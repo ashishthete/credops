@@ -49,6 +49,16 @@ describe('EnvironmentStore and ProductStore', () => {
     expect(f.envs.update(staging.id, { name: 'Staging' }).name).toBe('Staging')
   })
 
+  it('renaming a shared environment checks every product it is in', async () => {
+    const f = await makeInventory()
+    const a = prod(f, 'Acme')
+    const b = prod(f, 'Essentials')
+    f.envs.create({ name: 'reports', color: COLOR, productIds: [b.id] })
+    const shared = f.envs.create({ name: 'analytics', color: COLOR, productIds: [a.id, b.id] })
+    expect(() => f.envs.update(shared.id, { name: 'Reports' })).toThrow(/product Essentials already has an environment named reports/)
+    expect(f.envs.list().find((e) => e.id === shared.id)!.name).toBe('analytics')
+  })
+
   it('product names are unique', async () => {
     const f = await makeInventory()
     prod(f, 'Acme')
@@ -172,6 +182,16 @@ describe('environment and product IPC', () => {
     await rejects('product:create', { name: 'p', color: COLOR, icon: 'leaf', repoUrl: 'javascript:x' })
     const ok = (await call('env:create', { name: 'e', color: COLOR, defaultPort: null })) as { name: string }
     expect(ok.name).toBe('e')
+    const missing = randomUUID()
+    for (const [c, ...a] of [
+      ['env:update', missing, { name: 'x' }],
+      ['env:delete', missing],
+      ['env:setProducts', missing, []],
+      ['env:putHost', missing, randomUUID(), 'app'],
+      ['env:removeHost', missing, randomUUID()],
+    ] as [string, ...unknown[]][]) {
+      await expect(call(c, ...a)).rejects.toThrow(/environment not found/)
+    }
     const p = (await call('product:create', { name: 'p', color: COLOR, icon: 'leaf', repoUrl: null })) as { repoUrl: null }
     expect(p.repoUrl).toBeNull()
   })

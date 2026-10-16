@@ -5,7 +5,8 @@ const SENSITIVE_KEY = /pass(word|phrase)?|secret|token|api[_-]?key|private[_-]?k
 const PEM_BLOCK = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g
 const MIN_SECRET_LENGTH = 4
 // Shorter secrets (a PIN, a short word) also occur inside unrelated numbers and words, so they
-// are masked only as whole tokens.
+// are masked only as whole tokens. A 4–7 char secret fused to letters or digits ("pin1234x")
+// is left as is on purpose: masking it would also mask every number that happens to contain it.
 const MIN_ANYWHERE_LENGTH = 8
 const WORD_CHAR = /[\p{L}\p{N}]/u
 

@@ -94,6 +94,25 @@ describe('HostStore', () => {
     expect(f.hosts.create({ label: 'C', address: 'c.example.com', jumpHostId: a.id }).jumpHostId).toBe(a.id)
   })
 
+  it('finds a loop three hops long', async () => {
+    const f = await makeInventory()
+    const a = f.hosts.create({ label: 'A', address: 'a.example.com' })
+    const b = f.hosts.create({ label: 'B', address: 'b.example.com', jumpHostId: a.id })
+    const c = f.hosts.create({ label: 'C', address: 'c.example.com', jumpHostId: b.id })
+    expect(() => f.hosts.update(a.id, { jumpHostId: c.id })).toThrow(/jump host loop: A → C → B → A/)
+    expect(f.hosts.list().find((h) => h.id === a.id)!.jumpHostId).toBeNull()
+  })
+
+  it('unchanged tags are a no-op', async () => {
+    const f = await makeInventory()
+    const h = f.hosts.create({ label: 'a', address: 'a.example.com', tags: ['web', 'eu'] })
+    const before = hostActions(f).length
+    expect(f.hosts.update(h.id, { tags: ['web', 'eu'] }).updatedAt).toBe(h.updatedAt)
+    expect(hostActions(f)).toHaveLength(before)
+    expect(f.hosts.update(h.id, { tags: ['eu', 'web'] }).tags).toEqual(['eu', 'web'])
+    expect(hostActions(f)).toHaveLength(before + 1)
+  })
+
   it('refuses deleting a jump host', async () => {
     const f = await makeInventory()
     const a = f.hosts.create({ label: 'A', address: 'a.example.com' })
@@ -168,7 +187,21 @@ describe('host IPC', () => {
       expect((err as Error).message).toMatch(/invalid arguments/)
       expect((err as Error).message).not.toContain('a b')
     }
-    const ok = (await calls['host:create']!(ev, { label: 'x', address: 'a.b', port: null })) as { label: string }
+    const ok = (await calls['host:create']!(ev, { label: 'x', address: 'a.b', port: null })) as { label: string; id: string }
     expect(ok.label).toBe('x')
+
+    const rejects = async (c: string, ...a: unknown[]): Promise<void> => {
+      await expect(Promise.resolve(calls[c]!(ev, ...a))).rejects.toThrow(/invalid arguments/)
+    }
+    // Option-looking addresses would be read by ssh as a flag.
+    await rejects('host:create', { label: 'y', address: '-oProxyCommand=x' })
+    await rejects('host:update', ok.id, { address: '-oProxyCommand=x' })
+    await rejects('host:update', 'not-a-uuid', { label: 'z' })
+    await rejects('host:update', ok.id, { vaultIds: [] })
+    await rejects('host:update', ok.id, { port: 0 })
+    await rejects('host:delete', 'not-a-uuid')
+    await rejects('host:setVaults', ok.id, 'v1')
+    await rejects('host:setVaults', ok.id, ['not-a-uuid'])
+    await expect(Promise.resolve(calls['host:delete']!(ev, randomUUID()))).rejects.toThrow(/host not found/)
   })
 })

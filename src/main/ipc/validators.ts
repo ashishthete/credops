@@ -174,7 +174,6 @@ export const asHostPatch: Check<HostPatch> = v.object({
   notes: v.optional(hostNotes),
 }) as Check<HostPatch>
 
-/** Every channel must have an entry; each later task adds its own. */
 const envName = v.str({ min: 1, max: MAX_NAME, trim: true })
 const envColor = v.str({ pattern: VAULT_COLOR })
 const envPort = v.nullable(v.int({ min: 1, max: 65535 }))
@@ -227,6 +226,7 @@ export const asSshImportRequest: Check<SshImportRequest> = v.object({
   role: v.optional(v.oneOf(HOST_ROLES)),
 }) as Check<SshImportRequest>
 
+/** Every channel must have an entry; each later task adds its own. */
 export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']> } = {
   'app:info': args(),
   'audit:list': args(asFilter),
