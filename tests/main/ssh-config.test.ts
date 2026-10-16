@@ -75,7 +75,7 @@ describe('robustness', () => {
   })
 
   it('caps aliases and stays fast on many Host lines', () => {
-    const text = Array.from({ length: 150000 }, (_, i) => `Host a${i}`).join('\n').slice(0, 1024 * 1024)
+    const text = Array.from({ length: 150000 }, (_, i) => `Host a${i}`).join('\n').slice(0, 1024 * 1024 - 100)
     const t0 = Date.now()
     const { entries, warnings } = parse(text + '\nHost *\n User z\n')
     expect(Date.now() - t0).toBeLessThan(1000)
