@@ -23,7 +23,7 @@ describe('database migrations', () => {
   })
 
   it('rolls back a failing migration', () => {
-    const fresh = openDatabase(':memory:')
+    const fresh = new (process.getBuiltinModule('node:sqlite').DatabaseSync)(':memory:')
     const list: Migration[] = [
       { version: 1, name: 'a', up: 'CREATE TABLE a(x)' },
       { version: 2, name: 'b', up: 'CREATE TABLE b(x); SELECT * FROM nope' },
