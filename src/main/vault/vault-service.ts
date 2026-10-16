@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto'
 import {
   DEFAULT_VAULT_ID,
   MAX_MASTER_PASSWORD,
+  MAX_VAULT_NAME,
   MIN_MASTER_PASSWORD,
+  VAULT_COLOR,
   VAULT_LOCKED,
   type LockReason,
   type QuickUnlockMode,
@@ -21,9 +23,6 @@ export interface QuickUnlockDeps {
   touchId: { available(): boolean; prompt(reason: string): Promise<void> } // systemPreferences
 }
 
-export const MAX_VAULT_NAME = 64
-export const VAULT_COLOR = /^#[0-9a-f]{6}$/i
-
 const MAX_UNLOCK_DELAY_MS = 300_000
 
 /** Wait required after `failures` consecutive wrong passwords. */
@@ -33,6 +32,9 @@ export function unlockDelayMs(failures: number): number {
 }
 
 type Failure = Extract<UnlockResult, { ok: false }>
+type Verified = { ok: true; kek: Buffer; keys: Map<string, Buffer>; corrupt: string[] }
+
+const CANCELLED: Failure = { ok: false, reason: 'cancelled', retryAfterMs: 0 }
 
 interface VaultRow {
   id: string
@@ -58,7 +60,7 @@ const META_SQL = `SELECT v.id, v.name, v.color, v.created_at, v.updated_at,
     (SELECT COUNT(*) FROM identities WHERE vault_id = v.id) AS identities
   FROM vaults v`
 
-const wrapAad = (vaultId: string): string => `vault:${vaultId}:key`
+const wrapAad = (vaultId: string): string => `vault:${vaultId}`
 
 function toMeta(r: VaultRow): VaultMeta {
   return {
@@ -91,6 +93,10 @@ export class VaultService {
   /** Key-encryption key derived from the master password; null while locked. */
   private kek: Buffer | null = null
   private readonly keys = new Map<string, Buffer>()
+  /** Keyed vaults whose wrapped key failed to open at unlock (Default opened, so not a wrong password). */
+  private corrupt: string[] = []
+  /** Bumped by every lock(); a password operation that saw it change while awaiting scrypt is abandoned. */
+  private epoch = 0
   private readonly known = new Map<string, readonly string[]>()
   private readonly lockListeners = new Set<(reason: LockReason) => void>()
   /** Chains password operations so the throttle check and failure count cannot interleave. */
@@ -118,6 +124,7 @@ export class VaultService {
       },
       autoLockMinutes: s.auto_lock_minutes,
       retryAfterMs: this.retryAfterMs(s),
+      corruptVaultIds: this.kek ? [...this.corrupt] : [],
     }
   }
 
@@ -133,8 +140,13 @@ export class VaultService {
     return this.serial(async () => {
       if (this.isSetUp()) throw new Error('already set up')
       checkPassword(password, true)
+      const epoch = this.epoch
       const params = newKdfParams(this.kdf)
       const kek = await deriveKek(password, params)
+      if (epoch !== this.epoch) {
+        kek.fill(0)
+        throw new Error(VAULT_LOCKED)
+      }
       const keys = new Map<string, Buffer>()
       try {
         this.tx(() => {
@@ -153,7 +165,7 @@ export class VaultService {
         zero(kek, keys.values())
         throw err
       }
-      this.install(kek, keys)
+      this.install(kek, keys, [])
       this.audit.append({ action: 'vault.setup', outcome: 'success', details: { vaults: keys.size } })
       return this.status()
     })
@@ -163,7 +175,7 @@ export class VaultService {
     return this.serial(async () => {
       if (!this.isSetUp()) throw new Error('not set up')
       checkPassword(password, false)
-      const res = await this.verify(password)
+      const res = await this.verify(password, this.epoch)
       if (!res.ok) {
         this.audit.append({
           action: 'vault.unlock',
@@ -172,17 +184,23 @@ export class VaultService {
         })
         return res
       }
-      this.install(res.kek, res.keys)
-      this.audit.append({ action: 'vault.unlock', outcome: 'success', details: { method: 'password' } })
+      this.install(res.kek, res.keys, res.corrupt)
+      this.audit.append({
+        action: 'vault.unlock',
+        outcome: 'success',
+        details: { method: 'password', ...(res.corrupt.length ? { corrupt: res.corrupt } : {}) },
+      })
       return { ok: true }
     })
   }
 
   lock(reason: LockReason): void {
+    this.epoch++
     if (!this.kek) return
     zero(this.kek, this.keys.values())
     this.kek = null
     this.keys.clear()
+    this.corrupt = []
     this.known.clear()
     try {
       this.audit.append({ action: 'vault.lock', outcome: 'success', details: { reason } })
@@ -207,7 +225,8 @@ export class VaultService {
       this.assertUnlocked()
       checkPassword(current, false)
       checkPassword(next, true)
-      const res = await this.verify(current)
+      const epoch = this.epoch
+      const res = await this.verify(current, epoch)
       if (!res.ok) {
         this.audit.append({ action: 'vault.rekey', outcome: 'failure', details: { reason: res.reason } })
         return res
@@ -216,16 +235,18 @@ export class VaultService {
       zero(res.kek, res.keys.values())
       const params = newKdfParams(this.kdf)
       const kek = await deriveKek(next, params)
-      if (!this.kek) {
+      if (epoch !== this.epoch) {
         kek.fill(0)
-        throw new Error(VAULT_LOCKED)
+        this.audit.append({ action: 'vault.rekey', outcome: 'failure', details: { reason: 'cancelled' } })
+        return CANCELLED
       }
       try {
         this.tx(() => {
           const keyed = this.db.prepare('SELECT COUNT(*) AS n FROM vaults WHERE wrapped_key IS NOT NULL').get() as {
             n: number
           }
-          if (Number(keyed.n) !== this.keys.size) throw new Error('vault keys out of sync')
+          // Corrupt vaults keep their old wrapping: their key is gone either way.
+          if (Number(keyed.n) !== this.keys.size + this.corrupt.length) throw new Error('vault keys out of sync')
           const ts = this.now().toISOString()
           for (const [id, key] of this.keys) {
             this.db
@@ -312,6 +333,7 @@ export class VaultService {
     })
     this.keys.get(id)?.fill(0)
     this.keys.delete(id)
+    this.corrupt = this.corrupt.filter((c) => c !== id)
     this.audit.append({
       action: 'vault.delete',
       outcome: 'success',
@@ -350,7 +372,7 @@ export class VaultService {
   private vaultKey(vaultId: string): Buffer {
     this.assertUnlocked()
     const key = this.keys.get(vaultId)
-    if (!key) throw new Error('vault not found')
+    if (!key) throw new Error(this.corrupt.includes(vaultId) ? 'vault key is corrupt' : 'vault not found')
     return key
   }
 
@@ -396,9 +418,10 @@ export class VaultService {
 
   /**
    * The throttled password check shared by unlock and changePassword. On success the caller owns
-   * the returned buffers. Any unwrap failure counts as a wrong password and zeroes what was derived.
+   * the returned buffers. Only the Default vault's unwrap decides a wrong password; another vault
+   * that fails to open is reported as corrupt. A lock() since `epoch` abandons the attempt uncounted.
    */
-  private async verify(password: string): Promise<{ ok: true; kek: Buffer; keys: Map<string, Buffer> } | Failure> {
+  private async verify(password: string, epoch: number): Promise<Verified | Failure> {
     const wait = this.retryAfterMs()
     if (wait > 0) return { ok: false, reason: 'throttled', retryAfterMs: wait }
     const master = this.db.prepare('SELECT kdf_params FROM vaults WHERE id = ?').get(DEFAULT_VAULT_ID) as {
@@ -406,29 +429,40 @@ export class VaultService {
     }
     if (!master.kdf_params) throw new Error('invalid kdf params')
     const kek = await deriveKek(password, JSON.parse(master.kdf_params) as KdfParams)
+    if (epoch !== this.epoch) {
+      kek.fill(0)
+      return CANCELLED
+    }
     // Read after the await: a vault created during derivation must be included.
-    const rows = this.db.prepare('SELECT id, wrapped_key FROM vaults WHERE wrapped_key IS NOT NULL').all() as {
-      id: string
-      wrapped_key: string
-    }[]
+    const rows = this.db
+      .prepare('SELECT id, wrapped_key FROM vaults WHERE wrapped_key IS NOT NULL ORDER BY (id = ?) DESC, id')
+      .all(DEFAULT_VAULT_ID) as { id: string; wrapped_key: string }[]
     const keys = new Map<string, Buffer>()
-    try {
-      for (const r of rows) keys.set(r.id, openSealed(kek, r.wrapped_key, wrapAad(r.id)))
-    } catch {
-      zero(kek, keys.values())
-      this.db
-        .prepare('UPDATE vault_state SET failed_attempts = failed_attempts + 1, last_failed_at = ? WHERE id = 1')
-        .run(this.now().toISOString())
-      return { ok: false, reason: 'wrong-password', retryAfterMs: this.retryAfterMs() }
+    const corrupt: string[] = []
+    for (const r of rows) {
+      try {
+        keys.set(r.id, openSealed(kek, r.wrapped_key, wrapAad(r.id)))
+      } catch {
+        if (r.id !== DEFAULT_VAULT_ID) {
+          corrupt.push(r.id)
+          continue
+        }
+        zero(kek, keys.values())
+        this.db
+          .prepare('UPDATE vault_state SET failed_attempts = failed_attempts + 1, last_failed_at = ? WHERE id = 1')
+          .run(this.now().toISOString())
+        return { ok: false, reason: 'wrong-password', retryAfterMs: this.retryAfterMs() }
+      }
     }
     this.resetFailures()
-    return { ok: true, kek, keys }
+    return { ok: true, kek, keys, corrupt }
   }
 
-  private install(kek: Buffer, keys: Map<string, Buffer>): void {
+  private install(kek: Buffer, keys: Map<string, Buffer>, corrupt: string[]): void {
     if (this.kek) zero(this.kek, this.keys.values())
     this.keys.clear()
     this.kek = kek
+    this.corrupt = corrupt
     for (const [id, key] of keys) this.keys.set(id, key)
   }
 

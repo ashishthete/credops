@@ -1,7 +1,6 @@
 import { AUDIT_ACTIONS, type AuditFilter } from '../../shared/audit'
 import type { Channel, IpcContract } from '../../shared/ipc'
-import { MAX_MASTER_PASSWORD, type VaultInput } from '../../shared/vault'
-import { MAX_VAULT_NAME, VAULT_COLOR } from '../vault/vault-service'
+import { MAX_MASTER_PASSWORD, MAX_VAULT_NAME, VAULT_COLOR, type VaultInput } from '../../shared/vault'
 import { args, v, type ArgsValidator, type Check } from './validate'
 
 const OUTCOMES = ['success', 'failure', 'denied', 'info'] as const

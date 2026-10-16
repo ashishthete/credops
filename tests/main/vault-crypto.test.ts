@@ -51,6 +51,12 @@ describe('vault crypto', () => {
       { ...good, N: 2 ** 9 },
       { ...good, salt: Buffer.alloc(8).toString('base64') },
       { ...good, salt: Buffer.alloc(17).toString('base64') },
+      { ...good, N: 2 ** 10 + 1 },
+      { ...good, N: 2 ** 21 },
+      { ...good, r: 0 },
+      { ...good, r: 17 },
+      { ...good, p: 1.5 },
+      { ...good, p: 17 },
     ] as (typeof good)[]
     for (const params of bad) {
       const err = await deriveKek('Pässword1!', params).catch((e: unknown) => e)

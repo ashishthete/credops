@@ -23,13 +23,20 @@ export function newKdfParams(base: Omit<KdfParams, 'salt'> = DEFAULT_KDF): KdfPa
 }
 
 const MIN_N = 2 ** 10
+const MAX_N = 2 ** 20
+const MAX_RP = 16
+
+const inRange = (n: unknown, min: number, max: number): boolean =>
+  Number.isInteger(n) && (n as number) >= min && (n as number) <= max
 
 /** Params come from the db: refuse anything weaker than we would write. The message carries no values. */
 function usableParams(params: KdfParams): boolean {
   return (
     params.alg === 'scrypt' &&
-    Number.isInteger(params.N) &&
-    params.N >= MIN_N &&
+    inRange(params.N, MIN_N, MAX_N) &&
+    (params.N & (params.N - 1)) === 0 &&
+    inRange(params.r, 1, MAX_RP) &&
+    inRange(params.p, 1, MAX_RP) &&
     typeof params.salt === 'string' &&
     Buffer.from(params.salt, 'base64').length === SALT_BYTES
   )

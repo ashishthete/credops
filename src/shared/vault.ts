@@ -4,6 +4,8 @@ export const VAULT_LOCKED = 'vault locked'
 export const MIN_MASTER_PASSWORD = 10
 export const MAX_MASTER_PASSWORD = 1024
 export const MAX_SECRET_VALUE = 65536
+export const MAX_VAULT_NAME = 64
+export const VAULT_COLOR = /^#[0-9a-f]{6}$/i
 export const CLIPBOARD_CLEAR_MS = 30_000
 export const REVEAL_HIDE_MS = 10_000
 export const SECRET_KINDS = ['password', 'token', 'env', 'webhook', 'api_key'] as const
@@ -20,6 +22,8 @@ export interface VaultStatus {
   quickUnlockAvailable: { touchId: boolean; login: boolean }
   autoLockMinutes: number | null
   retryAfterMs: number
+  /** Vaults whose wrapped key failed to open at the last unlock; empty while locked. */
+  corruptVaultIds: string[]
 }
 export type UnlockResult =
   | { ok: true }

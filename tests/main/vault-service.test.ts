@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { StatementSync } from 'node:sqlite'
-import { deriveKek } from '../../src/main/vault/crypto'
+import { deriveKek, openSealed, type KdfParams } from '../../src/main/vault/crypto'
 import { unlockDelayMs, VaultService } from '../../src/main/vault/vault-service'
 import { DEFAULT_VAULT_ID, MAX_MASTER_PASSWORD, VAULT_LOCKED } from '../../src/shared/vault'
 import { auditRows, FAST_KDF, makeVault } from './vault-helpers'
@@ -144,6 +144,112 @@ describe('VaultService', () => {
     f.db.prepare('UPDATE vaults SET wrapped_key = ? WHERE id = ?').run(tampered, DEFAULT_VAULT_ID)
     expect(await f.vault.unlock(PW)).toMatchObject({ ok: false, reason: 'wrong-password' })
     expect(f.vault.isUnlocked()).toBe(false)
+  })
+
+  it('wraps each vault key under aad vault:<id>', async () => {
+    const f = makeVault()
+    await f.vault.setup(PW)
+    const prod = f.vault.createVault({ name: 'Prod', color: '#ff0000' })
+    const kek = await deriveKek(PW, JSON.parse(defaultRow(f.db).kdf_params!) as KdfParams)
+    for (const id of [DEFAULT_VAULT_ID, prod.id]) {
+      const row = f.db.prepare('SELECT wrapped_key FROM vaults WHERE id = ?').get(id) as { wrapped_key: string }
+      expect(openSealed(kek, row.wrapped_key, `vault:${id}`)).toHaveLength(32)
+    }
+  })
+
+  it('a corrupt non-default vault does not fail the unlock', async () => {
+    const f = makeVault()
+    await f.vault.setup(PW)
+    const prod = f.vault.createVault({ name: 'Prod', color: '#ff0000' })
+    const sealed = f.vault.seal(DEFAULT_VAULT_ID, 'a', 'one')
+    f.vault.lock('manual')
+    const row = f.db.prepare('SELECT wrapped_key FROM vaults WHERE id = ?').get(prod.id) as { wrapped_key: string }
+    const i = row.wrapped_key.length - 5
+    const bad = row.wrapped_key.slice(0, i) + (row.wrapped_key[i] === 'A' ? 'B' : 'A') + row.wrapped_key.slice(i + 1)
+    f.db.prepare('UPDATE vaults SET wrapped_key = ? WHERE id = ?').run(bad, prod.id)
+
+    expect(await f.vault.unlock(PW)).toEqual({ ok: true })
+    expect(f.vault.status().corruptVaultIds).toEqual([prod.id])
+    expect(f.vault.open(DEFAULT_VAULT_ID, 'a', sealed)).toBe('one')
+    expect(() => f.vault.seal(prod.id, 'x', 'v')).toThrow(/corrupt/)
+    expect(f.db.prepare('SELECT failed_attempts FROM vault_state').get()).toEqual({ failed_attempts: 0 })
+    expect(actions(f).at(-1)).toMatchObject({
+      action: 'vault.unlock',
+      outcome: 'success',
+      details: { method: 'password', corrupt: [prod.id] },
+    })
+
+    // A password change still works and leaves the corrupt vault as it was.
+    expect(await f.vault.changePassword(PW, PW2)).toEqual({ ok: true })
+    f.vault.lock('manual')
+    expect(f.vault.status().corruptVaultIds).toEqual([])
+    expect(await f.vault.unlock(PW2)).toEqual({ ok: true })
+    expect(f.vault.status().corruptVaultIds).toEqual([prod.id])
+    f.vault.deleteVault(prod.id)
+    expect(f.vault.status().corruptVaultIds).toEqual([])
+  })
+
+  it('a lock during unlock derivation cancels it', async () => {
+    const f = makeVault()
+    await f.vault.setup(PW)
+    f.vault.lock('manual')
+    const derived = Buffer.alloc(32, 7)
+    let release!: () => void
+    vi.mocked(deriveKek).mockImplementationOnce(
+      () => new Promise<Buffer>((resolve) => (release = () => resolve(derived))),
+    )
+    const pending = f.vault.unlock(PW)
+    await vi.waitFor(() => expect(deriveKek).toHaveBeenCalled())
+    f.vault.lock('screen')
+    release()
+    expect(await pending).toEqual({ ok: false, reason: 'cancelled', retryAfterMs: 0 })
+    expect(f.vault.isUnlocked()).toBe(false)
+    expect(derived.every((b) => b === 0)).toBe(true)
+    expect(f.db.prepare('SELECT failed_attempts FROM vault_state').get()).toEqual({ failed_attempts: 0 })
+    expect(await f.vault.unlock(PW)).toEqual({ ok: true })
+  })
+
+  it('a lock during setup derivation cancels it', async () => {
+    const f = makeVault()
+    const derived = Buffer.alloc(32, 7)
+    let release!: () => void
+    vi.mocked(deriveKek).mockImplementationOnce(
+      () => new Promise<Buffer>((resolve) => (release = () => resolve(derived))),
+    )
+    const pending = f.vault.setup(PW)
+    await vi.waitFor(() => expect(deriveKek).toHaveBeenCalled())
+    f.vault.lock('screen')
+    release()
+    await expect(pending).rejects.toThrow(VAULT_LOCKED)
+    expect(f.vault.isUnlocked()).toBe(false)
+    expect(f.vault.status().setUp).toBe(false)
+    expect(derived.every((b) => b === 0)).toBe(true)
+  })
+
+  it('a lock during either password-change derivation cancels it', async () => {
+    for (const which of [1, 2]) {
+      const f = makeVault()
+      await f.vault.setup(PW)
+      const derived = Buffer.alloc(32, 7)
+      let release!: () => void
+      const real = vi.mocked(deriveKek).getMockImplementation()!
+      let calls = 0
+      vi.mocked(deriveKek).mockImplementation((pw, params) => {
+        if (++calls !== which) return real(pw, params)
+        return new Promise<Buffer>((resolve) => (release = () => resolve(derived)))
+      })
+      const before = defaultRow(f.db)
+      const pending = f.vault.changePassword(PW, PW2)
+      await vi.waitFor(() => expect(calls).toBe(which))
+      f.vault.lock('screen')
+      release()
+      expect(await pending).toEqual({ ok: false, reason: 'cancelled', retryAfterMs: 0 })
+      vi.mocked(deriveKek).mockImplementation(real)
+      expect(f.vault.isUnlocked()).toBe(false)
+      expect(derived.every((b) => b === 0)).toBe(true)
+      expect(defaultRow(f.db)).toEqual(before)
+      expect(await f.vault.unlock(PW)).toEqual({ ok: true })
+    }
   })
 
   it('rejects unusable kdf params without deriving', async () => {
