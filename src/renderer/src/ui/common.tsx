@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { MoreHorizontal, type LucideIcon } from 'lucide-react'
-import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { cleanIpcErrorMessage } from '../lib/api'
 import { Button } from './Button'
 import { Dialog } from './Dialog'
@@ -82,6 +82,73 @@ export interface MenuItem {
   danger?: boolean
 }
 
+/**
+ * Open, close, focus and keys for a small popover menu. Opening focuses the first item; arrows, Home and
+ * End move; Escape closes back to the trigger; Tab and a click outside just close. If the trigger goes
+ * away while it holds focus (picking the last choice can do that), focus moves to `fallback`.
+ */
+export function useMenuPopover({ itemSelector = '[role^="menuitem"]', fallback }: { itemSelector?: string; fallback?: () => HTMLElement | null } = {}) {
+  const [open, setOpen] = useState(false)
+  const trigger = useRef<HTMLButtonElement>(null)
+  const menu = useRef<HTMLDivElement>(null)
+  const menuId = useId()
+  const anchor = useRef(fallback)
+  anchor.current = fallback
+
+  const close = useCallback((refocus = true) => {
+    setOpen(false)
+    if (refocus) trigger.current?.focus()
+  }, [])
+
+  useEffect(() => {
+    if (!open) return
+    menu.current?.querySelector<HTMLElement>(itemSelector)?.focus()
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node
+      if (!menu.current?.contains(t) && !trigger.current?.contains(t)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open, itemSelector])
+
+  // Runs before the trigger leaves the DOM, while it can still say whether it had focus.
+  useLayoutEffect(() => {
+    const el = trigger.current
+    return () => {
+      if (!el?.contains(document.activeElement)) return
+      queueMicrotask(() => {
+        if (!document.activeElement || document.activeElement === document.body) anchor.current?.()?.focus()
+      })
+    }
+  }, [])
+
+  const onKeyDown = (e: KeyboardEvent) => {
+    const els = [...(menu.current?.querySelectorAll<HTMLElement>(itemSelector) ?? [])]
+    const i = els.indexOf(document.activeElement as HTMLElement)
+    const go = (n: number) => {
+      e.preventDefault()
+      els[(n + els.length) % els.length]?.focus()
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      e.stopPropagation()
+      close()
+    } else if (e.key === 'ArrowDown') go(i + 1)
+    else if (e.key === 'ArrowUp') go(i - 1)
+    else if (e.key === 'Home') go(0)
+    else if (e.key === 'End') go(els.length - 1)
+    else if (e.key === 'Tab') close(false)
+  }
+
+  return {
+    open,
+    setOpen,
+    close,
+    triggerProps: { ref: trigger, 'aria-haspopup': 'menu' as const, 'aria-expanded': open, 'aria-controls': open ? menuId : undefined },
+    menuProps: { ref: menu, id: menuId, role: 'menu', onKeyDown },
+  }
+}
+
 /** A "⋯" button with a small popover menu. `extra` renders above the items (e.g. swatches). */
 export function RowMenu({
   label,
@@ -95,52 +162,14 @@ export function RowMenu({
   className?: string
 }) {
   const motionSafe = useMotionSafe()
-  const [open, setOpen] = useState(false)
-  const trigger = useRef<HTMLButtonElement>(null)
-  const menu = useRef<HTMLDivElement>(null)
-  const menuId = useId()
-
-  const close = (refocus = true) => {
-    setOpen(false)
-    if (refocus) trigger.current?.focus()
-  }
-
-  useEffect(() => {
-    if (!open) return
-    menu.current?.querySelector<HTMLElement>('[role^="menuitem"]')?.focus()
-    const onDown = (e: MouseEvent) => {
-      const t = e.target as Node
-      if (!menu.current?.contains(t) && !trigger.current?.contains(t)) setOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
-  }, [open])
-
-  const onKeyDown = (e: KeyboardEvent) => {
-    const els = [...(menu.current?.querySelectorAll<HTMLElement>('[role^="menuitem"]') ?? [])]
-    const i = els.indexOf(document.activeElement as HTMLElement)
-    if (e.key === 'Escape') {
-      e.preventDefault()
-      e.stopPropagation()
-      close()
-    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      e.preventDefault()
-      const step = e.key === 'ArrowDown' ? 1 : -1
-      els[(i + step + els.length) % els.length]?.focus()
-    } else if (e.key === 'Tab') {
-      close(false)
-    }
-  }
+  const { open, setOpen, close, triggerProps, menuProps } = useMenuPopover()
 
   return (
     <div className={`relative ${className}`}>
       <button
-        ref={trigger}
+        {...triggerProps}
         type="button"
         aria-label={label}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-controls={open ? menuId : undefined}
         onClick={(e) => {
           e.stopPropagation()
           setOpen((o) => !o)
@@ -154,11 +183,8 @@ export function RowMenu({
       <AnimatePresence>
         {open && (
           <motion.div
-            ref={menu}
-            id={menuId}
-            role="menu"
+            {...menuProps}
             aria-label={label}
-            onKeyDown={onKeyDown}
             onClick={(e) => e.stopPropagation()}
             initial={motionSafe ? { opacity: 0, scale: 0.94, y: -4 } : { opacity: 0 }}
             animate={motionSafe ? { opacity: 1, scale: 1, y: 0 } : { opacity: 1 }}
@@ -200,6 +226,8 @@ export interface ConfirmRequest {
   confirmLabel: string
   /** When set, the user must type this exactly before confirming. */
   typeToConfirm?: string
+  /** The action can't go ahead yet; `description` says why and the confirm button stays off. */
+  blocked?: boolean
   run: () => Promise<unknown>
 }
 
@@ -217,7 +245,7 @@ export function ConfirmDialog({ request, onClose }: { request: ConfirmRequest | 
     if (request) setTyped('')
   }, [request])
 
-  const ready = !r?.typeToConfirm || typed === r.typeToConfirm
+  const ready = !r?.blocked && (!r?.typeToConfirm || typed === r.typeToConfirm)
   const confirm = async () => {
     if (!request || !ready || busy) return
     setBusy(true)
@@ -253,7 +281,7 @@ export function ConfirmDialog({ request, onClose }: { request: ConfirmRequest | 
           void confirm()
         }}
       >
-        {r?.typeToConfirm ? (
+        {r?.blocked ? null : r?.typeToConfirm ? (
           <TextField
             autoFocus
             label={`Type ${r.typeToConfirm} to confirm`}

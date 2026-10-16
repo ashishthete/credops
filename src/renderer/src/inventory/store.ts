@@ -158,11 +158,14 @@ export const inv = {
     return row
   },
 
-  /** Create sends everything; edit sends changed fields only and routes vault links to setHostVaults. */
-  async saveHost(input: HostInput, id?: string): Promise<HostMeta | undefined> {
+  /**
+   * Create sends everything; edit sends changed fields only and routes vault links to setHostVaults.
+   * `base` is the host the edit started from (defaults to the stored one), so others' changes aren't undone.
+   */
+  async saveHost(input: HostInput, id?: string, base?: HostMeta): Promise<HostMeta | undefined> {
     const row = await attempt("Couldn't save the host", async () => {
       if (!id) return api.invoke('host:create', input)
-      const current = inventoryStore.get()?.hosts.find((h) => h.id === id)
+      const current = base ?? inventoryStore.get()?.hosts.find((h) => h.id === id)
       const patch = diff<HostPatch>(input, current, HOST_KEYS)
       let saved = Object.keys(patch).length || !current ? await api.invoke('host:update', id, patch) : current
       if (input.vaultIds && !(current && sameSet(input.vaultIds, current.vaultIds))) {

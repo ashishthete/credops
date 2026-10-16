@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { AppWindow, Laptop, Server, SquareTerminal, X, type LucideIcon } from 'lucide-react'
-import { useEffect, useId, useMemo, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import {
   DEFAULT_SSH_PORT,
   HOST_ADDRESS,
@@ -52,11 +52,13 @@ interface HostDialogProps {
   host?: HostMeta
   /** A new host starts in this environment, with this role. */
   presetEnvironment?: Membership
+  /** The environment the host is being looked at from; blank fields say what they inherit there. */
+  contextEnvironmentId?: string
   onClose: () => void
   onSaved: (host: HostMeta, created: boolean) => void
 }
 
-export function HostDialog({ open, host, presetEnvironment, onClose, onSaved }: HostDialogProps) {
+export function HostDialog({ open, host, presetEnvironment, contextEnvironmentId, onClose, onSaved }: HostDialogProps) {
   const formId = useId()
   const data = useInventory()
   const status = useVaultStatus()
@@ -69,9 +71,12 @@ export function HostDialog({ open, host, presetEnvironment, onClose, onSaved }: 
   const [osIcon, setOsIcon] = useState<OsIcon>('linux')
   const [notes, setNotes] = useState('')
   const [busy, setBusy] = useState(false)
+  // The host as it was when the dialog opened; a save sends only what changed from this.
+  const opened = useRef(host)
 
   useEffect(() => {
     if (!open) return
+    opened.current = host
     setLabel(host?.label ?? '')
     setAddress(host?.address ?? '')
     setPort(host?.port != null ? String(host.port) : '')
@@ -98,13 +103,25 @@ export function HostDialog({ open, host, presetEnvironment, onClose, onSaved }: 
     [data, host],
   )
 
-  // What a blank field falls back to: the first of the host's environments that sets it, else the app.
-  const envs = memberships.flatMap((m) => data?.environments.filter((e) => e.id === m.environmentId) ?? [])
-  const inherited = (has: (e: (typeof envs)[number]) => boolean) => {
-    const e = envs.find(has)
-    return e ? sourceLabel('environment', e.name) : sourceLabel('global')
+  // What a blank field falls back to: the context environment's default, or, with no context, the one
+  // default every environment agrees on. When they disagree there is no single answer to show.
+  const memberEnvs = memberships.flatMap((m) => data?.environments.filter((e) => e.id === m.environmentId) ?? [])
+  const ctxEnv = memberEnvs.find((e) => e.id === contextEnvironmentId)
+  const envs = ctxEnv ? [ctxEnv] : memberEnvs
+  type Env = (typeof envs)[number]
+  const fallback = <T,>(pick: (e: Env) => T | null): { env?: Env; value: T | null } | null => {
+    const set = new Set(envs.map(pick))
+    if (set.size > 1) return null
+    const env = envs.find((e) => pick(e) != null)
+    return { env, value: env ? pick(env) : null }
   }
-  const envPort = envs.find((e) => e.defaultPort != null)?.defaultPort ?? DEFAULT_SSH_PORT
+  const inheritLabel = (pick: (e: Env) => string | null) => {
+    const f = fallback(pick)
+    if (!f) return 'Inherit'
+    return `Inherit (${f.env ? sourceLabel('environment', f.env.name) : sourceLabel('global')})`
+  }
+  const portFallback = fallback((e) => e.defaultPort)
+  const portPlaceholder = portFallback ? String(portFallback.value ?? DEFAULT_SSH_PORT) : ''
   const knownIdentity = !identityId || groups.some((g) => g.entries.some((x) => x.i.id === identityId))
   const knownJump = !jumpId || jumpHosts.some((h) => h.id === jumpId)
 
@@ -126,7 +143,11 @@ export function HostDialog({ open, host, presetEnvironment, onClose, onSaved }: 
       osIcon,
       notes,
     }
-    const saved = await inv.saveHost(host ? fields : { ...fields, vaultIds: [DEFAULT_VAULT_ID], environments: memberships }, host?.id)
+    const saved = await inv.saveHost(
+      host ? fields : { ...fields, vaultIds: [DEFAULT_VAULT_ID], environments: memberships },
+      host?.id,
+      opened.current,
+    )
     setBusy(false)
     if (saved) {
       toast({ title: host ? `Saved ${saved.label}` : `Created ${saved.label}`, tone: 'success' })
@@ -173,7 +194,7 @@ export function HostDialog({ open, host, presetEnvironment, onClose, onSaved }: 
           <TextField
             label="Port"
             inputMode="numeric"
-            placeholder={String(envPort)}
+            placeholder={portPlaceholder}
             value={port}
             onChange={(e) => setPort(e.target.value)}
             error={parsedPort.error}
@@ -182,7 +203,7 @@ export function HostDialog({ open, host, presetEnvironment, onClose, onSaved }: 
           />
         </div>
         <SelectField label="Identity" value={identityId} onChange={(e) => setIdentityId(e.target.value)}>
-          <option value="">{`Inherit (${inherited((e) => e.defaultIdentityId != null)})`}</option>
+          <option value="">{inheritLabel((e) => e.defaultIdentityId)}</option>
           {groups.map((g) => (
             <optgroup key={g.group} label={g.group}>
               {g.entries.map(({ i, vault }) => (
@@ -199,7 +220,7 @@ export function HostDialog({ open, host, presetEnvironment, onClose, onSaved }: 
           )}
         </SelectField>
         <SelectField label="Jump host" value={jumpId} onChange={(e) => setJumpId(e.target.value)}>
-          <option value="">{`Inherit (${inherited((e) => e.defaultJumpHostId != null)})`}</option>
+          <option value="">{inheritLabel((e) => e.defaultJumpHostId)}</option>
           {jumpHosts.map((h) => (
             <option key={h.id} value={h.id}>
               {h.label}

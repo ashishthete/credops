@@ -1,8 +1,9 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronDown, Lock, Plus, X } from 'lucide-react'
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
+import { useRef } from 'react'
 import { HOST_ROLES, type EnvironmentMeta, type HostMeta, type HostRole } from '../../../../shared/inventory'
 import { inv, type InventoryData } from '../../inventory/store'
+import { useMenuPopover } from '../../ui/common'
 import { fast, spring, useMotionSafe } from '../../ui/motion'
 import { ROLE_LABEL } from '../products/ProductView'
 
@@ -25,12 +26,14 @@ export function MembershipEditor({ host, data, onRemove }: MembershipEditorProps
     })
     .sort((a, b) => a.env.name.localeCompare(b.env.name))
   const joined = new Set(host.environments.map((m) => m.environmentId))
+  const list = useRef<HTMLUListElement>(null)
   const available = data.environments.filter((e) => !joined.has(e.id)).sort((a, b) => a.name.localeCompare(b.name))
 
   return (
     <div className="flex flex-col gap-2">
       {rows.length === 0 && <p className="text-[12.5px] text-muted">Not in any environment. It connects with its own settings and the app defaults.</p>}
-      <ul className="flex flex-col gap-1">
+      {/* Focus lands here when picking the last environment takes the add button away. */}
+      <ul ref={list} tabIndex={-1} aria-label="Environments" className="flex flex-col gap-1 focus:outline-none">
         <AnimatePresence initial={false}>
           {rows.map(({ env, role }) => (
             <motion.li
@@ -74,56 +77,30 @@ export function MembershipEditor({ host, data, onRemove }: MembershipEditorProps
           ))}
         </AnimatePresence>
       </ul>
-      {available.length > 0 && <AddMenu envs={available} where={where} onPick={(e) => void inv.putHost(e.id, host.id, 'other')} />}
+      {available.length > 0 && <AddMenu envs={available} where={where} anchor={() => list.current} onPick={(e) => void inv.putHost(e.id, host.id, 'other')} />}
     </div>
   )
 }
 
-function AddMenu({ envs, where, onPick }: { envs: EnvironmentMeta[]; where: (e: EnvironmentMeta) => string; onPick: (e: EnvironmentMeta) => void }) {
+function AddMenu({
+  envs,
+  where,
+  anchor,
+  onPick,
+}: {
+  envs: EnvironmentMeta[]
+  where: (e: EnvironmentMeta) => string
+  anchor: () => HTMLElement | null
+  onPick: (e: EnvironmentMeta) => void
+}) {
   const motionSafe = useMotionSafe()
-  const [open, setOpen] = useState(false)
-  const trigger = useRef<HTMLButtonElement>(null)
-  const menu = useRef<HTMLDivElement>(null)
-  const menuId = useId()
-
-  useEffect(() => {
-    if (!open) return
-    menu.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus()
-    const onDown = (e: MouseEvent) => {
-      const t = e.target as Node
-      if (!menu.current?.contains(t) && !trigger.current?.contains(t)) setOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
-  }, [open])
-
-  const close = () => {
-    setOpen(false)
-    trigger.current?.focus()
-  }
-  const onKeyDown = (e: KeyboardEvent) => {
-    const els = [...(menu.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])]
-    const i = els.indexOf(document.activeElement as HTMLElement)
-    if (e.key === 'Escape') {
-      e.preventDefault()
-      e.stopPropagation()
-      close()
-    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      e.preventDefault()
-      els[(i + (e.key === 'ArrowDown' ? 1 : -1) + els.length) % els.length]?.focus()
-    } else if (e.key === 'Tab') {
-      setOpen(false)
-    }
-  }
+  const { open, setOpen, close, triggerProps, menuProps } = useMenuPopover({ fallback: anchor })
 
   return (
     <div className="relative self-start">
       <button
-        ref={trigger}
+        {...triggerProps}
         type="button"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-controls={open ? menuId : undefined}
         onClick={() => setOpen((o) => !o)}
         className="flex h-8 items-center gap-1.5 rounded-lg border border-dashed border-line px-2.5 text-[12.5px] font-medium text-muted transition-colors hover:border-muted/40 hover:text-fg"
       >
@@ -133,11 +110,8 @@ function AddMenu({ envs, where, onPick }: { envs: EnvironmentMeta[]; where: (e: 
       <AnimatePresence>
         {open && (
           <motion.div
-            ref={menu}
-            id={menuId}
-            role="menu"
+            {...menuProps}
             aria-label="Add to environment"
-            onKeyDown={onKeyDown}
             initial={motionSafe ? { opacity: 0, scale: 0.95, y: -4 } : { opacity: 0 }}
             animate={motionSafe ? { opacity: 1, scale: 1, y: 0 } : { opacity: 1 }}
             exit={{ opacity: 0, transition: fast }}

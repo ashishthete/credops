@@ -1,10 +1,10 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { Check, Layers, Pencil, StickyNote, Trash2, Vault, X } from 'lucide-react'
-import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import type { EnvironmentMeta, HostMeta } from '../../../../shared/inventory'
-import { inv, useInventory } from '../../inventory/store'
+import { inv, inventoryStore, useInventory, type InventoryData } from '../../inventory/store'
 import { Button } from '../../ui/Button'
-import { ConfirmDialog, RowMenu, type ConfirmRequest } from '../../ui/common'
+import { ConfirmDialog, RowMenu, useMenuPopover, type ConfirmRequest } from '../../ui/common'
 import { fast, spring, useMotionSafe } from '../../ui/motion'
 import { Skeleton } from '../../ui/Skeleton'
 import { toast } from '../../ui/Toaster'
@@ -26,6 +26,7 @@ export function HostView({ hostId, environmentId, onDeleted }: HostViewProps) {
   const data = useInventory()
   const [editing, setEditing] = useState(false)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
+  const [context, setContext] = useState<string | null>(environmentId ?? null)
   const host = data?.hosts.find((h) => h.id === hostId)
 
   if (!data) {
@@ -41,12 +42,17 @@ export function HostView({ hostId, environmentId, onDeleted }: HostViewProps) {
   const { icon: OsIcon, label: osLabel } = OS_META[host.osIcon]
   const protectedEnv = data.environments.find((e) => e.protected && e.hosts.some((m) => m.hostId === host.id))
 
-  const askDelete = () =>
+  const askDelete = () => {
+    // The store refuses to delete a host something still jumps through, so say so up front.
+    const blockers = jumpDependents(data, host.id)
     setConfirm({
       title: `Delete ${host.label}?`,
-      description: `It leaves every environment it's in. Hosts that jump through ${host.label} will connect directly.`,
+      description: blockers
+        ? `${host.label} is the jump host for ${blockers}. Change those first.`
+        : `It leaves every environment it's in, and its vault links go with it.`,
       confirmLabel: 'Delete host',
-      typeToConfirm: protectedEnv ? host.label : undefined,
+      blocked: !!blockers,
+      typeToConfirm: protectedEnv && !blockers ? host.label : undefined,
       run: async () => {
         if (await inv.deleteHost(host.id)) {
           toast({ title: `Deleted ${host.label}`, tone: 'success' })
@@ -54,6 +60,7 @@ export function HostView({ hostId, environmentId, onDeleted }: HostViewProps) {
         }
       },
     })
+  }
 
   const askRemove = (env: EnvironmentMeta) =>
     setConfirm({
@@ -101,7 +108,7 @@ export function HostView({ hostId, environmentId, onDeleted }: HostViewProps) {
             ))}
           </ul>
         )}
-        <ConnectionCard hostId={host.id} environmentId={environmentId} />
+        <ConnectionCard hostId={host.id} environmentId={environmentId} onContextChange={setContext} />
 
         <div className="mt-6 grid grid-cols-[repeat(auto-fit,minmax(300px,1fr))] gap-6">
           <Section icon={Layers} title="Environments">
@@ -122,12 +129,21 @@ export function HostView({ hostId, environmentId, onDeleted }: HostViewProps) {
       <HostDialog
         open={editing}
         host={host}
+        contextEnvironmentId={context ?? undefined}
         onClose={() => setEditing(false)}
         onSaved={() => setEditing(false)}
       />
       <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
     </>
   )
+}
+
+/** "web-1, web-2 and the defaults of prod", or null when nothing jumps through the host. */
+function jumpDependents(data: InventoryData, hostId: string): string | null {
+  const hosts = data.hosts.filter((h) => h.jumpHostId === hostId).map((h) => h.label).sort((a, b) => a.localeCompare(b))
+  const envs = data.environments.filter((e) => e.defaultJumpHostId === hostId).map((e) => e.name).sort((a, b) => a.localeCompare(b))
+  const parts = [...(hosts.length ? [hosts.join(', ')] : []), ...(envs.length ? [`the defaults of ${envs.join(', ')}`] : [])]
+  return parts.length ? parts.join(' and ') : null
 }
 
 function Section({ icon: Icon, title, className = '', children }: { icon: typeof Layers; title: string; className?: string; children: ReactNode }) {
@@ -150,8 +166,14 @@ function VaultLinks({ host }: { host: HostMeta }) {
   const corrupt = status?.corruptVaultIds ?? []
   const vaults = [...(data?.vaults ?? [])].sort((a, b) => Number(b.isDefault) - Number(a.isDefault) || a.name.localeCompare(b.name))
   const linked = vaults.filter((v) => host.vaultIds.includes(v.id))
-  const toggle = (id: string) =>
-    void inv.setHostVaults(host.id, host.vaultIds.includes(id) ? host.vaultIds.filter((x) => x !== id) : [...host.vaultIds, id])
+  // One change at a time, each built on the links as they stand after the last, so quick clicks don't undo each other.
+  const queue = useRef(Promise.resolve())
+  const toggle = (id: string) => {
+    queue.current = queue.current.then(async () => {
+      const ids = inventoryStore.get()?.hosts.find((h) => h.id === host.id)?.vaultIds ?? host.vaultIds
+      await inv.setHostVaults(host.id, ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id])
+    })
+  }
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
@@ -199,46 +221,13 @@ function LinkVaultMenu({
   onToggle: (id: string) => void
 }) {
   const motionSafe = useMotionSafe()
-  const [open, setOpen] = useState(false)
-  const trigger = useRef<HTMLButtonElement>(null)
-  const menu = useRef<HTMLDivElement>(null)
-  const menuId = useId()
-
-  useEffect(() => {
-    if (!open) return
-    menu.current?.querySelector<HTMLElement>('[role="menuitemcheckbox"]')?.focus()
-    const onDown = (e: MouseEvent) => {
-      const t = e.target as Node
-      if (!menu.current?.contains(t) && !trigger.current?.contains(t)) setOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
-  }, [open])
-
-  const onKeyDown = (e: KeyboardEvent) => {
-    const els = [...(menu.current?.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]') ?? [])]
-    const i = els.indexOf(document.activeElement as HTMLElement)
-    if (e.key === 'Escape') {
-      e.preventDefault()
-      e.stopPropagation()
-      setOpen(false)
-      trigger.current?.focus()
-    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      e.preventDefault()
-      els[(i + (e.key === 'ArrowDown' ? 1 : -1) + els.length) % els.length]?.focus()
-    } else if (e.key === 'Tab') {
-      setOpen(false)
-    }
-  }
+  const { open, setOpen, triggerProps, menuProps } = useMenuPopover()
 
   return (
     <div className="relative">
       <button
-        ref={trigger}
+        {...triggerProps}
         type="button"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-controls={open ? menuId : undefined}
         onClick={() => setOpen((o) => !o)}
         className="flex h-7 items-center gap-1.5 rounded-full border border-dashed border-line px-2.5 text-[12.5px] font-medium text-muted transition-colors hover:border-muted/40 hover:text-fg"
       >
@@ -248,11 +237,8 @@ function LinkVaultMenu({
       <AnimatePresence>
         {open && (
           <motion.div
-            ref={menu}
-            id={menuId}
-            role="menu"
+            {...menuProps}
             aria-label="Link vault"
-            onKeyDown={onKeyDown}
             initial={motionSafe ? { opacity: 0, scale: 0.95, y: -4 } : { opacity: 0 }}
             animate={motionSafe ? { opacity: 1, scale: 1, y: 0 } : { opacity: 1 }}
             exit={{ opacity: 0, transition: fast }}

@@ -212,6 +212,42 @@ describe('HostView', () => {
     await waitFor(() => expect(resolves()).toBe(before + 1))
   })
 
+  it('switching context dims until it resolves and clears an error', async () => {
+    const user = userEvent.setup()
+    let release = () => {}
+    const gate = new Promise<void>((r) => (release = r))
+    setup(world(), async (_h, e) => {
+      if (e) throw new Error('environment not found')
+      await gate
+      return outside
+    })
+    render(<HostView hostId="web1" environmentId="prod" />)
+    expect(await screen.findByText('environment not found')).toBeInTheDocument()
+    await user.click(within(card()).getByRole('radio', { name: 'Outside any environment' }))
+    expect(screen.queryByText('environment not found')).not.toBeInTheDocument()
+    expect(card()).toHaveAttribute('aria-busy', 'true')
+    await act(async () => release())
+    expect(await within(row('Port')).findByText('22')).toBeInTheDocument()
+    expect(card()).not.toHaveAttribute('aria-busy')
+  })
+
+  it('recovers from a resolve error when the inventory changes', async () => {
+    let broken = true
+    setup(world(), async () => {
+      if (broken) throw new Error('jump host loop: web-1 → bastion → web-1')
+      return inProd
+    })
+    render(<HostView hostId="web1" environmentId="prod" />)
+    expect(await screen.findByText('jump host loop: web-1 → bastion → web-1')).toBeInTheDocument()
+    broken = false
+    act(() => {
+      const d = inventoryStore.get()!
+      inventoryStore.set({ ...d, hosts: d.hosts.map((h) => (h.id === 'bastion' ? { ...h, jumpHostId: null, port: 2201 } : h)) })
+    })
+    expect(await within(card()).findByText('2222')).toBeInTheDocument()
+    expect(screen.queryByText(/jump host loop/)).not.toBeInTheDocument()
+  })
+
   it('conflict warning', async () => {
     setup(world(), async () => ({ ...outside, conflicts: [{ field: 'identity', environmentIds: ['prod', 'staging'] }] }))
     render(<HostView hostId="web1" />)
@@ -274,6 +310,7 @@ describe('HostView', () => {
     await user.click(await screen.findByRole('button', { name: 'web-1 options' }))
     await user.click(screen.getByRole('menuitem', { name: 'Delete' }))
     const dialog = await screen.findByRole('dialog', { name: 'Delete web-1?' })
+    expect(dialog).not.toHaveTextContent(/connect directly|jump host for/)
     const confirm = within(dialog).getByRole('button', { name: 'Delete host' })
     expect(confirm).toBeDisabled()
     expect(invoke).not.toHaveBeenCalledWith('host:delete', 'web1')
@@ -281,6 +318,73 @@ describe('HostView', () => {
     await user.click(confirm)
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('host:delete', 'web1'))
     await waitFor(() => expect(onDeleted).toHaveBeenCalled())
+  })
+
+  it('delete is blocked while other hosts or environments jump through it', async () => {
+    const user = userEvent.setup()
+    const data = world()
+    data.hosts = data.hosts.map((h) => (h.id === 'web1' ? { ...h, jumpHostId: 'bastion' } : h))
+    const invoke = setup(data)
+    render(<HostView hostId="bastion" environmentId="prod" />)
+    await user.click(await screen.findByRole('button', { name: 'bastion options' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Delete' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Delete bastion?' })
+    expect(dialog).toHaveTextContent('bastion is the jump host for web-1 and the defaults of prod. Change those first.')
+    expect(within(dialog).queryByLabelText(/to confirm/)).not.toBeInTheDocument()
+    const confirm = within(dialog).getByRole('button', { name: 'Delete host' })
+    expect(confirm).toBeDisabled()
+    await user.click(confirm)
+    expect(invoke).not.toHaveBeenCalledWith('host:delete', 'bastion')
+  })
+
+  it('menus move with Home and End', async () => {
+    const user = userEvent.setup()
+    setup()
+    render(<HostView hostId="web1" environmentId="prod" />)
+    await user.click(await screen.findByRole('button', { name: 'web-1 options' }))
+    expect(screen.getByRole('menuitem', { name: 'Edit' })).toHaveFocus()
+    await user.keyboard('{End}')
+    expect(screen.getByRole('menuitem', { name: 'Delete' })).toHaveFocus()
+    await user.keyboard('{Home}')
+    expect(screen.getByRole('menuitem', { name: 'Edit' })).toHaveFocus()
+    await user.keyboard('{Escape}')
+    expect(screen.getByRole('button', { name: 'web-1 options' })).toHaveFocus()
+
+    await user.click(screen.getByRole('button', { name: 'Link vault' }))
+    expect(screen.getByRole('menuitemcheckbox', { name: 'Default' })).toHaveFocus()
+    await user.keyboard('{End}')
+    expect(screen.getByRole('menuitemcheckbox', { name: 'Default' })).toHaveFocus()
+    await user.keyboard('{Escape}')
+    expect(screen.getByRole('button', { name: 'Link vault' })).toHaveFocus()
+  })
+
+  it('picking the last environment hands focus to the list', async () => {
+    const user = userEvent.setup()
+    const invoke = setup()
+    render(<HostView hostId="web1" environmentId="prod" />)
+    await user.click(await screen.findByRole('button', { name: 'Add to environment…' }))
+    await user.keyboard('{End}')
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:putHost', 'staging', 'web1', 'other'))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Add to environment…' })).not.toBeInTheDocument())
+    expect(screen.getByRole('list', { name: 'Environments' })).toHaveFocus()
+  })
+
+  it('vault toggles apply in order, each on the last result', async () => {
+    const user = userEvent.setup()
+    const data = world()
+    data.vaults = [defaultVault, vault('ops', 'Ops'), vault('lab', 'Lab')]
+    const invoke = setup(data)
+    const run = invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
+    let release = () => {}
+    const gate = new Promise<void>((r) => (release = r))
+    invoke.mockImplementation(async (c: string, ...a: unknown[]) => (c === 'host:setVaults' ? gate.then(() => run(c, ...a)) : run(c, ...a)))
+    render(<HostView hostId="web1" environmentId="prod" />)
+    await user.click(await screen.findByRole('button', { name: 'Link vault' }))
+    await user.click(screen.getByRole('menuitemcheckbox', { name: 'Ops' }))
+    await user.click(screen.getByRole('menuitemcheckbox', { name: 'Lab' }))
+    await act(async () => release())
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('host:setVaults', 'web1', ['ops', 'lab']))
   })
 
   it('links a vault', async () => {
@@ -295,12 +399,21 @@ describe('HostView', () => {
   })
 
   it('never renders a secret', async () => {
-    setup()
+    const SECRET = 'hunter2-S3CRET-do-not-show'
+    const data = world()
+    // A meta row that somehow carried a secret field must still never reach the screen.
+    data.identities = [{ ...deploy, password: SECRET, passphrase: SECRET } as IdentityMeta]
+    const leaky = { ...inProd, identity: { ...inProd.identity, password: SECRET } as unknown as ResolvedHost['identity'] }
+    setup(data, async () => leaky)
     const { container } = render(<HostView hostId="web1" environmentId="prod" />)
     await within(card()).findByText('2222')
     expect(within(row('User')).getByText(/deploy, SSH key/)).toBeInTheDocument()
     expect(container.querySelector('input[type="password"]')).toBeNull()
     expect(container.textContent).not.toMatch(/passphrase|hasPassword/i)
+    expect(document.body.innerHTML).not.toContain(SECRET)
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Edit' }))
+    await screen.findByRole('dialog', { name: 'Edit host' })
+    expect(document.body.innerHTML).not.toContain(SECRET)
   })
 
   it('edit to inherit', async () => {
@@ -338,6 +451,42 @@ describe('HostDialog', () => {
     const values = [...select.querySelectorAll('option')].map((o) => o.value)
     expect(values).toEqual(['', 'id-ops', 'id-def'])
     expect(select.querySelector('option')!.textContent).toBe('Inherit (Inherited from prod)')
+  })
+
+  it('inherit labels follow the context, and go plain when environments disagree', () => {
+    const data = world()
+    data.environments = data.environments.map((e) =>
+      e.id === 'staging' ? { ...e, defaultIdentityId: null, defaultPort: 2300, hosts: [{ hostId: 'web1', role: 'app' }] } : e,
+    )
+    data.hosts = data.hosts.map((h) =>
+      h.id === 'web1' ? { ...h, environments: [...h.environments, { environmentId: 'staging', role: 'app' }] } : h,
+    )
+    setup(data)
+    const { rerender } = render(<HostDialog open host={data.hosts[0]} onClose={noop} onSaved={noop} />)
+    const identityInherit = () => screen.getByRole('combobox', { name: 'Identity' }).querySelector('option')!.textContent
+    expect(identityInherit()).toBe('Inherit')
+    expect(screen.getByLabelText('Port')).toHaveAttribute('placeholder', '')
+    rerender(<HostDialog open host={data.hosts[0]} contextEnvironmentId="staging" onClose={noop} onSaved={noop} />)
+    expect(identityInherit()).toBe('Inherit (App default)')
+    expect(screen.getByLabelText('Port')).toHaveAttribute('placeholder', '2300')
+    rerender(<HostDialog open host={data.hosts[0]} contextEnvironmentId="prod" onClose={noop} onSaved={noop} />)
+    expect(identityInherit()).toBe('Inherit (Inherited from prod)')
+    expect(screen.getByLabelText('Port')).toHaveAttribute('placeholder', '2222')
+  })
+
+  it('edits only send what the user changed since opening', async () => {
+    const user = userEvent.setup()
+    const data = world()
+    const invoke = setup(data)
+    render(<HostDialog open host={data.hosts[0]} onClose={noop} onSaved={noop} />)
+    // Someone else renames the host while the dialog is open.
+    act(() => {
+      const d = inventoryStore.get()!
+      inventoryStore.set({ ...d, hosts: d.hosts.map((h) => (h.id === 'web1' ? { ...h, label: 'web-1-renamed' } : h)) })
+    })
+    await user.type(screen.getByLabelText('Port'), '2201')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('host:update', 'web1', { port: 2201 }))
   })
 
   it('jump picker excludes self and loops', () => {

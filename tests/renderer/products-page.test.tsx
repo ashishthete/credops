@@ -98,6 +98,16 @@ function renderPage(w: World = world()) {
         w.environments = [...w.environments, e]
         return e
       }
+      case 'host:create': {
+        const input = args[0] as { label: string; environments: { environmentId: string; role: 'app' }[] }
+        const h = host({ id: 'new-host', ...input })
+        w.hosts = [...w.hosts, h]
+        w.environments = w.environments.map((e) => {
+          const m = input.environments.find((x) => x.environmentId === e.id)
+          return m ? { ...e, hosts: [...e.hosts, { hostId: h.id, role: m.role }] } : e
+        })
+        return h
+      }
       case 'env:putHost': {
         const [envId, hostId, role] = args as [string, string, 'app']
         w.environments = w.environments.map((e) => (e.id === envId ? { ...e, hosts: [...e.hosts, { hostId, role }] } : e))
@@ -427,6 +437,9 @@ describe('products page', () => {
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith('host:create', expect.objectContaining({ environments: [{ environmentId: 'staging', role: 'app' }] })),
     )
+    await waitFor(() => expect(new URLSearchParams(where.split('?')[1]).get('node')).toBe('p:acme/e:staging/h:new-host'))
+    expect(await screen.findByRole('heading', { name: 'db-2', level: 2 })).toBeInTheDocument()
+    expect(screen.getByRole('treeitem', { name: 'db-2' })).toHaveAttribute('aria-selected', 'true')
   })
 
   it('reduced motion', async () => {

@@ -1,6 +1,6 @@
 import { AnimatePresence, LayoutGroup, motion } from 'framer-motion'
 import { ChevronRight, CircleAlert, KeyRound, Network, Route, TriangleAlert, UserRound, type LucideIcon } from 'lucide-react'
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import type { IdentityRef, InheritConflict, ResolvedHost, ValueSource } from '../../../../shared/inventory'
 import { sourceLabel } from '../../inventory/choices'
 import { useInventory, type InventoryData } from '../../inventory/store'
@@ -50,9 +50,17 @@ function dependencyStamp(data: InventoryData | null, hostId: string): string {
   return JSON.stringify([hosts, envs, data.identities.filter((i) => identityIds.has(i.id))])
 }
 
-type State = { kind: 'loading' } | { kind: 'ok'; value: ResolvedHost } | { kind: 'error'; message: string }
+/** `key` is the context the result was resolved for, so a switch can tell the old answer from the new. */
+type State = { kind: 'loading' } | { kind: 'ok'; key: string; value: ResolvedHost } | { kind: 'error'; key: string; message: string }
 
-export function ConnectionCard({ hostId, environmentId }: { hostId: string; environmentId?: string }) {
+interface ConnectionCardProps {
+  hostId: string
+  environmentId?: string
+  /** Told whenever the card looks from a different environment (null is outside any). */
+  onContextChange?: (environmentId: string | null) => void
+}
+
+export function ConnectionCard({ hostId, environmentId, onContextChange }: ConnectionCardProps) {
   const motionSafe = useMotionSafe()
   const data = useInventory()
   const self = data?.hosts.find((h) => h.id === hostId)
@@ -68,30 +76,41 @@ export function ConnectionCard({ hostId, environmentId }: { hostId: string; envi
   // Leaving the environment the card was looking from drops back to "outside".
   const ctx = context && memberEnvs.some((e) => e.id === context) ? context : null
 
+  const report = useRef(onContextChange)
+  report.current = onContextChange
+  useEffect(() => report.current?.(ctx), [ctx])
+
   const [state, setState] = useState<State>({ kind: 'loading' })
   const stamp = useMemo(() => dependencyStamp(data, hostId), [data, hostId])
+  const key = ctx ?? ''
 
   useEffect(() => {
     let live = true
     api
       .invoke('host:resolve', hostId, ...(ctx ? [ctx] : []))
-      .then((value) => live && setState(value ? { kind: 'ok', value } : { kind: 'error', message: "Couldn't work out how to reach this host." }))
-      .catch((err: unknown) => live && setState({ kind: 'error', message: errorText(err) }))
+      .then(
+        (value) =>
+          live && setState(value ? { kind: 'ok', key: ctx ?? '', value } : { kind: 'error', key: ctx ?? '', message: "Couldn't work out how to reach this host." }),
+      )
+      .catch((err: unknown) => live && setState({ kind: 'error', key: ctx ?? '', message: errorText(err) }))
     return () => {
       live = false
     }
   }, [hostId, ctx, stamp])
 
-  const ctxEnv = memberEnvs.find((e) => e.id === ctx)
-  const chip = (source: ValueSource | null) => (
-    <SourceChip source={source} label={sourceLabel(source, ctxEnv?.name)} color={source === 'environment' ? ctxEnv?.color : undefined} />
-  )
-
+  // After a context switch the old answer stays, dimmed, until the new one lands; an old error just goes.
+  const stale = state.kind !== 'loading' && state.key !== key
+  const error = state.kind === 'error' && !stale ? state.message : null
   const resolved = state.kind === 'ok' ? state.value : null
+  // Chips name the environment the values came from, which is the one they were resolved in.
+  const sourceEnv = data?.environments.find((e) => e.id === resolved?.environmentId)
+  const chip = (source: ValueSource | null) => (
+    <SourceChip source={source} label={sourceLabel(source, sourceEnv?.name)} color={source === 'environment' ? sourceEnv?.color : undefined} />
+  )
   const route = resolved ? [...resolved.chain.map((h) => h.label), self?.label ?? resolved.address] : []
 
   return (
-    <section aria-label="Connection" className="overflow-hidden rounded-xl border border-line bg-surface/60">
+    <section aria-label="Connection" aria-busy={state.kind === 'loading' || stale || undefined} className="overflow-hidden rounded-xl border border-line bg-surface/60">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line/70 px-4 py-2.5">
         <h3 className="text-[12.5px] font-semibold text-fg/90">How OpsDeck connects</h3>
         <LayoutGroup id={`ctx-${hostId}`}>
@@ -104,19 +123,19 @@ export function ConnectionCard({ hostId, environmentId }: { hostId: string; envi
         </LayoutGroup>
       </div>
 
-      {state.kind === 'error' ? (
+      {error ? (
         <div role="alert" className="flex items-start gap-3 px-4 py-4">
           <span className="tone-soft inline-flex h-6 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[12px] font-medium" style={{ '--tone': 'var(--err)' } as CSSProperties}>
             <CircleAlert aria-hidden className="size-3.5" />
             Can't resolve
           </span>
           <div className="min-w-0 pt-0.5">
-            <p className="font-mono text-[12.5px] break-words text-fg/90">{state.message}</p>
-            {errorHint(state.message) && <p className="mt-1 text-[12px] text-muted">{errorHint(state.message)}</p>}
+            <p className="font-mono text-[12.5px] break-words text-fg/90">{error}</p>
+            {errorHint(error) && <p className="mt-1 text-[12px] text-muted">{errorHint(error)}</p>}
           </div>
         </div>
       ) : (
-        <dl className="divide-y divide-line/60">
+        <dl className={`divide-y divide-line/60 transition-opacity duration-150 ${stale ? 'opacity-55' : ''}`}>
           <Row icon={UserRound} term="User" loading={!resolved} chip={resolved && chip(resolved.identity.source)}>
             {resolved && (
               <Value id={`u:${resolved.identity.username}:${resolved.identity.source}`}>
