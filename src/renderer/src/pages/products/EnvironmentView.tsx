@@ -1,0 +1,163 @@
+import { motion } from 'framer-motion'
+import { KeyRound, Link2, Lock, Network, Pencil, Route, Server, Trash2, X } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
+import { DEFAULT_SSH_PORT, type EnvironmentMeta } from '../../../../shared/inventory'
+import { sourceLabel } from '../../inventory/choices'
+import type { InventoryData } from '../../inventory/store'
+import type { NodeKey } from '../../inventory/tree'
+import { Badge } from '../../ui/Badge'
+import { Button } from '../../ui/Button'
+import { RowMenu } from '../../ui/common'
+import { fast, spring, useMotionSafe } from '../../ui/motion'
+import { GlowDot, PaneHeader, ROLE_LABEL, ROLE_ORDER } from './ProductView'
+
+interface EnvironmentViewProps {
+  env: EnvironmentMeta
+  envKey: NodeKey
+  data: InventoryData
+  onSelect: (key: NodeKey) => void
+  onRemoveHost: (hostId: string) => void
+  onEdit: () => void
+  onDelete: () => void
+}
+
+export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onEdit, onDelete }: EnvironmentViewProps) {
+  const motionSafe = useMotionSafe()
+  const hostById = new Map(data.hosts.map((h) => [h.id, h]))
+  const identity = env.defaultIdentityId ? data.identities.find((i) => i.id === env.defaultIdentityId) : undefined
+  const jump = env.defaultJumpHostId ? hostById.get(env.defaultJumpHostId) : undefined
+  const inherited = sourceLabel('environment', env.name)
+  const appDefault = sourceLabel('global')
+
+  const groups = ROLE_ORDER.map((role) => ({
+    role,
+    hosts: env.hosts
+      .filter((m) => m.role === role)
+      .flatMap((m) => (hostById.has(m.hostId) ? [hostById.get(m.hostId)!] : []))
+      .sort((a, b) => a.label.localeCompare(b.label)),
+  })).filter((g) => g.hosts.length)
+
+  return (
+    <>
+      <PaneHeader
+        lead={<GlowDot color={env.color} />}
+        title={env.name}
+        badges={
+          <>
+            {env.protected && (
+              <Badge tone="warn">
+                <Lock aria-hidden className="size-3" />
+                Protected
+              </Badge>
+            )}
+            {env.productIds.length > 1 && (
+              <Badge tone="info">
+                <Link2 aria-hidden className="size-3" />
+                Shared
+              </Badge>
+            )}
+          </>
+        }
+        actions={
+          <>
+            <Button size="sm" variant="ghost" icon={<Pencil aria-hidden className="size-3.5" />} onClick={onEdit}>
+              Edit
+            </Button>
+            <RowMenu label={`${env.name} options`} items={[{ label: 'Delete', icon: Trash2, run: onDelete, danger: true }]} />
+          </>
+        }
+      />
+      <div className="min-h-0 flex-1 overflow-y-auto px-8 pt-2 pb-8">
+        <dl className="grid grid-cols-3 gap-px overflow-hidden rounded-xl border border-line bg-line">
+          <Default
+            icon={KeyRound}
+            term="Identity"
+            value={identity ? `${identity.label} (${identity.username})` : 'ssh-agent, then default key'}
+            source={env.defaultIdentityId ? inherited : appDefault}
+          />
+          <Default
+            icon={Network}
+            term="Port"
+            value={String(env.defaultPort ?? DEFAULT_SSH_PORT)}
+            mono
+            source={env.defaultPort != null ? inherited : appDefault}
+          />
+          <Default
+            icon={Route}
+            term="Jump host"
+            value={jump?.label ?? 'Direct'}
+            source={env.defaultJumpHostId ? inherited : appDefault}
+          />
+        </dl>
+
+        {groups.length === 0 ? (
+          <div className="mt-6 flex flex-col items-center gap-2 rounded-xl border border-dashed border-line px-6 py-10 text-center">
+            <Server aria-hidden className="size-5 text-muted" strokeWidth={1.8} />
+            <p className="text-[13px] font-medium text-fg">No hosts in this environment yet</p>
+            <p className="text-[12.5px] text-muted">Drag a host onto {env.name} in the tree to add it.</p>
+          </div>
+        ) : (
+          groups.map((g) => (
+            <section key={g.role} className="mt-6">
+              <h3 className="mb-2 flex items-center gap-2 text-[12.5px] font-semibold text-fg/90">
+                {ROLE_LABEL[g.role]}
+                <span className="min-w-5 rounded-full bg-white/[0.05] px-1.5 text-center text-[11px] leading-[18px] font-medium text-muted tabular-nums">
+                  {g.hosts.length}
+                </span>
+              </h3>
+              <ul className="flex flex-col gap-1">
+                {g.hosts.map((h, i) => (
+                  <motion.li
+                    key={h.id}
+                    initial={motionSafe ? { opacity: 0, x: -4 } : { opacity: 0 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={motionSafe ? { ...spring, delay: i * 0.02 } : fast}
+                    className="group relative"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => onSelect(`${envKey}/h:${h.id}`)}
+                      className="flex h-10 w-full items-center gap-3 rounded-lg border border-transparent px-3 pr-10 text-left transition-colors hover:border-line hover:bg-white/[0.03]"
+                    >
+                      <Server aria-hidden className="size-3.5 shrink-0 text-muted" />
+                      <span className="truncate text-[13px] font-medium text-fg">{h.label}</span>
+                      <span className="truncate font-mono text-[12px] text-muted">
+                        {h.address}
+                        {h.port != null ? `:${h.port}` : ''}
+                      </span>
+                      {h.environments.length > 1 && (
+                        <Link2 aria-label="Shared" className="ml-auto size-3 shrink-0 text-muted" strokeWidth={2.2} />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Remove ${h.label} from ${env.name}`}
+                      title={`Remove from ${env.name}`}
+                      onClick={() => onRemoveHost(h.id)}
+                      className="absolute top-1/2 right-2 grid size-6 -translate-y-1/2 place-items-center rounded-md text-muted opacity-0 transition-[opacity,color,background-color] group-hover:opacity-100 hover:bg-white/[0.06] hover:text-fg focus-visible:opacity-100"
+                    >
+                      <X aria-hidden className="size-3.5" />
+                    </button>
+                  </motion.li>
+                ))}
+              </ul>
+            </section>
+          ))
+        )}
+      </div>
+    </>
+  )
+}
+
+function Default({ icon: Icon, term, value, source, mono }: { icon: LucideIcon; term: string; value: string; source: string; mono?: boolean }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-1 bg-surface/70 px-4 py-3">
+      <dt className="flex items-center gap-1.5 text-[11.5px] text-muted">
+        <Icon aria-hidden className="size-3" />
+        {term}
+      </dt>
+      <dd className={`truncate text-[13px] font-medium text-fg ${mono ? 'font-mono tabular-nums' : ''}`}>{value}</dd>
+      <dd className="truncate text-[11.5px] text-muted">{source}</dd>
+    </div>
+  )
+}

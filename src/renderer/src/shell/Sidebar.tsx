@@ -21,7 +21,7 @@ import { SECTIONS, sectionShortcut, type SectionId } from './sections'
 import { VaultLockButton } from './VaultLockButton'
 
 export const SECTION_ICONS: Record<SectionId, LucideIcon> = {
-  environments: Boxes,
+  products: Boxes,
   hosts: Server,
   vaults: KeyRound,
   tunnels: Cable,

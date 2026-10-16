@@ -1,5 +1,5 @@
 export const SECTIONS = [
-  { id: 'environments', label: 'Environments', path: '/environments' },
+  { id: 'products', label: 'Products', path: '/products' },
   { id: 'hosts', label: 'Hosts', path: '/hosts' },
   { id: 'vaults', label: 'Vaults', path: '/vaults' },
   { id: 'tunnels', label: 'Tunnels', path: '/tunnels' },

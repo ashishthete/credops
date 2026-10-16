@@ -27,12 +27,12 @@ describe('shell', () => {
     const links = within(nav).getAllByRole('link')
     expect(links.map((l) => l.textContent)).toEqual(SECTIONS.map((s) => expect.stringContaining(s.label)))
     // `/` redirects to the first section.
-    expect(within(nav).getByRole('link', { name: /Environments/ })).toHaveAttribute('aria-current', 'page')
+    expect(within(nav).getByRole('link', { name: /Products/ })).toHaveAttribute('aria-current', 'page')
 
     await user.click(within(nav).getByRole('link', { name: /Audit/ }))
     expect(await screen.findByRole('heading', { name: 'Audit trail' })).toBeInTheDocument()
     expect(within(nav).getByRole('link', { name: /Audit/ })).toHaveAttribute('aria-current', 'page')
-    expect(within(nav).getByRole('link', { name: /Environments/ })).not.toHaveAttribute('aria-current')
+    expect(within(nav).getByRole('link', { name: /Products/ })).not.toHaveAttribute('aria-current')
   })
 
   it('vaults is a real page, not a placeholder', async () => {
@@ -41,6 +41,20 @@ describe('shell', () => {
     await user.click(within(screen.getByRole('navigation', { name: 'Sections' })).getByRole('link', { name: /Vaults/ }))
     expect(await screen.findByRole('heading', { name: 'Vaults', level: 1 })).toBeInTheDocument()
     expect(screen.queryByText('Coming in phase 2')).not.toBeInTheDocument()
+  })
+
+  it('mod+1 lands on Products', async () => {
+    renderShell('/audit')
+    act(() => {
+      fireEvent.keyDown(window, { key: '1', metaKey: true })
+    })
+    expect(await screen.findByRole('heading', { name: 'Products', level: 1 })).toBeInTheDocument()
+    expect(screen.queryByText('Coming in phase 3')).not.toBeInTheDocument()
+  })
+
+  it('/environments redirects to Products', async () => {
+    renderShell('/environments')
+    expect(await screen.findByRole('heading', { name: 'Products', level: 1 })).toBeInTheDocument()
   })
 
   it('mod+6 jumps to Audit', async () => {

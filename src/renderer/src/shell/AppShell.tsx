@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router'
 import { AuditPage } from '../pages/AuditPage'
 import { PlaceholderPage } from '../pages/PlaceholderPage'
+import { ProductsPage } from '../pages/products/ProductsPage'
 import { VaultsPage } from '../pages/vaults/VaultsPage'
 import { registerCommand } from '../ui/commands'
 import { fast, useMotionSafe } from '../ui/motion'
@@ -12,7 +13,6 @@ import { SECTION_ICONS, Sidebar } from './Sidebar'
 
 // Sections a later phase builds out; each renders a placeholder until then.
 const PLACEHOLDERS = [
-  { id: 'environments', phase: 3, blurb: 'Group hosts into environments' },
   { id: 'hosts', phase: 3, blurb: 'Your fleet, one click from a shell' },
   { id: 'tunnels', phase: 5, blurb: 'Port forwards that stay up' },
   { id: 'deployments', phase: 8, blurb: 'Ansible runs, streamed live' },
@@ -54,6 +54,8 @@ export function AppShell() {
                 />
               )
             })}
+            <Route path="/products" element={<ProductsPage />} />
+            <Route path="/environments" element={<Navigate to="/products" replace />} />
             <Route path="/vaults" element={<VaultsPage />} />
             <Route path="/audit" element={<AuditPage />} />
             <Route path="*" element={<Navigate to={SECTIONS[0].path} replace />} />
