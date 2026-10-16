@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -76,12 +76,25 @@ beforeEach(() => {
   vaultStatusStore.set(null)
 })
 
+// Fake only the timers, never requestAnimationFrame itself.
+const useTimerClock = () =>
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
+
 afterEach(() => {
   act(() => {
     cancelUnlock()
     closeVaultSettings()
     clearToasts()
   })
+  if (vi.isFakeTimers()) {
+    // jsdom drives requestAnimationFrame from a setInterval, which is fake here. A frame still
+    // pending when the clock switches back would never fire, and motion's frameloop, waiting on
+    // it, would stall every later exit animation in the file. Unmount, then let it run dry.
+    cleanup()
+    act(() => {
+      vi.advanceTimersByTime(1000)
+    })
+  }
   vi.useRealTimers()
 })
 
@@ -206,7 +219,7 @@ describe('auth gate', () => {
   })
 
   it('throttle countdown', async () => {
-    vi.useFakeTimers()
+    useTimerClock()
     fakeVault({ retryAfterMs: 3000 })
     renderApp()
     await flush()
@@ -359,7 +372,7 @@ describe('sidebar lock button', () => {
   })
 
   it('auto-lock (status polling) returns to the gate', async () => {
-    vi.useFakeTimers()
+    useTimerClock()
     const { state } = fakeVault({ unlocked: true })
     renderApp()
     await flush()
