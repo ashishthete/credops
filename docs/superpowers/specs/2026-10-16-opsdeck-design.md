@@ -371,7 +371,10 @@ Each phase ends usable and demoable.
 
 ## 10. Left to the builder
 
-- Exact UI layout and visual style (dark-first, Termius-level polish expected).
+- Exact UI layout and visual style. The bar is set: dark-first, at least
+  Termius-level polish, highly interactive and **fun to use, not a nightmare** (user
+  requirement). That means spring animations, a ⌘K command palette, keyboard
+  shortcuts, toasts, skeleton loaders and friendly empty states.
 - Library versions, project folder layout, test framework.
 - The exact Ansible playbook shape (`community.docker` modules or shell
   `docker compose`).
