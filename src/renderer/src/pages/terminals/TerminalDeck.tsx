@@ -8,6 +8,7 @@ import { TerminalView } from '../../terminal/TerminalView'
 import { ConfirmDialog, type ConfirmRequest } from '../../ui/common'
 import { useShortcut } from '../../ui/shortcuts'
 import { ConnectOverlay } from './ConnectOverlay'
+import { openKnownHosts } from './KnownHostsDialog'
 import { QuickConnect } from './QuickConnect'
 import { SessionEnded } from './SessionEnded'
 import { paneId, TabStrip, tabId } from './TabStrip'
@@ -139,7 +140,7 @@ function SessionPane({ meta, visible, onClose }: { meta: SessionMeta; visible: b
         <TerminalView sessionId={meta.id} visible={visible} />
         <AnimatePresence>
           {visible && overlay && (
-            <ConnectOverlay key="overlay" meta={meta} onReconnect={reconnect} reconnecting={reconnecting} onClose={onClose} />
+            <ConnectOverlay key="overlay" meta={meta} onReconnect={reconnect} reconnecting={reconnecting} onClose={onClose} onOpenKnownHosts={openKnownHosts} />
           )}
         </AnimatePresence>
       </div>

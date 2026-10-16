@@ -7,6 +7,8 @@ import { AuditPage } from '../pages/AuditPage'
 import { HostsPage } from '../pages/hosts/HostsPage'
 import { PlaceholderPage } from '../pages/PlaceholderPage'
 import { ProductsPage } from '../pages/products/ProductsPage'
+import { openKnownHosts } from '../pages/terminals/KnownHostsDialog'
+import { PromptHost } from '../pages/terminals/PromptHost'
 import { TerminalDeck } from '../pages/terminals/TerminalDeck'
 import { VaultsPage } from '../pages/vaults/VaultsPage'
 import { disposeAll } from '../terminal/registry'
@@ -33,6 +35,17 @@ export function AppShell() {
   useEffect(() => {
     void loadInventory()
   }, [])
+  useEffect(
+    () =>
+      registerCommand({
+        id: 'knownhosts.open',
+        title: 'Known hosts…',
+        section: 'Terminals',
+        keywords: ['ssh', 'fingerprint', 'trust', 'host key'],
+        run: openKnownHosts,
+      }),
+    [],
+  )
   useEffect(() => {
     const stop = startSessionSync()
     return () => {
@@ -85,6 +98,7 @@ export function AppShell() {
         </motion.div>
         <TerminalDeck visible={location.pathname === '/terminals'} />
       </main>
+      <PromptHost />
     </div>
   )
 }

@@ -1,5 +1,5 @@
 import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
-import { CircleDashed, Database, FileDown, Plus, Search, Server, ShieldHalf, X, type LucideIcon } from 'lucide-react'
+import { CircleDashed, Database, FileDown, Fingerprint, Plus, Search, Server, ShieldHalf, X, type LucideIcon } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { useSearchParams } from 'react-router'
 import type { EnvironmentMeta, HostMeta, HostRole } from '../../../../shared/inventory'
@@ -13,6 +13,7 @@ import { useShortcut } from '../../ui/shortcuts'
 import { Skeleton } from '../../ui/Skeleton'
 import { ROLE_LABEL, ROLE_ORDER } from '../products/ProductView'
 import { HostDialog } from './HostDialog'
+import { openKnownHosts } from '../terminals/KnownHostsDialog'
 import { HostView } from './HostView'
 import { ImportDialog } from './ImportDialog'
 
@@ -167,6 +168,7 @@ export function HostsPage() {
           <div className="flex flex-col gap-0.5 border-t border-line/70 p-2.5">
             <RailButton icon={Plus} label="New host" onClick={() => setDialog('new')} />
             <RailButton icon={FileDown} label={IMPORT_LABEL} onClick={() => setDialog('import')} />
+            <RailButton icon={Fingerprint} label="Known hosts…" onClick={openKnownHosts} />
           </div>
         </aside>
 
