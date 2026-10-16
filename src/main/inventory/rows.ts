@@ -20,8 +20,6 @@ import { MAX_LABEL, VAULT_COLOR } from '../../shared/vault'
 import type { Db } from '../db/connection'
 import { checkHexColor, checkText } from '../util/checks'
 
-/** Control, format (bidi, zero-width) and line-separator characters. */
-
 /** Trimmed 1..max characters; the message never carries the value. */
 export const checkName = checkText
 
