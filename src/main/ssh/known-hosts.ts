@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
-import { readFile, stat } from 'node:fs/promises'
+import { open } from 'node:fs/promises'
 import { MAX_KNOWN_HOSTS_BYTES, type HostKeyInfo, type KnownHostMeta } from '../../shared/ssh'
 import type { AuditLog } from '../audit/audit-log'
 import type { Db } from '../db/connection'
@@ -58,6 +58,15 @@ function patternMatcher(field: string): ((token: string) => boolean) | null {
   }
 }
 
+/** OpenSSH rejects non-canonical base64, and a label that disagrees with the blob's own type string. */
+function canonicalKey(key: string, keyType: string): boolean {
+  if (!BASE64.test(key)) return false
+  const blob = Buffer.from(key, 'base64')
+  if (blob.toString('base64') !== key || blob.length < 4) return false
+  const len = blob.readUInt32BE(0)
+  return len <= blob.length - 4 && blob.toString('latin1', 4, 4 + len) === keyType
+}
+
 /** Malformed lines and unknown `@markers` are skipped; line numbers still count them. */
 export function parseKnownHosts(text: string): KnownHostLine[] {
   const out: KnownHostLine[] = []
@@ -75,7 +84,7 @@ export function parseKnownHosts(text: string): KnownHostLine[] {
     }
     if (parts.length < 3) continue
     const [hostField, keyType, key] = parts
-    if (!BASE64.test(key)) continue
+    if (!canonicalKey(key, keyType)) continue
     const matches = hostField.startsWith('|') ? hashedMatcher(hostField) : patternMatcher(hostField)
     if (matches) out.push({ line: i + 1, marker, matches, keyType, key })
   }
@@ -109,6 +118,7 @@ export class KnownHostStore {
   private readonly knownHostsPath: string
   private readonly now: () => Date
   private warnedOversize = false
+  private warnedRead = false
 
   constructor(
     private readonly db: Db,
@@ -221,20 +231,36 @@ export class KnownHostStore {
     })
   }
 
-  /** Missing, unreadable or oversized files count as empty. */
+  /** Missing, unreadable or oversized files count as empty; an unreadable one warns once. */
   private async readLines(): Promise<KnownHostLine[]> {
     try {
-      const st = await stat(this.knownHostsPath)
-      if (!st.isFile()) return []
-      if (st.size > MAX_KNOWN_HOSTS_BYTES) {
-        if (!this.warnedOversize) {
-          this.warnedOversize = true
-          console.warn('known_hosts is larger than 4 MiB; skipped')
+      const fh = await open(this.knownHostsPath, 'r')
+      try {
+        const cap = MAX_KNOWN_HOSTS_BYTES
+        const buf = Buffer.alloc(cap + 1)
+        let n = 0
+        while (n <= cap) {
+          const { bytesRead } = await fh.read(buf, n, cap + 1 - n, n)
+          if (bytesRead === 0) break
+          n += bytesRead
         }
-        return []
+        if (n > cap) {
+          if (!this.warnedOversize) {
+            this.warnedOversize = true
+            console.warn('known_hosts is larger than 4 MiB; skipped')
+          }
+          return []
+        }
+        return parseKnownHosts(buf.toString('utf8', 0, n))
+      } finally {
+        await fh.close()
       }
-      return parseKnownHosts(await readFile(this.knownHostsPath, 'utf8'))
-    } catch {
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code
+      if (code !== 'ENOENT' && !this.warnedRead) {
+        this.warnedRead = true
+        console.warn(`known_hosts could not be read (${code ?? 'unknown error'})`)
+      }
       return []
     }
   }

@@ -1,5 +1,5 @@
 import { createHash, createHmac } from 'node:crypto'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
@@ -143,6 +143,56 @@ describe('KnownHostStore.check', () => {
     writeFileSync(s.path, line + '#'.repeat(4 * 1024 * 1024 + 1 - line.length))
     expect((await s.store.check('db', 22, k.type, k.b64)).status).toBe('unknown')
     expect(warn).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('hardening', () => {
+  it('ignores unpadded and mislabelled key lines', async () => {
+    const e = gen('ecdsa')
+    const k = gen('ed25519')
+    const unpadded = k.b64.replace(/=+$/, '')
+    expect(e.b64.length % 4).toBe(0)
+    // Force an unpadded variant even when the key needs no padding: drop a char (non-canonical).
+    const bad = unpadded === k.b64 ? k.b64.slice(0, -1) : unpadded
+    const s = await setup(`db ${k.type} ${bad}\ndb ssh-ed25519 ${e.b64}\n`)
+    const r = await s.store.check('db', 22, k.type, k.b64)
+    expect(r.status).toBe('unknown')
+    expect(r.info.known).toEqual([])
+  })
+
+  it('unreadable file warns once and is unknown', async () => {
+    if (process.getuid?.() === 0) return
+    const k = gen('ed25519')
+    const s = await setup(`db ${k.type} ${k.b64}\n`)
+    chmodSync(s.path, 0o000)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    onTestFinished(() => warn.mockRestore())
+    expect((await s.store.check('db', 22, k.type, k.b64)).status).toBe('unknown')
+    await s.store.check('db', 22, k.type, k.b64)
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(String(warn.mock.calls[0][0])).toContain('EACCES')
+    expect(String(warn.mock.calls[0][0])).not.toContain(s.path)
+  })
+
+  it('app-store different key is changed, listed as app', async () => {
+    const a = gen('ed25519')
+    const b = gen('ed25519')
+    const s = await setup('')
+    s.store.trust('db', 22, a.type, a.b64)
+    const r = await s.store.check('db', 22, b.type, b.b64)
+    expect(r.status).toBe('changed')
+    expect(r.info.known).toEqual([{ keyType: a.type, fingerprint: fingerprintOf(a.b64), source: 'app' }])
+  })
+
+  it('revoked hashed entry blocks; ? and [db]:* wildcards match', async () => {
+    const k = gen('ed25519')
+    const s = await setup(`@revoked ${hashed('[db]:2222')} ${k.type} ${k.b64}\n`)
+    expect((await s.store.check('db', 2222, k.type, k.b64)).status).toBe('revoked')
+    const [q, br] = parseKnownHosts(`db?.example ${k.type} ${k.b64}\n[db]:* ${k.type} ${k.b64}\n`)
+    expect(q.matches('db1.example')).toBe(true)
+    expect(q.matches('db12.example')).toBe(false)
+    expect(br.matches('[db]:2222')).toBe(true)
+    expect(br.matches('db')).toBe(false)
   })
 })
 
