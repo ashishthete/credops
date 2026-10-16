@@ -129,7 +129,7 @@ export interface IpcContract {
   // Also forgets the session: it leaves the list and its buffer is freed.
   'session:close': { args: [id: string]; result: void }
   'session:list': { args: []; result: SessionMeta[] }
-  'session:attach': { args: [id: string]; result: { meta: SessionMeta; buffer: string } }
+  'session:attach': { args: [id: string]; result: { meta: SessionMeta; buffer: string; end: number } }
   'session:answer': { args: [promptId: string, answer: PromptAnswer]; result: void }
   'knownhost:list': { args: []; result: KnownHostMeta[] }
   'knownhost:remove': { args: [id: string]; result: void }
@@ -217,7 +217,8 @@ export type Handlers = {
 /** Events main pushes to the window. Payloads never carry secrets; session:data is terminal output. */
 export interface EventContract {
   'vault:locked': { reason: LockReason }
-  'session:data': { id: string; data: string }
+  // `end` is the stream offset after this chunk; attach returns the offset its buffer reaches.
+  'session:data': { id: string; data: string; end: number }
   'session:state': SessionMeta
   'session:prompt': SessionPrompt
   'session:promptDone': { promptId: string }

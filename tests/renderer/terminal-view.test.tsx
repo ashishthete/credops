@@ -36,7 +36,7 @@ afterEach(() => {
 const calls = (invoke: ReturnType<typeof mockBridge>, channel: string) => (invoke.mock.calls as unknown[][]).filter((c) => c[0] === channel)
 
 async function mount(visible = true) {
-  const invoke = mockBridge({ 'session:attach': { meta: {}, buffer: '' } })
+  const invoke = mockBridge({ 'session:attach': { meta: {}, buffer: '', end: 0 } })
   const view = render(<TerminalView sessionId="s1" visible={visible} />)
   await act(async () => {})
   return { invoke, view }
@@ -70,6 +70,17 @@ describe('TerminalView', () => {
     act(() => resizeCb()) // same size again
     act(() => vi.advanceTimersByTime(100))
     expect(calls(invoke, 'session:resize')).toHaveLength(2)
+  })
+
+  it('a resize that returns to the sent size inside the debounce window sends nothing stale', async () => {
+    const { invoke } = await mount()
+    act(() => vi.advanceTimersByTime(50)) // 100x30 sent
+    fake.fitSize = { cols: 90, rows: 30 }
+    act(() => resizeCb())
+    fake.fitSize = { cols: 100, rows: 30 }
+    act(() => resizeCb())
+    act(() => vi.advanceTimersByTime(200))
+    expect(calls(invoke, 'session:resize')).toEqual([['session:resize', 's1', 100, 30]])
   })
 
   it('does not open a hidden terminal until first visible', async () => {
@@ -124,5 +135,26 @@ describe('TerminalView', () => {
       await vi.advanceTimersByTimeAsync(1000)
     })
     expect(screen.queryByLabelText('Search terminal')).toBeNull()
+  })
+
+  it('mod+f opens search in the visible view even when a hidden view mounted first', async () => {
+    mockBridge({ 'session:attach': { meta: {}, buffer: '', end: 0 } })
+    const view = render(
+      <>
+        <TerminalView sessionId="s1" visible />
+        <TerminalView sessionId="s2" visible={false} />
+      </>,
+    )
+    await act(async () => {})
+    view.rerender(
+      <>
+        <TerminalView sessionId="s1" visible={false} />
+        <TerminalView sessionId="s2" visible />
+      </>,
+    )
+    await act(async () => {})
+    fireEvent.keyDown(document.body, { key: 'f', metaKey: true })
+    expect(screen.getAllByLabelText('Search terminal')).toHaveLength(1)
+    expect(screen.getByTestId('terminal-s2')).toContainElement(screen.getByLabelText('Search terminal'))
   })
 })

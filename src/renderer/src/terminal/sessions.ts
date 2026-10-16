@@ -39,7 +39,7 @@ function remove(id: string): void {
 /** Subscribes to main's session events and loads the open sessions; returns the unsubscribe. */
 export function startSessionSync(): () => void {
   const offs = [
-    api.on('session:data', ({ id, data }) => writeData(id, data)),
+    api.on('session:data', ({ id, data, end }) => writeData(id, data, end)),
     api.on('session:state', (meta) => upsert(meta)),
     api.on('session:prompt', (prompt) => {
       if (!promptStore.get().some((p) => p.promptId === prompt.promptId)) promptStore.set([...promptStore.get(), prompt])

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act } from '@testing-library/react'
 import type { SessionMeta, SessionPrompt } from '../../src/shared/ssh'
-import { attachSession, disposeAll, getTerminal } from '../../src/renderer/src/terminal/registry'
+import { attachSession, disposeAll, disposeTerminal, getTerminal, writeData } from '../../src/renderer/src/terminal/registry'
 import {
   closeSession,
   moveTab,
@@ -88,12 +88,13 @@ describe('session store', () => {
   })
 
   it('data goes to the registry, not the store', async () => {
-    mockBridge({ 'session:attach': { meta: meta('a'), buffer: '' } })
+    mockBridge({ 'session:attach': { meta: meta('a'), buffer: '', end: 0 } })
+    getTerminal('a')
     const stop = startSessionSync()
     const listener = vi.fn()
     const off = sessionStore.subscribe(listener)
     await attachSession('a')
-    act(() => emitBridgeEvent('session:data', { id: 'a', data: 'hello' }))
+    act(() => emitBridgeEvent('session:data', { id: 'a', data: 'hello', end: 5 }))
     expect(listener).not.toHaveBeenCalled()
     expect(fake.terms[0].write).toHaveBeenCalledWith('hello')
     off()
@@ -108,13 +109,74 @@ describe('session store', () => {
       return null
     })
     const stop = startSessionSync()
+    getTerminal('a')
     const attached = attachSession('a')
-    emitBridgeEvent('session:data', { id: 'a', data: 'live' })
+    emitBridgeEvent('session:data', { id: 'a', data: 'live', end: 10 })
     expect(fake.terms[0].write).not.toHaveBeenCalled()
-    release({ meta: meta('a'), buffer: 'buffer' })
+    release({ meta: meta('a'), buffer: 'buffer', end: 6 })
     await attached
     expect(fake.terms[0].write.mock.calls.map((c) => c[0])).toEqual(['buffer', 'live'])
     stop()
+  })
+
+  it('writes only the unseen suffix of events that overlap the attached buffer', async () => {
+    mockBridge({ 'session:attach': { meta: meta('a'), buffer: 'abcdefghij', end: 10 } })
+    getTerminal('a')
+    await attachSession('a')
+    const term = fake.terms[0]
+    term.write.mockClear()
+    writeData('a', 'fghij', 10) // fully inside the buffer
+    writeData('a', 'ijKL', 12) // straddles: only KL is new
+    writeData('a', 'MN', 14)
+    expect(term.write.mock.calls.map((c) => c[0])).toEqual(['KL', 'MN'])
+  })
+
+  it('applies the offset to events queued during the attach too', async () => {
+    let release!: (v: unknown) => void
+    const invoke = mockBridge()
+    invoke.mockImplementation(async (channel: string) =>
+      channel === 'session:attach' ? new Promise((r) => (release = r)) : null,
+    )
+    getTerminal('a')
+    const attached = attachSession('a')
+    writeData('a', 'efgh', 8) // in the buffer
+    writeData('a', 'ghIJ', 10) // straddles
+    release({ meta: meta('a'), buffer: 'abcdefgh', end: 8 })
+    await attached
+    expect(fake.terms[0].write.mock.calls.map((c) => c[0])).toEqual(['abcdefgh', 'IJ'])
+  })
+
+  it('a terminal disposed mid-attach is not written to and not recreated', async () => {
+    let release!: (v: unknown) => void
+    const invoke = mockBridge()
+    invoke.mockImplementation(async (channel: string) =>
+      channel === 'session:attach' ? new Promise((r) => (release = r)) : null,
+    )
+    getTerminal('a')
+    const attached = attachSession('a')
+    writeData('a', 'live', 4)
+    disposeTerminal('a')
+    release({ meta: meta('a'), buffer: 'buf', end: 0 })
+    await expect(attached).resolves.toBeUndefined()
+    expect(fake.terms[0].write).not.toHaveBeenCalled()
+    await attachSession('a') // removed session: no-op
+    expect(fake.terms).toHaveLength(1)
+  })
+
+  it('bounds the in-flight queue at the scrollback size, oldest first', async () => {
+    let release!: (v: unknown) => void
+    const invoke = mockBridge()
+    invoke.mockImplementation(async (channel: string) =>
+      channel === 'session:attach' ? new Promise((r) => (release = r)) : null,
+    )
+    getTerminal('a')
+    const attached = attachSession('a')
+    const big = 'x'.repeat(600_000)
+    writeData('a', big, 600_000)
+    writeData('a', big, 1_200_000)
+    release({ meta: meta('a'), buffer: '', end: 0 })
+    await attached
+    expect(fake.terms[0].write).toHaveBeenCalledTimes(1)
   })
 
   it('creates terminals with the spec options', () => {

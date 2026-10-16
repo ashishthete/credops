@@ -2,6 +2,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { Terminal } from '@xterm/xterm'
+import { SCROLLBACK_CHARS } from '../../../shared/ssh'
 import { api } from '../lib/api'
 import { terminalTheme } from './theme'
 
@@ -14,8 +15,11 @@ export interface TerminalHandle {
 interface Entry extends TerminalHandle {
   /** Set once attach has started; live data before it is dropped, because the buffer covers it. */
   attach: Promise<void> | null
+  /** The stream offset the replayed buffer reaches; chunks at or below it are already on screen. */
+  attachEnd: number
   /** Live data that arrived while the attach was in flight; written after the buffer. */
-  queue: string[] | null
+  queue: { data: string; end: number }[] | null
+  queuedChars: number
 }
 
 const entries = new Map<string, Entry>()
@@ -44,38 +48,62 @@ export function getTerminal(id: string): TerminalHandle {
     term.loadAddon(fit)
     term.loadAddon(search)
     term.loadAddon(new WebLinksAddon((_event, url) => void window.open(url)))
-    entry = { term, fit, search, attach: null, queue: null }
+    entry = { term, fit, search, attach: null, attachEnd: 0, queue: null, queuedChars: 0 }
     entries.set(id, entry)
   }
   return entry
 }
 
+/** The part of a chunk past `attachEnd`; `end` is the stream offset after the chunk. */
+function unseen(data: string, end: number, attachEnd: number): string {
+  if (end <= attachEnd) return ''
+  const start = end - data.length
+  return start >= attachEnd ? data : data.slice(attachEnd - start)
+}
+
+function write(id: string, entry: Entry, data: string, end: number): void {
+  // A tab closed mid-attach disposes the terminal; writing to it would throw.
+  if (entries.get(id) !== entry) return
+  const text = unseen(data, end, entry.attachEnd)
+  if (text) entry.term.write(text)
+}
+
 /**
- * Replays main's buffer into the terminal, once. Live data that arrives meanwhile is queued
- * and written after the buffer, in order. A failed attach still releases the queue.
+ * Replays main's buffer into the terminal, once. Live data that arrives meanwhile is queued;
+ * after the replay, each chunk is written only past the buffer's end offset, so output that
+ * is in both the buffer and an event shows once. A failed attach still releases the queue.
+ * A no-op for a session that has no terminal (it was closed).
  */
 export function attachSession(id: string): Promise<void> {
-  const entry = entries.get(id) ?? (getTerminal(id), entries.get(id)!)
+  const entry = entries.get(id)
+  if (!entry) return Promise.resolve()
   entry.attach ??= (async () => {
     entry.queue = []
     try {
-      const { buffer } = await api.invoke('session:attach', id)
+      const { buffer, end } = await api.invoke('session:attach', id)
+      if (entries.get(id) !== entry) return
+      entry.attachEnd = end
       if (buffer) entry.term.write(buffer)
     } catch {
       // The session is gone or main is shutting down; the state events say so.
     }
-    for (const data of entry.queue ?? []) entry.term.write(data)
+    const queued = entry.queue ?? []
     entry.queue = null
+    entry.queuedChars = 0
+    for (const { data, end } of queued) write(id, entry, data, end)
   })()
   return entry.attach
 }
 
 /** Terminal output goes straight to xterm; it never passes through React state. */
-export function writeData(id: string, data: string): void {
+export function writeData(id: string, data: string, end: number): void {
   const entry = entries.get(id)
   if (!entry?.attach) return
-  if (entry.queue) entry.queue.push(data)
-  else entry.term.write(data)
+  if (!entry.queue) return write(id, entry, data, end)
+  // Bound the in-flight queue at the scrollback size, oldest first, like the buffer itself.
+  entry.queue.push({ data, end })
+  entry.queuedChars += data.length
+  while (entry.queuedChars > SCROLLBACK_CHARS && entry.queue.length > 1) entry.queuedChars -= entry.queue.shift()!.data.length
 }
 
 export function disposeTerminal(id: string): void {

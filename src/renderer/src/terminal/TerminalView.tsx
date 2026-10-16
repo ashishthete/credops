@@ -28,6 +28,12 @@ function isAppCombo(e: KeyboardEvent): boolean {
   return /^[twfk1-7]$/i.test(e.key)
 }
 
+/** Mounted only for the visible view: a hidden view's listener would preventDefault mod+f first. */
+function SearchShortcut({ onFire }: { onFire: () => void }) {
+  useShortcut('mod+f', onFire)
+  return null
+}
+
 export function TerminalView({ sessionId, visible }: { sessionId: string; visible: boolean }) {
   const motionSafe = useMotionSafe()
   const host = useRef<HTMLDivElement>(null)
@@ -62,8 +68,8 @@ export function TerminalView({ sessionId, visible }: { sessionId: string; visibl
       if (!cols || !rows) return
       setLastSize(cols, rows)
       const key = `${cols}x${rows}`
+      clearTimeout(timer) // a pending resize is stale as soon as the size changes again
       if (key === lastSent) return
-      clearTimeout(timer)
       timer = setTimeout(() => {
         lastSent = key
         api.invoke('session:resize', sessionId, cols, rows).catch(() => {})
@@ -104,12 +110,11 @@ export function TerminalView({ sessionId, visible }: { sessionId: string; visibl
     term.focus()
   }, [visible, opened, sessionId])
 
-  useShortcut('mod+f', () => {
-    if (!visibleRef.current) return
+  const openSearch = () => {
     setSearching(true)
     searchInput.current?.focus()
     searchInput.current?.select()
-  })
+  }
 
   const closeSearch = () => {
     const { term, search } = getTerminal(sessionId)
@@ -127,6 +132,7 @@ export function TerminalView({ sessionId, visible }: { sessionId: string; visibl
 
   return (
     <div className={`relative size-full ${visible ? '' : 'hidden'}`} data-testid={`terminal-${sessionId}`}>
+      {visible && <SearchShortcut onFire={openSearch} />}
       <div ref={host} className="size-full overflow-hidden bg-canvas p-2" />
       <AnimatePresence>
         {searching && visible && (

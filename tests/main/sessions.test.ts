@@ -216,6 +216,31 @@ describe('SessionManager', () => {
     expect(t.audits('ssh.open')).toHaveLength(2)
   })
 
+  it('attach while a batch is pending gives a buffer and end consistent with the next event', async () => {
+    const t = await setup()
+    const srv = await server()
+    t.trust(srv)
+    const { id } = t.manager.openSsh({ hostId: t.host(srv.port), ...size })
+    await t.waitState(id, 'ready')
+    await t.waitData(id, 'READY')
+    await new Promise((r) => setTimeout(r, 100))
+    const sent = (): { data: string; end: number }[] =>
+      t.events.flatMap((e) => (e.event === 'session:data' && e.payload.id === id ? [e.payload] : []))
+    const before = sent().length
+    // Output that is appended but not yet flushed to an event.
+    const internals = t.manager as unknown as { sessions: Map<string, unknown>; output(s: unknown, text: string): void }
+    internals.output(internals.sessions.get(id), 'PENDING')
+    const snap = t.manager.attach(id)
+    expect(sent()).toHaveLength(before)
+    expect(snap.buffer.endsWith('PENDING')).toBe(true)
+    await vi.waitFor(() => expect(sent().length).toBeGreaterThan(before))
+    const next = sent()[before]
+    expect(next.data).toBe('PENDING')
+    expect(next.end).toBe(snap.end)
+    expect(snap.end - next.data.length).toBe(sent()[before - 1].end)
+    expect(snap.end).toBe(sent().reduce((n, e) => n + e.data.length, 0))
+  })
+
   it('coalesces a flood into batched events and caps scrollback', async () => {
     const chunk = (i: number): string => `${String(i).padStart(99, '.')}\n`
     const t = await setup()

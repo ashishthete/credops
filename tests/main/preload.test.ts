@@ -39,8 +39,8 @@ describe('preload bridge', () => {
     const listener = vi.fn()
     bridge.on('session:data', listener)
     for (const e of ['session:state', 'session:prompt', 'session:promptDone'] as const) bridge.on(e, () => {})
-    emit('session:data', {}, { id: 's', data: 'hi' })
-    expect(listener).toHaveBeenCalledExactlyOnceWith({ id: 's', data: 'hi' })
+    emit('session:data', {}, { id: 's', data: 'hi', end: 2 })
+    expect(listener).toHaveBeenCalledExactlyOnceWith({ id: 's', data: 'hi', end: 2 })
     expect(ipc.on).toHaveBeenCalledTimes(4)
   })
 

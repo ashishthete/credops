@@ -127,8 +127,8 @@ describe('pushEvent', () => {
   it('sends any event to a live window and skips a missing or destroyed one', () => {
     const send = vi.fn()
     pushEvent({ isDestroyed: () => false, webContents: { send } }, 'session:promptDone', { promptId: 'p' })
-    pushEvent({ isDestroyed: () => true, webContents: { send } }, 'session:data', { id: 's', data: 'x' })
-    pushEvent(null, 'session:data', { id: 's', data: 'x' })
+    pushEvent({ isDestroyed: () => true, webContents: { send } }, 'session:data', { id: 's', data: 'x', end: 1 })
+    pushEvent(null, 'session:data', { id: 's', data: 'x', end: 1 })
     expect(send.mock.calls).toEqual([['session:promptDone', { promptId: 'p' }]])
   })
 })

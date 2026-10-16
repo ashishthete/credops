@@ -28,7 +28,7 @@ function fakeManager(): { [K in keyof SessionApi]: ReturnType<typeof vi.fn> } {
     resize: vi.fn(),
     close: vi.fn(),
     list: vi.fn(() => [meta]),
-    attach: vi.fn(() => ({ meta, buffer: 'b' })),
+    attach: vi.fn(() => ({ meta, buffer: 'b', end: 1 })),
     answer: vi.fn(),
   }
 }
@@ -70,7 +70,7 @@ describe('session IPC', () => {
     await call('session:close', id)
     expect(sessions.close).toHaveBeenCalledWith(id)
     await expect(call('session:list')).resolves.toEqual([meta])
-    await expect(call('session:attach', id)).resolves.toEqual({ meta, buffer: 'b' })
+    await expect(call('session:attach', id)).resolves.toEqual({ meta, buffer: 'b', end: 1 })
     await call('session:answer', id, { kind: 'host-key', trust: true })
     await call('session:answer', id, { kind: 'password', password: null })
     await call('session:answer', id, { kind: 'keyboard', responses: ['', '123456'] })

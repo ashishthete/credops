@@ -106,6 +106,8 @@ interface Session {
   rows: number
   scrollback: Scrollback
   pending: string
+  /** Chars ever appended to the scrollback, pending ones included; never shrinks on trim. */
+  end: number
   flushTimer: NodeJS.Timeout | null
   pty: Pty | null
   /** Set while connecting or ready. */
@@ -263,9 +265,10 @@ export class SessionManager {
     return [...this.sessions.values()].map((s) => snapshot(s.meta))
   }
 
-  attach(id: string): { meta: SessionMeta; buffer: string } {
+  /** `end` is the stream offset the buffer reaches; later session:data events carry theirs. */
+  attach(id: string): { meta: SessionMeta; buffer: string; end: number } {
     const s = this.get(id)
-    return { meta: snapshot(s.meta), buffer: s.scrollback.text() }
+    return { meta: snapshot(s.meta), buffer: s.scrollback.text(), end: s.end }
   }
 
   /** An unknown or expired prompt id is a no-op. */
@@ -342,6 +345,7 @@ export class SessionManager {
       rows: size.rows,
       scrollback: new Scrollback(),
       pending: '',
+      end: 0,
       flushTimer: null,
       pty: null,
       attempt: null,
@@ -582,6 +586,7 @@ export class SessionManager {
   private output(s: Session, text: string): void {
     if (!text) return
     s.scrollback.append(text)
+    s.end += text.length
     s.pending += text
     if (s.pending.length >= FLUSH_CHARS) this.flush(s)
     else s.flushTimer ??= setTimeout(() => this.flush(s), FLUSH_MS)
@@ -593,7 +598,7 @@ export class SessionManager {
     if (!s.pending) return
     const data = s.pending
     s.pending = ''
-    this.deps.emit('session:data', { id: s.meta.id, data })
+    this.deps.emit('session:data', { id: s.meta.id, data, end: s.end })
   }
 
   /** Pending output goes first, so a state change never overtakes the data before it. */
