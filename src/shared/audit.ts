@@ -2,7 +2,34 @@
 export type AuditOutcome = 'success' | 'failure' | 'denied' | 'info'
 
 /** Every audit action; `AuditAction` is derived from it, so the list is complete by construction. */
-export const AUDIT_ACTIONS = ['app.start', 'app.quit', 'audit.verify', 'audit.export'] as const // later phases extend
+export const AUDIT_ACTIONS = [
+  'app.start',
+  'app.quit',
+  'audit.verify',
+  'audit.export',
+  'vault.setup',
+  'vault.unlock',
+  'vault.lock',
+  'vault.rekey',
+  'vault.quickunlock',
+  'vault.autolock',
+  'vault.create',
+  'vault.update',
+  'vault.delete',
+  'secret.create',
+  'secret.update',
+  'secret.delete',
+  'secret.reveal',
+  'secret.copy',
+  'key.link',
+  'key.import',
+  'key.generate',
+  'key.update',
+  'key.delete',
+  'identity.create',
+  'identity.update',
+  'identity.delete',
+] as const // later phases extend
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]
 
 export interface AuditInput {

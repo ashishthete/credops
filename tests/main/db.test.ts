@@ -39,3 +39,36 @@ describe('database migrations', () => {
     expect(db.prepare('PRAGMA foreign_keys').get()).toEqual({ foreign_keys: 1 })
   })
 })
+
+describe('vault schema', () => {
+  it('seeds the default vault', async () => {
+    const { DEFAULT_VAULT_ID } = await import('../../src/shared/vault')
+    const db = openDatabase(':memory:')
+    const rows = db.prepare('SELECT id,name,wrapped_key FROM vaults').all()
+    expect(rows.map((r) => ({ ...r }))).toEqual([
+      { id: DEFAULT_VAULT_ID, name: 'Default', wrapped_key: null },
+    ])
+    const state = db.prepare('SELECT * FROM vault_state').all() as { auto_lock_minutes: number }[]
+    expect(state).toHaveLength(1)
+    expect(state[0]!.auto_lock_minutes).toBe(15)
+  })
+
+  it('enforces key and identity shapes', async () => {
+    const { DEFAULT_VAULT_ID: v } = await import('../../src/shared/vault')
+    const db = openDatabase(':memory:')
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO ssh_keys(id,vault_id,label,key_type,public_key,fingerprint,source,file_path,created_at,updated_at) VALUES ('k',?,'l','ssh-ed25519','p','f','file',NULL,'t','t')",
+        )
+        .run(v),
+    ).toThrow()
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO identities(id,vault_id,label,username,auth,password_enc,created_at,updated_at) VALUES ('i',?,'l','u','password',NULL,'t','t')",
+        )
+        .run(v),
+    ).toThrow()
+  })
+})
