@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import { spawnLocalShell } from '../../src/main/ssh/local-shell'
+import { PromptBroker } from '../../src/main/ssh/prompts'
 import { SessionManager, type Pty, type SessionManagerDeps } from '../../src/main/ssh/sessions'
 import type { SessionMeta } from '../../src/shared/ssh'
 import { makeVault } from './vault-helpers'
@@ -85,6 +86,7 @@ describe('SessionManager local shell', () => {
         return pty
       },
       audit: f.audit,
+      prompts: new PromptBroker({ emit: vi.fn(), isLocked: () => false }),
       emit: vi.fn(),
     } as unknown as SessionManagerDeps)
     onTestFinished(() => manager.closeAll('quit'))

@@ -8,7 +8,6 @@ import {
   FLUSH_CHARS,
   FLUSH_MS,
   MAX_SESSIONS,
-  PROMPT_TIMEOUT_MS,
   SCROLLBACK_CHARS,
   SESSION_LIMIT,
   type OpenLocalRequest,
@@ -16,14 +15,14 @@ import {
   type PromptAnswer,
   type SessionError,
   type SessionMeta,
-  type SessionPrompt,
 } from '../../shared/ssh'
 import { VAULT_LOCKED } from '../../shared/vault'
 import { redact } from '../security/redact'
 import type { AuthPlan } from './auth'
-import { describeError, HostKeyError, hopsOf } from './connect'
+import { describeError, hopsOf } from './connect'
 import type { ConnectDeps, HopTarget, connectChain } from './connect'
 import type { KnownHostStore } from './known-hosts'
+import { verifyWithStore, type PromptBody, type PromptBroker } from './prompts'
 
 /** The SSH shell stream and node-pty both adapt to this. */
 export interface Pty {
@@ -44,6 +43,8 @@ export interface SessionManagerDeps {
   connect: typeof connectChain
   plan(identity: IdentityRef): Promise<AuthPlan>
   knownHosts: Pick<KnownHostStore, 'check' | 'trust' | 'recordMismatch'>
+  /** Shared with tunnels; `session:answer` and `session:prompts` go to it directly. */
+  prompts: PromptBroker
   /** Spawns the local shell; absent when it isn't available. */
   openLocal?: (req: OpenLocalRequest) => Pty
   audit: { append(input: AuditInput): unknown }
@@ -93,6 +94,7 @@ class Scrollback {
 /** One connect attempt, or one local shell: what a close or a lock has to cancel. */
 interface Attempt {
   readonly abort: AbortController
+  /** The broker group of the prompts this attempt raised. */
   readonly prompts: Set<string>
   /** The hop being dialled, then the one that failed: the one a dial error names. */
   hop: number
@@ -129,19 +131,6 @@ interface DialTarget {
   keepaliveSec: number
   envVars: Record<string, string>
 }
-
-interface PendingPrompt {
-  /** What `session:prompt` carried, for a renderer that loads the queue after it. */
-  prompt: SessionPrompt
-  kind: PromptAnswer['kind']
-  /** Keyboard prompts only: how many responses the answer must carry. */
-  count: number
-  attempt: Attempt
-  timer: NodeJS.Timeout
-  resolve(answer: PromptAnswer | null): void
-}
-
-type PromptBody = SessionPrompt extends infer P ? (P extends SessionPrompt ? Omit<P, 'promptId' | 'sessionId'> : never) : never
 
 const snapshot = (m: SessionMeta): SessionMeta => ({
   ...m,
@@ -191,11 +180,10 @@ function shellPty(stream: ClientChannel): Pty {
 
 /**
  * Open terminal sessions: SSH over a hop chain, or a local shell. Owns each session's scrollback,
- * batches its output into `session:data` events, and brokers the prompts a connect needs.
+ * batches its output into `session:data` events, and raises the prompts a connect needs.
  */
 export class SessionManager {
   private readonly sessions = new Map<string, Session>()
-  private readonly prompts = new Map<string, PendingPrompt>()
   private localCount = 0
   private readonly now: () => Date
   private readonly ids: () => string
@@ -279,29 +267,15 @@ export class SessionManager {
     return { meta: snapshot(s.meta), buffer: s.scrollback.text(), end: s.end }
   }
 
-  /** An unknown or expired prompt id is a no-op. */
-  answer(promptId: string, answer: PromptAnswer): void {
-    const p = this.prompts.get(promptId)
-    if (!p) return
-    const wrongCount = answer.kind === 'keyboard' && answer.responses !== null && answer.responses.length !== p.count
-    if (p.kind !== answer.kind || wrongCount) throw new Error("prompt answer doesn't match")
-    this.settle(promptId, answer)
-  }
-
-  /** Prompts still waiting on the user, oldest first: what a reloaded renderer has missed. */
-  pendingPrompts(): SessionPrompt[] {
-    return [...this.prompts.values()].map((p) => structuredClone(p.prompt))
-  }
-
   /**
-   * On vault lock: every pending prompt is cancelled and every SSH connect still dialling fails as
-   * locked, so nothing asks behind the lock screen. Ready sessions keep running.
+   * On vault lock: every SSH connect still dialling fails as locked, cancelling its prompts, so
+   * nothing asks behind the lock screen. Ready sessions keep running. The broker's other prompts
+   * are the lock hook's to cancel.
    */
   vaultLocked(): void {
     for (const s of [...this.sessions.values()]) {
       if (s.meta.state === 'connecting') s.attempt?.fail?.(new Error(VAULT_LOCKED))
     }
-    for (const id of [...this.prompts.keys()]) this.settle(id, null)
   }
 
   closeAll(reason: 'quit'): void {
@@ -408,7 +382,17 @@ export class SessionManager {
         if (attempt.hop === target.hops.length - 1) attempt.auth = plan.kind
         return plan
       },
-      verifyHostKey: (hop, keyType, keyBase64) => this.verifyHostKey(s, attempt, target, hop, keyType, keyBase64),
+      verifyHostKey: (hop, keyType, keyBase64) =>
+        verifyWithStore(this.deps.knownHosts, this.deps.prompts, {
+          ownerId: s.meta.id,
+          group: attempt.prompts,
+          hop,
+          hostId: target.hostIds[target.hops.indexOf(hop)] ?? null,
+          keyType,
+          keyBase64,
+          isLive: () => this.isLive(s, attempt),
+          onLocked: () => attempt.fail?.(new Error(VAULT_LOCKED)),
+        }),
       askPassword: async (hop, username) => {
         const a = await this.ask(s, attempt, { kind: 'password', hopLabel: hop.label, username })
         const password = a?.kind === 'password' ? a.password : null
@@ -435,27 +419,6 @@ export class SessionManager {
         (err: unknown) => this.dialFailed(s, attempt, target, err),
       )
       .catch((err: unknown) => console.error('Session bookkeeping failed:', redact(err instanceof Error ? err.message : String(err))))
-  }
-
-  private async verifyHostKey(
-    s: Session,
-    attempt: Attempt,
-    target: DialTarget,
-    hop: HopTarget,
-    keyType: string,
-    keyBase64: string,
-  ): Promise<boolean> {
-    const { status, info } = await this.deps.knownHosts.check(hop.address, hop.port, keyType, keyBase64)
-    if (status === 'match') return true
-    if (status === 'changed' || status === 'revoked') {
-      this.deps.knownHosts.recordMismatch(info, target.hostIds[target.hops.indexOf(hop)] ?? null)
-      throw new HostKeyError(status === 'changed' ? 'host-key-changed' : 'host-key-revoked', info)
-    }
-    const answer = await this.ask(s, attempt, { kind: 'host-key', hopLabel: hop.label, info })
-    // A late answer for an aborted attempt never stores trust.
-    if (answer?.kind !== 'host-key' || !answer.trust || !this.isLive(s, attempt)) return false
-    this.deps.knownHosts.trust(hop.address, hop.port, keyType, keyBase64)
-    return true
   }
 
   private openShell(s: Session, attempt: Attempt, target: DialTarget, chain: { client: Client; close(): void }): void {
@@ -584,36 +547,16 @@ export class SessionManager {
   }
 
   /** Never asks while locked: the attempt fails as locked instead of waiting on a hidden prompt. */
-  private ask(s: Session, attempt: Attempt, body: PromptBody): Promise<PromptAnswer | null> {
-    if (!this.isLive(s, attempt)) return Promise.resolve(null)
-    if (this.deps.isLocked()) {
-      attempt.fail?.(new Error(VAULT_LOCKED))
-      return Promise.resolve(null)
-    }
-    const promptId = this.ids()
-    const prompt = { ...body, promptId, sessionId: s.meta.id } as SessionPrompt
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => this.settle(promptId, null), PROMPT_TIMEOUT_MS)
-      const count = prompt.kind === 'keyboard' ? prompt.prompts.length : 0
-      this.prompts.set(promptId, { prompt, kind: prompt.kind, count, attempt, timer, resolve })
-      attempt.prompts.add(promptId)
-      this.deps.emit('session:prompt', prompt)
-    })
-  }
-
-  /** `null` cancels. */
-  private settle(promptId: string, answer: PromptAnswer | null): void {
-    const p = this.prompts.get(promptId)
-    if (!p) return
-    this.prompts.delete(promptId)
-    clearTimeout(p.timer)
-    p.attempt.prompts.delete(promptId)
-    this.deps.emit('session:promptDone', { promptId })
-    p.resolve(answer)
+  private async ask(s: Session, attempt: Attempt, body: PromptBody): Promise<PromptAnswer | null> {
+    if (!this.isLive(s, attempt)) return null
+    const answer = await this.deps.prompts.ask(s.meta.id, attempt.prompts, body)
+    if (answer !== 'locked') return answer
+    attempt.fail?.(new Error(VAULT_LOCKED))
+    return null
   }
 
   private cancelAttemptPrompts(attempt: Attempt): void {
-    for (const id of [...attempt.prompts]) this.settle(id, null)
+    this.deps.prompts.cancel(attempt.prompts)
   }
 
   private output(s: Session, text: string): void {

@@ -38,6 +38,7 @@ import { redact } from './security/redact'
 import { authPlan } from './ssh/auth'
 import { connectChain } from './ssh/connect'
 import { KnownHostStore } from './ssh/known-hosts'
+import { PromptBroker } from './ssh/prompts'
 import { spawnLocalShell } from './ssh/local-shell'
 import { SessionManager } from './ssh/sessions'
 import { AutoLock } from './vault/auto-lock'
@@ -162,6 +163,9 @@ if (!app.requestSingleInstanceLock()) {
       const knownHosts = new KnownHostStore(db, service, log, { knownHostsPath: join(homedir(), '.ssh', 'known_hosts') })
       const authDeps = { identities, env: process.env, home: homedir() }
       const envStore = environments
+      const isLocked = (): boolean => !service.isUnlocked()
+      // One queue for session and tunnel prompts, so one answer channel serves both.
+      const prompts = new PromptBroker({ emit: (event, payload) => pushEvent(mainWindow, event, payload), isLocked })
       sessions = new SessionManager({
         resolve,
         hostInfo: (hostId) => {
@@ -172,14 +176,17 @@ if (!app.requestSingleInstanceLock()) {
         connect: connectChain,
         plan: (identity) => authPlan(identity, authDeps),
         knownHosts,
+        prompts,
         openLocal: (req) => spawnLocalShell({ ...req, env: process.env, home: homedir() }),
         audit: log,
-        isLocked: () => !service.isUnlocked(),
+        isLocked,
         emit: (event, payload) => pushEvent(mainWindow, event, payload),
       })
       const manager = sessions
-      // Sessions keep running across a lock; prompts and connects still dialling are cancelled.
+      // Sessions keep running across a lock; connects still dialling fail, then every prompt left is
+      // cancelled. Separate listeners, run in this order, so one failing never skips the other.
       service.onLock(() => manager.vaultLocked())
+      service.onLock(() => prompts.cancelAll())
       stopAutoLock = new AutoLock({
         idleSeconds: () => powerMonitor.getSystemIdleTime(),
         minutes: () => service.autoLockMinutes(),
@@ -229,7 +236,7 @@ if (!app.requestSingleInstanceLock()) {
           }),
           ...createSshImportHandlers(importer),
           ...createTunnelHandlers({ store: tunnels }),
-          ...createSessionHandlers({ sessions: manager, knownHosts }),
+          ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
         },
         (url) => isTrustedSender(url, { devServerUrl, rendererFile }),
         { validators: VALIDATORS, knownSecrets },

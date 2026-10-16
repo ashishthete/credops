@@ -17,6 +17,7 @@ import {
 import type { AuditLog } from '../audit/audit-log'
 import type { Db } from '../db/connection'
 import { inTransaction } from '../db/tx'
+import { redact } from '../security/redact'
 import { checkHexColor } from '../util/checks'
 import { DEFAULT_KDF, deriveKek, newKdfParams, openSealed, randomKey, seal, type KdfParams } from './crypto'
 
@@ -108,6 +109,9 @@ export class VaultService {
   private epoch = 0
   private readonly known = new Map<string, readonly string[]>()
   private readonly lockListeners = new Set<(reason: LockReason) => void>()
+  private readonly unlockListeners = new Set<() => void>()
+  /** Set by install() on a locked-to-unlocked transition; serial() fires the unlock listeners once the section resolves. */
+  private unlockedPending = false
   /** Chains password operations so the throttle check and failure count cannot interleave. */
   private queue: Promise<unknown> = Promise.resolve()
 
@@ -295,6 +299,7 @@ export class VaultService {
 
   lock(reason: LockReason): void {
     this.epoch++
+    this.unlockedPending = false
     if (!this.kek) return
     zero(this.kek, this.keys.values())
     this.kek = null
@@ -317,6 +322,12 @@ export class VaultService {
   onLock(fn: (reason: LockReason) => void): () => void {
     this.lockListeners.add(fn)
     return () => this.lockListeners.delete(fn)
+  }
+
+  /** Fires after each transition from locked to unlocked: setup, password or quick unlock. */
+  onUnlock(fn: () => void): () => void {
+    this.unlockListeners.add(fn)
+    return () => this.unlockListeners.delete(fn)
   }
 
   changePassword(current: string, next: string): Promise<UnlockResult> {
@@ -610,6 +621,7 @@ export class VaultService {
 
   private install(kek: Buffer, keys: Map<string, Buffer>, corrupt: string[]): void {
     if (this.kek) zero(this.kek, this.keys.values())
+    else this.unlockedPending = true
     this.keys.clear()
     this.kek = kek
     this.corrupt = corrupt
@@ -621,9 +633,22 @@ export class VaultService {
   }
 
   private serial<T>(fn: () => Promise<T>): Promise<T> {
-    const run = this.queue.then(fn, fn)
+    const run = this.queue.then(fn, fn).finally(() => this.fireUnlocked())
     this.queue = run.catch(() => undefined)
     return run
+  }
+
+  /** Once per transition, and only if no lock() came first. */
+  private fireUnlocked(): void {
+    if (!this.unlockedPending) return
+    this.unlockedPending = false
+    for (const fn of [...this.unlockListeners]) {
+      try {
+        fn()
+      } catch (err) {
+        console.error('vault unlock listener failed:', redact(err instanceof Error ? err.message : String(err), this.knownValues()))
+      }
+    }
   }
 }
 

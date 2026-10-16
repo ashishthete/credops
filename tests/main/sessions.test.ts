@@ -13,6 +13,7 @@ import type { SessionMeta, SessionPrompt } from '../../src/shared/ssh'
 import type { AuthPlan } from '../../src/main/ssh/auth'
 import { connectChain } from '../../src/main/ssh/connect'
 import { fingerprintOf, KnownHostStore } from '../../src/main/ssh/known-hosts'
+import { PromptBroker } from '../../src/main/ssh/prompts'
 import { SessionManager, type SessionManagerDeps } from '../../src/main/ssh/sessions'
 import { generateKey, startServer } from './ssh-server'
 import type { ServerOpts, TestServer } from './ssh-server'
@@ -74,6 +75,9 @@ async function setup(over: Partial<SessionManagerDeps> = {}) {
       conflicts: [],
     }
   }
+  const emit: SessionManagerDeps['emit'] = (event, payload) => events.push({ event, payload } as Emitted)
+  const isLocked = over.isLocked ?? ((): boolean => !f.vault.isUnlocked())
+  const broker = new PromptBroker({ emit, isLocked })
   const manager = new SessionManager({
     resolve,
     hostInfo: () => ({ label: 'web-1', keepaliveSec: null, envVars: { LANG: 'C.UTF-8' } }),
@@ -81,9 +85,10 @@ async function setup(over: Partial<SessionManagerDeps> = {}) {
     connect: connectChain,
     plan: async () => keyPlan(),
     knownHosts,
+    prompts: broker,
     audit: f.audit,
-    isLocked: () => !f.vault.isUnlocked(),
-    emit: (event, payload) => events.push({ event, payload } as Emitted),
+    isLocked,
+    emit,
     ...over,
   })
   onTestFinished(() => manager.closeAll('quit'))
@@ -129,7 +134,7 @@ async function setup(over: Partial<SessionManagerDeps> = {}) {
     )
   const audits = (action: 'ssh.open' | 'ssh.close') => f.audit.list({ actions: [action] })
 
-  return { ...f, knownHosts, manager, events, host, trust, states, prompts, promptDone, data, dataEvents, waitState, waitPrompt, waitData, audits }
+  return { ...f, knownHosts, manager, broker, events, host, trust, states, prompts, promptDone, data, dataEvents, waitState, waitPrompt, waitData, audits }
 }
 
 afterEach(() => {
@@ -167,7 +172,7 @@ describe('SessionManager', () => {
     if (prompt.kind !== 'host-key') throw new Error('wrong kind')
     expect(prompt.info.fingerprint).toBe(fingerprintOf(srv.hostKeyBase64))
 
-    t.manager.answer(prompt.promptId, { kind: 'host-key', trust: true })
+    t.broker.answer(prompt.promptId, { kind: 'host-key', trust: true })
     await t.waitState(meta.id, 'ready')
     expect(t.promptDone()).toEqual([prompt.promptId])
     expect(t.knownHosts.list()).toHaveLength(1)
@@ -186,7 +191,7 @@ describe('SessionManager', () => {
     expect(t.promptDone()).toEqual([prompt.promptId])
     await vi.waitFor(() => expect(srv.connections()).toBe(0), { timeout: 5000 })
     // A late trust answer is a no-op: the key is not stored.
-    t.manager.answer(prompt.promptId, { kind: 'host-key', trust: true })
+    t.broker.answer(prompt.promptId, { kind: 'host-key', trust: true })
     expect(t.knownHosts.list()).toEqual([])
     expect(t.audits('ssh.open')).toEqual([])
     expect(t.manager.list()).toEqual([])
@@ -381,12 +386,12 @@ describe('SessionManager', () => {
     t.vault.lock('manual')
     t.manager.vaultLocked()
     expect(t.promptDone()).toEqual([prompt.promptId])
-    expect(t.manager.pendingPrompts()).toEqual([])
+    expect(t.broker.pending()).toEqual([])
     const failed = t.states(b.id).at(-1)
     expect(failed).toMatchObject({ state: 'failed', error: { code: 'locked', hopLabel: 'web-1' } })
     await vi.waitFor(() => expect(unknown.connections()).toBe(0), { timeout: 5000 })
     // A late trust answer for the cancelled prompt stores nothing.
-    t.manager.answer(prompt.promptId, { kind: 'host-key', trust: true })
+    t.broker.answer(prompt.promptId, { kind: 'host-key', trust: true })
     expect(t.knownHosts.list()).toHaveLength(1)
     expect(t.audits('ssh.open').find((e) => e.outcome === 'failure')?.details).toMatchObject({ code: 'locked' })
     t.manager.write(a.id, 'still\r')
@@ -438,9 +443,9 @@ describe('SessionManager', () => {
     const srv = await server()
     t.manager.openSsh({ hostId: t.host(srv.port), ...size })
     const prompt = await t.waitPrompt()
-    expect(t.manager.pendingPrompts()).toEqual([prompt])
-    t.manager.answer(prompt.promptId, { kind: 'host-key', trust: false })
-    expect(t.manager.pendingPrompts()).toEqual([])
+    expect(t.broker.pending()).toEqual([prompt])
+    t.broker.answer(prompt.promptId, { kind: 'host-key', trust: false })
+    expect(t.broker.pending()).toEqual([])
   })
 
   it('closeAll audits quit for every ready session', async () => {
@@ -482,8 +487,8 @@ describe('SessionManager', () => {
     const srv = await server()
     t.manager.openSsh({ hostId: t.host(srv.port), ...size })
     const prompt = await t.waitPrompt()
-    expect(() => t.manager.answer(prompt.promptId, { kind: 'password', password: 'x' })).toThrow("prompt answer doesn't match")
-    expect(() => t.manager.answer(randomUUID(), { kind: 'host-key', trust: true })).not.toThrow()
+    expect(() => t.broker.answer(prompt.promptId, { kind: 'password', password: 'x' })).toThrow("prompt answer doesn't match")
+    expect(() => t.broker.answer(randomUUID(), { kind: 'host-key', trust: true })).not.toThrow()
     expect(t.promptDone()).toEqual([])
   })
 
@@ -527,11 +532,11 @@ describe('SessionManager', () => {
     })
     t.manager.openSsh({ hostId: t.host(22), ...size })
     const prompt = await t.waitPrompt()
-    expect(() => t.manager.answer(prompt.promptId, { kind: 'keyboard', responses: ['123456'] })).toThrow(
+    expect(() => t.broker.answer(prompt.promptId, { kind: 'keyboard', responses: ['123456'] })).toThrow(
       "prompt answer doesn't match",
     )
     expect(t.promptDone()).toEqual([])
-    t.manager.answer(prompt.promptId, { kind: 'keyboard', responses: ['123456', '0000'] })
+    t.broker.answer(prompt.promptId, { kind: 'keyboard', responses: ['123456', '0000'] })
     expect(t.promptDone()).toEqual([prompt.promptId])
   })
 

@@ -1,5 +1,6 @@
 import type { Handlers } from '../../../shared/ipc'
 import type { KnownHostStore } from '../../ssh/known-hosts'
+import type { PromptBroker } from '../../ssh/prompts'
 import type { SessionManager } from '../../ssh/sessions'
 
 type SessionChannel =
@@ -18,14 +19,18 @@ type SessionChannel =
 
 export type SessionApi = Pick<
   SessionManager,
-  'openSsh' | 'openLocal' | 'reconnect' | 'write' | 'resize' | 'close' | 'list' | 'attach' | 'answer' | 'pendingPrompts'
+  'openSsh' | 'openLocal' | 'reconnect' | 'write' | 'resize' | 'close' | 'list' | 'attach'
 >
+
+/** Session and tunnel prompts share one broker, so one answer channel serves both. */
+export type PromptApi = Pick<PromptBroker, 'answer' | 'pending'>
 
 export function createSessionHandlers(deps: {
   sessions: SessionApi
+  prompts: PromptApi
   knownHosts: Pick<KnownHostStore, 'list' | 'remove'>
 }): Pick<Handlers, SessionChannel> {
-  const { sessions, knownHosts } = deps
+  const { sessions, prompts, knownHosts } = deps
   return {
     'ssh:open': (req) => sessions.openSsh(req),
     'shell:open': (req) => sessions.openLocal(req),
@@ -35,8 +40,8 @@ export function createSessionHandlers(deps: {
     'session:close': (id) => sessions.close(id),
     'session:list': () => sessions.list(),
     'session:attach': (id) => sessions.attach(id),
-    'session:answer': (promptId, answer) => sessions.answer(promptId, answer),
-    'session:prompts': () => sessions.pendingPrompts(),
+    'session:answer': (promptId, answer) => prompts.answer(promptId, answer),
+    'session:prompts': () => prompts.pending(),
     'knownhost:list': () => knownHosts.list(),
     'knownhost:remove': (id) => knownHosts.remove(id),
   }

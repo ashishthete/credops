@@ -84,6 +84,51 @@ describe('VaultService', () => {
     expect(onLock).toHaveBeenCalledTimes(2)
   })
 
+  it('onUnlock fires once per unlock, not on a failed attempt', async () => {
+    const quick = {
+      keychain: { available: () => true, encrypt: (p: string) => Buffer.from(p, 'utf8'), decrypt: (b: Buffer) => b.toString('utf8') },
+      touchId: { available: () => true, prompt: async () => undefined },
+    }
+    const f = makeVault({ quick })
+    await f.vault.setup(PW)
+    f.vault.setQuickUnlock('touchId')
+    f.vault.lock('manual')
+    const onUnlock = vi.fn()
+    const off = f.vault.onUnlock(onUnlock)
+    expect(await f.vault.unlock('wrong password')).toMatchObject({ ok: false, reason: 'wrong-password' })
+    expect(onUnlock).not.toHaveBeenCalled()
+    f.now.t += 60_000
+    expect(await f.vault.unlock(PW)).toEqual({ ok: true })
+    expect(onUnlock).toHaveBeenCalledTimes(1)
+    f.vault.lock('manual')
+    expect(await f.vault.unlockQuick()).toEqual({ ok: true })
+    expect(onUnlock).toHaveBeenCalledTimes(2)
+    off()
+    f.vault.lock('manual')
+    expect(await f.vault.unlock(PW)).toEqual({ ok: true })
+    expect(onUnlock).toHaveBeenCalledTimes(2)
+  })
+
+  it('onUnlock fires on first-run setup, after the serial section, and survives a throwing listener', async () => {
+    const f = makeVault()
+    const seen: { unlocked: boolean; audited: boolean }[] = []
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    f.vault.onUnlock(() => {
+      throw new Error('listener broke: -----BEGIN OPENSSH PRIVATE KEY-----abc')
+    })
+    f.vault.onUnlock(() => {
+      // The section's last step, its audit row, is already written.
+      seen.push({ unlocked: f.vault.isUnlocked(), audited: actions(f).some((e) => e.action === 'vault.setup') })
+    })
+    await f.vault.setup(PW)
+    expect(seen).toEqual([{ unlocked: true, audited: true }])
+    expect(error).toHaveBeenCalledTimes(1)
+    expect(error.mock.calls.flat().map(String).join(' ')).not.toContain('BEGIN OPENSSH')
+    // A password change while unlocked is not a transition.
+    expect(await f.vault.changePassword(PW, PW2)).toEqual({ ok: true })
+    expect(seen).toHaveLength(1)
+  })
+
   it('unlock before setup throws', async () => {
     const { vault } = makeVault()
     await expect(vault.unlock(PW)).rejects.toThrow(/not set up/)

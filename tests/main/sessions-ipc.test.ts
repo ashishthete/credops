@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { IpcMainInvokeEvent } from 'electron'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
-import { createSessionHandlers, type SessionApi } from '../../src/main/ipc/handlers/sessions'
+import { createSessionHandlers, type PromptApi, type SessionApi } from '../../src/main/ipc/handlers/sessions'
 import { registerHandlers } from '../../src/main/ipc/register'
 import { VALIDATORS } from '../../src/main/ipc/validators'
 import { KnownHostStore } from '../../src/main/ssh/known-hosts'
@@ -30,8 +30,13 @@ function fakeManager(): { [K in keyof SessionApi]: ReturnType<typeof vi.fn> } {
     close: vi.fn(),
     list: vi.fn(() => [meta]),
     attach: vi.fn(() => ({ meta, buffer: 'b', end: 1 })),
+  }
+}
+
+function fakeBroker(): { [K in keyof PromptApi]: ReturnType<typeof vi.fn> } {
+  return {
     answer: vi.fn(),
-    pendingPrompts: vi.fn(() => [prompt]),
+    pending: vi.fn(() => [prompt]),
   }
 }
 
@@ -42,21 +47,22 @@ async function setup() {
   onTestFinished(() => rmSync(dir, { recursive: true, force: true }))
   const knownHosts = new KnownHostStore(f.db, f.vault, f.audit, { knownHostsPath: join(dir, 'known_hosts') })
   const sessions = fakeManager()
+  const prompts = fakeBroker()
   const registered = new Map<string, Fn>()
   registerHandlers(
     { handle: (c: string, fn: Fn) => void registered.set(c, fn) },
-    stubHandlers(createSessionHandlers({ sessions: sessions as unknown as SessionApi, knownHosts })),
+    stubHandlers(createSessionHandlers({ sessions: sessions as unknown as SessionApi, prompts: prompts as unknown as PromptApi, knownHosts })),
     (u) => u === 'file:///ok',
     { validators: VALIDATORS },
   )
   const ev = { senderFrame: { url: 'file:///ok' } } as IpcMainInvokeEvent
   const call = (c: string, ...a: unknown[]) => Promise.resolve(registered.get(c)!(ev, ...a))
-  return { ...f, knownHosts, sessions, call }
+  return { ...f, knownHosts, sessions, prompts, call }
 }
 
 describe('session IPC', () => {
   it('delegates to the manager', async () => {
-    const { sessions, call } = await setup()
+    const { sessions, prompts, call } = await setup()
     const id = randomUUID()
     const hostId = randomUUID()
     await expect(call('shell:open', { cols: 80, rows: 24 })).resolves.toBe(meta)
@@ -76,13 +82,13 @@ describe('session IPC', () => {
     await call('session:answer', id, { kind: 'host-key', trust: true })
     await call('session:answer', id, { kind: 'password', password: null })
     await call('session:answer', id, { kind: 'keyboard', responses: ['', '123456'] })
-    expect(sessions.answer).toHaveBeenCalledTimes(3)
-    expect(sessions.answer).toHaveBeenLastCalledWith(id, { kind: 'keyboard', responses: ['', '123456'] })
+    expect(prompts.answer).toHaveBeenCalledTimes(3)
+    expect(prompts.answer).toHaveBeenLastCalledWith(id, { kind: 'keyboard', responses: ['', '123456'] })
     await expect(call('session:prompts')).resolves.toEqual([prompt])
   })
 
   it('validators reject bad args, naming the path and never the value', async () => {
-    const { sessions, call } = await setup()
+    const { sessions, prompts, call } = await setup()
     const id = randomUUID()
     const hostId = randomUUID()
     await expect(call('shell:open', { cols: 0, rows: 24 })).rejects.toThrow('invalid arguments: [0].cols must be at least 1')
@@ -102,7 +108,7 @@ describe('session IPC', () => {
     await expect(call('session:answer', id, { kind: 'password', password: 'p', extra: 1 })).rejects.toThrow(
       '[1].extra is not an allowed key',
     )
-    for (const fn of Object.values(sessions)) expect(fn).not.toHaveBeenCalled()
+    for (const fn of [...Object.values(sessions), ...Object.values(prompts)]) expect(fn).not.toHaveBeenCalled()
   })
 
   it('knownhost:list and knownhost:remove go to the store; remove needs the vault unlocked', async () => {
