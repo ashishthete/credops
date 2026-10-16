@@ -5,7 +5,15 @@ import { Button } from '../../ui/Button'
 import { fast, spring, useMotionSafe } from '../../ui/motion'
 
 /** A thin bar under a closed session; the terminal above it stays readable. */
-export function SessionEnded({ meta, onReconnect }: { meta: SessionMeta; onReconnect: () => void }) {
+export function SessionEnded({
+  meta,
+  onReconnect,
+  reconnecting = false,
+}: {
+  meta: SessionMeta
+  onReconnect: () => void
+  reconnecting?: boolean
+}) {
   const motionSafe = useMotionSafe()
   return (
     <motion.div
@@ -20,7 +28,14 @@ export function SessionEnded({ meta, onReconnect }: { meta: SessionMeta; onRecon
       <span className="font-medium text-fg">Session ended</span>
       {meta.error && <span className="min-w-0 truncate text-muted">{meta.error.message}</span>}
       {meta.kind === 'ssh' && (
-        <Button size="sm" variant="ghost" className="ml-auto" icon={<RotateCw aria-hidden className="size-3" />} onClick={onReconnect}>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="ml-auto"
+          icon={<RotateCw aria-hidden className="size-3" />}
+          loading={reconnecting}
+          onClick={onReconnect}
+        >
           Reconnect
         </Button>
       )}

@@ -10,7 +10,7 @@ import { ProductsPage } from '../pages/products/ProductsPage'
 import { TerminalDeck } from '../pages/terminals/TerminalDeck'
 import { VaultsPage } from '../pages/vaults/VaultsPage'
 import { disposeAll } from '../terminal/registry'
-import { promptStore, sessionStore, startSessionSync } from '../terminal/sessions'
+import { resetSessions, startSessionSync } from '../terminal/sessions'
 import { registerCommand } from '../ui/commands'
 import { fast, useMotionSafe } from '../ui/motion'
 import { useShortcut } from '../ui/shortcuts'
@@ -39,8 +39,7 @@ export function AppShell() {
       stop()
       disposeAll()
       // Events stop while unmounted (the vault locked); the next mount's session list is the truth.
-      sessionStore.set({ sessions: [], activeId: null, order: [] })
-      promptStore.set([])
+      resetSessions()
     }
   }, [])
 

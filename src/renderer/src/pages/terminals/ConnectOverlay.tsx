@@ -17,6 +17,8 @@ const NODE: Record<HopState, string> = {
 export interface ConnectOverlayProps {
   meta: SessionMeta
   onReconnect: () => void
+  /** A reconnect is in flight: the button waits instead of sending a second one. */
+  reconnecting?: boolean
   onClose: () => void
   /** Shown for a changed key the app stored; the known-hosts manager arrives with the prompts. */
   onOpenKnownHosts?: () => void
@@ -26,7 +28,7 @@ export interface ConnectOverlayProps {
  * Drawn over the terminal while a session connects or after it failed: the hop chain, and on
  * failure a card with the reason. The backdrop never takes the pointer; only the card does.
  */
-export function ConnectOverlay({ meta, onReconnect, onClose, onOpenKnownHosts }: ConnectOverlayProps) {
+export function ConnectOverlay({ meta, onReconnect, reconnecting, onClose, onOpenKnownHosts }: ConnectOverlayProps) {
   const motionSafe = useMotionSafe()
   const failed = meta.state === 'failed'
   const chain = meta.kind === 'ssh' ? [LOCAL, ...meta.hops] : []
@@ -50,7 +52,13 @@ export function ConnectOverlay({ meta, onReconnect, onClose, onOpenKnownHosts }:
         </ol>
       )}
       {failed ? (
-        <FailedCard meta={meta} onReconnect={onReconnect} onClose={onClose} onOpenKnownHosts={onOpenKnownHosts} />
+        <FailedCard
+          meta={meta}
+          onReconnect={onReconnect}
+          reconnecting={reconnecting}
+          onClose={onClose}
+          onOpenKnownHosts={onOpenKnownHosts}
+        />
       ) : (
         <motion.p
           className="text-[13px] text-muted"
@@ -128,7 +136,13 @@ function HopLink({ state }: { state: HopState }) {
   )
 }
 
-function FailedCard({ meta, onReconnect, onClose, onOpenKnownHosts }: Omit<ConnectOverlayProps, 'meta'> & { meta: SessionMeta }) {
+function FailedCard({
+  meta,
+  onReconnect,
+  reconnecting = false,
+  onClose,
+  onOpenKnownHosts,
+}: Omit<ConnectOverlayProps, 'meta'> & { meta: SessionMeta }) {
   const motionSafe = useMotionSafe()
   const error = meta.error
   const hostKeyChanged = error?.code === 'host-key-changed' && error.hostKey
@@ -158,7 +172,7 @@ function FailedCard({ meta, onReconnect, onClose, onOpenKnownHosts }: Omit<Conne
           Close
         </Button>
         {meta.kind === 'ssh' && (
-          <Button size="sm" icon={<RotateCw aria-hidden className="size-3.5" />} onClick={onReconnect}>
+          <Button size="sm" icon={<RotateCw aria-hidden className="size-3.5" />} loading={reconnecting} onClick={onReconnect}>
             Reconnect
           </Button>
         )}

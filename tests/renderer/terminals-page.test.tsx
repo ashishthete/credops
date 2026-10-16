@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { inventoryStore } from '../../src/renderer/src/inventory/store'
 import { AppShell } from '../../src/renderer/src/shell/AppShell'
 import { SECTIONS } from '../../src/renderer/src/shell/sections'
-import { promptStore, sessionStore } from '../../src/renderer/src/terminal/sessions'
+import { resetSessions, sessionStore } from '../../src/renderer/src/terminal/sessions'
 import { clearToasts } from '../../src/renderer/src/ui/Toaster'
 import type { SessionMeta } from '../../src/shared/ssh'
 import { emitBridgeEvent, environment, host, mockBridge } from './helpers'
@@ -70,8 +70,7 @@ beforeEach(() => {
   motion.safe = true
   resetFakeXterm()
   inventoryStore.set(null)
-  sessionStore.set({ sessions: [], activeId: null, order: [] })
-  promptStore.set([])
+  resetSessions()
   vi.stubGlobal(
     'ResizeObserver',
     class {
@@ -342,5 +341,161 @@ describe('terminals page', () => {
     expect(tab('web').querySelector('[data-state="connecting"]')).not.toBeNull()
     expect(tab('web').querySelector('.animate-ping')).toBeNull()
     expect(document.querySelector('[aria-label="Connection path"] .animate-ping')).toBeNull()
+  })
+
+  describe('fix round 1', () => {
+    const settle = (ms = 1000) =>
+      act(async () => {
+        await vi.advanceTimersByTimeAsync(ms)
+      })
+    const item = (id: string) => document.querySelector<HTMLElement>(`[data-session="${id}"]`)
+    const failed = (id: string) => ssh(id, { state: 'failed', error: { code: 'refused', message: 'refused' } })
+
+    it('a closing tab collapses its width; nothing on the collapsing item pins a min-width', async () => {
+      await renderShell()
+      state(ssh('web'))
+      state(failed('db'))
+      await settle()
+      fireEvent.click(screen.getByRole('button', { name: 'Close db' }))
+      await settle(16)
+      const exiting = item('db')!
+      expect(exiting.style.width).toBe('0px')
+      expect(Number(exiting.style.opacity)).toBeGreaterThan(0)
+      expect(exiting.className).not.toMatch(/min-w-/)
+      expect(exiting.querySelector('[data-tab-row]')!.className).toMatch(/min-w-\[120px\]/)
+      await settle(500)
+      expect(item('db')).toBeNull()
+    })
+
+    it('reduced motion: a closing tab leaves on the next frame, with no fade', async () => {
+      motion.safe = false
+      await renderShell()
+      state(ssh('web'))
+      state(failed('db'))
+      await settle()
+      fireEvent.click(screen.getByRole('button', { name: 'Close db' }))
+      await settle(16)
+      expect(item('db')).toBeNull()
+    })
+
+    it('tabs follow the tab pattern: panels, roving tabindex, arrows/Home/End, close outside the tab', async () => {
+      await renderShell()
+      state(meta('a'))
+      state(meta('b'))
+      state(meta('c'))
+      await settle()
+      const [a, b, c] = ['a', 'b', 'c'].map(tab)
+
+      for (const t of [a, b, c]) {
+        const panel = document.getElementById(t.getAttribute('aria-controls')!)!
+        expect(panel).toHaveAttribute('role', 'tabpanel')
+        expect(panel).toHaveAttribute('aria-labelledby', t.id)
+      }
+      expect(screen.getByRole('tabpanel', { name: 'a' })).toBeVisible()
+      expect([a, b, c].map((t) => t.tabIndex)).toEqual([0, -1, -1])
+
+      const close = screen.getByRole('button', { name: 'Close a' })
+      expect(close.tabIndex).toBe(-1)
+      expect(a.contains(close)).toBe(false)
+      expect(close.closest('[role="tab"]')).toBeNull()
+
+      a.focus()
+      fireEvent.keyDown(a, { key: 'ArrowRight' })
+      expect(b).toHaveFocus()
+      expect(b).toHaveAttribute('aria-selected', 'true')
+      expect([a, b, c].map((t) => t.tabIndex)).toEqual([-1, 0, -1])
+      fireEvent.keyDown(b, { key: 'End' })
+      expect(c).toHaveFocus()
+      fireEvent.keyDown(c, { key: 'ArrowRight' }) // wraps
+      expect(a).toHaveFocus()
+      fireEvent.keyDown(a, { key: 'ArrowLeft' }) // wraps back
+      expect(c).toHaveFocus()
+      fireEvent.keyDown(c, { key: 'Home' })
+      expect(a).toHaveFocus()
+      expect(sessionStore.get().activeId).toBe('a')
+    })
+
+    it('after a close by click, focus moves to the next tab, else the previous, else QuickConnect', async () => {
+      await renderShell()
+      state(failed('a'))
+      state(failed('b'))
+      state(failed('c'))
+      await settle()
+
+      const closeB = screen.getByRole('button', { name: 'Close b' })
+      closeB.focus()
+      fireEvent.click(closeB)
+      await flush()
+      expect(tab('c')).toHaveFocus()
+
+      const closeC = screen.getByRole('button', { name: 'Close c' })
+      closeC.focus()
+      fireEvent.click(closeC)
+      await flush()
+      expect(tab('a')).toHaveFocus()
+
+      const closeA = screen.getByRole('button', { name: 'Close a' })
+      closeA.focus()
+      fireEvent.click(closeA)
+      await settle()
+      expect(screen.getByRole('searchbox', { name: 'Connect to a host' })).toHaveFocus()
+    })
+
+    it('middle-click close and a cancelled or confirmed close all leave focus on a tab', async () => {
+      await renderShell()
+      state(meta('a'))
+      state(failed('b'))
+      state(meta('c'))
+      await settle()
+
+      // Middle-click a failed tab: it goes at once and focus moves to the next.
+      document.body.focus()
+      fireEvent(tab('b'), new MouseEvent('auxclick', { bubbles: true, button: 1 }))
+      await flush()
+      expect(tab('c')).toHaveFocus()
+
+      // Middle-click a live tab, then cancel: focus lands on that tab.
+      document.body.focus()
+      fireEvent(tab('a'), new MouseEvent('auxclick', { bubbles: true, button: 1 }))
+      const dialog = screen.getByRole('dialog', { name: 'Close a?' })
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+      await settle()
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(tab('a')).toHaveFocus()
+
+      // Confirm a close by click on ×: the button is gone, so focus moves to the next tab.
+      const closeA = screen.getByRole('button', { name: 'Close a' })
+      closeA.focus()
+      fireEvent.click(closeA)
+      fireEvent.click(within(screen.getByRole('dialog', { name: 'Close a?' })).getByRole('button', { name: 'Close' }))
+      await settle()
+      expect(tab('c')).toHaveFocus()
+    })
+
+    it('Reconnect is disabled while one is in flight and sends only one request', async () => {
+      let release!: (m: SessionMeta) => void
+      const invoke = await renderShell()
+      const fallback = invoke.getMockImplementation()!
+      invoke.mockImplementation(async (ch: string) =>
+        ch === 'session:reconnect' ? new Promise<SessionMeta>((r) => (release = r)) : fallback(ch),
+      )
+      state(ssh('web', { state: 'closed' }))
+      const button = () => within(screen.getByRole('status', { name: 'Session ended' })).getByRole('button', { name: 'Reconnect' })
+      fireEvent.click(button())
+      await flush()
+      expect(button()).toBeDisabled()
+      expect(button()).toHaveAttribute('aria-busy', 'true')
+      fireEvent.click(button())
+      await flush()
+      expect(calls(invoke, 'session:reconnect')).toHaveLength(1)
+
+      await act(async () => release(ssh('web', { state: 'failed', attempt: 2, error: { code: 'refused', message: 'refused' } })))
+      const card = screen.getByRole('alert')
+      expect(within(card).getByRole('button', { name: 'Reconnect' })).toBeEnabled()
+      fireEvent.click(within(card).getByRole('button', { name: 'Reconnect' }))
+      await flush()
+      expect(within(screen.getByRole('alert')).getByRole('button', { name: 'Reconnect' })).toBeDisabled()
+      expect(calls(invoke, 'session:reconnect')).toHaveLength(2)
+    })
   })
 })

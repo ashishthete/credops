@@ -8,6 +8,8 @@ import {
   nextTab,
   openLocal,
   promptStore,
+  reconnectSession,
+  resetSessions,
   sessionStore,
   startSessionSync,
 } from '../../src/renderer/src/terminal/sessions'
@@ -43,8 +45,7 @@ const state = (m: SessionMeta) => act(() => emitBridgeEvent('session:state', m))
 beforeEach(() => {
   disposeAll()
   resetFakeXterm()
-  sessionStore.set({ sessions: [], activeId: null, order: [] })
-  promptStore.set([])
+  resetSessions()
 })
 
 describe('session store', () => {
@@ -202,5 +203,94 @@ describe('session store', () => {
     act(() => emitBridgeEvent('session:promptDone', { promptId: '1' }))
     expect(promptStore.get().map((x) => x.promptId)).toEqual(['2'])
     stop()
+  })
+
+  describe('open and reconnect replies', () => {
+    /** Holds `channel`'s reply until release() is called. */
+    function hold(invoke: ReturnType<typeof mockBridge>, channel: string) {
+      let release!: (meta: SessionMeta) => void
+      const fallback = invoke.getMockImplementation()!
+      invoke.mockImplementation(async (ch: string) =>
+        ch === channel ? new Promise<SessionMeta>((r) => (release = r)) : fallback(ch),
+      )
+      return (meta: SessionMeta) => act(async () => release(meta))
+    }
+
+    it('a reconnect reply for a tab closed meanwhile does not bring it back', async () => {
+      const invoke = mockBridge({ 'session:list': [] })
+      const stop = startSessionSync()
+      await state(meta('a', { kind: 'ssh', state: 'failed' }))
+      const release = hold(invoke, 'session:reconnect')
+      const pending = reconnectSession('a')
+      await act(() => closeSession('a'))
+      await release(meta('a', { kind: 'ssh', state: 'connecting', attempt: 2 }))
+      await pending
+      // A late state event for the closed id is dropped too.
+      await state(meta('a', { kind: 'ssh', state: 'failed', attempt: 2 }))
+      expect(sessionStore.get()).toMatchObject({ sessions: [], order: [], activeId: null })
+      stop()
+    })
+
+    it('an open reply for a session closed before it landed is dropped', async () => {
+      const invoke = mockBridge({ 'session:list': [], 'session:close': null })
+      const stop = startSessionSync()
+      const release = hold(invoke, 'shell:open')
+      const pending = openLocal()
+      await state(meta('L', { state: 'ready' }))
+      await act(() => closeSession('L'))
+      await release(meta('L', { state: 'connecting' }))
+      expect(await pending).toBeUndefined()
+      expect(sessionStore.get().order).toEqual([])
+      stop()
+    })
+
+    it('a reply never overwrites a state event from the same or a newer attempt', async () => {
+      const invoke = mockBridge({ 'session:list': [] })
+      const stop = startSessionSync()
+      const releaseOpen = hold(invoke, 'shell:open')
+      const opening = openLocal()
+      await state(meta('L', { state: 'ready', attempt: 1 }))
+      await releaseOpen(meta('L', { state: 'connecting', attempt: 1 }))
+      expect(await opening).toBe('L')
+      expect(sessionStore.get()).toMatchObject({ activeId: 'L', sessions: [{ state: 'ready' }] })
+
+      await state(meta('a', { kind: 'ssh', state: 'failed', attempt: 1 }))
+      const releaseReconnect = hold(invoke, 'session:reconnect')
+      const reconnecting = reconnectSession('a')
+      await state(meta('a', { kind: 'ssh', state: 'ready', attempt: 2 }))
+      await releaseReconnect(meta('a', { kind: 'ssh', state: 'connecting', attempt: 2 }))
+      await reconnecting
+      expect(sessionStore.get().sessions.find((m) => m.id === 'a')).toMatchObject({ state: 'ready', attempt: 2 })
+      stop()
+    })
+
+    it('a reply with a newer attempt than the stored entry replaces it', async () => {
+      const invoke = mockBridge({ 'session:list': [] })
+      const stop = startSessionSync()
+      await state(meta('a', { kind: 'ssh', state: 'failed', attempt: 1 }))
+      const release = hold(invoke, 'session:reconnect')
+      const pending = reconnectSession('a')
+      await release(meta('a', { kind: 'ssh', state: 'connecting', attempt: 2 }))
+      await pending
+      expect(sessionStore.get().sessions[0]).toMatchObject({ state: 'connecting', attempt: 2 })
+      stop()
+    })
+
+    it('a second reconnect while one is in flight sends nothing', async () => {
+      const invoke = mockBridge({ 'session:list': [] })
+      const stop = startSessionSync()
+      await state(meta('a', { kind: 'ssh', state: 'failed' }))
+      const release = hold(invoke, 'session:reconnect')
+      const first = reconnectSession('a')
+      await reconnectSession('a')
+      await release(meta('a', { kind: 'ssh', state: 'connecting', attempt: 2 }))
+      await first
+      const sent = () => invoke.mock.calls.filter(([ch]) => ch === 'session:reconnect').length
+      expect(sent()).toBe(1)
+      // Once it settles, the next reconnect goes through.
+      void reconnectSession('a')
+      expect(sent()).toBe(2)
+      stop()
+    })
   })
 })

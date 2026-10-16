@@ -1,6 +1,6 @@
 import { AnimatePresence, motion, Reorder } from 'framer-motion'
 import { Plus, X } from 'lucide-react'
-import { useRef } from 'react'
+import { useRef, type KeyboardEvent } from 'react'
 import type { SessionMeta, SessionState } from '../../../../shared/ssh'
 import { moveTab } from '../../terminal/sessions'
 import { fast, spring, useMotionSafe } from '../../ui/motion'
@@ -26,6 +26,17 @@ export function StatusDot({ state }: { state: SessionState }) {
   )
 }
 
+/** DOM ids that tie each tab to its pane (aria-controls / aria-labelledby). */
+export const tabId = (sessionId: string) => `terminal-tab-${sessionId}`
+export const paneId = (sessionId: string) => `terminal-pane-${sessionId}`
+
+const STEP: Record<string, (at: number, n: number) => number> = {
+  ArrowRight: (at, n) => (at + 1) % n,
+  ArrowLeft: (at, n) => (at - 1 + n) % n,
+  Home: () => 0,
+  End: (_, n) => n - 1,
+}
+
 export interface TabStripProps {
   sessions: SessionMeta[]
   activeId: string | null
@@ -39,6 +50,17 @@ export function TabStrip({ sessions, activeId, envName, onSelect, onClose, onNew
   const motionSafe = useMotionSafe()
   // Reorder hands back the whole new order; the tab being dragged is the one that moved.
   const dragging = useRef<string | null>(null)
+  // Roving tabindex: one tab stop for the strip, on the active tab (or the first).
+  const stop = sessions.some((s) => s.id === activeId) ? activeId : sessions[0]?.id
+
+  const onTabKey = (e: KeyboardEvent, at: number) => {
+    const step = STEP[e.key]
+    if (!step || e.metaKey || e.ctrlKey || e.altKey) return
+    e.preventDefault()
+    const id = sessions[step(at, sessions.length)].id
+    onSelect(id)
+    document.getElementById(tabId(id))?.focus()
+  }
 
   return (
     <div className="app-drag flex h-[52px] shrink-0 items-end gap-1 border-b border-line bg-surface/60 px-2 pb-1.5">
@@ -55,7 +77,7 @@ export function TabStrip({ sessions, activeId, envName, onSelect, onClose, onNew
         className="flex min-w-0 items-center gap-1 overflow-x-auto [scrollbar-width:none]"
       >
         <AnimatePresence initial={false}>
-          {sessions.map((s) => {
+          {sessions.map((s, at) => {
             const active = s.id === activeId
             const env = envName(s.environmentId)
             return (
@@ -63,6 +85,7 @@ export function TabStrip({ sessions, activeId, envName, onSelect, onClose, onNew
                 key={s.id}
                 value={s.id}
                 as="div"
+                role="presentation"
                 data-session={s.id}
                 onDragStart={() => (dragging.current = s.id)}
                 onDragEnd={() => (dragging.current = null)}
@@ -76,47 +99,60 @@ export function TabStrip({ sessions, activeId, envName, onSelect, onClose, onNew
                 }}
                 initial={motionSafe ? { opacity: 0, scale: 0.9, y: 4 } : { opacity: 0 }}
                 animate={motionSafe ? { opacity: 1, scale: 1, y: 0 } : { opacity: 1 }}
-                // Width collapses so the neighbours slide over; nothing waits on it.
-                exit={{ opacity: 0, width: 0, paddingLeft: 0, paddingRight: 0, transition: fast }}
+                // Width collapses so the neighbours slide over; the min-width lives on the inner row,
+                // so nothing pins the item open. Reduced motion drops it at once.
+                exit={{ opacity: 0, width: 0, transition: motionSafe ? fast : { duration: 0 } }}
                 transition={motionSafe ? spring : { ...fast, layout: { duration: 0 } }}
-                className={`group relative flex h-8 max-w-[220px] min-w-[120px] shrink-0 cursor-default items-center overflow-hidden rounded-lg text-[12.5px] select-none ${
+                className={`group relative h-8 shrink-0 cursor-default overflow-hidden rounded-lg text-[12.5px] select-none ${
                   active ? 'text-fg' : 'text-muted hover:bg-white/[0.035] hover:text-fg'
                 }`}
               >
                 {active &&
                   (motionSafe ? (
-                    <motion.span layoutId="terminal-tab-active" transition={spring} className="absolute inset-0 rounded-lg border border-line bg-surface-2" />
+                    <motion.span
+                      layoutId="terminal-tab-active"
+                      transition={spring}
+                      className="absolute inset-0 rounded-lg border border-line bg-surface-2"
+                    />
                   ) : (
                     <span className="absolute inset-0 rounded-lg border border-line bg-surface-2" />
                   ))}
-                <span
-                  aria-hidden
-                  data-stripe
-                  className="absolute inset-y-1.5 left-1 w-[3px] rounded-full"
-                  style={{ background: s.color ?? 'var(--accent)' }}
-                />
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={active}
-                  title={env ? `${s.label} · ${env}` : s.label}
-                  onClick={() => onSelect(s.id)}
-                  className="relative flex h-full min-w-0 flex-1 items-center gap-2 pr-1 pl-3.5 text-left focus-visible:outline-offset-[-2px]"
-                >
-                  <StatusDot state={s.state} />
-                  <span className="truncate font-medium">{s.label}</span>
-                  {env && <span className="truncate text-[11.5px] text-muted">{env}</span>}
-                </button>
-                <button
-                  type="button"
-                  aria-label={`Close ${s.label}`}
-                  onClick={() => onClose(s)}
-                  className={`relative mr-1 grid size-5 shrink-0 place-items-center rounded-md text-muted transition-[opacity,background-color,color] hover:bg-white/8 hover:text-fg focus-visible:opacity-100 ${
-                    active ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-                  }`}
-                >
-                  <X aria-hidden className="size-3" />
-                </button>
+                <div data-tab-row className="relative flex h-full max-w-[220px] min-w-[120px] items-center">
+                  <span
+                    aria-hidden
+                    data-stripe
+                    className="absolute inset-y-1.5 left-1 w-[3px] rounded-full"
+                    style={{ background: s.color ?? 'var(--accent)' }}
+                  />
+                  <button
+                    type="button"
+                    role="tab"
+                    id={tabId(s.id)}
+                    aria-controls={paneId(s.id)}
+                    aria-selected={active}
+                    tabIndex={s.id === stop ? 0 : -1}
+                    onKeyDown={(e) => onTabKey(e, at)}
+                    title={env ? `${s.label} · ${env}` : s.label}
+                    onClick={() => onSelect(s.id)}
+                    className="relative flex h-full min-w-0 flex-1 items-center gap-2 pr-1 pl-3.5 text-left focus-visible:outline-offset-[-2px]"
+                  >
+                    <StatusDot state={s.state} />
+                    <span className="truncate font-medium">{s.label}</span>
+                    {env && <span className="truncate text-[11.5px] text-muted">{env}</span>}
+                  </button>
+                  {/* A sibling of the tab, not inside it; reached by mouse, mod+w or middle-click. */}
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    aria-label={`Close ${s.label}`}
+                    onClick={() => onClose(s)}
+                    className={`relative mr-1 grid size-5 shrink-0 place-items-center rounded-md text-muted transition-[opacity,background-color,color] hover:bg-white/8 hover:text-fg focus-visible:opacity-100 ${
+                      active ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                    }`}
+                  >
+                    <X aria-hidden className="size-3" />
+                  </button>
+                </div>
               </Reorder.Item>
             )
           })}

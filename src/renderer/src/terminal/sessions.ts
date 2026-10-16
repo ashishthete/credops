@@ -15,6 +15,19 @@ export const sessionStore = createStore<SessionsState>({ sessions: [], activeId:
 /** Pending prompts, oldest first; the head is the one on screen. */
 export const promptStore = createStore<SessionPrompt[]>([])
 
+/** Sessions closed from here; late events and replies for them must not bring the tab back. */
+const removed = new Set<string>()
+/** Sessions with a reconnect in flight; a second click would only earn an error toast. */
+const reconnecting = new Set<string>()
+
+/** Empties both stores and forgets closed and reconnecting ids (the shell unmounting, tests). */
+export function resetSessions(): void {
+  sessionStore.set({ sessions: [], activeId: null, order: [] })
+  promptStore.set([])
+  removed.clear()
+  reconnecting.clear()
+}
+
 function upsert(meta: SessionMeta, activate = false): void {
   const s = sessionStore.get()
   const known = s.sessions.some((m) => m.id === meta.id)
@@ -25,7 +38,20 @@ function upsert(meta: SessionMeta, activate = false): void {
   })
 }
 
+/**
+ * Applies an open or reconnect reply. A state event that already landed for the same or a newer
+ * attempt is newer than the reply, so it stays; a reply for a session closed meanwhile is dropped.
+ */
+function applyReply(meta: SessionMeta, activate: boolean): boolean {
+  if (removed.has(meta.id)) return false
+  const known = sessionStore.get().sessions.find((m) => m.id === meta.id)
+  if (!known || known.attempt < meta.attempt) upsert(meta, activate)
+  else if (activate) setActive(meta.id)
+  return true
+}
+
 function remove(id: string): void {
+  removed.add(id)
   const s = sessionStore.get()
   const at = s.order.indexOf(id)
   if (at < 0) return
@@ -40,7 +66,9 @@ function remove(id: string): void {
 export function startSessionSync(): () => void {
   const offs = [
     api.on('session:data', ({ id, data, end }) => writeData(id, data, end)),
-    api.on('session:state', (meta) => upsert(meta)),
+    api.on('session:state', (meta) => {
+      if (!removed.has(meta.id)) upsert(meta)
+    }),
     api.on('session:prompt', (prompt) => {
       if (!promptStore.get().some((p) => p.promptId === prompt.promptId)) promptStore.set([...promptStore.get(), prompt])
     }),
@@ -53,7 +81,7 @@ export function startSessionSync(): () => void {
     .then((list) => {
       // Events that landed before the list keep their (newer) entry.
       const known = new Set(sessionStore.get().order)
-      for (const meta of list ?? []) if (!known.has(meta.id)) upsert(meta)
+      for (const meta of list ?? []) if (!known.has(meta.id) && !removed.has(meta.id)) upsert(meta)
     })
     .catch((err) => fail("Couldn't load your sessions", err))
   return () => offs.forEach((off) => off())
@@ -62,9 +90,8 @@ export function startSessionSync(): () => void {
 async function open(failTitle: string, request: () => Promise<SessionMeta>): Promise<string | undefined> {
   const meta = await attempt(failTitle, request)
   if (!meta) return undefined
-  // The state event may have beaten the reply here; upsert keeps one entry either way.
-  upsert(meta, true)
-  return meta.id
+  // The state event may have beaten the reply here; applyReply keeps the newer entry.
+  return applyReply(meta, true) ? meta.id : undefined
 }
 
 /** Opens an SSH session at the last-known terminal size; resolves undefined after a toast on failure. */
@@ -88,9 +115,16 @@ export async function closeSession(id: string): Promise<void> {
   remove(id)
 }
 
+/** One reconnect per session at a time; a reply for a tab closed meanwhile is dropped. */
 export async function reconnectSession(id: string): Promise<void> {
-  const meta = await attempt("Couldn't reconnect", () => api.invoke('session:reconnect', id))
-  if (meta) upsert(meta)
+  if (reconnecting.has(id)) return
+  reconnecting.add(id)
+  try {
+    const meta = await attempt("Couldn't reconnect", () => api.invoke('session:reconnect', id))
+    if (meta && sessionStore.get().order.includes(id)) applyReply(meta, false)
+  } finally {
+    reconnecting.delete(id)
+  }
 }
 
 export function setActive(id: string): void {

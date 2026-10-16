@@ -1,5 +1,5 @@
 import { AnimatePresence } from 'framer-motion'
-import { useState, useSyncExternalStore } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import { useNavigate } from 'react-router'
 import type { SessionMeta } from '../../../../shared/ssh'
 import { useInventory } from '../../inventory/store'
@@ -10,7 +10,7 @@ import { useShortcut } from '../../ui/shortcuts'
 import { ConnectOverlay } from './ConnectOverlay'
 import { QuickConnect } from './QuickConnect'
 import { SessionEnded } from './SessionEnded'
-import { TabStrip } from './TabStrip'
+import { paneId, TabStrip, tabId } from './TabStrip'
 
 export const useSessions = () => useSyncExternalStore(sessionStore.subscribe, sessionStore.get)
 
@@ -23,6 +23,9 @@ export function TerminalDeck({ visible }: { visible: boolean }) {
   const { sessions, order, activeId } = useSessions()
   const inventory = useInventory()
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
+  // The session a close was asked for, with the tab order at that moment, until focus is placed.
+  const [closing, setClosing] = useState<{ id: string; order: string[] } | null>(null)
+  const [refocus, setRefocus] = useState<{ id: string; order: string[] } | null>(null)
 
   const byId = new Map(sessions.map((s) => [s.id, s]))
   const tabs = order.flatMap((id) => byId.get(id) ?? [])
@@ -30,9 +33,12 @@ export function TerminalDeck({ visible }: { visible: boolean }) {
 
   const envName = (id: string | null) => (id ? inventory?.environments.find((e) => e.id === id)?.name : undefined)
 
-  // A live session asks first; one that is connecting, failed or closed goes at once.
+  // A live session asks first; one that is connecting, failed or closed goes at once. Either way
+  // focus is placed afterwards, since the button that had it may be gone.
   const requestClose = (meta: SessionMeta) => {
-    if (meta.state !== 'ready') return void closeSession(meta.id)
+    const target = { id: meta.id, order }
+    if (meta.state !== 'ready') return void closeSession(meta.id).then(() => setRefocus(target))
+    setClosing(target)
     setConfirm({
       title: `Close ${meta.label}?`,
       description: 'The session will end.',
@@ -40,6 +46,13 @@ export function TerminalDeck({ visible }: { visible: boolean }) {
       run: () => closeSession(meta.id),
     })
   }
+
+  // Runs after the dialog hands focus back (a layout effect), so this placement wins.
+  useEffect(() => {
+    if (!refocus) return
+    setRefocus(null)
+    focusAfterClose(refocus.id, refocus.order)
+  }, [refocus])
 
   useShortcut('mod+t', () => {
     navigate('/terminals')
@@ -68,9 +81,33 @@ export function TerminalDeck({ visible }: { visible: boolean }) {
           </div>
         </>
       )}
-      <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
+      <ConfirmDialog
+        request={confirm}
+        onClose={() => {
+          setConfirm(null)
+          setRefocus(closing)
+          setClosing(null)
+        }}
+      />
     </section>
   )
+}
+
+/**
+ * After a close: the tab itself if it is still open (a cancel or a failed close), else the next
+ * tab, else the one before, else QuickConnect's search. Focus that went somewhere real is left be.
+ */
+function focusAfterClose(id: string, before: string[]): void {
+  const now = document.activeElement
+  const lost = !now || now === document.body || !now.isConnected || now.closest('[data-session]')
+  if (!lost) return
+  const { order } = sessionStore.get()
+  const at = before.indexOf(id)
+  const next = order.includes(id)
+    ? id
+    : (before.slice(at + 1).find((x) => order.includes(x)) ?? before.slice(0, at).reverse().find((x) => order.includes(x)))
+  const el = next ? document.getElementById(tabId(next)) : document.querySelector<HTMLElement>('[aria-label="Connect to a host"]')
+  el?.focus()
 }
 
 /** Bound only while the deck is on screen, so mod+w never closes a tab you can't see. */
@@ -82,15 +119,31 @@ function TabShortcuts({ onClose }: { onClose: () => void }) {
 }
 
 function SessionPane({ meta, visible, onClose }: { meta: SessionMeta; visible: boolean; onClose: () => void }) {
-  const reconnect = () => void reconnectSession(meta.id)
+  // The store drops a second reconnect too; this only keeps the button honest while one runs.
+  const [reconnecting, setReconnecting] = useState(false)
+  const reconnect = () => {
+    if (reconnecting) return
+    setReconnecting(true)
+    void reconnectSession(meta.id).finally(() => setReconnecting(false))
+  }
   const overlay = meta.state === 'failed' || (meta.state === 'connecting' && meta.kind === 'ssh')
   return (
-    <div hidden={!visible} className="absolute inset-0 flex flex-col">
+    <div
+      hidden={!visible}
+      role="tabpanel"
+      id={paneId(meta.id)}
+      aria-labelledby={tabId(meta.id)}
+      className="absolute inset-0 flex flex-col"
+    >
       <div className="relative min-h-0 flex-1">
         <TerminalView sessionId={meta.id} visible={visible} />
-        <AnimatePresence>{visible && overlay && <ConnectOverlay key="overlay" meta={meta} onReconnect={reconnect} onClose={onClose} />}</AnimatePresence>
+        <AnimatePresence>
+          {visible && overlay && (
+            <ConnectOverlay key="overlay" meta={meta} onReconnect={reconnect} reconnecting={reconnecting} onClose={onClose} />
+          )}
+        </AnimatePresence>
       </div>
-      {meta.state === 'closed' && <SessionEnded meta={meta} onReconnect={reconnect} />}
+      {meta.state === 'closed' && <SessionEnded meta={meta} onReconnect={reconnect} reconnecting={reconnecting} />}
     </div>
   )
 }
