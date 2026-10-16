@@ -205,6 +205,36 @@ describe('session store', () => {
     stop()
   })
 
+  it('a state event from an older attempt than the stored entry is dropped', async () => {
+    mockBridge({ 'session:list': [] })
+    const stop = startSessionSync()
+    await state(meta('a', { kind: 'ssh', state: 'connecting', attempt: 2 }))
+    await state(meta('a', { kind: 'ssh', state: 'failed', attempt: 1 }))
+    expect(sessionStore.get().sessions[0]).toMatchObject({ state: 'connecting', attempt: 2 })
+    await state(meta('a', { kind: 'ssh', state: 'ready', attempt: 2 }))
+    expect(sessionStore.get().sessions[0]).toMatchObject({ state: 'ready', attempt: 2 })
+    stop()
+  })
+
+  it('loads prompts still pending in main, ahead of ones that arrived as events, minus settled ones', async () => {
+    const p = (promptId: string): SessionPrompt => ({ kind: 'password', promptId, sessionId: 'a', hopLabel: 'h', username: 'u' })
+    let reply!: (list: SessionPrompt[]) => void
+    const invoke = mockBridge({ 'session:list': [] })
+    const fallback = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (ch: string) =>
+      ch === 'session:prompts' ? new Promise<SessionPrompt[]>((r) => (reply = r)) : fallback(ch),
+    )
+    const stop = startSessionSync()
+    expect(invoke).toHaveBeenCalledWith('session:prompts')
+    act(() => {
+      emitBridgeEvent('session:prompt', p('3'))
+      emitBridgeEvent('session:promptDone', { promptId: '2' })
+    })
+    await act(async () => reply([p('1'), p('2'), p('3')]))
+    expect(promptStore.get().map((x) => x.promptId)).toEqual(['1', '3'])
+    stop()
+  })
+
   describe('open and reconnect replies', () => {
     /** Holds `channel`'s reply until release() is called. */
     function hold(invoke: ReturnType<typeof mockBridge>, channel: string) {

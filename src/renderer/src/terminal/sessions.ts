@@ -62,17 +62,27 @@ function remove(id: string): void {
   disposeTerminal(id)
 }
 
-/** Subscribes to main's session events and loads the open sessions; returns the unsubscribe. */
+/**
+ * Subscribes to main's session events and loads the open sessions and the prompts still waiting
+ * (sent while nothing was listening: locked, or before a reload); returns the unsubscribe.
+ */
 export function startSessionSync(): () => void {
+  /** Prompts settled since the sync started; a slower prompts reply must not bring them back. */
+  const done = new Set<string>()
   const offs = [
     api.on('session:data', ({ id, data, end }) => writeData(id, data, end)),
     api.on('session:state', (meta) => {
-      if (!removed.has(meta.id)) upsert(meta)
+      if (removed.has(meta.id)) return
+      // An event from an older attempt than the stored entry is stale (a reply crossed it).
+      const current = sessionStore.get().sessions.find((m) => m.id === meta.id)
+      if (current && meta.attempt < current.attempt) return
+      upsert(meta)
     }),
     api.on('session:prompt', (prompt) => {
       if (!promptStore.get().some((p) => p.promptId === prompt.promptId)) promptStore.set([...promptStore.get(), prompt])
     }),
     api.on('session:promptDone', ({ promptId }) => {
+      done.add(promptId)
       promptStore.set(promptStore.get().filter((p) => p.promptId !== promptId))
     }),
   ]
@@ -84,6 +94,17 @@ export function startSessionSync(): () => void {
       for (const meta of list ?? []) if (!known.has(meta.id) && !removed.has(meta.id)) upsert(meta)
     })
     .catch((err) => fail("Couldn't load your sessions", err))
+  api
+    .invoke('session:prompts')
+    .then((pending) => {
+      const queued = promptStore.get()
+      const missed = (pending ?? []).filter(
+        (p) => !done.has(p.promptId) && !removed.has(p.sessionId) && !queued.some((q) => q.promptId === p.promptId),
+      )
+      // These were sent before anything that arrived as an event, so they go first.
+      if (missed.length) promptStore.set([...missed, ...queued])
+    })
+    .catch((err) => fail("Couldn't load waiting prompts", err))
   return () => offs.forEach((off) => off())
 }
 
