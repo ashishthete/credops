@@ -35,6 +35,14 @@ describe('shell', () => {
     expect(within(nav).getByRole('link', { name: /Environments/ })).not.toHaveAttribute('aria-current')
   })
 
+  it('vaults is a real page, not a placeholder', async () => {
+    const user = userEvent.setup()
+    renderShell()
+    await user.click(within(screen.getByRole('navigation', { name: 'Sections' })).getByRole('link', { name: /Vaults/ }))
+    expect(await screen.findByRole('heading', { name: 'Vaults', level: 1 })).toBeInTheDocument()
+    expect(screen.queryByText('Coming in phase 2')).not.toBeInTheDocument()
+  })
+
   it('mod+6 jumps to Audit', async () => {
     renderShell()
     act(() => {

@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router'
 import { AuditPage } from '../pages/AuditPage'
 import { PlaceholderPage } from '../pages/PlaceholderPage'
+import { VaultsPage } from '../pages/vaults/VaultsPage'
 import { registerCommand } from '../ui/commands'
 import { fast, useMotionSafe } from '../ui/motion'
 import { useShortcut } from '../ui/shortcuts'
@@ -13,7 +14,6 @@ import { SECTION_ICONS, Sidebar } from './Sidebar'
 const PLACEHOLDERS = [
   { id: 'environments', phase: 3, blurb: 'Group hosts into environments' },
   { id: 'hosts', phase: 3, blurb: 'Your fleet, one click from a shell' },
-  { id: 'vaults', phase: 2, blurb: 'Keys and secrets, locked down' },
   { id: 'tunnels', phase: 5, blurb: 'Port forwards that stay up' },
   { id: 'deployments', phase: 8, blurb: 'Ansible runs, streamed live' },
 ] as const
@@ -54,6 +54,7 @@ export function AppShell() {
                 />
               )
             })}
+            <Route path="/vaults" element={<VaultsPage />} />
             <Route path="/audit" element={<AuditPage />} />
             <Route path="*" element={<Navigate to={SECTIONS[0].path} replace />} />
           </Routes>
