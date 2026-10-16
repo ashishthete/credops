@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CommandPalette, closeCommandPalette, registerCommand } from '../../src/renderer/src/ui/CommandPalette'
+import { getRecents } from '../../src/renderer/src/ui/commands'
 import { Toaster, clearToasts, toast } from '../../src/renderer/src/ui/Toaster'
 import { useShortcut } from '../../src/renderer/src/ui/shortcuts'
 
@@ -98,10 +99,92 @@ describe('command palette', () => {
   })
 })
 
-describe('toasts', () => {
+describe('palette polish', () => {
+  const cleanups: Array<() => void> = []
   afterEach(() => {
-    act(() => clearToasts())
+    act(() => closeCommandPalette())
+    cleanups.splice(0).forEach((fn) => fn())
+  })
+
+  it('Enter that confirms an IME candidate does not run a command', async () => {
+    const user = userEvent.setup()
+    const run = vi.fn()
+    cleanups.push(registerCommand({ id: 'go-audit', title: 'Go to Audit', section: 'Navigate', run }))
+    render(<CommandPalette />)
+    act(() => {
+      pressModK()
+    })
+    const input = await screen.findByRole('combobox')
+    await user.type(input, 'aud')
+
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true })
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 })
+
+    expect(run).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  it('holding mod+k does not flicker the palette', async () => {
+    render(<CommandPalette />)
+    act(() => {
+      pressModK()
+      fireEvent.keyDown(window, { key: 'k', metaKey: true, repeat: true })
+    })
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+  })
+
+  it('Tab keeps focus inside the palette so Esc still closes it', async () => {
+    const user = userEvent.setup()
+    render(
+      <>
+        <button>behind</button>
+        <CommandPalette />
+      </>,
+    )
+    act(() => {
+      pressModK()
+    })
+    const input = await screen.findByRole('combobox')
+    await user.tab()
+    expect(input).toHaveFocus()
+    await user.tab({ shift: true })
+    expect(input).toHaveFocus()
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('unregistered commands drop out of recents', async () => {
+    const user = userEvent.setup()
+    const unregisterA = registerCommand({ id: 'a', title: 'Alpha', section: 'Navigate', run: vi.fn() })
+    cleanups.push(registerCommand({ id: 'b', title: 'Bravo', section: 'Navigate', run: vi.fn() }))
+    render(<CommandPalette />)
+
+    for (const name of [/Alpha/, /Bravo/]) {
+      act(() => {
+        pressModK()
+      })
+      await user.click(await screen.findByRole('option', { name }))
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      if (name.source === 'Alpha') unregisterA()
+    }
+
+    expect(getRecents()).toContain('b')
+    expect(getRecents()).not.toContain('a')
+  })
+})
+
+describe('toasts', () => {
+  // Fake only the toast clock. Faking requestAnimationFrame too would strand framer-motion's
+  // frameloop whenever a test switches clocks mid-animation.
+  const useToastClock = () => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+  const elapse = (ms: number) =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(ms)
+    })
+
+  afterEach(() => {
     vi.useRealTimers()
+    act(() => clearToasts())
   })
 
   it('toasts stack and cap at 4', () => {
@@ -113,7 +196,7 @@ describe('toasts', () => {
   })
 
   it('error toasts persist', async () => {
-    vi.useFakeTimers()
+    useToastClock()
     render(<Toaster />)
     act(() => {
       toast({ title: 'Deploy failed', tone: 'error' })
@@ -122,12 +205,33 @@ describe('toasts', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Deploy failed')
     expect(screen.getByText('Saved')).toBeInTheDocument()
 
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(6000)
-    })
+    await elapse(6000)
+    vi.useRealTimers()
 
     expect(screen.getByText('Deploy failed')).toBeInTheDocument()
-    expect(screen.queryByText('Saved')).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('Saved')).not.toBeInTheDocument())
+  })
+
+  it('focus inside a toast pauses its timer', async () => {
+    useToastClock()
+    render(<Toaster />)
+    act(() => {
+      toast({ title: 'Saved' })
+    })
+    const dismiss = screen.getByRole('button', { name: 'Dismiss notification' })
+    act(() => dismiss.focus())
+
+    await elapse(6000)
+    // Give a dismissed toast real frames to finish exiting before checking it stayed.
+    vi.useRealTimers()
+    await act(() => new Promise((r) => setTimeout(r, 400)))
+    expect(screen.getByText('Saved')).toBeInTheDocument()
+
+    useToastClock()
+    act(() => dismiss.blur())
+    await elapse(6000)
+    vi.useRealTimers()
+    await waitFor(() => expect(screen.queryByText('Saved')).not.toBeInTheDocument())
   })
 })
 

@@ -54,8 +54,13 @@ function PaletteDialog() {
   }
 
   const onKeyDown = (e: KeyboardEvent) => {
+    // Keys pressed while an IME is composing (e.g. Enter confirming a candidate) belong to the IME.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return
     const n = results.length
-    if (e.key === 'Escape') {
+    if (e.key === 'Tab') {
+      // The input is the dialog's only tab stop; keep focus trapped inside the modal.
+      e.preventDefault()
+    } else if (e.key === 'Escape') {
       e.preventDefault()
       closeCommandPalette()
     } else if (e.key === 'ArrowDown' && n) {
@@ -171,6 +176,7 @@ function PaletteRow({ id, result, active, motionSafe, onHover, onRun }: PaletteR
         role="option"
         aria-selected={active}
         onMouseMove={active ? undefined : onHover}
+        onMouseDown={(e) => e.preventDefault()}
         onClick={onRun}
         className={`relative flex h-10 cursor-default items-center gap-3 rounded-lg px-3 text-sm select-none ${
           active ? 'text-fg' : 'text-fg/80'

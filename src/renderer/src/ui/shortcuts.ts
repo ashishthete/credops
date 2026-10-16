@@ -69,7 +69,8 @@ export function useShortcut(combo: string, handler: () => void): void {
     const normalized = combo.toLowerCase()
     const parsed = parseCombo(normalized)
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || !matches(parsed, e)) return
+      // Skip IME composition and auto-repeat, so holding a toggle like ⌘K doesn't flicker.
+      if (e.defaultPrevented || e.isComposing || e.repeat || !matches(parsed, e)) return
       if (!ALLOWED_IN_INPUTS.has(normalized) && isEditable(e.target)) return
       e.preventDefault()
       handlerRef.current()

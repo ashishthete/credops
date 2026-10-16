@@ -82,7 +82,9 @@ export function getRecents(): readonly string[] {
 }
 
 export function markRecent(id: string): void {
-  recents = [id, ...recents.filter((r) => r !== id)].slice(0, MAX_RECENTS)
+  // Drop ids that are no longer registered so they don't hold recent slots.
+  const registered = new Set(commandStore.get().map((c) => c.id))
+  recents = [id, ...recents.filter((r) => r !== id && registered.has(r))].slice(0, MAX_RECENTS)
   try {
     localStorage.setItem(RECENTS_KEY, JSON.stringify(recents))
   } catch {

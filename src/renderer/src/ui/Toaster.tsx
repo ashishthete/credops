@@ -83,7 +83,9 @@ export function Toaster() {
 
 function ToastCard({ item }: { item: ToastItem }) {
   const motionSafe = useMotionSafe()
-  const [paused, setPaused] = useState(false)
+  const [hovered, setHovered] = useState(false)
+  const [focused, setFocused] = useState(false)
+  const paused = hovered || focused
   const remaining = useRef(DURATION_MS)
   const persistent = item.tone === 'error'
   const Icon = icons[item.tone]
@@ -102,8 +104,12 @@ function ToastCard({ item }: { item: ToastItem }) {
     <motion.div
       layout={motionSafe ? 'position' : false}
       role={persistent ? 'alert' : 'status'}
-      onMouseEnter={() => setPaused(true)}
-      onMouseLeave={() => setPaused(false)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocus={() => setFocused(true)}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget)) setFocused(false)
+      }}
       initial={motionSafe ? { opacity: 0, y: 24, scale: 0.95 } : { opacity: 0 }}
       animate={motionSafe ? { opacity: 1, y: 0, scale: 1 } : { opacity: 1 }}
       exit={motionSafe ? { opacity: 0, x: 48, scale: 0.96, transition: fast } : { opacity: 0, transition: fast }}
