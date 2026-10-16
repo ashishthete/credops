@@ -62,13 +62,21 @@ describe('vault schema', () => {
           "INSERT INTO ssh_keys(id,vault_id,label,key_type,public_key,fingerprint,source,file_path,created_at,updated_at) VALUES ('k',?,'l','ssh-ed25519','p','f','file',NULL,'t','t')",
         )
         .run(v),
-    ).toThrow()
+    ).toThrow(/CHECK constraint failed/)
     expect(() =>
       db
         .prepare(
           "INSERT INTO identities(id,vault_id,label,username,auth,password_enc,created_at,updated_at) VALUES ('i',?,'l','u','password',NULL,'t','t')",
         )
         .run(v),
-    ).toThrow()
+    ).toThrow(/CHECK constraint failed/)
+    // Control: a well-formed row of each shape is accepted.
+    db.prepare(
+      "INSERT INTO ssh_keys(id,vault_id,label,key_type,public_key,fingerprint,source,file_path,created_at,updated_at) VALUES ('k',?,'l','ssh-ed25519','p','f','file','/k','t','t')",
+    ).run(v)
+    db.prepare(
+      "INSERT INTO identities(id,vault_id,label,username,auth,ssh_key_id,created_at,updated_at) VALUES ('i',?,'l','u','key','k','t','t')",
+    ).run(v)
+    expect(db.prepare('SELECT COUNT(*) AS n FROM identities').get()).toEqual({ n: 1 })
   })
 })

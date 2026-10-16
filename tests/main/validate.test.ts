@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { args, InvalidArgs, v } from '../../src/main/ipc/validate'
-import { asFilter } from '../../src/main/ipc/validators'
+import { asFilter, VALIDATORS } from '../../src/main/ipc/validators'
+import { DEFAULT_VAULT_ID, MAX_MASTER_PASSWORD } from '../../src/shared/vault'
 
 describe('validate', () => {
   it('checks shapes without echoing values', () => {
@@ -45,5 +46,21 @@ describe('validate', () => {
     }
     expect(asFilter(full, '[0]')).toEqual(full)
     expect(asFilter({}, '[0]')).toEqual({})
+  })
+
+  it('vault channels', () => {
+    const V = VALIDATORS
+    expect(V['vault:unlock'](['pw'])).toEqual(['pw'])
+    expect(() => V['vault:unlock']([''])).toThrow(InvalidArgs)
+    expect(() => V['vault:setup'](['x'.repeat(MAX_MASTER_PASSWORD + 1)])).toThrow(/at most 1024/)
+    expect(() => V['vault:changePassword'](['a'])).toThrow(/\[1\] must be a string/)
+    expect(V['vault:create']([{ name: '  Prod ', color: '#A0b1C2' }])).toEqual([{ name: 'Prod', color: '#A0b1C2' }])
+    expect(() => V['vault:create']([{ name: 'Prod', color: 'red' }])).toThrow(/color has an invalid format/)
+    expect(() => V['vault:create']([{ name: ' ', color: '#000000' }])).toThrow(/name must be at least 1/)
+    expect(() => V['vault:create']([{ name: 'x'.repeat(65), color: '#000000' }])).toThrow(InvalidArgs)
+    expect(V['vault:update']([DEFAULT_VAULT_ID, { name: 'New' }])).toEqual([DEFAULT_VAULT_ID, { name: 'New' }])
+    expect(() => V['vault:update']([DEFAULT_VAULT_ID, { wrapped_key: 'x' }])).toThrow(/not an allowed key/)
+    expect(() => V['vault:delete'](['../etc'])).toThrow(/must be a uuid/)
+    expect(V['vault:lock'](['extra'])).toEqual([])
   })
 })

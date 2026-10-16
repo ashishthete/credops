@@ -44,6 +44,22 @@ describe('vault crypto', () => {
     expect(await deriveKek('Pässword1!'.normalize('NFD'), params)).toEqual(k1)
   })
 
+  it('rejects unusable kdf params', async () => {
+    const good = newKdfParams({ alg: 'scrypt', N: 2 ** 10, r: 8, p: 1 })
+    const bad = [
+      { ...good, alg: 'pbkdf2' },
+      { ...good, N: 2 ** 9 },
+      { ...good, salt: Buffer.alloc(8).toString('base64') },
+      { ...good, salt: Buffer.alloc(17).toString('base64') },
+    ] as (typeof good)[]
+    for (const params of bad) {
+      const err = await deriveKek('Pässword1!', params).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(Error)
+      expect((err as Error).message).toBe('invalid kdf params')
+    }
+    await expect(deriveKek('Pässword1!', good)).resolves.toHaveLength(32)
+  })
+
   it('default params', () => {
     expect(DEFAULT_KDF).toEqual({ alg: 'scrypt', N: 131072, r: 8, p: 1 })
   })

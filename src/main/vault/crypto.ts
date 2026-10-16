@@ -22,7 +22,21 @@ export function newKdfParams(base: Omit<KdfParams, 'salt'> = DEFAULT_KDF): KdfPa
   return { ...base, salt: randomBytes(SALT_BYTES).toString('base64') }
 }
 
+const MIN_N = 2 ** 10
+
+/** Params come from the db: refuse anything weaker than we would write. The message carries no values. */
+function usableParams(params: KdfParams): boolean {
+  return (
+    params.alg === 'scrypt' &&
+    Number.isInteger(params.N) &&
+    params.N >= MIN_N &&
+    typeof params.salt === 'string' &&
+    Buffer.from(params.salt, 'base64').length === SALT_BYTES
+  )
+}
+
 export function deriveKek(password: string, params: KdfParams): Promise<Buffer> {
+  if (!usableParams(params)) return Promise.reject(new Error('invalid kdf params'))
   const pw = Buffer.from(password.normalize('NFC'), 'utf8')
   return new Promise((resolve, reject) => {
     scrypt(

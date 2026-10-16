@@ -5,9 +5,11 @@ import { AuditLog } from './audit/audit-log'
 import { openDatabase, type Db } from './db/connection'
 import { createAppHandlers } from './ipc/handlers/app'
 import { createAuditHandlers } from './ipc/handlers/audit'
+import { createVaultHandlers } from './ipc/handlers/vault'
 import { isTrustedSender, registerHandlers } from './ipc/register'
 import { VALIDATORS } from './ipc/validators'
 import { redact } from './security/redact'
+import { VaultService } from './vault/vault-service'
 import { devRendererUrl, shouldAllowNavigation, windowOptions } from './window'
 
 // Keep dev data apart from the packaged app's (same name, same userData otherwise).
@@ -19,6 +21,7 @@ const devServerUrl = devRendererUrl(app.isPackaged, process.env)
 let mainWindow: BrowserWindow | null = null
 let db: Db | null = null
 let audit: AuditLog | null = null
+let vault: VaultService | null = null
 let quitAudited = false
 
 function createWindow(): void {
@@ -58,9 +61,12 @@ if (!app.requestSingleInstanceLock()) {
       session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
       session.defaultSession.setPermissionCheckHandler(() => false)
       db = openDatabase(join(app.getPath('userData'), 'opsdeck.db'))
-      audit = new AuditLog(db)
+      // Decrypted values are known only while unlocked; the vault drops them on lock.
+      const knownSecrets = (): readonly string[] => vault?.knownValues() ?? []
+      audit = new AuditLog(db, { knownSecrets })
       audit.append({ action: 'app.start', outcome: 'info', details: { version: app.getVersion() } })
       const log = audit
+      vault = new VaultService(db, log)
       const rendererFile = join(__dirname, '../renderer/index.html')
       registerHandlers(
         ipcMain,
@@ -80,9 +86,10 @@ if (!app.requestSingleInstanceLock()) {
               return res.canceled ? undefined : res.filePath
             },
           }),
+          ...createVaultHandlers(vault),
         },
         (url) => isTrustedSender(url, { devServerUrl, rendererFile }),
-        { validators: VALIDATORS, knownSecrets: () => [] },
+        { validators: VALIDATORS, knownSecrets },
       )
       createWindow()
     })
@@ -97,6 +104,11 @@ if (!app.requestSingleInstanceLock()) {
     if (!audit || quitAudited) return
     quitAudited = true
     try {
+      vault?.lock('quit')
+    } catch (err) {
+      console.error('Failed to lock vaults on quit:', err)
+    }
+    try {
       audit.append({ action: 'app.quit', outcome: 'info' })
     } catch (err) {
       console.error('Failed to audit app.quit:', err)
@@ -104,6 +116,7 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   app.on('will-quit', () => {
+    vault = null
     audit = null
     db?.close()
     db = null

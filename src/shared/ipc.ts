@@ -1,4 +1,5 @@
 import type { AuditEvent, AuditFilter, ChainVerification } from './audit'
+import type { UnlockResult, VaultInput, VaultMeta, VaultStatus } from './vault'
 
 // Mirrors Platform the renderer tsconfig has no node types.
 export type Platform =
@@ -26,12 +27,35 @@ export interface IpcContract {
   'audit:list': { args: [filter: AuditFilter]; result: AuditEvent[] }
   'audit:verify': { args: []; result: ChainVerification }
   'audit:exportCsv': { args: [filter: AuditFilter]; result: { path: string } | null }
+  'vault:status': { args: []; result: VaultStatus }
+  'vault:setup': { args: [password: string]; result: VaultStatus }
+  'vault:unlock': { args: [password: string]; result: UnlockResult }
+  'vault:lock': { args: []; result: void }
+  'vault:changePassword': { args: [current: string, next: string]; result: UnlockResult }
+  'vault:list': { args: []; result: VaultMeta[] }
+  'vault:create': { args: [input: VaultInput]; result: VaultMeta }
+  'vault:update': { args: [id: string, patch: Partial<VaultInput>]; result: VaultMeta }
+  'vault:delete': { args: [id: string]; result: void }
 }
 
 export type Channel = keyof IpcContract
 
 // Every key of IpcContract, listed literally (the preload needs it at runtime).
-export const CHANNELS = ['app:info', 'audit:list', 'audit:verify', 'audit:exportCsv'] as const satisfies readonly Channel[]
+export const CHANNELS = [
+  'app:info',
+  'audit:list',
+  'audit:verify',
+  'audit:exportCsv',
+  'vault:status',
+  'vault:setup',
+  'vault:unlock',
+  'vault:lock',
+  'vault:changePassword',
+  'vault:list',
+  'vault:create',
+  'vault:update',
+  'vault:delete',
+] as const satisfies readonly Channel[]
 
 // Fails typecheck if IpcContract gains a channel that CHANNELS does not list.
 type MissingChannels = Exclude<Channel, (typeof CHANNELS)[number]>
