@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { Fingerprint } from 'lucide-react'
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useState, type ReactNode } from 'react'
 import type { VaultStatus } from '../../../shared/vault'
 import { api } from '../lib/api'
 import { Button } from '../ui/Button'
@@ -8,13 +8,22 @@ import { closeCommandPalette } from '../ui/commands'
 import { fast, spring, useMotionSafe, useShake } from '../ui/motion'
 import { toast } from '../ui/Toaster'
 import { SetupCard } from './SetupCard'
-import { refreshVaultStatus, useVaultStatus, vaultStatusStore } from './status'
-import { peekUserLock, resolveUnlock, takeUserLock } from './unlock'
+import {
+  peekLockReason,
+  refreshVaultStatus,
+  takeLockReason,
+  useVaultStatus,
+  useVaultStatusError,
+  vaultStatusStore,
+} from './status'
+import { resolveUnlock } from './unlock'
 import { LockBadge, UnlockCard } from './UnlockCard'
 import { closeVaultSettings } from './VaultSettingsDialog'
 
 /** How long the open padlock stays on screen before the shell is revealed. */
 const CELEBRATE_MS = 360
+/** How long the splash waits on a failing vault:status before offering Retry. */
+const SPLASH_ERROR_MS = 3000
 
 /** 'ready': the post-setup step; 'celebrate': the open padlock after an unlock. Both keep the gate up. */
 type Hold = 'none' | 'ready' | 'celebrate'
@@ -40,26 +49,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const status = useVaultStatus()
   const motionSafe = useMotionSafe()
   const [hold, setHold] = useState<Hold>('none')
-  // Bumped on every lock, so the unlock card (and its one Touch ID try) starts fresh.
-  const [session, setSession] = useState(0)
-  const [lockedByUser, setLockedByUser] = useState(false)
-  const [wasUnlocked, setWasUnlocked] = useState<boolean | null>(null)
-
-  // Derived during render, not in an effect: the fresh unlock card's own mount effect (which may
-  // fire Touch ID) runs before any effect here, so it must already see the right autoQuick.
-  if (status && status.unlocked !== wasUnlocked) {
-    setWasUnlocked(status.unlocked)
-    if (!status.unlocked && wasUnlocked) {
-      setHold('none')
-      setSession((n) => n + 1)
-      setLockedByUser(peekUserLock())
-    }
-  }
-
-  useLockWatcher(status, () => {
-    closeCommandPalette()
-    closeVaultSettings()
-  })
+  const lock = useLockTransitions(status, () => setHold('none'))
 
   useEffect(() => {
     if (hold !== 'celebrate') return
@@ -98,8 +88,8 @@ export function AuthGate({ children }: { children: ReactNode }) {
             key="gate"
             status={status}
             hold={hold}
-            session={session}
-            autoQuick={!lockedByUser}
+            session={lock.session}
+            autoQuick={!lock.byUser}
             onSetUp={() => {
               setHold('ready')
               resolveUnlock()
@@ -125,6 +115,7 @@ interface GateScreenProps {
 
 function GateScreen({ status, hold, session, autoQuick, onSetUp, onUnlocked, onContinue }: GateScreenProps) {
   const motionSafe = useMotionSafe()
+  const statusError = useSplashError(status)
   const titleId = useId()
   const [shake, setShake] = useState(0)
   const shakeScope = useShake(shake)
@@ -132,7 +123,11 @@ function GateScreen({ status, hold, session, autoQuick, onSetUp, onUnlocked, onC
   let title = ''
   let description = ''
   let body: ReactNode = null
-  if (!status) {
+  if (!status && statusError) {
+    title = "Couldn't open your vaults"
+    description = statusError
+    body = <RetryButton />
+  } else if (!status) {
     // First status fetch in flight: just the closed padlock.
   } else if (hold === 'ready') {
     title = 'Your vaults are ready'
@@ -201,6 +196,36 @@ function GateScreen({ status, hold, session, autoQuick, onSetUp, onUnlocked, onC
   )
 }
 
+/** The vault:status error, but only once it has kept failing for SPLASH_ERROR_MS with no status. */
+function useSplashError(status: VaultStatus | null): string | null {
+  const error = useVaultStatusError()
+  const [waited, setWaited] = useState(false)
+  const failing = !status && !!error
+  useEffect(() => {
+    if (!failing) return
+    const timer = setTimeout(() => setWaited(true), SPLASH_ERROR_MS)
+    return () => {
+      clearTimeout(timer)
+      setWaited(false)
+    }
+  }, [failing])
+  return failing && waited ? error : null
+}
+
+function RetryButton() {
+  const [busy, setBusy] = useState(false)
+  const retry = async () => {
+    setBusy(true)
+    await refreshVaultStatus().catch(() => undefined)
+    setBusy(false)
+  }
+  return (
+    <Button autoFocus loading={busy} onClick={() => void retry()} className="w-full">
+      Retry
+    </Button>
+  )
+}
+
 /** After setup: offer Touch ID (the passkey path) once, then into the app. */
 function ReadyStep({ status, onContinue }: { status: VaultStatus; onContinue: () => void }) {
   const [busy, setBusy] = useState(false)
@@ -243,22 +268,48 @@ function ReadyStep({ status, onContinue }: { status: VaultStatus; onContinue: ()
   )
 }
 
-/** Fires `onLock` when the vaults go from unlocked to locked, and announces locks the user didn't ask for. */
-function useLockWatcher(status: VaultStatus | null, onLock: () => void) {
-  const wasUnlocked = useRef<boolean | null>(null)
-  const onLockRef = useRef(onLock)
+interface LockTransitions {
+  /** Bumped on every unlocked -> locked change, so the unlock card (and its Touch ID try) starts fresh. */
+  session: number
+  /** Whether that lock was the user's own (reason 'manual'). */
+  byUser: boolean
+  wasUnlocked: boolean | null
+}
+
+/**
+ * Tracks unlocked -> locked changes. The change is derived during render, not in an effect: the
+ * fresh unlock card's mount effect (which may fire Touch ID) runs before any effect here, so it
+ * must already see `byUser`. The side effects (one "Vaults locked" toast, closing overlays) run
+ * once per lock in an effect.
+ */
+function useLockTransitions(status: VaultStatus | null, onLock: () => void): LockTransitions {
+  const [t, setT] = useState<LockTransitions>({ session: 0, byUser: false, wasUnlocked: null })
+  if (status && status.unlocked !== t.wasUnlocked) {
+    const locked = !status.unlocked && t.wasUnlocked === true
+    setT({
+      session: locked ? t.session + 1 : t.session,
+      byUser: locked ? peekLockReason() === 'manual' : t.byUser,
+      wasUnlocked: status.unlocked,
+    })
+    if (locked) onLock()
+  }
+
   useEffect(() => {
-    onLockRef.current = onLock
-  })
+    if (!t.session) return
+    takeLockReason()
+    toast(
+      t.byUser
+        ? { title: 'Vaults locked', tone: 'info' }
+        : { title: 'Vaults locked', description: 'Locked automatically.', tone: 'info' },
+    )
+    closeCommandPalette()
+    closeVaultSettings()
+  }, [t.session, t.byUser])
+
   useEffect(() => {
-    if (!status) return
-    if (status.unlocked) {
-      takeUserLock()
-    } else if (wasUnlocked.current) {
-      const byUser = takeUserLock()
-      if (!byUser) toast({ title: 'Vaults locked', description: 'Locked automatically.', tone: 'info' })
-      onLockRef.current()
-    }
-    wasUnlocked.current = status.unlocked
-  }, [status])
+    // A reason noted while already locked (nothing changed) must not leak into the next lock.
+    if (t.wasUnlocked) takeLockReason()
+  }, [t.wasUnlocked])
+
+  return t
 }

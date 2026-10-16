@@ -189,6 +189,7 @@ function ChangePasswordForm({ onWrong }: { onWrong: () => void }) {
     setBusy(true)
     setError(null)
     try {
+      // This closure holds both passwords until the retry (or a dismissed gate) lets it go; it is never stored.
       const res = await withUnlock(() => api.invoke('vault:changePassword', current, next))
       if (!res) return
       if (res.ok) {

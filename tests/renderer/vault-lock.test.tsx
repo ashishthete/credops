@@ -31,6 +31,8 @@ function fakeVault(start: Partial<VaultStatus> = {}, results: Record<string, unk
     if (channel === 'vault:status') return { ...state }
     if (channel === 'vault:lock') {
       state.unlocked = false
+      // As in Electron: main's push reaches the renderer before the invoke's reply does.
+      emitBridgeEvent('vault:locked', { reason: 'manual' })
       return undefined
     }
     if (channel in results) {
@@ -62,6 +64,9 @@ function renderApp() {
 
 const gate = (name: string) => screen.findByRole('region', { name })
 const shellNav = () => screen.queryByRole('navigation')
+
+/** Lets pending promises and effects settle with real timers. */
+const flushReal = () => act(() => new Promise((r) => setTimeout(r, 20)))
 
 const flush = () => act(async () => {
   await vi.advanceTimersByTimeAsync(0)
@@ -308,6 +313,9 @@ describe('sidebar lock button', () => {
     expect(await screen.findByText('Vaults locked')).toBeInTheDocument()
     await gate('Unlock vaults')
     await waitFor(() => expect(shellNav()).not.toBeInTheDocument())
+    // Exactly one announcement, and not the automatic one.
+    expect(screen.getAllByText('Vaults locked')).toHaveLength(1)
+    expect(screen.queryByText('Locked automatically.')).not.toBeInTheDocument()
   })
 
   it('a manual lock does not pop Touch ID', async () => {
@@ -316,7 +324,24 @@ describe('sidebar lock button', () => {
     renderApp()
     await user.click(await screen.findByRole('button', { name: 'Lock vaults' }))
     expect(await screen.findByRole('button', { name: 'Unlock with Touch ID' })).toBeInTheDocument()
+    await flushReal()
     expect(invoke).not.toHaveBeenCalledWith('vault:unlockQuick')
+    expect(screen.getAllByText('Vaults locked')).toHaveLength(1)
+    expect(screen.queryByText('Locked automatically.')).not.toBeInTheDocument()
+  })
+
+  it('an automatic lock auto-prompts Touch ID and says so', async () => {
+    const { invoke, state } = fakeVault(
+      { unlocked: true, quickUnlock: 'touchId' },
+      { 'vault:unlockQuick': [{ ok: false, reason: 'cancelled', retryAfterMs: 0 }] },
+    )
+    renderApp()
+    await screen.findByRole('button', { name: 'Lock vaults' })
+    state.unlocked = false
+    act(() => emitBridgeEvent('vault:locked', { reason: 'idle' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('vault:unlockQuick'))
+    expect(screen.getAllByText('Vaults locked')).toHaveLength(1)
+    expect(screen.getByText('Locked automatically.')).toBeInTheDocument()
   })
 
   it('Meta+L locks', async () => {
@@ -329,6 +354,8 @@ describe('sidebar lock button', () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('vault:lock'))
     expect(await screen.findByText('Vaults locked')).toBeInTheDocument()
     await gate('Unlock vaults')
+    expect(screen.getAllByText('Vaults locked')).toHaveLength(1)
+    expect(screen.queryByText('Locked automatically.')).not.toBeInTheDocument()
   })
 
   it('auto-lock (status polling) returns to the gate', async () => {

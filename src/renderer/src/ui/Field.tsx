@@ -1,7 +1,7 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronDown, Eye, EyeOff } from 'lucide-react'
 import { useId, useState, type ComponentProps, type ReactNode } from 'react'
-import { fast } from './motion'
+import { fast, useMotionSafe } from './motion'
 
 interface FieldChrome {
   label: string
@@ -27,6 +27,7 @@ function Shell({
   hint,
   children,
 }: FieldChrome & { id: string; msgId: string; children: ReactNode }) {
+  const motionSafe = useMotionSafe()
   return (
     <div className="flex flex-col gap-1.5">
       <label htmlFor={id} className="text-[12.5px] font-medium text-fg/90">
@@ -40,8 +41,8 @@ function Shell({
             key={typeof (error || hint) === 'string' ? (error || (hint as string)) : 'hint'}
             id={msgId}
             aria-live="polite"
-            initial={{ opacity: 0, y: -2 }}
-            animate={{ opacity: 1, y: 0 }}
+            initial={motionSafe ? { opacity: 0, y: -2 } : { opacity: 0 }}
+            animate={motionSafe ? { opacity: 1, y: 0 } : { opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={fast}
             className={`text-[12px] leading-4 transition-colors ${error ? 'text-err' : 'text-muted'}`}

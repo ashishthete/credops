@@ -1,7 +1,7 @@
 import { VAULT_LOCKED } from '../../../shared/vault'
 import { api } from '../lib/api'
 import { toast } from '../ui/Toaster'
-import { refreshVaultStatus, vaultStatusStore } from './status'
+import { markLocked, noteLockReason, refreshVaultStatus, vaultStatusStore } from './status'
 
 // Callers waiting for the gate to be passed; a locked status is what puts the gate up.
 let waiters: Array<(ok: boolean) => void> = []
@@ -54,31 +54,17 @@ export async function withUnlock<T>(fn: () => Promise<T>): Promise<T | undefined
   return fn()
 }
 
-// Set once the user's own lock went through, so the lock watcher does not announce it twice.
-let userLockPending = false
-
-/** True (once) when the last lock was the user's; the watcher also calls it on every unlocked status. */
-/** Reads the flag without clearing it, for decisions made during render. */
-export const peekUserLock = (): boolean => userLockPending
-
-export function takeUserLock(): boolean {
-  const pending = userLockPending
-  userLockPending = false
-  return pending
-}
-
-/** Locks every vault and says so. */
+/** Locks every vault. The gate announces it once the locked status (or main's push) lands. */
 export async function lockVaults(): Promise<void> {
+  // Set before the await: main's 'vault:locked' push (reason 'manual') may land first, and either
+  // way the gate must know the user asked for this.
+  noteLockReason('manual')
   try {
     await api.invoke('vault:lock')
   } catch (err) {
+    noteLockReason(null)
     toast({ title: "Couldn't lock vaults", description: err instanceof Error ? err.message : String(err), tone: 'error' })
     return
   }
-  userLockPending = true
-  toast({ title: 'Vaults locked', tone: 'info' })
-  await refreshVaultStatus().catch(() => {
-    const s = vaultStatusStore.get()
-    if (s) vaultStatusStore.set({ ...s, unlocked: false, corruptVaultIds: [] })
-  })
+  await refreshVaultStatus().catch(markLocked)
 }
