@@ -53,7 +53,7 @@ const key = (k: string, over: Partial<KeyboardEventInit> = {}) =>
   })
 const calls = (invoke: ReturnType<typeof mockBridge>, channel: string) =>
   (invoke.mock.calls as unknown[][]).filter((c) => c[0] === channel)
-const tab = (label: string) => screen.getByRole('tab', { name: new RegExp(label) })
+const tab = (label: string) => screen.getByRole('tab', { name: new RegExp(`^${label}\\b`) })
 
 async function renderShell(path = '/terminals', results: Record<string, unknown> = {}) {
   const invoke = mockBridge({ 'session:attach': { meta: {}, buffer: '', end: 0 }, ...results })
@@ -143,7 +143,6 @@ describe('terminals page', () => {
     state(ssh('db', { state: 'failed', error: { code: 'refused', message: 'db refused the connection' } }))
     state(ssh('old', { state: 'closed' }))
     await flush()
-
     const web = tab('web')
     expect(web).toHaveTextContent('Staging')
     const stripe = (label: string) => tab(label).closest('[data-session]')!.querySelector('[data-stripe]') as HTMLElement
@@ -154,6 +153,11 @@ describe('terminals page', () => {
     expect(dot('local')).toHaveAttribute('data-state', 'ready')
     expect(dot('db')).toHaveAttribute('data-state', 'failed')
     expect(dot('old')).toHaveAttribute('data-state', 'closed')
+    // The dot is decorative; the state is in each tab's accessible name.
+    expect(web).toHaveAccessibleName('web, Staging, Connecting')
+    expect(tab('local')).toHaveAccessibleName('local, Connected')
+    expect(tab('db')).toHaveAccessibleName('db, Failed')
+    expect(tab('old')).toHaveAccessibleName('old, Closed')
   })
 
   it('connect overlay shows the hop chain and marks the failed hop', async () => {
@@ -408,11 +412,14 @@ describe('terminals page', () => {
         expect(panel).toHaveAttribute('role', 'tabpanel')
         expect(panel).toHaveAttribute('aria-labelledby', t.id)
       }
-      expect(screen.getByRole('tabpanel', { name: 'a' })).toBeVisible()
+      expect(screen.getByRole('tabpanel', { name: 'a, Connected' })).toBeVisible()
       expect([a, b, c].map((t) => t.tabIndex)).toEqual([0, -1, -1])
 
+      // The close button follows the strip's one tab stop: Tab from the active tab reaches it.
       const close = screen.getByRole('button', { name: 'Close a' })
-      expect(close.tabIndex).toBe(-1)
+      expect(close.tabIndex).toBe(0)
+      expect(['Close b', 'Close c'].map((n) => screen.getByRole('button', { name: n }).tabIndex)).toEqual([-1, -1])
+      expect(a.compareDocumentPosition(close) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
       expect(a.contains(close)).toBe(false)
       expect(close.closest('[role="tab"]')).toBeNull()
 
@@ -421,6 +428,7 @@ describe('terminals page', () => {
       expect(b).toHaveFocus()
       expect(b).toHaveAttribute('aria-selected', 'true')
       expect([a, b, c].map((t) => t.tabIndex)).toEqual([-1, 0, -1])
+      expect(['Close a', 'Close b'].map((n) => screen.getByRole('button', { name: n }).tabIndex)).toEqual([-1, 0])
       fireEvent.keyDown(b, { key: 'End' })
       expect(c).toHaveFocus()
       fireEvent.keyDown(c, { key: 'ArrowRight' }) // wraps
@@ -430,6 +438,21 @@ describe('terminals page', () => {
       fireEvent.keyDown(c, { key: 'Home' })
       expect(a).toHaveFocus()
       expect(sessionStore.get().activeId).toBe('a')
+    })
+
+    it('Delete on a focused tab closes it like the close button', async () => {
+      await renderShell()
+      state(failed('a'))
+      state(meta('b'))
+      await settle()
+      tab('a').focus()
+      fireEvent.keyDown(tab('a'), { key: 'Delete' })
+      await flush()
+      expect(screen.queryByRole('tab', { name: /^a / })).not.toBeInTheDocument()
+      expect(tab('b')).toHaveFocus()
+      // A live tab asks first, as the close button does.
+      fireEvent.keyDown(tab('b'), { key: 'Delete' })
+      expect(screen.getByRole('dialog', { name: 'Close b?' })).toBeInTheDocument()
     })
 
     it('after a close by click, focus moves to the next tab, else the previous, else QuickConnect', async () => {

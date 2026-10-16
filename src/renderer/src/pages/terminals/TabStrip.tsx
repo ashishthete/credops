@@ -13,7 +13,18 @@ const DOT: Record<SessionState, string> = {
   closed: 'bg-muted/60',
 }
 
-/** A session's status: amber (pulsing when motion is safe) while connecting, then green, red or grey. */
+/** What the dot means, in words: part of the tab's accessible name. */
+export const STATE_LABEL: Record<SessionState, string> = {
+  connecting: 'Connecting',
+  ready: 'Connected',
+  failed: 'Failed',
+  closed: 'Closed',
+}
+
+/**
+ * A session's status: amber (pulsing when motion is safe) while connecting, then green, red or grey.
+ * Decorative; the tab carries STATE_LABEL for assistive technology.
+ */
 export function StatusDot({ state }: { state: SessionState }) {
   const motionSafe = useMotionSafe()
   return (
@@ -54,6 +65,10 @@ export function TabStrip({ sessions, activeId, envName, onSelect, onClose, onNew
   const stop = sessions.some((s) => s.id === activeId) ? activeId : sessions[0]?.id
 
   const onTabKey = (e: KeyboardEvent, at: number) => {
+    if (e.key === 'Delete' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault()
+      return onClose(sessions[at])
+    }
     const step = STEP[e.key]
     if (!step || e.metaKey || e.ctrlKey || e.altKey) return
     e.preventDefault()
@@ -131,6 +146,7 @@ export function TabStrip({ sessions, activeId, envName, onSelect, onClose, onNew
                     aria-controls={paneId(s.id)}
                     aria-selected={active}
                     tabIndex={s.id === stop ? 0 : -1}
+                    aria-label={[s.label, env, STATE_LABEL[s.state]].filter(Boolean).join(', ')}
                     onKeyDown={(e) => onTabKey(e, at)}
                     title={env ? `${s.label} · ${env}` : s.label}
                     onClick={() => onSelect(s.id)}
@@ -140,10 +156,11 @@ export function TabStrip({ sessions, activeId, envName, onSelect, onClose, onNew
                     <span className="truncate font-medium">{s.label}</span>
                     {env && <span className="truncate text-[11.5px] text-muted">{env}</span>}
                   </button>
-                  {/* A sibling of the tab, not inside it; reached by mouse, mod+w or middle-click. */}
+                  {/* A sibling of the tab, not inside it. Tab from the strip's one tab stop reaches it;
+                      Delete on a tab, mod+w and middle-click close too. */}
                   <button
                     type="button"
-                    tabIndex={-1}
+                    tabIndex={s.id === stop ? 0 : -1}
                     aria-label={`Close ${s.label}`}
                     onClick={() => onClose(s)}
                     className={`relative mr-1 grid size-5 shrink-0 place-items-center rounded-md text-muted transition-[opacity,background-color,color] hover:bg-white/8 hover:text-fg focus-visible:opacity-100 ${
