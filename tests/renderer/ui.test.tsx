@@ -2,11 +2,14 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CommandPalette, closeCommandPalette, registerCommand } from '../../src/renderer/src/ui/CommandPalette'
-import { getRecents } from '../../src/renderer/src/ui/commands'
+import { getRecents, resetRecents } from '../../src/renderer/src/ui/commands'
 import { Toaster, clearToasts, toast } from '../../src/renderer/src/ui/Toaster'
 import { useShortcut } from '../../src/renderer/src/ui/shortcuts'
 
 const pressModK = () => fireEvent.keyDown(window, { key: 'k', metaKey: true })
+
+// Recents live at module level; one test's palette runs must not reorder the next one's list.
+afterEach(() => resetRecents())
 
 describe('command palette', () => {
   const cleanups: Array<() => void> = []

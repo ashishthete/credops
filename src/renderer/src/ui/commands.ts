@@ -74,6 +74,16 @@ export function getRecents(): readonly string[] {
   return recents
 }
 
+/** Forgets every recent, in memory and in storage (tests: recents must not leak between them). */
+export function resetRecents(): void {
+  recents = []
+  try {
+    localStorage.removeItem(RECENTS_KEY)
+  } catch {
+    // Storage unavailable; nothing was persisted.
+  }
+}
+
 export function markRecent(id: string): void {
   // Drop ids that are no longer registered so they don't hold recent slots.
   const registered = new Set(commandStore.get().map((c) => c.id))
