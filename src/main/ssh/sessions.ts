@@ -10,6 +10,7 @@ import {
   MAX_SESSIONS,
   PROMPT_TIMEOUT_MS,
   SCROLLBACK_CHARS,
+  SESSION_LIMIT,
   type OpenLocalRequest,
   type OpenSshRequest,
   type PromptAnswer,
@@ -54,7 +55,7 @@ export interface SessionManagerDeps {
 export class SessionLimitError extends Error {
   readonly code = 'limit' as const
   constructor() {
-    super(`Too many open sessions (${MAX_SESSIONS})`)
+    super(SESSION_LIMIT)
     this.name = 'SessionLimitError'
   }
 }
@@ -125,6 +126,8 @@ interface DialTarget {
 
 interface PendingPrompt {
   kind: PromptAnswer['kind']
+  /** Keyboard prompts only: how many responses the answer must carry. */
+  count: number
   attempt: Attempt
   timer: NodeJS.Timeout
   resolve(answer: PromptAnswer | null): void
@@ -158,6 +161,7 @@ function lostError(label: string, err: unknown): SessionError {
 }
 
 function shellPty(stream: ClientChannel): Pty {
+  // A channel error is followed by 'close'; the reason comes from the client's 'error'.
   stream.on('error', () => {})
   return {
     write: (data) => void stream.write(data),
@@ -266,7 +270,8 @@ export class SessionManager {
   answer(promptId: string, answer: PromptAnswer): void {
     const p = this.prompts.get(promptId)
     if (!p) return
-    if (p.kind !== answer.kind) throw new Error("prompt answer doesn't match")
+    const wrongCount = answer.kind === 'keyboard' && answer.responses !== null && answer.responses.length !== p.count
+    if (p.kind !== answer.kind || wrongCount) throw new Error("prompt answer doesn't match")
     this.settle(promptId, answer)
   }
 
@@ -444,13 +449,17 @@ export class SessionManager {
       stream.once('exit', () => {
         exited = true
       })
-      this.ready(s, attempt, shellPty(stream), () =>
+      const pty = shellPty(stream)
+      // A resize while the shell request was in flight was only stored; apply it now.
+      if (s.cols !== sent.cols || s.rows !== sent.rows) pty.resize(s.cols, s.rows)
+      this.ready(s, attempt, pty, () =>
         exited ? this.finish(s, attempt, 'remote', null) : this.finish(s, attempt, 'error', lostError(target.label, lastError)),
       )
     }
+    const sent = { cols: s.cols, rows: s.rows }
     try {
       // A server may refuse the env vars; ssh2 doesn't wait for a reply, so that is ignored.
-      client.shell({ term: 'xterm-256color', cols: s.cols, rows: s.rows }, { env: target.envVars }, onShell)
+      client.shell({ term: 'xterm-256color', ...sent }, { env: target.envVars }, onShell)
     } catch (err) {
       this.dialFailed(s, attempt, target, err)
     }
@@ -502,7 +511,7 @@ export class SessionManager {
     Object.assign(s.meta, { state: error ? 'failed' : 'closed', error, closedAt: now.toISOString() })
     this.publish(s)
     if (!wasReady) return
-    this.deps.audit.append({
+    this.audit({
       action: s.meta.kind === 'ssh' ? 'ssh.close' : 'shell.close',
       outcome: 'info',
       ...this.auditTarget(s),
@@ -515,7 +524,7 @@ export class SessionManager {
   }
 
   private auditOpen(s: Session, outcome: 'success' | 'failure', details: Record<string, unknown>): void {
-    this.deps.audit.append({
+    this.audit({
       action: s.meta.kind === 'ssh' ? 'ssh.open' : 'shell.open',
       outcome,
       ...this.auditTarget(s),
@@ -524,6 +533,15 @@ export class SessionManager {
         ...(s.meta.kind === 'ssh' ? details : {}),
       },
     })
+  }
+
+  /** Runs inside ssh2 callbacks, so a failing audit write must not throw out of them. */
+  private audit(entry: AuditInput): void {
+    try {
+      this.deps.audit.append(entry)
+    } catch (err) {
+      console.warn(`Session audit write failed (${entry.action}):`, redact(err instanceof Error ? err.message : String(err)))
+    }
   }
 
   private auditTarget(s: Session): Pick<AuditInput, 'targetType' | 'targetId' | 'targetLabel'> {
@@ -537,7 +555,8 @@ export class SessionManager {
     const promptId = this.ids()
     return new Promise((resolve) => {
       const timer = setTimeout(() => this.settle(promptId, null), PROMPT_TIMEOUT_MS)
-      this.prompts.set(promptId, { kind: prompt.kind, attempt, timer, resolve })
+      const count = prompt.kind === 'keyboard' ? prompt.prompts.length : 0
+      this.prompts.set(promptId, { kind: prompt.kind, count, attempt, timer, resolve })
       attempt.prompts.add(promptId)
       this.deps.emit('session:prompt', { ...prompt, promptId, sessionId: s.meta.id } as SessionPrompt)
     })

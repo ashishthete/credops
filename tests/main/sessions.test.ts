@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { EventEmitter } from 'node:events'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -7,7 +8,7 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import type { ParsedKey } from 'ssh2'
 import type { EventContract, EventName } from '../../src/shared/ipc'
 import type { IdentityRef, ResolvedHop, ResolvedHost } from '../../src/shared/inventory'
-import { PROMPT_TIMEOUT_MS, SCROLLBACK_CHARS } from '../../src/shared/ssh'
+import { PROMPT_TIMEOUT_MS, SCROLLBACK_CHARS, SESSION_LIMIT } from '../../src/shared/ssh'
 import type { SessionMeta, SessionPrompt } from '../../src/shared/ssh'
 import type { AuthPlan } from '../../src/main/ssh/auth'
 import { connectChain } from '../../src/main/ssh/connect'
@@ -386,7 +387,8 @@ describe('SessionManager', () => {
       err = e
     }
     expect(err).toBeInstanceOf(Error)
-    expect((err as Error).message).toBe('Too many open sessions (32)')
+    expect((err as Error).message).toBe(SESSION_LIMIT)
+    expect(SESSION_LIMIT).toBe('Too many open sessions (32)')
     expect((err as { code?: string }).code).toBe('limit')
     expect(t.manager.list()).toHaveLength(32)
   })
@@ -401,11 +403,117 @@ describe('SessionManager', () => {
     expect(t.promptDone()).toEqual([])
   })
 
-  it('writes to a session that is not ready are dropped', async () => {
-    const t = await setup({ connect: () => new Promise(() => {}) })
+  it('writes before the shell is up are dropped; a resize meanwhile is applied when it comes up', async () => {
+    const shell = stubShell()
+    const t = await setup({ connect: shell.connect })
     const { id } = t.manager.openSsh({ hostId: t.host(22), ...size })
-    expect(() => t.manager.write(id, 'x')).not.toThrow()
-    expect(() => t.manager.resize(id, 100, 30)).not.toThrow()
-    expect(() => t.manager.reconnect(id)).toThrow()
+    await vi.waitFor(() => expect(shell.requested).toEqual({ term: 'xterm-256color', ...size }), { timeout: 5000 })
+    t.manager.write(id, 'early')
+    t.manager.resize(id, 100, 30)
+    expect(() => t.manager.reconnect(id)).toThrow('Only a closed or failed session can be reconnected')
+
+    const stream = shell.open()
+    await t.waitState(id, 'ready')
+    expect(stream.setWindow).toHaveBeenCalledWith(30, 100, 0, 0)
+    t.manager.write(id, 'late')
+    expect(stream.write.mock.calls).toEqual([['late']])
+  })
+
+  it('a resize matching the requested size sends no extra window change', async () => {
+    const shell = stubShell()
+    const t = await setup({ connect: shell.connect })
+    const { id } = t.manager.openSsh({ hostId: t.host(22), ...size })
+    await vi.waitFor(() => expect(shell.requested).not.toBeNull(), { timeout: 5000 })
+    t.manager.resize(id, 100, 30)
+    t.manager.resize(id, size.cols, size.rows)
+    const stream = shell.open()
+    await t.waitState(id, 'ready')
+    expect(stream.setWindow).not.toHaveBeenCalled()
+  })
+
+  it('a keyboard answer must carry one response per prompt', async () => {
+    const t = await setup({
+      connect: (async (hops, deps) => {
+        await deps.askKeyboard(hops[0], '', '', [
+          { prompt: 'Code: ', echo: false },
+          { prompt: 'PIN: ', echo: false },
+        ])
+        return new Promise(() => {})
+      }) as SessionManagerDeps['connect'],
+    })
+    t.manager.openSsh({ hostId: t.host(22), ...size })
+    const prompt = await t.waitPrompt()
+    expect(() => t.manager.answer(prompt.promptId, { kind: 'keyboard', responses: ['123456'] })).toThrow(
+      "prompt answer doesn't match",
+    )
+    expect(t.promptDone()).toEqual([])
+    t.manager.answer(prompt.promptId, { kind: 'keyboard', responses: ['123456', '0000'] })
+    expect(t.promptDone()).toEqual([prompt.promptId])
+  })
+
+  it('a failing audit write inside an ssh2 callback is contained and logged without details', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    onTestFinished(() => warn.mockRestore())
+    const t = await setup({
+      audit: {
+        append: () => {
+          throw new Error('SQLITE_FULL: database or disk is full')
+        },
+      },
+    })
+    const srv = await server()
+    t.trust(srv)
+    const { id } = t.manager.openSsh({ hostId: t.host(srv.port), ...size })
+    await t.waitState(id, 'ready')
+    await t.waitData(id, 'READY')
+    t.manager.write(id, 'exit\r')
+    await t.waitState(id, 'closed')
+    expect(warn.mock.calls.map((c) => c[0])).toEqual([
+      'Session audit write failed (ssh.open):',
+      'Session audit write failed (ssh.close):',
+    ])
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('127.0.0.1')
+  })
+
+  it('a target exiting on its own ends the jump connection too', async () => {
+    const t = await setup()
+    const jump = await server({ allowForward: true })
+    const srv = await server()
+    t.trust(jump)
+    t.trust(srv)
+    const chain: ResolvedHop[] = [{ hostId: randomUUID(), label: 'bastion', address: '127.0.0.1', port: jump.port, identity: globalId }]
+    const { id } = t.manager.openSsh({ hostId: t.host(srv.port, chain), ...size })
+    await t.waitState(id, 'ready')
+    await t.waitData(id, 'READY')
+    expect(jump.connections()).toBe(1)
+    t.manager.write(id, 'exit\r')
+    await t.waitState(id, 'closed')
+    await vi.waitFor(() => expect(jump.connections()).toBe(0), { timeout: 5000 })
   })
 })
+
+/** A connect that hands back a fake client; `open()` delivers its shell stream. */
+function stubShell() {
+  let onShell: ((err: Error | undefined, stream: unknown) => void) | null = null
+  const client = Object.assign(new EventEmitter(), {
+    shell: (opts: unknown, _env: unknown, cb: typeof onShell) => {
+      stub.requested = opts
+      onShell = cb
+    },
+  })
+  const stub = {
+    requested: null as unknown,
+    connect: (async () => ({ client, close: () => {} })) as unknown as SessionManagerDeps['connect'],
+    open() {
+      const stream = Object.assign(new EventEmitter(), {
+        stderr: new EventEmitter(),
+        write: vi.fn(),
+        setWindow: vi.fn(),
+        close: vi.fn(() => stream.emit('close')),
+      })
+      onShell!(undefined, stream)
+      return stream
+    },
+  }
+  return stub
+}

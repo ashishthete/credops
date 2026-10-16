@@ -8,7 +8,8 @@ import { createSessionHandlers, type SessionApi } from '../../src/main/ipc/handl
 import { registerHandlers } from '../../src/main/ipc/register'
 import { VALIDATORS } from '../../src/main/ipc/validators'
 import { KnownHostStore } from '../../src/main/ssh/known-hosts'
-import type { SessionMeta } from '../../src/shared/ssh'
+import { SessionLimitError } from '../../src/main/ssh/sessions'
+import { SESSION_LIMIT, type SessionMeta } from '../../src/shared/ssh'
 import { VAULT_LOCKED } from '../../src/shared/vault'
 import { stubHandlers } from './ipc-helpers'
 import { generateKey } from './ssh-server'
@@ -105,5 +106,20 @@ describe('session IPC', () => {
     f.vault.lock('manual')
     await expect(f.call('knownhost:remove', row.id)).rejects.toThrow(VAULT_LOCKED)
     await expect(f.call('knownhost:list')).resolves.toHaveLength(1)
+  })
+
+  it('the session limit crosses IPC as its shared message (only messages survive)', async () => {
+    const { sessions, call } = await setup()
+    sessions.openSsh.mockImplementation(() => {
+      throw new SessionLimitError()
+    })
+    sessions.reconnect.mockImplementation(() => {
+      throw new SessionLimitError()
+    })
+    const open = await call('ssh:open', { hostId: randomUUID(), cols: 80, rows: 24 }).catch((e: Error) => e)
+    expect(open).toBeInstanceOf(Error)
+    expect((open as Error).message).toBe(SESSION_LIMIT)
+    expect((open as { code?: string }).code).toBeUndefined()
+    await expect(call('session:reconnect', randomUUID())).rejects.toThrow(SESSION_LIMIT)
   })
 })

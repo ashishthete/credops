@@ -4,6 +4,8 @@ export const DEFAULT_KEEPALIVE_SEC = 30 // sent every N seconds; ssh2 keepaliveC
 export const READY_TIMEOUT_MS = 20_000 // per hop
 export const PROMPT_TIMEOUT_MS = 120_000 // an unanswered prompt counts as cancelled
 export const MAX_SESSIONS = 32
+/** The open/reconnect error at the cap. Only the message crosses IPC, so the renderer matches on it. */
+export const SESSION_LIMIT = `Too many open sessions (${MAX_SESSIONS})`
 export const SCROLLBACK_CHARS = 1_048_576 // ring buffer per session, trimmed from the front
 export const FLUSH_MS = 16
 export const FLUSH_CHARS = 65_536
