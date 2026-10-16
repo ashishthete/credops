@@ -93,6 +93,19 @@ const row = (name: string) => screen.findByRole('listitem', { name })
 const calls = (invoke: ReturnType<typeof mockBridge>, channel: string) =>
   invoke.mock.calls.filter(([c]) => c === channel)
 
+/** Makes the first call on `channel` reject with `message`; later calls answer as before. */
+function failOnce(invoke: ReturnType<typeof mockBridge>, channel: string, message: string) {
+  const fallback = invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
+  let failed = false
+  invoke.mockImplementation(async (c: string, ...args: unknown[]) => {
+    if (c === channel && !failed) {
+      failed = true
+      throw new Error(message)
+    }
+    return fallback(c, ...args)
+  })
+}
+
 beforeEach(() => {
   vaultStatusStore.set(null)
 })
@@ -107,7 +120,7 @@ afterEach(() => {
 
 describe('vaults page', () => {
   it('lists vaults and masked secrets', async () => {
-    const { invoke } = renderPage()
+    const { invoke } = renderPage('/vaults', { 'secret:reveal': { value: 'hunter22' } })
     expect(await screen.findByRole('heading', { name: 'Default', level: 2 })).toBeInTheDocument()
     const def = within(rail()).getByRole('button', { name: /^Default,/ })
     const prod = within(rail()).getByRole('button', { name: /^Prod,/ })
@@ -124,6 +137,7 @@ describe('vaults page', () => {
     // Only metadata was fetched: nothing asked for a value.
     expect(calls(invoke, 'secret:reveal')).toHaveLength(0)
     expect(calls(invoke, 'secret:copy')).toHaveLength(0)
+    expect(document.body.textContent).not.toContain('hunter22')
   })
 
   it('search filters the current tab', async () => {
@@ -404,6 +418,142 @@ describe('vaults page', () => {
     act(() => commandStore.get().find((c) => c.title === 'New identity')!.run())
     expect(await screen.findByRole('dialog', { name: 'New identity' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: /Identities/ })).toHaveAttribute('aria-selected', 'true')
+  })
+})
+
+describe('vaults page details', () => {
+  it('deletes a secret, a key and an identity after confirming', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderPage('/vaults', { 'key:list': [sshKey()], 'identity:list': [identity()] })
+    const cases = [
+      { tab: /Secrets/, name: 'DATABASE_URL', title: 'Delete DATABASE_URL?', button: 'Delete secret', channel: 'secret:delete', id: 's1' },
+      { tab: /SSH keys/, name: 'deploy', title: 'Delete deploy?', button: 'Delete key', channel: 'key:delete', id: 'k1' },
+      { tab: /Identities/, name: 'ops', title: 'Delete ops?', button: 'Delete identity', channel: 'identity:delete', id: 'i1' },
+    ]
+    for (const c of cases) {
+      await user.click(screen.getByRole('tab', { name: c.tab }))
+      const r = await row(c.name)
+      await user.click(within(r).getByRole('button', { name: `${c.name} options` }))
+      await user.click(await screen.findByRole('menuitem', { name: 'Delete' }))
+      const dialog = await screen.findByRole('dialog', { name: c.title })
+      expect(calls(invoke, c.channel)).toHaveLength(0)
+      await user.click(within(dialog).getByRole('button', { name: c.button }))
+      expect(invoke).toHaveBeenCalledWith(c.channel, c.id)
+      await waitFor(() => expect(screen.queryByRole('listitem', { name: c.name })).not.toBeInTheDocument())
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    }
+  })
+
+  it('edits a secret with a minimal patch', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderPage('/vaults', { 'secret:update': secret({ kind: 'token' }) })
+    const r = await row('DATABASE_URL')
+    await user.click(within(r).getByRole('button', { name: 'DATABASE_URL options' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Edit' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Edit secret' })
+    expect(within(dialog).getByLabelText('Name')).toHaveValue('DATABASE_URL')
+    expect(within(dialog).getByLabelText('Value')).toHaveValue('')
+    await user.selectOptions(within(dialog).getByLabelText('Kind'), 'token')
+    await user.click(within(dialog).getByRole('button', { name: 'Save secret' }))
+    expect(invoke).toHaveBeenCalledWith('secret:update', 's1', { kind: 'token' })
+    expect(await within(await row('DATABASE_URL')).findByText('token')).toBeInTheDocument()
+  })
+
+  it('edits an identity with a minimal patch', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderPage('/vaults?tab=identities', {
+      'identity:list': [identity()],
+      'identity:update': identity({ username: 'root' }),
+    })
+    const r = await row('ops')
+    await user.click(within(r).getByRole('button', { name: 'ops options' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Edit' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Edit identity' })
+    const username = within(dialog).getByLabelText('Username')
+    await user.clear(username)
+    await user.type(username, 'root')
+    await user.click(within(dialog).getByRole('button', { name: 'Save identity' }))
+    expect(invoke).toHaveBeenCalledWith('identity:update', 'i1', { username: 'root' })
+  })
+
+  it('pasted import asks for the passphrase inline when main needs one', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderPage('/vaults?tab=keys', { 'key:import': sshKey({ source: 'imported', label: 'pasted' }) })
+    failOnce(invoke, 'key:import', 'passphrase required')
+    const toolbar = await screen.findByRole('toolbar', { name: 'SSH key actions' })
+    await user.click(within(toolbar).getByRole('button', { name: 'Import key' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Import key' })
+    await user.type(within(dialog).getByLabelText('Label'), 'pasted')
+    // An unrecognised shape: the client can't tell it is encrypted.
+    const key = '-----BEGIN PRIVATE KEY-----\nMIIBfake\n-----END PRIVATE KEY-----\n'
+    fireEvent.change(within(dialog).getByLabelText('Private key'), { target: { value: key } })
+    expect(within(dialog).queryByLabelText('Passphrase')).not.toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Import key' }))
+
+    const pass = await within(dialog).findByLabelText('Passphrase')
+    expect(screen.queryByText("Couldn't import the key")).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Import key' })).toBeDisabled()
+    await user.type(pass, 'open sesame')
+    await user.click(within(dialog).getByRole('button', { name: 'Import key' }))
+    expect(invoke).toHaveBeenLastCalledWith('key:import', {
+      vaultId: DEFAULT_VAULT_ID,
+      label: 'pasted',
+      privateKey: key,
+      passphrase: 'open sesame',
+    })
+    expect(await row('pasted')).toBeInTheDocument()
+  })
+
+  it('file import asks for the passphrase inline when main needs one', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderPage('/vaults?tab=keys', { 'key:importFile': sshKey({ source: 'imported', label: 'from-file' }) })
+    failOnce(invoke, 'key:importFile', 'passphrase required')
+    const toolbar = await screen.findByRole('toolbar', { name: 'SSH key actions' })
+    await user.click(within(toolbar).getByRole('button', { name: 'Import key' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Import key' })
+    await user.type(within(dialog).getByLabelText('Label'), 'from-file')
+    await user.click(within(dialog).getByRole('button', { name: 'Choose file…' }))
+    expect(invoke).toHaveBeenCalledWith('key:importFile', { vaultId: DEFAULT_VAULT_ID, label: 'from-file' })
+
+    const pass = await within(dialog).findByLabelText('Passphrase')
+    expect(within(dialog).getByText(/choose it again/)).toBeInTheDocument()
+    await user.type(pass, 'open sesame')
+    await user.click(within(dialog).getByRole('button', { name: 'Choose file…' }))
+    expect(invoke).toHaveBeenLastCalledWith('key:importFile', {
+      vaultId: DEFAULT_VAULT_ID,
+      label: 'from-file',
+      passphrase: 'open sesame',
+    })
+    expect(await row('from-file')).toBeInTheDocument()
+  })
+
+  it('cancelling a dialog forgets what was typed', async () => {
+    const user = userEvent.setup()
+    renderPage('/vaults?tab=keys')
+    const toolbar = await screen.findByRole('toolbar', { name: 'SSH key actions' })
+    await user.click(within(toolbar).getByRole('button', { name: 'Import key' }))
+    let dialog = await screen.findByRole('dialog', { name: 'Import key' })
+    const pem = '-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIBfake\n-----END ENCRYPTED PRIVATE KEY-----\n'
+    fireEvent.change(within(dialog).getByLabelText('Private key'), { target: { value: pem } })
+    await user.type(within(dialog).getByLabelText('Passphrase'), 'open sesame')
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    await user.click(within(toolbar).getByRole('button', { name: 'Import key' }))
+    dialog = await screen.findByRole('dialog', { name: 'Import key' })
+    expect(within(dialog).getByLabelText('Private key')).toHaveValue('')
+    expect(within(dialog).queryByLabelText('Passphrase')).not.toBeInTheDocument()
+  })
+
+  it('leaving the page hides revealed values', async () => {
+    const user = userEvent.setup()
+    const { unmount } = renderPage('/vaults', { 'secret:reveal': { value: 'hunter22' } })
+    await user.click(within(await row('DATABASE_URL')).getByRole('button', { name: 'Reveal' }))
+    expect(await screen.findByText('hunter22')).toBeInTheDocument()
+    unmount()
+    renderPage('/vaults')
+    await row('DATABASE_URL')
+    expect(document.body.textContent).not.toContain('hunter22')
   })
 })
 

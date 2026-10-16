@@ -146,21 +146,20 @@ export function ImportKeyDialog({ open, vaultId, onClose, onSaved }: NewKeyDialo
   const [label, setLabel] = useState('')
   const [text, setText] = useState('')
   const [passphrase, setPassphrase] = useState('')
-  // Main said a picked file needs a passphrase; the user then picks it again.
-  const [fileNeedsPass, setFileNeedsPass] = useState(false)
+  // Main answered "passphrase required" for this text (or picked file); cleared when the text changes.
+  const [forcePass, setForcePass] = useState(false)
   const [busy, setBusy] = useState<'paste' | 'file' | null>(null)
 
+  // Key material and passphrase never outlive the dialog, whether it saved or not.
   useEffect(() => {
-    if (open) {
-      setLabel('')
-      setText('')
-      setPassphrase('')
-      setFileNeedsPass(false)
-    }
+    setText('')
+    setPassphrase('')
+    setForcePass(false)
+    if (open) setLabel('')
   }, [open])
 
   const pasted = text.trim().length > 0
-  const needsPass = pasted ? isEncryptedKey(text) : fileNeedsPass
+  const needsPass = (pasted && isEncryptedKey(text)) || forcePass
   const base: Omit<KeyImportInput, 'privateKey'> = {
     vaultId,
     label: label.trim(),
@@ -175,29 +174,28 @@ export function ImportKeyDialog({ open, vaultId, onClose, onSaved }: NewKeyDialo
     onSaved(key)
   }
 
-  const importPasted = async (e: FormEvent) => {
-    e.preventDefault()
-    if (!ready || !pasted || busy) return
-    setBusy('paste')
-    const key = await attempt("Couldn't import the key", () => api.invoke('key:import', { ...base, privateKey: text }))
-    setBusy(null)
-    if (key) done(key)
-  }
-
-  // Main opens the file picker (null on cancel); "passphrase required" asks for it inline.
-  const importFile = async () => {
+  // "passphrase required" asks for it inline instead of failing with a toast.
+  const run = async (which: 'paste' | 'file', call: () => Promise<SshKeyMeta | null>) => {
     if (!ready || busy) return
-    setBusy('file')
+    setBusy(which)
     try {
-      const key = await withUnlock(() => api.invoke('key:importFile', base))
+      const key = await withUnlock(call)
       if (key) done(key)
     } catch (err) {
-      if (errorText(err) === PASSPHRASE_REQUIRED) setFileNeedsPass(true)
+      if (errorText(err) === PASSPHRASE_REQUIRED) setForcePass(true)
       else fail("Couldn't import the key", err)
     } finally {
       setBusy(null)
     }
   }
+
+  const importPasted = (e: FormEvent) => {
+    e.preventDefault()
+    if (pasted) void run('paste', () => api.invoke('key:import', { ...base, privateKey: text }))
+  }
+
+  // Main opens the file picker and answers null on cancel.
+  const importFile = () => void run('file', () => api.invoke('key:importFile', base))
 
   return (
     <Dialog
@@ -214,7 +212,7 @@ export function ImportKeyDialog({ open, vaultId, onClose, onSaved }: NewKeyDialo
             disabled={!ready || pasted}
             loading={busy === 'file'}
             icon={<FolderSearch aria-hidden className="size-3.5" />}
-            onClick={() => void importFile()}
+            onClick={importFile}
           >
             Choose file…
           </Button>
@@ -227,7 +225,7 @@ export function ImportKeyDialog({ open, vaultId, onClose, onSaved }: NewKeyDialo
         </>
       }
     >
-      <form id={formId} onSubmit={(e) => void importPasted(e)} className="flex flex-col gap-3.5" noValidate>
+      <form id={formId} onSubmit={importPasted} className="flex flex-col gap-3.5" noValidate>
         <TextField
           autoFocus
           label="Label"
@@ -242,7 +240,10 @@ export function ImportKeyDialog({ open, vaultId, onClose, onSaved }: NewKeyDialo
           spellCheck={false}
           autoComplete="off"
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value)
+            setForcePass(false)
+          }}
           className="h-28 resize-none font-mono text-[11.5px]"
           hint={pasted ? undefined : 'Or leave this empty and choose the key file.'}
         />
@@ -253,7 +254,7 @@ export function ImportKeyDialog({ open, vaultId, onClose, onSaved }: NewKeyDialo
             value={passphrase}
             onChange={(e) => setPassphrase(e.target.value)}
             hint={
-              !pasted && fileNeedsPass
+              !pasted && forcePass
                 ? 'That file is encrypted. Enter its passphrase, then choose it again.'
                 : 'This key is encrypted; its passphrase is stored with it.'
             }
@@ -276,12 +277,12 @@ export function LinkKeyDialog({ open, vaultId, onClose, onSaved }: NewKeyDialogP
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
+    setPassphrase('')
     if (!open) return
     let live = true
     setCandidates(null)
     setPicked(null)
     setLabel('')
-    setPassphrase('')
     api
       .invoke('key:scanLocal')
       .then((c) => live && setCandidates(c))

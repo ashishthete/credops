@@ -44,13 +44,14 @@ export function IdentityDialog({ open, vaultId, keys, identity, onClose, onSaved
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
 
+  // The password never outlives the dialog, whether it saved or not.
   useEffect(() => {
+    setPassword('')
     if (!open) return
     setLabel(identity?.label ?? '')
     setUsername(identity?.username ?? '')
     setAuth(identity?.auth ?? 'agent')
     setSshKeyId(identity?.sshKeyId ?? '')
-    setPassword('')
   }, [open, identity])
 
   const vaultKeys = keys.filter((k) => k.vaultId === vaultId)

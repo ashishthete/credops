@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { Check, Copy, Eye, EyeOff, Pencil, Trash2 } from 'lucide-react'
-import { useState, useSyncExternalStore } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { REVEAL_HIDE_MS, type SecretMeta } from '../../../../shared/vault'
 import { api } from '../../lib/api'
 import { Badge } from '../../ui/Badge'
@@ -141,6 +141,8 @@ function SecretRow({ secret: s, index, stagger, onEdit, onDelete }: SecretRowPro
   const reveal = useReveal(s.id)
   const [revealing, setRevealing] = useState(false)
   const [copied, setCopied] = useState(false)
+  const copiedTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  useEffect(() => () => clearTimeout(copiedTimer.current), [])
   const motionSafe = useMotionSafe()
 
   const toggleReveal = async () => {
@@ -156,7 +158,8 @@ function SecretRow({ secret: s, index, stagger, onEdit, onDelete }: SecretRowPro
     if (!res) return
     toast({ title: `Copied · clears in ${Math.round(res.clearsInMs / 1000)} s`, tone: 'success' })
     setCopied(true)
-    setTimeout(() => setCopied(false), 1400)
+    clearTimeout(copiedTimer.current)
+    copiedTimer.current = setTimeout(() => setCopied(false), 1400)
   }
 
   const RevealIcon = reveal ? EyeOff : Eye

@@ -30,11 +30,12 @@ export function SecretDialog({ open, vaultId, secret, onClose, onSaved }: Secret
   const [value, setValue] = useState('')
   const [busy, setBusy] = useState(false)
 
+  // The value never outlives the dialog, whether it saved or not.
   useEffect(() => {
+    setValue('')
     if (!open) return
     setName(secret?.name ?? '')
     setKind(secret?.kind ?? 'password')
-    setValue('')
   }, [open, secret])
 
   const editing = !!secret
