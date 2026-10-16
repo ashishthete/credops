@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { inventoryStore } from '../../src/renderer/src/inventory/store'
 import { AppShell } from '../../src/renderer/src/shell/AppShell'
 import { SECTIONS } from '../../src/renderer/src/shell/sections'
+import { openKnownHosts } from '../../src/renderer/src/pages/terminals/KnownHostsDialog'
 import { resetSessions, sessionStore } from '../../src/renderer/src/terminal/sessions'
 import { clearToasts } from '../../src/renderer/src/ui/Toaster'
 import type { SessionMeta } from '../../src/shared/ssh'
@@ -91,6 +92,22 @@ afterEach(async () => {
 })
 
 describe('terminals page', () => {
+  it('known hosts does not reopen after the shell unmounts and mounts again (vault lock)', async () => {
+    await renderShell('/terminals', { 'knownhost:list': [] })
+    act(() => openKnownHosts())
+    await flush()
+    expect(screen.getByRole('dialog', { name: 'Known hosts' })).toBeInTheDocument()
+    cleanup()
+    await act(async () => {
+      await vi.runOnlyPendingTimersAsync()
+    })
+    await renderShell('/terminals', { 'knownhost:list': [] })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500)
+    })
+    expect(screen.queryByRole('dialog', { name: 'Known hosts' })).not.toBeInTheDocument()
+  })
+
   it('section order puts Terminals second and mod+2 opens it', async () => {
     expect(SECTIONS.map((s) => s.id)).toEqual(['products', 'terminals', 'hosts', 'vaults', 'tunnels', 'deployments', 'audit'])
     await renderShell('/products')
