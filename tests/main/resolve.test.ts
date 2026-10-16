@@ -1,14 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import type { IpcMainInvokeEvent } from 'electron'
-import { createInventoryHandlers } from '../../src/main/ipc/handlers/inventory'
 import { registerHandlers } from '../../src/main/ipc/register'
 import { VALIDATORS } from '../../src/main/ipc/validators'
 import { inheritConflicts, resolveHost } from '../../src/main/inventory/resolve'
 import { MAX_JUMP_DEPTH } from '../../src/shared/inventory'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import { stubHandlers } from './ipc-helpers'
-import { makeInventory, type InventoryFixture } from './inventory-helpers'
+import { inventoryHandlers, makeInventory, type InventoryFixture } from './inventory-helpers'
 
 const COLOR = '#336699'
 const opts = { localUser: 'tester' }
@@ -202,6 +201,21 @@ describe('resolveHost', () => {
     expect(inheritConflicts(f.db, h.id)).toEqual([{ field: 'jumpHost', environmentIds: [prod.id, staging.id].sort() }])
   })
 
+  it('a default jump naming the host itself is no conflict', async () => {
+    const { f, prod, staging } = await setup()
+    f.envs.update(staging.id, { defaultPort: 2222, defaultIdentityId: prod.defaultIdentityId })
+    const bastion = f.hosts.create({
+      label: 'bastion',
+      address: 'b',
+      environments: [
+        { environmentId: prod.id, role: 'bastion' },
+        { environmentId: staging.id, role: 'bastion' },
+      ],
+    })
+    f.envs.update(prod.id, { defaultJumpHostId: bastion.id })
+    expect(inheritConflicts(f.db, bastion.id)).toEqual([])
+  })
+
   it('no secrets', async () => {
     const { f, prod } = await setup()
     const pw = f.identities.create({ vaultId: DEFAULT_VAULT_ID, label: 'pw', username: 'root', auth: 'password', password: 'hunter2-secret' })
@@ -233,14 +247,7 @@ describe('host:resolve IPC', () => {
     const registered = new Map<string, (e: IpcMainInvokeEvent, ...a: unknown[]) => unknown>()
     registerHandlers(
       { handle: (c: string, fn: never) => void registered.set(c, fn) },
-      stubHandlers(
-        createInventoryHandlers({
-          hosts: f.hosts,
-          environments: f.envs,
-          products: f.products,
-          resolve: (hostId, environmentId) => resolveHost(f.db, hostId, environmentId, opts),
-        }),
-      ),
+      stubHandlers(inventoryHandlers(f)),
       (u) => u === 'file:///ok',
       { validators: VALIDATORS },
     )

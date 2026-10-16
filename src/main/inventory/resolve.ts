@@ -122,7 +122,8 @@ export function inheritConflicts(db: Db, hostId: string): InheritConflict[] {
   const fields: [InheritConflict['field'], unknown, (e: EnvDefaults) => unknown][] = [
     ['identity', host.identity_id, (e) => e.default_identity_id],
     ['port', host.port, (e) => e.default_port],
-    ['jumpHost', host.jump_host_id, (e) => e.default_jump_host_id],
+    // A default naming the host itself means no jump for it (a host never jumps through itself).
+    ['jumpHost', host.jump_host_id, (e) => (e.default_jump_host_id === hostId ? null : e.default_jump_host_id)],
   ]
   return fields
     .filter(([, own, get]) => own === null && new Set(envs.map(get)).size > 1)

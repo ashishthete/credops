@@ -1,9 +1,11 @@
 import { mkdirSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createInventoryHandlers } from '../../src/main/ipc/handlers/inventory'
 import { EnvironmentStore } from '../../src/main/inventory/environment-store'
 import { HostStore } from '../../src/main/inventory/host-store'
 import { ProductStore } from '../../src/main/inventory/product-store'
+import { resolveHost } from '../../src/main/inventory/resolve'
 import { IdentityStore } from '../../src/main/vault/identity-store'
 import { KeyStore } from '../../src/main/vault/key-store'
 import type { IdentityMeta } from '../../src/shared/vault'
@@ -48,4 +50,14 @@ export async function makeInventory(): Promise<InventoryFixture> {
     makeIdentity: (vaultId = DEFAULT_VAULT_ID) =>
       identities.create({ vaultId, label: `id-${++n}`, username: 'deploy', auth: 'agent' }),
   }
+}
+
+/** The inventory IPC handlers over a fixture; resolution runs as local user `tester`. */
+export function inventoryHandlers(f: InventoryFixture): ReturnType<typeof createInventoryHandlers> {
+  return createInventoryHandlers({
+    hosts: f.hosts,
+    environments: f.envs,
+    products: f.products,
+    resolve: (hostId, environmentId) => resolveHost(f.db, hostId, environmentId, { localUser: 'tester' }),
+  })
 }

@@ -115,6 +115,7 @@ export interface ResolvedHop {
 }
 export interface InheritConflict {
   field: 'identity' | 'port' | 'jumpHost'
+  /** All of the host's environments whose defaults were compared (sorted), not only those that disagree. */
   environmentIds: string[]
 }
 export interface ResolvedHost {

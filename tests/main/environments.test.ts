@@ -1,12 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import type { IpcMainInvokeEvent } from 'electron'
-import { createInventoryHandlers } from '../../src/main/ipc/handlers/inventory'
 import { registerHandlers } from '../../src/main/ipc/register'
 import { VALIDATORS } from '../../src/main/ipc/validators'
 import { VAULT_LOCKED } from '../../src/shared/vault'
 import { stubHandlers } from './ipc-helpers'
-import { makeInventory, type InventoryFixture } from './inventory-helpers'
+import { inventoryHandlers, makeInventory, type InventoryFixture } from './inventory-helpers'
 
 const COLOR = '#336699'
 const prod = (f: InventoryFixture, name: string) => f.products.create({ name, color: COLOR, icon: 'boxes' })
@@ -155,16 +154,7 @@ describe('environment and product IPC', () => {
     const registered = new Map<string, (e: IpcMainInvokeEvent, ...a: unknown[]) => unknown>()
     registerHandlers(
       { handle: (c: string, fn: never) => void registered.set(c, fn) },
-      stubHandlers(
-        createInventoryHandlers({
-          hosts: f.hosts,
-          environments: f.envs,
-          products: f.products,
-          resolve: () => {
-            throw new Error('unused')
-          },
-        }),
-      ),
+      stubHandlers(inventoryHandlers(f)),
       (u) => u === 'file:///ok',
       { validators: VALIDATORS },
     )
