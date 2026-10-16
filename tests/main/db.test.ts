@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import { openDatabase } from '../../src/main/db/connection'
-import { DatabaseSync } from 'node:sqlite' // after connection: it installs the warning filter
 import { currentVersion, migrate, migrations, type Migration } from '../../src/main/db/migrations'
 
 function tableExists(db: ReturnType<typeof openDatabase>, name: string): boolean {
@@ -24,7 +23,7 @@ describe('database migrations', () => {
   })
 
   it('rolls back a failing migration', () => {
-    const fresh = new DatabaseSync(':memory:')
+    const fresh = openDatabase(':memory:')
     const list: Migration[] = [
       { version: 1, name: 'a', up: 'CREATE TABLE a(x)' },
       { version: 2, name: 'b', up: 'CREATE TABLE b(x); SELECT * FROM nope' },
