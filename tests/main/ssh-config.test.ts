@@ -96,6 +96,35 @@ describe('robustness', () => {
     expect(warnings.some((w) => w.includes('wildcard Host blocks'))).toBe(true)
   })
 
+  it('bounds wildcard matching work across the whole parse', () => {
+    const hosts = Array.from({ length: 2000 }, (_, i) => `Host ${String(i).padStart(4, '0')}${'a'.repeat(96)}`).join('\n')
+    const pat = `*${'a'.repeat(80)}b*`
+    const wild = Array.from({ length: 150 }, (_, i) => `Host ${Array(i < 50 ? 14 : 13).fill(pat).join(' ')}\n User w`).join('\n')
+    const text = `${hosts}\n${wild}\n`
+    expect(text.length).toBeLessThan(1024 * 1024)
+    const t0 = Date.now()
+    const { entries, warnings } = parse(text)
+    expect(Date.now() - t0).toBeLessThan(1000)
+    expect(entries).toHaveLength(2000)
+    expect(warnings.filter((w) => w.includes('wildcard Host patterns'))).toHaveLength(1)
+    expect(warnings.filter((w) => w.includes('Wildcard Host matching'))).toHaveLength(1)
+  })
+
+  it('ignores over-long wildcard patterns, and a block whose negation is too long', () => {
+    const long = `*${'x'.repeat(300)}*`
+    const { entries, warnings } = parse(`Host ${long} web*\n User a\nHost * !${long}\n Port 2200\nHost web\n`)
+    expect(entries[0]).toMatchObject({ user: 'a', port: null })
+    expect(warnings.filter((w) => w.includes('longer than 256'))).toHaveLength(1)
+  })
+
+  it('dedupes parse warnings and caps the list at 200', () => {
+    const many = Array.from({ length: 300 }, () => 'Match all').join('\n')
+    const { warnings } = parse(`Include x\nInclude x\n${many}\n`)
+    expect(warnings.filter((w) => w === 'Include not followed: x')).toHaveLength(1)
+    expect(warnings).toHaveLength(201)
+    expect(warnings[200]).toBe('…and 101 more warnings')
+  })
+
   it('strips trailing comments and dedupes shared-block warnings', () => {
     const { entries, warnings } = parse('Host a b c\n User u # note\nHost *\n Port 0\n')
     expect(entries[0].user).toBe('u')
@@ -187,5 +216,48 @@ describe('Include handling', () => {
     const many = Array.from({ length: 300 }, (_, i) => ({ path: join(sshDir, `m${i}`), text: 'Host q\n' }))
     const r = parseSshConfig('Include x\n', { home: '/home/t', sshDir, include: () => ({ files: many, warnings: [] }) })
     expect(r.warnings.filter((w) => w.startsWith('Include budget'))).toHaveLength(1)
+  })
+
+  it('stops reading includes once the budget is spent', () => {
+    const { sshDir } = setup()
+    writeFileSync(join(sshDir, 'big'), '#'.repeat(1000 * 1000))
+    const t0 = Date.now()
+    const { warnings } = parseSshConfig('Include big\n'.repeat(20000), {
+      home: '/home/t',
+      sshDir,
+      include: readSshIncludes(sshDir),
+    })
+    expect(Date.now() - t0).toBeLessThan(1000)
+    expect(warnings.filter((w) => w.startsWith('Include budget'))).toHaveLength(1)
+    expect(warnings.filter((w) => w.includes('Include directives'))).toHaveLength(1)
+  })
+
+  it('caps Include directives at 1000', () => {
+    let calls = 0
+    const { warnings } = parseSshConfig('Include none\n'.repeat(1500), {
+      ...opts,
+      include: () => (calls++, { files: [], warnings: [] }),
+    })
+    expect(calls).toBe(1000)
+    expect(warnings).toContain('More than 1000 Include directives, the rest are ignored')
+  })
+
+  it('the reader stops at the remaining budget before reading', () => {
+    const { sshDir } = setup()
+    mkdirSync(join(sshDir, 'many'))
+    for (let i = 0; i < 5; i++) writeFileSync(join(sshDir, 'many', `${i}.conf`), `Host m${i}\n`)
+    const byFiles = readSshIncludes(sshDir)('many/*.conf', { files: 3, bytes: 1e9 })
+    expect(byFiles.files).toHaveLength(3)
+    expect(byFiles.exhausted).toBe(true)
+    const byBytes = readSshIncludes(sshDir)('many/*.conf', { files: 100, bytes: 12 })
+    expect(byBytes.files).toHaveLength(1)
+    expect(byBytes.exhausted).toBe(true)
+  })
+
+  it('warns about wildcards in folder names', () => {
+    const { sshDir } = setup()
+    const r = readSshIncludes(sshDir)('conf*/x.conf')
+    expect(r.files).toEqual([])
+    expect(r.warnings).toEqual(["Include conf*/x.conf: wildcards in folder names aren't supported"])
   })
 })

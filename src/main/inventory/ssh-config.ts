@@ -11,6 +11,13 @@ export interface IncludeFile {
 export interface IncludeResult {
   files: IncludeFile[]
   warnings: string[]
+  /** The reader stopped because the budget it was given ran out. */
+  exhausted?: boolean
+}
+/** What is left of the aggregate include budget; the reader stops before reading past it. */
+export interface IncludeBudget {
+  files: number
+  bytes: number
 }
 export interface ParseOptions {
   /** Expands `~` and `%d`. */
@@ -18,7 +25,7 @@ export interface ParseOptions {
   /** Relative Include paths resolve here; IdentityFile must stay inside. */
   sshDir: string
   /** Supplied by main as a sshDir-confined reader (see readSshIncludes). */
-  include?: (pattern: string) => IncludeResult
+  include?: (pattern: string, budget: IncludeBudget) => IncludeResult
   /** Real path of the top-level file; seeds loop detection. */
   rootPath?: string
 }
@@ -29,6 +36,12 @@ const MAX_INCLUDE_FILES = 256
 const MAX_INCLUDE_TOTAL_BYTES = 4 * MAX_SSH_CONFIG_BYTES
 const MAX_HOST_PATTERNS = 10000
 const MAX_WILDCARD_BLOCKS = 200
+const MAX_WILDCARD_PATTERNS = 500
+const MAX_WILDCARD_PATTERN_LENGTH = 256
+/** globMatch steps for the whole parse; past it, wildcard blocks stop applying. */
+const MAX_GLOB_STEPS = 50_000_000
+const MAX_INCLUDE_DIRECTIVES = 1000
+const MAX_WARNINGS = 200
 const TOO_LARGE = 'ssh config is larger than 1 MiB'
 
 interface Directive {
@@ -56,8 +69,13 @@ function splitArgs(rest: string): string[] {
   return args
 }
 
+/** Shared step allowance; a match that runs out returns false and leaves `steps` negative. */
+interface GlobBudget {
+  steps: number
+}
+
 /** Iterative `*`/`?` matcher: backtracks only to the last `*`, so O(n*m) worst case. */
-export function globMatch(pattern: string, text: string): boolean {
+export function globMatch(pattern: string, text: string, budget?: GlobBudget): boolean {
   // Cheap rejects: the tail after the last `*` must fit and agree with the end of text.
   const lastStar = pattern.lastIndexOf('*')
   const tail = pattern.length - lastStar - 1
@@ -71,6 +89,7 @@ export function globMatch(pattern: string, text: string): boolean {
   let star = -1
   let mark = 0
   while (t < text.length) {
+    if (budget && budget.steps-- <= 0) return false
     if (p < pattern.length && (pattern[p] === '?' || pattern[p] === text[t]) && pattern[p] !== '*') {
       p++
       t++
@@ -86,14 +105,15 @@ export function globMatch(pattern: string, text: string): boolean {
   return p === pattern.length
 }
 
-function matchesPatterns(patterns: string[], alias: string): boolean {
+/** A block whose match ran out of budget doesn't apply, even if a positive pattern already matched. */
+function matchesPatterns(patterns: string[], alias: string, budget: GlobBudget): boolean {
   let positive = false
   for (const p of patterns) {
     if (p.startsWith('!')) {
-      if (globMatch(p.slice(1), alias)) return false
-    } else if (globMatch(p, alias)) positive = true
+      if (globMatch(p.slice(1), alias, budget)) return false
+    } else if (globMatch(p, alias, budget)) positive = true
   }
-  return positive
+  return positive && budget.steps >= 0
 }
 
 function expandHome(value: string, home: string): string {
@@ -111,11 +131,15 @@ export function parseSshConfig(text: string, opts: ParseOptions): { entries: Ssh
   let inMatch = false
   let skipBlock = false
   let wildcardBlocks = 0
+  let wildcardPatterns = 0
+  let wildcardCapWarned = false
+  let longWarned = false
   let storedPatterns = 0
   let patternsWarned = false
   let includeFiles = 0
   let includeBytes = 0
-  let budgetWarned = false
+  let budgetSpent = false
+  let includeDirectives = 0
   const aliases = new Set<string>()
   let aliasCapWarned = false
 
@@ -128,10 +152,28 @@ export function parseSshConfig(text: string, opts: ParseOptions): { entries: Ssh
       const m = /^([A-Za-z][A-Za-z0-9]*)(?:\s*=\s*|\s+)?(.*)$/.exec(line)
       if (!m) continue
       const key = m[1].toLowerCase()
-      const args = splitArgs(m[2])
+      let args = splitArgs(m[2])
       if (key === 'host') {
         inMatch = false
-        if (args.some((pat) => !isConcrete(pat)) && ++wildcardBlocks > MAX_WILDCARD_BLOCKS) {
+        // Matching costs grow with pattern length; a dropped negation would widen the block, so it goes too.
+        const long = args.filter((pat) => !isConcrete(pat) && pat.length > MAX_WILDCARD_PATTERN_LENGTH)
+        if (long.length > 0 && !longWarned) {
+          longWarned = true
+          warnings.push(`Host patterns longer than ${MAX_WILDCARD_PATTERN_LENGTH} characters are ignored`)
+        }
+        if (long.some((pat) => pat.startsWith('!'))) {
+          skipBlock = true
+          continue
+        }
+        if (long.length > 0) args = args.filter((pat) => !long.includes(pat))
+        const wildCount = args.filter((pat) => !isConcrete(pat)).length
+        if (wildCount > 0 && wildcardPatterns + wildCount > MAX_WILDCARD_PATTERNS) {
+          if (!wildcardCapWarned) warnings.push(`More than ${MAX_WILDCARD_PATTERNS} wildcard Host patterns, the rest are ignored`)
+          wildcardCapWarned = true
+          skipBlock = true
+          continue
+        }
+        if (wildCount > 0 && ++wildcardBlocks > MAX_WILDCARD_BLOCKS) {
           if (wildcardBlocks === MAX_WILDCARD_BLOCKS + 1) {
             warnings.push(`More than ${MAX_WILDCARD_BLOCKS} wildcard Host blocks, the rest are ignored`)
           }
@@ -156,6 +198,7 @@ export function parseSshConfig(text: string, opts: ParseOptions): { entries: Ssh
           skipBlock = true
         } else {
           storedPatterns += kept.length
+          wildcardPatterns += wildCount
           skipBlock = false
           blocks.push({ patterns: kept, directives: [] })
         }
@@ -172,7 +215,19 @@ export function parseSshConfig(text: string, opts: ParseOptions): { entries: Ssh
     }
   }
 
+  const spendBudget = (): void => {
+    if (!budgetSpent) warnings.push('Include budget exhausted, remaining includes skipped')
+    budgetSpent = true
+  }
+
   const include = (arg: string, depth: number): void => {
+    if (++includeDirectives > MAX_INCLUDE_DIRECTIVES) {
+      if (includeDirectives === MAX_INCLUDE_DIRECTIVES + 1) {
+        warnings.push(`More than ${MAX_INCLUDE_DIRECTIVES} Include directives, the rest are ignored`)
+      }
+      return
+    }
+    if (budgetSpent) return
     if (!opts.include) {
       warnings.push(`Include not followed: ${arg}`)
       return
@@ -183,13 +238,17 @@ export function parseSshConfig(text: string, opts: ParseOptions): { entries: Ssh
     }
     let result: IncludeResult
     try {
-      result = opts.include(expandHome(arg, opts.home))
+      result = opts.include(expandHome(arg, opts.home), {
+        files: MAX_INCLUDE_FILES - includeFiles,
+        bytes: MAX_INCLUDE_TOTAL_BYTES - includeBytes,
+      })
     } catch {
       warnings.push(`Include could not be read: ${arg}`)
       return
     }
     warnings.push(...result.warnings)
     for (const file of result.files) {
+      if (budgetSpent) return
       const key = file.realPath ?? resolve(file.path)
       if (visited.has(key)) {
         warnings.push(`Include loop skipped: ${file.path}`)
@@ -201,9 +260,8 @@ export function parseSshConfig(text: string, opts: ParseOptions): { entries: Ssh
         continue
       }
       if (includeFiles >= MAX_INCLUDE_FILES || includeBytes + size > MAX_INCLUDE_TOTAL_BYTES) {
-        if (!budgetWarned) warnings.push('Include budget exhausted, remaining includes skipped')
-        budgetWarned = true
-        continue
+        spendBudget()
+        return
       }
       visited.add(key)
       includeFiles++
@@ -211,6 +269,7 @@ export function parseSshConfig(text: string, opts: ParseOptions): { entries: Ssh
       walk(file.text, depth + 1)
       visited.delete(key) // only files on the current include stack count as a loop
     }
+    if (result.exhausted) spendBudget()
   }
 
   walk(text, 0)
@@ -224,19 +283,33 @@ export function parseSshConfig(text: string, opts: ParseOptions): { entries: Ssh
     if (!b.patterns || b.patterns.some((p) => !isConcrete(p))) wild.push(i)
     else for (const p of new Set(b.patterns)) (byAlias.get(p) ?? byAlias.set(p, []).get(p)!).push(i)
   })
+  const budget: GlobBudget = { steps: MAX_GLOB_STEPS }
   for (const alias of aliases) {
     const idx = [...(byAlias.get(alias) ?? []), ...wild].sort((x, y) => x - y)
-    entries.push(buildEntry(alias, idx.map((i) => blocks[i]), opts, shared))
+    entries.push(buildEntry(alias, idx.map((i) => blocks[i]), opts, shared, budget))
   }
+  if (budget.steps < 0) warnings.push('Wildcard Host matching took too long; some hosts are missing settings from wildcard blocks')
   warnings.push(...shared)
-  return { entries, warnings }
+  return { entries, warnings: capWarnings(warnings) }
+}
+
+function capWarnings(warnings: string[]): string[] {
+  const unique = [...new Set(warnings)]
+  if (unique.length <= MAX_WARNINGS) return unique
+  return [...unique.slice(0, MAX_WARNINGS), `…and ${unique.length - MAX_WARNINGS} more warnings`]
 }
 
 function isConcrete(pattern: string): boolean {
   return !/[*?!]/.test(pattern)
 }
 
-function buildEntry(alias: string, blocks: Block[], opts: ParseOptions, shared: Set<string>): SshConfigEntry {
+function buildEntry(
+  alias: string,
+  blocks: Block[],
+  opts: ParseOptions,
+  shared: Set<string>,
+  budget: GlobBudget,
+): SshConfigEntry {
   const entry: SshConfigEntry = {
     alias,
     hostName: alias,
@@ -251,9 +324,10 @@ function buildEntry(alias: string, blocks: Block[], opts: ParseOptions, shared: 
   const sshDir = resolve(opts.sshDir)
 
   for (const block of blocks) {
-    if (block.patterns && !matchesPatterns(block.patterns, alias)) continue
     // Problems in shared blocks (Host *, wildcards) are reported once, not per host.
     const shareable = !block.patterns || block.patterns.some((p) => !isConcrete(p))
+    // Literal-only blocks were picked by alias, so only wildcard blocks need (and spend) matching.
+    if (block.patterns && shareable && !matchesPatterns(block.patterns, alias, budget)) continue
     const warn = (msg: string): void => {
       if (shareable) shared.add(msg)
       else entry.warnings.push(msg)
@@ -292,14 +366,19 @@ function buildEntry(alias: string, blocks: Block[], opts: ParseOptions, shared: 
 }
 
 /** Include reader confined to `sshDir`: globs only in the basename, symlinks must not escape. */
-export function readSshIncludes(sshDir: string): (pattern: string) => IncludeResult {
-  return (pattern) => {
+export function readSshIncludes(sshDir: string): (pattern: string, budget?: IncludeBudget) => IncludeResult {
+  return (pattern, budget = { files: Infinity, bytes: Infinity }) => {
     const files: IncludeFile[] = []
     const warnings: string[] = []
+    let bytes = 0
     try {
       const full = isAbsolute(pattern) ? resolve(pattern) : resolve(sshDir, pattern)
       const dir = dirname(full)
       const base = basename(full)
+      if (/[*?]/.test(dir)) {
+        warnings.push(`Include ${pattern}: wildcards in folder names aren't supported`)
+        return { files, warnings }
+      }
       let realRoot: string
       let realDir: string
       try {
@@ -336,6 +415,8 @@ export function readSshIncludes(sshDir: string): (pattern: string) => IncludeRes
             warnings.push(`Include matches too many files, using the first ${MAX_INCLUDE_MATCHES}: ${pattern}`)
             break
           }
+          if (files.length >= budget.files || bytes + st.size > budget.bytes) return { files, warnings, exhausted: true }
+          bytes += st.size
           files.push({ path, realPath: real, text: readFileSync(real, 'utf8') })
         } catch {
           warnings.push(`Include could not be read: ${path}`)
