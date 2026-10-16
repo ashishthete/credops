@@ -1,4 +1,5 @@
 @import 'tailwindcss';
+@import './ui/tokens.css';
 
 html,
 body,
@@ -9,5 +10,5 @@ body,
 
 body {
   background: #0b0d12;
-  color: #e6e8ee;
+  color: var(--text);
 }
