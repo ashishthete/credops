@@ -1,3 +1,4 @@
+import type { ResolvedHost } from '../../../shared/inventory'
 import type { Handlers } from '../../../shared/ipc'
 import type { EnvironmentStore } from '../../inventory/environment-store'
 import type { HostStore } from '../../inventory/host-store'
@@ -9,6 +10,7 @@ type InventoryChannel =
   | 'host:update'
   | 'host:delete'
   | 'host:setVaults'
+  | 'host:resolve'
   | 'env:list'
   | 'env:create'
   | 'env:update'
@@ -25,14 +27,16 @@ export function createInventoryHandlers(deps: {
   hosts: HostStore
   environments: EnvironmentStore
   products: ProductStore
+  resolve: (hostId: string, environmentId?: string) => ResolvedHost
 }): Pick<Handlers, InventoryChannel> {
-  const { hosts, environments, products } = deps
+  const { hosts, environments, products, resolve } = deps
   return {
     'host:list': () => hosts.list(),
     'host:create': (input) => hosts.create(input),
     'host:update': (id, patch) => hosts.update(id, patch),
     'host:delete': (id) => hosts.delete(id),
     'host:setVaults': (id, vaultIds) => hosts.setVaults(id, vaultIds),
+    'host:resolve': (hostId, environmentId) => resolve(hostId, environmentId),
     'env:list': () => environments.list(),
     'env:create': (input) => environments.create(input),
     'env:update': (id, patch) => environments.update(id, patch),

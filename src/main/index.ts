@@ -27,6 +27,7 @@ import { VALIDATORS } from './ipc/validators'
 import { EnvironmentStore } from './inventory/environment-store'
 import { HostStore } from './inventory/host-store'
 import { ProductStore } from './inventory/product-store'
+import { resolveHost } from './inventory/resolve'
 import { redact } from './security/redact'
 import { AutoLock } from './vault/auto-lock'
 import { IdentityStore } from './vault/identity-store'
@@ -130,6 +131,7 @@ if (!app.requestSingleInstanceLock()) {
       hosts = new HostStore(db, service, log)
       environments = new EnvironmentStore(db, service, log)
       products = new ProductStore(db, service, log)
+      const inventoryDb = db
       stopAutoLock = new AutoLock({
         idleSeconds: () => powerMonitor.getSystemIdleTime(),
         minutes: () => service.autoLockMinutes(),
@@ -171,7 +173,12 @@ if (!app.requestSingleInstanceLock()) {
             },
           }),
           ...createIdentityHandlers(identities),
-          ...createInventoryHandlers({ hosts, environments, products }),
+          ...createInventoryHandlers({
+            hosts,
+            environments,
+            products,
+            resolve: (hostId, environmentId) => resolveHost(inventoryDb, hostId, environmentId, { localUser: actor.osUser }),
+          }),
         },
         (url) => isTrustedSender(url, { devServerUrl, rendererFile }),
         { validators: VALIDATORS, knownSecrets },

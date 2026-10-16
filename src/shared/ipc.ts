@@ -10,6 +10,7 @@ import type {
   ProductInput,
   ProductMeta,
   ProductPatch,
+  ResolvedHost,
 } from './inventory'
 import type {
   IdentityInput,
@@ -94,6 +95,7 @@ export interface IpcContract {
   'host:update': { args: [id: string, patch: HostPatch]; result: HostMeta }
   'host:delete': { args: [id: string]; result: void }
   'host:setVaults': { args: [id: string, vaultIds: string[]]; result: HostMeta }
+  'host:resolve': { args: [hostId: string, environmentId?: string]; result: ResolvedHost }
   'env:list': { args: []; result: EnvironmentMeta[] }
   'env:create': { args: [input: EnvironmentInput]; result: EnvironmentMeta }
   'env:update': { args: [id: string, patch: EnvironmentPatch]; result: EnvironmentMeta }
@@ -151,6 +153,7 @@ export const CHANNELS = [
   'host:update',
   'host:delete',
   'host:setVaults',
+  'host:resolve',
   'env:list',
   'env:create',
   'env:update',

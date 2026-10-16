@@ -155,7 +155,16 @@ describe('environment and product IPC', () => {
     const registered = new Map<string, (e: IpcMainInvokeEvent, ...a: unknown[]) => unknown>()
     registerHandlers(
       { handle: (c: string, fn: never) => void registered.set(c, fn) },
-      stubHandlers(createInventoryHandlers({ hosts: f.hosts, environments: f.envs, products: f.products })),
+      stubHandlers(
+        createInventoryHandlers({
+          hosts: f.hosts,
+          environments: f.envs,
+          products: f.products,
+          resolve: () => {
+            throw new Error('unused')
+          },
+        }),
+      ),
       (u) => u === 'file:///ok',
       { validators: VALIDATORS },
     )

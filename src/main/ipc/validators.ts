@@ -258,6 +258,7 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'host:update': args(v.uuid(), asHostPatch),
   'host:delete': args(v.uuid()),
   'host:setVaults': args(v.uuid(), v.array(v.uuid(), MAX_LINKS)),
+  'host:resolve': args(v.uuid(), v.optional(v.uuid())),
   'env:list': args(),
   'env:create': args(asEnvironmentInput),
   'env:update': args(v.uuid(), asEnvironmentPatch),
