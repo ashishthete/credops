@@ -145,3 +145,54 @@ describe('audit page', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })
+
+describe('audit page refresh', () => {
+  it('re-lists after verify and after a completed export, not after a cancelled one', async () => {
+    const user = userEvent.setup()
+    const invoke = mockBridge({ 'audit:list': events, 'audit:verify': { ok: true, count: 2 }, 'audit:exportCsv': null })
+    renderPage()
+    await screen.findByRole('cell', { name: 'audit.verify' })
+    expect(listCalls(invoke)).toHaveLength(1)
+
+    await user.click(screen.getByRole('button', { name: /Verify chain/ }))
+    await waitFor(() => expect(listCalls(invoke)).toHaveLength(2))
+
+    await user.click(screen.getByRole('button', { name: /Export CSV/ }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /Export CSV/ })).not.toHaveAttribute('aria-busy'))
+    expect(listCalls(invoke)).toHaveLength(2)
+
+    invoke.mockImplementation(async (channel: string) =>
+      channel === 'audit:exportCsv' ? { path: '/tmp/a.csv' } : channel === 'audit:list' ? events : null,
+    )
+    await user.click(screen.getByRole('button', { name: /Export CSV/ }))
+    await waitFor(() => expect(listCalls(invoke)).toHaveLength(3))
+  })
+
+  it('a failed refresh with rows on screen shows an error toast', async () => {
+    const user = userEvent.setup()
+    const invoke = mockBridge({ 'audit:list': events })
+    renderPage()
+    await screen.findByRole('cell', { name: 'audit.verify' })
+
+    invoke.mockImplementation(async (channel: string) => {
+      if (channel === 'audit:list') throw new Error('database is locked')
+      return null
+    })
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Outcome' }), 'denied')
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't refresh events")
+  })
+
+  it('load more is disabled while a refresh is in flight', async () => {
+    const user = userEvent.setup()
+    const page1 = Array.from({ length: 200 }, (_, i) => auditEvent({ id: 300 - i }))
+    const invoke = mockBridge({ 'audit:list': page1 })
+    renderPage()
+    expect(await screen.findByRole('button', { name: 'Load more' })).toBeEnabled()
+
+    invoke.mockImplementation((channel: string) =>
+      channel === 'audit:list' ? new Promise(() => {}) : Promise.resolve(null),
+    )
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Outcome' }), 'denied')
+    expect(screen.getByRole('button', { name: 'Load more' })).toBeDisabled()
+  })
+})

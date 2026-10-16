@@ -82,6 +82,7 @@ function useDebounced<T>(value: T, ms: number): T {
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 export function AuditPage() {
+  const motionSafe = useMotionSafe()
   const [filters, setFilters] = useState<Filters>(NO_FILTERS)
   const text = useDebounced(filters.search, SEARCH_DEBOUNCE_MS)
   const filter = useMemo(() => toAuditFilter(filters, text), [filters, text])
@@ -99,6 +100,13 @@ export function AuditPage() {
   // Rows stagger in only for the first batch; later loads appear without the cascade.
   const [staggered, setStaggered] = useState(false)
   const generation = useRef(0)
+  // Verify and export append their own audit events; bumping this re-lists so they show up.
+  const [reloadKey, setReloadKey] = useState(0)
+  const reload = useCallback(() => setReloadKey((k) => k + 1), [])
+  const rowsRef = useRef(rows)
+  useEffect(() => {
+    rowsRef.current = rows
+  })
 
   useEffect(() => {
     const gen = ++generation.current
@@ -113,6 +121,8 @@ export function AuditPage() {
       })
       .catch((e: unknown) => {
         if (gen !== generation.current) return
+        // With rows on screen the empty state never shows, so say so in a toast instead.
+        if (rowsRef.current?.length) toast({ title: "Couldn't refresh events", description: errorText(e), tone: 'error' })
         setRows((r) => r ?? [])
         setLoadError(errorText(e))
       })
@@ -120,7 +130,7 @@ export function AuditPage() {
         if (gen === generation.current) setRefreshing(false)
       })
     // filterKey captures filter's contents; the object itself is rebuilt every render.
-  }, [filterKey])
+  }, [filterKey, reloadKey])
 
   useEffect(() => {
     if (rows && !staggered) {
@@ -130,7 +140,8 @@ export function AuditPage() {
   }, [rows, staggered])
 
   const loadMore = async () => {
-    if (!rows?.length) return
+    // A refresh in flight would replace the rows this page continues from.
+    if (!rows?.length || refreshing) return
     const gen = generation.current
     setLoadingMore(true)
     try {
@@ -164,21 +175,26 @@ export function AuditPage() {
       toast({ title: "Couldn't verify the chain", description: errorText(e), tone: 'error' })
     } finally {
       setVerifying(false)
+      reload()
     }
-  }, [])
+  }, [reload])
 
   const exportCsv = useCallback(async (current: AuditFilter) => {
     setExporting(true)
+    // null: the user closed the save dialog, which needs no comment and logs nothing.
+    let logged = false
     try {
       const result = await api.invoke('audit:exportCsv', current)
-      // null: the user closed the save dialog, which needs no comment.
+      logged = result !== null
       if (result) toast({ title: 'Exported CSV', description: result.path, tone: 'success' })
     } catch (e) {
+      logged = true
       toast({ title: "Couldn't export CSV", description: errorText(e), tone: 'error' })
     } finally {
       setExporting(false)
+      if (logged) reload()
     }
-  }, [])
+  }, [reload])
 
   const filterRef = useRef(filter)
   useEffect(() => {
@@ -291,7 +307,12 @@ export function AuditPage() {
         />
         <AnimatePresence initial={false}>
           {filtered && (
-            <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }} transition={fast}>
+            <motion.div
+              initial={motionSafe ? { opacity: 0, scale: 0.9 } : { opacity: 0 }}
+              animate={motionSafe ? { opacity: 1, scale: 1 } : { opacity: 1 }}
+              exit={motionSafe ? { opacity: 0, scale: 0.9 } : { opacity: 0 }}
+              transition={fast}
+            >
               <Button variant="ghost" size="sm" icon={<FilterX aria-hidden className="size-3.5" />} onClick={() => setFilters(NO_FILTERS)}>
                 Clear
               </Button>
@@ -347,7 +368,7 @@ export function AuditPage() {
         </div>
         {hasMore && rows && rows.length > 0 && (
           <div className="flex justify-center pt-4">
-            <Button variant="ghost" size="sm" loading={loadingMore} onClick={() => void loadMore()}>
+            <Button variant="ghost" size="sm" loading={loadingMore} disabled={refreshing} onClick={() => void loadMore()}>
               Load more
             </Button>
           </div>
@@ -376,13 +397,14 @@ const formatTime = (iso: string) => {
 }
 
 function ChainStatus({ check }: { check: ChainVerification | null }) {
+  const motionSafe = useMotionSafe()
   return (
     <AnimatePresence mode="wait">
       {check && (
         <motion.span
           key={String(check.ok)}
-          initial={{ opacity: 0, x: -4 }}
-          animate={{ opacity: 1, x: 0 }}
+          initial={motionSafe ? { opacity: 0, x: -4 } : { opacity: 0 }}
+          animate={motionSafe ? { opacity: 1, x: 0 } : { opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={fast}
         >
