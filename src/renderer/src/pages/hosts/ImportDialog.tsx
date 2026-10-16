@@ -1,19 +1,20 @@
 import { animate, motion, useMotionValue, useTransform } from 'framer-motion'
-import { FileQuestion, KeyRound, Route, TriangleAlert } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { FileQuestion, FileWarning, KeyRound, RotateCw, Route, TriangleAlert } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { HOST_ROLES, type HostRole, type SshImportCandidate, type SshImportPreview, type SshImportResult } from '../../../../shared/inventory'
 import { DEFAULT_VAULT_ID } from '../../../../shared/vault'
 import { inv, useInventory } from '../../inventory/store'
 import { api } from '../../lib/api'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
-import { attempt, plural } from '../../ui/common'
+import { errorText, plural } from '../../ui/common'
 import { Dialog } from '../../ui/Dialog'
 import { SelectField } from '../../ui/Field'
 import { fast, spring, useMotionSafe } from '../../ui/motion'
 import { Skeleton } from '../../ui/Skeleton'
 import { toast } from '../../ui/Toaster'
 import { useVaultStatus } from '../../vault/status'
+import { withUnlock } from '../../vault/unlock'
 import { ROLE_LABEL } from '../products/ProductView'
 
 type Step = 'preview' | 'where' | 'done'
@@ -41,6 +42,7 @@ export function ImportDialog({ open, onClose, onImported }: ImportDialogProps) {
   const status = useVaultStatus()
   const [step, setStep] = useState<Step>('preview')
   const [preview, setPreview] = useState<SshImportPreview | null>(null)
+  const [previewError, setPreviewError] = useState<string | null>(null)
   const [chosen, setChosen] = useState<Set<string>>(new Set())
   const [vaultId, setVaultId] = useState(DEFAULT_VAULT_ID)
   const [environmentId, setEnvironmentId] = useState('')
@@ -49,27 +51,40 @@ export function ImportDialog({ open, onClose, onImported }: ImportDialogProps) {
   const [result, setResult] = useState<SshImportResult | null>(null)
   // A lock mid-import unmounts the app until the unlock, so the outcome may land with nobody to show it.
   const mounted = useRef(true)
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // Set here, not just initially: StrictMode runs this cleanup once and then the effect again.
+    mounted.current = true
+    return () => {
       mounted.current = false
-    },
-    [],
-  )
+    }
+  }, [])
+
+  // Each load bumps the generation, so a slow answer to an earlier one is dropped.
+  const generation = useRef(0)
+  const loadPreview = useCallback(() => {
+    const gen = ++generation.current
+    setPreview(null)
+    setPreviewError(null)
+    withUnlock(() => api.invoke('sshconfig:preview')).then(
+      // undefined means the unlock was cancelled; Retry asks again.
+      (p) => gen === generation.current && (p ? setPreview(p) : setPreviewError('OpsDeck is locked. Unlock it to read the file.')),
+      (err: unknown) => gen === generation.current && setPreviewError(errorText(err)),
+    )
+  }, [])
 
   useEffect(() => {
     if (!open) return
     setStep('preview')
-    setPreview(null)
     setChosen(new Set())
+    setVaultId(DEFAULT_VAULT_ID)
     setEnvironmentId('')
     setRole('app')
     setResult(null)
-    let live = true
-    void attempt("Couldn't read ~/.ssh/config", () => api.invoke('sshconfig:preview')).then((p) => live && p && setPreview(p))
+    loadPreview()
     return () => {
-      live = false
+      generation.current++
     }
-  }, [open])
+  }, [open, loadPreview])
 
   // Corrupt vaults can't take new identities or keys (F26); Default first.
   const vaults = useMemo(() => {
@@ -137,7 +152,12 @@ export function ImportDialog({ open, onClose, onImported }: ImportDialogProps) {
         animate={motionSafe ? { opacity: 1, x: 0 } : { opacity: 1 }}
         transition={motionSafe ? spring : fast}
       >
-        {step === 'preview' && <PreviewStep preview={preview} chosen={chosen} onChange={setChosen} />}
+        {step === 'preview' &&
+          (previewError ? (
+            <PreviewError message={previewError} onRetry={loadPreview} />
+          ) : (
+            <PreviewStep preview={preview} chosen={chosen} onChange={setChosen} />
+          ))}
         {step === 'where' && (
           <div className="flex flex-col gap-4">
             <p className="text-[12.5px] leading-5 text-muted">
@@ -198,6 +218,21 @@ function Steps({ step }: { step: Step }) {
         </li>
       ))}
     </ol>
+  )
+}
+
+function PreviewError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div role="alert" className="flex flex-col items-center gap-2 py-8 text-center">
+      <span className="grid size-11 place-items-center rounded-xl bg-err/10 text-err">
+        <FileWarning aria-hidden className="size-5" />
+      </span>
+      <h3 className="text-[14px] font-semibold text-fg">Couldn't read ~/.ssh/config</h3>
+      <p className="max-w-[44ch] text-[12.5px] leading-5 text-muted">{message}</p>
+      <Button variant="ghost" size="sm" className="mt-1" icon={<RotateCw aria-hidden className="size-3.5" />} onClick={onRetry}>
+        Retry
+      </Button>
+    </div>
   )
 }
 
@@ -303,8 +338,8 @@ function CandidateRow({ candidate: c, checked, onToggle }: { candidate: SshImpor
           </span>
           {c.warnings.length > 0 && (
             <span className="flex flex-wrap gap-1">
-              {c.warnings.map((w) => (
-                <span key={w} className="rounded-md bg-warn/12 px-1.5 text-[11.5px] leading-5 text-warn">
+              {c.warnings.map((w, i) => (
+                <span key={`${i}-${w}`} className="rounded-md bg-warn/12 px-1.5 text-[11.5px] leading-5 text-warn">
                   {w}
                 </span>
               ))}
@@ -324,8 +359,8 @@ function Warnings({ title, items }: { title: string; items: string[] }) {
         {title}
       </h4>
       <ul className="mt-1 flex flex-col gap-0.5 text-[12px] leading-5 text-fg/80">
-        {items.map((w) => (
-          <li key={w}>{w}</li>
+        {items.map((w, i) => (
+          <li key={`${i}-${w}`}>{w}</li>
         ))}
       </ul>
     </div>

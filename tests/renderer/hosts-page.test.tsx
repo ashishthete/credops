@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { StrictMode } from 'react'
 import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { inventoryStore } from '../../src/renderer/src/inventory/store'
@@ -36,6 +37,8 @@ interface World {
   preview: SshImportPreview
   /** Rejections `sshconfig:import` throws before it succeeds. */
   importFailures: Error[]
+  /** Rejections `sshconfig:preview` throws before it succeeds. */
+  previewFailures: Error[]
   unlocked: boolean
   vaults: VaultMeta[]
   corruptVaultIds: string[]
@@ -78,6 +81,7 @@ function world(over: Partial<World> = {}): World {
       warnings: ['Include ../outside points outside ~/.ssh; skipped'],
     },
     importFailures: [],
+    previewFailures: [],
     unlocked: true,
     vaults: [defaultVault],
     corruptVaultIds: [],
@@ -104,7 +108,7 @@ function Location() {
 }
 
 /** The real composition from App.tsx over a stateful fake main process. */
-function renderApp(w: World, path = '/hosts') {
+function renderApp(w: World, path = '/hosts', { strict = false } = {}) {
   const invoke = mockBridge()
   const base = invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
   invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
@@ -130,8 +134,11 @@ function renderApp(w: World, path = '/hosts') {
         w.hosts = w.hosts.filter((h) => h.id !== args[0])
         w.environments = w.environments.map((e) => ({ ...e, hosts: e.hosts.filter((m) => m.hostId !== args[0]) }))
         return null
-      case 'sshconfig:preview':
+      case 'sshconfig:preview': {
+        const failure = w.previewFailures.shift()
+        if (failure) throw failure
         return w.preview
+      }
       case 'sshconfig:import': {
         const failure = w.importFailures.shift()
         if (failure) {
@@ -157,7 +164,7 @@ function renderApp(w: World, path = '/hosts') {
     return base(channel, ...args)
   })
   vaultStatusStore.set(vaultStatus({ unlocked: w.unlocked, corruptVaultIds: w.corruptVaultIds }))
-  const view = render(
+  const app = (
     <MemoryRouter initialEntries={[path]}>
       <AuthGate>
         <AppShell />
@@ -165,8 +172,9 @@ function renderApp(w: World, path = '/hosts') {
       </AuthGate>
       <Location />
       <Toaster />
-    </MemoryRouter>,
+    </MemoryRouter>
   )
+  const view = render(strict ? <StrictMode>{app}</StrictMode> : app)
   return { invoke, ...view }
 }
 
@@ -264,6 +272,72 @@ describe('hosts page', () => {
 
     await user.click(within(dialog).getByRole('button', { name: 'Done' }))
     await waitFor(() => expect(rowNames()).toContain('web-1'))
+  })
+
+  it('import wizard reaches its summary under StrictMode', async () => {
+    const user = userEvent.setup()
+    renderApp(world(), '/hosts', { strict: true })
+    await user.click(await screen.findByRole('button', { name: 'Import from ~/.ssh/config' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(await within(dialog).findByRole('checkbox', { name: 'Select all' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Next' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Import 1 host' }))
+    expect(await within(dialog).findByText('Imported 1 host')).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Done' })).toBeInTheDocument()
+  })
+
+  it('a failed preview offers a retry', async () => {
+    const user = userEvent.setup()
+    renderApp(world({ previewFailures: [new Error('EACCES: permission denied')] }))
+    await user.click(await screen.findByRole('button', { name: 'Import from ~/.ssh/config' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(await within(dialog).findByText("Couldn't read ~/.ssh/config")).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Next' })).toBeDisabled()
+    await user.click(within(dialog).getByRole('button', { name: 'Retry' }))
+    expect(await within(dialog).findByRole('checkbox', { name: 'web-1' })).toBeInTheDocument()
+    expect(within(dialog).queryByText("Couldn't read ~/.ssh/config")).not.toBeInTheDocument()
+  })
+
+  it('a failed import keeps the choices and lets the user try again', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderApp(world({ importFailures: [new Error('disk full')] }))
+    await user.click(await screen.findByRole('button', { name: 'Import from ~/.ssh/config' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(await within(dialog).findByRole('checkbox', { name: 'Select all' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Next' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Import 1 host' }))
+
+    expect(await screen.findByText("Couldn't import from ~/.ssh/config")).toBeInTheDocument()
+    const again = within(dialog).getByRole('button', { name: 'Import 1 host' })
+    await waitFor(() => expect(again).toBeEnabled())
+    expect(within(dialog).getByLabelText('Vault')).toBeInTheDocument()
+    expect(within(dialog).queryByText('Imported 1 host')).not.toBeInTheDocument()
+
+    await user.click(again)
+    expect(await within(dialog).findByText('Imported 1 host')).toBeInTheDocument()
+    expect(invoke.mock.calls.filter(([c]) => c === 'sshconfig:import')).toHaveLength(2)
+  })
+
+  it('reopening resets the vault choice', async () => {
+    const user = userEvent.setup()
+    const team: VaultMeta = { ...defaultVault, id: 'team', name: 'Team', isDefault: false }
+    renderApp(world({ vaults: [defaultVault, team] }))
+    const toWhere = async () => {
+      const dialog = await screen.findByRole('dialog')
+      await user.click(await within(dialog).findByRole('checkbox', { name: 'Select all' }))
+      await user.click(within(dialog).getByRole('button', { name: 'Next' }))
+      return dialog
+    }
+    await user.click(await screen.findByRole('button', { name: 'Import from ~/.ssh/config' }))
+    let dialog = await toWhere()
+    await user.selectOptions(within(dialog).getByLabelText('Vault'), 'team')
+    await user.click(within(dialog).getByRole('button', { name: 'Back' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    await user.click(screen.getByRole('button', { name: 'Import from ~/.ssh/config' }))
+    dialog = await toWhere()
+    expect(within(dialog).getByLabelText('Vault')).toHaveValue(DEFAULT_VAULT_ID)
   })
 
   it('no config', async () => {
