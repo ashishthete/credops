@@ -110,6 +110,31 @@ describe('robustness', () => {
     expect(warnings.filter((w) => w.includes('Wildcard Host matching'))).toHaveLength(1)
   })
 
+  it('applies a huge Host * body once, not once per host', () => {
+    const hosts = Array.from({ length: 2000 }, (_, i) => `Host h${i}`).join('\n')
+    const body = 'a\n'.repeat(Math.floor((1024 * 1024 - hosts.length - 32) / 2))
+    const text = `${hosts}\nHost *\n User shared\n${body}`
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(1024 * 1024)
+    const t0 = Date.now()
+    const { entries } = parse(text)
+    expect(Date.now() - t0).toBeLessThan(1000)
+    expect(entries).toHaveLength(2000)
+    expect(entries.every((e) => e.user === 'shared')).toBe(true)
+  })
+
+  it('caps forwards per host', () => {
+    const hosts = Array.from({ length: 2000 }, (_, i) => `Host h${i}`).join('\n')
+    const fwd = Array.from({ length: 20000 }, (_, i) => ` LocalForward ${10000 + i} db:5432`).join('\n')
+    const t0 = Date.now()
+    const { entries, warnings } = parse(`${hosts}\nHost h0\n RemoteForward 9000 localhost:9000\nHost *\n${fwd}\n`)
+    expect(Date.now() - t0).toBeLessThan(1000)
+    expect(entries).toHaveLength(2000)
+    expect(entries.every((e) => e.forwards.length === 64)).toBe(true)
+    expect(entries[0].forwards[0]).toEqual({ type: 'R', spec: '9000 localhost:9000' })
+    expect(entries[1].forwards[0]).toEqual({ type: 'L', spec: '10000 db:5432' })
+    expect(warnings.filter((w) => w.includes('port forwards'))).toEqual(['More than 64 port forwards for a host; the rest are ignored'])
+  })
+
   it('ignores over-long wildcard patterns, and a block whose negation is too long', () => {
     const long = `*${'x'.repeat(300)}*`
     const { entries, warnings } = parse(`Host ${long} web*\n User a\nHost * !${long}\n Port 2200\nHost web\n`)
@@ -252,6 +277,21 @@ describe('Include handling', () => {
     const byBytes = readSshIncludes(sshDir)('many/*.conf', { files: 100, bytes: 12 })
     expect(byBytes.files).toHaveLength(1)
     expect(byBytes.exhausted).toBe(true)
+  })
+
+  it('caps the folder entries Include looks at per parse', () => {
+    const { sshDir } = setup()
+    const many = join(sshDir, 'many')
+    mkdirSync(many)
+    for (let i = 0; i < 3000; i++) mkdirSync(join(many, `d${i}`))
+    const t0 = Date.now()
+    const { warnings } = parseSshConfig('Include many/*\n'.repeat(1000), {
+      home: '/home/t',
+      sshDir,
+      include: readSshIncludes(sshDir),
+    })
+    expect(Date.now() - t0).toBeLessThan(1000)
+    expect(warnings).toContain('Include looked at more than 10000 folder entries; the rest are skipped')
   })
 
   it('warns about wildcards in folder names', () => {

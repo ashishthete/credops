@@ -204,7 +204,7 @@ export class SshImporter {
         warnings.push(`${n} port forward${n === 1 ? '' : 's'} will be offered when Tunnels arrive`)
       }
       // No identity for an unsafe User, not even one with the local user and its key.
-      const unsafeUser = e.user !== null && !isSafeSshToken(e.user)
+      const unsafeUser = e.user !== null && !isSafeSshToken(e.user.trim())
       if (unsafeUser) warnings.push(UNSAFE_USER)
       const login = unsafeUser ? { user: null, identityFile: null } : {}
       return { ...e, ...login, warnings, valid, existingHostId: existingId(e.alias), jumpResolvable: false }

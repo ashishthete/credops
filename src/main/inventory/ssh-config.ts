@@ -42,17 +42,38 @@ const MAX_WILDCARD_PATTERN_LENGTH = 256
 const MAX_GLOB_STEPS = 50_000_000
 const MAX_INCLUDE_DIRECTIVES = 1000
 const MAX_WARNINGS = 200
+/** Per host; the importer only shows the count until Tunnels arrive. */
+const MAX_FORWARDS = 64
+/** Folder entries the Include reader looks at per parse, matched or not. */
+const MAX_INCLUDE_ENTRIES = 10_000
 const TOO_LARGE = 'ssh config is larger than 1 MiB'
 
-interface Directive {
-  key: string
-  args: string[]
-  line: number
-}
+const KEYS = new Set(['hostname', 'port', 'user', 'identityfile', 'proxyjump'])
+
+/**
+ * A Host block folded as it is read: the first non-empty value per key (ssh's first-wins rule)
+ * and its first forwards. Applying a block then costs the same however long its body is.
+ */
 interface Block {
   /** null = lines before any Host, which match everything. */
   patterns: string[] | null
-  directives: Directive[]
+  values: Map<string, { value: string; line: number }>
+  forwards: SshForward[]
+  /** The block had more forwards than one host keeps. */
+  moreForwards: boolean
+}
+
+const newBlock = (patterns: string[] | null): Block => ({ patterns, values: new Map(), forwards: [], moreForwards: false })
+
+function addDirective(block: Block, key: string, args: string[], line: number): void {
+  if (key === 'localforward' || key === 'remoteforward') {
+    if (!args.length) return
+    if (block.forwards.length < MAX_FORWARDS) block.forwards.push({ type: key === 'localforward' ? 'L' : 'R', spec: args.join(' ') })
+    else block.moreForwards = true
+    return
+  }
+  const value = args.join(' ')
+  if (KEYS.has(key) && value && !block.values.has(key)) block.values.set(key, { value, line })
 }
 
 function tooLarge(text: string): boolean {
@@ -126,7 +147,7 @@ export function parseSshConfig(text: string, opts: ParseOptions): { entries: Ssh
   const warnings: string[] = []
   if (tooLarge(text)) return { entries: [], warnings: [TOO_LARGE] }
 
-  const blocks: Block[] = [{ patterns: null, directives: [] }]
+  const blocks: Block[] = [newBlock(null)]
   const visited = new Set<string>(opts.rootPath ? [resolve(opts.rootPath)] : [])
   let inMatch = false
   let skipBlock = false
@@ -200,7 +221,7 @@ export function parseSshConfig(text: string, opts: ParseOptions): { entries: Ssh
           storedPatterns += kept.length
           wildcardPatterns += wildCount
           skipBlock = false
-          blocks.push({ patterns: kept, directives: [] })
+          blocks.push(newBlock(kept))
         }
       } else if (key === 'match') {
         inMatch = true
@@ -210,7 +231,7 @@ export function parseSshConfig(text: string, opts: ParseOptions): { entries: Ssh
       } else if (key === 'include') {
         for (const arg of args) include(arg, depth)
       } else {
-        blocks[blocks.length - 1].directives.push({ key, args, line: lineNo })
+        addDirective(blocks[blocks.length - 1], key, args, lineNo)
       }
     }
   }
@@ -322,6 +343,7 @@ function buildEntry(
   }
   const got = new Set<string>()
   const sshDir = resolve(opts.sshDir)
+  let moreForwards = false
 
   for (const block of blocks) {
     // Problems in shared blocks (Host *, wildcards) are reported once, not per host.
@@ -332,17 +354,13 @@ function buildEntry(
       if (shareable) shared.add(msg)
       else entry.warnings.push(msg)
     }
-    for (const { key, args, line } of block.directives) {
-      if (key === 'localforward' || key === 'remoteforward') {
-        if (args.length) {
-          const f: SshForward = { type: key === 'localforward' ? 'L' : 'R', spec: args.join(' ') }
-          entry.forwards.push(f)
-        }
-        continue
-      }
-      if (!['hostname', 'port', 'user', 'identityfile', 'proxyjump'].includes(key) || got.has(key)) continue
-      const value = args.length ? args.join(' ') : ''
-      if (!value) continue
+    for (const f of block.forwards) {
+      if (entry.forwards.length < MAX_FORWARDS) entry.forwards.push(f)
+      else moreForwards = true
+    }
+    if (block.moreForwards) moreForwards = true
+    for (const [key, { value, line }] of block.values) {
+      if (got.has(key)) continue
       got.add(key)
       if (key === 'hostname') {
         entry.hostName = value.replace(/%([h%])/g, (_, c: string) => (c === 'h' ? alias : '%'))
@@ -362,11 +380,15 @@ function buildEntry(
       }
     }
   }
+  if (moreForwards) shared.add(`More than ${MAX_FORWARDS} port forwards for a host; the rest are ignored`)
   return entry
 }
 
 /** Include reader confined to `sshDir`: globs only in the basename, symlinks must not escape. */
 export function readSshIncludes(sshDir: string): (pattern: string, budget?: IncludeBudget) => IncludeResult {
+  // One reader per parse: folder listings are read once, and every entry looked at counts.
+  const listings = new Map<string, string[]>()
+  let examined = 0
   return (pattern, budget = { files: Infinity, bytes: Infinity }) => {
     const files: IncludeFile[] = []
     const warnings: string[] = []
@@ -392,8 +414,18 @@ export function readSshIncludes(sshDir: string): (pattern: string, budget?: Incl
         warnings.push(`Include outside ${sshDir} skipped: ${pattern}`)
         return { files, warnings }
       }
-      const names = /[*?]/.test(base) ? readdirSync(dir).filter((n) => globMatch(base, n)).sort() : [base]
+      let names = [base]
+      const globbed = /[*?]/.test(base)
+      if (globbed) {
+        let listing = listings.get(dir)
+        if (!listing) listings.set(dir, (listing = readdirSync(dir).sort()))
+        names = listing.filter((n) => globMatch(base, n))
+      }
       for (const name of names) {
+        if (++examined > MAX_INCLUDE_ENTRIES) {
+          warnings.push(`Include looked at more than ${MAX_INCLUDE_ENTRIES} folder entries; the rest are skipped`)
+          return { files, warnings, exhausted: true }
+        }
         const path = resolve(dir, name)
         try {
           if (!lstatSync(path, { throwIfNoEntry: false })) continue
@@ -404,7 +436,8 @@ export function readSshIncludes(sshDir: string): (pattern: string, budget?: Incl
           }
           const st = statSync(real)
           if (!st.isFile()) {
-            warnings.push(`Include skipped, not a regular file: ${path}`)
+            // A wildcard sweeps up folders as a matter of course; only a named one is worth a warning.
+            if (!globbed) warnings.push(`Include skipped, not a regular file: ${path}`)
             continue
           }
           if (st.size > MAX_SSH_CONFIG_BYTES) {

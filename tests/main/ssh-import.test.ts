@@ -283,6 +283,9 @@ describe('SshImporter.import', () => {
         'Host fmt-user',
         '  HostName 10.0.0.5',
         '  User root\u202e',
+        'Host pad-user',
+        '  HostName 10.0.0.6',
+        '  User " -x"',
         '',
       ].join('\n'),
     )
@@ -290,7 +293,7 @@ describe('SshImporter.import', () => {
     const by = new Map((await imp.preview()).candidates.map((c) => [c.alias, c]))
     expect(by.get('web\u200b')!.valid).toBe(false)
     expect(by.get('rtl')!.valid).toBe(false)
-    for (const a of ['opt-user', 'sep-user', 'fmt-user']) {
+    for (const a of ['opt-user', 'sep-user', 'fmt-user', 'pad-user']) {
       expect(by.get(a)).toMatchObject({ valid: true, user: null, identityFile: null })
       expect(by.get(a)!.warnings).toContain("User isn't a plain username; the host inherits an identity")
     }
