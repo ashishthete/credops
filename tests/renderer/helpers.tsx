@@ -1,6 +1,7 @@
 import { vi } from 'vitest'
 import type { AuditEvent } from '../../src/shared/audit'
 import type { AppInfo } from '../../src/shared/ipc'
+import { DEFAULT_VAULT_ID, type VaultMeta, type VaultStatus } from '../../src/shared/vault'
 
 export const appInfo: AppInfo = {
   version: '0.1.0',
@@ -27,12 +28,38 @@ export function auditEvent(over: Partial<AuditEvent> = {}): AuditEvent {
   }
 }
 
+export function vaultStatus(over: Partial<VaultStatus> = {}): VaultStatus {
+  return {
+    setUp: true,
+    unlocked: false,
+    quickUnlock: 'off',
+    quickUnlockAvailable: { touchId: true, login: false },
+    autoLockMinutes: 15,
+    retryAfterMs: 0,
+    corruptVaultIds: [],
+    ...over,
+  }
+}
+
+export const defaultVault: VaultMeta = {
+  id: DEFAULT_VAULT_ID,
+  name: 'Default',
+  color: '#5b8cff',
+  isDefault: true,
+  counts: { secrets: 0, keys: 0, identities: 0 },
+  createdAt: '2026-10-16T09:00:00.000Z',
+  updatedAt: '2026-10-16T09:00:00.000Z',
+}
+
 /** Installs window.opsdeck with per-channel results; returns the invoke mock. */
 export function mockBridge(results: Record<string, unknown> = {}) {
   const invoke = vi.fn(async (channel: string) => {
     if (channel in results) return results[channel]
     if (channel === 'app:info') return appInfo
     if (channel === 'audit:list') return []
+    if (channel === 'vault:status') return vaultStatus()
+    if (channel === 'vault:list') return [defaultVault]
+    if (channel === 'secret:list' || channel === 'key:list' || channel === 'identity:list') return []
     return null
   })
   ;(window as unknown as { opsdeck: unknown }).opsdeck = { invoke }

@@ -18,6 +18,7 @@ import { spring, useMotionSafe } from '../ui/motion'
 import { formatShortcut } from '../ui/shortcuts'
 import { Skeleton } from '../ui/Skeleton'
 import { SECTIONS, sectionShortcut, type SectionId } from './sections'
+import { VaultLockButton } from './VaultLockButton'
 
 export const SECTION_ICONS: Record<SectionId, LucideIcon> = {
   environments: Boxes,
@@ -111,7 +112,11 @@ export function Sidebar() {
         })}
       </nav>
 
-      <div className="mt-auto border-t border-line p-3">
+      <div className="mt-auto">
+        <VaultLockButton />
+      </div>
+
+      <div className="border-t border-line p-3">
         <div className="flex items-center gap-2.5 rounded-lg px-1.5 py-1">
           {info ? (
             <>
