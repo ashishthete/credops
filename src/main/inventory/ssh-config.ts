@@ -58,6 +58,14 @@ function splitArgs(rest: string): string[] {
 
 /** Iterative `*`/`?` matcher: backtracks only to the last `*`, so O(n*m) worst case. */
 export function globMatch(pattern: string, text: string): boolean {
+  // Cheap rejects: the tail after the last `*` must fit and agree with the end of text.
+  const lastStar = pattern.lastIndexOf('*')
+  const tail = pattern.length - lastStar - 1
+  if (lastStar >= 0 ? text.length < pattern.length - 1 : text.length !== pattern.length) return false
+  for (let i = 1; i <= tail; i++) {
+    const c = pattern[pattern.length - i]
+    if (c !== '?' && c !== text[text.length - i]) return false
+  }
   let p = 0
   let t = 0
   let star = -1
