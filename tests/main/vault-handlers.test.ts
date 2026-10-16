@@ -24,6 +24,9 @@ function fakeVault() {
     createVault: vi.fn(),
     updateVault: vi.fn(),
     deleteVault: vi.fn(),
+    unlockQuick: vi.fn(async () => ({ ok: true }) as const),
+    setQuickUnlock: vi.fn(() => status),
+    setAutoLock: vi.fn(() => status),
   }
 }
 
@@ -38,6 +41,11 @@ describe('createVaultHandlers', () => {
     expect(vault.unlock).toHaveBeenCalledWith('pw')
     await h['vault:changePassword']('a', 'b')
     expect(vault.changePassword).toHaveBeenCalledWith('a', 'b')
+    expect(await h['vault:unlockQuick']()).toEqual({ ok: true })
+    expect(await h['vault:setQuickUnlock']('login')).toBe(status)
+    expect(vault.setQuickUnlock).toHaveBeenCalledWith('login')
+    expect(await h['vault:setAutoLock'](null)).toBe(status)
+    expect(vault.setAutoLock).toHaveBeenCalledWith(null)
     await h['vault:update'](DEFAULT_VAULT_ID, { name: 'N' })
     expect(vault.updateVault).toHaveBeenCalledWith(DEFAULT_VAULT_ID, { name: 'N' })
     await h['vault:delete'](DEFAULT_VAULT_ID)

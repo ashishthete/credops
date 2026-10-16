@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import {
+  AUTO_LOCK_CHOICES,
   DEFAULT_VAULT_ID,
   MAX_MASTER_PASSWORD,
   MAX_VAULT_NAME,
@@ -24,6 +25,8 @@ export interface QuickUnlockDeps {
 }
 
 const MAX_UNLOCK_DELAY_MS = 300_000
+const TOUCH_ID_REASON = 'unlock your OpsDeck vaults'
+const KEK_BYTES = 32
 
 /** Wait required after `failures` consecutive wrong passwords. */
 export function unlockDelayMs(failures: number): number {
@@ -34,7 +37,10 @@ export function unlockDelayMs(failures: number): number {
 type Failure = Extract<UnlockResult, { ok: false }>
 type Verified = { ok: true; kek: Buffer; keys: Map<string, Buffer>; corrupt: string[] }
 
+type Opened = { keys: Map<string, Buffer>; corrupt: string[] }
+
 const CANCELLED: Failure = { ok: false, reason: 'cancelled', retryAfterMs: 0 }
+const UNAVAILABLE: Failure = { ok: false, reason: 'unavailable', retryAfterMs: 0 }
 
 interface VaultRow {
   id: string
@@ -51,6 +57,7 @@ interface StateRow {
   failed_attempts: number
   last_failed_at: string | null
   quick_unlock: QuickUnlockMode
+  quick_unlock_blob: string | null
   auto_lock_minutes: number | null
 }
 
@@ -118,10 +125,7 @@ export class VaultService {
       setUp: this.isSetUp(),
       unlocked: this.isUnlocked(),
       quickUnlock: s.quick_unlock,
-      quickUnlockAvailable: {
-        touchId: this.quick?.touchId.available() ?? false,
-        login: this.quick?.keychain.available() ?? false,
-      },
+      quickUnlockAvailable: { touchId: this.modeAvailable('touchId'), login: this.modeAvailable('login') },
       autoLockMinutes: s.auto_lock_minutes,
       retryAfterMs: this.retryAfterMs(s),
       corruptVaultIds: this.kek ? [...this.corrupt] : [],
@@ -194,6 +198,84 @@ export class VaultService {
     })
   }
 
+  /**
+   * Unlocks with the KEK cached in the OS keychain, after a Touch ID prompt in that mode. The
+   * cache is checked against the Default vault; one that no longer opens it is discarded and the
+   * result is 'unavailable', so the user falls back to the password. Never counts as a failure.
+   */
+  unlockQuick(): Promise<UnlockResult> {
+    return this.serial(async () => {
+      if (!this.isSetUp()) throw new Error('not set up')
+      if (this.kek) return { ok: true }
+      const { quick_unlock: mode, quick_unlock_blob: blob } = this.state()
+      const fail = (reason: string, res: Failure): Failure => {
+        this.audit.append({ action: 'vault.unlock', outcome: 'failure', details: { method: mode, reason } })
+        return res
+      }
+      if (mode === 'off' || !blob) return fail('off', UNAVAILABLE)
+      // Possibly temporary (e.g. a closed laptop lid hides Touch ID): keep the cache.
+      if (!this.modeAvailable(mode)) return fail('unavailable', UNAVAILABLE)
+      const epoch = this.epoch
+      if (mode === 'touchId') {
+        try {
+          await this.quick!.touchId.prompt(TOUCH_ID_REASON)
+        } catch {
+          return fail('cancelled', CANCELLED)
+        }
+      }
+      let kek: Buffer
+      try {
+        kek = Buffer.from(this.quick!.keychain.decrypt(Buffer.from(blob, 'base64')), 'base64')
+      } catch {
+        this.discardQuickUnlock()
+        return fail('cache-unreadable', UNAVAILABLE)
+      }
+      if (epoch !== this.epoch) {
+        kek.fill(0)
+        return fail('cancelled', CANCELLED)
+      }
+      const opened = kek.length === KEK_BYTES ? this.openAll(kek) : null
+      if (!opened) {
+        kek.fill(0)
+        this.discardQuickUnlock()
+        return fail('cache-stale', UNAVAILABLE)
+      }
+      this.resetFailures()
+      this.install(kek, opened.keys, opened.corrupt)
+      this.audit.append({
+        action: 'vault.unlock',
+        outcome: 'success',
+        details: { method: mode, ...(opened.corrupt.length ? { corrupt: opened.corrupt } : {}) },
+      })
+      return { ok: true }
+    })
+  }
+
+  /** Caches the live KEK in the OS keychain for `mode`, or clears the cache for 'off'. */
+  setQuickUnlock(mode: QuickUnlockMode): VaultStatus {
+    this.assertUnlocked()
+    if (mode === 'off') {
+      this.db.prepare("UPDATE vault_state SET quick_unlock = 'off', quick_unlock_blob = NULL WHERE id = 1").run()
+    } else {
+      if (!this.modeAvailable(mode)) throw new Error('quick unlock unavailable')
+      this.db
+        .prepare('UPDATE vault_state SET quick_unlock = ?, quick_unlock_blob = ? WHERE id = 1')
+        .run(mode, this.cacheBlob(this.kek!))
+    }
+    this.audit.append({ action: 'vault.quickunlock', outcome: 'success', details: { mode } })
+    return this.status()
+  }
+
+  /** Not secret, so allowed while locked. */
+  setAutoLock(minutes: number | null): VaultStatus {
+    if (!(AUTO_LOCK_CHOICES as readonly (number | null)[]).includes(minutes)) {
+      throw new Error(`auto-lock must be one of ${AUTO_LOCK_CHOICES.map((m) => m ?? 'never').join(', ')}`)
+    }
+    this.db.prepare('UPDATE vault_state SET auto_lock_minutes = ? WHERE id = 1').run(minutes)
+    this.audit.append({ action: 'vault.autolock', outcome: 'success', details: { minutes } })
+    return this.status()
+  }
+
   lock(reason: LockReason): void {
     this.epoch++
     if (!this.kek) return
@@ -240,8 +322,23 @@ export class VaultService {
         this.audit.append({ action: 'vault.rekey', outcome: 'failure', details: { reason: 'cancelled' } })
         return CANCELLED
       }
+      // A cache of the old KEK would be stale: refresh it, or turn quick unlock off if we cannot.
+      const mode = this.state().quick_unlock
+      let blob: string | null = null
+      if (mode !== 'off') {
+        try {
+          if (this.quick?.keychain.available()) blob = this.cacheBlob(kek)
+        } catch {
+          blob = null
+        }
+      }
       try {
         this.tx(() => {
+          if (mode !== 'off') {
+            this.db
+              .prepare('UPDATE vault_state SET quick_unlock = ?, quick_unlock_blob = ? WHERE id = 1')
+              .run(blob ? mode : 'off', blob)
+          }
           const keyed = this.db.prepare('SELECT COUNT(*) AS n FROM vaults WHERE wrapped_key IS NOT NULL').get() as {
             n: number
           }
@@ -262,6 +359,9 @@ export class VaultService {
       this.kek!.fill(0)
       this.kek = kek
       this.audit.append({ action: 'vault.rekey', outcome: 'success', details: { vaults: this.keys.size } })
+      if (mode !== 'off' && !blob) {
+        this.audit.append({ action: 'vault.quickunlock', outcome: 'info', details: { mode: 'off', reason: 'rekey' } })
+      }
       return { ok: true }
     })
   }
@@ -402,7 +502,7 @@ export class VaultService {
 
   private state(): StateRow {
     return this.db
-      .prepare('SELECT failed_attempts, last_failed_at, quick_unlock, auto_lock_minutes FROM vault_state WHERE id = 1')
+      .prepare('SELECT failed_attempts, last_failed_at, quick_unlock, quick_unlock_blob, auto_lock_minutes FROM vault_state WHERE id = 1')
       .get() as unknown as StateRow
   }
 
@@ -434,6 +534,20 @@ export class VaultService {
       return CANCELLED
     }
     // Read after the await: a vault created during derivation must be included.
+    const opened = this.openAll(kek)
+    if (!opened) {
+      kek.fill(0)
+      this.db
+        .prepare('UPDATE vault_state SET failed_attempts = failed_attempts + 1, last_failed_at = ? WHERE id = 1')
+        .run(this.now().toISOString())
+      return { ok: false, reason: 'wrong-password', retryAfterMs: this.retryAfterMs() }
+    }
+    this.resetFailures()
+    return { ok: true, kek, ...opened }
+  }
+
+  /** Unwraps every keyed vault with `kek`; null (nothing kept) when the Default vault does not open. */
+  private openAll(kek: Buffer): Opened | null {
     const rows = this.db
       .prepare('SELECT id, wrapped_key FROM vaults WHERE wrapped_key IS NOT NULL ORDER BY (id = ?) DESC, id')
       .all(DEFAULT_VAULT_ID) as { id: string; wrapped_key: string }[]
@@ -447,15 +561,27 @@ export class VaultService {
           corrupt.push(r.id)
           continue
         }
-        zero(kek, keys.values())
-        this.db
-          .prepare('UPDATE vault_state SET failed_attempts = failed_attempts + 1, last_failed_at = ? WHERE id = 1')
-          .run(this.now().toISOString())
-        return { ok: false, reason: 'wrong-password', retryAfterMs: this.retryAfterMs() }
+        zero(keys.values())
+        return null
       }
     }
-    this.resetFailures()
-    return { ok: true, kek, keys, corrupt }
+    return { keys, corrupt }
+  }
+
+  /** Touch ID mode also needs the keychain: that is where its cache lives. */
+  private modeAvailable(mode: Exclude<QuickUnlockMode, 'off'>): boolean {
+    if (!this.quick?.keychain.available()) return false
+    return mode === 'login' || this.quick.touchId.available()
+  }
+
+  /** The keychain-encrypted KEK as stored in quick_unlock_blob. Never log or audit it. */
+  private cacheBlob(kek: Buffer): string {
+    return this.quick!.keychain.encrypt(kek.toString('base64')).toString('base64')
+  }
+
+  private discardQuickUnlock(): void {
+    this.db.prepare("UPDATE vault_state SET quick_unlock = 'off', quick_unlock_blob = NULL WHERE id = 1").run()
+    this.audit.append({ action: 'vault.quickunlock', outcome: 'info', details: { mode: 'off', reason: 'discarded' } })
   }
 
   private install(kek: Buffer, keys: Map<string, Buffer>, corrupt: string[]): void {

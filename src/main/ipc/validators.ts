@@ -1,6 +1,13 @@
 import { AUDIT_ACTIONS, type AuditFilter } from '../../shared/audit'
 import type { Channel, IpcContract } from '../../shared/ipc'
-import { MAX_MASTER_PASSWORD, MAX_VAULT_NAME, VAULT_COLOR, type VaultInput } from '../../shared/vault'
+import {
+  AUTO_LOCK_CHOICES,
+  MAX_MASTER_PASSWORD,
+  MAX_VAULT_NAME,
+  QUICK_UNLOCK_MODES,
+  VAULT_COLOR,
+  type VaultInput,
+} from '../../shared/vault'
 import { args, v, type ArgsValidator, type Check } from './validate'
 
 const OUTCOMES = ['success', 'failure', 'denied', 'info'] as const
@@ -37,10 +44,13 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'vault:status': args(),
   'vault:setup': args(asPassword),
   'vault:unlock': args(asPassword),
+  'vault:unlockQuick': args(),
   'vault:lock': args(),
   'vault:changePassword': args(asPassword, asPassword),
   'vault:list': args(),
   'vault:create': args(asVaultInput),
   'vault:update': args(v.uuid(), asVaultPatch),
   'vault:delete': args(v.uuid()),
+  'vault:setQuickUnlock': args(v.oneOf(QUICK_UNLOCK_MODES)),
+  'vault:setAutoLock': args(v.oneOf(AUTO_LOCK_CHOICES)),
 }

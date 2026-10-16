@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { hostname, userInfo } from 'node:os'
-import { app, BrowserWindow, dialog, ipcMain, session, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, powerMonitor, safeStorage, session, shell, systemPreferences } from 'electron'
 import { AuditLog } from './audit/audit-log'
 import { openDatabase, type Db } from './db/connection'
 import { createAppHandlers } from './ipc/handlers/app'
@@ -9,7 +9,8 @@ import { createVaultHandlers } from './ipc/handlers/vault'
 import { isTrustedSender, registerHandlers } from './ipc/register'
 import { VALIDATORS } from './ipc/validators'
 import { redact } from './security/redact'
-import { VaultService } from './vault/vault-service'
+import { AutoLock } from './vault/auto-lock'
+import { VaultService, type QuickUnlockDeps } from './vault/vault-service'
 import { devRendererUrl, shouldAllowNavigation, windowOptions } from './window'
 
 // Keep dev data apart from the packaged app's (same name, same userData otherwise).
@@ -23,6 +24,7 @@ let db: Db | null = null
 let audit: AuditLog | null = null
 let vault: VaultService | null = null
 let quitAudited = false
+let stopAutoLock: (() => void) | null = null
 
 function createWindow(): void {
   const win = new BrowserWindow(windowOptions(join(__dirname, '../preload/index.js')))
@@ -66,7 +68,28 @@ if (!app.requestSingleInstanceLock()) {
       audit = new AuditLog(db, { knownSecrets })
       audit.append({ action: 'app.start', outcome: 'info', details: { version: app.getVersion() } })
       const log = audit
-      vault = new VaultService(db, log)
+      const quick: QuickUnlockDeps = {
+        keychain: {
+          available: () => safeStorage.isEncryptionAvailable(),
+          encrypt: (plain) => safeStorage.encryptString(plain),
+          decrypt: (blob) => safeStorage.decryptString(blob),
+        },
+        touchId: {
+          available: () => process.platform === 'darwin' && systemPreferences.canPromptTouchID(),
+          prompt: (reason) => systemPreferences.promptTouchID(reason),
+        },
+      }
+      const service = new VaultService(db, log, { quick })
+      vault = service
+      stopAutoLock = new AutoLock({
+        idleSeconds: () => powerMonitor.getSystemIdleTime(),
+        minutes: () => service.status().autoLockMinutes,
+        isUnlocked: () => service.isUnlocked(),
+        lock: (reason) => service.lock(reason),
+      }).start()
+      // vault is null once will-quit has closed the db.
+      powerMonitor.on('lock-screen', () => vault?.lock('screen'))
+      powerMonitor.on('suspend', () => vault?.lock('suspend'))
       const rendererFile = join(__dirname, '../renderer/index.html')
       registerHandlers(
         ipcMain,
@@ -116,6 +139,8 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   app.on('will-quit', () => {
+    stopAutoLock?.()
+    stopAutoLock = null
     vault = null
     audit = null
     db?.close()
