@@ -150,8 +150,16 @@ SSH config, hosts inheriting from a parent), not code or branding.
   - Each vault's secret fields are encrypted with AES-256-GCM.
   - The vault key is wrapped by a key derived from a master password (scrypt).
   - The unlocked key can be cached in macOS Keychain (Electron `safeStorage`) for
-    "unlock with Touch ID / login".
-  - Non-secret metadata (labels, addresses) is plain so search works while locked.
+    "unlock with Touch ID".
+  - **The whole app is gated** (user, 2026-10-16: "app should be gated by
+    authentications. or passkey"). Until the master password is set up and the
+    vaults are unlocked, only a full-screen gate renders; the shell is not
+    mounted. Every lock (manual, idle, screen lock, sleep) returns to the gate.
+    The passkey path is the platform authenticator (Touch ID); the master
+    password is always the fallback. The no-prompt "login" mode is not offered
+    because it would bypass the gate. Real WebAuthn passkeys need a relying
+    party, so they are revisited with the Hub (phase 10).
+  - Non-secret metadata (labels, addresses) is stored in plain text.
 - **Ansible is the deployment engine** (user decision). Each release produces a
   generated inventory and playbook in a private temp dir, then runs
   `ansible-playbook`. Step events come from a small bundled callback plugin that
