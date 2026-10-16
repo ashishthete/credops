@@ -1,8 +1,10 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, shell } from 'electron'
+import { openDatabase, type Db } from './db/connection'
 import { windowOptions } from './window'
 
 let mainWindow: BrowserWindow | null = null
+let db: Db | null = null
 
 function createWindow(): void {
   const win = new BrowserWindow(windowOptions(join(__dirname, '../preload/index.js')))
@@ -32,7 +34,21 @@ if (!app.requestSingleInstanceLock()) {
     mainWindow.focus()
   })
 
-  app.whenReady().then(createWindow)
+  app
+    .whenReady()
+    .then(() => {
+      db = openDatabase(join(app.getPath('userData'), 'opsdeck.db'))
+      createWindow()
+    })
+    .catch((err) => {
+      console.error('Startup failed:', err)
+      app.quit()
+    })
+
+  app.on('will-quit', () => {
+    db?.close()
+    db = null
+  })
 
   // Quit on all platforms, including macOS (v1 simplicity).
   app.on('window-all-closed', () => app.quit())
