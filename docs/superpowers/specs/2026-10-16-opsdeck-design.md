@@ -12,7 +12,10 @@ infrastructure:
    mainly to reach database machines.
 3. **Deployments**: ship docker-compose apps to hosts, via Ansible when available.
 
-What makes it different from Termius is an **Environment** layer. An environment
+What makes it different from Termius is a **Product → Environment → Host → Vault**
+hierarchy (user, 2026-10-16: "products have environments, environments have hosts,
+hosts have vaults"; there are 2 products today). Inside a product sits an
+**Environment** layer. An environment
 (e.g. `prod`, `staging`, `analytics-db`) groups machines and the apps running on
 them. Some environments are only DB machines, used just for SSH or tunnels.
 Others also have apps. Deployments are tied to environments, hosts and vaults,
@@ -46,6 +49,12 @@ SSH config, hosts inheriting from a parent), not code or branding.
 
 **Core (the three jobs)**
 - G1. Vaults, keys, identities and hosts are created **separately**, then **linked**.
+- G1a. **Products** are the top level (2 today). Each environment belongs to
+  one or more products (an environment can be shared between products, user
+  2026-10-16), and a host can be shared between environments. The sidebar and map browse Product → Environment → Host.
+  Hosts **link** to one or more vaults; the linked vaults supply the keys,
+  identities and secrets offered for that host. Vaults are still created on
+  their own (§8.1) and linked afterwards.
 - G2. Environments hold hosts (machines) and apps. A host can belong to more than
   one environment (e.g. a shared DB box).
 - G3. Default authentication is SSH public-key: use the user's ssh-agent and
@@ -169,7 +178,10 @@ All entities: `id (uuid), created_at, updated_at`.
 | **SshKey** | vault_id, label, private_key_enc, public_key, passphrase_enc, source (`file`/`imported`/`generated`), file_path? | `file` keys reference `~/.ssh/...` without copying. |
 | **Identity** | vault_id, label, username, auth (`agent`/`key`/`password`), ssh_key_id?, password_enc? | |
 | **Host** | label, address, port?, identity_id?, jump_host_id?, tags[], os_icon, keepalive, env_vars, startup_snippet_id?, notes | `null` fields inherit (see resolution). |
+| **Product** | name, color, icon, description, repo_url? | Top level; owns environments. |
+| **ProductEnvironment** | product_id, environment_id | Many-to-many: environments are shared across products. |
 | **Environment** | name, color, protected (bool), versioned (bool), auto_rollback (bool, default true), qa_on_deploy (bool), current_version, qa_workflow (repo, workflow, ref), email_to/cc, default_identity_id?, default_port?, default_jump_host_id?, notify_events[], teams_webhook_secret_id? | |
+| **HostVault** | host_id, vault_id | Many-to-many: the vaults a host draws credentials from. |
 | **EnvironmentHost** | environment_id, host_id, role (`app`/`db`/`bastion`/`other`) | Many-to-many. |
 | **App** | environment_id, host_id, name, compose_project, description | "What runs where"; shown on the map. |
 | **Tunnel** | label, host_id, type (`L`/`R`/`D`), bind_address, bind_port, target_host, target_port, auto_start, auto_reconnect | Host resolution gives the identity and jump host. |
@@ -182,6 +194,8 @@ All entities: `id (uuid), created_at, updated_at`.
 | **Settings** | ai_model, ai_api_key_secret_id, defaults, theme… | |
 
 **Credential and route resolution for a host in context:**
+(Identity and key pickers for a host list items from the host's linked vaults
+first, then all unlocked vaults.)
 1. Host's own field.
 2. If opened from an environment: that environment's default.
 3. Global default: ssh-agent first, then `~/.ssh/id_ed25519`, then `~/.ssh/id_rsa`;
@@ -369,7 +383,7 @@ Each phase ends usable and demoable.
    Audit), audit trail writer.
 2. **Vaults and keys:** master password, unlock, Keychain cache, secrets, SSH
    keys (pick from `~/.ssh`, import, generate ed25519), identities.
-3. **Hosts and environments:** CRUD, many-to-many linking, roles, defaults and
+3. **Products, hosts and environments:** product CRUD, host ↔ vault links, CRUD, many-to-many linking, roles, defaults and
    resolution, `~/.ssh/config` import.
 4. **SSH terminal:** sessions, jump hosts, known-hosts / TOFU, local shell tab.
 5. **Tunnels:** L/R/D, auto-reconnect, status, auto-start.
