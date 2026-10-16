@@ -29,6 +29,19 @@ export const AUDIT_ACTIONS = [
   'identity.create',
   'identity.update',
   'identity.delete',
+  'product.create',
+  'product.update',
+  'product.delete',
+  'environment.create',
+  'environment.update',
+  'environment.delete',
+  'environment.products',
+  'environment.host',
+  'host.create',
+  'host.update',
+  'host.delete',
+  'host.vaults',
+  'host.import',
 ] as const // later phases extend
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]
 

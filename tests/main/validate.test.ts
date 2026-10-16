@@ -21,6 +21,14 @@ describe('validate', () => {
     expect(() => v.object({ a: v.str() })({ ['x'.repeat(3) + 'hunter22']: 1 }, '[0]')).toThrow(InvalidArgs)
   })
 
+  it('nullable', () => {
+    const check = v.object({ p: v.optional(v.nullable(v.int())) })
+    expect(check({ p: null }, '[0]')).toEqual({ p: null })
+    expect(check({}, '[0]')).toEqual({})
+    expect(check({ p: 2 }, '[0]')).toEqual({ p: 2 })
+    expect(() => check({ p: 'x' }, '[0]')).toThrow(InvalidArgs)
+  })
+
   it('truncates extra args', () => {
     expect(args(v.int())([1, 'extra'])).toEqual([1])
   })

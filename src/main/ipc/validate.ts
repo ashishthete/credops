@@ -55,6 +55,11 @@ const optional = <T>(check: Check<T>): Optional<T> =>
     [OPTIONAL]: true as const,
   })
 
+const nullable =
+  <T>(check: Check<T>): Check<T | null> =>
+  (value, path) =>
+    value === null ? null : check(value, path)
+
 const array =
   <T>(check: Check<T>, max: number): Check<T[]> =>
   (value, path) => {
@@ -89,7 +94,7 @@ const object =
     return out as Infer<S>
   }
 
-export const v = { str, int, bool, oneOf, optional, array, object, uuid }
+export const v = { str, int, bool, oneOf, optional, nullable, array, object, uuid }
 
 export type ArgsValidator<A extends unknown[]> = (args: readonly unknown[]) => A
 

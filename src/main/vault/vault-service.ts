@@ -16,6 +16,7 @@ import {
 } from '../../shared/vault'
 import type { AuditLog } from '../audit/audit-log'
 import type { Db } from '../db/connection'
+import { inTransaction } from '../db/tx'
 import { DEFAULT_KDF, deriveKek, newKdfParams, openSealed, randomKey, seal, type KdfParams } from './crypto'
 
 /** Electron-backed unlock helpers, injected so tests can fake them (used by quick unlock). */
@@ -615,14 +616,7 @@ export class VaultService {
   }
 
   private tx(fn: () => void): void {
-    this.db.exec('BEGIN IMMEDIATE')
-    try {
-      fn()
-      this.db.exec('COMMIT')
-    } catch (err) {
-      if (this.db.isTransaction) this.db.exec('ROLLBACK')
-      throw err
-    }
+    inTransaction(this.db, fn)
   }
 
   private serial<T>(fn: () => Promise<T>): Promise<T> {

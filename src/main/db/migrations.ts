@@ -53,6 +53,38 @@ CREATE TABLE vault_state(id INTEGER PRIMARY KEY CHECK (id = 1), failed_attempts 
 INSERT INTO vault_state(id) VALUES (1);
 `,
   },
+  {
+    version: 3,
+    name: 'inventory',
+    up: `
+CREATE TABLE products(id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, color TEXT NOT NULL,
+  icon TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', repo_url TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE hosts(id TEXT PRIMARY KEY, label TEXT NOT NULL UNIQUE COLLATE NOCASE, address TEXT NOT NULL,
+  port INTEGER CHECK (port IS NULL OR port BETWEEN 1 AND 65535),
+  identity_id TEXT REFERENCES identities(id) ON DELETE SET NULL,
+  jump_host_id TEXT REFERENCES hosts(id),
+  tags TEXT NOT NULL DEFAULT '[]', os_icon TEXT NOT NULL DEFAULT 'linux', notes TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  CHECK (jump_host_id IS NULL OR jump_host_id <> id));
+CREATE TABLE environments(id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL,
+  protected INTEGER NOT NULL DEFAULT 0 CHECK (protected IN (0,1)),
+  default_identity_id TEXT REFERENCES identities(id) ON DELETE SET NULL,
+  default_port INTEGER CHECK (default_port IS NULL OR default_port BETWEEN 1 AND 65535),
+  default_jump_host_id TEXT REFERENCES hosts(id),
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE product_environments(product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE, PRIMARY KEY(product_id, environment_id));
+CREATE TABLE environment_hosts(environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+  host_id TEXT NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
+  role TEXT NOT NULL DEFAULT 'other' CHECK (role IN ('app','db','bastion','other')), PRIMARY KEY(environment_id, host_id));
+CREATE TABLE host_vaults(host_id TEXT NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
+  vault_id TEXT NOT NULL REFERENCES vaults(id) ON DELETE CASCADE, PRIMARY KEY(host_id, vault_id));
+CREATE INDEX product_environments_env ON product_environments(environment_id);
+CREATE INDEX environment_hosts_host ON environment_hosts(host_id);
+CREATE INDEX host_vaults_vault ON host_vaults(vault_id);
+`,
+  },
 ]
 
 const ENSURE_TABLE = `CREATE TABLE IF NOT EXISTS schema_migrations(
