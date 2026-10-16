@@ -1,0 +1,64 @@
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { AppShell } from '../../src/renderer/src/shell/AppShell'
+import { SECTIONS } from '../../src/renderer/src/shell/sections'
+import { commandStore } from '../../src/renderer/src/ui/commands'
+import { mockBridge } from './helpers'
+
+function renderShell(path = '/') {
+  return render(
+    <MemoryRouter initialEntries={[path]}>
+      <AppShell />
+    </MemoryRouter>,
+  )
+}
+
+describe('shell', () => {
+  beforeEach(() => {
+    mockBridge()
+  })
+
+  it('shell renders all sections and navigates', async () => {
+    const user = userEvent.setup()
+    renderShell()
+    const nav = screen.getByRole('navigation', { name: 'Sections' })
+    const links = within(nav).getAllByRole('link')
+    expect(links.map((l) => l.textContent)).toEqual(SECTIONS.map((s) => expect.stringContaining(s.label)))
+    // `/` redirects to the first section.
+    expect(within(nav).getByRole('link', { name: /Environments/ })).toHaveAttribute('aria-current', 'page')
+
+    await user.click(within(nav).getByRole('link', { name: /Audit/ }))
+    expect(await screen.findByRole('heading', { name: 'Audit trail' })).toBeInTheDocument()
+    expect(within(nav).getByRole('link', { name: /Audit/ })).toHaveAttribute('aria-current', 'page')
+    expect(within(nav).getByRole('link', { name: /Environments/ })).not.toHaveAttribute('aria-current')
+  })
+
+  it('mod+6 jumps to Audit', async () => {
+    renderShell()
+    act(() => {
+      fireEvent.keyDown(window, { key: '6', metaKey: true })
+    })
+    expect(await screen.findByRole('heading', { name: 'Audit trail' })).toBeInTheDocument()
+  })
+
+  it('placeholder pages name their phase', async () => {
+    renderShell('/tunnels')
+    expect(await screen.findByText('Coming in phase 5')).toBeInTheDocument()
+  })
+
+  it('sections are palette commands while mounted', async () => {
+    const { unmount } = renderShell()
+    await screen.findByText(/tester@mac/)
+    const nav = commandStore.get().filter((c) => c.section === 'Navigate')
+    expect(nav.map((c) => c.shortcut)).toEqual(['mod+1', 'mod+2', 'mod+3', 'mod+4', 'mod+5', 'mod+6'])
+    unmount()
+    expect(commandStore.get().filter((c) => c.section === 'Navigate')).toHaveLength(0)
+  })
+
+  it('shows the actor at the bottom of the sidebar', async () => {
+    renderShell()
+    expect(await screen.findByText('tester@mac')).toBeInTheDocument()
+  })
+})

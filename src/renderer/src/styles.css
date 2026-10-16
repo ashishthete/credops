@@ -12,3 +12,18 @@ body {
   background: #0b0d12;
   color: var(--text);
 }
+
+/* Window chrome: the title bar is hidden, so marked strips drag the window. */
+.app-drag {
+  -webkit-app-region: drag;
+}
+
+.app-drag :is(button, a, input, select, textarea, [role='button']) {
+  -webkit-app-region: no-drag;
+}
+
+/* Native date pickers default to a light glyph; match the dark theme. */
+input[type='date']::-webkit-calendar-picker-indicator {
+  filter: invert(0.6);
+  cursor: pointer;
+}
