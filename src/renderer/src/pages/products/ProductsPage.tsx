@@ -132,27 +132,41 @@ export function ProductsPage() {
 
   const env = (id: string) => data?.environments.find((e) => e.id === id)
 
+  // One drop at a time: the next is judged against the result of the last.
+  const [dropping, setDropping] = useState(false)
+  const whileDropping = async (fn: () => Promise<void>) => {
+    setDropping(true)
+    try {
+      await fn()
+    } finally {
+      setDropping(false)
+    }
+  }
+
   const canDrop = (drag: TreeRow, target: TreeRow) => {
+    if (dropping) return false
     if (drag.kind === 'host' && target.kind === 'environment') return !env(target.id)?.hosts.some((h) => h.hostId === drag.id)
     if (drag.kind === 'environment' && target.kind === 'product') return !env(drag.id)?.productIds.includes(target.id)
     return false
   }
 
-  const dropHost = async (host: TreeRow, target: TreeRow) => {
-    if (await inv.putHost(target.id, host.id, host.role ?? 'other')) {
-      expand(target.key)
-      toast({ title: `Added ${host.label} to ${target.label}`, tone: 'success' })
-    }
-  }
+  const dropHost = (host: TreeRow, target: TreeRow) =>
+    whileDropping(async () => {
+      if (await inv.putHost(target.id, host.id, host.role ?? 'other')) {
+        expand(target.key)
+        toast({ title: `Added ${host.label} to ${target.label}`, tone: 'success' })
+      }
+    })
 
-  const dropEnvironment = async (from: TreeRow, target: TreeRow) => {
-    const e = env(from.id)
-    if (!e) return
-    if (await inv.setEnvironmentProducts(e.id, [...e.productIds, target.id])) {
-      expand(target.key)
-      toast({ title: `Added ${from.label} to ${target.label}`, tone: 'success' })
-    }
-  }
+  const dropEnvironment = (from: TreeRow, target: TreeRow) =>
+    whileDropping(async () => {
+      const e = env(from.id)
+      if (!e) return
+      if (await inv.setEnvironmentProducts(e.id, [...e.productIds, target.id])) {
+        expand(target.key)
+        toast({ title: `Added ${from.label} to ${target.label}`, tone: 'success' })
+      }
+    })
 
   const askDeleteProduct = (p: ProductMeta) =>
     setConfirm({
@@ -178,9 +192,17 @@ export function ProductsPage() {
       },
     })
 
-  const removeHost = async (e: EnvironmentMeta, hostId: string) => {
-    const label = data?.hosts.find((h) => h.id === hostId)?.label ?? 'the host'
-    if (await inv.removeHost(e.id, hostId)) toast({ title: `Removed ${label} from ${e.name}`, tone: 'success' })
+  const askRemoveHost = (e: EnvironmentMeta, hostId: string) => {
+    const label = data?.hosts.find((h) => h.id === hostId)?.label ?? 'this host'
+    setConfirm({
+      title: `Remove ${label} from ${e.name}?`,
+      description: 'The host is kept, along with its places in other environments.',
+      confirmLabel: 'Remove host',
+      typeToConfirm: e.protected ? e.name : undefined,
+      run: async () => {
+        if (await inv.removeHost(e.id, hostId)) toast({ title: `Removed ${label} from ${e.name}`, tone: 'success' })
+      },
+    })
   }
 
   const productIcons = useMemo(() => Object.fromEntries((data?.products ?? []).map((p) => [p.id, p.icon])), [data])
@@ -222,7 +244,7 @@ export function ProductsPage() {
           envKey={selected}
           data={data}
           onSelect={select}
-          onRemoveHost={(id) => void removeHost(e, id)}
+          onRemoveHost={(id) => askRemoveHost(e, id)}
           onEdit={() => openDialog({ kind: 'environment', environment: e, productIds: e.productIds })}
           onDelete={() => askDeleteEnvironment(e, selected)}
         />

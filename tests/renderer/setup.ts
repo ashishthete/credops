@@ -16,6 +16,9 @@ if (!window.matchMedia) {
   })
 }
 
+// jsdom doesn't scroll and logs "Not implemented" for every scrollTo; make it a no-op.
+window.scrollTo = () => {}
+
 afterEach(() => cleanup())
 
 // Tests run as macOS, so `mod` is the Meta key.

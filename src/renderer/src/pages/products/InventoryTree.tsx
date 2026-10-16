@@ -1,6 +1,6 @@
 import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
 import { ChevronRight, Inbox, Link2, Lock, Server } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent } from 'react'
 import type { ProductIcon } from '../../../../shared/inventory'
 import { moveFocus, type NodeKey, type TreeRow } from '../../inventory/tree'
 import { fast, spring, useMotionSafe } from '../../ui/motion'
@@ -48,6 +48,20 @@ export function InventoryTree({ rows, selected, onSelect, onToggle, canDrop, onD
     const els = tree.current?.querySelectorAll<HTMLElement>('[data-key]') ?? []
     ;[...els].find((el) => el.dataset.key === key)?.focus()
   })
+
+  // Rows can leave without a mouseleave or dragend (a collapse, a refresh): drop state that points at them.
+  useEffect(() => {
+    const keys = new Set(rows.map((r) => r.key))
+    if (hovered && !keys.has(hovered.key)) setHovered(null)
+    if (drag.current && !keys.has(drag.current.key)) endDrag()
+  }, [rows, hovered])
+
+  // Collapsing a row that holds focus would strand it on a hidden row; it moves to the collapsed row.
+  const toggle = (row: TreeRow) => {
+    const focused = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('[data-key]')?.dataset.key
+    if (row.expanded && focused?.startsWith(`${row.key}/`) && tree.current?.contains(document.activeElement)) focusNext.current = row.key
+    onToggle(row.key)
+  }
 
   const onKeyDown = (e: KeyboardEvent<HTMLUListElement>) => {
     const key = (e.target as HTMLElement).closest<HTMLElement>('[data-key]')?.dataset.key ?? tabKey
@@ -114,7 +128,7 @@ export function InventoryTree({ rows, selected, onSelect, onToggle, canDrop, onD
             sharedHighlight={!!hovered && hovered.key !== row.key && hovered.kind === row.kind && hovered.id === row.id}
             icon={row.kind === 'product' ? productIcons[row.id] : undefined}
             onSelect={() => onSelect(row.key)}
-            onToggle={() => onToggle(row.key)}
+            onToggle={() => toggle(row)}
             onHover={(on) => setHovered((h) => (on ? (row.sharedCount > 0 ? row : null) : h?.key === row.key ? null : h))}
             {...dropHandlers(row)}
           />
@@ -149,6 +163,9 @@ function TreeItem({ row, selected, tabbable, dragging, dropTarget, over, sharedH
   const present = useIsPresent()
   const draggable = present && (row.kind === 'host' || row.kind === 'environment')
   const pulse = sharedHighlight && motionSafe
+  const descId = useId()
+  // The visible Shared badge and a hidden "Protected" describe the row; its name stays the bare label.
+  const describedBy = [row.protected && `${descId}-p`, row.sharedCount > 0 && `${descId}-s`].filter(Boolean).join(' ') || undefined
   const tint = (pct: number) => `color-mix(in oklab, ${row.color} ${pct}%, transparent)`
 
   return (
@@ -158,6 +175,7 @@ function TreeItem({ row, selected, tabbable, dragging, dropTarget, over, sharedH
       aria-level={row.depth + 1}
       aria-expanded={row.expandable ? row.expanded : undefined}
       aria-selected={selected}
+      aria-describedby={describedBy}
       aria-hidden={present ? undefined : true}
       inert={!present}
       tabIndex={present && tabbable ? 0 : -1}
@@ -238,9 +256,15 @@ function TreeItem({ row, selected, tabbable, dragging, dropTarget, over, sharedH
         <span className={`relative min-w-0 flex-1 truncate ${row.kind === 'product' || row.kind === 'group' ? 'font-medium' : ''}`}>
           {row.label}
         </span>
-        {row.protected && <Lock aria-label="Protected" className="relative size-3 shrink-0 text-warn/90" strokeWidth={2.2} />}
+        {row.protected && (
+          <span id={`${descId}-p`} className="sr-only">
+            Protected
+          </span>
+        )}
+        {row.protected && <Lock aria-hidden className="relative size-3 shrink-0 text-warn/90" strokeWidth={2.2} />}
         {row.sharedCount > 0 && (
           <span
+            id={`${descId}-s`}
             title={`Also in ${row.sharedCount} other ${row.sharedCount === 1 ? 'place' : 'places'}`}
             className="relative inline-flex h-[18px] shrink-0 items-center gap-1 rounded-full px-1.5 text-[10.5px] font-medium"
             style={{ color: row.color, background: tint(13), boxShadow: `inset 0 0 0 1px ${tint(26)}` }}

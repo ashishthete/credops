@@ -61,6 +61,14 @@ function world(): World {
   }
 }
 
+/** web-1 sits in both prod and staging, so it shows twice. */
+function sharedWorld(): World {
+  const w = world()
+  w.environments = w.environments.map((e) => (e.id === 'staging' ? { ...e, hosts: [{ hostId: 'web1', role: 'app' }] } : e))
+  w.hosts = w.hosts.map((h) => ({ ...h, environments: [...h.environments, { environmentId: 'staging', role: 'app' }] }))
+  return w
+}
+
 let where = ''
 function Location() {
   const loc = useLocation()
@@ -94,6 +102,12 @@ function renderPage(w: World = world()) {
         const [envId, hostId, role] = args as [string, string, 'app']
         w.environments = w.environments.map((e) => (e.id === envId ? { ...e, hosts: [...e.hosts, { hostId, role }] } : e))
         w.hosts = w.hosts.map((h) => (h.id === hostId ? { ...h, environments: [...h.environments, { environmentId: envId, role }] } : h))
+        return w.environments.find((e) => e.id === envId)
+      }
+      case 'env:removeHost': {
+        const [envId, hostId] = args as [string, string]
+        w.environments = w.environments.map((e) => (e.id === envId ? { ...e, hosts: e.hosts.filter((m) => m.hostId !== hostId) } : e))
+        w.hosts = w.hosts.map((h) => (h.id === hostId ? { ...h, environments: h.environments.filter((m) => m.environmentId !== envId) } : h))
         return w.environments.find((e) => e.id === envId)
       }
       case 'env:delete':
@@ -179,6 +193,42 @@ describe('products page', () => {
     expect(new URLSearchParams(where.split('?')[1]).get('node')).toBe('p:essentials')
   })
 
+  it('Enter selects a row focused without arrows; Home and End jump', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByRole('treeitem', { name: 'Acme' })
+    act(() => item('staging').focus())
+    await user.keyboard('{Enter}')
+    expect(item('staging')).toHaveAttribute('aria-selected', 'true')
+    expect(new URLSearchParams(where.split('?')[1]).get('node')).toBe('p:acme/e:staging')
+
+    await user.keyboard('{End}')
+    const last = items().at(-1)!
+    expect(last).toHaveAttribute('aria-label', 'analytics-db')
+    expect(last).toHaveFocus()
+    expect(last).toHaveAttribute('aria-selected', 'true')
+
+    await user.keyboard('{Home}')
+    expect(item('Acme')).toHaveFocus()
+    expect(item('Acme')).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('protected and shared state is in the row description', async () => {
+    renderPage()
+    await screen.findByRole('treeitem', { name: 'Acme' })
+    expect(item('prod')).toHaveAccessibleDescription('Protected')
+    expect(item('analytics-db')).toHaveAccessibleDescription('Shared')
+    expect(item('staging')).not.toHaveAccessibleDescription()
+  })
+
+  it('collapsing moves focus out of a hidden row', async () => {
+    renderPage()
+    const web1 = await screen.findByRole('treeitem', { name: 'web-1' })
+    act(() => web1.focus())
+    fireEvent.click(chevron(item('prod')))
+    expect(item('prod')).toHaveFocus()
+  })
+
   it('creates a product', async () => {
     const user = userEvent.setup()
     const w = world()
@@ -262,6 +312,64 @@ describe('products page', () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:setProducts', 'staging', ['acme', 'essentials']))
   })
 
+  it('a drop in flight blocks further drops', async () => {
+    const { invoke } = renderPage()
+    const run = invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
+    let release = () => {}
+    const gate = new Promise<void>((r) => (release = r))
+    invoke.mockImplementation(async (c: string, ...a: unknown[]) => (c === 'env:putHost' ? gate.then(() => run(c, ...a)) : run(c, ...a)))
+    const web1 = await screen.findByRole('treeitem', { name: 'web-1' })
+    fireEvent.dragStart(web1, { dataTransfer: dataTransfer() })
+    fireEvent.drop(item('staging'), { dataTransfer: dataTransfer() })
+    fireEvent.dragStart(web1, { dataTransfer: dataTransfer() })
+    expect(item('analytics-db')).not.toHaveAttribute('data-drop-target')
+    fireEvent.drop(item('analytics-db'), { dataTransfer: dataTransfer() })
+    expect(invoke.mock.calls.filter(([c]) => c === 'env:putHost')).toHaveLength(1)
+    await act(async () => release())
+    expect(await screen.findByText('Added web-1 to staging')).toBeInTheDocument()
+  })
+
+  it('hover and drag state clear when their row leaves the tree', async () => {
+    renderPage(sharedWorld())
+    await screen.findByRole('treeitem', { name: 'Acme' })
+    const [inProd, inStaging] = screen.getAllByRole('treeitem', { name: 'web-1' })
+    fireEvent.mouseEnter(inProd)
+    expect(inStaging).toHaveAttribute('data-shared-highlight', 'true')
+    fireEvent.click(chevron(item('prod')))
+    expect(inStaging).not.toHaveAttribute('data-shared-highlight')
+
+    fireEvent.click(chevron(item('prod')))
+    fireEvent.dragStart(screen.getAllByRole('treeitem', { name: 'web-1' })[0], { dataTransfer: dataTransfer() })
+    expect(item('analytics-db')).toHaveAttribute('data-drop-target', 'true')
+    fireEvent.click(chevron(item('prod')))
+    expect(item('analytics-db')).not.toHaveAttribute('data-drop-target')
+  })
+
+  it('removing a host asks first', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderPage(sharedWorld())
+    await user.click(await screen.findByRole('treeitem', { name: 'staging' }))
+    await user.click(screen.getByRole('button', { name: 'Remove web-1 from staging' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Remove web-1 from staging?' })
+    expect(within(dialog).queryByLabelText(/to confirm/)).not.toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Remove host' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:removeHost', 'staging', 'web1'))
+    expect(await screen.findByText('Removed web-1 from staging')).toBeInTheDocument()
+  })
+
+  it('removing a host from a protected environment types the name', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderPage()
+    await user.click(await screen.findByRole('treeitem', { name: 'prod' }))
+    await user.click(screen.getByRole('button', { name: 'Remove web-1 from prod' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Remove web-1 from prod?' })
+    const confirm = within(dialog).getByRole('button', { name: 'Remove host' })
+    expect(confirm).toBeDisabled()
+    await user.type(within(dialog).getByLabelText('Type prod to confirm'), 'prod')
+    await user.click(confirm)
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:removeHost', 'prod', 'web1'))
+  })
+
   it('protected delete types the name', async () => {
     const user = userEvent.setup()
     const { invoke } = renderPage()
@@ -299,24 +407,30 @@ describe('products page', () => {
   it('reduced motion', async () => {
     motion.safe = false
     const user = userEvent.setup()
-    renderPage()
+    renderPage(sharedWorld())
     const prod = await screen.findByRole('treeitem', { name: 'prod' })
     await user.click(chevron(prod))
-    expect(screen.queryByRole('treeitem', { name: 'web-1' })).not.toBeInTheDocument()
+    expect(screen.getAllByRole('treeitem', { name: 'web-1' })).toHaveLength(1)
     await user.click(chevron(prod))
     // No findBy: the row is there right after the click, with no height or transform animation.
-    const web1 = screen.getByRole('treeitem', { name: 'web-1' })
-    expect(web1.style.transform).toBe('')
-    expect(web1.style.height).toBe('')
+    const [inProd, inStaging] = screen.getAllByRole('treeitem', { name: 'web-1' })
+    expect(inProd.style.transform).toBe('')
+    expect(inProd.style.height).toBe('')
+    fireEvent.mouseEnter(inProd)
+    expect(inStaging).toHaveAttribute('data-shared-highlight', 'true')
     for (const el of items()) expect(el).not.toHaveAttribute('data-pulse')
   })
 
-  it('motion-safe expand animates height', async () => {
+  it('motion-safe expand animates height and pulses shared rows', async () => {
     const user = userEvent.setup()
-    renderPage()
+    renderPage(sharedWorld())
     const prod = await screen.findByRole('treeitem', { name: 'prod' })
     await user.click(chevron(prod))
     await user.click(chevron(prod))
-    expect(screen.getByRole('treeitem', { name: 'web-1' }).style.height).not.toBe('')
+    const [inProd, inStaging] = screen.getAllByRole('treeitem', { name: 'web-1' })
+    expect(inProd.style.height).not.toBe('')
+    fireEvent.mouseEnter(inProd)
+    expect(inStaging).toHaveAttribute('data-shared-highlight', 'true')
+    expect(inStaging).toHaveAttribute('data-pulse', 'true')
   })
 })
