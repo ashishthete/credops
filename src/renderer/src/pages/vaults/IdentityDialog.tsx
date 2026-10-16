@@ -15,7 +15,7 @@ import { Dialog } from '../../ui/Dialog'
 import { SecretField, SelectField, TextField } from '../../ui/Field'
 import { fast, spring, useMotionSafe } from '../../ui/motion'
 import { toast } from '../../ui/Toaster'
-import { attempt } from './common'
+import { attempt } from '../../ui/common'
 
 const AUTH_LABEL: Record<IdentityAuth, string> = {
   agent: 'SSH agent',

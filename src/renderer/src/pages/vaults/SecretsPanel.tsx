@@ -7,7 +7,7 @@ import { Badge } from '../../ui/Badge'
 import { fast, spring, useMotionSafe } from '../../ui/motion'
 import { toast } from '../../ui/Toaster'
 import { vaultStatusStore } from '../../vault/status'
-import { attempt, ListRow, RowMenu, type ConfirmRequest } from './common'
+import { attempt, ListRow, RowMenu, type ConfirmRequest } from '../../ui/common'
 import { SecretDialog } from './SecretDialog'
 
 export const MASK = '••••••••'

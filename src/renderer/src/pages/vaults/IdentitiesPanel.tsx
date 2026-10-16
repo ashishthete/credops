@@ -5,7 +5,7 @@ import type { IdentityMeta, SshKeyMeta } from '../../../../shared/vault'
 import { api } from '../../lib/api'
 import { Badge } from '../../ui/Badge'
 import { toast } from '../../ui/Toaster'
-import { attempt, ListRow, RowMenu, type ConfirmRequest } from './common'
+import { attempt, ListRow, RowMenu, type ConfirmRequest } from '../../ui/common'
 import { IdentityDialog } from './IdentityDialog'
 
 interface IdentitiesPanelProps {

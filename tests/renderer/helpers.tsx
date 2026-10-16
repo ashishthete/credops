@@ -1,5 +1,6 @@
 import { vi } from 'vitest'
 import type { AuditEvent } from '../../src/shared/audit'
+import type { EnvironmentMeta, HostMeta, ProductMeta } from '../../src/shared/inventory'
 import type { AppInfo } from '../../src/shared/ipc'
 import { DEFAULT_VAULT_ID, type VaultMeta, type VaultStatus } from '../../src/shared/vault'
 
@@ -51,6 +52,53 @@ export const defaultVault: VaultMeta = {
   updatedAt: '2026-10-16T09:00:00.000Z',
 }
 
+const STAMP = '2026-10-16T09:00:00.000Z'
+
+export function product(over: Partial<ProductMeta> & { id: string; name: string }): ProductMeta {
+  return {
+    color: '#5b8cff',
+    icon: 'boxes',
+    description: '',
+    repoUrl: null,
+    environmentIds: [],
+    createdAt: STAMP,
+    updatedAt: STAMP,
+    ...over,
+  }
+}
+
+export function environment(over: Partial<EnvironmentMeta> & { id: string; name: string }): EnvironmentMeta {
+  return {
+    color: '#2fbf71',
+    protected: false,
+    defaultIdentityId: null,
+    defaultPort: null,
+    defaultJumpHostId: null,
+    productIds: [],
+    hosts: [],
+    createdAt: STAMP,
+    updatedAt: STAMP,
+    ...over,
+  }
+}
+
+export function host(over: Partial<HostMeta> & { id: string; label: string }): HostMeta {
+  return {
+    address: `${over.label}.example.com`,
+    port: null,
+    identityId: null,
+    jumpHostId: null,
+    tags: [],
+    osIcon: 'linux',
+    notes: '',
+    vaultIds: [],
+    environments: [],
+    createdAt: STAMP,
+    updatedAt: STAMP,
+    ...over,
+  }
+}
+
 /** Installs window.opsdeck with per-channel results; returns the invoke mock. */
 export function mockBridge(results: Record<string, unknown> = {}) {
   const invoke = vi.fn(async (channel: string) => {
@@ -60,6 +108,7 @@ export function mockBridge(results: Record<string, unknown> = {}) {
     if (channel === 'vault:status') return vaultStatus()
     if (channel === 'vault:list') return [defaultVault]
     if (channel === 'secret:list' || channel === 'key:list' || channel === 'identity:list') return []
+    if (channel === 'product:list' || channel === 'env:list' || channel === 'host:list') return []
     return null
   })
   bridgeListeners.clear()

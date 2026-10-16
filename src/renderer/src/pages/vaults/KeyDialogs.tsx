@@ -18,7 +18,7 @@ import { fast, spring, useMotionSafe } from '../../ui/motion'
 import { Skeleton } from '../../ui/Skeleton'
 import { toast } from '../../ui/Toaster'
 import { withUnlock } from '../../vault/unlock'
-import { attempt, errorText, fail } from './common'
+import { attempt, errorText, fail } from '../../ui/common'
 
 const PASSPHRASE_REQUIRED = 'passphrase required'
 

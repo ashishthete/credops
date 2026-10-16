@@ -12,7 +12,7 @@ import { Button } from '../../ui/Button'
 import { Dialog } from '../../ui/Dialog'
 import { SecretAreaField, SelectField, TextField } from '../../ui/Field'
 import { toast } from '../../ui/Toaster'
-import { attempt } from './common'
+import { attempt } from '../../ui/common'
 
 interface SecretDialogProps {
   open: boolean

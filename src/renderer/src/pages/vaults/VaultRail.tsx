@@ -9,7 +9,7 @@ import { TextField } from '../../ui/Field'
 import { fast, spring, useMotionSafe } from '../../ui/motion'
 import { Skeleton } from '../../ui/Skeleton'
 import { toast } from '../../ui/Toaster'
-import { attempt, ColorPicker, plural, RowMenu, VAULT_COLORS, type ConfirmRequest } from './common'
+import { attempt, ColorPicker, plural, RowMenu, VAULT_COLORS, type ConfirmRequest } from '../../ui/common'
 
 interface VaultRailProps {
   vaults: VaultMeta[] | null

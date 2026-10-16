@@ -7,7 +7,7 @@ import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
 import { toast } from '../../ui/Toaster'
 import type { Tone } from '../../ui/tone'
-import { attempt, ListRow, RowMenu, type ConfirmRequest } from './common'
+import { attempt, ListRow, RowMenu, type ConfirmRequest } from '../../ui/common'
 import { RenameKeyDialog } from './KeyDialogs'
 
 const SOURCE_TONE: Record<SshKeySource, Tone> = { file: 'info', imported: 'warn', generated: 'success' }

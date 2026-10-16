@@ -1,5 +1,6 @@
 // Command registry, fuzzy matcher and palette open-state: small module-level stores read
 // through useSyncExternalStore.
+import { createStore } from './store'
 
 export interface Command {
   id: string
@@ -8,26 +9,6 @@ export interface Command {
   keywords?: string[]
   shortcut?: string
   run: () => void
-}
-
-type Listener = () => void
-
-function createStore<T>(initial: T) {
-  let value = initial
-  const listeners = new Set<Listener>()
-  return {
-    get: () => value,
-    set(next: T) {
-      value = next
-      listeners.forEach((l) => l())
-    },
-    subscribe(listener: Listener) {
-      listeners.add(listener)
-      return () => {
-        listeners.delete(listener)
-      }
-    },
-  }
 }
 
 export const commandStore = createStore<readonly Command[]>([])

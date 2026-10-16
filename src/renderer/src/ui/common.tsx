@@ -1,13 +1,13 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { MoreHorizontal, type LucideIcon } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import { cleanIpcErrorMessage } from '../../lib/api'
-import { Button } from '../../ui/Button'
-import { Dialog } from '../../ui/Dialog'
-import { TextField } from '../../ui/Field'
-import { fast, spring, useMotionSafe } from '../../ui/motion'
-import { toast } from '../../ui/Toaster'
-import { withUnlock } from '../../vault/unlock'
+import { cleanIpcErrorMessage } from '../lib/api'
+import { Button } from './Button'
+import { Dialog } from './Dialog'
+import { TextField } from './Field'
+import { fast, spring, useMotionSafe } from './motion'
+import { toast } from './Toaster'
+import { withUnlock } from '../vault/unlock'
 
 export const errorText = (err: unknown) => cleanIpcErrorMessage(err instanceof Error ? err.message : String(err))
 
