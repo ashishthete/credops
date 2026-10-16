@@ -85,7 +85,7 @@
 ### Task 1: Project scaffold with a secure window
 
 **Files:**
-- Create: `package.json`, `pnpm-workspace.yaml` (none; single package), `electron.vite.config.ts`, `tsconfig.json`, `tsconfig.node.json`, `tsconfig.web.json`, `vitest.config.ts`, `.gitignore`
+- Create: `package.json`, `electron.vite.config.ts`, `tsconfig.json`, `tsconfig.node.json`, `tsconfig.web.json`, `vitest.config.ts`, `.gitignore`
 - Create: `src/main/index.ts`, `src/main/window.ts`, `src/preload/index.ts` (empty bridge for now), `src/renderer/index.html`, `src/renderer/src/main.tsx`, `src/renderer/src/App.tsx`, `src/renderer/src/styles.css`
 - Test: `tests/main/window.test.ts`
 
