@@ -3,9 +3,9 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
-import { utils } from 'ssh2'
 import { fingerprintOf, hostToken, KnownHostStore, parseKnownHosts } from '../../src/main/ssh/known-hosts'
 import { VAULT_LOCKED } from '../../src/shared/vault'
+import { generateKey } from './ssh-server'
 import { makeVault } from './vault-helpers'
 
 interface Key {
@@ -15,9 +15,7 @@ interface Key {
 }
 
 function gen(kind: 'ed25519' | 'ecdsa'): Key {
-  const pair = kind === 'ed25519' ? utils.generateKeyPairSync('ed25519') : utils.generateKeyPairSync('ecdsa', { bits: 256 })
-  const parsed = utils.parseKey(pair.public)
-  if (parsed instanceof Error) throw parsed
+  const parsed = generateKey(kind).public
   const raw = parsed.getPublicSSH()
   return { type: parsed.type, b64: raw.toString('base64'), raw }
 }

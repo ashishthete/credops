@@ -33,9 +33,13 @@ export interface TestServer {
  * A key pair whose public half parses. ssh2's generator now and then drops a leading zero byte
  * from an ed25519 key (about 1 in 300), and that key is unusable, so retry.
  */
-export function generateKey(type: 'ed25519' | 'rsa' = 'ed25519', opts: object = {}): { private: string; public: ParsedKey } {
+export function generateKey(
+  type: 'ed25519' | 'rsa' | 'ecdsa' = 'ed25519',
+  opts: object = {},
+): { private: string; public: ParsedKey } {
+  const bits = { rsa: { bits: 2048 }, ecdsa: { bits: 256 }, ed25519: {} }[type]
   for (;;) {
-    const pair = utils.generateKeyPairSync(type as 'ed25519', (type === 'rsa' ? { bits: 2048, ...opts } : opts) as never)
+    const pair = utils.generateKeyPairSync(type as 'ed25519', { ...bits, ...opts } as never)
     const pub = utils.parseKey(pair.public)
     if (!(pub instanceof Error)) return { private: pair.private, public: pub }
   }
