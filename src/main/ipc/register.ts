@@ -2,6 +2,8 @@ import { fileURLToPath } from 'node:url'
 import { resolve } from 'node:path'
 import type { IpcMain, IpcMainInvokeEvent } from 'electron'
 import { CHANNELS, type Handlers } from '../../shared/ipc'
+import { redact } from '../security/redact'
+import type { VALIDATORS } from './validators'
 
 export function isTrustedSender(
   frameUrl: string,
@@ -34,12 +36,19 @@ export function registerHandlers(
   ipc: Pick<IpcMain, 'handle'>,
   handlers: Handlers,
   trust: (frameUrl: string) => boolean,
+  opts: { validators: typeof VALIDATORS; knownSecrets?: () => readonly string[] },
 ): void {
   for (const channel of CHANNELS) {
     const handler = handlers[channel] as (...args: unknown[]) => unknown
-    ipc.handle(channel, async (event: IpcMainInvokeEvent, ...args: unknown[]) => {
+    const validate = opts.validators[channel] as (args: readonly unknown[]) => unknown[]
+    ipc.handle(channel, async (event: IpcMainInvokeEvent, ...raw: unknown[]) => {
       if (!trust(event.senderFrame?.url ?? '')) throw new Error('untrusted sender')
-      return handler(...args)
+      try {
+        return await handler(...validate(raw))
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        throw new Error(redact(message, opts.knownSecrets?.() ?? []))
+      }
     })
   }
 }

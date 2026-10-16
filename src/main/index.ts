@@ -6,6 +6,7 @@ import { openDatabase, type Db } from './db/connection'
 import { createAppHandlers } from './ipc/handlers/app'
 import { createAuditHandlers } from './ipc/handlers/audit'
 import { isTrustedSender, registerHandlers } from './ipc/register'
+import { VALIDATORS } from './ipc/validators'
 import { redact } from './security/redact'
 import { devRendererUrl, shouldAllowNavigation, windowOptions } from './window'
 
@@ -81,6 +82,7 @@ if (!app.requestSingleInstanceLock()) {
           }),
         },
         (url) => isTrustedSender(url, { devServerUrl, rendererFile }),
+        { validators: VALIDATORS, knownSecrets: () => [] },
       )
       createWindow()
     })
