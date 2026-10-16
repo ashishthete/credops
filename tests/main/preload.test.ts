@@ -33,6 +33,17 @@ describe('preload bridge', () => {
     expect(ipc.on).not.toHaveBeenCalled()
   })
 
+  it('allows the session events', () => {
+    const { ipc, emit } = fakeIpc()
+    const bridge = createBridge(ipc)
+    const listener = vi.fn()
+    bridge.on('session:data', listener)
+    for (const e of ['session:state', 'session:prompt', 'session:promptDone'] as const) bridge.on(e, () => {})
+    emit('session:data', {}, { id: 's', data: 'hi' })
+    expect(listener).toHaveBeenCalledExactlyOnceWith({ id: 's', data: 'hi' })
+    expect(ipc.on).toHaveBeenCalledTimes(4)
+  })
+
   it('passes only the payload and unsubscribes', () => {
     const { ipc, emit, listeners } = fakeIpc()
     const bridge = createBridge(ipc)

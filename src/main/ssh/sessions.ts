@@ -1,0 +1,583 @@
+import { randomUUID } from 'node:crypto'
+import type { Client, ClientChannel } from 'ssh2'
+import type { AuditInput } from '../../shared/audit'
+import type { EventContract, EventName } from '../../shared/ipc'
+import type { IdentityRef, ResolvedHost } from '../../shared/inventory'
+import {
+  DEFAULT_KEEPALIVE_SEC,
+  FLUSH_CHARS,
+  FLUSH_MS,
+  MAX_SESSIONS,
+  PROMPT_TIMEOUT_MS,
+  SCROLLBACK_CHARS,
+  type OpenLocalRequest,
+  type OpenSshRequest,
+  type PromptAnswer,
+  type SessionError,
+  type SessionMeta,
+  type SessionPrompt,
+} from '../../shared/ssh'
+import { VAULT_LOCKED } from '../../shared/vault'
+import { redact } from '../security/redact'
+import type { AuthPlan } from './auth'
+import { describeError, HostKeyError, hopsOf } from './connect'
+import type { ConnectDeps, HopTarget, connectChain } from './connect'
+import type { KnownHostStore } from './known-hosts'
+
+/** The SSH shell stream and node-pty both adapt to this. */
+export interface Pty {
+  write(data: string): void
+  resize(cols: number, rows: number): void
+  onData(cb: (chunk: Buffer | string) => void): void
+  onExit(cb: (info: { code: number | null }) => void): void
+  kill(): void
+}
+
+export type CloseReason = 'user' | 'remote' | 'error' | 'quit'
+type AuthAudit = AuthPlan['kind'] | 'prompt'
+
+export interface SessionManagerDeps {
+  resolve(hostId: string, environmentId?: string): ResolvedHost
+  hostInfo(hostId: string): { label: string; keepaliveSec: number | null; envVars: Record<string, string> }
+  envColor(environmentId: string): string | null
+  connect: typeof connectChain
+  plan(identity: IdentityRef): Promise<AuthPlan>
+  knownHosts: Pick<KnownHostStore, 'check' | 'trust' | 'recordMismatch'>
+  /** Spawns the local shell; absent when it isn't available. */
+  openLocal?: (req: OpenLocalRequest) => Pty
+  audit: { append(input: AuditInput): unknown }
+  emit<K extends EventName>(event: K, payload: EventContract[K]): void
+  now?: () => Date
+  ids?: () => string
+}
+
+export class SessionLimitError extends Error {
+  readonly code = 'limit' as const
+  constructor() {
+    super(`Too many open sessions (${MAX_SESSIONS})`)
+    this.name = 'SessionLimitError'
+  }
+}
+
+const RECONNECTED = '\r\n\x1b[2m── reconnected ──\x1b[0m\r\n'
+const LOCAL_LABEL = 'Local shell'
+
+/** Keeps the last SCROLLBACK_CHARS of output, trimmed from the front. */
+class Scrollback {
+  private chunks: string[] = []
+  private size = 0
+
+  append(text: string): void {
+    this.chunks.push(text)
+    this.size += text.length
+    while (this.size - this.chunks[0].length >= SCROLLBACK_CHARS) this.size -= this.chunks.shift()!.length
+    if (this.size > SCROLLBACK_CHARS) {
+      let first = this.chunks[0].slice(this.size - SCROLLBACK_CHARS)
+      // Never start on the second half of a surrogate pair.
+      if (/^[\uDC00-\uDFFF]/.test(first)) first = first.slice(1)
+      this.size -= this.chunks[0].length - first.length
+      this.chunks[0] = first
+    }
+  }
+
+  text(): string {
+    const all = this.chunks.join('')
+    this.chunks = all ? [all] : []
+    return all
+  }
+}
+
+/** One connect attempt, or one local shell: what a close or a lock has to cancel. */
+interface Attempt {
+  readonly abort: AbortController
+  readonly prompts: Set<string>
+  /** The hop being dialled, then the one that failed: the one a dial error names. */
+  hop: number
+  failedHop: number | null
+  auth: AuthAudit
+  /** Ends every client of the chain; idempotent. */
+  close: (() => void) | null
+}
+
+interface Session {
+  meta: SessionMeta
+  cols: number
+  rows: number
+  scrollback: Scrollback
+  pending: string
+  flushTimer: NodeJS.Timeout | null
+  pty: Pty | null
+  /** Set while connecting or ready. */
+  attempt: Attempt | null
+  readyAtMs: number
+}
+
+interface DialTarget {
+  hops: HopTarget[]
+  /** Parallel to `hops`. */
+  hostIds: string[]
+  label: string
+  environmentId: string | null
+  color: string | null
+  keepaliveSec: number
+  envVars: Record<string, string>
+}
+
+interface PendingPrompt {
+  kind: PromptAnswer['kind']
+  attempt: Attempt
+  timer: NodeJS.Timeout
+  resolve(answer: PromptAnswer | null): void
+}
+
+type PromptBody = SessionPrompt extends infer P ? (P extends SessionPrompt ? Omit<P, 'promptId' | 'sessionId'> : never) : never
+
+const snapshot = (m: SessionMeta): SessionMeta => ({
+  ...m,
+  hops: m.hops.map((h) => ({ ...h })),
+  error: m.error ? structuredClone(m.error) : null,
+})
+
+const once = (fn: () => void): (() => void) => {
+  let done = false
+  return () => {
+    if (done) return
+    done = true
+    fn()
+  }
+}
+
+/** A drop after ready: never the dial-time "didn't answer within 20 s" text. */
+function lostError(label: string, err: unknown): SessionError {
+  const e = (err ?? {}) as { level?: unknown; message?: unknown }
+  if (e.level === 'client-timeout') {
+    return { code: 'closed', message: `The connection to ${label} was lost: the server stopped answering keepalives` }
+  }
+  const why = typeof e.message === 'string' && e.message ? `: ${redact(e.message)}` : ''
+  return { code: 'closed', message: `The connection to ${label} was lost${why}` }
+}
+
+function shellPty(stream: ClientChannel): Pty {
+  stream.on('error', () => {})
+  return {
+    write: (data) => void stream.write(data),
+    resize: (cols, rows) => stream.setWindow(rows, cols, 0, 0),
+    onData: (cb) => {
+      stream.on('data', cb)
+      stream.stderr.on('data', cb)
+    },
+    onExit: (cb) => {
+      let code: number | null = null
+      stream.on('exit', (c: unknown) => {
+        code = typeof c === 'number' ? c : null
+      })
+      stream.once('close', () => cb({ code }))
+    },
+    kill: () => stream.close(),
+  }
+}
+
+/**
+ * Open terminal sessions: SSH over a hop chain, or a local shell. Owns each session's scrollback,
+ * batches its output into `session:data` events, and brokers the prompts a connect needs.
+ */
+export class SessionManager {
+  private readonly sessions = new Map<string, Session>()
+  private readonly prompts = new Map<string, PendingPrompt>()
+  private readonly now: () => Date
+  private readonly ids: () => string
+
+  constructor(private readonly deps: SessionManagerDeps) {
+    this.now = deps.now ?? ((): Date => new Date())
+    this.ids = deps.ids ?? randomUUID
+  }
+
+  openSsh(req: OpenSshRequest): SessionMeta {
+    this.assertRoom()
+    const target = this.target(req.hostId, req.environmentId)
+    const s = this.create('ssh', req, target.label, req.hostId, target)
+    this.dial(s, target)
+    return snapshot(s.meta)
+  }
+
+  openLocal(req: OpenLocalRequest): SessionMeta {
+    if (!this.deps.openLocal) throw new Error("The local shell isn't available")
+    this.assertRoom()
+    const n = [...this.sessions.values()].filter((x) => x.meta.kind === 'local').length + 1
+    const pty = this.deps.openLocal(req)
+    const s = this.create('local', req, n === 1 ? LOCAL_LABEL : `${LOCAL_LABEL} ${n}`, null, null)
+    const attempt = this.newAttempt(s)
+    this.ready(s, attempt, pty, () => this.finish(s, attempt, 'remote', null))
+    return snapshot(s.meta)
+  }
+
+  /** SSH only, from `closed` or `failed`: the same tab dials again. */
+  reconnect(id: string): SessionMeta {
+    const s = this.get(id)
+    if (s.meta.kind !== 'ssh' || !s.meta.hostId) throw new Error("A local shell can't be reconnected; open a new one")
+    if (s.meta.state !== 'closed' && s.meta.state !== 'failed') throw new Error('Only a closed or failed session can be reconnected')
+    this.assertRoom()
+    const target = this.target(s.meta.hostId, s.meta.environmentId ?? undefined)
+    Object.assign(s.meta, {
+      label: target.label,
+      color: target.color,
+      state: 'connecting',
+      error: null,
+      readyAt: null,
+      closedAt: null,
+      attempt: s.meta.attempt + 1,
+    })
+    this.dial(s, target)
+    return snapshot(s.meta)
+  }
+
+  /** Dropped silently unless the session is ready. */
+  write(id: string, data: string): void {
+    const s = this.sessions.get(id)
+    if (s?.meta.state === 'ready') s.pty?.write(data)
+  }
+
+  resize(id: string, cols: number, rows: number): void {
+    const s = this.sessions.get(id)
+    if (!s) return
+    s.cols = cols
+    s.rows = rows
+    if (s.meta.state === 'ready') s.pty?.resize(cols, rows)
+  }
+
+  /** Ends the session and forgets it. */
+  close(id: string): void {
+    const s = this.sessions.get(id)
+    if (!s) return
+    if (s.attempt) this.finish(s, s.attempt, 'user', null)
+    this.forget(s)
+  }
+
+  list(): SessionMeta[] {
+    return [...this.sessions.values()].map((s) => snapshot(s.meta))
+  }
+
+  attach(id: string): { meta: SessionMeta; buffer: string } {
+    const s = this.get(id)
+    return { meta: snapshot(s.meta), buffer: s.scrollback.text() }
+  }
+
+  /** An unknown or expired prompt id is a no-op. */
+  answer(promptId: string, answer: PromptAnswer): void {
+    const p = this.prompts.get(promptId)
+    if (!p) return
+    if (p.kind !== answer.kind) throw new Error("prompt answer doesn't match")
+    this.settle(promptId, answer)
+  }
+
+  /** On vault lock: every pending prompt is cancelled; open sessions keep running. */
+  cancelPrompts(): void {
+    for (const id of [...this.prompts.keys()]) this.settle(id, null)
+  }
+
+  closeAll(reason: 'quit'): void {
+    for (const s of [...this.sessions.values()]) {
+      if (s.attempt) this.finish(s, s.attempt, reason, null)
+      this.forget(s)
+    }
+  }
+
+  private get(id: string): Session {
+    const s = this.sessions.get(id)
+    if (!s) throw new Error('session not found')
+    return s
+  }
+
+  private assertRoom(): void {
+    let open = 0
+    for (const s of this.sessions.values()) if (s.meta.state === 'connecting' || s.meta.state === 'ready') open++
+    if (open >= MAX_SESSIONS) throw new SessionLimitError()
+  }
+
+  private target(hostId: string, environmentId?: string): DialTarget {
+    const resolved = this.deps.resolve(hostId, environmentId)
+    const info = this.deps.hostInfo(hostId)
+    return {
+      hops: hopsOf(resolved, info.label),
+      hostIds: [...resolved.chain.map((h) => h.hostId), hostId],
+      label: info.label,
+      environmentId: resolved.environmentId,
+      color: resolved.environmentId ? this.deps.envColor(resolved.environmentId) : null,
+      keepaliveSec: info.keepaliveSec ?? DEFAULT_KEEPALIVE_SEC,
+      envVars: info.envVars,
+    }
+  }
+
+  private create(
+    kind: SessionMeta['kind'],
+    size: { cols: number; rows: number },
+    label: string,
+    hostId: string | null,
+    target: DialTarget | null,
+  ): Session {
+    const s: Session = {
+      meta: {
+        id: this.ids(),
+        kind,
+        hostId,
+        environmentId: target?.environmentId ?? null,
+        label,
+        color: target?.color ?? null,
+        state: 'connecting',
+        hops: [],
+        error: null,
+        openedAt: this.now().toISOString(),
+        readyAt: null,
+        closedAt: null,
+        attempt: 1,
+      },
+      cols: size.cols,
+      rows: size.rows,
+      scrollback: new Scrollback(),
+      pending: '',
+      flushTimer: null,
+      pty: null,
+      attempt: null,
+      readyAtMs: 0,
+    }
+    this.sessions.set(s.meta.id, s)
+    return s
+  }
+
+  private forget(s: Session): void {
+    this.flush(s)
+    this.sessions.delete(s.meta.id)
+  }
+
+  private newAttempt(s: Session): Attempt {
+    const attempt: Attempt = { abort: new AbortController(), prompts: new Set(), hop: 0, failedHop: null, auth: 'default', close: null }
+    s.attempt = attempt
+    return attempt
+  }
+
+  private isLive(s: Session, attempt: Attempt): boolean {
+    return s.attempt === attempt && this.sessions.get(s.meta.id) === s
+  }
+
+  private dial(s: Session, target: DialTarget): void {
+    s.meta.hops = target.hops.map((h) => ({ label: h.label, state: 'pending' }))
+    const attempt = this.newAttempt(s)
+    this.publish(s)
+    const targetHop = target.hops.at(-1)
+    const deps: ConnectDeps = {
+      plan: async (identity) => {
+        const plan = await this.deps.plan(identity)
+        if (attempt.hop === target.hops.length - 1) attempt.auth = plan.kind
+        return plan
+      },
+      verifyHostKey: (hop, keyType, keyBase64) => this.verifyHostKey(s, attempt, target, hop, keyType, keyBase64),
+      askPassword: async (hop, username) => {
+        const a = await this.ask(s, attempt, { kind: 'password', hopLabel: hop.label, username })
+        const password = a?.kind === 'password' ? a.password : null
+        if (password !== null && hop === targetHop) attempt.auth = 'prompt'
+        return password
+      },
+      askKeyboard: async (hop, name, instructions, prompts) => {
+        const a = await this.ask(s, attempt, { kind: 'keyboard', hopLabel: hop.label, name, instructions, prompts })
+        return a?.kind === 'keyboard' ? a.responses : null
+      },
+      onHop: (i, state) => {
+        if (!this.isLive(s, attempt)) return
+        if (state === 'connecting') attempt.hop = i
+        if (state === 'failed') attempt.failedHop = i
+        s.meta.hops[i] = { ...s.meta.hops[i], state }
+        this.publish(s)
+      },
+      keepaliveSec: target.keepaliveSec,
+    }
+    this.deps
+      .connect(target.hops, deps, attempt.abort.signal)
+      .then(
+        (chain) => this.openShell(s, attempt, target, chain),
+        (err: unknown) => this.dialFailed(s, attempt, target, err),
+      )
+      .catch((err: unknown) => console.error('Session bookkeeping failed:', redact(err instanceof Error ? err.message : String(err))))
+  }
+
+  private async verifyHostKey(
+    s: Session,
+    attempt: Attempt,
+    target: DialTarget,
+    hop: HopTarget,
+    keyType: string,
+    keyBase64: string,
+  ): Promise<boolean> {
+    const { status, info } = await this.deps.knownHosts.check(hop.address, hop.port, keyType, keyBase64)
+    if (status === 'match') return true
+    if (status === 'changed' || status === 'revoked') {
+      this.deps.knownHosts.recordMismatch(info, target.hostIds[target.hops.indexOf(hop)] ?? null)
+      throw new HostKeyError(status === 'changed' ? 'host-key-changed' : 'host-key-revoked', info)
+    }
+    const answer = await this.ask(s, attempt, { kind: 'host-key', hopLabel: hop.label, info })
+    // A late answer for an aborted attempt never stores trust.
+    if (answer?.kind !== 'host-key' || !answer.trust || !this.isLive(s, attempt)) return false
+    this.deps.knownHosts.trust(hop.address, hop.port, keyType, keyBase64)
+    return true
+  }
+
+  private openShell(s: Session, attempt: Attempt, target: DialTarget, chain: { client: Client; close(): void }): void {
+    attempt.close = once(() => chain.close())
+    if (!this.isLive(s, attempt)) return attempt.close()
+    const { client } = chain
+    let lastError: unknown = null
+    client.on('error', (err) => {
+      lastError = err
+    })
+    // The target closing on its own (or a jump under it): end the rest of the chain too.
+    client.on('close', () => {
+      if (!this.isLive(s, attempt)) return
+      if (s.meta.state === 'ready') this.finish(s, attempt, 'error', lostError(target.label, lastError))
+      else this.dialFailed(s, attempt, target, lastError ?? new Error('The server closed the connection'))
+    })
+    const onShell = (err: Error | undefined, stream: ClientChannel): void => {
+      if (err) return this.dialFailed(s, attempt, target, err)
+      if (!this.isLive(s, attempt)) {
+        stream.close()
+        return attempt.close?.()
+      }
+      let exited = false
+      stream.once('exit', () => {
+        exited = true
+      })
+      this.ready(s, attempt, shellPty(stream), () =>
+        exited ? this.finish(s, attempt, 'remote', null) : this.finish(s, attempt, 'error', lostError(target.label, lastError)),
+      )
+    }
+    try {
+      // A server may refuse the env vars; ssh2 doesn't wait for a reply, so that is ignored.
+      client.shell({ term: 'xterm-256color', cols: s.cols, rows: s.rows }, { env: target.envVars }, onShell)
+    } catch (err) {
+      this.dialFailed(s, attempt, target, err)
+    }
+  }
+
+  private ready(s: Session, attempt: Attempt, pty: Pty, onExit: () => void): void {
+    s.pty = pty
+    const decoder = new TextDecoder('utf-8')
+    if (s.meta.attempt > 1) this.output(s, RECONNECTED)
+    pty.onData((chunk) => {
+      if (s.pty !== pty) return
+      this.output(s, typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true }))
+    })
+    pty.onExit(() => onExit())
+    const now = this.now()
+    s.readyAtMs = now.getTime()
+    s.meta.state = 'ready'
+    s.meta.readyAt = now.toISOString()
+    this.publish(s)
+    this.auditOpen(s, 'success', { hops: s.meta.hops.length, auth: attempt.auth })
+  }
+
+  private dialFailed(s: Session, attempt: Attempt, target: DialTarget, err: unknown): void {
+    if (!this.isLive(s, attempt)) return
+    s.attempt = null
+    this.cancelAttemptPrompts(attempt)
+    attempt.close?.()
+    const hop = target.hops[attempt.failedHop ?? attempt.hop] ?? null
+    const error =
+      err instanceof Error && err.message === VAULT_LOCKED
+        ? { code: 'locked' as const, message: 'Unlock the vault to connect', ...(hop ? { hopLabel: hop.label } : {}) }
+        : describeError(err, hop)
+    Object.assign(s.meta, { state: 'failed', error, closedAt: this.now().toISOString() })
+    this.publish(s)
+    this.auditOpen(s, 'failure', { hops: s.meta.hops.length, code: error.code })
+  }
+
+  /** Ends a connecting or ready attempt. Only a ready one audits a close. */
+  private finish(s: Session, attempt: Attempt, reason: CloseReason, error: SessionError | null): void {
+    if (s.attempt !== attempt) return
+    s.attempt = null
+    attempt.abort.abort()
+    this.cancelAttemptPrompts(attempt)
+    const wasReady = s.meta.state === 'ready'
+    s.pty?.kill()
+    s.pty = null
+    attempt.close?.()
+    const now = this.now()
+    Object.assign(s.meta, { state: error ? 'failed' : 'closed', error, closedAt: now.toISOString() })
+    this.publish(s)
+    if (!wasReady) return
+    this.deps.audit.append({
+      action: s.meta.kind === 'ssh' ? 'ssh.close' : 'shell.close',
+      outcome: 'info',
+      ...this.auditTarget(s),
+      details: {
+        ...(s.meta.environmentId ? { environmentId: s.meta.environmentId } : {}),
+        durationSec: Math.round((now.getTime() - s.readyAtMs) / 1000),
+        reason,
+      },
+    })
+  }
+
+  private auditOpen(s: Session, outcome: 'success' | 'failure', details: Record<string, unknown>): void {
+    this.deps.audit.append({
+      action: s.meta.kind === 'ssh' ? 'ssh.open' : 'shell.open',
+      outcome,
+      ...this.auditTarget(s),
+      details: {
+        ...(s.meta.environmentId ? { environmentId: s.meta.environmentId } : {}),
+        ...(s.meta.kind === 'ssh' ? details : {}),
+      },
+    })
+  }
+
+  private auditTarget(s: Session): Pick<AuditInput, 'targetType' | 'targetId' | 'targetLabel'> {
+    return s.meta.kind === 'ssh'
+      ? { targetType: 'host', targetId: s.meta.hostId ?? undefined, targetLabel: s.meta.label }
+      : { targetType: 'shell', targetLabel: LOCAL_LABEL }
+  }
+
+  private ask(s: Session, attempt: Attempt, prompt: PromptBody): Promise<PromptAnswer | null> {
+    if (!this.isLive(s, attempt)) return Promise.resolve(null)
+    const promptId = this.ids()
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => this.settle(promptId, null), PROMPT_TIMEOUT_MS)
+      this.prompts.set(promptId, { kind: prompt.kind, attempt, timer, resolve })
+      attempt.prompts.add(promptId)
+      this.deps.emit('session:prompt', { ...prompt, promptId, sessionId: s.meta.id } as SessionPrompt)
+    })
+  }
+
+  /** `null` cancels. */
+  private settle(promptId: string, answer: PromptAnswer | null): void {
+    const p = this.prompts.get(promptId)
+    if (!p) return
+    this.prompts.delete(promptId)
+    clearTimeout(p.timer)
+    p.attempt.prompts.delete(promptId)
+    this.deps.emit('session:promptDone', { promptId })
+    p.resolve(answer)
+  }
+
+  private cancelAttemptPrompts(attempt: Attempt): void {
+    for (const id of [...attempt.prompts]) this.settle(id, null)
+  }
+
+  private output(s: Session, text: string): void {
+    if (!text) return
+    s.scrollback.append(text)
+    s.pending += text
+    if (s.pending.length >= FLUSH_CHARS) this.flush(s)
+    else s.flushTimer ??= setTimeout(() => this.flush(s), FLUSH_MS)
+  }
+
+  private flush(s: Session): void {
+    if (s.flushTimer) clearTimeout(s.flushTimer)
+    s.flushTimer = null
+    if (!s.pending) return
+    const data = s.pending
+    s.pending = ''
+    this.deps.emit('session:data', { id: s.meta.id, data })
+  }
+
+  /** Pending output goes first, so a state change never overtakes the data before it. */
+  private publish(s: Session): void {
+    this.flush(s)
+    this.deps.emit('session:state', snapshot(s.meta))
+  }
+}

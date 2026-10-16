@@ -4,6 +4,7 @@ import {
   appMenuTemplate,
   devRendererUrl,
   forwardVaultLocks,
+  pushEvent,
   shouldAllowNavigation,
   windowOptions,
 } from '../../src/main/window'
@@ -119,5 +120,15 @@ describe('forwardVaultLocks', () => {
     expect(send).not.toHaveBeenCalled()
     stop()
     expect(listeners.size).toBe(0)
+  })
+})
+
+describe('pushEvent', () => {
+  it('sends any event to a live window and skips a missing or destroyed one', () => {
+    const send = vi.fn()
+    pushEvent({ isDestroyed: () => false, webContents: { send } }, 'session:promptDone', { promptId: 'p' })
+    pushEvent({ isDestroyed: () => true, webContents: { send } }, 'session:data', { id: 's', data: 'x' })
+    pushEvent(null, 'session:data', { id: 's', data: 'x' })
+    expect(send.mock.calls).toEqual([['session:promptDone', { promptId: 'p' }]])
   })
 })

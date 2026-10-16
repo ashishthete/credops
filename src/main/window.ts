@@ -76,15 +76,17 @@ interface LockSource {
   onLock(fn: (reason: LockReason) => void): () => void
 }
 
-interface PushTarget {
+export interface PushTarget {
   isDestroyed(): boolean
   webContents: { send(channel: EventName, payload: EventContract[EventName]): void }
 }
 
+/** Sends one event to the window; a missing or destroyed window drops it. */
+export function pushEvent<K extends EventName>(win: PushTarget | null, name: K, payload: EventContract[K]): void {
+  if (win && !win.isDestroyed()) win.webContents.send(name, payload)
+}
+
 /** Pushes every vault lock (the reason only) to the window, so its auth gate comes up at once. */
 export function forwardVaultLocks(vault: LockSource, window: () => PushTarget | null): () => void {
-  return vault.onLock((reason) => {
-    const win = window()
-    if (win && !win.isDestroyed()) win.webContents.send('vault:locked', { reason })
-  })
+  return vault.onLock((reason) => pushEvent(window(), 'vault:locked', { reason }))
 }

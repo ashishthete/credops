@@ -26,6 +26,7 @@ import {
   type ProductPatch,
   type SshImportRequest,
 } from '../../shared/inventory'
+import { MAX_COLS, MAX_ROWS, MAX_WRITE_CHARS, type OpenSshRequest, type PromptAnswer } from '../../shared/ssh'
 import {
   AUTO_LOCK_CHOICES,
   IDENTITY_AUTHS,
@@ -241,6 +242,36 @@ export const asSshImportRequest: Check<SshImportRequest> = v.object({
   role: v.optional(v.oneOf(HOST_ROLES)),
 }) as Check<SshImportRequest>
 
+const cols = v.int({ min: 1, max: MAX_COLS })
+const rows = v.int({ min: 1, max: MAX_ROWS })
+
+export const asOpenSshRequest: Check<OpenSshRequest> = v.object({
+  hostId: v.uuid(),
+  environmentId: v.optional(v.uuid()),
+  cols,
+  rows,
+}) as Check<OpenSshRequest>
+
+// More than any real keyboard-interactive round asks.
+const MAX_KEYBOARD_PROMPTS = 32
+// Typed by the user: not trimmed, and empty is allowed. null cancels.
+const typed = v.str({ max: MAX_SECRET_VALUE })
+const ANSWERS: Record<PromptAnswer['kind'], Check<PromptAnswer>> = {
+  'host-key': v.object({ kind: v.oneOf(['host-key'] as const), trust: v.bool() }) as Check<PromptAnswer>,
+  password: v.object({ kind: v.oneOf(['password'] as const), password: v.nullable(typed) }) as Check<PromptAnswer>,
+  keyboard: v.object({
+    kind: v.oneOf(['keyboard'] as const),
+    responses: v.nullable(v.array(typed, MAX_KEYBOARD_PROMPTS)),
+  }) as Check<PromptAnswer>,
+}
+export const asPromptAnswer: Check<PromptAnswer> = (value, path) => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new InvalidArgs(path, 'must be an object')
+  const kind = (value as { kind?: unknown }).kind
+  const check = typeof kind === 'string' && Object.hasOwn(ANSWERS, kind) ? ANSWERS[kind as PromptAnswer['kind']] : null
+  if (!check) throw new InvalidArgs(`${path}.kind`, 'is not an allowed value')
+  return check(value, path)
+}
+
 /** Every channel must have an entry; each later task adds its own. */
 export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']> } = {
   'app:info': args(),
@@ -297,4 +328,14 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'product:delete': args(v.uuid()),
   'sshconfig:preview': args(),
   'sshconfig:import': args(asSshImportRequest),
+  'ssh:open': args(asOpenSshRequest),
+  'session:reconnect': args(v.uuid()),
+  'session:write': args(v.uuid(), v.str({ max: MAX_WRITE_CHARS })),
+  'session:resize': args(v.uuid(), cols, rows),
+  'session:close': args(v.uuid()),
+  'session:list': args(),
+  'session:attach': args(v.uuid()),
+  'session:answer': args(v.uuid(), asPromptAnswer),
+  'knownhost:list': args(),
+  'knownhost:remove': args(v.uuid()),
 }

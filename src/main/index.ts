@@ -21,6 +21,7 @@ import { createIdentityHandlers } from './ipc/handlers/identities'
 import { createInventoryHandlers } from './ipc/handlers/inventory'
 import { createKeyHandlers } from './ipc/handlers/keys'
 import { createSecretHandlers } from './ipc/handlers/secrets'
+import { createSessionHandlers } from './ipc/handlers/sessions'
 import { createSshImportHandlers } from './ipc/handlers/ssh-import'
 import { createVaultHandlers } from './ipc/handlers/vault'
 import { isTrustedSender, registerHandlers } from './ipc/register'
@@ -29,14 +30,19 @@ import { EnvironmentStore } from './inventory/environment-store'
 import { HostStore } from './inventory/host-store'
 import { ProductStore } from './inventory/product-store'
 import { resolveHost } from './inventory/resolve'
+import { hostMeta } from './inventory/rows'
 import { SshImporter } from './inventory/ssh-import'
 import { redact } from './security/redact'
+import { authPlan } from './ssh/auth'
+import { connectChain } from './ssh/connect'
+import { KnownHostStore } from './ssh/known-hosts'
+import { SessionManager } from './ssh/sessions'
 import { AutoLock } from './vault/auto-lock'
 import { IdentityStore } from './vault/identity-store'
 import { KeyStore } from './vault/key-store'
 import { SecretStore } from './vault/secret-store'
 import { VaultService, type QuickUnlockDeps } from './vault/vault-service'
-import { appMenuTemplate, devRendererUrl, forwardVaultLocks, shouldAllowNavigation, windowOptions } from './window'
+import { appMenuTemplate, devRendererUrl, forwardVaultLocks, pushEvent, shouldAllowNavigation, windowOptions } from './window'
 
 // Keep dev data apart from the packaged app's (same name, same userData otherwise).
 // Must run before anything touches userData, including the single-instance lock.
@@ -55,6 +61,7 @@ let identities: IdentityStore | null = null
 let hosts: HostStore | null = null
 let environments: EnvironmentStore | null = null
 let products: ProductStore | null = null
+let sessions: SessionManager | null = null
 let quitAudited = false
 let stopAutoLock: (() => void) | null = null
 
@@ -146,6 +153,27 @@ if (!app.requestSingleInstanceLock()) {
         localUser: actor.osUser,
       })
       const inventoryDb = db
+      const resolve = (hostId: string, environmentId?: string) =>
+        resolveHost(inventoryDb, hostId, environmentId, { localUser: actor.osUser })
+      const knownHosts = new KnownHostStore(db, service, log, { knownHostsPath: join(homedir(), '.ssh', 'known_hosts') })
+      const authDeps = { identities, env: process.env, home: homedir() }
+      const envStore = environments
+      sessions = new SessionManager({
+        resolve,
+        hostInfo: (hostId) => {
+          const h = hostMeta(inventoryDb, hostId)
+          return { label: h.label, keepaliveSec: h.keepaliveSec, envVars: h.envVars }
+        },
+        envColor: (environmentId) => envStore.list().find((e) => e.id === environmentId)?.color ?? null,
+        connect: connectChain,
+        plan: (identity) => authPlan(identity, authDeps),
+        knownHosts,
+        audit: log,
+        emit: (event, payload) => pushEvent(mainWindow, event, payload),
+      })
+      const manager = sessions
+      // Sessions keep running across a lock; only the prompts waiting on the user are cancelled.
+      service.onLock(() => manager.cancelPrompts())
       stopAutoLock = new AutoLock({
         idleSeconds: () => powerMonitor.getSystemIdleTime(),
         minutes: () => service.autoLockMinutes(),
@@ -191,9 +219,10 @@ if (!app.requestSingleInstanceLock()) {
             hosts,
             environments,
             products,
-            resolve: (hostId, environmentId) => resolveHost(inventoryDb, hostId, environmentId, { localUser: actor.osUser }),
+            resolve,
           }),
           ...createSshImportHandlers(importer),
+          ...createSessionHandlers({ sessions: manager, knownHosts }),
         },
         (url) => isTrustedSender(url, { devServerUrl, rendererFile }),
         { validators: VALIDATORS, knownSecrets },
@@ -210,6 +239,11 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', (event) => {
     if (!audit || quitAudited) return
     quitAudited = true
+    try {
+      sessions?.closeAll('quit')
+    } catch (err) {
+      console.error('Failed to close sessions on quit:', err)
+    }
     try {
       vault?.lock('quit')
     } catch (err) {
@@ -240,6 +274,7 @@ if (!app.requestSingleInstanceLock()) {
     hosts = null
     environments = null
     products = null
+    sessions = null
     audit = null
     db?.close()
     db = null

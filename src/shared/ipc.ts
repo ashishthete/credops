@@ -16,6 +16,13 @@ import type {
   SshImportResult,
 } from './inventory'
 import type {
+  KnownHostMeta,
+  OpenSshRequest,
+  PromptAnswer,
+  SessionMeta,
+  SessionPrompt,
+} from './ssh'
+import type {
   IdentityInput,
   IdentityMeta,
   IdentityPatch,
@@ -112,6 +119,18 @@ export interface IpcContract {
   'product:delete': { args: [id: string]; result: void }
   'sshconfig:preview': { args: []; result: SshImportPreview }
   'sshconfig:import': { args: [req: SshImportRequest]; result: SshImportResult }
+  // Returns at once in the connecting state; progress arrives as session:state events.
+  'ssh:open': { args: [req: OpenSshRequest]; result: SessionMeta }
+  'session:reconnect': { args: [id: string]; result: SessionMeta }
+  'session:write': { args: [id: string, data: string]; result: void }
+  'session:resize': { args: [id: string, cols: number, rows: number]; result: void }
+  // Also forgets the session: it leaves the list and its buffer is freed.
+  'session:close': { args: [id: string]; result: void }
+  'session:list': { args: []; result: SessionMeta[] }
+  'session:attach': { args: [id: string]; result: { meta: SessionMeta; buffer: string } }
+  'session:answer': { args: [promptId: string, answer: PromptAnswer]; result: void }
+  'knownhost:list': { args: []; result: KnownHostMeta[] }
+  'knownhost:remove': { args: [id: string]; result: void }
 }
 
 export type Channel = keyof IpcContract
@@ -172,6 +191,16 @@ export const CHANNELS = [
   'product:delete',
   'sshconfig:preview',
   'sshconfig:import',
+  'ssh:open',
+  'session:reconnect',
+  'session:write',
+  'session:resize',
+  'session:close',
+  'session:list',
+  'session:attach',
+  'session:answer',
+  'knownhost:list',
+  'knownhost:remove',
 ] as const satisfies readonly Channel[]
 
 // Fails typecheck if IpcContract gains a channel that CHANNELS does not list.
@@ -182,12 +211,24 @@ export type Handlers = {
   [K in Channel]: (...args: IpcContract[K]['args']) => Promise<IpcContract[K]['result']> | IpcContract[K]['result']
 }
 
-/** Events main pushes to the window. Payloads are metadata only, never secrets. */
+/** Events main pushes to the window. Payloads never carry secrets; session:data is terminal output. */
 export interface EventContract {
   'vault:locked': { reason: LockReason }
+  'session:data': { id: string; data: string }
+  'session:state': SessionMeta
+  'session:prompt': SessionPrompt
+  'session:promptDone': { promptId: string }
 }
 export type EventName = keyof EventContract
-export const EVENTS = ['vault:locked'] as const satisfies readonly EventName[]
+export const EVENTS = [
+  'vault:locked',
+  'session:data',
+  'session:state',
+  'session:prompt',
+  'session:promptDone',
+] as const satisfies readonly EventName[]
+type MissingEvents = Exclude<EventName, (typeof EVENTS)[number]>
+export const eventsAreComplete: [MissingEvents] extends [never] ? true : never = true
 
 export interface OpsDeckBridge {
   invoke<K extends Channel>(channel: K, ...args: IpcContract[K]['args']): Promise<IpcContract[K]['result']>
