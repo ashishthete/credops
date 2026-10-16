@@ -102,6 +102,8 @@ export function describeError(err: unknown, hop: HopTarget | null): SessionError
   return make('unknown', redact(message))
 }
 
+const toError = (err: unknown): Error => (err instanceof Error ? err : new Error(String(err)))
+
 /** The key type is the blob's first length-prefixed string (`ssh-rsa` even when `rsa-sha2-256` was negotiated). */
 function blobKeyType(blob: Buffer): string {
   if (blob.length < 4) return ''
@@ -130,17 +132,24 @@ async function dialHop(
     let timer: NodeJS.Timeout | undefined
     let hostKeyError: Error | null = null
 
-    // Our own ready timer, since ssh2's also runs while the user answers a prompt.
+    // Our own ready timer, since ssh2's also runs while the user answers a prompt. It pauses
+    // while a prompt is open and resumes with the time that was left.
+    let remaining = timeoutMs
+    let armedAt = 0
+    let prompting = 0
     const arm = (): void => {
-      clearTimeout(timer)
-      timer = setTimeout(() => fail(new HopTimeoutError()), timeoutMs)
+      armedAt = Date.now()
+      timer = setTimeout(() => fail(new HopTimeoutError()), Math.max(0, remaining))
     }
     const waitOnUser = async <T>(prompt: () => Promise<T>): Promise<T> => {
-      clearTimeout(timer)
+      if (prompting++ === 0) {
+        clearTimeout(timer)
+        remaining -= Date.now() - armedAt
+      }
       try {
         return await prompt()
       } finally {
-        if (!settled) arm()
+        if (--prompting === 0 && !settled) arm()
       }
     }
     const done = (): void => {
@@ -166,6 +175,13 @@ async function dialHop(
     })
 
     const start = (sock?: ClientChannel): void => {
+      try {
+        dial(sock)
+      } catch (err) {
+        fail(toError(err))
+      }
+    }
+    const dial = (sock?: ClientChannel): void => {
       client.connect({
         ...(sock ? { sock } : { host: hop.address, port: hop.port }),
         username: plan.username,
@@ -177,19 +193,22 @@ async function dialHop(
         hostVerifier: (key: Buffer, verify: (ok: boolean) => void) => {
           const keyType = blobKeyType(key)
           const keyBase64 = key.toString('base64')
-          waitOnUser(() => deps.verifyHostKey(hop, keyType, keyBase64)).then(
-            (ok) => {
-              if (!ok) {
-                const info = { host: hostToken(hop.address, hop.port), keyType, fingerprint: fingerprintOf(keyBase64), known: [] }
-                hostKeyError = new HostKeyError('host-key-rejected', info)
-              }
-              verify(ok)
-            },
-            (err: unknown) => {
-              hostKeyError = err instanceof Error ? err : new Error(String(err))
-              verify(false)
-            },
-          )
+          waitOnUser(() => deps.verifyHostKey(hop, keyType, keyBase64))
+            .then(
+              (ok) => {
+                if (!ok) {
+                  const info = { host: hostToken(hop.address, hop.port), keyType, fingerprint: fingerprintOf(keyBase64), known: [] }
+                  hostKeyError = new HostKeyError('host-key-rejected', info)
+                }
+                verify(ok)
+              },
+              (err: unknown) => {
+                hostKeyError = toError(err)
+                verify(false)
+              },
+            )
+            // A throw from inside ssh2's verify callback.
+            .catch((err: unknown) => fail(toError(err)))
         },
         readyTimeout: 0,
         keepaliveInterval: deps.keepaliveSec * 1000,
@@ -206,7 +225,7 @@ async function dialHop(
         start(stream)
       })
     } catch (err) {
-      fail(err instanceof Error ? err : new Error(String(err)))
+      fail(toError(err))
     }
   })
 }

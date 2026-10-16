@@ -296,6 +296,30 @@ describe('connectChain', () => {
     expect(await shellOutput(client, 'READY')).toContain('READY')
   })
 
+  it('a prompt longer than readyTimeoutMs does not time the hop out', async () => {
+    const s = await server({ users: [{ username: 'ops', password: 'pw' }] })
+    const later = <T>(value: T): Promise<T> => new Promise((r) => setTimeout(() => r(value), 600))
+    const verifyHostKey = vi.fn(() => later(true))
+    const askPassword = vi.fn(() => later<string | null>('pw'))
+    await connect([hop('target', s.port)], deps({ readyTimeoutMs: 300, verifyHostKey, askPassword, plan: async () => keyPlan(otherKey.privateKey) }))
+    expect(verifyHostKey).toHaveBeenCalledTimes(1)
+    expect(askPassword).toHaveBeenCalledTimes(1)
+  })
+
+  it('abort while a prompt is open rejects with closed and leaves no connections', async () => {
+    const s = await server({ users: [{ username: 'ops', password: 'pw' }] })
+    const ac = new AbortController()
+    const askPassword = vi.fn(() => {
+      setTimeout(() => ac.abort(), 20)
+      return new Promise<string | null>(() => {})
+    })
+    const d = deps({ askPassword, plan: async () => keyPlan(otherKey.privateKey) })
+    const { described } = await failure([hop('target', s.port)], d, ac.signal)
+    expect(described.code).toBe('closed')
+    expect(askPassword).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(s.connections()).toBe(0), { timeout: 1000 })
+  })
+
   it('abort mid-dial ends every opened client', async () => {
     const bastion = await server({ allowForward: true })
     const silent = await silentServer()
