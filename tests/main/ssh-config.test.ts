@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest'
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { afterEach, describe, expect, it } from 'vitest'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { parseSshConfig, readSshIncludes } from '../../src/main/inventory/ssh-config'
+import { MAX_IMPORT_ALIASES } from '../../src/shared/inventory'
+import { globMatch, parseSshConfig, readSshIncludes } from '../../src/main/inventory/ssh-config'
 
 const FIX = join(__dirname, '../fixtures/ssh')
 const opts = { home: '/home/t', sshDir: '/home/t/.ssh' }
@@ -62,9 +63,44 @@ describe('parseSshConfig', () => {
   })
 })
 
+describe('robustness', () => {
+  it('matches pathological globs in linear-ish time', () => {
+    const t0 = Date.now()
+    expect(globMatch('*a*a*a*a*a*a*b', 'a'.repeat(5000))).toBe(false)
+    expect(parse(`Host *a*a*a*a*a*a*b\n User x\nHost ${'a'.repeat(300)}\n`).entries).toHaveLength(1)
+    expect(Date.now() - t0).toBeLessThan(100)
+    expect(globMatch('a*b?d', 'aXXbcd')).toBe(true)
+    expect(globMatch('*', '')).toBe(true)
+    expect(globMatch('a?', 'a')).toBe(false)
+  })
+
+  it('caps aliases and stays fast on many Host lines', () => {
+    const text = Array.from({ length: 150000 }, (_, i) => `Host a${i}`).join('\n').slice(0, 1024 * 1024)
+    const t0 = Date.now()
+    const { entries, warnings } = parse(text + '\nHost *\n User z\n')
+    expect(Date.now() - t0).toBeLessThan(1000)
+    expect(entries).toHaveLength(MAX_IMPORT_ALIASES)
+    expect(entries[0].user).toBe('z')
+    expect(warnings.some((w) => w.includes('More than'))).toBe(true)
+  })
+
+  it('strips trailing comments and dedupes shared-block warnings', () => {
+    const { entries, warnings } = parse('Host a b c\n User u # note\nHost *\n Port 0\n')
+    expect(entries[0].user).toBe('u')
+    expect(entries.every((e) => e.warnings.length === 0)).toBe(true)
+    expect(warnings.filter((w) => w.startsWith('Invalid Port'))).toHaveLength(1)
+  })
+})
+
+const tmps: string[] = []
+afterEach(() => {
+  for (const d of tmps.splice(0)) rmSync(d, { recursive: true, force: true })
+})
+
 describe('Include handling', () => {
   function setup() {
-    const root = mkdtempSync(join(tmpdir(), 'sshcfg-'))
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'sshcfg-')))
+    tmps.push(root)
     const sshDir = join(root, '.ssh')
     cpSync(join(FIX, 'include'), sshDir, { recursive: true })
     const outside = join(root, 'outside.conf')
@@ -101,5 +137,29 @@ describe('Include handling', () => {
     for (let i = 0; i < 6; i++) writeFileSync(join(sshDir, 'n', `${i}.conf`), `Include n/${i + 1}.conf\n`)
     const { warnings } = parseSshConfig('Include n/0.conf\n', { home: '/home/t', sshDir, include: readSshIncludes(sshDir) })
     expect(warnings.some((w) => w.includes('nested too deeply'))).toBe(true)
+  })
+
+  it('caps matches at 100 and skips oversized includes', () => {
+    const { sshDir } = setup()
+    mkdirSync(join(sshDir, 'many'))
+    for (let i = 0; i < 105; i++) writeFileSync(join(sshDir, 'many', `${String(i).padStart(3, '0')}.conf`), `Host m${i}\n`)
+    const r = readSshIncludes(sshDir)('many/*.conf')
+    expect(r.files).toHaveLength(100)
+    expect(r.warnings.some((w) => w.includes('too many files'))).toBe(true)
+    writeFileSync(join(sshDir, 'big.conf'), '#'.repeat(1024 * 1024 + 1))
+    const big = readSshIncludes(sshDir)('big.conf')
+    expect(big.files).toEqual([])
+    expect(big.warnings[0]).toContain('larger than 1 MiB')
+  })
+
+  it('enforces the aggregate include budget', () => {
+    const { sshDir } = setup()
+    const chunk = '#'.repeat(900 * 1024)
+    const files = Array.from({ length: 6 }, (_, i) => ({ path: join(sshDir, `c${i}`), text: chunk }))
+    const { warnings } = parseSshConfig('Include x\n', { home: '/home/t', sshDir, include: () => ({ files, warnings: [] }) })
+    expect(warnings.filter((w) => w.startsWith('Include budget'))).toHaveLength(1)
+    const many = Array.from({ length: 300 }, (_, i) => ({ path: join(sshDir, `m${i}`), text: 'Host q\n' }))
+    const r = parseSshConfig('Include x\n', { home: '/home/t', sshDir, include: () => ({ files: many, warnings: [] }) })
+    expect(r.warnings.filter((w) => w.startsWith('Include budget'))).toHaveLength(1)
   })
 })

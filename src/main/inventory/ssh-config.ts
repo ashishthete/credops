@@ -1,9 +1,11 @@
 import { lstatSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, isAbsolute, resolve, sep } from 'node:path'
-import { MAX_SSH_CONFIG_BYTES, type SshConfigEntry, type SshForward } from '../../shared/inventory'
+import { MAX_IMPORT_ALIASES, MAX_SSH_CONFIG_BYTES, type SshConfigEntry, type SshForward } from '../../shared/inventory'
 
 export interface IncludeFile {
   path: string
+  /** Canonical path, used for loop detection when the reader has one. */
+  realPath?: string
   text: string
 }
 export interface IncludeResult {
@@ -17,12 +19,15 @@ export interface ParseOptions {
   sshDir: string
   /** Supplied by main as a sshDir-confined reader (see readSshIncludes). */
   include?: (pattern: string) => IncludeResult
-  /** Path of the top-level file; seeds loop detection. */
+  /** Real path of the top-level file; seeds loop detection. */
   rootPath?: string
 }
 
 const MAX_INCLUDE_DEPTH = 4
 const MAX_INCLUDE_MATCHES = 100
+const MAX_INCLUDE_FILES = 256
+const MAX_INCLUDE_TOTAL_BYTES = 4 * MAX_SSH_CONFIG_BYTES
+const MAX_HOST_PATTERNS = 10000
 const TOO_LARGE = 'ssh config is larger than 1 MiB'
 
 interface Directive {
@@ -43,21 +48,41 @@ function tooLarge(text: string): boolean {
 function splitArgs(rest: string): string[] {
   const args: string[] = []
   const re = /"([^"]*)"?|(\S+)/g
-  for (let m = re.exec(rest); m; m = re.exec(rest)) args.push(m[1] ?? m[2])
+  for (let m = re.exec(rest); m; m = re.exec(rest)) {
+    if (m[1] === undefined && m[2].startsWith('#')) break
+    args.push(m[1] ?? m[2])
+  }
   return args
 }
 
-function globToRegExp(glob: string): RegExp {
-  const body = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')
-  return new RegExp(`^${body}$`)
+/** Iterative `*`/`?` matcher: backtracks only to the last `*`, so O(n*m) worst case. */
+export function globMatch(pattern: string, text: string): boolean {
+  let p = 0
+  let t = 0
+  let star = -1
+  let mark = 0
+  while (t < text.length) {
+    if (p < pattern.length && (pattern[p] === '?' || pattern[p] === text[t]) && pattern[p] !== '*') {
+      p++
+      t++
+    } else if (p < pattern.length && pattern[p] === '*') {
+      star = p++
+      mark = t
+    } else if (star >= 0) {
+      p = star + 1
+      t = ++mark
+    } else return false
+  }
+  while (p < pattern.length && pattern[p] === '*') p++
+  return p === pattern.length
 }
 
 function matchesPatterns(patterns: string[], alias: string): boolean {
   let positive = false
   for (const p of patterns) {
     if (p.startsWith('!')) {
-      if (globToRegExp(p.slice(1)).test(alias)) return false
-    } else if (globToRegExp(p).test(alias)) positive = true
+      if (globMatch(p.slice(1), alias)) return false
+    } else if (globMatch(p, alias)) positive = true
   }
   return positive
 }
@@ -75,6 +100,14 @@ export function parseSshConfig(text: string, opts: ParseOptions): { entries: Ssh
   const blocks: Block[] = [{ patterns: null, directives: [] }]
   const visited = new Set<string>(opts.rootPath ? [resolve(opts.rootPath)] : [])
   let inMatch = false
+  let skipBlock = false
+  let storedPatterns = 0
+  let patternsWarned = false
+  let includeFiles = 0
+  let includeBytes = 0
+  let budgetWarned = false
+  const aliases = new Set<string>()
+  let aliasCapWarned = false
 
   const walk = (src: string, depth: number): void => {
     const lines = src.split(/\r?\n/)
@@ -88,11 +121,31 @@ export function parseSshConfig(text: string, opts: ParseOptions): { entries: Ssh
       const args = splitArgs(m[2])
       if (key === 'host') {
         inMatch = false
-        blocks.push({ patterns: args, directives: [] })
+        const kept: string[] = []
+        for (const pat of args) {
+          if (!isConcrete(pat)) kept.push(pat)
+          else if (aliases.has(pat)) kept.push(pat)
+          else if (aliases.size < MAX_IMPORT_ALIASES) {
+            aliases.add(pat)
+            kept.push(pat)
+          } else if (!aliasCapWarned) {
+            aliasCapWarned = true
+            warnings.push(`More than ${MAX_IMPORT_ALIASES} hosts, the rest are not imported`)
+          }
+        }
+        if (storedPatterns + kept.length > MAX_HOST_PATTERNS) {
+          if (!patternsWarned) warnings.push('Too many Host patterns, the rest are ignored')
+          patternsWarned = true
+          skipBlock = true
+        } else {
+          storedPatterns += kept.length
+          skipBlock = false
+          blocks.push({ patterns: kept, directives: [] })
+        }
       } else if (key === 'match') {
         inMatch = true
         warnings.push(`Match blocks are not imported (line ${lineNo})`)
-      } else if (inMatch) {
+      } else if (inMatch || skipBlock) {
         continue
       } else if (key === 'include') {
         for (const arg of args) include(arg, depth)
@@ -120,37 +173,52 @@ export function parseSshConfig(text: string, opts: ParseOptions): { entries: Ssh
     }
     warnings.push(...result.warnings)
     for (const file of result.files) {
-      const key = resolve(file.path)
+      const key = file.realPath ?? resolve(file.path)
       if (visited.has(key)) {
         warnings.push(`Include loop skipped: ${file.path}`)
         continue
       }
-      visited.add(key)
-      if (tooLarge(file.text)) {
+      const size = Buffer.byteLength(file.text)
+      if (size > MAX_SSH_CONFIG_BYTES) {
         warnings.push(`Include skipped, larger than 1 MiB: ${file.path}`)
         continue
       }
-      const prevMatch = inMatch
+      if (includeFiles >= MAX_INCLUDE_FILES || includeBytes + size > MAX_INCLUDE_TOTAL_BYTES) {
+        if (!budgetWarned) warnings.push('Include budget exhausted, remaining includes skipped')
+        budgetWarned = true
+        continue
+      }
+      visited.add(key)
+      includeFiles++
+      includeBytes += size
       walk(file.text, depth + 1)
-      inMatch = prevMatch && inMatch
     }
   }
 
   walk(text, 0)
 
   const entries: SshConfigEntry[] = []
-  const seen = new Set<string>()
-  for (const block of blocks) {
-    for (const alias of block.patterns ?? []) {
-      if (/[*?!]/.test(alias) || seen.has(alias)) continue
-      seen.add(alias)
-      entries.push(buildEntry(alias, blocks, opts))
-    }
+  const shared = new Set<string>()
+  // Literal-only blocks are indexed by alias so matching stays linear in the config size.
+  const byAlias = new Map<string, number[]>()
+  const wild: number[] = []
+  blocks.forEach((b, i) => {
+    if (!b.patterns || b.patterns.some((p) => !isConcrete(p))) wild.push(i)
+    else for (const p of new Set(b.patterns)) (byAlias.get(p) ?? byAlias.set(p, []).get(p)!).push(i)
+  })
+  for (const alias of aliases) {
+    const idx = [...(byAlias.get(alias) ?? []), ...wild].sort((x, y) => x - y)
+    entries.push(buildEntry(alias, idx.map((i) => blocks[i]), opts, shared))
   }
+  warnings.push(...shared)
   return { entries, warnings }
 }
 
-function buildEntry(alias: string, blocks: Block[], opts: ParseOptions): SshConfigEntry {
+function isConcrete(pattern: string): boolean {
+  return !/[*?!]/.test(pattern)
+}
+
+function buildEntry(alias: string, blocks: Block[], opts: ParseOptions, shared: Set<string>): SshConfigEntry {
   const entry: SshConfigEntry = {
     alias,
     hostName: alias,
@@ -166,6 +234,12 @@ function buildEntry(alias: string, blocks: Block[], opts: ParseOptions): SshConf
 
   for (const block of blocks) {
     if (block.patterns && !matchesPatterns(block.patterns, alias)) continue
+    // Problems in shared blocks (Host *, wildcards) are reported once, not per host.
+    const shareable = !block.patterns || block.patterns.some((p) => !isConcrete(p))
+    const warn = (msg: string): void => {
+      if (shareable) shared.add(msg)
+      else entry.warnings.push(msg)
+    }
     for (const { key, args, line } of block.directives) {
       if (key === 'localforward' || key === 'remoteforward') {
         if (args.length) {
@@ -187,12 +261,12 @@ function buildEntry(alias: string, blocks: Block[], opts: ParseOptions): SshConf
       } else if (key === 'port') {
         const n = /^\d+$/.test(value) ? Number(value) : NaN
         if (n >= 1 && n <= 65535) entry.port = n
-        else entry.warnings.push(`Invalid Port "${value}" (line ${line})`)
+        else warn(`Invalid Port "${value}" (line ${line})`)
       } else {
         const expanded = expandHome(value, opts.home)
         const full = isAbsolute(expanded) ? resolve(expanded) : null
         if (full && full.startsWith(sshDir + sep)) entry.identityFile = full
-        else entry.warnings.push(`IdentityFile outside ${opts.sshDir} ignored: ${value} (line ${line})`)
+        else warn(`IdentityFile outside ${opts.sshDir} ignored: ${value} (line ${line})`)
       }
     }
   }
@@ -221,13 +295,7 @@ export function readSshIncludes(sshDir: string): (pattern: string) => IncludeRes
         warnings.push(`Include outside ${sshDir} skipped: ${pattern}`)
         return { files, warnings }
       }
-      const names = /[*?]/.test(base)
-        ? readdirSync(dir).filter((n) => globToRegExp(base).test(n)).sort()
-        : [base]
-      if (names.length > MAX_INCLUDE_MATCHES) {
-        warnings.push(`Include matches too many files, using the first ${MAX_INCLUDE_MATCHES}: ${pattern}`)
-        names.length = MAX_INCLUDE_MATCHES
-      }
+      const names = /[*?]/.test(base) ? readdirSync(dir).filter((n) => globMatch(base, n)).sort() : [base]
       for (const name of names) {
         const path = resolve(dir, name)
         try {
@@ -246,7 +314,11 @@ export function readSshIncludes(sshDir: string): (pattern: string) => IncludeRes
             warnings.push(`Include skipped, larger than 1 MiB: ${path}`)
             continue
           }
-          files.push({ path, text: readFileSync(real, 'utf8') })
+          if (files.length >= MAX_INCLUDE_MATCHES) {
+            warnings.push(`Include matches too many files, using the first ${MAX_INCLUDE_MATCHES}: ${pattern}`)
+            break
+          }
+          files.push({ path, realPath: real, text: readFileSync(real, 'utf8') })
         } catch {
           warnings.push(`Include could not be read: ${path}`)
         }
