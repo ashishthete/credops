@@ -28,7 +28,7 @@ const MAX_INCLUDE_MATCHES = 100
 const MAX_INCLUDE_FILES = 256
 const MAX_INCLUDE_TOTAL_BYTES = 4 * MAX_SSH_CONFIG_BYTES
 const MAX_HOST_PATTERNS = 10000
-const MAX_WILDCARD_BLOCKS = 500
+const MAX_WILDCARD_BLOCKS = 200
 const TOO_LARGE = 'ssh config is larger than 1 MiB'
 
 interface Directive {
