@@ -22,7 +22,7 @@ function isPlainObject(value: object): boolean {
 /**
  * Deep-copies `value` with secrets masked: values under sensitive keys, PEM
  * private-key blocks, and any occurrence of `knownSecrets` inside strings.
- * Non-plain objects are stringified (Date as ISO, Buffer/Uint8Array as
+ * Non-plain objects are stringified (Date as ISO, any ArrayBuffer view as
  * `[buffer N bytes]` so raw bytes, which may be key material, never leak).
  */
 export function redact<T>(value: T, knownSecrets: readonly string[] = []): T {
@@ -39,8 +39,8 @@ export function redact<T>(value: T, knownSecrets: readonly string[] = []): T {
     if (v === null || typeof v !== 'object') {
       return typeof v === 'function' || typeof v === 'symbol' ? maskString(String(v)) : v
     }
-    if (v instanceof Date) return v.toISOString()
-    if (v instanceof Uint8Array) return `[buffer ${v.byteLength} bytes]`
+    if (v instanceof Date) return Number.isNaN(v.getTime()) ? '[invalid date]' : v.toISOString()
+    if (ArrayBuffer.isView(v)) return `[buffer ${v.byteLength} bytes]`
     if (ancestors.has(v)) return '[circular]'
 
     if (!Array.isArray(v) && !isPlainObject(v)) return maskString(String(v))
@@ -50,7 +50,7 @@ export function redact<T>(value: T, knownSecrets: readonly string[] = []): T {
       if (Array.isArray(v)) return v.map(walk)
       const out: Record<string, unknown> = {}
       for (const [key, child] of Object.entries(v)) {
-        out[key] = SENSITIVE_KEY.test(key) ? REDACTED : walk(child)
+        out[maskString(key)] = SENSITIVE_KEY.test(key) ? REDACTED : walk(child)
       }
       return out
     } finally {

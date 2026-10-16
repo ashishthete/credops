@@ -103,6 +103,20 @@ describe('redact', () => {
     })
   })
 
+  it('does not throw on invalid dates', () => {
+    expect(redact({ d: new Date(NaN) })).toEqual({ d: '[invalid date]' })
+  })
+
+  it('never emits raw bytes from any typed array or DataView', () => {
+    expect(
+      redact({ a: new Uint16Array(3), b: new Int8Array([1, 2]), c: new DataView(new ArrayBuffer(5)) })
+    ).toEqual({ a: '[buffer 6 bytes]', b: '[buffer 2 bytes]', c: '[buffer 5 bytes]' })
+  })
+
+  it('masks known secrets in object keys', () => {
+    expect(redact({ 'user-hunter22': true }, ['hunter22'])).toEqual({ 'user-‹redacted›': true })
+  })
+
   it('passes primitives through', () => {
     expect(redact({ n: 1, b: true, z: null, u: undefined })).toEqual({ n: 1, b: true, z: null, u: undefined })
   })
