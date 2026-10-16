@@ -28,6 +28,7 @@ const MAX_INCLUDE_MATCHES = 100
 const MAX_INCLUDE_FILES = 256
 const MAX_INCLUDE_TOTAL_BYTES = 4 * MAX_SSH_CONFIG_BYTES
 const MAX_HOST_PATTERNS = 10000
+const MAX_WILDCARD_BLOCKS = 500
 const TOO_LARGE = 'ssh config is larger than 1 MiB'
 
 interface Directive {
@@ -101,6 +102,7 @@ export function parseSshConfig(text: string, opts: ParseOptions): { entries: Ssh
   const visited = new Set<string>(opts.rootPath ? [resolve(opts.rootPath)] : [])
   let inMatch = false
   let skipBlock = false
+  let wildcardBlocks = 0
   let storedPatterns = 0
   let patternsWarned = false
   let includeFiles = 0
@@ -121,6 +123,13 @@ export function parseSshConfig(text: string, opts: ParseOptions): { entries: Ssh
       const args = splitArgs(m[2])
       if (key === 'host') {
         inMatch = false
+        if (args.some((pat) => !isConcrete(pat)) && ++wildcardBlocks > MAX_WILDCARD_BLOCKS) {
+          if (wildcardBlocks === MAX_WILDCARD_BLOCKS + 1) {
+            warnings.push(`More than ${MAX_WILDCARD_BLOCKS} wildcard Host blocks, the rest are ignored`)
+          }
+          skipBlock = true
+          continue
+        }
         const kept: string[] = []
         for (const pat of args) {
           if (!isConcrete(pat)) kept.push(pat)
@@ -192,6 +201,7 @@ export function parseSshConfig(text: string, opts: ParseOptions): { entries: Ssh
       includeFiles++
       includeBytes += size
       walk(file.text, depth + 1)
+      visited.delete(key) // only files on the current include stack count as a loop
     }
   }
 

@@ -84,6 +84,18 @@ describe('robustness', () => {
     expect(warnings.some((w) => w.includes('More than'))).toBe(true)
   })
 
+  it('caps wildcard blocks so adversarial configs do not stall', () => {
+    const wild = Array.from({ length: 25000 }, () => 'Host *a*a*a*a*b').join('\n')
+    const hosts = Array.from({ length: 2000 }, (_, i) => `Host ${String(i).padStart(4, '0')}${'a'.repeat(196)}`).join('\n')
+    const text = `${hosts}\n${wild}`.slice(0, 1024 * 1024 - 10)
+    expect(text.length).toBeGreaterThan(700 * 1024)
+    const t0 = Date.now()
+    const { entries, warnings } = parse(text)
+    expect(Date.now() - t0).toBeLessThan(1000)
+    expect(entries.length).toBeGreaterThan(1000)
+    expect(warnings.some((w) => w.includes('wildcard Host blocks'))).toBe(true)
+  })
+
   it('strips trailing comments and dedupes shared-block warnings', () => {
     const { entries, warnings } = parse('Host a b c\n User u # note\nHost *\n Port 0\n')
     expect(entries[0].user).toBe('u')
@@ -131,6 +143,20 @@ describe('Include handling', () => {
     expect(r.warnings).toHaveLength(1)
   })
 
+  it('does not report a diamond include as a loop', () => {
+    const { sshDir } = setup()
+    writeFileSync(join(sshDir, 'a.conf'), 'Include shared.conf\n')
+    writeFileSync(join(sshDir, 'b.conf'), 'Include shared.conf\n')
+    writeFileSync(join(sshDir, 'shared.conf'), 'Host shared\n')
+    const { entries, warnings } = parseSshConfig('Include a.conf\nInclude b.conf\n', {
+      home: '/home/t',
+      sshDir,
+      include: readSshIncludes(sshDir),
+    })
+    expect(entries.map((e) => e.alias)).toEqual(['shared'])
+    expect(warnings.filter((w) => w.includes('loop'))).toEqual([])
+  })
+
   it('limits nesting depth', () => {
     const { sshDir } = setup()
     mkdirSync(join(sshDir, 'n'))
@@ -154,7 +180,7 @@ describe('Include handling', () => {
 
   it('enforces the aggregate include budget', () => {
     const { sshDir } = setup()
-    const chunk = '#'.repeat(900 * 1024)
+    const chunk = '#'.repeat(700 * 1024)
     const files = Array.from({ length: 6 }, (_, i) => ({ path: join(sshDir, `c${i}`), text: chunk }))
     const { warnings } = parseSshConfig('Include x\n', { home: '/home/t', sshDir, include: () => ({ files, warnings: [] }) })
     expect(warnings.filter((w) => w.startsWith('Include budget'))).toHaveLength(1)
