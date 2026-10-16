@@ -50,7 +50,18 @@ interface Row {
   hash: string
 }
 
-function toEvent(r: Row): AuditEvent {
+function parseDetails(raw: string): Record<string, unknown> {
+  return JSON.parse(raw) as Record<string, unknown>
+}
+
+function toEvent(r: Row, tolerant = false): AuditEvent {
+  let details: Record<string, unknown>
+  try {
+    details = parseDetails(r.details)
+  } catch (err) {
+    if (!tolerant) throw err
+    details = { _corrupt: r.details }
+  }
   return {
     id: r.id,
     ts: r.ts,
@@ -61,7 +72,7 @@ function toEvent(r: Row): AuditEvent {
     targetId: r.target_id,
     targetLabel: r.target_label,
     outcome: r.outcome as AuditOutcome,
-    details: JSON.parse(r.details) as Record<string, unknown>,
+    details,
     prevHash: r.prev_hash,
     hash: r.hash,
   }
@@ -151,7 +162,7 @@ export class AuditLog {
       this.db.exec('COMMIT')
       return { id: Number(res.lastInsertRowid), ...body, hash }
     } catch (err) {
-      this.db.exec('ROLLBACK')
+      if (this.db.isTransaction) this.db.exec('ROLLBACK')
       throw err
     }
   }
@@ -198,14 +209,20 @@ export class AuditLog {
     const sql = `SELECT * FROM audit_events${where.length ? ` WHERE ${where.join(' AND ')}` : ''}
       ORDER BY id DESC LIMIT ?`
     const rows = this.db.prepare(sql).all(...params, limit) as unknown as Row[]
-    return rows.map(toEvent)
+    return rows.map((r) => toEvent(r, true))
   }
 
   verifyChain(): ChainVerification {
     const rows = this.db.prepare('SELECT * FROM audit_events ORDER BY id ASC').all() as unknown as Row[]
     let prev = GENESIS_HASH
     for (const r of rows) {
-      const { id, hash, ...body } = toEvent(r)
+      let parsed: AuditEvent
+      try {
+        parsed = toEvent(r)
+      } catch {
+        return { ok: false, count: rows.length, brokenAtId: r.id, reason: 'hash-mismatch' }
+      }
+      const { id, hash, ...body } = parsed
       if (body.prevHash !== prev) {
         return { ok: false, count: rows.length, brokenAtId: id, reason: 'prev-link-mismatch' }
       }

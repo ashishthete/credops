@@ -52,7 +52,7 @@ export function migrate(db: Db, list: Migration[] = migrations): { from: number;
       insert.run(m.version, m.name, new Date().toISOString())
       db.exec('COMMIT')
     } catch (err) {
-      db.exec('ROLLBACK')
+      if (db.isTransaction) db.exec('ROLLBACK')
       const reason = err instanceof Error ? err.message : String(err)
       throw new Error(`migration ${m.version} (${m.name}) failed: ${reason}`, { cause: err })
     }

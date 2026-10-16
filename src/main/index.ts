@@ -53,7 +53,11 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', () => {
     if (!audit || quitAudited) return
     quitAudited = true
-    audit.append({ action: 'app.quit', outcome: 'info' })
+    try {
+      audit.append({ action: 'app.quit', outcome: 'info' })
+    } catch (err) {
+      console.error('Failed to audit app.quit:', err)
+    }
   })
 
   app.on('will-quit', () => {
