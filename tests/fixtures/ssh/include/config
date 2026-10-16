@@ -1,0 +1,3 @@
+Include config.d/*
+Host root-host
+  HostName 10.0.0.1
