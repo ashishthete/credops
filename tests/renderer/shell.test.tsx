@@ -52,6 +52,15 @@ describe('shell', () => {
     expect(screen.queryByText('Coming in phase 3')).not.toBeInTheDocument()
   })
 
+  it('Hosts no longer shows a placeholder', async () => {
+    renderShell()
+    act(() => {
+      fireEvent.keyDown(window, { key: '2', metaKey: true })
+    })
+    expect(await screen.findByRole('heading', { name: 'Hosts', level: 1 })).toBeInTheDocument()
+    expect(screen.queryByText('Coming in phase 3')).not.toBeInTheDocument()
+  })
+
   it('/environments redirects to Products', async () => {
     renderShell('/environments')
     expect(await screen.findByRole('heading', { name: 'Products', level: 1 })).toBeInTheDocument()

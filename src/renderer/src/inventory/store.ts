@@ -9,6 +9,8 @@ import type {
   HostRole,
   ProductInput,
   ProductMeta,
+  SshImportRequest,
+  SshImportResult,
 } from '../../../shared/inventory'
 import type { IdentityMeta, VaultMeta } from '../../../shared/vault'
 import { api } from '../lib/api'
@@ -25,8 +27,26 @@ export interface InventoryData {
 
 export const inventoryStore = createStore<InventoryData | null>(null)
 
-/** Reads every list in parallel. The store stays null (or stale) when a list fails. */
-export async function loadInventory(): Promise<void> {
+let loading: Promise<void> | null = null
+
+/**
+ * Reads every list in parallel. The store stays null (or stale) when a list fails.
+ * Calls made while a load is in flight share it, so the shell and a page don't both fetch.
+ */
+export function loadInventory(): Promise<void> {
+  loading ??= readInventory().finally(() => {
+    loading = null
+  })
+  return loading
+}
+
+/** A load that starts after any in flight, so it sees writes made since that one began. */
+async function reloadInventory(): Promise<void> {
+  await loading
+  await loadInventory()
+}
+
+async function readInventory(): Promise<void> {
   const data = await attempt("Couldn't load your inventory", async () => {
     const [products, environments, hosts, identities, vaults] = await Promise.all([
       api.invoke('product:list'),
@@ -187,6 +207,13 @@ export const inv = {
       await refresh('environments')
     }
     return ok
+  },
+
+  /** Imports hosts from ~/.ssh/config, then reloads everything (it can add hosts, identities and keys). */
+  async importSshConfig(req: SshImportRequest): Promise<SshImportResult | undefined> {
+    const result = await attempt("Couldn't import from ~/.ssh/config", () => api.invoke('sshconfig:import', req))
+    if (result) await reloadInventory()
+    return result
   },
 
   async setHostVaults(id: string, vaultIds: string[]): Promise<HostMeta | undefined> {

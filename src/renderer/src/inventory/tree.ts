@@ -1,4 +1,4 @@
-import type { HostMeta, HostRole } from '../../../shared/inventory'
+import type { EnvironmentMeta, HostMeta, HostRole } from '../../../shared/inventory'
 import type { InventoryData } from './store'
 
 /** 'p:<id>', 'p:<id>/e:<id>', 'p:<id>/e:<id>/h:<id>', 'u', 'u/e:<id>', 'u/e:<id>/h:<id>', 'u/h:<id>' */
@@ -19,6 +19,13 @@ export interface TreeRow {
   expandable: boolean
   expanded: boolean
   childCount: number
+}
+
+/** Where an environment sits in the tree: under `preferProduct` if it's one of its products, else its first by id. */
+export function environmentKey(env: EnvironmentMeta, preferProduct?: string): NodeKey {
+  if (env.productIds.length === 0) return `u/e:${env.id}`
+  const productId = preferProduct && env.productIds.includes(preferProduct) ? preferProduct : [...env.productIds].sort()[0]
+  return `p:${productId}/e:${env.id}`
 }
 
 const ROLE_ORDER: HostRole[] = ['bastion', 'app', 'db', 'other']

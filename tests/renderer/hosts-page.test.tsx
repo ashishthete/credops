@@ -1,0 +1,356 @@
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { MemoryRouter, useLocation } from 'react-router'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { inventoryStore } from '../../src/renderer/src/inventory/store'
+import { AppShell } from '../../src/renderer/src/shell/AppShell'
+import { closeCommandPalette, commandStore } from '../../src/renderer/src/ui/commands'
+import { CommandPalette } from '../../src/renderer/src/ui/CommandPalette'
+import { clearToasts, Toaster } from '../../src/renderer/src/ui/Toaster'
+import { AuthGate } from '../../src/renderer/src/vault/AuthGate'
+import { vaultStatusStore } from '../../src/renderer/src/vault/status'
+import { cancelUnlock } from '../../src/renderer/src/vault/unlock'
+import type {
+  EnvironmentMeta,
+  HostMeta,
+  ProductMeta,
+  ResolvedHost,
+  SshImportCandidate,
+  SshImportPreview,
+  SshImportRequest,
+} from '../../src/shared/inventory'
+import { DEFAULT_VAULT_ID, VAULT_LOCKED, type VaultMeta } from '../../src/shared/vault'
+import { defaultVault, environment, host, mockBridge, product, vaultStatus } from './helpers'
+
+// framer-motion caches matchMedia, so reduced motion is driven through useMotionSafe (F18).
+const motion = vi.hoisted(() => ({ safe: true }))
+vi.mock('../../src/renderer/src/ui/motion', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/renderer/src/ui/motion')>()),
+  useMotionSafe: () => motion.safe,
+}))
+
+interface World {
+  products: ProductMeta[]
+  environments: EnvironmentMeta[]
+  hosts: HostMeta[]
+  preview: SshImportPreview
+  /** Rejections `sshconfig:import` throws before it succeeds. */
+  importFailures: Error[]
+  unlocked: boolean
+  vaults: VaultMeta[]
+  corruptVaultIds: string[]
+}
+
+function candidate(over: Partial<SshImportCandidate> & { alias: string }): SshImportCandidate {
+  return {
+    hostName: `${over.alias}.example.com`,
+    port: null,
+    user: null,
+    identityFile: null,
+    proxyJump: null,
+    forwards: [],
+    warnings: [],
+    existingHostId: null,
+    valid: true,
+    jumpResolvable: false,
+    ...over,
+  }
+}
+
+/** api-1 and edge are tagged api, db-1 is tagged db; api-1 and db-1 share the 10.0.0.x network. */
+function world(over: Partial<World> = {}): World {
+  return {
+    products: [product({ id: 'acme', name: 'Acme', environmentIds: ['prod'] })],
+    environments: [environment({ id: 'prod', name: 'prod', color: '#ef5b5b', productIds: ['acme'], hosts: [{ hostId: 'api1', role: 'app' }] })],
+    hosts: [
+      host({ id: 'api1', label: 'api-1', address: '10.0.0.5', tags: ['api'], environments: [{ environmentId: 'prod', role: 'app' }] }),
+      host({ id: 'db1', label: 'db-1', address: '10.0.0.9', tags: ['db'] }),
+      host({ id: 'edge', label: 'edge', address: 'edge.example.com', tags: ['api'] }),
+    ],
+    preview: {
+      path: '/home/tester/.ssh/config',
+      found: true,
+      candidates: [
+        candidate({ alias: 'web-1', hostName: '10.0.1.7', user: 'deploy', port: 2222, identityFile: '/home/tester/.ssh/id_web', proxyJump: 'bastion', jumpResolvable: true }),
+        candidate({ alias: 'bastion', existingHostId: 'bastion' }),
+        candidate({ alias: 'evil', hostName: '-oProxyCommand=x', valid: false, warnings: ["HostName isn't a usable address; skipped"] }),
+      ],
+      warnings: ['Include ../outside points outside ~/.ssh; skipped'],
+    },
+    importFailures: [],
+    unlocked: true,
+    vaults: [defaultVault],
+    corruptVaultIds: [],
+    ...over,
+  }
+}
+
+const outside = (hostId: string, address: string): ResolvedHost => ({
+  hostId,
+  environmentId: null,
+  address,
+  port: { value: 22, source: 'global' },
+  identity: { source: 'global', username: 'tester', auth: 'default' },
+  jump: { hostId: null, source: null },
+  chain: [],
+  conflicts: [],
+})
+
+let where = ''
+function Location() {
+  const loc = useLocation()
+  where = loc.pathname + loc.search
+  return null
+}
+
+/** The real composition from App.tsx over a stateful fake main process. */
+function renderApp(w: World, path = '/hosts') {
+  const invoke = mockBridge()
+  const base = invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
+  invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+    switch (channel) {
+      case 'vault:status':
+        return vaultStatus({ unlocked: w.unlocked, corruptVaultIds: w.corruptVaultIds })
+      case 'vault:list':
+        return w.vaults
+      case 'vault:unlock':
+        w.unlocked = true
+        return { ok: true }
+      case 'product:list':
+        return w.products
+      case 'env:list':
+        return w.environments
+      case 'host:list':
+        return w.hosts
+      case 'host:resolve': {
+        const h = w.hosts.find((x) => x.id === args[0])
+        return h ? outside(h.id, h.address) : null
+      }
+      case 'host:delete':
+        w.hosts = w.hosts.filter((h) => h.id !== args[0])
+        w.environments = w.environments.map((e) => ({ ...e, hosts: e.hosts.filter((m) => m.hostId !== args[0]) }))
+        return null
+      case 'sshconfig:preview':
+        return w.preview
+      case 'sshconfig:import': {
+        const failure = w.importFailures.shift()
+        if (failure) {
+          if (failure.message === VAULT_LOCKED) w.unlocked = false
+          throw failure
+        }
+        const req = args[0] as SshImportRequest
+        const created = req.aliases.map((alias) =>
+          host({
+            id: `imported-${alias}`,
+            label: alias,
+            address: w.preview.candidates.find((c) => c.alias === alias)!.hostName,
+            environments: req.environmentId ? [{ environmentId: req.environmentId, role: req.role ?? 'other' }] : [],
+          }),
+        )
+        w.hosts = [...w.hosts, ...created]
+        w.environments = w.environments.map((e) =>
+          e.id === req.environmentId ? { ...e, hosts: [...e.hosts, ...created.map((h) => ({ hostId: h.id, role: req.role ?? 'other' }))] } : e,
+        )
+        return { created, skipped: [], keysLinked: 1, identitiesCreated: 1, warnings: ['1 port forward will be offered when Tunnels arrive'] }
+      }
+    }
+    return base(channel, ...args)
+  })
+  vaultStatusStore.set(vaultStatus({ unlocked: w.unlocked, corruptVaultIds: w.corruptVaultIds }))
+  const view = render(
+    <MemoryRouter initialEntries={[path]}>
+      <AuthGate>
+        <AppShell />
+        <CommandPalette />
+      </AuthGate>
+      <Location />
+      <Toaster />
+    </MemoryRouter>,
+  )
+  return { invoke, ...view }
+}
+
+const hostList = () => screen.getByRole('listbox', { name: 'Hosts' })
+const rowNames = () => within(hostList()).queryAllByRole('option').map((o) => o.getAttribute('aria-label'))
+
+beforeEach(() => {
+  motion.safe = true
+  inventoryStore.set(null)
+  vaultStatusStore.set(null)
+})
+
+afterEach(() => {
+  act(() => {
+    cancelUnlock()
+    closeCommandPalette()
+    clearToasts()
+  })
+})
+
+describe('hosts page', () => {
+  it('lists and filters', async () => {
+    const user = userEvent.setup()
+    renderApp(world())
+    expect(await screen.findByRole('heading', { name: 'Hosts', level: 1 })).toBeInTheDocument()
+    await waitFor(() => expect(rowNames()).toEqual(['api-1', 'db-1', 'edge']))
+    const api1 = within(hostList()).getByRole('option', { name: 'api-1' })
+    expect(within(api1).getByText('10.0.0.5')).toBeInTheDocument()
+    expect(within(api1).getByText('prod')).toBeInTheDocument()
+
+    await user.type(screen.getByRole('searchbox', { name: 'Search hosts' }), '10.0.0')
+    await waitFor(() => expect(rowNames()).toEqual(['api-1', 'db-1']))
+
+    await user.click(within(screen.getByRole('group', { name: 'Tags' })).getByRole('button', { name: 'db' }))
+    expect(within(screen.getByRole('group', { name: 'Tags' })).getByRole('button', { name: 'db' })).toHaveAttribute('aria-pressed', 'true')
+    await waitFor(() => expect(rowNames()).toEqual(['db-1']))
+  })
+
+  it('selects a host into the side pane', async () => {
+    const user = userEvent.setup()
+    renderApp(world())
+    await user.click(await screen.findByRole('option', { name: 'edge' }))
+    expect(where).toBe('/hosts?host=edge')
+    expect(await screen.findByRole('heading', { name: 'edge', level: 2 })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'edge' })).toHaveAttribute('aria-selected', 'true')
+
+    await user.keyboard('{ArrowUp}')
+    expect(where).toBe('/hosts?host=db1')
+    expect(screen.getByRole('option', { name: 'db-1' })).toHaveFocus()
+  })
+
+  it('empty state offers both actions', async () => {
+    renderApp(world({ hosts: [], environments: [] }))
+    expect(await screen.findByText('No hosts yet')).toBeInTheDocument()
+    const empty = screen.getByTestId('hosts-empty')
+    expect(within(empty).getByRole('button', { name: 'New host' })).toBeInTheDocument()
+    expect(within(empty).getByRole('button', { name: 'Import from ~/.ssh/config' })).toBeInTheDocument()
+  })
+
+  it('import wizard', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderApp(world())
+    await screen.findByRole('option', { name: 'api-1' })
+    await user.click(screen.getByRole('button', { name: 'Import from ~/.ssh/config' }))
+
+    const dialog = await screen.findByRole('dialog')
+    const web = await within(dialog).findByRole('checkbox', { name: 'web-1' })
+    const bastion = within(dialog).getByRole('checkbox', { name: 'bastion' })
+    const evil = within(dialog).getByRole('checkbox', { name: 'evil' })
+    expect(within(dialog).getByText('deploy@10.0.1.7:2222')).toBeInTheDocument()
+    expect(within(dialog).getByText('Already added')).toBeInTheDocument()
+    expect(within(dialog).getByText('Skipped')).toBeInTheDocument()
+    expect(bastion).toBeDisabled()
+    expect(evil).toBeDisabled()
+    // Both warning lists: the file's own, and the entry's.
+    expect(within(dialog).getByText('Include ../outside points outside ~/.ssh; skipped')).toBeInTheDocument()
+    expect(within(dialog).getByText("HostName isn't a usable address; skipped")).toBeInTheDocument()
+    // Paths only ever show as a badge; no key material reaches the page.
+    expect(dialog.textContent).not.toContain('id_web')
+
+    await user.click(within(dialog).getByRole('checkbox', { name: 'Select all' }))
+    expect(web).toBeChecked()
+    expect(bastion).not.toBeChecked()
+    expect(evil).not.toBeChecked()
+
+    await user.click(within(dialog).getByRole('button', { name: 'Next' }))
+    expect(within(dialog).getByLabelText('Vault')).toHaveValue(DEFAULT_VAULT_ID)
+    await user.selectOptions(within(dialog).getByLabelText('Environment'), 'prod')
+    await user.selectOptions(within(dialog).getByLabelText('Role'), 'app')
+    await user.click(within(dialog).getByRole('button', { name: 'Import 1 host' }))
+
+    expect(invoke).toHaveBeenCalledWith('sshconfig:import', { vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'], environmentId: 'prod', role: 'app' })
+    expect(await within(dialog).findByText('Imported 1 host')).toBeInTheDocument()
+    expect(within(dialog).getByText('1 port forward will be offered when Tunnels arrive')).toBeInTheDocument()
+
+    await user.click(within(dialog).getByRole('button', { name: 'Done' }))
+    await waitFor(() => expect(rowNames()).toContain('web-1'))
+  })
+
+  it('no config', async () => {
+    const user = userEvent.setup()
+    renderApp(world({ preview: { path: '/home/tester/.ssh/config', found: false, candidates: [], warnings: [] } }))
+    await user.click(await screen.findByRole('button', { name: 'Import from ~/.ssh/config' }))
+    expect(await within(screen.getByRole('dialog')).findByText('No ~/.ssh/config found')).toBeInTheDocument()
+  })
+
+  it('import vault picker leaves out corrupt vaults', async () => {
+    const user = userEvent.setup()
+    const broken: VaultMeta = { ...defaultVault, id: 'broken', name: 'Broken', isDefault: false }
+    const team: VaultMeta = { ...defaultVault, id: 'team', name: 'Team', isDefault: false }
+    renderApp(world({ vaults: [team, broken, defaultVault], corruptVaultIds: ['broken'] }))
+    await user.click(await screen.findByRole('button', { name: 'Import from ~/.ssh/config' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(await within(dialog).findByRole('checkbox', { name: 'Select all' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Next' }))
+    const vaults = within(within(dialog).getByLabelText('Vault')).getAllByRole('option')
+    expect(vaults.map((o) => o.textContent)).toEqual(['Default', 'Team'])
+  })
+
+  it('locked import unlocks first', async () => {
+    motion.safe = false
+    const user = userEvent.setup()
+    const w = world({ importFailures: [new Error(VAULT_LOCKED)] })
+    const { invoke } = renderApp(w)
+    await screen.findByRole('option', { name: 'api-1' })
+    await user.click(screen.getByRole('button', { name: 'Import from ~/.ssh/config' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(await within(dialog).findByRole('checkbox', { name: 'Select all' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Next' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Import 1 host' }))
+
+    // The lock brings the gate up; the import runs again once the user is back through it.
+    await user.type(await screen.findByLabelText('Master password'), 'correct horse{Enter}')
+    const imports = () => invoke.mock.calls.filter(([c]) => c === 'sshconfig:import')
+    await waitFor(() => expect(imports()).toHaveLength(2))
+    expect(imports()[1]).toEqual(['sshconfig:import', { vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'] }])
+    expect(await screen.findByText('Imported 1 host')).toBeInTheDocument()
+    await waitFor(() => expect(rowNames()).toContain('web-1'))
+  })
+
+  it('palette navigates', async () => {
+    const user = userEvent.setup()
+    const w = world()
+    w.hosts = [...w.hosts, host({ id: 'web1', label: 'web-1', address: '10.0.1.7' })]
+    renderApp(w, '/audit')
+    await waitFor(() => expect(commandStore.get().some((c) => c.title === 'Go to web-1')).toBe(true))
+    expect(commandStore.get().find((c) => c.title === 'Go to prod · Acme')).toBeDefined()
+
+    act(() => {
+      fireEvent.keyDown(window, { key: 'k', metaKey: true })
+    })
+    await user.type(await screen.findByRole('combobox', { name: 'Search commands' }), 'web')
+    await user.click(screen.getByRole('option', { name: /Go to web-1/ }))
+
+    expect(where).toBe('/hosts?host=web1')
+    expect(await screen.findByRole('heading', { name: 'web-1', level: 2 })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'web-1 options' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Delete' }))
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete host' }))
+    await waitFor(() => expect(commandStore.get().some((c) => c.title === 'Go to web-1')).toBe(false))
+    expect(commandStore.get().some((c) => c.title === 'Go to api-1')).toBe(true)
+  })
+
+  it('palette environment command opens the products tree there', async () => {
+    renderApp(world(), '/hosts')
+    await waitFor(() => expect(commandStore.get().some((c) => c.title === 'Go to prod · Acme')).toBe(true))
+    act(() => commandStore.get().find((c) => c.title === 'Go to prod · Acme')!.run())
+    expect(where).toBe('/products?node=p%3Aacme%2Fe%3Aprod')
+    expect(await screen.findByRole('treeitem', { name: 'prod' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('palette opens the import dialog from anywhere', async () => {
+    renderApp(world(), '/audit')
+    await waitFor(() => expect(commandStore.get().some((c) => c.title === 'Import from ~/.ssh/config')).toBe(true))
+    act(() => commandStore.get().find((c) => c.title === 'Import from ~/.ssh/config')!.run())
+    expect(await within(await screen.findByRole('dialog')).findByRole('checkbox', { name: 'web-1' })).toBeInTheDocument()
+    expect(where).toBe('/hosts')
+  })
+
+  it('reduced motion renders rows without transforms', async () => {
+    motion.safe = false
+    renderApp(world())
+    await waitFor(() => expect(rowNames()).toEqual(['api-1', 'db-1', 'edge']))
+    for (const row of within(hostList()).getAllByRole('option')) expect(row.closest('li')?.style.transform ?? '').toBe('')
+  })
+})

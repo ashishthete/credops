@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
 import type { EnvironmentMeta, Membership, ProductMeta } from '../../../../shared/inventory'
 import { inv, inventoryStore, loadInventory, useInventory, type InventoryData } from '../../inventory/store'
-import { buildTree, selectionFromKey, type NodeKey, type TreeRow } from '../../inventory/tree'
+import { buildTree, environmentKey, selectionFromKey, type NodeKey, type TreeRow } from '../../inventory/tree'
 import { Badge } from '../../ui/Badge'
 import { registerCommand } from '../../ui/commands'
 import { ConfirmDialog, plural, type ConfirmRequest } from '../../ui/common'
@@ -35,10 +35,6 @@ function everyNode(data: InventoryData): { expandable: Set<NodeKey>; all: Set<No
 }
 
 const parentOf = (key: NodeKey) => (key.includes('/') ? key.slice(0, key.lastIndexOf('/')) : key)
-const envPlacement = (env: EnvironmentMeta, preferProduct?: string) =>
-  env.productIds.length === 0
-    ? `u/e:${env.id}`
-    : `p:${preferProduct && env.productIds.includes(preferProduct) ? preferProduct : [...env.productIds].sort()[0]}/e:${env.id}`
 
 type Dialogs =
   | { kind: 'product'; product?: ProductMeta }
@@ -59,7 +55,7 @@ export function ProductsPage() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
 
-  // The shell owns loading once it lands (T10); until then the page loads what isn't there yet (F22).
+  // The shell loads the inventory on mount; this covers the page rendered on its own (F22).
   useEffect(() => {
     if (inventoryStore.get() === null) void loadInventory()
   }, [])
@@ -340,7 +336,7 @@ export function ProductsPage() {
           onClose={closeDialog}
           onSaved={(e) => {
             closeDialog()
-            const key = envPlacement(e, sel.productId)
+            const key = environmentKey(e, sel.productId)
             expand(parentOf(key))
             if (key !== selected) select(key)
           }}

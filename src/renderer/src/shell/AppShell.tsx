@@ -1,7 +1,10 @@
 import { motion } from 'framer-motion'
 import { useEffect, useRef } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router'
+import { useInventoryCommands } from '../inventory/commands'
+import { loadInventory } from '../inventory/store'
 import { AuditPage } from '../pages/AuditPage'
+import { HostsPage } from '../pages/hosts/HostsPage'
 import { PlaceholderPage } from '../pages/PlaceholderPage'
 import { ProductsPage } from '../pages/products/ProductsPage'
 import { VaultsPage } from '../pages/vaults/VaultsPage'
@@ -13,7 +16,6 @@ import { SECTION_ICONS, Sidebar } from './Sidebar'
 
 // Sections a later phase builds out; each renders a placeholder until then.
 const PLACEHOLDERS = [
-  { id: 'hosts', phase: 3, blurb: 'Your fleet, one click from a shell' },
   { id: 'tunnels', phase: 5, blurb: 'Port forwards that stay up' },
   { id: 'deployments', phase: 8, blurb: 'Ansible runs, streamed live' },
 ] as const
@@ -23,6 +25,11 @@ export function AppShell() {
   const location = useLocation()
   const motionSafe = useMotionSafe()
   useSectionNavigation()
+  useInventoryCommands()
+  // The shell mounts only while unlocked, so every unlock reloads (F22).
+  useEffect(() => {
+    void loadInventory()
+  }, [])
 
   return (
     <div className="flex h-screen overflow-hidden bg-canvas text-fg">
@@ -55,6 +62,7 @@ export function AppShell() {
               )
             })}
             <Route path="/products" element={<ProductsPage />} />
+            <Route path="/hosts" element={<HostsPage />} />
             <Route path="/environments" element={<Navigate to="/products" replace />} />
             <Route path="/vaults" element={<VaultsPage />} />
             <Route path="/audit" element={<AuditPage />} />
