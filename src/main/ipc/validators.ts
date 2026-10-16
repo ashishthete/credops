@@ -4,6 +4,8 @@ import {
   HOST_ADDRESS,
   HOST_ROLES,
   MAX_ADDRESS,
+  MAX_ENV_VARS,
+  MAX_KEEPALIVE_SEC,
   MAX_DESCRIPTION,
   MAX_IMPORT_ALIASES,
   MAX_LINKS,
@@ -49,7 +51,7 @@ import {
   type VaultInput,
 } from '../../shared/vault'
 import { MAX_PRIVATE_KEY_BYTES } from '../vault/openssh'
-import { args, v, type ArgsValidator, type Check } from './validate'
+import { InvalidArgs, args, v, type ArgsValidator, type Check } from './validate'
 
 const OUTCOMES = ['success', 'failure', 'denied', 'info'] as const
 
@@ -148,6 +150,15 @@ const nullableId = v.nullable(v.uuid())
 const hostTags = v.array(v.str({ min: 1, max: MAX_TAG, pattern: TAG, trim: true }), MAX_TAGS)
 const osIcon = v.oneOf(OS_ICONS)
 const hostNotes = v.str({ max: MAX_NOTES })
+const keepaliveSec = v.nullable(v.int({ min: 0, max: MAX_KEEPALIVE_SEC }))
+// A plain record of strings; the store re-checks names, value length and characters.
+const envVars: Check<Record<string, string>> = (value, path) => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new InvalidArgs(path, 'must be an object')
+  const entries = Object.entries(value)
+  if (entries.length > MAX_ENV_VARS) throw new InvalidArgs(path, `must have at most ${MAX_ENV_VARS} entries`)
+  for (const [key, item] of entries) if (typeof item !== 'string') throw new InvalidArgs(`${path}.${key}`, 'must be a string')
+  return value as Record<string, string>
+}
 const membership = v.object({ environmentId: v.uuid(), role: v.oneOf(HOST_ROLES) })
 
 export const asHostInput: Check<HostInput> = v.object({
@@ -159,6 +170,8 @@ export const asHostInput: Check<HostInput> = v.object({
   tags: v.optional(hostTags),
   osIcon: v.optional(osIcon),
   notes: v.optional(hostNotes),
+  keepaliveSec: v.optional(keepaliveSec),
+  envVars: v.optional(envVars),
   vaultIds: v.optional(v.array(v.uuid(), MAX_LINKS)),
   environments: v.optional(v.array(membership, MAX_LINKS)),
 }) as Check<HostInput>
@@ -172,6 +185,8 @@ export const asHostPatch: Check<HostPatch> = v.object({
   tags: v.optional(hostTags),
   osIcon: v.optional(osIcon),
   notes: v.optional(hostNotes),
+  keepaliveSec: v.optional(keepaliveSec),
+  envVars: v.optional(envVars),
 }) as Check<HostPatch>
 
 const envName = v.str({ min: 1, max: MAX_NAME, trim: true })

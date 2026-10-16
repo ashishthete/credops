@@ -42,6 +42,13 @@ export const AUDIT_ACTIONS = [
   'host.delete',
   'host.vaults',
   'host.import',
+  'ssh.open',
+  'ssh.close',
+  'shell.open',
+  'shell.close',
+  'knownhost.trust',
+  'knownhost.remove',
+  'knownhost.mismatch',
 ] as const // later phases extend
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]
 

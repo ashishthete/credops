@@ -27,6 +27,53 @@ function insertEnv(f: InventoryFixture, name: string, jumpHostId: string | null 
 }
 
 describe('HostStore', () => {
+  it('stores keepalive and env vars', async () => {
+    const f = await makeInventory()
+    const h = f.hosts.create({ label: 'k', address: 'a.b', keepaliveSec: 0, envVars: { LANG: 'en_US.UTF-8' } })
+    expect(f.hosts.list()[0]).toMatchObject({ keepaliveSec: 0, envVars: { LANG: 'en_US.UTF-8' } })
+    expect(f.hosts.update(h.id, { envVars: {} }).envVars).toEqual({})
+    const upd = hostActions(f).filter((e) => e.action === 'host.update')
+    expect(upd).toHaveLength(1)
+    expect(upd[0]!.details).toEqual({ fields: ['envVars'] })
+    expect(JSON.stringify(hostActions(f).map((e) => e.details))).not.toContain('en_US')
+  })
+
+  it('rejects bad env vars without echoing values', async () => {
+    const f = await makeInventory()
+    const bad: Record<string, string>[] = [
+      { '1BAD': 'x' },
+      Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`V${i}`, 'x'])),
+      { A: 'secret\u0007val' },
+      { A: 's'.repeat(1025) },
+    ]
+    for (const envVars of bad) {
+      const err = (() => {
+        try {
+          f.hosts.create({ label: `e${Math.random()}`, address: 'a.b', envVars })
+        } catch (e) {
+          return e as Error
+        }
+      })()
+      expect(err).toBeInstanceOf(Error)
+      expect(err!.message).toMatch(/env/i)
+      expect(err!.message).not.toContain('secret')
+      expect(err!.message).not.toContain('1BAD')
+    }
+  })
+
+  it('envVars no-op patch is not audited', async () => {
+    const f = await makeInventory()
+    const h = f.hosts.create({ label: 'n', address: 'a.b', envVars: { A: '1', B: '2' } })
+    const before = hostActions(f).length
+    f.hosts.update(h.id, { envVars: { B: '2', A: '1' } })
+    expect(hostActions(f)).toHaveLength(before)
+  })
+
+  it('stores keepalive only in range', async () => {
+    const f = await makeInventory()
+    expect(() => f.hosts.create({ label: 'r', address: 'a.b', keepaliveSec: 3601 })).toThrow(/keepalive/)
+  })
+
   it('creates with links in one go', async () => {
     const f = await makeInventory()
     const h = f.hosts.create({
@@ -199,6 +246,7 @@ describe('host IPC', () => {
     await rejects('host:update', 'not-a-uuid', { label: 'z' })
     await rejects('host:update', ok.id, { vaultIds: [] })
     await rejects('host:update', ok.id, { port: 0 })
+    await expect(Promise.resolve(calls['host:create']!(ev, { label: 'ka', address: 'a.b', keepaliveSec: 3601 }))).rejects.toThrow(/keepaliveSec/)
     await rejects('host:delete', 'not-a-uuid')
     await rejects('host:setVaults', ok.id, 'v1')
     await rejects('host:setVaults', ok.id, ['not-a-uuid'])

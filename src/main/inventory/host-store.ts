@@ -12,7 +12,7 @@ import type { AuditLog } from '../audit/audit-log'
 import type { Db } from '../db/connection'
 import { inTransaction } from '../db/tx'
 import type { VaultService } from '../vault/vault-service'
-import { checkAddress, checkLabel, checkPort, checkTags, hostMeta, hostRow } from './rows'
+import { checkAddress, checkEnvVars, checkKeepalive, checkLabel, checkPort, checkTags, hostMeta, hostRow } from './rows'
 
 const labelOf = (db: Db, id: string): string => hostRow(db, id).label
 
@@ -84,16 +84,18 @@ export class HostStore {
     const tags = checkTags(input.tags ?? [])
     const osIcon = this.checkIcon(input.osIcon ?? 'linux')
     const notes = this.checkNotes(input.notes ?? '')
+    const keepaliveSec = input.keepaliveSec == null ? null : checkKeepalive(input.keepaliveSec)
+    const envVars = checkEnvVars(input.envVars ?? {})
     const vaultIds = this.checkVaults(input.vaultIds ?? [])
     const memberships = this.checkMemberships(input.environments ?? [])
     const id = randomUUID()
     const ts = new Date().toISOString()
     this.db
       .prepare(
-        `INSERT INTO hosts(id, label, address, port, identity_id, jump_host_id, tags, os_icon, notes, created_at, updated_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO hosts(id, label, address, port, identity_id, jump_host_id, tags, os_icon, notes, keepalive_sec, env_vars, created_at, updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
-      .run(id, label, address, port, identityId, jumpHostId, JSON.stringify(tags), osIcon, notes, ts, ts)
+      .run(id, label, address, port, identityId, jumpHostId, JSON.stringify(tags), osIcon, notes, keepaliveSec, envVars, ts, ts)
     for (const vaultId of vaultIds) {
       this.db.prepare('INSERT INTO host_vaults(host_id, vault_id) VALUES (?,?)').run(id, vaultId)
     }
@@ -119,6 +121,13 @@ export class HostStore {
       const tags = patch.tags === undefined ? (JSON.parse(before.tags) as string[]) : checkTags(patch.tags)
       const osIcon = patch.osIcon === undefined ? before.os_icon : this.checkIcon(patch.osIcon)
       const notes = patch.notes === undefined ? before.notes : this.checkNotes(patch.notes)
+      const keepaliveSec =
+        patch.keepaliveSec === undefined
+          ? before.keepalive_sec
+          : patch.keepaliveSec === null
+            ? null
+            : checkKeepalive(patch.keepaliveSec)
+      const envVars = patch.envVars === undefined ? before.env_vars : checkEnvVars(patch.envVars)
       const tagsJson = JSON.stringify(tags)
       const fields = [
         label !== before.label && 'label',
@@ -129,14 +138,16 @@ export class HostStore {
         tagsJson !== before.tags && 'tags',
         osIcon !== before.os_icon && 'osIcon',
         notes !== before.notes && 'notes',
+        keepaliveSec !== before.keepalive_sec && 'keepaliveSec',
+        envVars !== before.env_vars && 'envVars',
       ].filter(Boolean)
       if (fields.length === 0) return null
       this.db
         .prepare(
           `UPDATE hosts SET label = ?, address = ?, port = ?, identity_id = ?, jump_host_id = ?, tags = ?,
-            os_icon = ?, notes = ?, updated_at = ? WHERE id = ?`,
+            os_icon = ?, notes = ?, keepalive_sec = ?, env_vars = ?, updated_at = ? WHERE id = ?`,
         )
-        .run(label, address, port, identityId, jumpHostId, tagsJson, osIcon, notes, new Date().toISOString(), id)
+        .run(label, address, port, identityId, jumpHostId, tagsJson, osIcon, notes, keepaliveSec, envVars, new Date().toISOString(), id)
       return { label, fields }
     })
     if (next === null) return hostMeta(this.db, id)

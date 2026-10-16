@@ -15,3 +15,5 @@ electronFuses:
   enableNodeCliInspectArguments: false
   enableEmbeddedAsarIntegrityValidation: true
   onlyLoadAppFromAsar: true
+asarUnpack:
+  - "**/node_modules/node-pty/**"

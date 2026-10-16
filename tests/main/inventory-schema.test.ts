@@ -8,9 +8,9 @@ import { makeVault } from './vault-helpers'
 const NOW = '2026-01-01T00:00:00.000Z'
 
 describe('inventory schema', () => {
-  it('migrates to 3', () => {
+  it('migrates to 4', () => {
     const db = openDatabase(':memory:')
-    expect(currentVersion(db)).toBe(3)
+    expect(currentVersion(db)).toBe(4)
     for (const t of ['products', 'hosts', 'environments', 'product_environments', 'environment_hosts', 'host_vaults']) {
       expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(t)).toBeDefined()
     }
@@ -72,5 +72,30 @@ describe('inventory schema', () => {
       db.prepare("INSERT INTO environment_hosts(environment_id, host_id, role) VALUES ('e1','h1','web')").run(),
     ).toThrow(/CHECK/i)
     expect(() => db.prepare("UPDATE hosts SET jump_host_id = 'h1' WHERE id = 'h1'").run()).toThrow(/CHECK/i)
+  })
+
+  it('migration 4 adds keepalive, env vars and known_hosts', () => {
+    const db = openDatabase(':memory:')
+    const cols = (db.prepare('PRAGMA table_info(hosts)').all() as { name: string }[]).map((c) => c.name)
+    expect(cols).toEqual(expect.arrayContaining(['keepalive_sec', 'env_vars']))
+    const insert = (id: string, keepalive: number): void => {
+      db.prepare('INSERT INTO hosts(id, label, address, keepalive_sec, created_at, updated_at) VALUES (?,?,?,?,?,?)').run(
+        id,
+        id,
+        'a',
+        keepalive,
+        NOW,
+        NOW,
+      )
+    }
+    insert('h1', 0)
+    expect(() => insert('h2', 4000)).toThrow(/CHECK/i)
+    const known = (id: string): void => {
+      db.prepare(
+        'INSERT INTO known_hosts(id, host, key_type, key, fingerprint, first_seen, last_seen) VALUES (?,?,?,?,?,?,?)',
+      ).run(id, 'h:22', 'ssh-ed25519', 'k', 'SHA256:x', NOW, NOW)
+    }
+    known('k1')
+    expect(() => known('k2')).toThrow(/UNIQUE/i)
   })
 })

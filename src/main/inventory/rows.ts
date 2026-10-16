@@ -1,6 +1,10 @@
 import {
+  ENV_NAME,
   HOST_ADDRESS,
   MAX_ADDRESS,
+  MAX_ENV_VALUE,
+  MAX_ENV_VARS,
+  MAX_KEEPALIVE_SEC,
   MAX_TAG,
   MAX_TAGS,
   TAG,
@@ -14,6 +18,9 @@ import {
 import { MAX_LABEL, VAULT_COLOR } from '../../shared/vault'
 import type { Db } from '../db/connection'
 import { checkHexColor, checkText } from '../util/checks'
+
+/** Control, format (bidi, zero-width) and line-separator characters. */
+const UNSAFE_ENV_VALUE = /[\p{Cc}\p{Cf}\u2028\u2029\u0085]/u
 
 /** Trimmed 1..max characters; the message never carries the value. */
 export const checkName = checkText
@@ -61,6 +68,28 @@ export function checkPort(raw: number): number {
   return raw
 }
 
+export function checkKeepalive(raw: number): number {
+  if (!Number.isInteger(raw) || raw < 0 || raw > MAX_KEEPALIVE_SEC) {
+    throw new Error(`keepalive must be 0-${MAX_KEEPALIVE_SEC} seconds`)
+  }
+  return raw
+}
+
+/** Env vars as sorted-key JSON, so equal sets compare equal. Messages name the rule, never a name or value. */
+export function checkEnvVars(raw: Record<string, string>): string {
+  const entries = typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? Object.entries(raw) : null
+  if (entries === null) throw new Error('env vars must be an object')
+  if (entries.length > MAX_ENV_VARS) throw new Error(`a host can have at most ${MAX_ENV_VARS} env vars`)
+  for (const [name, value] of entries) {
+    if (!ENV_NAME.test(name)) throw new Error('an env var name is invalid')
+    if (typeof value !== 'string' || value.length > MAX_ENV_VALUE) {
+      throw new Error(`an env var value must be a string of at most ${MAX_ENV_VALUE} characters`)
+    }
+    if (UNSAFE_ENV_VALUE.test(value)) throw new Error('an env var value has control or format characters')
+  }
+  return JSON.stringify(Object.fromEntries(entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))))
+}
+
 interface HostRow {
   id: string
   label: string
@@ -71,6 +100,8 @@ interface HostRow {
   tags: string
   os_icon: OsIcon
   notes: string
+  keepalive_sec: number | null
+  env_vars: string
   created_at: string
   updated_at: string
 }
@@ -99,6 +130,8 @@ export function hostMeta(db: Db, id: string): HostMeta {
     tags: JSON.parse(r.tags) as string[],
     osIcon: r.os_icon,
     notes: r.notes,
+    keepaliveSec: r.keepalive_sec,
+    envVars: JSON.parse(r.env_vars) as Record<string, string>,
     vaultIds: vaults.map((x) => x.vault_id),
     environments: envs.map((e) => ({ environmentId: e.environment_id, role: e.role })),
     createdAt: r.created_at,

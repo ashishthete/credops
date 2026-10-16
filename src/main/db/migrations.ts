@@ -85,6 +85,16 @@ CREATE INDEX environment_hosts_host ON environment_hosts(host_id);
 CREATE INDEX host_vaults_vault ON host_vaults(vault_id);
 `,
   },
+  {
+    version: 4,
+    name: 'ssh-terminal',
+    up: `
+ALTER TABLE hosts ADD COLUMN keepalive_sec INTEGER CHECK (keepalive_sec IS NULL OR keepalive_sec BETWEEN 0 AND 3600);
+ALTER TABLE hosts ADD COLUMN env_vars TEXT NOT NULL DEFAULT '{}';
+CREATE TABLE known_hosts(id TEXT PRIMARY KEY, host TEXT NOT NULL, key_type TEXT NOT NULL, key TEXT NOT NULL,
+  fingerprint TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, UNIQUE(host, key_type));
+`,
+  },
 ]
 
 const ENSURE_TABLE = `CREATE TABLE IF NOT EXISTS schema_migrations(

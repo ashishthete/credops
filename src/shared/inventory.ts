@@ -24,6 +24,10 @@ export const MAX_JUMP_DEPTH = 8
 export const MAX_SSH_CONFIG_BYTES = 1024 * 1024
 export const MAX_LINKS = 64 // ids in any id list
 export const MAX_IMPORT_ALIASES = 2000
+export const MAX_ENV_VARS = 32 // per host
+export const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
+export const MAX_ENV_VALUE = 1024
+export const MAX_KEEPALIVE_SEC = 3600
 
 /** Control, format (bidi, zero-width) and line-separator characters. */
 const UNSAFE_SSH_CHAR = /[\p{Cc}\p{Cf}\u2028\u2029\u0085]/u
@@ -89,6 +93,9 @@ export interface HostInput {
   tags?: string[]
   osIcon?: OsIcon
   notes?: string
+  /** Seconds between keepalives; null = default, 0 = off. */
+  keepaliveSec?: number | null
+  envVars?: Record<string, string>
   vaultIds?: string[]
   environments?: Membership[]
 }
@@ -103,6 +110,8 @@ export interface HostMeta {
   tags: string[]
   osIcon: OsIcon
   notes: string
+  keepaliveSec: number | null
+  envVars: Record<string, string>
   vaultIds: string[]
   environments: Membership[]
   createdAt: string

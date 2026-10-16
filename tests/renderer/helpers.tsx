@@ -91,6 +91,8 @@ export function host(over: Partial<HostMeta> & { id: string; label: string }): H
     tags: [],
     osIcon: 'linux',
     notes: '',
+    keepaliveSec: null,
+    envVars: {},
     vaultIds: [],
     environments: [],
     createdAt: STAMP,
