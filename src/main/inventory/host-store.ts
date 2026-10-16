@@ -54,6 +54,11 @@ export class HostStore {
   create(input: HostInput, opts: { auditDetails?: Record<string, unknown> } = {}): HostMeta {
     this.vault.assertUnlocked()
     const id = inTransaction(this.db, () => this.insertInTx(input))
+    return this.auditCreated(id, opts.auditDetails)
+  }
+
+  /** Appends the `host.create` event for a committed `insertInTx` row and returns its meta. */
+  auditCreated(id: string, auditDetails?: Record<string, unknown>): HostMeta {
     const meta = hostMeta(this.db, id)
     this.audit.append({
       action: 'host.create',
@@ -61,7 +66,7 @@ export class HostStore {
       targetType: 'host',
       targetId: id,
       targetLabel: meta.label,
-      details: { vaults: meta.vaultIds.length, environments: meta.environments.length, ...opts.auditDetails },
+      details: { vaults: meta.vaultIds.length, environments: meta.environments.length, ...auditDetails },
     })
     return meta
   }

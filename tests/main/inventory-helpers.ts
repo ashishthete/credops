@@ -6,6 +6,7 @@ import { EnvironmentStore } from '../../src/main/inventory/environment-store'
 import { HostStore } from '../../src/main/inventory/host-store'
 import { ProductStore } from '../../src/main/inventory/product-store'
 import { resolveHost } from '../../src/main/inventory/resolve'
+import { SshImporter } from '../../src/main/inventory/ssh-import'
 import { IdentityStore } from '../../src/main/vault/identity-store'
 import { KeyStore } from '../../src/main/vault/key-store'
 import type { IdentityMeta } from '../../src/shared/vault'
@@ -59,5 +60,21 @@ export function inventoryHandlers(f: InventoryFixture): ReturnType<typeof create
     environments: f.envs,
     products: f.products,
     resolve: (hostId, environmentId) => resolveHost(f.db, hostId, environmentId, { localUser: 'tester' }),
+  })
+}
+
+/** An importer over the fixture's tmp home; `sshConfigPath` defaults to `<sshDir>/config`. Local user `tester`. */
+export function makeImporter(f: InventoryFixture, sshConfigPath = join(f.sshDir, 'config')): SshImporter {
+  return new SshImporter({
+    db: f.db,
+    vault: f.vault,
+    audit: f.audit,
+    hosts: f.hosts,
+    keys: f.keys,
+    identities: f.identities,
+    sshConfigPath,
+    sshDir: f.sshDir,
+    home: f.home,
+    localUser: 'tester',
   })
 }

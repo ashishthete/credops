@@ -5,6 +5,7 @@ import {
   HOST_ROLES,
   MAX_ADDRESS,
   MAX_DESCRIPTION,
+  MAX_IMPORT_ALIASES,
   MAX_LINKS,
   MAX_NAME,
   MAX_NOTES,
@@ -21,6 +22,7 @@ import {
   type HostPatch,
   type ProductInput,
   type ProductPatch,
+  type SshImportRequest,
 } from '../../shared/inventory'
 import {
   AUTO_LOCK_CHOICES,
@@ -217,6 +219,14 @@ export const asProductPatch: Check<ProductPatch> = v.object({
   repoUrl,
 }) as Check<ProductPatch>
 
+// Aliases only: the importer re-reads the config itself, so no config text crosses IPC.
+export const asSshImportRequest: Check<SshImportRequest> = v.object({
+  vaultId: v.uuid(),
+  aliases: v.array(v.str({ min: 1, max: MAX_LABEL }), MAX_IMPORT_ALIASES),
+  environmentId: v.optional(v.uuid()),
+  role: v.optional(v.oneOf(HOST_ROLES)),
+}) as Check<SshImportRequest>
+
 export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']> } = {
   'app:info': args(),
   'audit:list': args(asFilter),
@@ -270,4 +280,6 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'product:create': args(asProductInput),
   'product:update': args(v.uuid(), asProductPatch),
   'product:delete': args(v.uuid()),
+  'sshconfig:preview': args(),
+  'sshconfig:import': args(asSshImportRequest),
 }

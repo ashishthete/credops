@@ -21,6 +21,7 @@ import { createIdentityHandlers } from './ipc/handlers/identities'
 import { createInventoryHandlers } from './ipc/handlers/inventory'
 import { createKeyHandlers } from './ipc/handlers/keys'
 import { createSecretHandlers } from './ipc/handlers/secrets'
+import { createSshImportHandlers } from './ipc/handlers/ssh-import'
 import { createVaultHandlers } from './ipc/handlers/vault'
 import { isTrustedSender, registerHandlers } from './ipc/register'
 import { VALIDATORS } from './ipc/validators'
@@ -28,6 +29,7 @@ import { EnvironmentStore } from './inventory/environment-store'
 import { HostStore } from './inventory/host-store'
 import { ProductStore } from './inventory/product-store'
 import { resolveHost } from './inventory/resolve'
+import { SshImporter } from './inventory/ssh-import'
 import { redact } from './security/redact'
 import { AutoLock } from './vault/auto-lock'
 import { IdentityStore } from './vault/identity-store'
@@ -131,6 +133,18 @@ if (!app.requestSingleInstanceLock()) {
       hosts = new HostStore(db, service, log)
       environments = new EnvironmentStore(db, service, log)
       products = new ProductStore(db, service, log)
+      const importer = new SshImporter({
+        db,
+        vault: service,
+        audit: log,
+        hosts,
+        keys,
+        identities,
+        sshConfigPath: join(homedir(), '.ssh', 'config'),
+        sshDir: join(homedir(), '.ssh'),
+        home: homedir(),
+        localUser: actor.osUser,
+      })
       const inventoryDb = db
       stopAutoLock = new AutoLock({
         idleSeconds: () => powerMonitor.getSystemIdleTime(),
@@ -179,6 +193,7 @@ if (!app.requestSingleInstanceLock()) {
             products,
             resolve: (hostId, environmentId) => resolveHost(inventoryDb, hostId, environmentId, { localUser: actor.osUser }),
           }),
+          ...createSshImportHandlers(importer),
         },
         (url) => isTrustedSender(url, { devServerUrl, rendererFile }),
         { validators: VALIDATORS, knownSecrets },

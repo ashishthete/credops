@@ -11,6 +11,9 @@ import type {
   ProductMeta,
   ProductPatch,
   ResolvedHost,
+  SshImportPreview,
+  SshImportRequest,
+  SshImportResult,
 } from './inventory'
 import type {
   IdentityInput,
@@ -107,6 +110,8 @@ export interface IpcContract {
   'product:create': { args: [input: ProductInput]; result: ProductMeta }
   'product:update': { args: [id: string, patch: ProductPatch]; result: ProductMeta }
   'product:delete': { args: [id: string]; result: void }
+  'sshconfig:preview': { args: []; result: SshImportPreview }
+  'sshconfig:import': { args: [req: SshImportRequest]; result: SshImportResult }
 }
 
 export type Channel = keyof IpcContract
@@ -165,6 +170,8 @@ export const CHANNELS = [
   'product:create',
   'product:update',
   'product:delete',
+  'sshconfig:preview',
+  'sshconfig:import',
 ] as const satisfies readonly Channel[]
 
 // Fails typecheck if IpcContract gains a channel that CHANNELS does not list.
