@@ -1,8 +1,9 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { Check, Layers, Pencil, StickyNote, Trash2, Vault, X } from 'lucide-react'
+import { Check, Layers, Pencil, SquareTerminal, StickyNote, Trash2, Vault, X } from 'lucide-react'
 import { useRef, useState, type ReactNode } from 'react'
 import type { EnvironmentMeta, HostMeta } from '../../../../shared/inventory'
 import { inv, inventoryStore, useInventory, type InventoryData } from '../../inventory/store'
+import { useConnect } from '../../terminal/connect'
 import { Button } from '../../ui/Button'
 import { ConfirmDialog, RowMenu, useMenuPopover, type ConfirmRequest } from '../../ui/common'
 import { fast, spring, useMotionSafe } from '../../ui/motion'
@@ -27,6 +28,7 @@ export function HostView({ hostId, environmentId, onDeleted }: HostViewProps) {
   const [editing, setEditing] = useState(false)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   const [context, setContext] = useState<string | null>(environmentId ?? null)
+  const { connect } = useConnect()
   const host = data?.hosts.find((h) => h.id === hostId)
 
   if (!data) {
@@ -85,6 +87,9 @@ export function HostView({ hostId, environmentId, onDeleted }: HostViewProps) {
         badges={<span className="truncate font-mono text-[12.5px] text-muted">{host.address}</span>}
         actions={
           <>
+            <Button size="sm" icon={<SquareTerminal aria-hidden className="size-3.5" />} onClick={() => void connect(host.id, context ?? undefined)}>
+              Connect
+            </Button>
             <Button size="sm" variant="ghost" icon={<Pencil aria-hidden className="size-3.5" />} onClick={() => setEditing(true)}>
               Edit
             </Button>

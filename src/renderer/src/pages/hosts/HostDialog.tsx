@@ -23,6 +23,7 @@ import { SelectField, TextAreaField, TextField } from '../../ui/Field'
 import { fast, spring, useMotionSafe } from '../../ui/motion'
 import { toast } from '../../ui/Toaster'
 import { useVaultStatus } from '../../vault/status'
+import { HostAdvanced, advancedFrom, checkAdvanced, type AdvancedState } from './HostAdvanced'
 
 export const OS_META: Record<OsIcon, { label: string; icon: LucideIcon }> = {
   linux: { label: 'Linux', icon: SquareTerminal },
@@ -70,6 +71,7 @@ export function HostDialog({ open, host, presetEnvironment, contextEnvironmentId
   const [tags, setTags] = useState<string[]>([])
   const [osIcon, setOsIcon] = useState<OsIcon>('linux')
   const [notes, setNotes] = useState('')
+  const [adv, setAdv] = useState<AdvancedState>(() => advancedFrom(host))
   const [busy, setBusy] = useState(false)
   // The host as it was when the dialog opened; a save sends only what changed from this.
   const opened = useRef(host)
@@ -85,6 +87,7 @@ export function HostDialog({ open, host, presetEnvironment, contextEnvironmentId
     setTags(host?.tags ?? [])
     setOsIcon(host?.osIcon ?? 'linux')
     setNotes(host?.notes ?? '')
+    setAdv(advancedFrom(host))
     // Reset when the dialog opens or switches host, not when a refresh hands over a new object mid-edit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, host?.id])
@@ -127,7 +130,8 @@ export function HostDialog({ open, host, presetEnvironment, contextEnvironmentId
 
   const parsedPort = parsePort(port)
   const addrError = addressError(address)
-  const valid = label.trim().length > 0 && address.trim().length > 0 && !addrError && !parsedPort.error
+  const advCheck = checkAdvanced(adv)
+  const valid = label.trim().length > 0 && address.trim().length > 0 && !addrError && !parsedPort.error && advCheck.valid
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -142,6 +146,8 @@ export function HostDialog({ open, host, presetEnvironment, contextEnvironmentId
       tags,
       osIcon,
       notes,
+      keepaliveSec: advCheck.keepaliveSec,
+      envVars: advCheck.envVars,
     }
     const saved = await inv.saveHost(
       host ? fields : { ...fields, vaultIds: [DEFAULT_VAULT_ID], environments: memberships },
@@ -234,6 +240,7 @@ export function HostDialog({ open, host, presetEnvironment, contextEnvironmentId
         </SelectField>
         <TagInput tags={tags} onChange={setTags} />
         <TextAreaField label="Notes" rows={3} maxLength={MAX_NOTES} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Runbooks, quirks, who owns it" />
+        <HostAdvanced value={adv} check={advCheck} onChange={setAdv} />
       </form>
     </Dialog>
   )

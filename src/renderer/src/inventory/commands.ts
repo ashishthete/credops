@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router'
+import { useConnect } from '../terminal/connect'
 import { registerCommand, registerCommands } from '../ui/commands'
 import { useInventory } from './store'
 import { environmentKey } from './tree'
@@ -16,6 +17,7 @@ export function useInventoryCommands(): void {
   useEffect(() => {
     navigateRef.current = navigate
   })
+  const { connect, connectLocal } = useConnect()
   const go = useCallback((path: string) => () => navigateRef.current(path), [])
 
   useEffect(() => {
@@ -28,15 +30,35 @@ export function useInventoryCommands(): void {
         keywords: ['ssh', 'config', 'openssh'],
         run: go(hostsActionPath('import')),
       }),
+      registerCommand({
+        id: 'terminal.local',
+        title: 'New local shell',
+        section: 'Terminals',
+        keywords: ['terminal', 'shell', 'console'],
+        shortcut: 'mod+t',
+        run: () => void connectLocal(),
+      }),
     ]
     return () => off.forEach((fn) => fn())
-  }, [go])
+  }, [go, connectLocal])
 
   // Rebuilt whenever the store changes, so renamed or deleted items never linger.
   useEffect(() => {
     if (!data) return
     const productName = new Map(data.products.map((p) => [p.id, p.name]))
+    const envById = new Map(data.environments.map((e) => [e.id, e]))
     return registerCommands([
+      ...data.hosts.map((h) => {
+        const envs = h.environments.flatMap((m) => envById.get(m.environmentId) ?? [])
+        return {
+          id: `connect:${h.id}`,
+          title: `Connect to ${h.label}`,
+          section: 'Terminals',
+          keywords: [h.address, ...h.tags, ...envs.map((e) => e.name)],
+          // A host in exactly one environment connects with its defaults; otherwise there is no single context.
+          run: () => void connect(h.id, envs.length === 1 ? envs[0].id : undefined),
+        }
+      }),
       ...data.hosts.map((h) => ({
         id: `hosts.go.${h.id}`,
         title: `Go to ${h.label}`,
@@ -55,5 +77,5 @@ export function useInventoryCommands(): void {
         }
       }),
     ])
-  }, [data, go])
+  }, [data, go, connect])
 }

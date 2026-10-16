@@ -1,10 +1,11 @@
 import { motion } from 'framer-motion'
-import { KeyRound, Link2, Lock, Network, Pencil, Plus, Route, Server, Trash2, Unlink, X } from 'lucide-react'
+import { KeyRound, Link2, Lock, Network, Pencil, Plus, Route, Server, SquareTerminal, Trash2, Unlink, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { DEFAULT_SSH_PORT, type EnvironmentMeta } from '../../../../shared/inventory'
 import { sourceLabel } from '../../inventory/choices'
 import type { InventoryData } from '../../inventory/store'
 import type { NodeKey } from '../../inventory/tree'
+import { useConnect } from '../../terminal/connect'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
 import { RowMenu } from '../../ui/common'
@@ -26,6 +27,7 @@ interface EnvironmentViewProps {
 
 export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onNewHost, onEdit, onDelete, removeFrom }: EnvironmentViewProps) {
   const motionSafe = useMotionSafe()
+  const { connect } = useConnect()
   const hostById = new Map(data.hosts.map((h) => [h.id, h]))
   const identity = env.defaultIdentityId ? data.identities.find((i) => i.id === env.defaultIdentityId) : undefined
   const jump = env.defaultJumpHostId ? hostById.get(env.defaultJumpHostId) : undefined
@@ -129,7 +131,7 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
                     <button
                       type="button"
                       onClick={() => onSelect(`${envKey}/h:${h.id}`)}
-                      className="flex h-10 w-full items-center gap-3 rounded-lg border border-transparent px-3 pr-10 text-left transition-colors hover:border-line hover:bg-white/[0.03]"
+                      className="flex h-10 w-full items-center gap-3 rounded-lg border border-transparent px-3 pr-[4.5rem] text-left transition-colors hover:border-line hover:bg-white/[0.03]"
                     >
                       <Server aria-hidden className="size-3.5 shrink-0 text-muted" />
                       <span className="truncate text-[13px] font-medium text-fg">{h.label}</span>
@@ -140,6 +142,15 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
                       {h.environments.length > 1 && (
                         <Link2 aria-label="Shared" className="ml-auto size-3 shrink-0 text-muted" strokeWidth={2.2} />
                       )}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Connect to ${h.label}`}
+                      title={`Connect to ${h.label} in ${env.name}`}
+                      onClick={() => void connect(h.id, env.id)}
+                      className="absolute top-1/2 right-9 grid size-6 -translate-y-1/2 place-items-center rounded-md text-muted opacity-0 transition-[opacity,color,background-color] group-hover:opacity-100 hover:bg-white/[0.06] hover:text-fg focus-visible:opacity-100"
+                    >
+                      <SquareTerminal aria-hidden className="size-3.5" />
                     </button>
                     <button
                       type="button"

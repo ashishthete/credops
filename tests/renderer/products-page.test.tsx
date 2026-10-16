@@ -32,6 +32,15 @@ const deploy: IdentityMeta = {
   updatedAt: TS,
 }
 
+
+// Opening a session is the terminal store's job; these tests only care what it is asked for.
+const sessions = vi.hoisted(() => ({ openSsh: vi.fn(), openLocal: vi.fn() }))
+vi.mock('../../src/renderer/src/terminal/sessions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/renderer/src/terminal/sessions')>()),
+  openSsh: sessions.openSsh,
+  openLocal: sessions.openLocal,
+}))
+
 interface World {
   products: ProductMeta[]
   environments: EnvironmentMeta[]
@@ -156,6 +165,7 @@ const dataTransfer = () => ({ setData() {}, getData: () => '', effectAllowed: ''
 beforeEach(() => {
   motion.safe = true
   inventoryStore.set(null)
+  sessions.openSsh.mockReset().mockResolvedValue('s1')
 })
 
 afterEach(() => {
@@ -267,6 +277,17 @@ describe('products page', () => {
     )
     expect(await screen.findByText('Created Essentials')).toBeInTheDocument()
     expect(screen.getByRole('treeitem', { name: 'Essentials' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('EnvironmentView host row Connect passes the environment', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByRole('treeitem', { name: 'Acme' })
+    await user.click(item('prod'))
+    const details = screen.getByRole('region', { name: 'Details' })
+    await user.click(await within(details).findByRole('button', { name: 'Connect to web-1' }))
+    await waitFor(() => expect(where).toBe('/terminals'))
+    expect(sessions.openSsh).toHaveBeenCalledWith('web1', 'prod')
   })
 
   it('environment dialog saves defaults', async () => {

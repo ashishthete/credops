@@ -1,6 +1,7 @@
 import { AnimatePresence, LayoutGroup, motion } from 'framer-motion'
-import { ChevronRight, CircleAlert, KeyRound, Network, Route, TriangleAlert, UserRound, type LucideIcon } from 'lucide-react'
+import { ChevronRight, CircleAlert, KeyRound, Network, Route, Timer, TriangleAlert, UserRound, type LucideIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { DEFAULT_KEEPALIVE_SEC } from '../../../../shared/ssh'
 import type { IdentityRef, InheritConflict, ResolvedHost, ValueSource } from '../../../../shared/inventory'
 import { sourceLabel } from '../../inventory/choices'
 import { useInventory, type InventoryData } from '../../inventory/store'
@@ -49,6 +50,10 @@ function dependencyStamp(data: InventoryData | null, hostId: string): string {
   const identityIds = new Set([...hosts.map((h) => h.identityId), ...envs.map((e) => e.defaultIdentityId)])
   return JSON.stringify([hosts, envs, data.identities.filter((i) => identityIds.has(i.id))])
 }
+
+/** The host's own setting, or the app default it falls back to. */
+const keepaliveText = (sec: number | null) =>
+  sec === null ? `${DEFAULT_KEEPALIVE_SEC} s (default)` : sec === 0 ? 'off' : `${sec} s`
 
 /** `key` is the context the result was resolved for, so a switch can tell the old answer from the new. */
 type State = { kind: 'loading' } | { kind: 'ok'; key: string; value: ResolvedHost } | { kind: 'error'; key: string; message: string }
@@ -185,6 +190,13 @@ export function ConnectionCard({ hostId, environmentId, onContextChange }: Conne
               </Value>
             )}
           </Row>
+          {self && (
+            <Row icon={Timer} term="Keepalive" loading={false} chip={null}>
+              <Value id={`k:${self.keepaliveSec}`}>
+                <span className="font-mono text-fg tabular-nums">{keepaliveText(self.keepaliveSec)}</span>
+              </Value>
+            </Row>
+          )}
         </dl>
       )}
 

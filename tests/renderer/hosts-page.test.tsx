@@ -30,6 +30,15 @@ vi.mock('../../src/renderer/src/ui/motion', async (importOriginal) => ({
   useMotionSafe: () => motion.safe,
 }))
 
+
+// Opening a session is the terminal store's job; these tests only care what it is asked for.
+const sessions = vi.hoisted(() => ({ openSsh: vi.fn(), openLocal: vi.fn() }))
+vi.mock('../../src/renderer/src/terminal/sessions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/renderer/src/terminal/sessions')>()),
+  openSsh: sessions.openSsh,
+  openLocal: sessions.openLocal,
+}))
+
 interface World {
   products: ProductMeta[]
   environments: EnvironmentMeta[]
@@ -183,6 +192,7 @@ const rowNames = () => within(hostList()).queryAllByRole('option').map((o) => o.
 
 beforeEach(() => {
   motion.safe = true
+  sessions.openSsh.mockReset().mockResolvedValue('s1')
   inventoryStore.set(null)
   vaultStatusStore.set(null)
 })
@@ -379,6 +389,26 @@ describe('hosts page', () => {
     expect(imports()[1]).toEqual(['sshconfig:import', { vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'] }])
     expect(await screen.findByText('Imported 1 host')).toBeInTheDocument()
     await waitFor(() => expect(rowNames()).toContain('web-1'))
+  })
+
+  it('HostsPage double-click connects without environment', async () => {
+    const user = userEvent.setup()
+    renderApp(world())
+    await waitFor(() => expect(rowNames()).toEqual(['api-1', 'db-1', 'edge']))
+    // api-1 is in prod, yet the Hosts page has no environment context.
+    await user.dblClick(within(hostList()).getByRole('option', { name: 'api-1' }))
+    await waitFor(() => expect(where).toBe('/terminals'))
+    expect(sessions.openSsh).toHaveBeenCalledWith('api1', undefined)
+  })
+
+  it('the row Connect button connects without selecting the row', async () => {
+    const user = userEvent.setup()
+    renderApp(world())
+    await waitFor(() => expect(rowNames()).toEqual(['api-1', 'db-1', 'edge']))
+    await user.click(within(hostList()).getByRole('button', { name: 'Connect to edge' }))
+    await waitFor(() => expect(where).toBe('/terminals'))
+    expect(sessions.openSsh).toHaveBeenCalledTimes(1)
+    expect(sessions.openSsh).toHaveBeenCalledWith('edge', undefined)
   })
 
   it('palette navigates', async () => {

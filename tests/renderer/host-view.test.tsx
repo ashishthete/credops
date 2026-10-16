@@ -1,5 +1,7 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render as rtlRender, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import type { ReactElement, ReactNode } from 'react'
+import { MemoryRouter, useLocation } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { inventoryStore, type InventoryData } from '../../src/renderer/src/inventory/store'
 import { HostDialog } from '../../src/renderer/src/pages/hosts/HostDialog'
@@ -16,6 +18,28 @@ vi.mock('../../src/renderer/src/ui/motion', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/renderer/src/ui/motion')>()),
   useMotionSafe: () => motion.safe,
 }))
+
+
+// Opening a session is the terminal store's job; these tests only care what it is asked for.
+const sessions = vi.hoisted(() => ({ openSsh: vi.fn(), openLocal: vi.fn() }))
+vi.mock('../../src/renderer/src/terminal/sessions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/renderer/src/terminal/sessions')>()),
+  openSsh: sessions.openSsh,
+  openLocal: sessions.openLocal,
+}))
+
+let where = ''
+function Location() {
+  where = useLocation().pathname
+  return null
+}
+const Router = ({ children }: { children: ReactNode }) => (
+  <MemoryRouter initialEntries={['/products']}>
+    {children}
+    <Location />
+  </MemoryRouter>
+)
+const render = (ui: ReactElement) => rtlRender(ui, { wrapper: Router })
 
 const TS = '2026-10-16T09:00:00.000Z'
 const identity = (over: Partial<IdentityMeta> & { id: string; label: string; vaultId: string }): IdentityMeta => ({
@@ -145,6 +169,8 @@ const row = (term: string) => within(card()).getByRole('group', { name: term })
 beforeEach(() => {
   motion.safe = true
   inventoryStore.set(null)
+  where = ''
+  sessions.openSsh.mockReset().mockResolvedValue('s1')
 })
 
 describe('HostView', () => {
@@ -518,6 +544,8 @@ describe('HostDialog', () => {
         tags: [],
         osIcon: 'linux',
         notes: '',
+        keepaliveSec: null,
+        envVars: {},
         vaultIds: [DEFAULT_VAULT_ID],
         environments: [{ environmentId: 'prod', role: 'db' }],
       }),
@@ -537,5 +565,125 @@ describe('HostDialog', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Remove tag edge' })).not.toBeInTheDocument())
     await user.type(input, 'bad tag{Enter}')
     expect(screen.getByText(/Tags use letters, numbers/)).toBeInTheDocument()
+  })
+
+  it('HostView connect in env context opens ssh with environmentId and navigates', async () => {
+    const user = userEvent.setup()
+    setup()
+    render(<HostView hostId="web1" environmentId="prod" />)
+    await user.click(await screen.findByRole('button', { name: 'Connect' }))
+    await waitFor(() => expect(where).toBe('/terminals'))
+    expect(sessions.openSsh).toHaveBeenCalledWith('web1', 'prod')
+  })
+
+  it('HostView connect outside any environment passes none, and a failed open stays put', async () => {
+    const user = userEvent.setup()
+    setup()
+    sessions.openSsh.mockResolvedValue(undefined)
+    render(<HostView hostId="web1" />)
+    await user.click(await screen.findByRole('button', { name: 'Connect' }))
+    await waitFor(() => expect(sessions.openSsh).toHaveBeenCalledWith('web1', undefined))
+    await act(async () => {})
+    expect(where).toBe('/products')
+  })
+
+  it.each([
+    [null, '30 s (default)'],
+    [45, '45 s'],
+    [0, 'off'],
+  ])('connection card shows the effective keepalive %s', async (keepaliveSec, text) => {
+    const data = world()
+    data.hosts = data.hosts.map((h) => (h.id === 'web1' ? { ...h, keepaliveSec } : h))
+    setup(data)
+    render(<HostView hostId="web1" />)
+    expect(await within(row('Keepalive')).findByText(text)).toBeInTheDocument()
+  })
+
+  describe('HostDialog advanced', () => {
+    const noop = () => {}
+    const open = async (user: ReturnType<typeof userEvent.setup>) => {
+      const dialog = screen.getByRole('dialog', { name: 'Edit host' })
+      const toggle = within(dialog).getByRole('button', { name: 'Advanced' })
+      expect(toggle).toHaveAttribute('aria-expanded', 'false')
+      await user.click(toggle)
+      return dialog
+    }
+
+    it('HostDialog advanced edits keepalive and env vars and patches only changed fields', async () => {
+      const user = userEvent.setup()
+      const data = world()
+      data.hosts = data.hosts.map((h) => (h.id === 'web1' ? { ...h, envVars: { LANG: 'C' } } : h))
+      const invoke = setup(data)
+      render(<HostDialog open host={data.hosts[0]} onClose={noop} onSaved={noop} />)
+      const dialog = await open(user)
+      expect(within(dialog).getByText("Sent to the server at login. Don't put secrets here.")).toBeInTheDocument()
+      expect(within(dialog).getByLabelText('Variable name 1')).toHaveValue('LANG')
+      await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Keepalive' }), 'custom')
+      await user.type(within(dialog).getByLabelText('Seconds'), '60')
+      await user.click(within(dialog).getByRole('button', { name: 'Add variable' }))
+      await user.type(within(dialog).getByLabelText('Variable name 2'), 'EDITOR')
+      await user.type(within(dialog).getByLabelText('Variable value 2'), 'vim')
+      await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith('host:update', 'web1', { keepaliveSec: 60, envVars: { EDITOR: 'vim', LANG: 'C' } }))
+    })
+
+    it('off and removing a variable are saved; untouched advanced fields send nothing', async () => {
+      const user = userEvent.setup()
+      const data = world()
+      data.hosts = data.hosts.map((h) => (h.id === 'web1' ? { ...h, envVars: { LANG: 'C' }, keepaliveSec: 15 } : h))
+      const invoke = setup(data)
+      render(<HostDialog open host={data.hosts[0]} onClose={noop} onSaved={noop} />)
+      const dialog = await open(user)
+      await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Keepalive' }), 'off')
+      await user.click(within(dialog).getByRole('button', { name: 'Remove variable 1' }))
+      await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith('host:update', 'web1', { keepaliveSec: 0, envVars: {} }))
+    })
+
+    it('env var name error shows inline and blocks save', async () => {
+      const user = userEvent.setup()
+      const invoke = setup()
+      const data = world()
+      render(<HostDialog open host={data.hosts[0]} onClose={noop} onSaved={noop} />)
+      const dialog = await open(user)
+      await user.click(within(dialog).getByRole('button', { name: 'Add variable' }))
+      await user.type(within(dialog).getByLabelText('Variable name 1'), '1BAD NAME')
+      await user.type(within(dialog).getByLabelText('Variable value 1'), 'hunter2')
+      const alert = await within(dialog).findByRole('alert')
+      expect(alert).toHaveTextContent('an env var name is invalid')
+      expect(alert).not.toHaveTextContent('BAD')
+      expect(alert).not.toHaveTextContent('hunter2')
+      expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled()
+      await user.clear(within(dialog).getByLabelText('Variable name 1'))
+      await user.type(within(dialog).getByLabelText('Variable name 1'), 'GOOD')
+      expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument()
+      expect(within(dialog).getByRole('button', { name: 'Save' })).toBeEnabled()
+      expect(invoke).not.toHaveBeenCalledWith('host:update', expect.anything(), expect.anything())
+    })
+
+    it('rejects duplicate names, bad values and a keepalive out of range without echoing them', async () => {
+      const user = userEvent.setup()
+      setup()
+      const data = world()
+      render(<HostDialog open host={data.hosts[0]} onClose={noop} onSaved={noop} />)
+      const dialog = await open(user)
+      await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Keepalive' }), 'custom')
+      await user.type(within(dialog).getByLabelText('Seconds'), '9000')
+      expect(await within(dialog).findByText('keepalive must be 1-3600 seconds')).toBeInTheDocument()
+      await user.clear(within(dialog).getByLabelText('Seconds'))
+      await user.type(within(dialog).getByLabelText('Seconds'), '20')
+      const add = within(dialog).getByRole('button', { name: 'Add variable' })
+      await user.click(add)
+      await user.click(add)
+      await user.type(within(dialog).getByLabelText('Variable name 1'), 'DUP')
+      await user.type(within(dialog).getByLabelText('Variable name 2'), 'DUP')
+      expect(await within(dialog).findByRole('alert')).toHaveTextContent('an env var name is used more than once')
+      expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled()
+      await user.clear(within(dialog).getByLabelText('Variable name 2'))
+      await user.type(within(dialog).getByLabelText('Variable name 2'), 'OTHER')
+      fireEvent.change(within(dialog).getByLabelText('Variable value 2'), { target: { value: 'a\u200Bb' } })
+      expect(await within(dialog).findByRole('alert')).toHaveTextContent('an env var value has control or format characters')
+      expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled()
+    })
   })
 })

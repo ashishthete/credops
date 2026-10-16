@@ -125,7 +125,7 @@ function diff<T extends object>(input: Partial<T>, current: T | undefined, keys:
   return out
 }
 
-const HOST_KEYS = ['label', 'address', 'port', 'identityId', 'jumpHostId', 'tags', 'osIcon', 'notes'] as const satisfies readonly (keyof HostPatch)[]
+const HOST_KEYS = ['label', 'address', 'port', 'identityId', 'jumpHostId', 'tags', 'osIcon', 'notes', 'keepaliveSec', 'envVars'] as const satisfies readonly (keyof HostPatch)[]
 const ENV_KEYS = ['name', 'color', 'protected', 'defaultIdentityId', 'defaultPort', 'defaultJumpHostId'] as const satisfies readonly (keyof EnvironmentPatch)[]
 
 const deleted = async (fn: () => Promise<unknown>, title: string) =>

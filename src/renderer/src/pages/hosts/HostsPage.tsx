@@ -1,10 +1,11 @@
 import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
-import { CircleDashed, Database, FileDown, Fingerprint, Plus, Search, Server, ShieldHalf, X, type LucideIcon } from 'lucide-react'
+import { CircleDashed, Database, FileDown, Fingerprint, Plus, Search, Server, ShieldHalf, SquareTerminal, X, type LucideIcon } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { useSearchParams } from 'react-router'
 import type { EnvironmentMeta, HostMeta, HostRole } from '../../../../shared/inventory'
 import type { HostsAction } from '../../inventory/commands'
 import { useInventory } from '../../inventory/store'
+import { useConnect } from '../../terminal/connect'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
 import { EmptyState } from '../../ui/EmptyState'
@@ -311,6 +312,7 @@ function HostRow({ host, envs, index, stagger, selected, tabbable, onSelect }: H
   const present = useIsPresent()
   const role = primaryRole(host)
   const RoleIcon = role ? ROLE_ICON[role] : Server
+  const { connect } = useConnect()
   const delay = stagger && motionSafe ? Math.min(index, 16) * 0.03 : 0
 
   return (
@@ -323,6 +325,7 @@ function HostRow({ host, envs, index, stagger, selected, tabbable, onSelect }: H
       data-host-id={host.id}
       tabIndex={present && tabbable ? 0 : -1}
       onClick={onSelect}
+      onDoubleClick={() => void connect(host.id)}
       layout={motionSafe ? 'position' : false}
       initial={motionSafe ? { opacity: 0, y: 8 } : { opacity: 0 }}
       animate={motionSafe ? { opacity: 1, y: 0 } : { opacity: 1 }}
@@ -373,6 +376,20 @@ function HostRow({ host, envs, index, stagger, selected, tabbable, onSelect }: H
           </span>
         )}
       </span>
+      <button
+        type="button"
+        tabIndex={-1}
+        aria-label={`Connect to ${host.label}`}
+        title="Connect"
+        onClick={(e) => {
+          e.stopPropagation()
+          void connect(host.id)
+        }}
+        onDoubleClick={(e) => e.stopPropagation()}
+        className="relative mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg text-muted opacity-0 transition-[opacity,color,background-color] group-hover:opacity-100 hover:bg-white/[0.06] hover:text-fg focus-visible:opacity-100"
+      >
+        <SquareTerminal aria-hidden className="size-3.5" />
+      </button>
     </motion.li>
   )
 }
