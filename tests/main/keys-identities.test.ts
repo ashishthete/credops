@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { generateKeyPairSync } from 'node:crypto'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { open } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { IpcMainInvokeEvent } from 'electron'
@@ -18,11 +18,13 @@ import { DEFAULT_VAULT_ID, VAULT_LOCKED } from '../../src/shared/vault'
 import { stubHandlers } from './ipc-helpers'
 import { auditRows, makeVault } from './vault-helpers'
 
-// Wraps readFile so a test can see which files the scan read.
+// Wraps open so a test can see which files the store opened (every key read goes through it).
 vi.mock('node:fs/promises', async (importOriginal) => {
   const mod = await importOriginal<typeof import('node:fs/promises')>()
-  return { ...mod, readFile: vi.fn(mod.readFile) }
+  return { ...mod, open: vi.fn(mod.open) }
 })
+
+const opened = (): string[] => vi.mocked(open).mock.calls.map((c) => String(c[0]))
 
 const PW = 'correct horse'
 const hasSshKeygen = spawnSync('ssh-keygen', ['-?']).error === undefined
@@ -107,7 +109,7 @@ function actions(f: Fixture): string[] {
 }
 
 beforeEach(() => {
-  vi.mocked(readFile).mockClear()
+  vi.mocked(open).mockClear()
 })
 
 describe('KeyStore', () => {
@@ -139,7 +141,7 @@ describe('KeyStore', () => {
     expect(found.find((c) => c.path === ed.path)).toMatchObject({ encrypted: false, alreadyLinked: false })
 
     // Size cap and name rules: never read, not just discarded.
-    const read = vi.mocked(readFile).mock.calls.map((c) => String(c[0]))
+    const read = opened()
     expect(read).toContain(ed.path)
     for (const name of ['big', 'known_hosts', 'known_hosts.old', 'config', 'authorized_keys', 'orphan.pub', 'id_ed25519.pub']) {
       expect(read).not.toContain(join(d, name))
@@ -166,6 +168,27 @@ describe('KeyStore', () => {
         alreadyLinked: false,
       },
     ])
+  })
+
+  it('scan skips a 20 KiB file without opening it', async () => {
+    const f = await setup()
+    const big = join(f.sshDir, 'id_big')
+    writeFileSync(big, `${generateEd25519('').privateKey}${'#'.repeat(20 * 1024)}`)
+    const ok = writeKey(f.sshDir, 'id_ok')
+    expect((await f.keys.scanLocal()).map((c) => c.path)).toEqual([ok.path])
+    expect(opened()).toContain(ok.path)
+    expect(opened()).not.toContain(big)
+  })
+
+  it('the .pub fallback ignores a symlinked .pub', async () => {
+    const f = await setup()
+    const pem = encryptedPem('pw')
+    writeFileSync(join(f.sshDir, 'id_pem'), pem)
+    const elsewhere = join(tmp(), 'id_pem.pub')
+    writeFileSync(elsewhere, `${parsePrivateKey(pem, 'pw').publicKey}\n`)
+    symlinkSync(elsewhere, join(f.sshDir, 'id_pem.pub'))
+    expect(await f.keys.scanLocal()).toEqual([])
+    expect(opened()).not.toContain(join(f.sshDir, 'id_pem.pub'))
   })
 
   it('scanLocal works while locked and never throws', async () => {
@@ -219,6 +242,24 @@ describe('KeyStore', () => {
     await expect(f.keys.material(meta.id)).rejects.toThrow(/key file changed/)
     rmSync(path)
     await expect(f.keys.material(meta.id)).rejects.toThrow(/cannot read key file/)
+  })
+
+  it('material refuses a linked file grown past the cap', async () => {
+    const f = await setup()
+    const { path, privateKey } = writeKey(f.sshDir, 'id_ed25519')
+    const meta = await f.keys.link({ vaultId: DEFAULT_VAULT_ID, label: 'laptop', path })
+    writeFileSync(path, `${privateKey}${'#'.repeat(16 * 1024)}`)
+    await expect(f.keys.material(meta.id)).rejects.toThrow(/too large/)
+  })
+
+  it('a linked path that became a symlink is still checked against ~/.ssh', async () => {
+    const f = await setup()
+    const { path } = writeKey(f.sshDir, 'id_ed25519')
+    const meta = await f.keys.link({ vaultId: DEFAULT_VAULT_ID, label: 'laptop', path })
+    const far = writeKey(tmp(), 'id_far')
+    rmSync(path)
+    symlinkSync(far.path, path)
+    await expect(f.keys.material(meta.id)).rejects.toThrow(/outside ~\/.ssh/)
   })
 
   it('import and generate encrypt at rest', async () => {
@@ -297,8 +338,8 @@ describe('KeyStore', () => {
     expect((await f.keys.material(meta.id)).privateKey).toBe(privateKey)
     const big = join(tmp(), 'big')
     writeFileSync(big, 'x'.repeat(20_000))
+    // Opened, then refused on the handle's fstat before any read.
     await expect(f.keys.importFile({ vaultId: DEFAULT_VAULT_ID, label: 'big' }, big)).rejects.toThrow(/too large/)
-    expect(vi.mocked(readFile).mock.calls.map((c) => String(c[0]))).not.toContain(big)
   })
 
   it('rejects bad input', async () => {
@@ -412,6 +453,36 @@ describe('IdentityStore', () => {
     expect(f.ids.knownValues()).toEqual(['pw12345'])
   })
 
+  it('key and identity writes throw on a corrupt vault', async () => {
+    const f = await setup()
+    const other = f.vault.createVault({ name: 'Prod', color: '#112233' })
+    const pem = encryptedPem('pw-secret')
+    const k = f.keys.import({ vaultId: other.id, label: 'enc', privateKey: pem, passphrase: 'pw-secret' })
+    const pw = f.ids.create({ vaultId: other.id, label: 'p', username: 'root', auth: 'password', password: 'pw12345' })
+    f.vault.lock('manual')
+    f.db.prepare("UPDATE vaults SET wrapped_key = 'v1.AAAA.AAAA.AAAA' WHERE id = ?").run(other.id)
+    await f.vault.unlock(PW)
+    expect(f.vault.status().corruptVaultIds).toEqual([other.id])
+    expect(f.keys.list(other.id)).toHaveLength(1)
+    expect(f.ids.list(other.id)).toHaveLength(1)
+    expect(f.keys.knownValues()).toEqual([])
+    expect(f.ids.knownValues()).toEqual([])
+    const v = other.id
+    expect(() => f.keys.generate({ vaultId: v, label: 'x' })).toThrow(/corrupt/)
+    expect(() => f.keys.import({ vaultId: v, label: 'x', privateKey: generateEd25519('').privateKey })).toThrow(
+      /corrupt/,
+    )
+    const { path } = writeKey(f.sshDir, 'id_ed25519')
+    await expect(f.keys.link({ vaultId: v, label: 'x', path })).rejects.toThrow(/corrupt/)
+    expect(() => f.keys.update(k.id, { label: 'y' })).toThrow(/corrupt/)
+    expect(() => f.keys.delete(k.id)).toThrow(/corrupt/)
+    await expect(f.keys.material(k.id)).rejects.toThrow(/corrupt/)
+    expect(() => f.ids.create({ vaultId: v, label: 'a', username: 'u', auth: 'agent' })).toThrow(/corrupt/)
+    expect(() => f.ids.update(pw.id, { label: 'q' })).toThrow(/corrupt/)
+    expect(() => f.ids.delete(pw.id)).toThrow(/corrupt/)
+    await expect(f.ids.resolve(pw.id)).rejects.toThrow(/corrupt/)
+  })
+
   it('deleting a vault removes its identities, keys and secrets', async () => {
     const f = await setup()
     const other = f.vault.createVault({ name: 'Other', color: '#123456' })
@@ -465,6 +536,7 @@ describe('key and identity ipc', () => {
       ['key:delete', 'nope'],
       ['key:copyPublic', 'nope'],
       ['identity:create', { vaultId: v, label: 'x', username: 'u', auth: 'cert' }],
+      ['identity:create', { vaultId: v, label: 'x', username: 'u'.repeat(257), auth: 'agent' }],
       ['identity:create', { vaultId: v, label: 'x', username: 'u', auth: 'password', password: 'p'.repeat(65537) }],
       ['identity:update', v, { vaultId: v }],
       ['identity:delete', 'nope'],

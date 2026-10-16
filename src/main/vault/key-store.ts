@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { lstat, readdir, readFile, realpath, stat } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { lstat, open, readdir, realpath, type FileHandle } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import {
   MAX_KEY_COMMENT,
@@ -108,21 +109,46 @@ const isInside = (root: string, path: string): boolean => {
   return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)
 }
 
-/** Reads a key file after checking its size, so a large file is never read. */
-async function readKeyFile(path: string): Promise<string> {
-  let size: number
+/**
+ * Reads a key file through one handle: the size and type checked are those of the file read, so
+ * a file swapped or grown after a check is still refused, and at most MAX_PRIVATE_KEY_BYTES + 1
+ * bytes are read. Unless `follow`, a symlink is refused (O_NOFOLLOW). O_NONBLOCK keeps a FIFO
+ * from hanging the open.
+ */
+async function readKeyFile(path: string, opts: { follow: boolean }): Promise<string> {
+  const flags = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (opts.follow ? 0 : (constants.O_NOFOLLOW ?? 0))
+  let fh: FileHandle
   try {
-    const st = await stat(path)
-    if (!st.isFile()) throw new Error('not a file')
-    size = st.size
+    fh = await open(path, flags)
   } catch {
     throw new Error('cannot read key file')
   }
-  if (size > MAX_PRIVATE_KEY_BYTES) throw new Error('key file is too large')
   try {
-    return await readFile(path, 'utf8')
-  } catch {
-    throw new Error('cannot read key file')
+    let size: number
+    try {
+      const st = await fh.stat()
+      if (!st.isFile()) throw new Error('not a file')
+      size = st.size
+    } catch {
+      throw new Error('cannot read key file')
+    }
+    if (size > MAX_PRIVATE_KEY_BYTES) throw new Error('key file is too large')
+    const buf = Buffer.alloc(MAX_PRIVATE_KEY_BYTES + 1)
+    let n = 0
+    try {
+      for (;;) {
+        const { bytesRead } = await fh.read(buf, n, buf.length - n, n)
+        if (bytesRead === 0) break
+        n += bytesRead
+        if (n === buf.length) break
+      }
+    } catch {
+      throw new Error('cannot read key file')
+    }
+    if (n > MAX_PRIVATE_KEY_BYTES) throw new Error('key file is too large')
+    return buf.subarray(0, n).toString('utf8')
+  } finally {
+    await fh.close().catch(() => undefined)
   }
 }
 
@@ -187,9 +213,10 @@ export class KeyStore {
     for (const name of names) {
       const path = join(this.sshDir, name)
       try {
+        // Pre-check so an oversized file is never even opened; readKeyFile checks the handle again.
         const st = await lstat(path)
         if (!st.isFile() || st.size > MAX_PRIVATE_KEY_BYTES) continue
-        const text = await readFile(path, 'utf8')
+        const text = await readKeyFile(path, { follow: false })
         if (!PRIVATE_HEADER.test(text)) continue
         const { keyType, fingerprint, encrypted } = await this.identify(path, text)
         found.push({ path, keyType, fingerprint, encrypted, alreadyLinked: linked.has(path) })
@@ -228,7 +255,8 @@ export class KeyStore {
   /** Imports the key at `path` (picked in main's file dialog), so its text never reaches the renderer. */
   async importFile(input: Omit<KeyImportInput, 'privateKey'>, path: string): Promise<SshKeyMeta> {
     this.vault.assertUnlocked()
-    const privateKey = await readKeyFile(path)
+    // Picked in the dialog, which may hand back a symlink.
+    const privateKey = await readKeyFile(path, { follow: true })
     return this.import({ ...input, privateKey })
   }
 
@@ -395,7 +423,10 @@ export class KeyStore {
       return parsePrivateKey(text)
     } catch (err) {
       if (!(err instanceof Error) || err.message !== 'passphrase required') throw err
-      const pub = parsePublicKeyLine(await readKeyFile(`${path}.pub`))
+      // Directly in ~/.ssh by construction; a symlink is refused (lstat here, O_NOFOLLOW on open).
+      const pubPath = `${path}.pub`
+      if (!(await lstat(pubPath)).isFile()) throw err
+      const pub = parsePublicKeyLine(await readKeyFile(pubPath, { follow: false }))
       return { keyType: pub.keyType, fingerprint: fingerprintOf(pub.blob), encrypted: true }
     }
   }
@@ -411,7 +442,7 @@ export class KeyStore {
       throw new Error('cannot read key file')
     }
     if (!isInside(root, real)) throw new Error('key file is outside ~/.ssh')
-    return readKeyFile(real)
+    return readKeyFile(real, { follow: false })
   }
 
   /** Re-registers every readable passphrase; keys in corrupt vaults or failing to open are skipped. */
