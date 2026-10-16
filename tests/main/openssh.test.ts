@@ -55,6 +55,36 @@ describe('openssh keys', () => {
     expect(fingerprintOf(pub.blob)).toBe(g.fingerprint)
   })
 
+  it('handles empty and multi-line comments', () => {
+    const g = generateEd25519('')
+    expect(g.publicKey).toMatch(/^ssh-ed25519 AAAA[\w+/]+=*$/)
+    expect(parsePrivateKey(g.privateKey).comment).toBe('')
+    expect(parsePublicKeyLine(g.publicKey).comment).toBe('')
+    expect(() => generateEd25519('a\nb')).toThrow(/invalid comment/)
+    expect(() => generateEd25519('a\rb')).toThrow(/invalid comment/)
+  })
+
+  it('rejects tampered openssh bodies', () => {
+    const body = (): Buffer =>
+      Buffer.from(generateEd25519('x').privateKey.split('\n').slice(1, -2).join(''), 'base64')
+    const armor = (b: Buffer): string =>
+      ['BEGIN', 'END']
+        .map((w) => `-----${w} OPENSSH PRIVATE KEY-----`)
+        .join(`\n${b.toString('base64')}\n`)
+    expect(parsePrivateKey(armor(body())).comment).toBe('x')
+    // magic(15) | "none"(8) | "none"(8) | ""(4) | uint32 1 | pubblob(4+51) | priv length(4)
+    const privStart = 15 + 8 + 8 + 4 + 4 + 55 + 4
+    const flipped = body()
+    flipped[privStart] ^= 0xff
+    expect(() => parsePrivateKey(armor(flipped))).toThrow(/unsupported key format/)
+    const huge = body()
+    huge.writeUInt32BE(0xffffffff, 15) // ciphername length
+    expect(() => parsePrivateKey(armor(huge))).toThrow(/unsupported key format/)
+    const kdf = body()
+    kdf.write('nope', 15 + 8 + 4, 'latin1') // kdfname "none" -> "nope"
+    expect(() => parsePrivateKey(armor(kdf))).toThrow(/unsupported key format/)
+  })
+
   it.skipIf(!hasSshKeygen)('interoperates with ssh-keygen', () => {
     const g = generateEd25519('me@mac')
     const d = tmp()

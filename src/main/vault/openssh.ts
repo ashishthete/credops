@@ -130,10 +130,12 @@ export function generateEd25519(comment: string): {
   publicKey: string
   fingerprint: string
 } {
+  if (/[\r\n]/.test(comment)) throw new Error('invalid comment')
   const { privateKey } = generateKeyPairSync('ed25519')
   const jwk = privateKey.export({ format: 'jwk' })
   const seed = Buffer.from(jwk.d as string, 'base64url')
   const pub = Buffer.from(jwk.x as string, 'base64url')
+  const seedPub = Buffer.concat([seed, pub])
 
   const pubBlob = new SshWriter().string('ssh-ed25519').string(pub).toBuffer()
   const check = randomBytes(4)
@@ -142,7 +144,7 @@ export function generateEd25519(comment: string): {
     .raw(check)
     .string('ssh-ed25519')
     .string(pub)
-    .string(Buffer.concat([seed, pub]))
+    .string(seedPub)
     .string(comment)
   for (let pad = 1; priv.length % 8 !== 0; pad++) priv.raw(Buffer.of(pad))
   const privBuf = priv.toBuffer()
@@ -156,12 +158,14 @@ export function generateEd25519(comment: string): {
     .string(pubBlob)
     .string(privBuf)
     .toBuffer()
-  seed.fill(0)
-  privBuf.fill(0)
+  const armored = `${OPENSSH_BEGIN}\n${wrap(body.toString('base64'), 70)}\n${OPENSSH_END}\n`
+  // Best effort: the JWK strings and the armored text can't be wiped.
+  for (const b of [seed, seedPub, privBuf, body]) b.fill(0)
 
+  const line = publicLine('ssh-ed25519', pubBlob)
   return {
-    privateKey: `${OPENSSH_BEGIN}\n${wrap(body.toString('base64'), 70)}\n${OPENSSH_END}\n`,
-    publicKey: `${publicLine('ssh-ed25519', pubBlob)} ${comment}`,
+    privateKey: armored,
+    publicKey: comment ? `${line} ${comment}` : line,
     fingerprint: fingerprintOf(pubBlob),
   }
 }
@@ -204,7 +208,8 @@ function parseOpenSsh(text: string): ParsedKey {
   const r = new SshReader(Buffer.from(b64, 'base64'))
   if (!r.raw(MAGIC.length).equals(MAGIC)) throw unsupported()
   const cipher = r.text()
-  r.string() // kdfname
+  const kdf = r.text()
+  if (kdf !== 'none' && kdf !== 'bcrypt') throw unsupported()
   r.string() // kdfoptions
   if (r.uint32() !== 1) throw unsupported()
   const pubBlob = r.string()
