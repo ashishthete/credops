@@ -140,10 +140,13 @@ SSH config, hosts inheriting from a parent), not code or branding.
   - The unlocked key can be cached in macOS Keychain (Electron `safeStorage`) for
     "unlock with Touch ID / login".
   - Non-secret metadata (labels, addresses) is plain so search works while locked.
-- **Ansible:** if `ansible-playbook` is on PATH, generate a temp inventory and
-  playbook per run and stream its output. Otherwise use the built-in
-  "native" runner that does the same steps over `ssh2`. Both paths produce the
-  same step events for the UI.
+- **Ansible is the deployment engine** (user decision). Each release produces a
+  generated inventory and playbook in a private temp dir, then runs
+  `ansible-playbook`. Step events come from a small bundled callback plugin that
+  writes one JSON line per task start/finish. There is no native fallback runner:
+  if `ansible-playbook` is missing, the Deployments screen says so and explains
+  how to install it (`brew install ansible`). `ssh2` is still used for terminals,
+  tunnels, container view and multi-host run.
 - **Visualization:** React Flow for the topology map, Framer Motion for transitions
   and pipeline animation.
 - **AI:** Anthropic Claude API, default model `claude-opus-5-5` (configurable). The
@@ -167,7 +170,7 @@ All entities: `id (uuid), created_at, updated_at`.
 | **EnvironmentHost** | environment_id, host_id, role (`app`/`db`/`bastion`/`other`) | Many-to-many. |
 | **App** | environment_id, host_id, name, compose_project, description | "What runs where"; shown on the map. |
 | **Tunnel** | label, host_id, type (`L`/`R`/`D`), bind_address, bind_port, target_host, target_port, auto_start, auto_reconnect | Host resolution gives the identity and jump host. |
-| **Deployment** | name, urls[], environment_id, host_id, app_id?, repo_path, default_branch, compose_file, deploy_tag, order, db_backup (on/off, backup_dir), pre_hook?, post_hook?, timeouts, use_sudo (auto/yes/no), managed_env (off/on + env_template → secret refs), vault_ids[], health_check (expected status, timeout, from host/mac), mode (`auto`/`ansible`/`native`) | |
+| **Deployment** | name, urls[], environment_id, host_id, app_id?, repo_path, default_branch, compose_file, deploy_tag, order, db_backup (on/off, backup_dir), pre_hook?, post_hook?, timeouts, use_sudo (auto/yes/no), managed_env (off/on + env_template → secret refs), vault_ids[], health_check (expected status, timeout, from host/mac) | |
 | **Release** | environment_id, version (e.g. v1.4.0)?, version_bump, status, started_at, finished_at, triggered_by, release_notes, options (backup/notify/qa) | One batch run. |
 | **DeploymentRun** | release_id, deployment_id, branch, previous_commit, deployed_commit, commits[], status, steps[] (name, status, log ref), rolled_back | |
 | **Snippet** | label, script, tags[] | Used by multi-host run and startup. |
@@ -281,8 +284,11 @@ Other rules:
 - Hosts run in parallel. Deployments on one host run in sequence in a single
   session.
 - Every command and its output streams to the UI and the run history.
-- **Ansible mode** generates a playbook with the same steps
-  (`ansible.builtin.git`/`shell`/`uri`). It emits the same step events.
+- **Execution:** the whole release is one generated Ansible playbook: one play
+  per host, with the steps above as tasks (`ansible.builtin.git`/`shell`/`uri`/
+  `command`). Rollback is a separate generated playbook. The local steps
+  (release notes, Teams, email, QA dispatch) run in OpsDeck itself, after the
+  playbook finishes.
 
 ### 8.5 Visualization
 - **Map view** per environment: hosts as nodes (role icon, reachability dot),
@@ -329,7 +335,7 @@ Each phase ends usable and demoable.
 5. **Tunnels:** L/R/D, auto-reconnect, status, auto-start.
 6. **Visualization:** topology map, animated tunnel edges.
 7. **Ops tools:** container view, multi-host run, snippets.
-8. **Deployments:** model, native runner, Ansible runner, preflight, `.env`
+8. **Deployments:** model, Ansible playbook generation and runner, preflight, `.env`
    rendering, health checks, history, rollback, protected-env confirm, pipeline
    animation.
 9. **Notifications and AI help:** Teams webhooks, macOS notifications,
@@ -337,11 +343,10 @@ Each phase ends usable and demoable.
 
 ## 9a. Calls made after the builder review (Claude's calls, check these)
 
-- **Deploy steps are re-implemented natively** in OpsDeck rather than calling
-  `unified_release.sh` on the host, so the same engine works for any repo, host and
-  environment and every step gets its own status, log and AI help.
-- **AI release notes use Claude** (same prompt intent as `release_mail.sh`), replacing
-  the OpenAI/Gemini calls. Provider stays configurable later.
+- **Deploy steps are generated as Ansible tasks** rather than calling
+  `unified_release.sh` on the host, so every step gets its own status, log and AI help.
+- **AI release notes use Claude** (user confirmed), with the same prompt intent as
+  `release_mail.sh`, replacing the OpenAI/Gemini calls.
 - **One master password** unlocks all vaults. Vaults are separate for organisation
   and linking, not for separate passwords.
 - **Rollback = previous git commit + rebuild** (images are built on the host, so there are no digests to pin).
@@ -350,7 +355,8 @@ Each phase ends usable and demoable.
   agent when the run ends. A generated `ssh_config` carries ProxyJump and a
   generated `known_hosts` built from the app's store.
   - No key file ever touches disk.
-  - Password-only identities use the native runner.
+  - Deploy targets must use key or agent auth. Password-only identities still
+    work for terminals and tunnels, but they are rejected for deployments in v1.
 - **sudo.** Preflight tests `docker info` as the user. If that is denied, it tries
   `sudo -n docker info`. If that also fails, it asks for an optional "become
   password" secret on the identity. Ansible uses `become` the same way.
