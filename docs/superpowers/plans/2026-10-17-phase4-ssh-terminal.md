@@ -167,7 +167,7 @@ Roadmap and contracts: `docs/superpowers/plans/2026-10-16-roadmap.md`. Conventio
   - Typing and output never wait on an animation: xterm writes are never
     deferred behind React state.
 - **Shortcuts:**
-  - Section shortcuts stay `mod+1…mod+7` (Terminals is section 7).
+  - Section shortcuts stay `mod+1…mod+7` (Terminals is section 2, after Products; the later sections shift down by one).
   - Tabs use `mod+t` (new local shell), `mod+w` (close tab),
     `mod+shift+]` / `mod+shift+[` (next / previous) and `mod+f` (search).
   - Inside the terminal, `mod+…` combos that the app owns (the ones above,
@@ -822,7 +822,8 @@ Expected: PASS.
     external in the main build.
 
 **Interfaces:**
-- `spawnLocalShell(opts: { cols: number; rows: number; env: Record<string, string | undefined>; home: string; shell?: string }): Pty`.
+- `spawnLocalShell(opts: { cols: number; rows: number; env: Record<string, string | undefined>; home: string; shell?: string }, load: () => typeof import('node-pty') = () => require('node-pty')): Pty`.
+  Tests inject `load` to simulate a failed native load.
   - The shell is `opts.shell ?? env.SHELL ?? '/bin/zsh'`, with args `['-l']`.
   - Its cwd is `home`.
   - Its env is a copy of `env` with these changes:
