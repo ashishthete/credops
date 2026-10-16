@@ -1,7 +1,11 @@
 import { join } from 'node:path'
-import { app, BrowserWindow, shell } from 'electron'
+import { hostname, userInfo } from 'node:os'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { AuditLog } from './audit/audit-log'
 import { openDatabase, type Db } from './db/connection'
+import { createAppHandlers } from './ipc/handlers/app'
+import { createAuditHandlers } from './ipc/handlers/audit'
+import { isTrustedSender, registerHandlers } from './ipc/register'
 import { windowOptions } from './window'
 
 let mainWindow: BrowserWindow | null = null
@@ -43,6 +47,30 @@ if (!app.requestSingleInstanceLock()) {
       db = openDatabase(join(app.getPath('userData'), 'opsdeck.db'))
       audit = new AuditLog(db)
       audit.append({ action: 'app.start', outcome: 'info', details: { version: app.getVersion() } })
+      const log = audit
+      const rendererFile = join(__dirname, '../renderer/index.html')
+      const devServerUrl = process.env['ELECTRON_RENDERER_URL']
+      registerHandlers(
+        ipcMain,
+        {
+          ...createAppHandlers(() => ({
+            version: app.getVersion(),
+            platform: process.platform,
+            userDataPath: app.getPath('userData'),
+            actor: { osUser: userInfo().username, machine: hostname() },
+          })),
+          ...createAuditHandlers(log, {
+            saveDialog: async () => {
+              const opts = { defaultPath: `opsdeck-audit-${new Date().toISOString().slice(0, 10)}.csv` }
+              const res = mainWindow
+                ? await dialog.showSaveDialog(mainWindow, opts)
+                : await dialog.showSaveDialog(opts)
+              return res.canceled ? undefined : res.filePath
+            },
+          }),
+        },
+        (url) => isTrustedSender(url, { devServerUrl, rendererFile }),
+      )
       createWindow()
     })
     .catch((err) => {
