@@ -8,9 +8,9 @@ import { makeVault } from './vault-helpers'
 const NOW = '2026-01-01T00:00:00.000Z'
 
 describe('inventory schema', () => {
-  it('migrates to 4', () => {
+  it('migrates to 5', () => {
     const db = openDatabase(':memory:')
-    expect(currentVersion(db)).toBe(4)
+    expect(currentVersion(db)).toBe(5)
     for (const t of ['products', 'hosts', 'environments', 'product_environments', 'environment_hosts', 'host_vaults']) {
       expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(t)).toBeDefined()
     }
@@ -97,5 +97,27 @@ describe('inventory schema', () => {
     }
     known('k1')
     expect(() => known('k2')).toThrow(/UNIQUE/i)
+  })
+
+  it('migration 5 adds tunnels with checks and cascades', () => {
+    const db = openDatabase(':memory:')
+    const cols = (db.prepare('PRAGMA table_info(tunnels)').all() as { name: string }[]).map((c) => c.name)
+    expect(cols).toEqual([
+      'id', 'label', 'host_id', 'environment_id', 'type', 'bind_address', 'bind_port', 'target_host',
+      'target_port', 'auto_start', 'auto_reconnect', 'created_at', 'updated_at',
+    ])
+    db.prepare('INSERT INTO hosts(id, label, address, created_at, updated_at) VALUES (?,?,?,?,?)').run('h1', 'web', '10.0.0.1', NOW, NOW)
+    db.prepare('INSERT INTO environments(id, name, color, created_at, updated_at) VALUES (?,?,?,?,?)').run('e1', 'prod', '#aabbcc', NOW, NOW)
+    const insert = db.prepare(
+      `INSERT INTO tunnels(id, label, host_id, environment_id, type, bind_port, target_host, target_port, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    )
+    expect(() => insert.run('t1', 'd', 'h1', null, 'D', 1080, null, 22, NOW, NOW)).toThrow(/CHECK/)
+    expect(() => insert.run('t2', 'l', 'h1', null, 'L', 5433, null, null, NOW, NOW)).toThrow(/CHECK/)
+    insert.run('t3', 'l', 'h1', 'e1', 'L', 5433, 'localhost', 5432, NOW, NOW)
+    db.prepare('DELETE FROM environments WHERE id = ?').run('e1')
+    expect(db.prepare('SELECT environment_id FROM tunnels WHERE id = ?').get('t3')).toEqual({ environment_id: null })
+    db.prepare('DELETE FROM hosts WHERE id = ?').run('h1')
+    expect(db.prepare('SELECT COUNT(*) AS n FROM tunnels').get()).toEqual({ n: 0 })
   })
 })

@@ -18,6 +18,8 @@ import { openDatabase, type Db } from './db/connection'
 import { createAppHandlers } from './ipc/handlers/app'
 import { createAuditHandlers } from './ipc/handlers/audit'
 import { createIdentityHandlers } from './ipc/handlers/identities'
+import { createTunnelHandlers } from './ipc/handlers/tunnels'
+import { TunnelStore } from './tunnels/tunnel-store'
 import { createInventoryHandlers } from './ipc/handlers/inventory'
 import { createKeyHandlers } from './ipc/handlers/keys'
 import { createSecretHandlers } from './ipc/handlers/secrets'
@@ -141,6 +143,7 @@ if (!app.requestSingleInstanceLock()) {
       hosts = new HostStore(db, service, log)
       environments = new EnvironmentStore(db, service, log)
       products = new ProductStore(db, service, log)
+      const tunnels = new TunnelStore({ db, audit: log, vault: service })
       const importer = new SshImporter({
         db,
         vault: service,
@@ -225,6 +228,7 @@ if (!app.requestSingleInstanceLock()) {
             resolve,
           }),
           ...createSshImportHandlers(importer),
+          ...createTunnelHandlers({ store: tunnels }),
           ...createSessionHandlers({ sessions: manager, knownHosts }),
         },
         (url) => isTrustedSender(url, { devServerUrl, rendererFile }),

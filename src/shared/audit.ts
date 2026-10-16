@@ -49,6 +49,11 @@ export const AUDIT_ACTIONS = [
   'knownhost.trust',
   'knownhost.remove',
   'knownhost.mismatch',
+  'tunnel.create',
+  'tunnel.update',
+  'tunnel.delete',
+  'tunnel.start',
+  'tunnel.stop',
 ] as const // later phases extend
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]
 

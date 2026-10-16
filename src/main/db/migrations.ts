@@ -95,6 +95,25 @@ CREATE TABLE known_hosts(id TEXT PRIMARY KEY, host TEXT NOT NULL, key_type TEXT 
   fingerprint TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, UNIQUE(host, key_type));
 `,
   },
+  {
+    version: 5,
+    name: 'tunnels',
+    up: `
+CREATE TABLE tunnels(id TEXT PRIMARY KEY, label TEXT NOT NULL,
+  host_id TEXT NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
+  environment_id TEXT REFERENCES environments(id) ON DELETE SET NULL,
+  type TEXT NOT NULL CHECK (type IN ('L','R','D')),
+  bind_address TEXT NOT NULL DEFAULT '127.0.0.1',
+  bind_port INTEGER NOT NULL CHECK (bind_port BETWEEN 0 AND 65535),
+  target_host TEXT,
+  target_port INTEGER CHECK (target_port IS NULL OR target_port BETWEEN 1 AND 65535),
+  auto_start INTEGER NOT NULL DEFAULT 0 CHECK (auto_start IN (0,1)),
+  auto_reconnect INTEGER NOT NULL DEFAULT 1 CHECK (auto_reconnect IN (0,1)),
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  CHECK ((type = 'D') = (target_host IS NULL AND target_port IS NULL)));
+CREATE INDEX tunnels_host ON tunnels(host_id);
+`,
+  },
 ]
 
 const ENSURE_TABLE = `CREATE TABLE IF NOT EXISTS schema_migrations(

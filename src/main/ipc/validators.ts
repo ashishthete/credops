@@ -26,6 +26,7 @@ import {
   type ProductPatch,
   type SshImportRequest,
 } from '../../shared/inventory'
+import { BIND_ADDRESS, MAX_BIND_ADDRESS, type TunnelInput, type TunnelPatch } from '../../shared/tunnels'
 import { MAX_COLS, MAX_ROWS, MAX_WRITE_CHARS, type OpenLocalRequest, type OpenSshRequest, type PromptAnswer } from '../../shared/ssh'
 import {
   AUTO_LOCK_CHOICES,
@@ -190,6 +191,36 @@ export const asHostPatch: Check<HostPatch> = v.object({
   envVars: v.optional(envVars),
 }) as Check<HostPatch>
 
+const tunnelBindAddress = v.str({ min: 1, max: MAX_BIND_ADDRESS, pattern: BIND_ADDRESS, trim: true })
+const tunnelBindPort = v.int({ min: 0, max: 65535 })
+const tunnelTargetPort = v.int({ min: 1, max: 65535 })
+
+// The store re-checks the cross-field rules (target present exactly for L and R).
+export const asTunnelInput: Check<TunnelInput> = v.object({
+  label: hostLabel,
+  hostId: v.uuid(),
+  environmentId: v.optional(v.uuid()),
+  type: v.oneOf(['L', 'R', 'D'] as const),
+  bindAddress: v.optional(tunnelBindAddress),
+  bindPort: tunnelBindPort,
+  targetHost: v.optional(hostAddress),
+  targetPort: v.optional(tunnelTargetPort),
+  autoStart: v.optional(v.bool()),
+  autoReconnect: v.optional(v.bool()),
+}) as Check<TunnelInput>
+export const asTunnelPatch: Check<TunnelPatch> = v.object({
+  label: v.optional(hostLabel),
+  hostId: v.optional(v.uuid()),
+  environmentId: v.optional(nullableId),
+  type: v.optional(v.oneOf(['L', 'R', 'D'] as const)),
+  bindAddress: v.optional(tunnelBindAddress),
+  bindPort: v.optional(tunnelBindPort),
+  targetHost: v.optional(v.nullable(hostAddress)),
+  targetPort: v.optional(v.nullable(tunnelTargetPort)),
+  autoStart: v.optional(v.bool()),
+  autoReconnect: v.optional(v.bool()),
+}) as Check<TunnelPatch>
+
 const envName = v.str({ min: 1, max: MAX_NAME, trim: true })
 const envColor = v.str({ pattern: VAULT_COLOR })
 const envPort = v.nullable(v.int({ min: 1, max: 65535 }))
@@ -342,4 +373,8 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'session:prompts': args(),
   'knownhost:list': args(),
   'knownhost:remove': args(v.uuid()),
+  'tunnel:list': args(),
+  'tunnel:create': args(asTunnelInput),
+  'tunnel:update': args(v.uuid(), asTunnelPatch),
+  'tunnel:delete': args(v.uuid()),
 }

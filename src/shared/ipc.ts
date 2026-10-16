@@ -15,6 +15,7 @@ import type {
   SshImportRequest,
   SshImportResult,
 } from './inventory'
+import type { TunnelInput, TunnelMeta, TunnelPatch } from './tunnels'
 import type {
   KnownHostMeta,
   OpenLocalRequest,
@@ -135,6 +136,10 @@ export interface IpcContract {
   'session:prompts': { args: []; result: SessionPrompt[] }
   'knownhost:list': { args: []; result: KnownHostMeta[] }
   'knownhost:remove': { args: [id: string]; result: void }
+  'tunnel:list': { args: []; result: TunnelMeta[] }
+  'tunnel:create': { args: [input: TunnelInput]; result: TunnelMeta }
+  'tunnel:update': { args: [id: string, patch: TunnelPatch]; result: TunnelMeta }
+  'tunnel:delete': { args: [id: string]; result: void }
 }
 
 export type Channel = keyof IpcContract
@@ -207,6 +212,10 @@ export const CHANNELS = [
   'session:prompts',
   'knownhost:list',
   'knownhost:remove',
+  'tunnel:list',
+  'tunnel:create',
+  'tunnel:update',
+  'tunnel:delete',
 ] as const satisfies readonly Channel[]
 
 // Fails typecheck if IpcContract gains a channel that CHANNELS does not list.
