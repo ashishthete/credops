@@ -9,7 +9,7 @@ import { registerHandlers } from '../../src/main/ipc/register'
 import { VALIDATORS } from '../../src/main/ipc/validators'
 import { KnownHostStore } from '../../src/main/ssh/known-hosts'
 import { SessionLimitError } from '../../src/main/ssh/sessions'
-import { SESSION_LIMIT, type SessionMeta } from '../../src/shared/ssh'
+import { SESSION_LIMIT, type SessionMeta, type SessionPrompt } from '../../src/shared/ssh'
 import { VAULT_LOCKED } from '../../src/shared/vault'
 import { stubHandlers } from './ipc-helpers'
 import { generateKey } from './ssh-server'
@@ -18,6 +18,7 @@ import { makeVault } from './vault-helpers'
 type Fn = (e: IpcMainInvokeEvent, ...a: unknown[]) => unknown
 
 const meta = { id: 'm' } as SessionMeta
+const prompt = { promptId: 'p' } as SessionPrompt
 
 function fakeManager(): { [K in keyof SessionApi]: ReturnType<typeof vi.fn> } {
   return {
@@ -30,6 +31,7 @@ function fakeManager(): { [K in keyof SessionApi]: ReturnType<typeof vi.fn> } {
     list: vi.fn(() => [meta]),
     attach: vi.fn(() => ({ meta, buffer: 'b', end: 1 })),
     answer: vi.fn(),
+    pendingPrompts: vi.fn(() => [prompt]),
   }
 }
 
@@ -76,6 +78,7 @@ describe('session IPC', () => {
     await call('session:answer', id, { kind: 'keyboard', responses: ['', '123456'] })
     expect(sessions.answer).toHaveBeenCalledTimes(3)
     expect(sessions.answer).toHaveBeenLastCalledWith(id, { kind: 'keyboard', responses: ['', '123456'] })
+    await expect(call('session:prompts')).resolves.toEqual([prompt])
   })
 
   it('validators reject bad args, naming the path and never the value', async () => {

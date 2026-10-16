@@ -171,11 +171,12 @@ if (!app.requestSingleInstanceLock()) {
         knownHosts,
         openLocal: (req) => spawnLocalShell({ ...req, env: process.env, home: homedir() }),
         audit: log,
+        isLocked: () => !service.isUnlocked(),
         emit: (event, payload) => pushEvent(mainWindow, event, payload),
       })
       const manager = sessions
-      // Sessions keep running across a lock; only the prompts waiting on the user are cancelled.
-      service.onLock(() => manager.cancelPrompts())
+      // Sessions keep running across a lock; prompts and connects still dialling are cancelled.
+      service.onLock(() => manager.vaultLocked())
       stopAutoLock = new AutoLock({
         idleSeconds: () => powerMonitor.getSystemIdleTime(),
         minutes: () => service.autoLockMinutes(),

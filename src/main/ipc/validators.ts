@@ -339,6 +339,7 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'session:list': args(),
   'session:attach': args(v.uuid()),
   'session:answer': args(v.uuid(), asPromptAnswer),
+  'session:prompts': args(),
   'knownhost:list': args(),
   'knownhost:remove': args(v.uuid()),
 }

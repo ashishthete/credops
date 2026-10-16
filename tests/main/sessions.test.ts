@@ -17,6 +17,7 @@ import { SessionManager, type SessionManagerDeps } from '../../src/main/ssh/sess
 import { generateKey, startServer } from './ssh-server'
 import type { ServerOpts, TestServer } from './ssh-server'
 import { makeVault } from './vault-helpers'
+import { VAULT_LOCKED } from '../../src/shared/vault'
 
 const globalId: IdentityRef = { source: 'global', username: 'ops', auth: 'default' }
 const userKey = generateKey()
@@ -81,6 +82,7 @@ async function setup(over: Partial<SessionManagerDeps> = {}) {
     plan: async () => keyPlan(),
     knownHosts,
     audit: f.audit,
+    isLocked: () => !f.vault.isUnlocked(),
     emit: (event, payload) => events.push({ event, payload } as Emitted),
     ...over,
   })
@@ -365,7 +367,7 @@ describe('SessionManager', () => {
     expect(failed.error?.code).toBe('host-key-rejected')
   })
 
-  it('cancelPrompts on lock cancels pending prompts but keeps ready sessions', async () => {
+  it('vault lock cancels pending prompts and fails connects still dialling, but keeps ready sessions', async () => {
     const t = await setup()
     const known = await server()
     t.trust(known)
@@ -376,12 +378,69 @@ describe('SessionManager', () => {
     const b = t.manager.openSsh({ hostId: t.host(unknown.port), ...size })
     const prompt = await t.waitPrompt()
 
-    t.manager.cancelPrompts()
+    t.vault.lock('manual')
+    t.manager.vaultLocked()
     expect(t.promptDone()).toEqual([prompt.promptId])
-    expect((await t.waitState(b.id, 'failed')).error?.code).toBe('host-key-rejected')
+    expect(t.manager.pendingPrompts()).toEqual([])
+    const failed = t.states(b.id).at(-1)
+    expect(failed).toMatchObject({ state: 'failed', error: { code: 'locked', hopLabel: 'web-1' } })
+    await vi.waitFor(() => expect(unknown.connections()).toBe(0), { timeout: 5000 })
+    // A late trust answer for the cancelled prompt stores nothing.
+    t.manager.answer(prompt.promptId, { kind: 'host-key', trust: true })
+    expect(t.knownHosts.list()).toHaveLength(1)
+    expect(t.audits('ssh.open').find((e) => e.outcome === 'failure')?.details).toMatchObject({ code: 'locked' })
     t.manager.write(a.id, 'still\r')
     await t.waitData(a.id, 'still\r')
     expect(t.manager.attach(a.id).meta.state).toBe('ready')
+  })
+
+  it('a dial in flight at the lock never raises a prompt and ends locked', async () => {
+    const t = await setup()
+    const srv = await server()
+    const { id } = t.manager.openSsh({ hostId: t.host(srv.port), ...size })
+    t.vault.lock('manual')
+    t.manager.vaultLocked()
+    expect(t.states(id).at(-1)).toMatchObject({ state: 'failed', error: { code: 'locked' } })
+    await vi.waitFor(() => expect(srv.connections()).toBe(0), { timeout: 5000 })
+    expect(t.prompts()).toEqual([])
+    expect(t.knownHosts.list()).toEqual([])
+  })
+
+  it('a prompt the dial reaches while locked is never raised: the attempt fails as locked', async () => {
+    let locked = false
+    const t = await setup({ isLocked: () => locked })
+    const srv = await server()
+    const { id } = t.manager.openSsh({ hostId: t.host(srv.port), ...size })
+    // Locked without the lock hook having run: ask() itself must refuse.
+    locked = true
+    const failed = await t.waitState(id, 'failed')
+    expect(failed.error?.code).toBe('locked')
+    expect(t.prompts()).toEqual([])
+    expect(t.promptDone()).toEqual([])
+    expect(t.knownHosts.list()).toEqual([])
+    await vi.waitFor(() => expect(srv.connections()).toBe(0), { timeout: 5000 })
+  })
+
+  it('open and reconnect are refused while locked', async () => {
+    const t = await setup()
+    const srv = await server()
+    const hostId = t.host(srv.port)
+    const { id } = t.manager.openSsh({ hostId, ...size })
+    t.manager.vaultLocked()
+    t.vault.lock('manual')
+    expect(() => t.manager.openSsh({ hostId, ...size })).toThrow(VAULT_LOCKED)
+    expect(() => t.manager.reconnect(id)).toThrow(VAULT_LOCKED)
+    expect(t.manager.list()).toHaveLength(1)
+  })
+
+  it('pendingPrompts lists the prompts still waiting, for a renderer that mounts late', async () => {
+    const t = await setup()
+    const srv = await server()
+    t.manager.openSsh({ hostId: t.host(srv.port), ...size })
+    const prompt = await t.waitPrompt()
+    expect(t.manager.pendingPrompts()).toEqual([prompt])
+    t.manager.answer(prompt.promptId, { kind: 'host-key', trust: false })
+    expect(t.manager.pendingPrompts()).toEqual([])
   })
 
   it('closeAll audits quit for every ready session', async () => {

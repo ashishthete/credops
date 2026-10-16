@@ -47,6 +47,8 @@ export interface SessionManagerDeps {
   /** Spawns the local shell; absent when it isn't available. */
   openLocal?: (req: OpenLocalRequest) => Pty
   audit: { append(input: AuditInput): unknown }
+  /** While locked, no connect starts and no prompt is raised. */
+  isLocked(): boolean
   emit<K extends EventName>(event: K, payload: EventContract[K]): void
   now?: () => Date
   ids?: () => string
@@ -98,6 +100,8 @@ interface Attempt {
   auth: AuthAudit
   /** Ends every client of the chain; idempotent. */
   close: (() => void) | null
+  /** SSH only, while dialling: fails the attempt as if the dial had thrown `err`. */
+  fail: ((err: unknown) => void) | null
 }
 
 interface Session {
@@ -127,6 +131,8 @@ interface DialTarget {
 }
 
 interface PendingPrompt {
+  /** What `session:prompt` carried, for a renderer that loads the queue after it. */
+  prompt: SessionPrompt
   kind: PromptAnswer['kind']
   /** Keyboard prompts only: how many responses the answer must carry. */
   count: number
@@ -200,6 +206,7 @@ export class SessionManager {
   }
 
   openSsh(req: OpenSshRequest): SessionMeta {
+    this.assertUnlocked()
     this.assertRoom()
     const target = this.target(req.hostId, req.environmentId)
     const s = this.create('ssh', req, target.label, req.hostId, target)
@@ -224,6 +231,7 @@ export class SessionManager {
     const s = this.get(id)
     if (s.meta.kind !== 'ssh' || !s.meta.hostId) throw new Error("A local shell can't be reconnected; open a new one")
     if (s.meta.state !== 'closed' && s.meta.state !== 'failed') throw new Error('Only a closed or failed session can be reconnected')
+    this.assertUnlocked()
     this.assertRoom()
     const target = this.target(s.meta.hostId, s.meta.environmentId ?? undefined)
     Object.assign(s.meta, {
@@ -280,8 +288,19 @@ export class SessionManager {
     this.settle(promptId, answer)
   }
 
-  /** On vault lock: every pending prompt is cancelled; open sessions keep running. */
-  cancelPrompts(): void {
+  /** Prompts still waiting on the user, oldest first: what a reloaded renderer has missed. */
+  pendingPrompts(): SessionPrompt[] {
+    return [...this.prompts.values()].map((p) => structuredClone(p.prompt))
+  }
+
+  /**
+   * On vault lock: every pending prompt is cancelled and every SSH connect still dialling fails as
+   * locked, so nothing asks behind the lock screen. Ready sessions keep running.
+   */
+  vaultLocked(): void {
+    for (const s of [...this.sessions.values()]) {
+      if (s.meta.state === 'connecting') s.attempt?.fail?.(new Error(VAULT_LOCKED))
+    }
     for (const id of [...this.prompts.keys()]) this.settle(id, null)
   }
 
@@ -296,6 +315,10 @@ export class SessionManager {
     const s = this.sessions.get(id)
     if (!s) throw new Error('session not found')
     return s
+  }
+
+  private assertUnlocked(): void {
+    if (this.deps.isLocked()) throw new Error(VAULT_LOCKED)
   }
 
   private assertRoom(): void {
@@ -361,7 +384,7 @@ export class SessionManager {
   }
 
   private newAttempt(s: Session): Attempt {
-    const attempt: Attempt = { abort: new AbortController(), prompts: new Set(), hop: 0, failedHop: null, auth: 'default', close: null }
+    const attempt: Attempt = { abort: new AbortController(), prompts: new Set(), hop: 0, failedHop: null, auth: 'default', close: null, fail: null }
     s.attempt = attempt
     return attempt
   }
@@ -373,6 +396,10 @@ export class SessionManager {
   private dial(s: Session, target: DialTarget): void {
     s.meta.hops = target.hops.map((h) => ({ label: h.label, state: 'pending' }))
     const attempt = this.newAttempt(s)
+    attempt.fail = (err) => {
+      attempt.abort.abort()
+      this.dialFailed(s, attempt, target, err)
+    }
     this.publish(s)
     const targetHop = target.hops.at(-1)
     const deps: ConnectDeps = {
@@ -556,15 +583,21 @@ export class SessionManager {
       : { targetType: 'shell', targetLabel: LOCAL_LABEL }
   }
 
-  private ask(s: Session, attempt: Attempt, prompt: PromptBody): Promise<PromptAnswer | null> {
+  /** Never asks while locked: the attempt fails as locked instead of waiting on a hidden prompt. */
+  private ask(s: Session, attempt: Attempt, body: PromptBody): Promise<PromptAnswer | null> {
     if (!this.isLive(s, attempt)) return Promise.resolve(null)
+    if (this.deps.isLocked()) {
+      attempt.fail?.(new Error(VAULT_LOCKED))
+      return Promise.resolve(null)
+    }
     const promptId = this.ids()
+    const prompt = { ...body, promptId, sessionId: s.meta.id } as SessionPrompt
     return new Promise((resolve) => {
       const timer = setTimeout(() => this.settle(promptId, null), PROMPT_TIMEOUT_MS)
       const count = prompt.kind === 'keyboard' ? prompt.prompts.length : 0
-      this.prompts.set(promptId, { kind: prompt.kind, count, attempt, timer, resolve })
+      this.prompts.set(promptId, { prompt, kind: prompt.kind, count, attempt, timer, resolve })
       attempt.prompts.add(promptId)
-      this.deps.emit('session:prompt', { ...prompt, promptId, sessionId: s.meta.id } as SessionPrompt)
+      this.deps.emit('session:prompt', prompt)
     })
   }
 

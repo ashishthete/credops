@@ -131,6 +131,8 @@ export interface IpcContract {
   'session:list': { args: []; result: SessionMeta[] }
   'session:attach': { args: [id: string]; result: { meta: SessionMeta; buffer: string; end: number } }
   'session:answer': { args: [promptId: string, answer: PromptAnswer]; result: void }
+  // Prompts still waiting on the user, oldest first: for a renderer that mounts after they were sent.
+  'session:prompts': { args: []; result: SessionPrompt[] }
   'knownhost:list': { args: []; result: KnownHostMeta[] }
   'knownhost:remove': { args: [id: string]; result: void }
 }
@@ -202,6 +204,7 @@ export const CHANNELS = [
   'session:list',
   'session:attach',
   'session:answer',
+  'session:prompts',
   'knownhost:list',
   'knownhost:remove',
 ] as const satisfies readonly Channel[]

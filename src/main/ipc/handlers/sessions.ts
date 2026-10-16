@@ -12,12 +12,13 @@ type SessionChannel =
   | 'session:list'
   | 'session:attach'
   | 'session:answer'
+  | 'session:prompts'
   | 'knownhost:list'
   | 'knownhost:remove'
 
 export type SessionApi = Pick<
   SessionManager,
-  'openSsh' | 'openLocal' | 'reconnect' | 'write' | 'resize' | 'close' | 'list' | 'attach' | 'answer'
+  'openSsh' | 'openLocal' | 'reconnect' | 'write' | 'resize' | 'close' | 'list' | 'attach' | 'answer' | 'pendingPrompts'
 >
 
 export function createSessionHandlers(deps: {
@@ -35,6 +36,7 @@ export function createSessionHandlers(deps: {
     'session:list': () => sessions.list(),
     'session:attach': (id) => sessions.attach(id),
     'session:answer': (promptId, answer) => sessions.answer(promptId, answer),
+    'session:prompts': () => sessions.pendingPrompts(),
     'knownhost:list': () => knownHosts.list(),
     'knownhost:remove': (id) => knownHosts.remove(id),
   }
