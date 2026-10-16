@@ -382,6 +382,50 @@ through `HubRunner`, and everyone sees live runs. SSH, tunnels, vault SSH keys
 and the local audit trail stay local. Until the Hub exists, Teams notifications
 are the team's shared deploy feed.
 
+### 8.10 Deployment access: Microsoft SSO, roles and groups (phase 10, deployments only)
+
+User, 2026-10-16: Microsoft SSO login; admin and maintainer roles for
+deployments; groups get access to one app's environment, a whole environment or
+all environments; a Default group plus app/env-specific groups; every user must
+be in a group; to start, the admin adds everyone to Default. "It is only for
+deployments."
+
+- **Scope.** Only deployments are behind SSO. The app gate (§6, master password
+  / Touch ID), SSH, tunnels and vaults stay local and do not need SSO.
+- **Sign-in.** Microsoft Entra ID (OIDC authorization code + PKCE, system
+  browser, loopback redirect; MSAL Node). The desktop app is a public client;
+  the Hub validates the Entra token and issues its own session. Tokens are kept
+  with `safeStorage`, never in logs, the audit trail or AI prompts.
+- **Enforced on the Hub.** Access is checked server-side by the Hub, which also
+  holds the deploy secrets and runs releases (§8.9), so a desktop client cannot
+  bypass it. A local-only check would be cosmetic, because a user with SSH keys
+  can deploy by hand anyway (Claude's call).
+- **Roles** (per user):
+  - **Admin:** manages users, groups and grants; can deploy everywhere; can break
+    host locks.
+  - **Maintainer:** deploys where their groups grant access.
+- **Groups and grants.** Groups are managed in OpsDeck by admins, not mirrored
+  from Entra groups (Claude's call; Entra group mapping can come later). A grant
+  gives a group one of three scopes:
+  - all environments;
+  - one environment (every app deployed in it);
+  - one app in one environment (a single deployment target).
+- **Default group.** Built in, cannot be deleted, granted all environments. A
+  deployment target is open to the Default group plus the groups granted on its
+  app/environment or environment. To start, the admin adds everyone to Default;
+  narrower app/env groups are added later for people who should only reach
+  specific deployments.
+- **Every user must be in a group.** The first admin is set in the Hub's config
+  (Entra object id or email). Anyone else who signs in appears as *pending* and
+  sees no deployments until an admin puts them in a group.
+- **Audit.** Deploy events record the Entra identity (name, UPN, object id), the
+  role and the group that granted access. Membership and grant changes are
+  audited too.
+- **Before the Hub exists** (phases 8–9), deployments run locally through
+  `LocalRunner` with no SSO check. Phase 8 routes every deploy action through a
+  `DeployAccess` interface (`can(user, action, target)`) whose local
+  implementation allows everything, so phase 10 only swaps the implementation.
+
 ## 9. Build order (one by one)
 
 Each phase ends usable and demoable.
@@ -403,7 +447,9 @@ Each phase ends usable and demoable.
 9. **Notifications and AI help:** Teams webhooks, macOS notifications,
    "Explain & fix".
 10. **OpsDeck Hub:** deployments-only server: HubRunner, shared deploy secrets,
-    environment locks, team-wide run history, live status for all users.
+    environment locks, team-wide run history, live status for all users, and
+    deployment access (§8.10): Microsoft SSO, admin/maintainer roles, Default
+    and app/env groups.
 
 ## 9a. Calls made after the builder review (Claude's calls, check these)
 
