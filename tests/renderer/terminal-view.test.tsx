@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { useShortcut } from '../../src/renderer/src/ui/shortcuts'
 import { disposeAll, getTerminal } from '../../src/renderer/src/terminal/registry'
 import { TerminalView } from '../../src/renderer/src/terminal/TerminalView'
@@ -28,7 +28,12 @@ beforeEach(() => {
     },
   )
 })
-afterEach(() => {
+afterEach(async () => {
+  // Unmount while the fake clock still runs, so AnimatePresence exits finish on it.
+  cleanup()
+  await act(async () => {
+    await vi.runOnlyPendingTimersAsync()
+  })
   vi.useRealTimers()
   vi.unstubAllGlobals()
 })
@@ -116,6 +121,27 @@ describe('TerminalView', () => {
     expect(key({ key: 'a' })).toBe(true)
   })
 
+  it('mod+f opens search in the visible view even when a hidden view mounted first', async () => {
+    mockBridge({ 'session:attach': { meta: {}, buffer: '', end: 0 } })
+    const view = render(
+      <>
+        <TerminalView sessionId="s1" visible />
+        <TerminalView sessionId="s2" visible={false} />
+      </>,
+    )
+    await act(async () => {})
+    view.rerender(
+      <>
+        <TerminalView sessionId="s1" visible={false} />
+        <TerminalView sessionId="s2" visible />
+      </>,
+    )
+    await act(async () => {})
+    fireEvent.keyDown(document.body, { key: 'f', metaKey: true })
+    expect(screen.getAllByLabelText('Search terminal')).toHaveLength(1)
+    expect(screen.getByTestId('terminal-s2')).toContainElement(screen.getByLabelText('Search terminal'))
+  })
+
   it('mod+f opens search; Esc closes and refocuses', async () => {
     await mount()
     const search = getTerminal('s1').search as unknown as { findNext: ReturnType<typeof vi.fn>; findPrevious: ReturnType<typeof vi.fn> }
@@ -137,24 +163,4 @@ describe('TerminalView', () => {
     expect(screen.queryByLabelText('Search terminal')).toBeNull()
   })
 
-  it('mod+f opens search in the visible view even when a hidden view mounted first', async () => {
-    mockBridge({ 'session:attach': { meta: {}, buffer: '', end: 0 } })
-    const view = render(
-      <>
-        <TerminalView sessionId="s1" visible />
-        <TerminalView sessionId="s2" visible={false} />
-      </>,
-    )
-    await act(async () => {})
-    view.rerender(
-      <>
-        <TerminalView sessionId="s1" visible={false} />
-        <TerminalView sessionId="s2" visible />
-      </>,
-    )
-    await act(async () => {})
-    fireEvent.keyDown(document.body, { key: 'f', metaKey: true })
-    expect(screen.getAllByLabelText('Search terminal')).toHaveLength(1)
-    expect(screen.getByTestId('terminal-s2')).toContainElement(screen.getByLabelText('Search terminal'))
-  })
 })
