@@ -4,14 +4,23 @@ import {
   HOST_ADDRESS,
   HOST_ROLES,
   MAX_ADDRESS,
+  MAX_DESCRIPTION,
   MAX_LINKS,
+  MAX_NAME,
   MAX_NOTES,
   MAX_TAG,
   MAX_TAGS,
+  MAX_URL,
   OS_ICONS,
+  PRODUCT_ICONS,
+  REPO_URL,
   TAG,
+  type EnvironmentInput,
+  type EnvironmentPatch,
   type HostInput,
   type HostPatch,
+  type ProductInput,
+  type ProductPatch,
 } from '../../shared/inventory'
 import {
   AUTO_LOCK_CHOICES,
@@ -164,6 +173,50 @@ export const asHostPatch: Check<HostPatch> = v.object({
 }) as Check<HostPatch>
 
 /** Every channel must have an entry; each later task adds its own. */
+const envName = v.str({ min: 1, max: MAX_NAME, trim: true })
+const envColor = v.str({ pattern: VAULT_COLOR })
+const envPort = v.nullable(v.int({ min: 1, max: 65535 }))
+const idList = v.array(v.uuid(), MAX_LINKS)
+
+export const asEnvironmentInput: Check<EnvironmentInput> = v.object({
+  name: envName,
+  color: envColor,
+  protected: v.optional(v.bool()),
+  defaultIdentityId: v.optional(nullableId),
+  defaultPort: v.optional(envPort),
+  defaultJumpHostId: v.optional(nullableId),
+  productIds: v.optional(idList),
+}) as Check<EnvironmentInput>
+
+export const asEnvironmentPatch: Check<EnvironmentPatch> = v.object({
+  name: v.optional(envName),
+  color: v.optional(envColor),
+  protected: v.optional(v.bool()),
+  defaultIdentityId: v.optional(nullableId),
+  defaultPort: v.optional(envPort),
+  defaultJumpHostId: v.optional(nullableId),
+}) as Check<EnvironmentPatch>
+
+const productIcon = v.oneOf(PRODUCT_ICONS)
+const repoUrl = v.optional(v.nullable(v.str({ max: MAX_URL, pattern: REPO_URL })))
+const description = v.str({ max: MAX_DESCRIPTION })
+
+export const asProductInput: Check<ProductInput> = v.object({
+  name: envName,
+  color: envColor,
+  icon: productIcon,
+  description: v.optional(description),
+  repoUrl,
+}) as Check<ProductInput>
+
+export const asProductPatch: Check<ProductPatch> = v.object({
+  name: v.optional(envName),
+  color: v.optional(envColor),
+  icon: v.optional(productIcon),
+  description: v.optional(description),
+  repoUrl,
+}) as Check<ProductPatch>
+
 export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']> } = {
   'app:info': args(),
   'audit:list': args(asFilter),
@@ -205,4 +258,15 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'host:update': args(v.uuid(), asHostPatch),
   'host:delete': args(v.uuid()),
   'host:setVaults': args(v.uuid(), v.array(v.uuid(), MAX_LINKS)),
+  'env:list': args(),
+  'env:create': args(asEnvironmentInput),
+  'env:update': args(v.uuid(), asEnvironmentPatch),
+  'env:delete': args(v.uuid()),
+  'env:setProducts': args(v.uuid(), idList),
+  'env:putHost': args(v.uuid(), v.uuid(), v.oneOf(HOST_ROLES)),
+  'env:removeHost': args(v.uuid(), v.uuid()),
+  'product:list': args(),
+  'product:create': args(asProductInput),
+  'product:update': args(v.uuid(), asProductPatch),
+  'product:delete': args(v.uuid()),
 }

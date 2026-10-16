@@ -24,7 +24,9 @@ import { createSecretHandlers } from './ipc/handlers/secrets'
 import { createVaultHandlers } from './ipc/handlers/vault'
 import { isTrustedSender, registerHandlers } from './ipc/register'
 import { VALIDATORS } from './ipc/validators'
+import { EnvironmentStore } from './inventory/environment-store'
 import { HostStore } from './inventory/host-store'
+import { ProductStore } from './inventory/product-store'
 import { redact } from './security/redact'
 import { AutoLock } from './vault/auto-lock'
 import { IdentityStore } from './vault/identity-store'
@@ -48,6 +50,8 @@ let secrets: SecretStore | null = null
 let keys: KeyStore | null = null
 let identities: IdentityStore | null = null
 let hosts: HostStore | null = null
+let environments: EnvironmentStore | null = null
+let products: ProductStore | null = null
 let quitAudited = false
 let stopAutoLock: (() => void) | null = null
 
@@ -124,6 +128,8 @@ if (!app.requestSingleInstanceLock()) {
       })
       identities = new IdentityStore(db, service, keys, log)
       hosts = new HostStore(db, service, log)
+      environments = new EnvironmentStore(db, service, log)
+      products = new ProductStore(db, service, log)
       stopAutoLock = new AutoLock({
         idleSeconds: () => powerMonitor.getSystemIdleTime(),
         minutes: () => service.autoLockMinutes(),
@@ -165,7 +171,7 @@ if (!app.requestSingleInstanceLock()) {
             },
           }),
           ...createIdentityHandlers(identities),
-          ...createInventoryHandlers({ hosts }),
+          ...createInventoryHandlers({ hosts, environments, products }),
         },
         (url) => isTrustedSender(url, { devServerUrl, rendererFile }),
         { validators: VALIDATORS, knownSecrets },
@@ -210,6 +216,8 @@ if (!app.requestSingleInstanceLock()) {
     keys = null
     identities = null
     hosts = null
+    environments = null
+    products = null
     audit = null
     db?.close()
     db = null

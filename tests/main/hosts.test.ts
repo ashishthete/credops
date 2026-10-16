@@ -157,7 +157,7 @@ describe('host IPC', () => {
     const registered = new Map<string, (e: IpcMainInvokeEvent, ...a: unknown[]) => unknown>()
     registerHandlers(
       { handle: (c: string, fn: never) => void registered.set(c, fn) },
-      stubHandlers(createInventoryHandlers({ hosts: f.hosts })),
+      stubHandlers(createInventoryHandlers({ hosts: f.hosts, environments: f.envs, products: f.products })),
       (u) => u === 'file:///ok',
       { validators: VALIDATORS },
     )

@@ -1,7 +1,9 @@
 import { mkdirSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { EnvironmentStore } from '../../src/main/inventory/environment-store'
 import { HostStore } from '../../src/main/inventory/host-store'
+import { ProductStore } from '../../src/main/inventory/product-store'
 import { IdentityStore } from '../../src/main/vault/identity-store'
 import { KeyStore } from '../../src/main/vault/key-store'
 import type { IdentityMeta } from '../../src/shared/vault'
@@ -10,6 +12,8 @@ import { makeVault, type VaultFixture } from './vault-helpers'
 
 export type InventoryFixture = VaultFixture & {
   hosts: HostStore
+  envs: EnvironmentStore
+  products: ProductStore
   keys: KeyStore
   identities: IdentityStore
   /** A tmp home; `sshDir` is its `.ssh`, which KeyStore confines key links to. */
@@ -30,9 +34,13 @@ export async function makeInventory(): Promise<InventoryFixture> {
   const keys = new KeyStore(f.db, f.vault, f.audit, { sshDir, clipboard, defaultComment: 'tester@box' })
   const identities = new IdentityStore(f.db, f.vault, keys, f.audit)
   const hosts = new HostStore(f.db, f.vault, f.audit)
+  const envs = new EnvironmentStore(f.db, f.vault, f.audit)
+  const products = new ProductStore(f.db, f.vault, f.audit)
   return {
     ...f,
     hosts,
+    envs,
+    products,
     keys,
     identities,
     home,

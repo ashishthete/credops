@@ -1,5 +1,16 @@
 import type { AuditEvent, AuditFilter, ChainVerification } from './audit'
-import type { HostInput, HostMeta, HostPatch } from './inventory'
+import type {
+  EnvironmentInput,
+  EnvironmentMeta,
+  EnvironmentPatch,
+  HostInput,
+  HostMeta,
+  HostPatch,
+  HostRole,
+  ProductInput,
+  ProductMeta,
+  ProductPatch,
+} from './inventory'
 import type {
   IdentityInput,
   IdentityMeta,
@@ -83,6 +94,17 @@ export interface IpcContract {
   'host:update': { args: [id: string, patch: HostPatch]; result: HostMeta }
   'host:delete': { args: [id: string]; result: void }
   'host:setVaults': { args: [id: string, vaultIds: string[]]; result: HostMeta }
+  'env:list': { args: []; result: EnvironmentMeta[] }
+  'env:create': { args: [input: EnvironmentInput]; result: EnvironmentMeta }
+  'env:update': { args: [id: string, patch: EnvironmentPatch]; result: EnvironmentMeta }
+  'env:delete': { args: [id: string]; result: void }
+  'env:setProducts': { args: [id: string, productIds: string[]]; result: EnvironmentMeta }
+  'env:putHost': { args: [id: string, hostId: string, role: HostRole]; result: EnvironmentMeta }
+  'env:removeHost': { args: [id: string, hostId: string]; result: EnvironmentMeta }
+  'product:list': { args: []; result: ProductMeta[] }
+  'product:create': { args: [input: ProductInput]; result: ProductMeta }
+  'product:update': { args: [id: string, patch: ProductPatch]; result: ProductMeta }
+  'product:delete': { args: [id: string]; result: void }
 }
 
 export type Channel = keyof IpcContract
@@ -129,6 +151,17 @@ export const CHANNELS = [
   'host:update',
   'host:delete',
   'host:setVaults',
+  'env:list',
+  'env:create',
+  'env:update',
+  'env:delete',
+  'env:setProducts',
+  'env:putHost',
+  'env:removeHost',
+  'product:list',
+  'product:create',
+  'product:update',
+  'product:delete',
 ] as const satisfies readonly Channel[]
 
 // Fails typecheck if IpcContract gains a channel that CHANNELS does not list.
