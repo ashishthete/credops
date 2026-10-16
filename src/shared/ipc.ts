@@ -7,6 +7,7 @@ import type {
   KeyImportInput,
   KeyLinkInput,
   LocalKeyCandidate,
+  LockReason,
   QuickUnlockMode,
   SecretInput,
   SecretMeta,
@@ -127,6 +128,15 @@ export type Handlers = {
   [K in Channel]: (...args: IpcContract[K]['args']) => Promise<IpcContract[K]['result']> | IpcContract[K]['result']
 }
 
+/** Events main pushes to the window. Payloads are metadata only, never secrets. */
+export interface EventContract {
+  'vault:locked': { reason: LockReason }
+}
+export type EventName = keyof EventContract
+export const EVENTS = ['vault:locked'] as const satisfies readonly EventName[]
+
 export interface OpsDeckBridge {
   invoke<K extends Channel>(channel: K, ...args: IpcContract[K]['args']): Promise<IpcContract[K]['result']>
+  /** Subscribes to a main-process event from EVENTS; returns the unsubscribe. */
+  on<K extends EventName>(event: K, listener: (payload: EventContract[K]) => void): () => void
 }

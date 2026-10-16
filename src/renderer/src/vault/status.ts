@@ -46,9 +46,16 @@ function startPolling(): () => void {
     quietRefresh()
     const timer = setInterval(quietRefresh, POLL_MS)
     window.addEventListener('focus', quietRefresh)
+    // Main pushes every lock; the poll stays as a backstop.
+    const stopEvents = api.on('vault:locked', () => {
+      const s = vaultStatusStore.get()
+      if (s?.unlocked) vaultStatusStore.set({ ...s, unlocked: false, corruptVaultIds: [] })
+      quietRefresh()
+    })
     stopPolling = () => {
       clearInterval(timer)
       window.removeEventListener('focus', quietRefresh)
+      stopEvents()
     }
   }
   return () => {
@@ -59,7 +66,7 @@ function startPolling(): () => void {
   }
 }
 
-/** The live vault status, polled every 5 s and on window focus while anything is subscribed. */
+/** The live vault status: pushed on lock, polled every 5 s and on window focus while anything is subscribed. */
 export function useVaultStatus(): VaultStatus | null {
   useEffect(startPolling, [])
   return useSyncExternalStore(vaultStatusStore.subscribe, vaultStatusStore.get)

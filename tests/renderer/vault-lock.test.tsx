@@ -11,7 +11,7 @@ import { passwordStrength } from '../../src/renderer/src/vault/strength'
 import { cancelUnlock, ensureUnlocked, withUnlock } from '../../src/renderer/src/vault/unlock'
 import { closeVaultSettings, openVaultSettings, VaultSettingsDialog } from '../../src/renderer/src/vault/VaultSettingsDialog'
 import type { UnlockResult, VaultStatus } from '../../src/shared/vault'
-import { mockBridge, vaultStatus } from './helpers'
+import { emitBridgeEvent, mockBridge, vaultStatus } from './helpers'
 
 const WRONG: UnlockResult = { ok: false, reason: 'wrong-password', retryAfterMs: 0 }
 
@@ -344,6 +344,17 @@ describe('sidebar lock button', () => {
     expect(screen.getByRole('region', { name: 'Unlock vaults' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Lock vaults' })).not.toBeInTheDocument()
     // A lock the user did not ask for is announced too.
+    expect(screen.getByText('Vaults locked')).toBeInTheDocument()
+  })
+
+  it('a pushed lock event unmounts the shell at once', async () => {
+    const { state } = fakeVault({ unlocked: true })
+    renderApp()
+    await screen.findByRole('button', { name: 'Lock vaults' })
+    state.unlocked = false // main locked on screen lock; no poll or focus needed
+    act(() => emitBridgeEvent('vault:locked', { reason: 'screen' }))
+    expect(screen.getByRole('region', { name: 'Unlock vaults' })).toBeInTheDocument()
+    await waitFor(() => expect(shellNav()).not.toBeInTheDocument())
     expect(screen.getByText('Vaults locked')).toBeInTheDocument()
   })
 

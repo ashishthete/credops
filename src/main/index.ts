@@ -109,6 +109,10 @@ if (!app.requestSingleInstanceLock()) {
       }
       const service = new VaultService(db, log, { quick })
       vault = service
+      // Push locks (manual, idle, screen, sleep) so the renderer's auth gate comes up at once.
+      service.onLock((reason) => {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('vault:locked', { reason })
+      })
       secrets = new SecretStore(db, service, log, { clipboard })
       const actor = { osUser: userInfo().username, machine: hostname() }
       keys = new KeyStore(db, service, log, {

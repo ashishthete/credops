@@ -62,6 +62,22 @@ export function mockBridge(results: Record<string, unknown> = {}) {
     if (channel === 'secret:list' || channel === 'key:list' || channel === 'identity:list') return []
     return null
   })
-  ;(window as unknown as { opsdeck: unknown }).opsdeck = { invoke }
+  bridgeListeners.clear()
+  const on = (event: string, listener: (payload: unknown) => void) => {
+    const set = bridgeListeners.get(event) ?? new Set()
+    set.add(listener)
+    bridgeListeners.set(event, set)
+    return () => {
+      set.delete(listener)
+    }
+  }
+  ;(window as unknown as { opsdeck: unknown }).opsdeck = { invoke, on }
   return invoke
+}
+
+const bridgeListeners = new Map<string, Set<(payload: unknown) => void>>()
+
+/** Delivers a main-process push event to whatever subscribed through the mock bridge. */
+export function emitBridgeEvent(event: string, payload: unknown) {
+  bridgeListeners.get(event)?.forEach((l) => l(payload))
 }

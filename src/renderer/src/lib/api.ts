@@ -16,4 +16,5 @@ export const api: OpsDeckBridge = {
       throw new Error(cleanIpcErrorMessage(err instanceof Error ? err.message : String(err)))
     }
   },
+  on: (event, listener) => window.opsdeck.on(event, listener),
 }

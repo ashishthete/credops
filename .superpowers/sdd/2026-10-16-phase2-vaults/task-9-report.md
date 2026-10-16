@@ -94,3 +94,20 @@ Concerns
 - Task 10: the vaults page can no longer be reached when not set up, so its "SetupCard when !setUp" case is moot; its tests should render through `<AuthGate>` (or assume unlocked) instead of `<UnlockDialog/>`, which no longer exists.
 - A VAULT_LOCKED mid-session unmounts the calling page; `withUnlock` still retries after unlock, but any component state of the caller is lost.
 - Locks are detected by polling (5 s) + window focus, since main pushes no lock event; the shell can stay visible up to 5 s after an auto/screen lock while the window is focused. A push event from main would close that gap.
+
+## Amendment 2 (team-lead): push lock event
+
+The gate itself (amendment items 1, 3, 4, 5) landed in 2a27181 on top of acdd9b3; this commit adds item 2.
+
+Changes
+- `src/shared/ipc.ts`: `EventContract` (`'vault:locked': { reason: LockReason }`), `EVENTS` allow-list, `OpsDeckBridge.on(event, listener) => unsubscribe`.
+- `src/preload/bridge.ts` (new): `createBridge(ipc)` — invoke as before (CHANNELS allow-list); `on` throws for any event not in EVENTS and forwards only the payload (never the IpcRendererEvent/sender). `preload/index.ts` just exposes it. The bundle still requires only 'electron'.
+- `src/main/index.ts`: `service.onLock(reason => mainWindow.webContents.send('vault:locked', { reason }))`, guarded against a destroyed window. VaultService only fires listeners on a real lock, and the payload is the reason only.
+- `api.on`, and `status.ts` subscribes while polling is active: it marks the cached status locked at once (the gate comes up on the same tick), then refreshes. The 5 s poll and focus refresh stay as a backstop.
+
+Tests: `tests/main/preload.test.ts` (invoke allow-list; on rejects non-allow-listed events such as `vault:status` and `ssh:data`; payload-only delivery; unsubscribe). vault-lock: "a pushed lock event unmounts the shell at once" (no poll/focus). The mock bridge gained `on` and `emitBridgeEvent`.
+
+Command: `pnpm typecheck && pnpm test && pnpm build`
+Output: typecheck clean; Test Files 21 passed, Tests 219 passed; build ok.
+
+Concern 3 from Amendment 1 (5 s lag) is resolved. Concerns 1 (Task 10 tests) and 2 (caller state lost on mid-session lock) still apply.
