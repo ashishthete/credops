@@ -1,4 +1,4 @@
-import { AnimatePresence, motion } from 'framer-motion'
+import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
 import { useEffect, useId, useLayoutEffect, useRef, type KeyboardEvent, type ReactNode } from 'react'
 import { fast, spring, useMotionSafe, useShake } from './motion'
 
@@ -14,7 +14,12 @@ export interface DialogProps {
   /** Bump to shake the card, e.g. after a wrong password. */
   shake?: number
   width?: number
-  /** `prompt` sits above every other dialog: a security question must never hide under one. */
+  /**
+   * `prompt` sits above every other dialog and keeps focus while it shows: a security question must
+   * never hide under one. It also sits above AuthGate (z-[55]); that is safe only because a lock
+   * unmounts AppShell, and the PromptHost inside it, after main has settled every prompt. Keep
+   * PromptHost inside the gate.
+   */
   layer?: 'prompt'
 }
 
@@ -35,15 +40,31 @@ export function Dialog(props: DialogProps) {
     if (el instanceof HTMLElement && el.isConnected) el.focus()
   }, [props.open])
 
-  return <AnimatePresence>{props.open && <DialogPanel key="dialog" {...props} />}</AnimatePresence>
+  return (
+    <AnimatePresence>
+      {props.open && <DialogPanel key="dialog" {...props} onFocusRefused={(el) => (opener.current = el)} />}
+    </AnimatePresence>
+  )
 }
 
-function DialogPanel({ onClose, title, description, children, footer, icon, shake = 0, width = 420, layer }: DialogProps) {
+function DialogPanel({
+  onClose,
+  title,
+  description,
+  children,
+  footer,
+  icon,
+  shake = 0,
+  width = 420,
+  layer,
+  onFocusRefused,
+}: DialogProps & { onFocusRefused: (el: Element) => void }) {
   const motionSafe = useMotionSafe()
   const titleId = useId()
   const descId = useId()
   const panel = useRef<HTMLDivElement>(null)
   const shakeScope = useShake(shake)
+  const present = useIsPresent()
 
   useEffect(() => {
     const el = panel.current
@@ -51,6 +72,21 @@ function DialogPanel({ onClose, title, description, children, footer, icon, shak
       ;(el.querySelector<HTMLElement>('[autofocus], [data-autofocus]') ?? el.querySelector<HTMLElement>(FOCUSABLE) ?? el).focus()
     }
   }, [])
+
+  // A prompt keeps focus (and so Esc) while it shows: a dialog opened behind it would otherwise take
+  // focus the keyboard can't get back. Whatever was refused gets focus when the prompt closes. A layout
+  // effect, so the guard is gone before Dialog hands focus back on close.
+  useLayoutEffect(() => {
+    if (layer !== 'prompt' || !present) return
+    const onFocusIn = (e: FocusEvent) => {
+      const el = panel.current
+      if (!el || !(e.target instanceof Element) || el.contains(e.target)) return
+      onFocusRefused(e.target)
+      ;(e.relatedTarget instanceof HTMLElement && el.contains(e.relatedTarget) ? e.relatedTarget : el).focus()
+    }
+    document.addEventListener('focusin', onFocusIn)
+    return () => document.removeEventListener('focusin', onFocusIn)
+  }, [layer, present, onFocusRefused])
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Escape') {

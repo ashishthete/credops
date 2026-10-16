@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PromptHost } from '../../src/renderer/src/pages/terminals/PromptHost'
 import { closeKnownHosts, KnownHostsDialog, openKnownHosts } from '../../src/renderer/src/pages/terminals/KnownHostsDialog'
 import { promptStore, resetSessions, startSessionSync } from '../../src/renderer/src/terminal/sessions'
+import { closeCommandPalette, CommandPalette } from '../../src/renderer/src/ui/CommandPalette'
 import { clearToasts } from '../../src/renderer/src/ui/Toaster'
 import type { KnownHostMeta, SessionPrompt } from '../../src/shared/ssh'
 import { emitBridgeEvent, mockBridge } from './helpers'
@@ -135,6 +136,51 @@ describe('host key prompt', () => {
     await settle()
     // Esc answered the prompt only; Known hosts stays open and gets focus back.
     expect(screen.getByRole('dialog', { name: 'Known hosts' })).toContainElement(document.activeElement as HTMLElement)
+  })
+
+  it('a dialog opened while the prompt shows cannot take focus or Esc from it', async () => {
+    const invoke = mockBridge({ 'session:list': [], 'session:answer': undefined, 'knownhost:list': [] })
+    stop = startSessionSync()
+    render(
+      <>
+        <button>terminal</button>
+        <PromptHost />
+        <KnownHostsDialog />
+      </>,
+    )
+    screen.getByRole('button', { name: 'terminal' }).focus()
+    await show(hostKey('p1'))
+    const prompt = screen.getByRole('dialog', { name: 'First time connecting to web-1' })
+    expect(prompt).toContainElement(document.activeElement as HTMLElement)
+
+    act(() => openKnownHosts())
+    await settle()
+    const known = screen.getByRole('dialog', { name: 'Known hosts' })
+    expect(prompt).toContainElement(document.activeElement as HTMLElement)
+    // Even a direct focus() is pulled back while the prompt is up.
+    act(() => within(known).getAllByRole('button')[0].focus())
+    expect(prompt).toContainElement(document.activeElement as HTMLElement)
+
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
+    expect(calls(invoke, 'session:answer').map((c) => c.slice(1))).toEqual([['p1', { kind: 'host-key', trust: false }]])
+    await settle()
+    // Esc answered the prompt; Known hosts is still open and now has the focus it was refused.
+    expect(screen.getByRole('dialog', { name: 'Known hosts' })).toContainElement(document.activeElement as HTMLElement)
+  })
+
+  it('the command palette opened over a prompt leaves focus in the prompt', async () => {
+    setup()
+    render(<CommandPalette />)
+    await show(hostKey('p1'))
+    const prompt = screen.getByRole('dialog', { name: 'First time connecting to web-1' })
+    act(() => {
+      fireEvent.keyDown(window, { key: 'k', metaKey: true })
+    })
+    await settle()
+    expect(screen.getByRole('combobox')).toBeInTheDocument()
+    expect(prompt).toContainElement(document.activeElement as HTMLElement)
+    act(() => closeCommandPalette())
+    await settle()
   })
 })
 
