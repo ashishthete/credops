@@ -156,7 +156,7 @@ const envVars: Check<Record<string, string>> = (value, path) => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new InvalidArgs(path, 'must be an object')
   const entries = Object.entries(value)
   if (entries.length > MAX_ENV_VARS) throw new InvalidArgs(path, `must have at most ${MAX_ENV_VARS} entries`)
-  for (const [key, item] of entries) if (typeof item !== 'string') throw new InvalidArgs(`${path}.${key}`, 'must be a string')
+  for (const [, item] of entries) if (typeof item !== 'string') throw new InvalidArgs(`${path}[]`, 'must be a string')
   return value as Record<string, string>
 }
 const membership = v.object({ environmentId: v.uuid(), role: v.oneOf(HOST_ROLES) })

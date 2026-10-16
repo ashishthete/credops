@@ -30,7 +30,7 @@ export const MAX_ENV_VALUE = 1024
 export const MAX_KEEPALIVE_SEC = 3600
 
 /** Control, format (bidi, zero-width) and line-separator characters. */
-const UNSAFE_SSH_CHAR = /[\p{Cc}\p{Cf}\u2028\u2029\u0085]/u
+export const UNSAFE_SSH_CHAR = /[\p{Cc}\p{Cf}\u2028\u2029\u0085]/u
 /** A value safe to hand ssh as one argument: non-empty, no leading `-`, no control or format characters. */
 export function isSafeSshToken(value: string): boolean {
   return value.length > 0 && !value.startsWith('-') && !UNSAFE_SSH_CHAR.test(value)

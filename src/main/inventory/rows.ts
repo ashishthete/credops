@@ -8,6 +8,7 @@ import {
   MAX_TAG,
   MAX_TAGS,
   TAG,
+  UNSAFE_SSH_CHAR,
   type EnvironmentMeta,
   type HostMeta,
   type HostRole,
@@ -20,7 +21,6 @@ import type { Db } from '../db/connection'
 import { checkHexColor, checkText } from '../util/checks'
 
 /** Control, format (bidi, zero-width) and line-separator characters. */
-const UNSAFE_ENV_VALUE = /[\p{Cc}\p{Cf}\u2028\u2029\u0085]/u
 
 /** Trimmed 1..max characters; the message never carries the value. */
 export const checkName = checkText
@@ -85,7 +85,7 @@ export function checkEnvVars(raw: Record<string, string>): string {
     if (typeof value !== 'string' || value.length > MAX_ENV_VALUE) {
       throw new Error(`an env var value must be a string of at most ${MAX_ENV_VALUE} characters`)
     }
-    if (UNSAFE_ENV_VALUE.test(value)) throw new Error('an env var value has control or format characters')
+    if (UNSAFE_SSH_CHAR.test(value)) throw new Error('an env var value has control or format characters')
   }
   return JSON.stringify(Object.fromEntries(entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))))
 }
