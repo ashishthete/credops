@@ -4,11 +4,11 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppShell } from '../../src/renderer/src/shell/AppShell'
 import { clearToasts, Toaster } from '../../src/renderer/src/ui/Toaster'
+import { AuthGate } from '../../src/renderer/src/vault/AuthGate'
 import { SetupCard } from '../../src/renderer/src/vault/SetupCard'
 import { vaultStatusStore } from '../../src/renderer/src/vault/status'
 import { passwordStrength } from '../../src/renderer/src/vault/strength'
 import { cancelUnlock, ensureUnlocked, withUnlock } from '../../src/renderer/src/vault/unlock'
-import { UnlockDialog } from '../../src/renderer/src/vault/UnlockDialog'
 import { closeVaultSettings, openVaultSettings, VaultSettingsDialog } from '../../src/renderer/src/vault/VaultSettingsDialog'
 import type { UnlockResult, VaultStatus } from '../../src/shared/vault'
 import { mockBridge, vaultStatus } from './helpers'
@@ -47,25 +47,21 @@ function fakeVault(start: Partial<VaultStatus> = {}, results: Record<string, unk
   return { invoke, state }
 }
 
+/** The real composition from App.tsx, in a MemoryRouter. */
 function renderApp() {
   return render(
     <MemoryRouter>
-      <AppShell />
-      <VaultSettingsDialog />
-      <UnlockDialog />
+      <AuthGate>
+        <AppShell />
+        <VaultSettingsDialog />
+      </AuthGate>
       <Toaster />
     </MemoryRouter>,
   )
 }
 
-function renderDialog() {
-  return render(
-    <>
-      <UnlockDialog />
-      <Toaster />
-    </>,
-  )
-}
+const gate = (name: string) => screen.findByRole('region', { name })
+const shellNav = () => screen.queryByRole('navigation')
 
 const flush = () => act(async () => {
   await vi.advanceTimersByTimeAsync(0)
@@ -120,80 +116,85 @@ describe('setup', () => {
     expect(passwordStrength('c0rrect-Horse-battery-staple')).toBe(4)
   })
 
-  it('setup toast offers Touch ID when available', async () => {
+  it('first run shows only the setup gate, then offers Touch ID', async () => {
     const user = userEvent.setup()
-    const { invoke } = fakeVault({ setUp: false })
-    render(
-      <>
-        <SetupCard />
-        <Toaster />
-      </>,
+    const { invoke } = fakeVault(
+      { setUp: false },
+      { 'vault:setQuickUnlock': [vaultStatus({ unlocked: true, quickUnlock: 'touchId' })] },
     )
+    renderApp()
+    await gate('Protect your vaults')
+    expect(shellNav()).not.toBeInTheDocument()
     await user.type(screen.getByLabelText('Master password'), 'correct horse')
     await user.type(screen.getByLabelText('Confirm password'), 'correct horse')
     await user.click(screen.getByRole('button', { name: 'Create master password' }))
-    await user.click(await screen.findByRole('button', { name: 'Enable Touch ID' }))
+    await gate('Your vaults are ready')
+    // Still gated until the user picks: nothing behind it has mounted.
+    expect(shellNav()).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Enable Touch ID' }))
     expect(invoke).toHaveBeenCalledWith('vault:setQuickUnlock', 'touchId')
+    expect(await screen.findByRole('navigation')).toBeInTheDocument()
   })
 })
 
-describe('unlock dialog', () => {
-  it('unlock dialog', async () => {
+describe('auth gate', () => {
+  it('shell is not mounted while locked', async () => {
+    const { invoke } = fakeVault()
+    renderApp()
+    await gate('Unlock vaults')
+    expect(shellNav()).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Lock vaults' })).not.toBeInTheDocument()
+    // No page loaded any data behind the gate.
+    const channels = invoke.mock.calls.map(([c]) => c)
+    expect(channels.every((c) => c === 'vault:status')).toBe(true)
+  })
+
+  it('unlock', async () => {
     const user = userEvent.setup()
     const { invoke } = fakeVault({}, { 'vault:unlock': [WRONG, { ok: true }] })
-    renderDialog()
-
-    let done!: Promise<boolean>
-    act(() => {
-      done = ensureUnlocked()
-    })
-    const dialog = await screen.findByRole('dialog', { name: 'Unlock vaults' })
-    const input = within(dialog).getByLabelText('Master password')
+    renderApp()
+    const card = await gate('Unlock vaults')
+    const input = within(card).getByLabelText('Master password')
     await waitFor(() => expect(input).toHaveFocus())
 
     await user.type(input, 'not the one!')
-    await user.click(within(dialog).getByRole('button', { name: 'Unlock' }))
-    expect(await within(dialog).findByText('Wrong password')).toBeInTheDocument()
+    await user.click(within(card).getByRole('button', { name: 'Unlock' }))
+    expect(await within(card).findByText('Wrong password')).toBeInTheDocument()
     expect(input).toHaveValue('')
     expect(input).toHaveFocus()
 
     await user.type(input, 'correct horse{Enter}')
-    await expect(done).resolves.toBe(true)
     expect(invoke).toHaveBeenCalledWith('vault:unlock', 'correct horse')
     expect(await screen.findByText('Vaults unlocked')).toBeInTheDocument()
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(await screen.findByRole('navigation')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Unlock vaults' })).not.toBeInTheDocument())
     // Never echoed anywhere in the UI.
     expect(document.body.textContent).not.toContain('correct horse')
   })
 
-  it('Esc resolves to false', async () => {
+  it('ensureUnlocked resolves once the gate is passed', async () => {
     const user = userEvent.setup()
-    fakeVault()
-    renderDialog()
+    fakeVault({}, { 'vault:unlock': [{ ok: true }] })
+    renderApp()
     let done!: Promise<boolean>
     act(() => {
       done = ensureUnlocked()
     })
-    await screen.findByRole('dialog', { name: 'Unlock vaults' })
-    await user.keyboard('{Escape}')
-    await expect(done).resolves.toBe(false)
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await user.type(await screen.findByLabelText('Master password'), 'correct horse{Enter}')
+    await expect(done).resolves.toBe(true)
   })
 
   it('resolves at once when already unlocked', async () => {
     fakeVault({ unlocked: true })
-    renderDialog()
+    renderApp()
     await expect(ensureUnlocked()).resolves.toBe(true)
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Unlock vaults' })).not.toBeInTheDocument()
   })
 
   it('warns about vaults that could not be opened', async () => {
     const user = userEvent.setup()
     const { state } = fakeVault({}, { 'vault:unlock': [{ ok: true }] })
-    renderDialog()
-    act(() => {
-      void ensureUnlocked()
-    })
+    renderApp()
     state.corruptVaultIds = ['a', 'b']
     await user.type(await screen.findByLabelText('Master password'), 'correct horse{Enter}')
     expect(await screen.findByText('2 vaults could not be opened')).toBeInTheDocument()
@@ -202,10 +203,7 @@ describe('unlock dialog', () => {
   it('throttle countdown', async () => {
     vi.useFakeTimers()
     fakeVault({ retryAfterMs: 3000 })
-    renderDialog()
-    act(() => {
-      void ensureUnlocked()
-    })
+    renderApp()
     await flush()
     const submit = screen.getByRole('button', { name: 'Try again in 3 s' })
     expect(submit).toBeDisabled()
@@ -224,10 +222,7 @@ describe('unlock dialog', () => {
   it('throttled result starts a countdown', async () => {
     const user = userEvent.setup()
     fakeVault({}, { 'vault:unlock': [{ ok: false, reason: 'throttled', retryAfterMs: 4000 }] })
-    renderDialog()
-    act(() => {
-      void ensureUnlocked()
-    })
+    renderApp()
     await user.type(await screen.findByLabelText('Master password'), 'correct horse{Enter}')
     expect(await screen.findByRole('button', { name: /^Try again in [34] s$/ })).toBeDisabled()
   })
@@ -240,11 +235,7 @@ describe('touch id', () => {
       { quickUnlock: 'touchId' },
       { 'vault:unlockQuick': [{ ok: false, reason: 'cancelled', retryAfterMs: 0 }, { ok: true }] },
     )
-    renderDialog()
-    let done!: Promise<boolean>
-    act(() => {
-      done = ensureUnlocked()
-    })
+    renderApp()
     const button = await screen.findByRole('button', { name: 'Unlock with Touch ID' })
     await waitFor(() => expect(invoke.mock.calls.filter(([c]) => c === 'vault:unlockQuick')).toHaveLength(1))
     // A cancelled prompt is not an error.
@@ -252,28 +243,22 @@ describe('touch id', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
 
     await user.click(button)
-    await expect(done).resolves.toBe(true)
+    expect(await screen.findByRole('navigation')).toBeInTheDocument()
     expect(invoke.mock.calls.filter(([c]) => c === 'vault:unlockQuick')).toHaveLength(2)
   })
 
   it('unavailable falls back to the password with a hint', async () => {
     fakeVault({ quickUnlock: 'touchId' }, { 'vault:unlockQuick': [{ ok: false, reason: 'unavailable', retryAfterMs: 0 }] })
-    renderDialog()
-    act(() => {
-      void ensureUnlocked()
-    })
+    renderApp()
     expect(await screen.findByText(/Touch ID isn't available/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Unlock with Touch ID' })).not.toBeInTheDocument()
     await waitFor(() => expect(screen.getByLabelText('Master password')).toHaveFocus())
   })
 
-  it('is not called when the mode is off', async () => {
-    const { invoke } = fakeVault()
-    renderDialog()
-    act(() => {
-      void ensureUnlocked()
-    })
-    await screen.findByRole('dialog', { name: 'Unlock vaults' })
+  it('is not called when the mode is off, or for the login keychain', async () => {
+    const { invoke } = fakeVault({ quickUnlock: 'login', quickUnlockAvailable: { touchId: true, login: true } })
+    renderApp()
+    await gate('Unlock vaults')
     expect(screen.queryByRole('button', { name: 'Unlock with Touch ID' })).not.toBeInTheDocument()
     expect(invoke).not.toHaveBeenCalledWith('vault:unlockQuick')
   })
@@ -283,7 +268,7 @@ describe('withUnlock', () => {
   it('withUnlock retries once', async () => {
     const user = userEvent.setup()
     fakeVault({}, { 'vault:unlock': [{ ok: true }] })
-    renderDialog()
+    renderApp()
     const fn = vi.fn<() => Promise<string>>()
     fn.mockRejectedValueOnce(new Error('vault locked')).mockResolvedValueOnce('ok')
     // The cached status still says unlocked; withUnlock must refresh before asking.
@@ -297,17 +282,16 @@ describe('withUnlock', () => {
     expect(fn).toHaveBeenCalledTimes(2)
   })
 
-  it('resolves undefined when the unlock is dismissed and rethrows other errors', async () => {
-    const user = userEvent.setup()
+  it('resolves undefined when the wait is cancelled and rethrows other errors', async () => {
     fakeVault()
-    renderDialog()
+    renderApp()
     const fn = vi.fn<() => Promise<string>>().mockRejectedValue(new Error('vault locked'))
     let done!: Promise<string | undefined>
     act(() => {
       done = withUnlock(fn)
     })
-    await screen.findByRole('dialog', { name: 'Unlock vaults' })
-    await user.keyboard('{Escape}')
+    await gate('Unlock vaults')
+    act(() => cancelUnlock())
     await expect(done).resolves.toBeUndefined()
     expect(fn).toHaveBeenCalledOnce()
     await expect(withUnlock(() => Promise.reject(new Error('boom')))).rejects.toThrow('boom')
@@ -315,16 +299,24 @@ describe('withUnlock', () => {
 })
 
 describe('sidebar lock button', () => {
-  it('sidebar lock button', async () => {
+  it('locking unmounts the shell', async () => {
     const user = userEvent.setup()
     const { invoke } = fakeVault({ unlocked: true })
     renderApp()
     await user.click(await screen.findByRole('button', { name: 'Lock vaults' }))
     expect(invoke).toHaveBeenCalledWith('vault:lock')
     expect(await screen.findByText('Vaults locked')).toBeInTheDocument()
+    await gate('Unlock vaults')
+    await waitFor(() => expect(shellNav()).not.toBeInTheDocument())
+  })
 
-    await user.click(await screen.findByRole('button', { name: 'Unlock vaults' }))
-    expect(await screen.findByRole('dialog', { name: 'Unlock vaults' })).toBeInTheDocument()
+  it('a manual lock does not pop Touch ID', async () => {
+    const user = userEvent.setup()
+    const { invoke } = fakeVault({ unlocked: true, quickUnlock: 'touchId' })
+    renderApp()
+    await user.click(await screen.findByRole('button', { name: 'Lock vaults' }))
+    expect(await screen.findByRole('button', { name: 'Unlock with Touch ID' })).toBeInTheDocument()
+    expect(invoke).not.toHaveBeenCalledWith('vault:unlockQuick')
   })
 
   it('Meta+L locks', async () => {
@@ -336,10 +328,10 @@ describe('sidebar lock button', () => {
     })
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('vault:lock'))
     expect(await screen.findByText('Vaults locked')).toBeInTheDocument()
-    expect(await screen.findByRole('button', { name: 'Unlock vaults' })).toBeInTheDocument()
+    await gate('Unlock vaults')
   })
 
-  it('status polling flips the lock', async () => {
+  it('auto-lock (status polling) returns to the gate', async () => {
     vi.useFakeTimers()
     const { state } = fakeVault({ unlocked: true })
     renderApp()
@@ -349,7 +341,8 @@ describe('sidebar lock button', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5000)
     })
-    expect(screen.getByRole('button', { name: 'Unlock vaults' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Unlock vaults' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Lock vaults' })).not.toBeInTheDocument()
     // A lock the user did not ask for is announced too.
     expect(screen.getByText('Vaults locked')).toBeInTheDocument()
   })
@@ -362,7 +355,7 @@ describe('sidebar lock button', () => {
     act(() => {
       window.dispatchEvent(new Event('focus'))
     })
-    expect(await screen.findByRole('button', { name: 'Unlock vaults' })).toBeInTheDocument()
+    await gate('Unlock vaults')
   })
 })
 
@@ -376,7 +369,6 @@ describe('settings', () => {
     render(
       <>
         <VaultSettingsDialog />
-        <UnlockDialog />
         <Toaster />
       </>,
     )
@@ -413,6 +405,14 @@ describe('settings', () => {
     await user.selectOptions(quick, 'Touch ID')
     expect(invoke).toHaveBeenCalledWith('vault:setQuickUnlock', 'touchId')
     await waitFor(() => expect(quick).toHaveValue('touchId'))
-    await waitFor(() => expect(quick).toHaveValue('touchId'))
+  })
+
+  it('never offers the login keychain', async () => {
+    fakeVault({ unlocked: true, quickUnlockAvailable: { touchId: true, login: true } })
+    render(<VaultSettingsDialog />)
+    act(() => openVaultSettings())
+    const quick = await screen.findByLabelText('Quick unlock')
+    await waitFor(() => expect(quick).toBeEnabled())
+    expect(within(quick).getAllByRole('option').map((o) => o.getAttribute('value'))).toEqual(['off', 'touchId'])
   })
 })

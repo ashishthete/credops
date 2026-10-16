@@ -1,21 +1,13 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { Fingerprint } from 'lucide-react'
-import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from 'react'
 import { MAX_MASTER_PASSWORD, type VaultStatus } from '../../../shared/vault'
 import { api } from '../lib/api'
 import { Button } from '../ui/Button'
-import { Dialog } from '../ui/Dialog'
 import { SecretField } from '../ui/Field'
 import { useMotionSafe } from '../ui/motion'
 import { Padlock } from '../ui/Padlock'
-import { toast } from '../ui/Toaster'
 import { toneColor } from '../ui/tone'
-import { SetupCard } from './SetupCard'
-import { refreshVaultStatus, useVaultStatus, vaultStatusStore } from './status'
-import { cancelUnlock, ensureUnlocked, resolveUnlock, takeUserLock, unlockRequestStore } from './unlock'
-
-/** How long the open padlock stays on screen after a successful unlock. */
-const CELEBRATE_MS = 360
 
 /** Whole seconds until `deadline` (epoch ms), ticking while it is in the future. */
 export function useSecondsLeft(deadline: number): number {
@@ -35,86 +27,8 @@ export function useSecondsLeft(deadline: number): number {
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
-function announceCorrupt(status: VaultStatus | null) {
-  const n = status?.corruptVaultIds.length ?? 0
-  if (!n) return
-  toast({
-    title: `${n} vault${n === 1 ? '' : 's'} could not be opened`,
-    description: 'Their keys failed to decrypt. Everything else is unlocked.',
-    tone: 'warn',
-  })
-}
-
-/** The unlock (or first-run setup) prompt behind ensureUnlocked(). Mount once. */
-export function UnlockDialog() {
-  const requested = useSyncExternalStore(unlockRequestStore.subscribe, unlockRequestStore.get)
-  const status = useVaultStatus()
-  const motionSafe = useMotionSafe()
-  const [celebrating, setCelebrating] = useState(false)
-  const [shake, setShake] = useState(0)
-  const [session, setSession] = useState(0)
-  useLockWatcher(status)
-
-  // A fresh form (and one automatic quick-unlock try) for every prompt.
-  useEffect(() => {
-    if (requested) {
-      setSession((s) => s + 1)
-      setShake(0)
-    }
-  }, [requested])
-
-  useEffect(() => {
-    if (!celebrating) return
-    const timer = setTimeout(() => setCelebrating(false), motionSafe ? CELEBRATE_MS : 0)
-    return () => clearTimeout(timer)
-  }, [celebrating, motionSafe])
-
-  const finish = async (announce: boolean) => {
-    const fresh = await refreshVaultStatus().catch(() => {
-      const s = vaultStatusStore.get()
-      if (s) vaultStatusStore.set({ ...s, unlocked: true })
-      return null
-    })
-    setCelebrating(true)
-    resolveUnlock()
-    if (announce) toast({ title: 'Vaults unlocked', tone: 'success' })
-    announceCorrupt(fresh)
-  }
-
-  const setup = status !== null && !status.setUp
-  const open = requested || celebrating
-  return (
-    <Dialog
-      open={open}
-      onClose={() => {
-        if (!celebrating) cancelUnlock()
-      }}
-      title={setup ? 'Protect your vaults' : 'Unlock vaults'}
-      description={
-        setup
-          ? "One master password opens every vault. It can't be recovered, so keep it somewhere safe."
-          : 'Enter your master password to open your vaults.'
-      }
-      icon={<LockBadge open={celebrating} />}
-      shake={shake}
-      width={400}
-    >
-      {setup ? (
-        <SetupCard key={session} onDone={() => void finish(false)} />
-      ) : (
-        <UnlockForm
-          key={session}
-          status={status}
-          onUnlocked={() => void finish(true)}
-          onWrong={() => setShake((n) => n + 1)}
-        />
-      )}
-    </Dialog>
-  )
-}
-
 /** The padlock tile at the top of the prompt: springs open and flashes green on success. */
-function LockBadge({ open }: { open: boolean }) {
+export function LockBadge({ open }: { open: boolean }) {
   const motionSafe = useMotionSafe()
   return (
     <div
@@ -140,12 +54,19 @@ function LockBadge({ open }: { open: boolean }) {
   )
 }
 
-function UnlockForm({
+/**
+ * The master-password form, with Touch ID (the platform passkey) offered and, unless `autoQuick`
+ * is false, tried once on mount when that is the quick-unlock mode. Mount it fresh for every lock so that try happens again.
+ */
+export function UnlockCard({
   status,
+  autoQuick = true,
   onUnlocked,
   onWrong,
 }: {
   status: VaultStatus | null
+  /** False after the user's own lock: they are walking away, so don't pop a Touch ID prompt. */
+  autoQuick?: boolean
   onUnlocked: () => void
   onWrong: () => void
 }) {
@@ -158,11 +79,11 @@ function UnlockForm({
   const [deadline, setDeadline] = useState(() => (status?.retryAfterMs ? Date.now() + status.retryAfterMs : 0))
   const secondsLeft = useSecondsLeft(deadline)
 
-  const mode = status?.quickUnlock ?? 'off'
-  const quickReady = mode !== 'off' && !!status?.quickUnlockAvailable[mode]
+  // Only Touch ID: the prompt-less 'login' mode would let anyone at the Mac past the gate.
+  const quickReady = status?.quickUnlock === 'touchId' && status.quickUnlockAvailable.touchId
   const [quickGone, setQuickGone] = useState(false)
   const [quickBusy, setQuickBusy] = useState(false)
-  const showTouchId = mode === 'touchId' && quickReady && !quickGone
+  const showTouchId = quickReady && !quickGone
 
   const tryQuick = async () => {
     setQuickBusy(true)
@@ -171,11 +92,7 @@ function UnlockForm({
       if (res.ok) return onUnlocked()
       if (res.reason === 'unavailable') {
         setQuickGone(true)
-        setHint(
-          mode === 'touchId'
-            ? "Touch ID isn't available right now. Use your master password."
-            : "Keychain unlock isn't available right now. Use your master password.",
-        )
+        setHint("Touch ID isn't available right now. Use your master password.")
       } else if (res.reason === 'throttled') {
         setDeadline(Date.now() + res.retryAfterMs)
       }
@@ -188,14 +105,14 @@ function UnlockForm({
     }
   }
 
-  // One automatic attempt when the prompt opens; the form is re-keyed per prompt.
+  // One automatic attempt per mount.
   const triedQuick = useRef(false)
   useEffect(() => {
-    if (quickReady && !triedQuick.current) {
+    if (autoQuick && quickReady && !triedQuick.current) {
       triedQuick.current = true
       void tryQuick()
     }
-  }, [quickReady])
+  }, [autoQuick, quickReady])
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -272,23 +189,4 @@ function UnlockForm({
       )}
     </form>
   )
-}
-
-/** Announces a lock the user did not ask for (idle, screen lock, sleep), seen via polling. */
-function useLockWatcher(status: VaultStatus | null) {
-  const wasUnlocked = useRef<boolean | null>(null)
-  useEffect(() => {
-    if (!status) return
-    if (status.unlocked) {
-      takeUserLock()
-    } else if (wasUnlocked.current && !takeUserLock()) {
-      toast({
-        title: 'Vaults locked',
-        description: 'Locked automatically. Unlock to use secrets again.',
-        tone: 'info',
-        action: { label: 'Unlock', run: () => void ensureUnlocked() },
-      })
-    }
-    wasUnlocked.current = status.unlocked
-  }, [status])
 }

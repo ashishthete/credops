@@ -3,46 +3,34 @@ import { api } from '../lib/api'
 import { toast } from '../ui/Toaster'
 import { refreshVaultStatus, vaultStatusStore } from './status'
 
-type Listener = () => void
-
-// The unlock dialog is open while someone awaits an unlock; every waiter shares one prompt.
+// Callers waiting for the gate to be passed; a locked status is what puts the gate up.
 let waiters: Array<(ok: boolean) => void> = []
-const listeners = new Set<Listener>()
-
-export const unlockRequestStore = {
-  get: (): boolean => waiters.length > 0,
-  subscribe(listener: Listener) {
-    listeners.add(listener)
-    return () => {
-      listeners.delete(listener)
-    }
-  },
-}
 
 function settle(ok: boolean) {
-  if (!waiters.length) return
   const done = waiters
   waiters = []
-  listeners.forEach((l) => l())
   done.forEach((resolve) => resolve(ok))
 }
 
-/** Called by the dialog once the vaults are open. */
+/** Called by the gate once the vaults are open. */
 export const resolveUnlock = () => settle(true)
-/** Closes the dialog; every pending ensureUnlocked() resolves to false. */
+/** Resolves every pending ensureUnlocked() to false (teardown and tests). */
 export const cancelUnlock = () => settle(false)
 
-/** Resolves true at once when unlocked; otherwise opens the unlock (or setup) dialog and waits. */
+/**
+ * Resolves true at once when unlocked. Otherwise the refreshed (locked) status brings up the
+ * auth gate, and this resolves true once the user is back through it.
+ */
 export async function ensureUnlocked(): Promise<boolean> {
   if (vaultStatusStore.get()?.unlocked) return true
   try {
     if ((await refreshVaultStatus()).unlocked) return true
   } catch {
-    // Show the dialog anyway; it reports its own errors.
+    // No status means no gate either; report "not unlocked" rather than wait forever.
+    return false
   }
   return new Promise<boolean>((resolve) => {
     waiters.push(resolve)
-    if (waiters.length === 1) listeners.forEach((l) => l())
   })
 }
 
@@ -52,7 +40,7 @@ function isLocked(err: unknown): boolean {
 
 /**
  * Runs a secret-needing action. When it fails because the vaults are locked, asks for an unlock
- * and retries once; resolves undefined if the user dismisses the prompt.
+ * and retries once; resolves undefined if no unlock happens (status unreadable).
  */
 export async function withUnlock<T>(fn: () => Promise<T>): Promise<T | undefined> {
   try {
@@ -70,6 +58,9 @@ export async function withUnlock<T>(fn: () => Promise<T>): Promise<T | undefined
 let userLockPending = false
 
 /** True (once) when the last lock was the user's; the watcher also calls it on every unlocked status. */
+/** Reads the flag without clearing it, for decisions made during render. */
+export const peekUserLock = (): boolean => userLockPending
+
 export function takeUserLock(): boolean {
   const pending = userLockPending
   userLockPending = false

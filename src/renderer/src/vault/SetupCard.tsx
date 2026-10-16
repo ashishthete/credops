@@ -5,7 +5,6 @@ import { api } from '../lib/api'
 import { Button } from '../ui/Button'
 import { SecretField } from '../ui/Field'
 import { spring, useMotionSafe } from '../ui/motion'
-import { toast } from '../ui/Toaster'
 import { toneColor } from '../ui/tone'
 import { vaultStatusStore } from './status'
 import { passwordStrength, type Strength } from './strength'
@@ -85,15 +84,9 @@ export function SetupCard({ onDone }: { onDone?: (status: VaultStatus) => void }
     setError(null)
     try {
       const status = await api.invoke('vault:setup', password)
-      vaultStatusStore.set(status)
-      const offerTouchId = status.quickUnlockAvailable.touchId && status.quickUnlock === 'off'
-      toast({
-        title: 'Master password created',
-        description: 'Your vaults are unlocked.',
-        tone: 'success',
-        action: offerTouchId ? { label: 'Enable Touch ID', run: enableTouchId } : undefined,
-      })
+      // onDone runs first so the gate can hold its success step before the status opens it.
       onDone?.(status)
+      vaultStatusStore.set(status)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       pwRef.current?.focus()
@@ -128,20 +121,4 @@ export function SetupCard({ onDone }: { onDone?: (status: VaultStatus) => void }
       </Button>
     </form>
   )
-}
-
-function enableTouchId() {
-  api
-    .invoke('vault:setQuickUnlock', 'touchId')
-    .then((status) => {
-      vaultStatusStore.set(status)
-      toast({ title: 'Touch ID enabled', tone: 'success' })
-    })
-    .catch((err: unknown) => {
-      toast({
-        title: "Couldn't enable Touch ID",
-        description: err instanceof Error ? err.message : String(err),
-        tone: 'error',
-      })
-    })
 }

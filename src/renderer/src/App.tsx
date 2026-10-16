@@ -2,16 +2,18 @@ import { HashRouter } from 'react-router'
 import { AppShell } from './shell/AppShell'
 import { CommandPalette } from './ui/CommandPalette'
 import { Toaster } from './ui/Toaster'
-import { UnlockDialog } from './vault/UnlockDialog'
+import { AuthGate } from './vault/AuthGate'
 import { VaultSettingsDialog } from './vault/VaultSettingsDialog'
 
 export function App() {
   return (
     <HashRouter>
-      <AppShell />
-      <CommandPalette />
-      <VaultSettingsDialog />
-      <UnlockDialog />
+      {/* Nothing inside the gate is mounted until the vaults are unlocked. */}
+      <AuthGate>
+        <AppShell />
+        <CommandPalette />
+        <VaultSettingsDialog />
+      </AuthGate>
       <Toaster />
     </HashRouter>
   )

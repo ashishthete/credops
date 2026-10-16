@@ -15,7 +15,7 @@ import { StrengthMeter } from './SetupCard'
 import { useVaultStatus, vaultStatusStore } from './status'
 import { passwordStrength, type Strength } from './strength'
 import { withUnlock } from './unlock'
-import { useSecondsLeft } from './UnlockDialog'
+import { useSecondsLeft } from './UnlockCard'
 
 type Listener = () => void
 let open = false
@@ -79,7 +79,9 @@ function SettingsBody({ status, onWrong }: { status: VaultStatus | null; onWrong
   const [saving, setSaving] = useState(false)
   const modes = status
     ? (Object.keys(MODE_LABELS) as QuickUnlockMode[]).filter(
-        (m) => m === 'off' || m === status.quickUnlock || status.quickUnlockAvailable[m],
+        // 'login' opens without any prompt, which would defeat the app's auth gate: never offered,
+        // only shown if it is somehow already the current mode.
+        (m) => m === 'off' || m === status.quickUnlock || (m === 'touchId' && status.quickUnlockAvailable.touchId),
       )
     : []
 

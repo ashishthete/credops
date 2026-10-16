@@ -1,6 +1,6 @@
-import { AnimatePresence, motion, useAnimate } from 'framer-motion'
+import { AnimatePresence, motion } from 'framer-motion'
 import { useEffect, useId, useLayoutEffect, useRef, type KeyboardEvent, type ReactNode } from 'react'
-import { fast, spring, useMotionSafe } from './motion'
+import { fast, spring, useMotionSafe, useShake } from './motion'
 
 export interface DialogProps {
   open: boolean
@@ -18,8 +18,6 @@ export interface DialogProps {
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-
-const SHAKE_X = [0, -8, 8, -5, 5, 0]
 
 /** Modal dialog: focus trap, Esc to close, focus handed back to the opener on close. */
 export function Dialog(props: DialogProps) {
@@ -43,7 +41,7 @@ function DialogPanel({ onClose, title, description, children, footer, icon, shak
   const titleId = useId()
   const descId = useId()
   const panel = useRef<HTMLDivElement>(null)
-  const [shakeScope, animate] = useAnimate<HTMLDivElement>()
+  const shakeScope = useShake(shake)
 
   useEffect(() => {
     const el = panel.current
@@ -51,12 +49,6 @@ function DialogPanel({ onClose, title, description, children, footer, icon, shak
       ;(el.querySelector<HTMLElement>('[autofocus], [data-autofocus]') ?? el.querySelector<HTMLElement>(FOCUSABLE) ?? el).focus()
     }
   }, [])
-
-  useEffect(() => {
-    if (shake && motionSafe && shakeScope.current) {
-      void animate(shakeScope.current, { x: SHAKE_X }, { duration: 0.25, ease: 'easeOut' })
-    }
-  }, [shake, motionSafe, animate, shakeScope])
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Escape') {
