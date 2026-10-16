@@ -57,7 +57,10 @@ describe('shell', () => {
     act(() => {
       fireEvent.keyDown(window, { key: '3', metaKey: true })
     })
-    expect(await screen.findByRole('heading', { name: 'Hosts', level: 1 })).toBeInTheDocument()
+    // The page swaps its loading layout for the empty one once host:list lands, remounting the
+    // heading; wait for that so the assertion never holds a detached node.
+    expect(await screen.findByText('No hosts yet')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Hosts', level: 1 })).toBeInTheDocument()
     expect(screen.queryByText('Coming in phase 3')).not.toBeInTheDocument()
   })
 
