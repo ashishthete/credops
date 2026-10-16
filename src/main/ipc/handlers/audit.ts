@@ -36,7 +36,13 @@ export function createAuditHandlers(
         if (page.length < PAGE) break
         beforeId = page[page.length - 1].id
       }
-      await writeFile(path, toCsv(events), 'utf8')
+      try {
+        await writeFile(path, toCsv(events), 'utf8')
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err)
+        log.append({ action: 'audit.export', outcome: 'failure', details: { path, reason } })
+        throw err
+      }
       log.append({ action: 'audit.export', outcome: 'success', details: { path, count: events.length } })
       return { path }
     },

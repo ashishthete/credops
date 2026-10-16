@@ -10,7 +10,14 @@ import {
   X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { AuditAction, AuditEvent, AuditFilter, AuditOutcome, ChainVerification } from '../../../shared/audit'
+import {
+  AUDIT_ACTIONS,
+  type AuditAction,
+  type AuditEvent,
+  type AuditFilter,
+  type AuditOutcome,
+  type ChainVerification,
+} from '../../../shared/audit'
 import { api } from '../lib/api'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
@@ -25,7 +32,6 @@ const PAGE_SIZE = 200
 const SEARCH_DEBOUNCE_MS = 250
 
 const OUTCOMES: AuditOutcome[] = ['success', 'failure', 'denied', 'info']
-const ACTIONS: AuditAction[] = ['app.start', 'app.quit', 'audit.verify', 'audit.export']
 
 const OUTCOME_TONE: Record<AuditOutcome, Tone> = {
   success: 'success',
@@ -280,7 +286,7 @@ export function AuditPage() {
           className={FIELD}
         >
           <option value="">All actions</option>
-          {ACTIONS.map((a) => (
+          {AUDIT_ACTIONS.map((a) => (
             <option key={a} value={a}>
               {a}
             </option>

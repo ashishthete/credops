@@ -5,6 +5,11 @@ import '@fontsource-variable/jetbrains-mono'
 import { App } from './App'
 import './styles.css'
 
+// A file dropped on the window must not navigate it (main also blocks navigation).
+for (const type of ['dragover', 'drop'] as const) {
+  document.addEventListener(type, (e) => e.preventDefault())
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />

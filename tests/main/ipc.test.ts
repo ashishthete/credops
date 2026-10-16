@@ -66,6 +66,16 @@ describe('audit handlers', () => {
     expect(ev.details).toEqual({ path, count: 1005 })
   })
 
+  it('audits a failed export and rethrows', async () => {
+    const path = join(dir, 'missing-dir', 'out.csv')
+    const h = createAuditHandlers(log, { saveDialog: async () => path })
+    await expect(h['audit:exportCsv']({})).rejects.toThrow(/ENOENT/)
+    const [ev] = log.list({ actions: ['audit.export'] })
+    expect(ev.outcome).toBe('failure')
+    expect(ev.details['path']).toBe(path)
+    expect(String(ev.details['reason'])).toMatch(/ENOENT/)
+  })
+
   it('returns null and no event when the dialog is cancelled', async () => {
     const h = createAuditHandlers(log, { saveDialog: async () => undefined })
     expect(await h['audit:exportCsv']({})).toBeNull()

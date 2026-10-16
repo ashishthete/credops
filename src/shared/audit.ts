@@ -1,6 +1,9 @@
-// Type-only: imported by the renderer, so no runtime code here.
+// Imported by the renderer: keep runtime code to plain constants (no node or electron imports).
 export type AuditOutcome = 'success' | 'failure' | 'denied' | 'info'
-export type AuditAction = 'app.start' | 'app.quit' | 'audit.verify' | 'audit.export' // later phases extend
+
+/** Every audit action; `AuditAction` is derived from it, so the list is complete by construction. */
+export const AUDIT_ACTIONS = ['app.start', 'app.quit', 'audit.verify', 'audit.export'] as const // later phases extend
+export type AuditAction = (typeof AUDIT_ACTIONS)[number]
 
 export interface AuditInput {
   action: AuditAction

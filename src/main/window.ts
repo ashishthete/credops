@@ -19,3 +19,28 @@ export function windowOptions(preloadPath: string): BrowserWindowConstructorOpti
     },
   }
 }
+
+const withoutHash = (u: URL): string => {
+  u.hash = ''
+  return u.href
+}
+
+/**
+ * True only when `target` is the document already loaded (hash routing aside).
+ * Blocks dropped files, links and redirects from replacing the app.
+ */
+export function shouldAllowNavigation(current: string, target: string): boolean {
+  try {
+    return withoutHash(new URL(target)) === withoutHash(new URL(current))
+  } catch {
+    return false
+  }
+}
+
+/** The dev server URL, honoured only for unpackaged (dev) runs. */
+export function devRendererUrl(
+  isPackaged: boolean,
+  env: Record<string, string | undefined>,
+): string | undefined {
+  return isPackaged ? undefined : env['ELECTRON_RENDERER_URL'] || undefined
+}

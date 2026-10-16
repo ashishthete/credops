@@ -57,6 +57,20 @@ describe('AuditLog', () => {
     expect(JSON.stringify(e)).not.toContain('hunter2hunter2')
   })
 
+  it('redacts known secrets in target label and id', () => {
+    const l = new AuditLog(db, { actor, knownSecrets: () => ['hunter2hunter2'] })
+    const e = l.append({
+      action: 'app.start',
+      outcome: 'info',
+      targetId: 'id-hunter2hunter2',
+      targetLabel: 'web-01 hunter2hunter2',
+    })
+    expect(e.targetLabel).toBe(`web-01 ${REDACTED}`)
+    expect(e.targetId).toBe(`id-${REDACTED}`)
+    expect(JSON.stringify(l.list())).not.toContain('hunter2hunter2')
+    expect(l.verifyChain().ok).toBe(true)
+  })
+
   it('is append-only', () => {
     seedFive()
     expect(() => db.exec("UPDATE audit_events SET outcome='success'")).toThrow(/append-only/)

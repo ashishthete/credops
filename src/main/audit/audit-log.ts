@@ -120,7 +120,8 @@ export class AuditLog {
 
   append(input: AuditInput): AuditEvent {
     // Round-trip so the hashed value is exactly what is stored and re-parsed.
-    const detailsJson = JSON.stringify(redact(input.details ?? {}, this.knownSecrets()), bigintAsString)
+    const secrets = this.knownSecrets()
+    const detailsJson = JSON.stringify(redact(input.details ?? {}, secrets), bigintAsString)
     const details = JSON.parse(detailsJson) as Record<string, unknown>
 
     this.db.exec('BEGIN IMMEDIATE')
@@ -134,8 +135,8 @@ export class AuditLog {
         actorMachine: this.actor.machine,
         action: input.action,
         targetType: input.targetType ?? null,
-        targetId: input.targetId ?? null,
-        targetLabel: input.targetLabel ?? null,
+        targetId: input.targetId === undefined ? null : redact(input.targetId, secrets),
+        targetLabel: input.targetLabel === undefined ? null : redact(input.targetLabel, secrets),
         outcome: input.outcome,
         details,
         prevHash: last?.hash ?? GENESIS_HASH,

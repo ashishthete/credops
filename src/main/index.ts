@@ -1,12 +1,19 @@
 import { join } from 'node:path'
 import { hostname, userInfo } from 'node:os'
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, session, shell } from 'electron'
 import { AuditLog } from './audit/audit-log'
 import { openDatabase, type Db } from './db/connection'
 import { createAppHandlers } from './ipc/handlers/app'
 import { createAuditHandlers } from './ipc/handlers/audit'
 import { isTrustedSender, registerHandlers } from './ipc/register'
-import { windowOptions } from './window'
+import { redact } from './security/redact'
+import { devRendererUrl, shouldAllowNavigation, windowOptions } from './window'
+
+// Keep dev data apart from the packaged app's (same name, same userData otherwise).
+// Must run before anything touches userData, including the single-instance lock.
+if (!app.isPackaged) app.setPath('userData', `${app.getPath('userData')}-dev`)
+
+const devServerUrl = devRendererUrl(app.isPackaged, process.env)
 
 let mainWindow: BrowserWindow | null = null
 let db: Db | null = null
@@ -26,9 +33,12 @@ function createWindow(): void {
     if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
     return { action: 'deny' }
   })
+  // Hash-route changes do not fire will-navigate; anything that does would leave the app.
+  win.webContents.on('will-navigate', (event, url) => {
+    if (!shouldAllowNavigation(win.webContents.getURL(), url)) event.preventDefault()
+  })
 
-  const devUrl = process.env['ELECTRON_RENDERER_URL']
-  if (devUrl) void win.loadURL(devUrl)
+  if (devServerUrl) void win.loadURL(devServerUrl)
   else void win.loadFile(join(__dirname, '../renderer/index.html'))
 }
 
@@ -44,12 +54,13 @@ if (!app.requestSingleInstanceLock()) {
   app
     .whenReady()
     .then(() => {
+      session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
+      session.defaultSession.setPermissionCheckHandler(() => false)
       db = openDatabase(join(app.getPath('userData'), 'opsdeck.db'))
       audit = new AuditLog(db)
       audit.append({ action: 'app.start', outcome: 'info', details: { version: app.getVersion() } })
       const log = audit
       const rendererFile = join(__dirname, '../renderer/index.html')
-      const devServerUrl = process.env['ELECTRON_RENDERER_URL']
       registerHandlers(
         ipcMain,
         {
@@ -75,6 +86,8 @@ if (!app.requestSingleInstanceLock()) {
     })
     .catch((err) => {
       console.error('Startup failed:', err)
+      const message = redact(err instanceof Error ? err.message : String(err))
+      dialog.showErrorBox('OpsDeck could not start', message)
       app.quit()
     })
 
