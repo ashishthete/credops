@@ -117,7 +117,7 @@ describe('AuditLog', () => {
     expect(log.verifyChain()).toEqual({ ok: false, count: 5, brokenAtId: 4, reason: 'hash-mismatch' })
     const rows = log.list()
     expect(rows).toHaveLength(5)
-    expect(rows.find((e) => e.id === 4)?.details).toEqual({ _corrupt: '{' })
+    expect(rows.find((e) => e.id === 4)?.details).toEqual({ _corrupt: true, bytes: 1 })
   })
 
   it('detects a broken prev link', () => {

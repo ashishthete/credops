@@ -60,7 +60,8 @@ function toEvent(r: Row, tolerant = false): AuditEvent {
     details = parseDetails(r.details)
   } catch (err) {
     if (!tolerant) throw err
-    details = { _corrupt: r.details }
+    // Never return the raw text: it may hold secrets that were never redacted.
+    details = { _corrupt: true, bytes: r.details.length }
   }
   return {
     id: r.id,

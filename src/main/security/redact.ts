@@ -36,6 +36,7 @@ export function redact<T>(value: T, knownSecrets: readonly string[] = []): T {
 
   const walk = (v: unknown): unknown => {
     if (typeof v === 'string') return maskString(v)
+    if (typeof v === 'bigint') return v.toString()
     if (v === null || typeof v !== 'object') {
       return typeof v === 'function' || typeof v === 'symbol' ? maskString(String(v)) : v
     }

@@ -119,7 +119,7 @@ describe('audit page', () => {
   it('details drawer shows JSON, closes on Esc and returns focus', async () => {
     const user = userEvent.setup()
     mockBridge({
-      'audit:list': [auditEvent({ id: 7, details: { pid: 42 } }), auditEvent({ id: 6, details: { _corrupt: '{bad' } })],
+      'audit:list': [auditEvent({ id: 7, details: { pid: 42 } }), auditEvent({ id: 6, details: { _corrupt: true, bytes: 4 } })],
     })
     renderPage()
     const rows = await screen.findAllByRole('button', { name: /Event #/ })
@@ -133,7 +133,7 @@ describe('audit page', () => {
     expect(rows[0]).toHaveFocus()
 
     await user.click(rows[1])
-    expect(await screen.findByRole('dialog', { name: /Event #6/ })).toHaveTextContent('{bad')
+    expect(await screen.findByRole('dialog', { name: /Event #6/ })).toHaveTextContent('"_corrupt": true')
   })
 
   it('cancelled export shows no error', async () => {

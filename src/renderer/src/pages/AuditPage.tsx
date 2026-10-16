@@ -558,8 +558,8 @@ function DetailsDrawer({ event, onClose }: { event: AuditEvent | null; onClose: 
 }
 
 function EventDetails({ event: ev, onClose }: { event: AuditEvent; onClose: () => void }) {
-  const corrupt = typeof ev.details._corrupt === 'string' ? ev.details._corrupt : null
-  const json = corrupt ?? JSON.stringify(ev.details, null, 2)
+  const corrupt = ev.details._corrupt === true
+  const json = JSON.stringify(ev.details, null, 2)
 
   const copy = async () => {
     try {
@@ -619,7 +619,7 @@ function EventDetails({ event: ev, onClose }: { event: AuditEvent; onClose: () =
         <div className="mt-5 flex items-center justify-between">
           <h3 className="text-[11px] font-medium tracking-wide text-muted uppercase">Details</h3>
           <div className="flex items-center gap-2">
-            {corrupt !== null && (
+            {corrupt && (
               <Badge tone="warn" dot>
                 Unreadable JSON
               </Badge>
