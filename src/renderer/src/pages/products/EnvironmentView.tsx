@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { KeyRound, Link2, Lock, Network, Pencil, Route, Server, Trash2, X } from 'lucide-react'
+import { KeyRound, Link2, Lock, Network, Pencil, Plus, Route, Server, Trash2, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { DEFAULT_SSH_PORT, type EnvironmentMeta } from '../../../../shared/inventory'
 import { sourceLabel } from '../../inventory/choices'
@@ -17,11 +17,12 @@ interface EnvironmentViewProps {
   data: InventoryData
   onSelect: (key: NodeKey) => void
   onRemoveHost: (hostId: string) => void
+  onNewHost: () => void
   onEdit: () => void
   onDelete: () => void
 }
 
-export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onEdit, onDelete }: EnvironmentViewProps) {
+export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onNewHost, onEdit, onDelete }: EnvironmentViewProps) {
   const motionSafe = useMotionSafe()
   const hostById = new Map(data.hosts.map((h) => [h.id, h]))
   const identity = env.defaultIdentityId ? data.identities.find((i) => i.id === env.defaultIdentityId) : undefined
@@ -60,6 +61,9 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onE
         }
         actions={
           <>
+            <Button size="sm" icon={<Plus aria-hidden className="size-3.5" />} onClick={onNewHost}>
+              New host
+            </Button>
             <Button size="sm" variant="ghost" icon={<Pencil aria-hidden className="size-3.5" />} onClick={onEdit}>
               Edit
             </Button>
@@ -94,7 +98,7 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onE
           <div className="mt-6 flex flex-col items-center gap-2 rounded-xl border border-dashed border-line px-6 py-10 text-center">
             <Server aria-hidden className="size-5 text-muted" strokeWidth={1.8} />
             <p className="text-[13px] font-medium text-fg">No hosts in this environment yet</p>
-            <p className="text-[12.5px] text-muted">Drag a host onto {env.name} in the tree to add it.</p>
+            <p className="text-[12.5px] text-muted">Create one with New host, or drag a host onto {env.name} in the tree.</p>
           </div>
         ) : (
           groups.map((g) => (

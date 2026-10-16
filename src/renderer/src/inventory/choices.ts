@@ -46,7 +46,7 @@ export function sourceLabel(source: ValueSource | null, envName?: string): strin
     case 'host':
       return 'From this host'
     case 'environment':
-      return `Inherited from ${envName}`
+      return `Inherited from ${envName ?? 'environment'}`
     case 'global':
       return 'App default'
     default:

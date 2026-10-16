@@ -85,6 +85,7 @@ describe('picker choices', () => {
   it('source labels', () => {
     expect(sourceLabel('host')).toBe('From this host')
     expect(sourceLabel('environment', 'prod')).toBe('Inherited from prod')
+    expect(sourceLabel('environment')).toBe('Inherited from environment')
     expect(sourceLabel('global')).toBe('App default')
     expect(sourceLabel(null)).toBe('None')
   })

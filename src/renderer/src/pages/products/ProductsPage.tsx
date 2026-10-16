@@ -1,8 +1,8 @@
 import { motion } from 'framer-motion'
-import { Boxes, Inbox, Plus, Server } from 'lucide-react'
+import { Boxes, Inbox, Plus } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
-import type { EnvironmentMeta, ProductMeta } from '../../../../shared/inventory'
+import type { EnvironmentMeta, Membership, ProductMeta } from '../../../../shared/inventory'
 import { inv, inventoryStore, loadInventory, useInventory, type InventoryData } from '../../inventory/store'
 import { buildTree, selectionFromKey, type NodeKey, type TreeRow } from '../../inventory/tree'
 import { Badge } from '../../ui/Badge'
@@ -14,6 +14,8 @@ import { useShortcut } from '../../ui/shortcuts'
 import { Skeleton } from '../../ui/Skeleton'
 import { toast } from '../../ui/Toaster'
 import { useVaultStatus } from '../../vault/status'
+import { HostDialog } from '../hosts/HostDialog'
+import { HostView } from '../hosts/HostView'
 import { EnvironmentDialog } from './EnvironmentDialog'
 import { EnvironmentView } from './EnvironmentView'
 import { InventoryTree } from './InventoryTree'
@@ -41,6 +43,7 @@ const envPlacement = (env: EnvironmentMeta, preferProduct?: string) =>
 type Dialogs =
   | { kind: 'product'; product?: ProductMeta }
   | { kind: 'environment'; environment?: EnvironmentMeta; productIds: string[] }
+  | { kind: 'host'; presetEnvironment: Membership; envKey: NodeKey }
   | null
 
 export function ProductsPage() {
@@ -220,20 +223,8 @@ export function ProductsPage() {
       )
     }
     if (sel.hostId) {
-      const h = data.hosts.find((x) => x.id === sel.hostId)
-      if (!h) return null
-      return (
-        <>
-          <PaneHeader lead={<Server aria-hidden className="size-4 text-muted" />} title={h.label} />
-          <div className="px-8 pt-2 text-[13px] text-muted">
-            <span className="font-mono text-fg/85">
-              {h.address}
-              {h.port != null ? `:${h.port}` : ''}
-            </span>
-            <span className="ml-3">In {plural(h.environments.length, 'environment')}</span>
-          </div>
-        </>
-      )
+      if (!data.hosts.some((x) => x.id === sel.hostId)) return null
+      return <HostView key={sel.hostId} hostId={sel.hostId} environmentId={sel.environmentId} onDeleted={() => select(parentOf(selected))} />
     }
     if (sel.environmentId) {
       const e = env(sel.environmentId)
@@ -245,6 +236,7 @@ export function ProductsPage() {
           data={data}
           onSelect={select}
           onRemoveHost={(id) => askRemoveHost(e, id)}
+          onNewHost={() => openDialog({ kind: 'host', presetEnvironment: { environmentId: e.id, role: 'app' }, envKey: selected })}
           onEdit={() => openDialog({ kind: 'environment', environment: e, productIds: e.productIds })}
           onDelete={() => askDeleteEnvironment(e, selected)}
         />
@@ -351,6 +343,18 @@ export function ProductsPage() {
             const key = envPlacement(e, sel.productId)
             expand(parentOf(key))
             if (key !== selected) select(key)
+          }}
+        />
+      )}
+      {dialog?.kind === 'host' && (
+        <HostDialog
+          open={dialogOpen}
+          presetEnvironment={dialog.presetEnvironment}
+          onClose={closeDialog}
+          onSaved={(h) => {
+            closeDialog()
+            expand(dialog.envKey)
+            select(`${dialog.envKey}/h:${h.id}`)
           }}
         />
       )}

@@ -404,6 +404,31 @@ describe('products page', () => {
     expect(await within(main).findByText('No hosts in this environment yet')).toBeInTheDocument()
   })
 
+  it('a host selection opens the host view in its environment', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderPage()
+    await user.click(await screen.findByRole('treeitem', { name: 'web-1' }))
+    const main = screen.getByRole('region', { name: 'Details' })
+    expect(await within(main).findByRole('heading', { name: 'web-1', level: 2 })).toBeInTheDocument()
+    expect(within(main).getByRole('region', { name: 'Connection' })).toBeInTheDocument()
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('host:resolve', 'web1', 'prod'))
+    expect(within(main).getByRole('radio', { name: 'prod' })).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('new host from an environment lands in it', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderPage()
+    await user.click(await screen.findByRole('treeitem', { name: 'staging' }))
+    await user.click(screen.getByRole('button', { name: 'New host' }))
+    const dialog = await screen.findByRole('dialog', { name: 'New host' })
+    await user.type(within(dialog).getByLabelText('Label'), 'db-2')
+    await user.type(within(dialog).getByLabelText('Address'), '10.0.0.9')
+    await user.click(within(dialog).getByRole('button', { name: 'Create host' }))
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('host:create', expect.objectContaining({ environments: [{ environmentId: 'staging', role: 'app' }] })),
+    )
+  })
+
   it('reduced motion', async () => {
     motion.safe = false
     const user = userEvent.setup()
