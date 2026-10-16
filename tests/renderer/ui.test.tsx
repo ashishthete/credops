@@ -258,4 +258,24 @@ describe('shortcuts', () => {
     fireEvent.keyDown(document.body, { key: '1', metaKey: true })
     expect(onOne).toHaveBeenCalledOnce()
   })
+
+  it('mod+w from inside .xterm reaches the shortcut handler; ctrl+c does not', () => {
+    const onW = vi.fn()
+    function Term() {
+      useShortcut('mod+w', onW)
+      return (
+        <div className="xterm">
+          <textarea aria-label="xterm input" />
+        </div>
+      )
+    }
+    render(<Term />)
+    const area = screen.getByLabelText('xterm input')
+    area.focus()
+
+    fireEvent.keyDown(area, { key: 'c', ctrlKey: true })
+    expect(onW).not.toHaveBeenCalled()
+    fireEvent.keyDown(area, { key: 'w', metaKey: true })
+    expect(onW).toHaveBeenCalledOnce()
+  })
 })

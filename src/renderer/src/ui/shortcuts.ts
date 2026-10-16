@@ -48,6 +48,11 @@ function matches(c: Combo, e: KeyboardEvent): boolean {
   )
 }
 
+/** xterm keeps a hidden textarea focused; app combos typed there are shortcuts, not typing. */
+function isInTerminal(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && target.closest('.xterm') !== null
+}
+
 function isEditable(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false
   return (
@@ -71,7 +76,8 @@ export function useShortcut(combo: string, handler: () => void): void {
     const onKeyDown = (e: KeyboardEvent) => {
       // Skip IME composition and auto-repeat, so holding a toggle like ⌘K doesn't flicker.
       if (e.defaultPrevented || e.isComposing || e.repeat || !matches(parsed, e)) return
-      if (!ALLOWED_IN_INPUTS.has(normalized) && isEditable(e.target)) return
+      const fromTerminal = parsed.mod && isInTerminal(e.target)
+      if (!ALLOWED_IN_INPUTS.has(normalized) && !fromTerminal && isEditable(e.target)) return
       e.preventDefault()
       handlerRef.current()
     }
