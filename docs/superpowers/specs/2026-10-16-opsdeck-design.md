@@ -99,7 +99,10 @@ SSH config, hosts inheriting from a parent), not code or branding.
 
 ## 4. Non-goals (v1)
 
-- Cloud sync, accounts, team sharing of vaults, or a server component.
+- Cloud sync, accounts, or team sharing of vaults.
+- A server component in v1. A deployments-only server ("OpsDeck Hub") is planned
+  as phase 10 (see §8.9). SSH sessions and tunnels stay on each user's machine
+  for good: they use personal keys and local ports.
 - Windows/Linux builds (keep the code portable; ship macOS only).
 - SFTP browser, mosh, telnet, serial, FIDO2 hardware keys, cloud-provider import.
 - Kubernetes or non-compose deploy targets.
@@ -289,6 +292,27 @@ Other rules:
   `command`). Rollback is a separate generated playbook. The local steps
   (release notes, Teams, email, QA dispatch) run in OpsDeck itself, after the
   playbook finishes.
+- **Runner boundary (built for the Hub).**
+  - A release run is a record (`release_run`) plus an append-only stream of
+    `run_event`s: step started, log line, step done, step failed, rollback
+    started/done, run finished.
+  - Run and event ids are UUIDv7, so histories from several machines can be merged.
+  - The UI (pipeline animation, logs, history) reads only that stream, never the
+    Ansible process directly.
+  - Ansible runs behind a `DeployRunner` interface: `start(plan) → runId`,
+    `events(runId)`, `cancel(runId)`. Phase 8 ships `LocalRunner`, which runs
+    `ansible-playbook` on this machine. Phase 10 adds `HubRunner` without changing
+    the UI.
+- **Host deploy lock.**
+  - Before any step, each host play takes a lock by creating
+    `<repo_path>/.opsdeck-deploy.lock`. The lock records who, from which machine,
+    the release id and the start time.
+  - It is released in an `always:` block. A lock older than 2 h counts as stale.
+    The user may break a stale lock only after a typed confirmation, and the break
+    is audited.
+  - If another user holds the lock, preflight fails with "<user>@<machine> is
+    deploying <release> since <time>".
+  - This prevents two people deploying the same host at once, with no server.
 
 ### 8.5 Visualization
 - **Map view** per environment: hosts as nodes (role icon, reachability dot),
@@ -320,6 +344,22 @@ Other rules:
 - Viewer: filter by actor, action, environment and date; export to CSV.
 - A "verify chain" button checks the hash chain.
 
+### 8.9 OpsDeck Hub (phase 10, deployments only)
+
+The Hub is a small self-hosted server, for example on an existing Azure VM. It
+centralizes deployments only:
+- Runs releases (Ansible) server-side, so closing a laptop doesn't kill a deploy.
+- Holds the shared deploy secrets (`.env` values, Teams/SendGrid/GitHub tokens),
+  so they no longer sit on every laptop.
+- Keeps environment locks, live run status, and one team-wide deploy history and
+  audit trail.
+- Sends Teams/email notifications and generates AI release notes.
+
+The desktop app connects as a client. Deployments of a Hub-linked environment go
+through `HubRunner`, and everyone sees live runs. SSH, tunnels, vault SSH keys
+and the local audit trail stay local. Until the Hub exists, Teams notifications
+are the team's shared deploy feed.
+
 ## 9. Build order (one by one)
 
 Each phase ends usable and demoable.
@@ -340,6 +380,8 @@ Each phase ends usable and demoable.
    animation.
 9. **Notifications and AI help:** Teams webhooks, macOS notifications,
    "Explain & fix".
+10. **OpsDeck Hub:** deployments-only server: HubRunner, shared deploy secrets,
+    environment locks, team-wide run history, live status for all users.
 
 ## 9a. Calls made after the builder review (Claude's calls, check these)
 
