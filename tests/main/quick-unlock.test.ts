@@ -87,6 +87,7 @@ describe('quick unlock', () => {
     resolve()
     expect(await pending).toEqual({ ok: false, reason: 'cancelled', retryAfterMs: 0 })
     expect(f.vault.isUnlocked()).toBe(false)
+    expect(f.quick.keychain.decrypt).not.toHaveBeenCalled()
     expect(f.vault.status().quickUnlock).toBe('touchId')
     // The cache survives and works next time.
     expect(await f.vault.unlockQuick()).toEqual({ ok: true })
@@ -150,7 +151,10 @@ describe('quick unlock', () => {
     const avail = { keychain: true, touchId: true }
     const f = await ready(fakeQuick(avail))
     f.vault.lock('manual')
+    const rows = events(f).length
     expect(await f.vault.unlockQuick()).toMatchObject({ ok: false, reason: 'unavailable' })
+    // Off is not an attempt: nothing audited.
+    expect(events(f)).toHaveLength(rows)
     await f.vault.unlock(PW)
     f.vault.setQuickUnlock('touchId')
     f.vault.lock('manual')
@@ -213,6 +217,23 @@ describe('quick unlock', () => {
     avail.keychain = false
     expect(await f.vault.changePassword(PW, PW2)).toEqual({ ok: true })
     expect(stateRow(f)).toEqual({ quick_unlock: 'off', quick_unlock_blob: null })
+    expect(events(f)).toContainEqual({
+      action: 'vault.quickunlock',
+      outcome: 'info',
+      details: { mode: 'off', reason: 'rekey' },
+    })
+  })
+
+  it('a failed keychain encrypt propagates and writes nothing', async () => {
+    const quick = fakeQuick()
+    quick.keychain.encrypt = () => {
+      throw new Error('keychain denied')
+    }
+    const f = await ready(quick)
+    const rows = events(f).length
+    expect(() => f.vault.setQuickUnlock('login')).toThrow(/keychain denied/)
+    expect(stateRow(f)).toEqual({ quick_unlock: 'off', quick_unlock_blob: null })
+    expect(events(f)).toHaveLength(rows)
   })
 
   it('cache holds no password', async () => {

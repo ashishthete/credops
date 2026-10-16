@@ -212,7 +212,7 @@ export class VaultService {
         this.audit.append({ action: 'vault.unlock', outcome: 'failure', details: { method: mode, reason } })
         return res
       }
-      if (mode === 'off' || !blob) return fail('off', UNAVAILABLE)
+      if (mode === 'off' || !blob) return UNAVAILABLE
       // Possibly temporary (e.g. a closed laptop lid hides Touch ID): keep the cache.
       if (!this.modeAvailable(mode)) return fail('unavailable', UNAVAILABLE)
       const epoch = this.epoch
@@ -222,6 +222,8 @@ export class VaultService {
         } catch {
           return fail('cancelled', CANCELLED)
         }
+        // A lock during the prompt must not reach the keychain (nor discard a good cache).
+        if (epoch !== this.epoch) return fail('cancelled', CANCELLED)
       }
       let kek: Buffer
       try {
@@ -264,6 +266,13 @@ export class VaultService {
     }
     this.audit.append({ action: 'vault.quickunlock', outcome: 'success', details: { mode } })
     return this.status()
+  }
+
+  autoLockMinutes(): number | null {
+    const row = this.db.prepare('SELECT auto_lock_minutes FROM vault_state WHERE id = 1').get() as {
+      auto_lock_minutes: number | null
+    }
+    return row.auto_lock_minutes
   }
 
   /** Not secret, so allowed while locked. */

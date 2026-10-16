@@ -59,7 +59,9 @@ describe('AutoLock', () => {
   it('setAutoLock persists', async () => {
     const f = makeVault()
     await f.vault.setup('correct horse')
+    expect(f.vault.autoLockMinutes()).toBe(15)
     expect(f.vault.setAutoLock(60).autoLockMinutes).toBe(60)
+    expect(f.vault.autoLockMinutes()).toBe(60)
     expect(makeVault({ db: f.db }).vault.status().autoLockMinutes).toBe(60)
     expect(f.audit.list({ actions: ['vault.autolock'] })[0]).toMatchObject({
       outcome: 'success',

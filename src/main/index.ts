@@ -83,13 +83,14 @@ if (!app.requestSingleInstanceLock()) {
       vault = service
       stopAutoLock = new AutoLock({
         idleSeconds: () => powerMonitor.getSystemIdleTime(),
-        minutes: () => service.status().autoLockMinutes,
+        minutes: () => service.autoLockMinutes(),
         isUnlocked: () => service.isUnlocked(),
         lock: (reason) => service.lock(reason),
       }).start()
       // vault is null once will-quit has closed the db.
       powerMonitor.on('lock-screen', () => vault?.lock('screen'))
       powerMonitor.on('suspend', () => vault?.lock('suspend'))
+      powerMonitor.on('shutdown', () => vault?.lock('quit'))
       const rendererFile = join(__dirname, '../renderer/index.html')
       registerHandlers(
         ipcMain,
