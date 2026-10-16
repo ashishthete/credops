@@ -2,17 +2,29 @@ import { AUDIT_ACTIONS, type AuditFilter } from '../../shared/audit'
 import type { Channel, IpcContract } from '../../shared/ipc'
 import {
   AUTO_LOCK_CHOICES,
+  IDENTITY_AUTHS,
+  MAX_KEY_COMMENT,
+  MAX_KEY_PATH,
+  MAX_LABEL,
   MAX_MASTER_PASSWORD,
+  MAX_PASSPHRASE,
   MAX_SECRET_NAME,
   MAX_SECRET_VALUE,
+  MAX_USERNAME,
   MAX_VAULT_NAME,
   QUICK_UNLOCK_MODES,
   SECRET_KINDS,
   VAULT_COLOR,
+  type IdentityInput,
+  type IdentityPatch,
+  type KeyGenerateInput,
+  type KeyImportInput,
+  type KeyLinkInput,
   type SecretInput,
   type SecretPatch,
   type VaultInput,
 } from '../../shared/vault'
+import { MAX_PRIVATE_KEY_BYTES } from '../vault/openssh'
 import { args, v, type ArgsValidator, type Check } from './validate'
 
 const OUTCOMES = ['success', 'failure', 'denied', 'info'] as const
@@ -57,6 +69,54 @@ export const asSecretPatch: Check<SecretPatch> = v.object({
   value: v.optional(secretValue),
 })
 
+const label = v.str({ min: 1, max: MAX_LABEL, trim: true })
+// Not trimmed: whitespace can be part of a passphrase, password or key file.
+const passphrase = v.optional(v.str({ min: 1, max: MAX_PASSPHRASE }))
+
+export const asKeyLinkInput: Check<KeyLinkInput> = v.object({
+  vaultId: v.uuid(),
+  label,
+  path: v.str({ min: 1, max: MAX_KEY_PATH }),
+  passphrase,
+})
+export const asKeyImportInput: Check<KeyImportInput> = v.object({
+  vaultId: v.uuid(),
+  label,
+  privateKey: v.str({ min: 1, max: MAX_PRIVATE_KEY_BYTES }),
+  passphrase,
+})
+export const asKeyImportFileInput: Check<Omit<KeyImportInput, 'privateKey'>> = v.object({
+  vaultId: v.uuid(),
+  label,
+  passphrase,
+})
+export const asKeyGenerateInput: Check<KeyGenerateInput> = v.object({
+  vaultId: v.uuid(),
+  label,
+  comment: v.optional(v.str({ max: MAX_KEY_COMMENT })),
+})
+export const asKeyPatch: Check<{ label?: string }> = v.object({ label: v.optional(label) })
+
+const username = v.str({ min: 1, max: MAX_USERNAME, trim: true })
+const identityAuth = v.oneOf(IDENTITY_AUTHS)
+const password = v.optional(v.str({ min: 1, max: MAX_SECRET_VALUE }))
+
+export const asIdentityInput: Check<IdentityInput> = v.object({
+  vaultId: v.uuid(),
+  label,
+  username,
+  auth: identityAuth,
+  sshKeyId: v.optional(v.uuid()),
+  password,
+})
+export const asIdentityPatch: Check<IdentityPatch> = v.object({
+  label: v.optional(label),
+  username: v.optional(username),
+  auth: v.optional(identityAuth),
+  sshKeyId: v.optional(v.uuid()),
+  password,
+})
+
 /** Every channel must have an entry; each later task adds its own. */
 export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']> } = {
   'app:info': args(),
@@ -81,4 +141,17 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'secret:delete': args(v.uuid()),
   'secret:reveal': args(v.uuid()),
   'secret:copy': args(v.uuid()),
+  'key:list': args(v.optional(v.uuid())),
+  'key:scanLocal': args(),
+  'key:link': args(asKeyLinkInput),
+  'key:import': args(asKeyImportInput),
+  'key:importFile': args(asKeyImportFileInput),
+  'key:generate': args(asKeyGenerateInput),
+  'key:update': args(v.uuid(), asKeyPatch),
+  'key:delete': args(v.uuid()),
+  'key:copyPublic': args(v.uuid()),
+  'identity:list': args(v.optional(v.uuid())),
+  'identity:create': args(asIdentityInput),
+  'identity:update': args(v.uuid(), asIdentityPatch),
+  'identity:delete': args(v.uuid()),
 }

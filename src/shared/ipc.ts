@@ -1,9 +1,17 @@
 import type { AuditEvent, AuditFilter, ChainVerification } from './audit'
 import type {
+  IdentityInput,
+  IdentityMeta,
+  IdentityPatch,
+  KeyGenerateInput,
+  KeyImportInput,
+  KeyLinkInput,
+  LocalKeyCandidate,
   QuickUnlockMode,
   SecretInput,
   SecretMeta,
   SecretPatch,
+  SshKeyMeta,
   UnlockResult,
   VaultInput,
   VaultMeta,
@@ -54,6 +62,20 @@ export interface IpcContract {
   'secret:delete': { args: [id: string]; result: void }
   'secret:reveal': { args: [id: string]; result: { value: string } }
   'secret:copy': { args: [id: string]; result: { clearsInMs: number } }
+  'key:list': { args: [vaultId?: string]; result: SshKeyMeta[] }
+  'key:scanLocal': { args: []; result: LocalKeyCandidate[] }
+  'key:link': { args: [input: KeyLinkInput]; result: SshKeyMeta }
+  'key:import': { args: [input: KeyImportInput]; result: SshKeyMeta }
+  // Main opens the file dialog and reads the key; null when the dialog is cancelled.
+  'key:importFile': { args: [input: Omit<KeyImportInput, 'privateKey'>]; result: SshKeyMeta | null }
+  'key:generate': { args: [input: KeyGenerateInput]; result: SshKeyMeta }
+  'key:update': { args: [id: string, patch: { label?: string }]; result: SshKeyMeta }
+  'key:delete': { args: [id: string]; result: void }
+  'key:copyPublic': { args: [id: string]; result: void }
+  'identity:list': { args: [vaultId?: string]; result: IdentityMeta[] }
+  'identity:create': { args: [input: IdentityInput]; result: IdentityMeta }
+  'identity:update': { args: [id: string, patch: IdentityPatch]; result: IdentityMeta }
+  'identity:delete': { args: [id: string]; result: void }
 }
 
 export type Channel = keyof IpcContract
@@ -82,6 +104,19 @@ export const CHANNELS = [
   'secret:delete',
   'secret:reveal',
   'secret:copy',
+  'key:list',
+  'key:scanLocal',
+  'key:link',
+  'key:import',
+  'key:importFile',
+  'key:generate',
+  'key:update',
+  'key:delete',
+  'key:copyPublic',
+  'identity:list',
+  'identity:create',
+  'identity:update',
+  'identity:delete',
 ] as const satisfies readonly Channel[]
 
 // Fails typecheck if IpcContract gains a channel that CHANNELS does not list.

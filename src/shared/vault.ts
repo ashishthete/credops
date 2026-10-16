@@ -6,6 +6,11 @@ export const MAX_MASTER_PASSWORD = 1024
 export const MAX_SECRET_VALUE = 65536
 export const MAX_SECRET_NAME = 120
 export const MAX_VAULT_NAME = 64
+export const MAX_LABEL = 120 // ssh key and identity labels
+export const MAX_USERNAME = 255
+export const MAX_KEY_COMMENT = 255
+export const MAX_KEY_PATH = 4096
+export const MAX_PASSPHRASE = 1024
 export const VAULT_COLOR = /^#[0-9a-f]{6}$/i
 export const CLIPBOARD_CLEAR_MS = 30_000
 export const REVEAL_HIDE_MS = 10_000
@@ -107,7 +112,8 @@ export interface KeyGenerateInput {
   comment?: string
 }
 
-export type IdentityAuth = 'agent' | 'key' | 'password'
+export const IDENTITY_AUTHS = ['agent', 'key', 'password'] as const
+export type IdentityAuth = (typeof IDENTITY_AUTHS)[number]
 export interface IdentityInput {
   vaultId: string
   label: string

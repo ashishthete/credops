@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { hostname, userInfo } from 'node:os'
+import { homedir, hostname, userInfo } from 'node:os'
 import {
   app,
   BrowserWindow,
@@ -16,12 +16,16 @@ import { AuditLog } from './audit/audit-log'
 import { openDatabase, type Db } from './db/connection'
 import { createAppHandlers } from './ipc/handlers/app'
 import { createAuditHandlers } from './ipc/handlers/audit'
+import { createIdentityHandlers } from './ipc/handlers/identities'
+import { createKeyHandlers } from './ipc/handlers/keys'
 import { createSecretHandlers } from './ipc/handlers/secrets'
 import { createVaultHandlers } from './ipc/handlers/vault'
 import { isTrustedSender, registerHandlers } from './ipc/register'
 import { VALIDATORS } from './ipc/validators'
 import { redact } from './security/redact'
 import { AutoLock } from './vault/auto-lock'
+import { IdentityStore } from './vault/identity-store'
+import { KeyStore } from './vault/key-store'
 import { SecretStore } from './vault/secret-store'
 import { VaultService, type QuickUnlockDeps } from './vault/vault-service'
 import { devRendererUrl, shouldAllowNavigation, windowOptions } from './window'
@@ -38,6 +42,8 @@ let db: Db | null = null
 let audit: AuditLog | null = null
 let vault: VaultService | null = null
 let secrets: SecretStore | null = null
+let keys: KeyStore | null = null
+let identities: IdentityStore | null = null
 let quitAudited = false
 let stopAutoLock: (() => void) | null = null
 
@@ -78,11 +84,13 @@ if (!app.requestSingleInstanceLock()) {
       session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
       session.defaultSession.setPermissionCheckHandler(() => false)
       db = openDatabase(join(app.getPath('userData'), 'opsdeck.db'))
-      // Decrypted values are known only while unlocked; the vault drops them on lock. Stores register
-      // theirs with the vault (Task 8 keys and identities too); asking the secret store first makes it
-      // decrypt its values once after an unlock.
+      // Decrypted values are known only while unlocked; the vault drops them on lock. Each store
+      // registers its own with the vault; asking the stores first makes each decrypt its values once
+      // after an unlock.
       const knownSecrets = (): readonly string[] => {
         secrets?.knownValues()
+        keys?.knownValues()
+        identities?.knownValues()
         return vault?.knownValues() ?? []
       }
       audit = new AuditLog(db, { knownSecrets })
@@ -102,6 +110,13 @@ if (!app.requestSingleInstanceLock()) {
       const service = new VaultService(db, log, { quick })
       vault = service
       secrets = new SecretStore(db, service, log, { clipboard })
+      const actor = { osUser: userInfo().username, machine: hostname() }
+      keys = new KeyStore(db, service, log, {
+        sshDir: join(homedir(), '.ssh'),
+        clipboard,
+        defaultComment: `${actor.osUser}@${actor.machine}`,
+      })
+      identities = new IdentityStore(db, service, keys, log)
       stopAutoLock = new AutoLock({
         idleSeconds: () => powerMonitor.getSystemIdleTime(),
         minutes: () => service.autoLockMinutes(),
@@ -120,7 +135,7 @@ if (!app.requestSingleInstanceLock()) {
             version: app.getVersion(),
             platform: process.platform,
             userDataPath: app.getPath('userData'),
-            actor: { osUser: userInfo().username, machine: hostname() },
+            actor,
           })),
           ...createAuditHandlers(log, {
             saveDialog: async () => {
@@ -133,6 +148,16 @@ if (!app.requestSingleInstanceLock()) {
           }),
           ...createVaultHandlers(vault),
           ...createSecretHandlers(secrets),
+          ...createKeyHandlers(keys, {
+            openDialog: async (dir) => {
+              const opts: Electron.OpenDialogOptions = { defaultPath: dir, properties: ['openFile', 'showHiddenFiles'] }
+              const res = mainWindow
+                ? await dialog.showOpenDialog(mainWindow, opts)
+                : await dialog.showOpenDialog(opts)
+              return res.canceled ? undefined : res.filePaths[0]
+            },
+          }),
+          ...createIdentityHandlers(identities),
         },
         (url) => isTrustedSender(url, { devServerUrl, rendererFile }),
         { validators: VALIDATORS, knownSecrets },
@@ -174,6 +199,8 @@ if (!app.requestSingleInstanceLock()) {
     stopAutoLock = null
     vault = null
     secrets = null
+    keys = null
+    identities = null
     audit = null
     db?.close()
     db = null
