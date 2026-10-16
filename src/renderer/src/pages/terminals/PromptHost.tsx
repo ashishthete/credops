@@ -1,9 +1,11 @@
-import { useRef, useSyncExternalStore } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import type { SessionPrompt } from '../../../../shared/ssh'
 import { promptStore } from '../../terminal/sessions'
 import { AuthPromptDialog } from './AuthPromptDialog'
 import { HostKeyDialog } from './HostKeyDialog'
-import { KnownHostsDialog } from './KnownHostsDialog'
+
+/** Longer than the dialog's exit animation. */
+const EXIT_MS = 400
 
 /**
  * Shows the oldest pending prompt, one at a time, on any page. The last prompt is kept while its
@@ -12,9 +14,15 @@ import { KnownHostsDialog } from './KnownHostsDialog'
 export function PromptHost() {
   const queue = useSyncExternalStore(promptStore.subscribe, promptStore.get)
   const head = queue[0]
-  const shown = useRef<SessionPrompt | undefined>(head)
-  if (head) shown.current = head
-  const prompt = shown.current
+  const [kept, setKept] = useState<SessionPrompt | undefined>(head)
+  if (head && kept !== head) setKept(head)
+  const prompt = head ?? kept
+  // Once the exit has played, nothing stays mounted to hold a prompt's state.
+  useEffect(() => {
+    if (head || !kept) return
+    const t = setTimeout(() => setKept(undefined), EXIT_MS)
+    return () => clearTimeout(t)
+  }, [head, kept])
   return (
     <>
       {prompt &&
@@ -23,7 +31,6 @@ export function PromptHost() {
         ) : (
           <AuthPromptDialog key={prompt.promptId} prompt={prompt} open={!!head} />
         ))}
-      <KnownHostsDialog />
     </>
   )
 }

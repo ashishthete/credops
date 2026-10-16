@@ -7,7 +7,7 @@ import { AuditPage } from '../pages/AuditPage'
 import { HostsPage } from '../pages/hosts/HostsPage'
 import { PlaceholderPage } from '../pages/PlaceholderPage'
 import { ProductsPage } from '../pages/products/ProductsPage'
-import { openKnownHosts } from '../pages/terminals/KnownHostsDialog'
+import { KnownHostsDialog, closeKnownHosts, openKnownHosts } from '../pages/terminals/KnownHostsDialog'
 import { PromptHost } from '../pages/terminals/PromptHost'
 import { TerminalDeck } from '../pages/terminals/TerminalDeck'
 import { VaultsPage } from '../pages/vaults/VaultsPage'
@@ -53,6 +53,7 @@ export function AppShell() {
       disposeAll()
       // Events stop while unmounted (the vault locked); the next mount's session list is the truth.
       resetSessions()
+      closeKnownHosts()
     }
   }, [])
 
@@ -99,6 +100,7 @@ export function AppShell() {
         <TerminalDeck visible={location.pathname === '/terminals'} />
       </main>
       <PromptHost />
+      <KnownHostsDialog />
     </div>
   )
 }

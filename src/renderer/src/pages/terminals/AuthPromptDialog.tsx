@@ -1,5 +1,5 @@
 import { KeyRound } from 'lucide-react'
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import type { PromptAnswer, SessionPrompt } from '../../../../shared/ssh'
 import { answerPrompt } from '../../terminal/sessions'
 import { Button } from '../../ui/Button'
@@ -10,7 +10,8 @@ type AuthPrompt = Extract<SessionPrompt, { kind: 'password' | 'keyboard' }>
 
 /**
  * A password or keyboard-interactive prompt. What is typed lives only in this component's state:
- * it is cleared when the answer goes out and when the dialog unmounts, and goes nowhere else.
+ * it is cleared when the answer goes out and the moment the dialog closes for any reason, and goes
+ * nowhere else.
  */
 export function AuthPromptDialog({ prompt, open }: { prompt: AuthPrompt; open: boolean }) {
   const formId = useId()
@@ -20,7 +21,17 @@ export function AuthPromptDialog({ prompt, open }: { prompt: AuthPrompt; open: b
   const outgoing = useRef<PromptAnswer | null>(null)
   const [sent, setSent] = useState(false)
 
-  useEffect(() => () => setValues([]), [])
+  // Closed from main (timeout, session gone): the exit animation replays the last open render, which
+  // React no longer touches, so the inputs are blanked in the DOM directly, and the state dropped.
+  const form = useRef<HTMLFormElement>(null)
+  const blank = Array<string>(count).fill('')
+  const shown = open ? values : blank
+  useLayoutEffect(() => {
+    if (open) return
+    form.current?.querySelectorAll('input').forEach((i) => (i.value = ''))
+    setValues(blank)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
 
   // The fields are blanked and re-rendered before the answer leaves: once main drops the prompt the
   // dialog animates out frozen as last rendered, and that must not be a frame holding the secret.
@@ -32,7 +43,7 @@ export function AuthPromptDialog({ prompt, open }: { prompt: AuthPrompt; open: b
   }, [sent, prompt.promptId])
 
   const send = (submit: boolean) => {
-    if (sent) return
+    if (sent || !open) return
     const typed = values
     setValues(Array<string>(count).fill(''))
     outgoing.current =
@@ -63,6 +74,7 @@ export function AuthPromptDialog({ prompt, open }: { prompt: AuthPrompt; open: b
       }
     >
       <form
+        ref={form}
         id={formId}
         className="flex flex-col gap-3"
         autoComplete="off"
@@ -72,13 +84,13 @@ export function AuthPromptDialog({ prompt, open }: { prompt: AuthPrompt; open: b
         }}
       >
         {prompt.kind === 'password' ? (
-          <SecretField label="Password" autoComplete="off" value={values[0] ?? ''} onChange={(e) => set(0, e.target.value)} />
+          <SecretField label="Password" autoComplete="off" value={shown[0] ?? ''} onChange={(e) => set(0, e.target.value)} />
         ) : (
           prompt.prompts.map((p, i) =>
             p.echo ? (
-              <TextField key={i} label={p.prompt} autoComplete="off" spellCheck={false} value={values[i] ?? ''} onChange={(e) => set(i, e.target.value)} />
+              <TextField key={i} label={p.prompt} autoComplete="off" spellCheck={false} value={shown[i] ?? ''} onChange={(e) => set(i, e.target.value)} />
             ) : (
-              <SecretField key={i} label={p.prompt} autoComplete="off" value={values[i] ?? ''} onChange={(e) => set(i, e.target.value)} />
+              <SecretField key={i} label={p.prompt} autoComplete="off" value={shown[i] ?? ''} onChange={(e) => set(i, e.target.value)} />
             ),
           )
         )}

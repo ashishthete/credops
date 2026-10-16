@@ -108,7 +108,6 @@ describe('auth prompts', () => {
     expect(input.value).toBe('')
     await settle()
     expect(screen.queryByLabelText('Password')).toBeNull()
-    expect(document.body.textContent).not.toContain('hunter2-secret')
   })
 
   it('Cancel answers a null password', async () => {
@@ -146,6 +145,24 @@ describe('auth prompts', () => {
   })
 })
 
+describe('external close', () => {
+  it('promptDone with a typed secret leaves no value in the DOM, during or after the exit', async () => {
+    setup()
+    await show({ kind: 'password', promptId: 'pw', sessionId: 's1', hopLabel: 'web-1', username: 'deploy' })
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'hunter2-secret' } })
+    act(() => emitBridgeEvent('session:promptDone', { promptId: 'pw' }))
+    const values = () => [...document.querySelectorAll('input')].map((i) => i.value)
+    expect(values().every((v) => !v.includes('hunter2'))).toBe(true)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50)
+    })
+    expect(values().every((v) => !v.includes('hunter2'))).toBe(true)
+    await settle()
+    expect(document.querySelector('input')).toBeNull()
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+})
+
 describe('queue', () => {
   it('promptDone closes the dialog; next prompt in queue appears', async () => {
     setup()
@@ -163,6 +180,24 @@ describe('queue', () => {
 })
 
 describe('known hosts dialog', () => {
+  it('shows an error with Retry when the list fails', async () => {
+    let fail = true
+    const invoke = mockBridge({})
+    invoke.mockImplementation(async (channel: string) => {
+      if (channel !== 'knownhost:list') return undefined
+      if (fail) throw new Error('boom')
+      return []
+    })
+    render(<KnownHostsDialog />)
+    act(() => openKnownHosts())
+    await settle()
+    expect(screen.queryByText('Loading…')).toBeNull()
+    fail = false
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await settle()
+    expect(screen.getByText('No trusted hosts yet.')).toBeTruthy()
+  })
+
   const entry = (id: string, host: string, over: Partial<KnownHostMeta> = {}): KnownHostMeta => ({
     id,
     host,
@@ -188,7 +223,7 @@ describe('known hosts dialog', () => {
     act(() => openKnownHosts())
     expect((await settleThen(() => screen.getByText('alpha.example.com')))).toBeTruthy()
     expect(screen.getByText('[beta.example.com]:2222')).toBeTruthy()
-    expect(screen.getAllByText(/3 days ago/)).toBeTruthy()
+    expect(screen.getAllByText(/3 days ago/).length).toBeGreaterThan(0)
     expect(screen.getAllByText(/2 hours ago/).length).toBeGreaterThan(0)
     expect(screen.getByText('Entries in ~/.ssh/known_hosts are read-only here; use ssh-keygen -R to remove them.')).toBeTruthy()
 

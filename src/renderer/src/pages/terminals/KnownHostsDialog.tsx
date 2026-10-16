@@ -36,11 +36,18 @@ export function KnownHostsDialog() {
   const [query, setQuery] = useState('')
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
 
-  const load = () =>
-    api
+  const [failed, setFailed] = useState(false)
+
+  const load = () => {
+    setFailed(false)
+    return api
       .invoke('knownhost:list')
       .then(setEntries)
-      .catch((err) => fail("Couldn't load known hosts", err))
+      .catch((err) => {
+        setFailed(true)
+        fail("Couldn't load known hosts", err)
+      })
+  }
 
   useEffect(() => {
     if (!open) return
@@ -91,7 +98,14 @@ export function KnownHostsDialog() {
           className="mb-3 h-8 w-full rounded-lg border border-line bg-canvas/60 px-2.5 text-[12.5px] text-fg placeholder:text-muted/60 focus:border-accent/60 focus:outline-none"
         />
         <div className="max-h-[45vh] overflow-y-auto">
-          {entries === null ? (
+          {failed && entries === null ? (
+            <div className="flex flex-col items-center gap-2 py-6 text-[12.5px] text-muted">
+              Couldn't load the list.
+              <Button variant="ghost" size="sm" onClick={() => void load()}>
+                Retry
+              </Button>
+            </div>
+          ) : entries === null ? (
             <p className="py-6 text-center text-[12.5px] text-muted">Loading…</p>
           ) : shown.length === 0 ? (
             <p className="py-6 text-center text-[12.5px] text-muted">{entries.length === 0 ? 'No trusted hosts yet.' : 'Nothing matches.'}</p>
