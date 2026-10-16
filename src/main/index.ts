@@ -1,15 +1,28 @@
 import { join } from 'node:path'
 import { hostname, userInfo } from 'node:os'
-import { app, BrowserWindow, dialog, ipcMain, powerMonitor, safeStorage, session, shell, systemPreferences } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  dialog,
+  ipcMain,
+  powerMonitor,
+  safeStorage,
+  session,
+  shell,
+  systemPreferences,
+} from 'electron'
 import { AuditLog } from './audit/audit-log'
 import { openDatabase, type Db } from './db/connection'
 import { createAppHandlers } from './ipc/handlers/app'
 import { createAuditHandlers } from './ipc/handlers/audit'
+import { createSecretHandlers } from './ipc/handlers/secrets'
 import { createVaultHandlers } from './ipc/handlers/vault'
 import { isTrustedSender, registerHandlers } from './ipc/register'
 import { VALIDATORS } from './ipc/validators'
 import { redact } from './security/redact'
 import { AutoLock } from './vault/auto-lock'
+import { SecretStore } from './vault/secret-store'
 import { VaultService, type QuickUnlockDeps } from './vault/vault-service'
 import { devRendererUrl, shouldAllowNavigation, windowOptions } from './window'
 
@@ -23,6 +36,7 @@ let mainWindow: BrowserWindow | null = null
 let db: Db | null = null
 let audit: AuditLog | null = null
 let vault: VaultService | null = null
+let secrets: SecretStore | null = null
 let quitAudited = false
 let stopAutoLock: (() => void) | null = null
 
@@ -64,7 +78,7 @@ if (!app.requestSingleInstanceLock()) {
       session.defaultSession.setPermissionCheckHandler(() => false)
       db = openDatabase(join(app.getPath('userData'), 'opsdeck.db'))
       // Decrypted values are known only while unlocked; the vault drops them on lock.
-      const knownSecrets = (): readonly string[] => vault?.knownValues() ?? []
+      const knownSecrets = (): readonly string[] => secrets?.knownValues() ?? []
       audit = new AuditLog(db, { knownSecrets })
       audit.append({ action: 'app.start', outcome: 'info', details: { version: app.getVersion() } })
       const log = audit
@@ -81,6 +95,7 @@ if (!app.requestSingleInstanceLock()) {
       }
       const service = new VaultService(db, log, { quick })
       vault = service
+      secrets = new SecretStore(db, service, log, { clipboard })
       stopAutoLock = new AutoLock({
         idleSeconds: () => powerMonitor.getSystemIdleTime(),
         minutes: () => service.autoLockMinutes(),
@@ -111,6 +126,7 @@ if (!app.requestSingleInstanceLock()) {
             },
           }),
           ...createVaultHandlers(vault),
+          ...createSecretHandlers(secrets),
         },
         (url) => isTrustedSender(url, { devServerUrl, rendererFile }),
         { validators: VALIDATORS, knownSecrets },
@@ -143,6 +159,7 @@ if (!app.requestSingleInstanceLock()) {
     stopAutoLock?.()
     stopAutoLock = null
     vault = null
+    secrets = null
     audit = null
     db?.close()
     db = null

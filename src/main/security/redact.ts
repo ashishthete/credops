@@ -5,13 +5,17 @@ const SENSITIVE_KEY = /pass(word|phrase)?|secret|token|api[_-]?key|private[_-]?k
 const PEM_BLOCK = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g
 const MIN_SECRET_LENGTH = 4
 
-const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-
-function buildSecretMatcher(knownSecrets: readonly string[]): RegExp | null {
+/**
+ * Longest first, so a secret that contains another is masked whole. Plain string replacement,
+ * not one alternation regex: V8 rejects a large pattern ("Regular expression too large", for
+ * example one 64 KiB secret) with a message that quotes every secret in it.
+ */
+function buildSecretMasker(knownSecrets: readonly string[]): ((s: string) => string) | null {
   const usable = [...new Set(knownSecrets)]
     .filter((s) => s.length >= MIN_SECRET_LENGTH)
     .sort((a, b) => b.length - a.length)
-  return usable.length ? new RegExp(usable.map(escapeRegExp).join('|'), 'g') : null
+  if (!usable.length) return null
+  return (s) => usable.reduce((acc, secret) => (acc.includes(secret) ? acc.split(secret).join(REDACTED) : acc), s)
 }
 
 function isPlainObject(value: object): boolean {
@@ -26,12 +30,12 @@ function isPlainObject(value: object): boolean {
  * `[buffer N bytes]` so raw bytes, which may be key material, never leak).
  */
 export function redact<T>(value: T, knownSecrets: readonly string[] = []): T {
-  const matcher = buildSecretMatcher(knownSecrets)
+  const maskSecrets = buildSecretMasker(knownSecrets)
   const ancestors = new Set<object>()
 
   const maskString = (s: string): string => {
     const noPem = s.replace(PEM_BLOCK, REDACTED)
-    return matcher ? noPem.replace(matcher, REDACTED) : noPem
+    return maskSecrets ? maskSecrets(noPem) : noPem
   }
 
   const walk = (v: unknown): unknown => {

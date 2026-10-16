@@ -473,9 +473,16 @@ export class VaultService {
     )
   }
 
-  knownValues(): readonly string[] {
+  /** Every registered value, or only `source`'s; [] while locked. */
+  knownValues(source?: string): readonly string[] {
     if (!this.kek) return []
+    if (source !== undefined) return this.known.get(source) ?? []
     return [...this.known.values()].flat()
+  }
+
+  /** True for a keyed vault whose key failed to open at unlock: its contents cannot be used. */
+  isCorrupt(vaultId: string): boolean {
+    return this.corrupt.includes(vaultId)
   }
 
   private vaultKey(vaultId: string): Buffer {

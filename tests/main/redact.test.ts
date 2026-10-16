@@ -117,6 +117,14 @@ describe('redact', () => {
     expect(redact({ 'user-hunter22': true }, ['hunter22'])).toEqual({ 'user-‹redacted›': true })
   })
 
+  it('masks secrets too large for one regex', () => {
+    const big = 'x'.repeat(65536)
+    const secrets = [big, 'a\nb=c\r\n', '🔑ünïcødé', 'hunter22']
+    expect(redact(`pre ${big} mid 🔑ünïcødé hunter22 a\nb=c\r\n`, secrets)).toBe(
+      `pre ${REDACTED} mid ${REDACTED} ${REDACTED} ${REDACTED}`,
+    )
+  })
+
   it('passes primitives through', () => {
     expect(redact({ n: 1, b: true, z: null, u: undefined })).toEqual({ n: 1, b: true, z: null, u: undefined })
   })

@@ -4,6 +4,7 @@ export const VAULT_LOCKED = 'vault locked'
 export const MIN_MASTER_PASSWORD = 10
 export const MAX_MASTER_PASSWORD = 1024
 export const MAX_SECRET_VALUE = 65536
+export const MAX_SECRET_NAME = 120
 export const MAX_VAULT_NAME = 64
 export const VAULT_COLOR = /^#[0-9a-f]{6}$/i
 export const CLIPBOARD_CLEAR_MS = 30_000

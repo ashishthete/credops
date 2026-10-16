@@ -1,5 +1,14 @@
 import type { AuditEvent, AuditFilter, ChainVerification } from './audit'
-import type { QuickUnlockMode, UnlockResult, VaultInput, VaultMeta, VaultStatus } from './vault'
+import type {
+  QuickUnlockMode,
+  SecretInput,
+  SecretMeta,
+  SecretPatch,
+  UnlockResult,
+  VaultInput,
+  VaultMeta,
+  VaultStatus,
+} from './vault'
 
 // Mirrors Platform the renderer tsconfig has no node types.
 export type Platform =
@@ -39,6 +48,12 @@ export interface IpcContract {
   'vault:delete': { args: [id: string]; result: void }
   'vault:setQuickUnlock': { args: [mode: QuickUnlockMode]; result: VaultStatus }
   'vault:setAutoLock': { args: [minutes: number | null]; result: VaultStatus }
+  'secret:list': { args: [vaultId?: string]; result: SecretMeta[] }
+  'secret:create': { args: [input: SecretInput]; result: SecretMeta }
+  'secret:update': { args: [id: string, patch: SecretPatch]; result: SecretMeta }
+  'secret:delete': { args: [id: string]; result: void }
+  'secret:reveal': { args: [id: string]; result: { value: string } }
+  'secret:copy': { args: [id: string]; result: { clearsInMs: number } }
 }
 
 export type Channel = keyof IpcContract
@@ -61,6 +76,12 @@ export const CHANNELS = [
   'vault:delete',
   'vault:setQuickUnlock',
   'vault:setAutoLock',
+  'secret:list',
+  'secret:create',
+  'secret:update',
+  'secret:delete',
+  'secret:reveal',
+  'secret:copy',
 ] as const satisfies readonly Channel[]
 
 // Fails typecheck if IpcContract gains a channel that CHANNELS does not list.
