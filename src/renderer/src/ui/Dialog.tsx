@@ -14,6 +14,8 @@ export interface DialogProps {
   /** Bump to shake the card, e.g. after a wrong password. */
   shake?: number
   width?: number
+  /** `prompt` sits above every other dialog: a security question must never hide under one. */
+  layer?: 'prompt'
 }
 
 const FOCUSABLE =
@@ -36,7 +38,7 @@ export function Dialog(props: DialogProps) {
   return <AnimatePresence>{props.open && <DialogPanel key="dialog" {...props} />}</AnimatePresence>
 }
 
-function DialogPanel({ onClose, title, description, children, footer, icon, shake = 0, width = 420 }: DialogProps) {
+function DialogPanel({ onClose, title, description, children, footer, icon, shake = 0, width = 420, layer }: DialogProps) {
   const motionSafe = useMotionSafe()
   const titleId = useId()
   const descId = useId()
@@ -72,7 +74,8 @@ function DialogPanel({ onClose, title, description, children, footer, icon, shak
 
   return (
     <motion.div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 backdrop-blur-md"
+      className={`fixed inset-0 ${layer === 'prompt' ? 'z-[60]' : 'z-50'} flex items-center justify-center bg-black/50 px-4 backdrop-blur-md`}
+      data-layer={layer}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}

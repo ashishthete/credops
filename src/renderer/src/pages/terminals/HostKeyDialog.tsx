@@ -25,6 +25,7 @@ export function HostKeyDialog({ prompt, open }: { prompt: HostKeyPrompt; open: b
   }
   return (
     <Dialog
+      layer="prompt"
       open={open}
       onClose={() => answer(false)}
       title={`First time connecting to ${prompt.hopLabel}`}

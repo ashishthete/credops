@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PromptHost } from '../../src/renderer/src/pages/terminals/PromptHost'
 import { closeKnownHosts, KnownHostsDialog, openKnownHosts } from '../../src/renderer/src/pages/terminals/KnownHostsDialog'
@@ -90,6 +91,51 @@ describe('host key prompt', () => {
       ['p2', { kind: 'host-key', trust: false }],
     ])
   })
+
+  it('Enter right after it opens answers false: focus starts on Cancel, never on Trust', async () => {
+    const invoke = setup()
+    const user = userEvent.setup()
+    await show(hostKey('p1'))
+    // user-event waits on the (fake) clock between key events, so the clock is moved along for it.
+    const typing = user.keyboard('{Enter}')
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+    await typing
+    expect(calls(invoke, 'session:answer').map((c) => c.slice(1))).toEqual([['p1', { kind: 'host-key', trust: false }]])
+    await settle()
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('renders above an open Known hosts dialog and takes focus from it', async () => {
+    const invoke = mockBridge({ 'session:list': [], 'session:answer': undefined, 'knownhost:list': [] })
+    stop = startSessionSync()
+    // AppShell's order: the prompt host comes first in the DOM, so stacking can't rely on order.
+    render(
+      <>
+        <PromptHost />
+        <KnownHostsDialog />
+      </>,
+    )
+    act(() => openKnownHosts())
+    await settle()
+    const known = screen.getByRole('dialog', { name: 'Known hosts' })
+    expect(known).toContainElement(document.activeElement as HTMLElement)
+
+    await show(hostKey('p1'))
+    const prompt = screen.getByRole('dialog', { name: 'First time connecting to web-1' })
+    const overlay = (el: HTMLElement) => el.closest('.fixed.inset-0') as HTMLElement
+    expect(overlay(prompt).className).toContain('z-[60]')
+    expect(overlay(known).className).toContain('z-50')
+    expect(overlay(known).className).not.toContain('z-[60]')
+    expect(document.activeElement).toBe(within(prompt).getByRole('button', { name: 'Cancel' }))
+
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
+    expect(calls(invoke, 'session:answer').map((c) => c.slice(1))).toEqual([['p1', { kind: 'host-key', trust: false }]])
+    await settle()
+    // Esc answered the prompt only; Known hosts stays open and gets focus back.
+    expect(screen.getByRole('dialog', { name: 'Known hosts' })).toContainElement(document.activeElement as HTMLElement)
+  })
 })
 
 describe('auth prompts', () => {
@@ -157,6 +203,34 @@ describe('external close', () => {
       await vi.advanceTimersByTimeAsync(50)
     })
     expect(values().every((v) => !v.includes('hunter2'))).toBe(true)
+    await settle()
+    expect(document.querySelector('input')).toBeNull()
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('keyboard-interactive: promptDone with a typed code leaves no value in the DOM, during or after the exit', async () => {
+    setup()
+    await show({
+      kind: 'keyboard',
+      promptId: 'kb',
+      sessionId: 's1',
+      hopLabel: 'web-1',
+      name: 'Two-factor',
+      instructions: '',
+      prompts: [
+        { prompt: 'Username: ', echo: true },
+        { prompt: 'Code: ', echo: false },
+      ],
+    })
+    fireEvent.change(screen.getByLabelText('Username:'), { target: { value: 'deploy-user' } })
+    fireEvent.change(screen.getByLabelText('Code:'), { target: { value: '424242' } })
+    act(() => emitBridgeEvent('session:promptDone', { promptId: 'kb' }))
+    const typed = () => [...document.querySelectorAll('input')].map((i) => i.value).filter((v) => v.includes('424242') || v.includes('deploy-user'))
+    expect(typed()).toEqual([])
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50)
+    })
+    expect(typed()).toEqual([])
     await settle()
     expect(document.querySelector('input')).toBeNull()
     expect(screen.queryByRole('dialog')).toBeNull()

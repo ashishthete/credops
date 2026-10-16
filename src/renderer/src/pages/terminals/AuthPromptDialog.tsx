@@ -57,6 +57,7 @@ export function AuthPromptDialog({ prompt, open }: { prompt: AuthPrompt; open: b
   const title = prompt.kind === 'password' ? `Password for ${prompt.username}@${prompt.hopLabel}` : prompt.name || `Sign in to ${prompt.hopLabel}`
   return (
     <Dialog
+      layer="prompt"
       open={open}
       onClose={() => send(false)}
       title={title}
