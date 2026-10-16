@@ -1,4 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest'
+import { act, renderHook } from '@testing-library/react'
+import { MemoryRouter } from 'react-router'
+import { createElement, type ReactNode } from 'react'
+import { useInventoryCommands } from '../../src/renderer/src/inventory/commands'
+import { commandStore } from '../../src/renderer/src/ui/commands'
 import { inv, inventoryStore, loadInventory } from '../../src/renderer/src/inventory/store'
 import { VAULT_LOCKED } from '../../src/shared/vault'
 import { vaultStatusStore } from '../../src/renderer/src/vault/status'
@@ -71,5 +76,71 @@ describe('inventory store', () => {
     expect(invoke).toHaveBeenCalledWith('host:update', 'H', { port: null })
     expect(invoke).toHaveBeenCalledWith('host:setVaults', 'H', ['v1', 'v2'])
     expect(inventoryStore.get()!.hosts[0].vaultIds).toEqual(['v1', 'v2'])
+  })
+
+  it('a failed link change after a saved edit re-reads that list', async () => {
+    let hosts: HostMeta[] = [host({ id: 'H', label: 'h', port: 22, vaultIds: ['v1'] })]
+    let envs: EnvironmentMeta[] = [environment({ id: 'E', name: 'e', productIds: ['p1'] })]
+    const invoke = mockBridge()
+    const base = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'host:list') return hosts
+      if (channel === 'env:list') return envs
+      if (channel === 'host:update') return (hosts = [{ ...hosts[0], port: 2222 }])[0]
+      if (channel === 'env:update') return (envs = [{ ...envs[0], name: 'e2' }])[0]
+      if (channel === 'host:setVaults' || channel === 'env:setProducts') throw new Error('link failed')
+      return base(channel, ...(args as []))
+    })
+    await loadInventory()
+    await expect(inv.saveHost({ label: 'h', address: hosts[0].address, port: 2222, vaultIds: ['v2'] }, 'H')).resolves.toBeUndefined()
+    expect(inventoryStore.get()!.hosts[0].port).toBe(2222)
+    await expect(inv.saveEnvironment({ name: 'e2', color: envs[0].color, productIds: ['p2'] }, 'E')).resolves.toBeUndefined()
+    expect(inventoryStore.get()!.environments[0].name).toBe('e2')
+  })
+
+  it("a load that started before a write doesn't undo it", async () => {
+    const h = host({ id: 'H', label: 'old' })
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    let slow = false
+    const invoke = mockBridge()
+    const base = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'host:list') {
+        if (slow) await gate
+        return [h]
+      }
+      if (channel === 'host:update') return { ...h, label: 'new' }
+      return base(channel, ...(args as []))
+    })
+    await loadInventory()
+    slow = true
+    const stale = loadInventory()
+    await inv.saveHost({ label: 'new', address: h.address }, 'H')
+    expect(inventoryStore.get()!.hosts[0].label).toBe('new')
+    release()
+    await stale
+    expect(inventoryStore.get()!.hosts[0].label).toBe('new')
+  })
+
+  it('registers the Go to commands in one batch', async () => {
+    const hosts = Array.from({ length: 40 }, (_, i) => host({ id: `h${i}`, label: `h${i}` }))
+    const invoke = mockBridge()
+    const base = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) =>
+      channel === 'host:list' ? hosts : base(channel, ...(args as [])),
+    )
+    await loadInventory()
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(MemoryRouter, null, children)
+    const { unmount } = renderHook(() => useInventoryCommands(), { wrapper })
+    expect(commandStore.get().filter((c) => c.id.startsWith('hosts.go.'))).toHaveLength(40)
+    let sets = 0
+    const off = commandStore.subscribe(() => sets++)
+    act(() => inventoryStore.set({ ...inventoryStore.get()!, hosts: hosts.slice(1) }))
+    off()
+    expect(sets).toBeLessThanOrEqual(2)
+    expect(commandStore.get().filter((c) => c.id.startsWith('hosts.go.'))).toHaveLength(39)
+    unmount()
+    expect(commandStore.get().filter((c) => c.id.startsWith('hosts.go.'))).toHaveLength(0)
   })
 })

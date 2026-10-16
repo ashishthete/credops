@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { KeyRound, Link2, Lock, Network, Pencil, Plus, Route, Server, Trash2, X } from 'lucide-react'
+import { KeyRound, Link2, Lock, Network, Pencil, Plus, Route, Server, Trash2, Unlink, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { DEFAULT_SSH_PORT, type EnvironmentMeta } from '../../../../shared/inventory'
 import { sourceLabel } from '../../inventory/choices'
@@ -20,9 +20,11 @@ interface EnvironmentViewProps {
   onNewHost: () => void
   onEdit: () => void
   onDelete: () => void
+  /** Set when viewed under a product: takes the environment out of that product only. */
+  removeFrom?: { productName: string; run: () => void }
 }
 
-export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onNewHost, onEdit, onDelete }: EnvironmentViewProps) {
+export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onNewHost, onEdit, onDelete, removeFrom }: EnvironmentViewProps) {
   const motionSafe = useMotionSafe()
   const hostById = new Map(data.hosts.map((h) => [h.id, h]))
   const identity = env.defaultIdentityId ? data.identities.find((i) => i.id === env.defaultIdentityId) : undefined
@@ -67,7 +69,13 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
             <Button size="sm" variant="ghost" icon={<Pencil aria-hidden className="size-3.5" />} onClick={onEdit}>
               Edit
             </Button>
-            <RowMenu label={`${env.name} options`} items={[{ label: 'Delete', icon: Trash2, run: onDelete, danger: true }]} />
+            <RowMenu
+              label={`${env.name} options`}
+              items={[
+                ...(removeFrom ? [{ label: `Remove from ${removeFrom.productName}`, icon: Unlink, run: removeFrom.run }] : []),
+                { label: 'Delete', icon: Trash2, run: onDelete, danger: true },
+              ]}
+            />
           </>
         }
       />

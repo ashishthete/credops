@@ -177,10 +177,16 @@ export function ProductsPage() {
       },
     })
 
-  const askDeleteEnvironment = (e: EnvironmentMeta, key: NodeKey) =>
+  const productName = (id: string) => data?.products.find((p) => p.id === id)?.name ?? id
+
+  const askDeleteEnvironment = (e: EnvironmentMeta, key: NodeKey) => {
+    // A shared environment is one record, so deleting it here takes it out of every product.
+    const others = e.productIds.filter((id) => id !== selectionFromKey(key).productId).map(productName)
     setConfirm({
       title: `Delete ${e.name}?`,
-      description: 'Its hosts are kept, along with their places in other environments.',
+      description: others.length
+        ? `It's also in ${others.join(', ')}; deleting removes it there too. To keep it there, use Remove from this product instead. Its hosts are kept.`
+        : 'Its hosts are kept, along with their places in other environments.',
       confirmLabel: 'Delete environment',
       typeToConfirm: e.protected ? e.name : undefined,
       run: async () => {
@@ -190,6 +196,20 @@ export function ProductsPage() {
         }
       },
     })
+  }
+
+  /** Takes the environment out of one product; it stays in the others, or moves to Unassigned. */
+  const removeFromProduct = async (e: EnvironmentMeta, productId: string) => {
+    const rest = e.productIds.filter((id) => id !== productId)
+    const row = await inv.setEnvironmentProducts(e.id, rest)
+    if (!row) return
+    toast({ title: rest.length ? `Removed ${e.name} from ${productName(productId)}` : `Moved ${e.name} to Unassigned`, tone: 'success' })
+    if (sel.environmentId === e.id && sel.productId === productId) {
+      const key = environmentKey(row)
+      expand(parentOf(key))
+      select(key)
+    }
+  }
 
   const askRemoveHost = (e: EnvironmentMeta, hostId: string) => {
     const label = data?.hosts.find((h) => h.id === hostId)?.label ?? 'this host'
@@ -235,6 +255,11 @@ export function ProductsPage() {
           onNewHost={() => openDialog({ kind: 'host', presetEnvironment: { environmentId: e.id, role: 'app' }, envKey: selected })}
           onEdit={() => openDialog({ kind: 'environment', environment: e, productIds: e.productIds })}
           onDelete={() => askDeleteEnvironment(e, selected)}
+          removeFrom={
+            sel.productId && e.productIds.includes(sel.productId)
+              ? { productName: productName(sel.productId), run: () => void removeFromProduct(e, sel.productId!) }
+              : undefined
+          }
         />
       )
     }
@@ -253,6 +278,10 @@ export function ProductsPage() {
           onNewEnvironment={() => newEnvironment(p.id)}
           onEdit={() => openDialog({ kind: 'product', product: p })}
           onDelete={() => askDeleteProduct(p)}
+          onRemoveEnvironment={(id) => {
+            const e = env(id)
+            if (e) void removeFromProduct(e, p.id)
+          }}
         />
       )
     }

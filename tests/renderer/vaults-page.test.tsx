@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { inventoryStore, loadInventory } from '../../src/renderer/src/inventory/store'
 import { AppShell } from '../../src/renderer/src/shell/AppShell'
 import { commandStore } from '../../src/renderer/src/ui/commands'
 import { clearToasts, Toaster } from '../../src/renderer/src/ui/Toaster'
@@ -18,7 +19,8 @@ import {
   type VaultMeta,
   type VaultStatus,
 } from '../../src/shared/vault'
-import { defaultVault, mockBridge, vaultStatus } from './helpers'
+import type { HostMeta } from '../../src/shared/inventory'
+import { defaultVault, host, mockBridge, vaultStatus } from './helpers'
 
 const PROD_ID = '7f0c6a52-3a0e-4c55-9d3f-0d5b9c1f2a10'
 const TS = '2026-10-16T09:00:00.000Z'
@@ -429,6 +431,47 @@ describe('vaults page', () => {
     expect(invoke).toHaveBeenCalledWith('vault:delete', PROD_ID)
   })
 
+  it('keeps the inventory current after vault and identity changes', async () => {
+    const user = userEvent.setup()
+    inventoryStore.set(null)
+    let hosts: HostMeta[] = [host({ id: 'H', label: 'web', vaultIds: [PROD_ID] })]
+    let vaultList = vaults
+    let identities: IdentityMeta[] = []
+    const { invoke } = renderPage('/vaults?tab=identities')
+    const base = invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
+    invoke.mockImplementation(async (c: string, ...args: unknown[]) => {
+      if (c === 'host:list') return hosts
+      if (c === 'vault:list') return vaultList
+      if (c === 'identity:list') return identities
+      if (c === 'vault:delete') {
+        vaultList = vaults.filter((v) => v.id !== PROD_ID)
+        hosts = hosts.map((h) => ({ ...h, vaultIds: [] }))
+        return null
+      }
+      if (c === 'identity:create') return (identities = [identity({ id: 'i-new' })])[0]
+      return base(c, ...args)
+    })
+    await screen.findByRole('heading', { name: 'Default', level: 2 })
+    await act(() => loadInventory())
+    expect(inventoryStore.get()!.hosts[0].vaultIds).toEqual([PROD_ID])
+
+    const toolbar = await screen.findByRole('toolbar', { name: 'Identity actions' })
+    await user.click(within(toolbar).getByRole('button', { name: 'New identity' }))
+    const dialog = await screen.findByRole('dialog', { name: 'New identity' })
+    await user.type(within(dialog).getByLabelText('Label'), 'ops')
+    await user.type(within(dialog).getByLabelText('Username'), 'ubuntu')
+    await user.click(within(dialog).getByRole('button', { name: 'Save identity' }))
+    await waitFor(() => expect(inventoryStore.get()!.identities.map((i) => i.id)).toEqual(['i-new']))
+
+    await user.click(within(rail()).getByRole('button', { name: 'Prod options' }))
+    await user.click(within(await screen.findByRole('menu', { name: 'Prod options' })).getByRole('menuitem', { name: 'Delete' }))
+    const confirm = await screen.findByRole('dialog', { name: 'Delete Prod?' })
+    await user.type(within(confirm).getByLabelText('Type Prod to confirm'), 'Prod')
+    await user.click(within(confirm).getByRole('button', { name: 'Delete vault' }))
+    await waitFor(() => expect(inventoryStore.get()!.hosts[0].vaultIds).toEqual([]))
+    expect(inventoryStore.get()!.vaults.map((v) => v.id)).toEqual([DEFAULT_VAULT_ID])
+  })
+
   it('creates a vault', async () => {
     const user = userEvent.setup()
     const created: VaultMeta = { ...vaults[1], id: 'v-new', name: 'Staging', color: '#2fbf71', counts: { secrets: 0, keys: 0, identities: 0 } }
@@ -556,12 +599,11 @@ describe('vaults page details', () => {
     expect(within(dialog).getByRole('button', { name: 'Import key' })).toBeDisabled()
     await user.type(pass, 'open sesame')
     await user.click(within(dialog).getByRole('button', { name: 'Import key' }))
-    expect(invoke).toHaveBeenLastCalledWith('key:import', {
-      vaultId: DEFAULT_VAULT_ID,
-      label: 'pasted',
-      privateKey: key,
-      passphrase: 'open sesame',
-    })
+    // Saving also re-reads the inventory, so check the last import call rather than the last call.
+    expect(calls(invoke, 'key:import').at(-1)).toEqual([
+      'key:import',
+      { vaultId: DEFAULT_VAULT_ID, label: 'pasted', privateKey: key, passphrase: 'open sesame' },
+    ])
     expect(await row('pasted')).toBeInTheDocument()
   })
 
@@ -580,11 +622,10 @@ describe('vaults page details', () => {
     expect(within(dialog).getByText(/choose it again/)).toBeInTheDocument()
     await user.type(pass, 'open sesame')
     await user.click(within(dialog).getByRole('button', { name: 'Choose file…' }))
-    expect(invoke).toHaveBeenLastCalledWith('key:importFile', {
-      vaultId: DEFAULT_VAULT_ID,
-      label: 'from-file',
-      passphrase: 'open sesame',
-    })
+    expect(calls(invoke, 'key:importFile').at(-1)).toEqual([
+      'key:importFile',
+      { vaultId: DEFAULT_VAULT_ID, label: 'from-file', passphrase: 'open sesame' },
+    ])
     expect(await row('from-file')).toBeInTheDocument()
   })
 

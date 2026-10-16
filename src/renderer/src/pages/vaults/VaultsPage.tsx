@@ -9,6 +9,7 @@ import {
   type SshKeyMeta,
   type VaultMeta,
 } from '../../../../shared/vault'
+import { reloadInventory } from '../../inventory/store'
 import { api } from '../../lib/api'
 import { Badge } from '../../ui/Badge'
 import { registerCommand } from '../../ui/commands'
@@ -38,6 +39,8 @@ interface VaultData {
 const isTab = (t: string | null): t is Tab => TABS.some((x) => x.id === t)
 const upsert = <T extends { id: string }>(list: T[], item: T) =>
   list.some((x) => x.id === item.id) ? list.map((x) => (x.id === item.id ? item : x)) : [...list, item]
+/** Hosts and environments read vaults, identities and keys, so the shared inventory re-reads after these change. */
+const syncInventory = () => void reloadInventory()
 
 export function VaultsPage() {
   const motionSafe = useMotionSafe()
@@ -208,9 +211,13 @@ export function VaultsPage() {
         onSelect={(id) => go({ vault: id })}
         onNew={() => setVaultDialog({ open: true })}
         onRename={(v) => setVaultDialog({ open: true, vault: v })}
-        onChanged={(v) => setVaults((list) => list && upsert(list, v))}
+        onChanged={(v) => {
+          setVaults((list) => list && upsert(list, v))
+          syncInventory()
+        }}
         onDeleted={(id) => {
           setVaults((list) => list && list.filter((v) => v.id !== id))
+          syncInventory()
           if (id === vaultId) go({ vault: DEFAULT_VAULT_ID })
         }}
         confirm={setConfirm}
@@ -350,8 +357,14 @@ export function VaultsPage() {
                     <KeysPanel
                       keys={shown.keys}
                       stagger={fresh}
-                      onChanged={(k) => patch((d) => ({ ...d, keys: upsert(d.keys, k) }))}
-                      onDeleted={(id) => patch((d) => ({ ...d, keys: d.keys.filter((k) => k.id !== id) }))}
+                      onChanged={(k) => {
+                        patch((d) => ({ ...d, keys: upsert(d.keys, k) }))
+                        syncInventory()
+                      }}
+                      onDeleted={(id) => {
+                        patch((d) => ({ ...d, keys: d.keys.filter((k) => k.id !== id) }))
+                        syncInventory()
+                      }}
                       confirm={setConfirm}
                     />
                   )}
@@ -360,8 +373,14 @@ export function VaultsPage() {
                       identities={shown.identities}
                       keys={current.keys}
                       stagger={fresh}
-                      onChanged={(i) => patch((d) => ({ ...d, identities: upsert(d.identities, i) }))}
-                      onDeleted={(id) => patch((d) => ({ ...d, identities: d.identities.filter((i) => i.id !== id) }))}
+                      onChanged={(i) => {
+                        patch((d) => ({ ...d, identities: upsert(d.identities, i) }))
+                        syncInventory()
+                      }}
+                      onDeleted={(id) => {
+                        patch((d) => ({ ...d, identities: d.identities.filter((i) => i.id !== id) }))
+                        syncInventory()
+                      }}
                       confirm={setConfirm}
                     />
                   )}
@@ -393,6 +412,7 @@ export function VaultsPage() {
             onSaved={(k) => {
               setFresh(false)
               patch((d) => ({ ...d, keys: upsert(d.keys, k) }))
+              syncInventory()
               setDialog(null)
             }}
           />
@@ -406,6 +426,7 @@ export function VaultsPage() {
         onSaved={(i) => {
           setFresh(false)
           patch((d) => ({ ...d, identities: upsert(d.identities, i) }))
+          syncInventory()
           setDialog(null)
         }}
       />
@@ -415,6 +436,7 @@ export function VaultsPage() {
         onClose={() => setVaultDialog((s) => ({ ...s, open: false }))}
         onSaved={(v, created) => {
           setVaults((list) => list && upsert(list, v))
+          syncInventory()
           setVaultDialog((s) => ({ ...s, open: false }))
           if (created) go({ vault: v.id, tab: 'secrets' })
         }}

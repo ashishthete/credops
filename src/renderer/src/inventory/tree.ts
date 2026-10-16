@@ -97,7 +97,7 @@ export function buildTree(data: InventoryData, expanded: ReadonlySet<NodeKey>): 
     if (open) {
       looseEnvs.forEach((e) => addEnv('u', e.id))
       for (const h of looseHosts) {
-        push({ key: `u/h:${h.id}`, kind: 'host', id: h.id, depth: 1 as 0 | 1 | 2, parentKey: 'u', label: h.label, color: UNASSIGNED_COLOR, sharedCount: 0, childCount: 0 })
+        push({ key: `u/h:${h.id}`, kind: 'host', id: h.id, depth: 1, parentKey: 'u', label: h.label, color: UNASSIGNED_COLOR, sharedCount: 0, childCount: 0 })
       }
     }
   }

@@ -120,6 +120,17 @@ function renderPage(w: World = world()) {
         w.hosts = w.hosts.map((h) => (h.id === hostId ? { ...h, environments: h.environments.filter((m) => m.environmentId !== envId) } : h))
         return w.environments.find((e) => e.id === envId)
       }
+      case 'env:setProducts': {
+        const [envId, productIds] = args as [string, string[]]
+        w.environments = w.environments.map((e) => (e.id === envId ? { ...e, productIds } : e))
+        w.products = w.products.map((p) => ({
+          ...p,
+          environmentIds: productIds.includes(p.id)
+            ? [...new Set([...p.environmentIds, envId])]
+            : p.environmentIds.filter((id) => id !== envId),
+        }))
+        return w.environments.find((e) => e.id === envId)
+      }
       case 'env:delete':
         w.environments = w.environments.filter((e) => e.id !== args[0])
         return null
@@ -395,6 +406,42 @@ describe('products page', () => {
     await user.click(confirm)
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:delete', 'prod'))
     await waitFor(() => expect(screen.queryByRole('treeitem', { name: 'prod' })).not.toBeInTheDocument())
+  })
+
+  it('deleting a shared environment names its other products', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByRole('treeitem', { name: 'Acme' })
+    await user.click(item('analytics-db', 0))
+    await screen.findByRole('heading', { name: 'analytics-db', level: 2 })
+    await user.click(screen.getByRole('button', { name: 'analytics-db options' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Delete' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Delete analytics-db?' })
+    expect(dialog).toHaveTextContent('Essentials')
+  })
+
+  it('removes a shared environment from one product only', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderPage()
+    await screen.findByRole('treeitem', { name: 'Acme' })
+    await user.click(item('analytics-db', 0))
+    await screen.findByRole('heading', { name: 'analytics-db', level: 2 })
+    await user.click(screen.getByRole('button', { name: 'analytics-db options' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Remove from Acme' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:setProducts', 'analytics', ['essentials']))
+    expect(invoke).not.toHaveBeenCalledWith('env:delete', expect.anything())
+    await waitFor(() => expect(screen.getAllByRole('treeitem', { name: 'analytics-db' })).toHaveLength(1))
+    await waitFor(() => expect(new URLSearchParams(where.split('?')[1]).get('node')).toBe('p:essentials/e:analytics'))
+  })
+
+  it("removes an environment from the product's card menu", async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderPage()
+    await screen.findByRole('heading', { name: 'Acme', level: 2 })
+    await user.click(screen.getByRole('button', { name: 'staging options' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Remove from Acme' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:setProducts', 'staging', []))
+    expect(await screen.findByText('Moved staging to Unassigned')).toBeInTheDocument()
   })
 
   it('environment view groups hosts and shows defaults', async () => {

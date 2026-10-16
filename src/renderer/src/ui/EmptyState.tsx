@@ -1,5 +1,6 @@
 import { motion } from 'framer-motion'
 import type { LucideIcon } from 'lucide-react'
+import type { ReactNode } from 'react'
 import { Button } from './Button'
 import { fast, spring, useMotionSafe } from './motion'
 
@@ -8,9 +9,11 @@ export interface EmptyStateProps {
   title: string
   text: string
   action?: { label: string; run: () => void }
+  /** Several buttons in place of `action`, laid out in a row under the text. */
+  actions?: ReactNode
 }
 
-export function EmptyState({ icon: Icon, title, text, action }: EmptyStateProps) {
+export function EmptyState({ icon: Icon, title, text, action, actions }: EmptyStateProps) {
   const motionSafe = useMotionSafe()
   return (
     <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
@@ -42,6 +45,7 @@ export function EmptyState({ icon: Icon, title, text, action }: EmptyStateProps)
             {action.label}
           </Button>
         )}
+        {actions && <div className="mt-5 flex gap-2">{actions}</div>}
       </motion.div>
     </div>
   )

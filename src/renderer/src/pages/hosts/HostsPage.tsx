@@ -100,16 +100,21 @@ export function HostsPage() {
       <div className="flex h-full flex-col">
         <PageTitle />
         <div data-testid="hosts-empty" className="flex flex-1 flex-col items-center justify-center pb-16">
-          <EmptyState icon={Server} title="No hosts yet" text="Add one by hand, or bring in everything from your SSH config at once." />
-          {/* EmptyState takes one action; both sit under its text instead. */}
-          <div className="-mt-10 flex gap-2">
-            <Button variant="ghost" icon={<Plus aria-hidden className="size-3.5" />} onClick={() => setDialog('new')}>
-              New host
-            </Button>
-            <Button icon={<FileDown aria-hidden className="size-3.5" />} onClick={() => setDialog('import')}>
-              {IMPORT_LABEL}
-            </Button>
-          </div>
+          <EmptyState
+            icon={Server}
+            title="No hosts yet"
+            text="Add one by hand, or bring in everything from your SSH config at once."
+            actions={
+              <>
+                <Button variant="ghost" icon={<Plus aria-hidden className="size-3.5" />} onClick={() => setDialog('new')}>
+                  New host
+                </Button>
+                <Button icon={<FileDown aria-hidden className="size-3.5" />} onClick={() => setDialog('import')}>
+                  {IMPORT_LABEL}
+                </Button>
+              </>
+            }
+          />
         </div>
       </div>
     ) : (

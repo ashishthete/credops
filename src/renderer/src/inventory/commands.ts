@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router'
-import { registerCommand } from '../ui/commands'
+import { registerCommand, registerCommands } from '../ui/commands'
 import { useInventory } from './store'
 import { environmentKey } from './tree'
 
@@ -36,27 +36,24 @@ export function useInventoryCommands(): void {
   useEffect(() => {
     if (!data) return
     const productName = new Map(data.products.map((p) => [p.id, p.name]))
-    const off = [
-      ...data.hosts.map((h) =>
-        registerCommand({
-          id: `hosts.go.${h.id}`,
-          title: `Go to ${h.label}`,
-          section: 'Hosts',
-          keywords: [h.address, ...h.tags],
-          run: go(`/hosts?host=${encodeURIComponent(h.id)}`),
-        }),
-      ),
+    return registerCommands([
+      ...data.hosts.map((h) => ({
+        id: `hosts.go.${h.id}`,
+        title: `Go to ${h.label}`,
+        section: 'Hosts',
+        keywords: [h.address, ...h.tags],
+        run: go(`/hosts?host=${encodeURIComponent(h.id)}`),
+      })),
       ...data.environments.map((e) => {
         const products = e.productIds.flatMap((id) => productName.get(id) ?? []).sort((a, b) => a.localeCompare(b))
-        return registerCommand({
+        return {
           id: `environments.go.${e.id}`,
           title: `Go to ${e.name} · ${products.length ? products.join(', ') : 'Unassigned'}`,
           section: 'Environments',
           keywords: [e.name],
           run: go(`/products?${new URLSearchParams({ node: environmentKey(e) })}`),
-        })
+        }
       }),
-    ]
-    return () => off.forEach((fn) => fn())
+    ])
   }, [data, go])
 }

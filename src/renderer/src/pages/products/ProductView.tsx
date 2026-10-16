@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { Layers, Link2, Lock, Pencil, Plus, Trash2 } from 'lucide-react'
+import { Layers, Link2, Lock, Pencil, Plus, Trash2, Unlink } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { HOST_ROLES, type EnvironmentMeta, type ProductMeta } from '../../../../shared/inventory'
 import type { InventoryData } from '../../inventory/store'
@@ -41,9 +41,11 @@ interface ProductViewProps {
   onNewEnvironment: () => void
   onEdit: () => void
   onDelete: () => void
+  /** Takes an environment out of this product; it stays in its other products. */
+  onRemoveEnvironment: (environmentId: string) => void
 }
 
-export function ProductView({ product, data, stagger, onOpen, onNewEnvironment, onEdit, onDelete }: ProductViewProps) {
+export function ProductView({ product, data, stagger, onOpen, onNewEnvironment, onEdit, onDelete, onRemoveEnvironment }: ProductViewProps) {
   const envs = data.environments.filter((e) => e.productIds.includes(product.id)).sort((a, b) => a.name.localeCompare(b.name))
   const productName = new Map(data.products.map((p) => [p.id, p.name]))
 
@@ -84,6 +86,13 @@ export function ProductView({ product, data, stagger, onOpen, onNewEnvironment, 
                 stagger={stagger}
                 others={env.productIds.filter((id) => id !== product.id).map((id) => productName.get(id) ?? id)}
                 onOpen={() => onOpen(env.id)}
+                menu={
+                  <RowMenu
+                    label={`${env.name} options`}
+                    className="absolute top-3 right-3"
+                    items={[{ label: `Remove from ${product.name}`, icon: Unlink, run: () => onRemoveEnvironment(env.id) }]}
+                  />
+                }
               />
             ))}
           </ul>
@@ -99,12 +108,15 @@ function EnvironmentCard({
   stagger,
   others,
   onOpen,
+  menu,
 }: {
   env: EnvironmentMeta
   index: number
   stagger: boolean
   others: string[]
   onOpen: () => void
+  /** Sits beside the card button, not inside it: a button can't hold another. */
+  menu: ReactNode
 }) {
   const motionSafe = useMotionSafe()
   const counts = ROLE_ORDER.map((role) => ({ role, n: env.hosts.filter((h) => h.role === role).length })).filter((c) => c.n)
@@ -113,6 +125,7 @@ function EnvironmentCard({
       initial={stagger ? (motionSafe ? { opacity: 0, y: 8 } : { opacity: 0 }) : false}
       animate={{ opacity: 1, y: 0 }}
       transition={motionSafe ? { ...spring, delay: index * 0.03 } : { ...fast, delay: index * 0.03 }}
+      className="relative"
     >
       <motion.button
         type="button"
@@ -120,7 +133,7 @@ function EnvironmentCard({
         whileHover={motionSafe ? { y: -2 } : undefined}
         whileTap={motionSafe ? { scale: 0.985 } : undefined}
         transition={spring}
-        className="group relative flex w-full flex-col gap-3 overflow-hidden rounded-xl border border-line bg-surface/60 p-4 pl-5 text-left transition-[border-color,background-color] hover:border-muted/30 hover:bg-surface"
+        className="group relative flex w-full flex-col gap-3 overflow-hidden rounded-xl border border-line bg-surface/60 p-4 pr-11 pl-5 text-left transition-[border-color,background-color] hover:border-muted/30 hover:bg-surface"
       >
         <span aria-hidden className="absolute inset-y-0 left-0 w-[3px]" style={{ background: env.color, boxShadow: `0 0 14px ${env.color}` }} />
         <span className="flex items-center gap-2">
@@ -150,6 +163,7 @@ function EnvironmentCard({
           </span>
         )}
       </motion.button>
+      {menu}
     </motion.li>
   )
 }

@@ -23,6 +23,18 @@ export function registerCommand(cmd: Command): () => void {
   }
 }
 
+/** Adds many commands in one store update. Returns a function that removes them again. */
+export function registerCommands(cmds: readonly Command[]): () => void {
+  if (!cmds.length) return () => {}
+  const ids = new Set(cmds.map((c) => c.id))
+  commandStore.set([...commandStore.get().filter((c) => !ids.has(c.id)), ...cmds])
+  return () => {
+    const mine = new Set(cmds)
+    const rest = commandStore.get().filter((c) => !mine.has(c))
+    if (rest.length !== commandStore.get().length) commandStore.set(rest)
+  }
+}
+
 // Focus is captured on open and handed back on close, so ⌘K never strands the caret.
 let returnFocus: Element | null = null
 

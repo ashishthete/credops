@@ -40,13 +40,35 @@ export function loadInventory(): Promise<void> {
   return loading
 }
 
-/** A load that starts after any in flight, so it sees writes made since that one began. */
-async function reloadInventory(): Promise<void> {
+/**
+ * A load that starts after any in flight, so it sees writes made since that one began.
+ * Pages that change what the inventory reads (vaults, identities) call it after a write.
+ */
+export async function reloadInventory(): Promise<void> {
   await loading
   await loadInventory()
 }
 
+type ListKey = keyof InventoryData
+
+/**
+ * Bumped by every write to a list. A read only applies the lists nobody wrote while it was in
+ * flight, so a slow load or refresh can't overwrite a newer edit with what it read before.
+ */
+const written: Record<ListKey, number> = { products: 0, environments: 0, hosts: 0, identities: 0, vaults: 0 }
+
+function applyRead(seen: Record<ListKey, number>, lists: Partial<InventoryData>) {
+  const d = inventoryStore.get()
+  if (!d) {
+    if (Object.keys(lists).length === Object.keys(written).length) inventoryStore.set(lists as InventoryData)
+    return
+  }
+  const fresh = Object.entries(lists).filter(([k]) => written[k as ListKey] === seen[k as ListKey])
+  if (fresh.length) inventoryStore.set({ ...d, ...Object.fromEntries(fresh) })
+}
+
 async function readInventory(): Promise<void> {
+  const seen = { ...written }
   const data = await attempt("Couldn't load your inventory", async () => {
     const [products, environments, hosts, identities, vaults] = await Promise.all([
       api.invoke('product:list'),
@@ -57,7 +79,7 @@ async function readInventory(): Promise<void> {
     ])
     return { products, environments, hosts, identities, vaults }
   })
-  if (data) inventoryStore.set(data)
+  if (data) applyRead(seen, data)
 }
 
 export const useInventory = (): InventoryData | null => useSyncExternalStore(inventoryStore.subscribe, inventoryStore.get)
@@ -70,7 +92,10 @@ function upsert<T extends Row>(rows: T[], row: T): T[] {
 
 function patchStore(change: (d: InventoryData) => Partial<InventoryData>) {
   const d = inventoryStore.get()
-  if (d) inventoryStore.set({ ...d, ...change(d) })
+  if (!d) return
+  const next = change(d)
+  for (const k of Object.keys(next) as ListKey[]) written[k]++
+  inventoryStore.set({ ...d, ...next })
 }
 
 const LISTS = {
@@ -81,9 +106,10 @@ const LISTS = {
 
 /** Re-reads the lists on the other side of a link, so shared items update everywhere. */
 async function refresh(...keys: (keyof typeof LISTS)[]) {
+  const seen = { ...written }
   try {
     const lists = await Promise.all(keys.map((k) => LISTS[k]()))
-    patchStore(() => Object.fromEntries(keys.map((k, i) => [k, lists[i]])))
+    applyRead(seen, Object.fromEntries(keys.map((k, i) => [k, lists[i]])))
   } catch (err) {
     fail("Couldn't refresh your inventory", err)
   }
@@ -125,19 +151,27 @@ export const inv = {
 
   /** Create sends everything; edit sends changed fields only and routes product links to setProducts. */
   async saveEnvironment(input: EnvironmentInput, id?: string): Promise<EnvironmentMeta | undefined> {
+    let updated = false
     const row = await attempt("Couldn't save the environment", async () => {
       if (!id) return api.invoke('env:create', input)
       const current = inventoryStore.get()?.environments.find((e) => e.id === id)
       const patch = diff<EnvironmentPatch>(input, current, ENV_KEYS)
-      let saved = Object.keys(patch).length || !current ? await api.invoke('env:update', id, patch) : current
+      let saved = current
+      if (Object.keys(patch).length || !current) {
+        saved = await api.invoke('env:update', id, patch)
+        updated = true
+      }
       if (input.productIds && !(current && sameSet(input.productIds, current.productIds))) {
         saved = await api.invoke('env:setProducts', id, input.productIds)
       }
-      return saved
+      return saved!
     })
     if (row) {
       patchStore((d) => ({ environments: upsert(d.environments, row) }))
       await refresh('products')
+    } else if (updated) {
+      // The edit saved but the product links didn't; show what was saved.
+      await refresh('environments')
     }
     return row
   },
@@ -183,19 +217,27 @@ export const inv = {
    * `base` is the host the edit started from (defaults to the stored one), so others' changes aren't undone.
    */
   async saveHost(input: HostInput, id?: string, base?: HostMeta): Promise<HostMeta | undefined> {
+    let updated = false
     const row = await attempt("Couldn't save the host", async () => {
       if (!id) return api.invoke('host:create', input)
       const current = base ?? inventoryStore.get()?.hosts.find((h) => h.id === id)
       const patch = diff<HostPatch>(input, current, HOST_KEYS)
-      let saved = Object.keys(patch).length || !current ? await api.invoke('host:update', id, patch) : current
+      let saved = current
+      if (Object.keys(patch).length || !current) {
+        saved = await api.invoke('host:update', id, patch)
+        updated = true
+      }
       if (input.vaultIds && !(current && sameSet(input.vaultIds, current.vaultIds))) {
         saved = await api.invoke('host:setVaults', id, input.vaultIds)
       }
-      return saved
+      return saved!
     })
     if (row) {
       patchStore((d) => ({ hosts: upsert(d.hosts, row) }))
       if (!id) await refresh('environments')
+    } else if (updated) {
+      // The edit saved but the vault links didn't; show what was saved.
+      await refresh('hosts')
     }
     return row
   },
