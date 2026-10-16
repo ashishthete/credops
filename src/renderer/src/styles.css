@@ -19,7 +19,7 @@ body {
   -webkit-app-region: drag;
 }
 
-.app-drag :is(button, a, input, select, textarea, [role='button']) {
+.app-drag :is(button, a, input, select, textarea, [role='button'], [role='tablist']) {
   -webkit-app-region: no-drag;
 }
 

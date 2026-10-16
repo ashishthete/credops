@@ -32,6 +32,9 @@ function keyMatches(key: string, e: KeyboardEvent): boolean {
   // Fall back to the physical key so Alt/Shift-altered characters still match.
   if (/^[a-z]$/.test(key)) return e.code === `Key${key.toUpperCase()}`
   if (/^[0-9]$/.test(key)) return e.code === `Digit${key}`
+  // Shift turns `]` into `}` on US layouts; match brackets by their physical key too.
+  if (key === ']') return e.code === 'BracketRight'
+  if (key === '[') return e.code === 'BracketLeft'
   return false
 }
 

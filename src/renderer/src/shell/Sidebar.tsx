@@ -7,12 +7,14 @@ import {
   ScrollText,
   Search,
   Server,
+  SquareTerminal,
   type LucideIcon,
 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import { NavLink } from 'react-router'
 import type { AppInfo } from '../../../shared/ipc'
 import { api } from '../lib/api'
+import { sessionStore } from '../terminal/sessions'
 import { openCommandPalette } from '../ui/commands'
 import { spring, useMotionSafe } from '../ui/motion'
 import { formatShortcut } from '../ui/shortcuts'
@@ -22,6 +24,7 @@ import { VaultLockButton } from './VaultLockButton'
 
 export const SECTION_ICONS: Record<SectionId, LucideIcon> = {
   products: Boxes,
+  terminals: SquareTerminal,
   hosts: Server,
   vaults: KeyRound,
   tunnels: Cable,
@@ -101,6 +104,7 @@ export function Sidebar() {
                     strokeWidth={2}
                   />
                   <span className="relative flex-1">{s.label}</span>
+                  {s.id === 'terminals' && <LiveCount />}
                   <Keys
                     combo={sectionShortcut(i)}
                     className="relative opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
@@ -145,6 +149,28 @@ export function Sidebar() {
         </div>
       </div>
     </aside>
+  )
+}
+
+const liveCount = () => sessionStore.get().sessions.filter((s) => s.state === 'connecting' || s.state === 'ready').length
+
+/** Sessions that are connecting or up; it gives way to the shortcut keys on hover. */
+function LiveCount() {
+  const motionSafe = useMotionSafe()
+  const count = useSyncExternalStore(sessionStore.subscribe, liveCount)
+  if (!count) return null
+  return (
+    <motion.span
+      key={count}
+      data-badge
+      aria-label={`${count} live`}
+      initial={motionSafe ? { scale: 0.6, opacity: 0 } : { opacity: 0 }}
+      animate={motionSafe ? { scale: 1, opacity: 1 } : { opacity: 1 }}
+      transition={spring}
+      className="absolute right-2.5 grid h-[18px] min-w-[18px] place-items-center rounded-full bg-ok/15 px-1.5 text-[10.5px] font-semibold text-ok tabular-nums transition-opacity group-hover:opacity-0 group-focus-visible:opacity-0"
+    >
+      {count}
+    </motion.span>
   )
 }
 

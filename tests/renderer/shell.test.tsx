@@ -55,7 +55,7 @@ describe('shell', () => {
   it('Hosts no longer shows a placeholder', async () => {
     renderShell()
     act(() => {
-      fireEvent.keyDown(window, { key: '2', metaKey: true })
+      fireEvent.keyDown(window, { key: '3', metaKey: true })
     })
     expect(await screen.findByRole('heading', { name: 'Hosts', level: 1 })).toBeInTheDocument()
     expect(screen.queryByText('Coming in phase 3')).not.toBeInTheDocument()
@@ -66,10 +66,10 @@ describe('shell', () => {
     expect(await screen.findByRole('heading', { name: 'Products', level: 1 })).toBeInTheDocument()
   })
 
-  it('mod+6 jumps to Audit', async () => {
+  it('mod+7 jumps to Audit', async () => {
     renderShell()
     act(() => {
-      fireEvent.keyDown(window, { key: '6', metaKey: true })
+      fireEvent.keyDown(window, { key: '7', metaKey: true })
     })
     expect(await screen.findByRole('heading', { name: 'Audit trail' })).toBeInTheDocument()
   })
@@ -83,7 +83,7 @@ describe('shell', () => {
     const { unmount } = renderShell()
     await screen.findByText(/tester@mac/)
     const nav = commandStore.get().filter((c) => c.section === 'Navigate')
-    expect(nav.map((c) => c.shortcut)).toEqual(['mod+1', 'mod+2', 'mod+3', 'mod+4', 'mod+5', 'mod+6'])
+    expect(nav.map((c) => c.shortcut)).toEqual(['mod+1', 'mod+2', 'mod+3', 'mod+4', 'mod+5', 'mod+6', 'mod+7'])
     unmount()
     expect(commandStore.get().filter((c) => c.section === 'Navigate')).toHaveLength(0)
   })

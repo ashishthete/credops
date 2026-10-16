@@ -7,7 +7,10 @@ import { AuditPage } from '../pages/AuditPage'
 import { HostsPage } from '../pages/hosts/HostsPage'
 import { PlaceholderPage } from '../pages/PlaceholderPage'
 import { ProductsPage } from '../pages/products/ProductsPage'
+import { TerminalDeck } from '../pages/terminals/TerminalDeck'
 import { VaultsPage } from '../pages/vaults/VaultsPage'
+import { disposeAll } from '../terminal/registry'
+import { promptStore, sessionStore, startSessionSync } from '../terminal/sessions'
 import { registerCommand } from '../ui/commands'
 import { fast, useMotionSafe } from '../ui/motion'
 import { useShortcut } from '../ui/shortcuts'
@@ -29,6 +32,16 @@ export function AppShell() {
   // The shell mounts only while unlocked, so every unlock reloads (F22).
   useEffect(() => {
     void loadInventory()
+  }, [])
+  useEffect(() => {
+    const stop = startSessionSync()
+    return () => {
+      stop()
+      disposeAll()
+      // Events stop while unmounted (the vault locked); the next mount's session list is the truth.
+      sessionStore.set({ sessions: [], activeId: null, order: [] })
+      promptStore.set([])
+    }
   }, [])
 
   return (
@@ -62,6 +75,8 @@ export function AppShell() {
               )
             })}
             <Route path="/products" element={<ProductsPage />} />
+            {/* The deck below draws this page; it stays mounted so terminals survive navigation. */}
+            <Route path="/terminals" element={null} />
             <Route path="/hosts" element={<HostsPage />} />
             <Route path="/environments" element={<Navigate to="/products" replace />} />
             <Route path="/vaults" element={<VaultsPage />} />
@@ -69,12 +84,13 @@ export function AppShell() {
             <Route path="*" element={<Navigate to={SECTIONS[0].path} replace />} />
           </Routes>
         </motion.div>
+        <TerminalDeck visible={location.pathname === '/terminals'} />
       </main>
     </div>
   )
 }
 
-// mod+1…mod+6 and a "Go to …" palette command per section.
+// mod+1…mod+7 and a "Go to …" palette command per section.
 function useSectionNavigation() {
   const navigate = useNavigate()
   const navigateRef = useRef(navigate)

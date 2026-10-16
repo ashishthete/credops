@@ -1,0 +1,346 @@
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { MemoryRouter } from 'react-router'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { inventoryStore } from '../../src/renderer/src/inventory/store'
+import { AppShell } from '../../src/renderer/src/shell/AppShell'
+import { SECTIONS } from '../../src/renderer/src/shell/sections'
+import { promptStore, sessionStore } from '../../src/renderer/src/terminal/sessions'
+import { clearToasts } from '../../src/renderer/src/ui/Toaster'
+import type { SessionMeta } from '../../src/shared/ssh'
+import { emitBridgeEvent, environment, host, mockBridge } from './helpers'
+import { fake, resetFakeXterm } from './terminal-fakes'
+
+vi.mock('@xterm/xterm', async () => ({ Terminal: (await import('./terminal-fakes')).FakeTerminal }))
+vi.mock('@xterm/addon-fit', async () => ({ FitAddon: (await import('./terminal-fakes')).FakeFit }))
+vi.mock('@xterm/addon-search', async () => ({ SearchAddon: (await import('./terminal-fakes')).FakeSearch }))
+vi.mock('@xterm/addon-web-links', async () => ({ WebLinksAddon: (await import('./terminal-fakes')).FakeWebLinks }))
+
+// framer-motion caches matchMedia, so reduced motion is driven through useMotionSafe (F18).
+const motion = vi.hoisted(() => ({ safe: true }))
+vi.mock('../../src/renderer/src/ui/motion', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/renderer/src/ui/motion')>()),
+  useMotionSafe: () => motion.safe,
+}))
+
+function meta(id: string, over: Partial<SessionMeta> = {}): SessionMeta {
+  return {
+    id,
+    kind: 'local',
+    hostId: null,
+    environmentId: null,
+    label: id,
+    color: null,
+    state: 'ready',
+    hops: [],
+    error: null,
+    openedAt: '2026-10-17T09:00:00.000Z',
+    readyAt: null,
+    closedAt: null,
+    attempt: 1,
+    ...over,
+  }
+}
+
+const ssh = (id: string, over: Partial<SessionMeta> = {}) =>
+  meta(id, { kind: 'ssh', hostId: `${id}-host`, hops: [{ label: id, state: 'up' }], ...over })
+
+const state = (m: SessionMeta) => act(() => emitBridgeEvent('session:state', m))
+const flush = () => act(async () => {})
+const key = (k: string, over: Partial<KeyboardEventInit> = {}) =>
+  act(() => {
+    fireEvent.keyDown(window, { key: k, metaKey: true, ...over })
+  })
+const calls = (invoke: ReturnType<typeof mockBridge>, channel: string) =>
+  (invoke.mock.calls as unknown[][]).filter((c) => c[0] === channel)
+const tab = (label: string) => screen.getByRole('tab', { name: new RegExp(label) })
+
+async function renderShell(path = '/terminals', results: Record<string, unknown> = {}) {
+  const invoke = mockBridge({ 'session:attach': { meta: {}, buffer: '', end: 0 }, ...results })
+  render(
+    <MemoryRouter initialEntries={[path]}>
+      <AppShell />
+    </MemoryRouter>,
+  )
+  await flush()
+  return invoke
+}
+
+beforeEach(() => {
+  vi.useFakeTimers()
+  motion.safe = true
+  resetFakeXterm()
+  inventoryStore.set(null)
+  sessionStore.set({ sessions: [], activeId: null, order: [] })
+  promptStore.set([])
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe() {}
+      disconnect() {}
+    },
+  )
+})
+afterEach(async () => {
+  // Unmount while the fake clock still runs, so AnimatePresence exits finish on it.
+  cleanup()
+  await act(async () => {
+    await vi.runOnlyPendingTimersAsync()
+  })
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
+  clearToasts()
+})
+
+describe('terminals page', () => {
+  it('section order puts Terminals second and mod+2 opens it', async () => {
+    expect(SECTIONS.map((s) => s.id)).toEqual(['products', 'terminals', 'hosts', 'vaults', 'tunnels', 'deployments', 'audit'])
+    await renderShell('/products')
+    expect(screen.queryByRole('searchbox', { name: 'Connect to a host' })).not.toBeInTheDocument()
+    key('2')
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500) // the card fades in
+    })
+    const nav = screen.getByRole('navigation', { name: 'Sections' })
+    expect(within(nav).getByRole('link', { name: /Terminals/ })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('searchbox', { name: 'Connect to a host' })).toBeVisible()
+  })
+
+  it('deck stays mounted across navigation', async () => {
+    await renderShell()
+    state(meta('s1', { label: 'Local shell 1' }))
+    await flush()
+    expect(fake.terms).toHaveLength(1)
+    key('3') // Hosts
+    await flush()
+    expect(screen.getByRole('heading', { name: 'Hosts', level: 1 })).toBeInTheDocument()
+    key('2')
+    await flush()
+    expect(tab('Local shell 1')).toBeVisible()
+    expect(fake.terms).toHaveLength(1)
+    expect(fake.terms[0].dispose).not.toHaveBeenCalled()
+  })
+
+  it('tab shows env colour stripe and status dot per state', async () => {
+    await renderShell('/terminals', { 'env:list': [environment({ id: 'e1', name: 'Staging' })] })
+    state(ssh('web', { state: 'connecting', color: '#2fbf71', environmentId: 'e1', hops: [{ label: 'web', state: 'connecting' }] }))
+    state(meta('local'))
+    state(ssh('db', { state: 'failed', error: { code: 'refused', message: 'db refused the connection' } }))
+    state(ssh('old', { state: 'closed' }))
+    await flush()
+
+    const web = tab('web')
+    expect(web).toHaveTextContent('Staging')
+    const stripe = (label: string) => tab(label).closest('[data-session]')!.querySelector('[data-stripe]') as HTMLElement
+    expect(stripe('web').style.background).toBe('rgb(47, 191, 113)')
+    expect(stripe('local').style.background).toBe('var(--accent)')
+    const dot = (label: string) => tab(label).querySelector('[data-state]')
+    expect(dot('web')).toHaveAttribute('data-state', 'connecting')
+    expect(dot('local')).toHaveAttribute('data-state', 'ready')
+    expect(dot('db')).toHaveAttribute('data-state', 'failed')
+    expect(dot('old')).toHaveAttribute('data-state', 'closed')
+  })
+
+  it('connect overlay shows the hop chain and marks the failed hop', async () => {
+    await renderShell()
+    state(ssh('db', { state: 'connecting', hops: [{ label: 'bastion', state: 'connecting' }, { label: 'db', state: 'pending' }] }))
+    const chain = () => screen.getByRole('list', { name: 'Connection path' })
+    expect(within(chain()).getByText('This Mac')).toBeInTheDocument()
+    expect(within(chain()).getByText('bastion').closest('[data-state]')).toHaveAttribute('data-state', 'connecting')
+
+    state(
+      ssh('db', {
+        state: 'failed',
+        hops: [{ label: 'bastion', state: 'up' }, { label: 'db', state: 'failed' }],
+        error: { code: 'timeout', message: "db didn't answer within 20 s", hopLabel: 'db' },
+      }),
+    )
+    expect(within(chain()).getByText('bastion').closest('[data-state]')).toHaveAttribute('data-state', 'up')
+    expect(within(chain()).getByText('db').closest('[data-state]')).toHaveAttribute('data-state', 'failed')
+    expect(screen.getByText("db didn't answer within 20 s")).toBeInTheDocument()
+  })
+
+  it('overlay leaves once the session is ready', async () => {
+    await renderShell()
+    state(ssh('web', { state: 'connecting', hops: [{ label: 'web', state: 'connecting' }] }))
+    expect(screen.getByRole('list', { name: 'Connection path' })).toBeInTheDocument()
+    state(ssh('web'))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    expect(screen.queryByRole('list', { name: 'Connection path' })).not.toBeInTheDocument()
+  })
+
+  it('failed host-key-changed shows both fingerprints and ssh-keygen command for openssh source', async () => {
+    await renderShell()
+    state(
+      ssh('db', {
+        state: 'failed',
+        hops: [{ label: 'db', state: 'failed' }],
+        error: {
+          code: 'host-key-changed',
+          message: 'The host key for db has changed',
+          hopLabel: 'db',
+          hostKey: {
+            host: '[db.internal]:2222',
+            keyType: 'ssh-ed25519',
+            fingerprint: 'SHA256:newnewnew',
+            known: [{ keyType: 'ssh-ed25519', fingerprint: 'SHA256:oldoldold', source: 'openssh', line: 3 }],
+          },
+        },
+      }),
+    )
+    const card = screen.getByRole('alert')
+    expect(within(card).getByText('SHA256:oldoldold')).toBeInTheDocument()
+    expect(within(card).getByText('SHA256:newnewnew')).toBeInTheDocument()
+    expect(within(card).getByText("ssh-keygen -R '[db.internal]:2222'")).toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: 'Reconnect' })).toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: 'Close' })).toBeInTheDocument()
+  })
+
+  it('closing a ready tab asks; closing a failed tab does not', async () => {
+    const invoke = await renderShell()
+    state(ssh('web'))
+    state(ssh('db', { state: 'failed', error: { code: 'refused', message: 'refused' } }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close db' }))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500) // the tab collapses out
+    })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(calls(invoke, 'session:close')).toEqual([['session:close', 'db']])
+    expect(screen.queryByRole('tab', { name: /db/ })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close web' }))
+    const dialog = screen.getByRole('dialog', { name: 'Close web?' })
+    expect(dialog).toHaveTextContent('The session will end.')
+    expect(calls(invoke, 'session:close')).toHaveLength(1)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
+    await flush()
+    expect(calls(invoke, 'session:close')).toEqual([
+      ['session:close', 'db'],
+      ['session:close', 'web'],
+    ])
+  })
+
+  it('middle-click closes a tab', async () => {
+    const invoke = await renderShell()
+    state(ssh('old', { state: 'closed' }))
+    fireEvent(tab('old'), new MouseEvent('auxclick', { bubbles: true, button: 1 }))
+    await flush()
+    expect(calls(invoke, 'session:close')).toEqual([['session:close', 'old']])
+  })
+
+  it('reconnect button calls session:reconnect', async () => {
+    const invoke = await renderShell('/terminals', { 'session:reconnect': ssh('db', { state: 'connecting', attempt: 2 }) })
+    state(ssh('db', { state: 'failed', error: { code: 'refused', message: 'refused' } }))
+    fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: 'Reconnect' }))
+    await flush()
+    expect(calls(invoke, 'session:reconnect')).toEqual([['session:reconnect', 'db']])
+  })
+
+  it('a closed ssh session shows the ended bar with reconnect', async () => {
+    const invoke = await renderShell()
+    state(ssh('web', { state: 'closed' }))
+    const bar = screen.getByRole('status', { name: 'Session ended' })
+    fireEvent.click(within(bar).getByRole('button', { name: 'Reconnect' }))
+    await flush()
+    expect(calls(invoke, 'session:reconnect')).toEqual([['session:reconnect', 'web']])
+
+    state(meta('local', { state: 'closed' }))
+    fireEvent.click(tab('local'))
+    expect(within(screen.getByRole('status', { name: 'Session ended' })).queryByRole('button', { name: 'Reconnect' })).toBeNull()
+  })
+
+  it('QuickConnect filters hosts and Enter opens ssh with no environment', async () => {
+    const invoke = await renderShell('/terminals', {
+      'host:list': [host({ id: 'h1', label: 'web-1' }), host({ id: 'h2', label: 'db-primary' }), host({ id: 'h3', label: 'api' })],
+      'ssh:open': ssh('s9', { label: 'db-primary', state: 'connecting' }),
+    })
+    const search = screen.getByRole('searchbox', { name: 'Connect to a host' })
+    expect(search).toHaveFocus()
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual([
+      expect.stringContaining('api'),
+      expect.stringContaining('db-primary'),
+      expect.stringContaining('web-1'),
+    ])
+    fireEvent.change(search, { target: { value: 'dbp' } })
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual([expect.stringContaining('db-primary')])
+    fireEvent.keyDown(search, { key: 'Enter' })
+    await flush()
+    const opens = calls(invoke, 'ssh:open')
+    expect(opens).toHaveLength(1)
+    expect(opens[0][1]).toMatchObject({ hostId: 'h2' })
+    expect((opens[0][1] as { environmentId?: string }).environmentId).toBeUndefined()
+    expect(tab('db-primary')).toBeInTheDocument()
+  })
+
+  it('QuickConnect puts recently connected hosts first', async () => {
+    await renderShell('/terminals', {
+      'host:list': [host({ id: 'h7', label: 'alpha' }), host({ id: 'h8', label: 'zulu' })],
+      'ssh:open': ssh('s9', { label: 'zulu' }),
+    })
+    fireEvent.click(screen.getByRole('option', { name: /zulu/ }))
+    await flush()
+    act(() => sessionStore.set({ sessions: [], activeId: null, order: [] }))
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual([
+      expect.stringContaining('zulu'),
+      expect.stringContaining('alpha'),
+    ])
+  })
+
+  it('mod+t opens a local shell; mod+shift+] cycles tabs', async () => {
+    const invoke = await renderShell('/products', { 'shell:open': meta('s1', { label: 'Local shell 1' }) })
+    key('t')
+    await flush()
+    expect(calls(invoke, 'shell:open')).toHaveLength(1)
+    expect(tab('Local shell 1')).toBeVisible() // mod+t also goes to Terminals
+    state(meta('s2', { label: 'Local shell 2' }))
+    expect(tab('Local shell 1')).toHaveAttribute('aria-selected', 'true')
+
+    key('}', { code: 'BracketRight', shiftKey: true })
+    expect(tab('Local shell 2')).toHaveAttribute('aria-selected', 'true')
+    key('}', { code: 'BracketRight', shiftKey: true })
+    expect(tab('Local shell 1')).toHaveAttribute('aria-selected', 'true')
+    key('{', { code: 'BracketLeft', shiftKey: true })
+    expect(tab('Local shell 2')).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('mod+w closes the active tab, only while Terminals is visible', async () => {
+    const invoke = await renderShell()
+    state(ssh('old', { state: 'closed' }))
+    key('3') // Hosts
+    await flush()
+    key('w')
+    await flush()
+    expect(calls(invoke, 'session:close')).toHaveLength(0)
+    key('2')
+    await flush()
+    key('w')
+    await flush()
+    expect(calls(invoke, 'session:close')).toEqual([['session:close', 'old']])
+  })
+
+  it('sidebar badge counts live sessions', async () => {
+    await renderShell('/products')
+    const link = () => within(screen.getByRole('navigation', { name: 'Sections' })).getByRole('link', { name: /Terminals/ })
+    expect(link().querySelector('[data-badge]')).toBeNull()
+    state(ssh('a', { state: 'connecting', hops: [] }))
+    state(meta('b'))
+    state(ssh('c', { state: 'closed' }))
+    expect(link().querySelector('[data-badge]')).toHaveTextContent('2')
+  })
+
+  it('reduced motion: no pulse class on the connecting dot', async () => {
+    await renderShell()
+    state(ssh('web', { state: 'connecting', hops: [{ label: 'web', state: 'connecting' }] }))
+    expect(tab('web').querySelector('.animate-ping')).not.toBeNull()
+    cleanup()
+
+    motion.safe = false
+    await renderShell()
+    state(ssh('web', { state: 'connecting', hops: [{ label: 'web', state: 'connecting' }] }))
+    expect(tab('web').querySelector('[data-state="connecting"]')).not.toBeNull()
+    expect(tab('web').querySelector('.animate-ping')).toBeNull()
+    expect(document.querySelector('[aria-label="Connection path"] .animate-ping')).toBeNull()
+  })
+})
