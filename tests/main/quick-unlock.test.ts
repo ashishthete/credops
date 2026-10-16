@@ -40,6 +40,12 @@ function events(f: VaultFixture): { action: string; outcome: string; details: un
     .map((e) => ({ action: e.action, outcome: e.outcome, details: e.details }))
 }
 
+/** A 'login' row as an older build could leave it: main no longer sets that mode itself. */
+function seedLogin(f: VaultFixture): void {
+  f.vault.setQuickUnlock('touchId')
+  f.db.prepare("UPDATE vault_state SET quick_unlock = 'login' WHERE id = 1").run()
+}
+
 async function ready(quick = fakeQuick()): Promise<VaultFixture & { quick: FakeQuick }> {
   const f = makeVault({ quick })
   await f.vault.setup(PW)
@@ -107,9 +113,32 @@ describe('quick unlock', () => {
     expect(await pw).toEqual({ ok: true })
   })
 
-  it('login mode skips prompt', async () => {
+  it('refuses to turn on login mode', async () => {
     const f = await ready()
-    expect(f.vault.setQuickUnlock('login').quickUnlock).toBe('login')
+    expect(() => f.vault.setQuickUnlock('login')).toThrow('login quick unlock is not offered')
+    expect(stateRow(f)).toEqual({ quick_unlock: 'off', quick_unlock_blob: null })
+    expect(events(f).filter((e) => e.action === 'vault.quickunlock')).toHaveLength(0)
+    // An existing login row can still be turned off.
+    seedLogin(f)
+    expect(f.vault.status().quickUnlock).toBe('login')
+    expect(f.vault.setQuickUnlock('off').quickUnlock).toBe('off')
+    expect(stateRow(f)).toEqual({ quick_unlock: 'off', quick_unlock_blob: null })
+  })
+
+  it('a quick unlock success resets the password backoff', async () => {
+    const f = await ready()
+    f.vault.setQuickUnlock('touchId')
+    f.vault.lock('manual')
+    for (let i = 0; i < 3; i++) expect(await f.vault.unlock('wrong password')).toMatchObject({ ok: false })
+    expect(f.vault.status().retryAfterMs).toBeGreaterThan(0)
+    expect(await f.vault.unlockQuick()).toEqual({ ok: true })
+    expect(f.db.prepare('SELECT failed_attempts FROM vault_state').get()).toEqual({ failed_attempts: 0 })
+    expect(f.vault.status().retryAfterMs).toBe(0)
+  })
+
+  it('an existing login row skips the prompt', async () => {
+    const f = await ready()
+    seedLogin(f)
     f.vault.lock('manual')
     expect(await f.vault.unlockQuick()).toEqual({ ok: true })
     expect(f.quick.touchId.prompt).not.toHaveBeenCalled()
@@ -118,7 +147,7 @@ describe('quick unlock', () => {
 
   it('a broken cache is discarded', async () => {
     const f = await ready()
-    f.vault.setQuickUnlock('login')
+    seedLogin(f)
     f.vault.lock('manual')
     f.quick.keychain.decrypt.mockImplementationOnce(() => {
       throw new Error('keychain changed')
@@ -133,7 +162,7 @@ describe('quick unlock', () => {
 
   it('a stale cache falls back to the password without counting a failure', async () => {
     const f = await ready()
-    f.vault.setQuickUnlock('login')
+    seedLogin(f)
     // Another key in the cache, e.g. the password changed with quick unlock off elsewhere.
     f.db
       .prepare('UPDATE vault_state SET quick_unlock_blob = ? WHERE id = 1')
@@ -176,22 +205,21 @@ describe('quick unlock', () => {
     // Touch ID mode stores its cache in the keychain too.
     avail.keychain = false
     expect(f.vault.status().quickUnlockAvailable).toEqual({ touchId: false, login: false })
-    expect(() => f.vault.setQuickUnlock('login')).toThrow(/quick unlock unavailable/)
     expect(() => f.vault.setQuickUnlock('touchId')).toThrow(/quick unlock unavailable/)
     avail.keychain = true
     f.vault.lock('manual')
-    expect(() => f.vault.setQuickUnlock('login')).toThrow(VAULT_LOCKED)
+    expect(() => f.vault.setQuickUnlock('touchId')).toThrow(VAULT_LOCKED)
     expect(stateRow(f)).toEqual({ quick_unlock: 'off', quick_unlock_blob: null })
 
     const none = makeVault()
     await none.vault.setup(PW)
     expect(none.vault.status().quickUnlockAvailable).toEqual({ touchId: false, login: false })
-    expect(() => none.vault.setQuickUnlock('login')).toThrow(/unavailable/)
+    expect(() => none.vault.setQuickUnlock('touchId')).toThrow(/unavailable/)
   })
 
   it('turning it off clears the cache', async () => {
     const f = await ready()
-    f.vault.setQuickUnlock('login')
+    seedLogin(f)
     expect(stateRow(f).quick_unlock_blob).not.toBeNull()
     expect(f.vault.setQuickUnlock('off').quickUnlock).toBe('off')
     expect(stateRow(f)).toEqual({ quick_unlock: 'off', quick_unlock_blob: null })
@@ -213,7 +241,7 @@ describe('quick unlock', () => {
   it('rekey clears the cache when the keychain is gone', async () => {
     const avail = { keychain: true, touchId: true }
     const f = await ready(fakeQuick(avail))
-    f.vault.setQuickUnlock('login')
+    f.vault.setQuickUnlock('touchId')
     avail.keychain = false
     expect(await f.vault.changePassword(PW, PW2)).toEqual({ ok: true })
     expect(stateRow(f)).toEqual({ quick_unlock: 'off', quick_unlock_blob: null })
@@ -231,14 +259,14 @@ describe('quick unlock', () => {
     }
     const f = await ready(quick)
     const rows = events(f).length
-    expect(() => f.vault.setQuickUnlock('login')).toThrow(/keychain denied/)
+    expect(() => f.vault.setQuickUnlock('touchId')).toThrow(/keychain denied/)
     expect(stateRow(f)).toEqual({ quick_unlock: 'off', quick_unlock_blob: null })
     expect(events(f)).toHaveLength(rows)
   })
 
   it('cache holds no password', async () => {
     const f = await ready()
-    f.vault.setQuickUnlock('login')
+    seedLogin(f)
     const blob = stateRow(f).quick_unlock_blob!
     const decoded = f.quick.keychain.decrypt(Buffer.from(blob, 'base64')) as string
     expect(decoded).not.toContain(PW)

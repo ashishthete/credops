@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronDown, Eye, EyeOff } from 'lucide-react'
-import { useId, useState, type ComponentProps, type ReactNode } from 'react'
+import { useId, useState, type ComponentProps, type CSSProperties, type ReactNode } from 'react'
 import { fast, useMotionSafe } from './motion'
 
 interface FieldChrome {
@@ -72,6 +72,25 @@ export function TextField({ label, error, hint, id, className = '', ...rest }: F
   )
 }
 
+const noAssist = { autoComplete: 'off', autoCapitalize: 'off', autoCorrect: 'off', spellCheck: false } as const
+
+function RevealToggle({ visible, onToggle, className }: { visible: boolean; onToggle: () => void; className: string }) {
+  const Icon = visible ? EyeOff : Eye
+  return (
+    <button
+      type="button"
+      aria-label={visible ? 'Hide password' : 'Show password'}
+      aria-pressed={visible}
+      // Keep the caret in the field while toggling.
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={onToggle}
+      className={`absolute right-1 grid size-7 place-items-center rounded-md text-muted transition-colors hover:bg-white/6 hover:text-fg ${className}`}
+    >
+      <Icon aria-hidden className="size-3.5" />
+    </button>
+  )
+}
+
 /** A password input with a show/hide toggle; never autocompleted or spell-checked. */
 export function SecretField({
   label,
@@ -83,33 +102,54 @@ export function SecretField({
 }: FieldChrome & Omit<ComponentProps<'input'>, 'type'>) {
   const ids = useFieldIds(id)
   const [visible, setVisible] = useState(false)
-  const Icon = visible ? EyeOff : Eye
   return (
     <Shell {...ids} label={label} error={error} hint={hint}>
       <div className="relative">
         <input
           id={ids.id}
           type={visible ? 'text' : 'password'}
-          autoComplete="off"
-          autoCapitalize="off"
-          autoCorrect="off"
-          spellCheck={false}
+          {...noAssist}
           aria-invalid={error ? true : undefined}
           aria-describedby={described(ids.msgId, { label, error, hint })}
           className={`h-9 pr-9 pl-3 font-mono tracking-wide ${control} ${className}`}
           {...rest}
         />
-        <button
-          type="button"
-          aria-label={visible ? 'Hide password' : 'Show password'}
-          aria-pressed={visible}
-          // Keep the caret in the input while toggling.
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={() => setVisible((v) => !v)}
-          className="absolute top-1/2 right-1 grid size-7 -translate-y-1/2 place-items-center rounded-md text-muted transition-colors hover:bg-white/6 hover:text-fg"
-        >
-          <Icon aria-hidden className="size-3.5" />
-        </button>
+        <RevealToggle visible={visible} onToggle={() => setVisible((v) => !v)} className="top-1/2 -translate-y-1/2" />
+      </div>
+    </Shell>
+  )
+}
+
+/**
+ * SecretField for values that span lines (PEM blocks, .env files): an input would drop the
+ * newlines. Masked with text-security while hidden; the value is kept exactly as typed.
+ */
+export function SecretAreaField({
+  label,
+  error,
+  hint,
+  id,
+  className = '',
+  style,
+  ...rest
+}: FieldChrome & ComponentProps<'textarea'>) {
+  const ids = useFieldIds(id)
+  const [visible, setVisible] = useState(false)
+  return (
+    <Shell {...ids} label={label} error={error} hint={hint}>
+      <div className="relative">
+        <textarea
+          id={ids.id}
+          rows={3}
+          {...noAssist}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={described(ids.msgId, { label, error, hint })}
+          data-masked={visible ? undefined : true}
+          style={{ ...style, WebkitTextSecurity: visible ? 'none' : 'disc' } as CSSProperties}
+          className={`block max-h-48 min-h-20 resize-y py-2 pr-9 pl-3 font-mono leading-5 tracking-wide ${control} ${className}`}
+          {...rest}
+        />
+        <RevealToggle visible={visible} onToggle={() => setVisible((v) => !v)} className="top-1" />
       </div>
     </Shell>
   )

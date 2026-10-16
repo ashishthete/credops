@@ -53,6 +53,19 @@ describe('redact', () => {
     expect(redact('abcd1234', ['abcd', 'abcd1234'])).toBe('‹redacted›')
   })
 
+  it('masks secrets under 8 characters only as whole tokens', () => {
+    expect(redact('pin=1234; again 1234', ['1234'])).toBe('pin=‹redacted›; again ‹redacted›')
+    expect(redact('1234', ['1234'])).toBe(REDACTED)
+    // Inside a longer word or number it is left alone, so common substrings do not shred logs.
+    expect(redact('port 51234 id a1234b 12345', ['1234'])).toBe('port 51234 id a1234b 12345')
+    expect(redact('ünïcabcd abcd', ['abcd'])).toBe('ünïcabcd ‹redacted›')
+    // 8 or more characters match anywhere.
+    expect(redact('xhunter22x', ['hunter22'])).toBe('x‹redacted›x')
+    // Longest first still wins over a short token inside it.
+    expect(redact('k=abcd-wxyz', ['abcd', 'abcd-wxyz', 'wxyz'])).toBe('k=‹redacted›')
+    expect(redact('wxyz-abcd wxyz', ['wxyz-abcd', 'wxyz'])).toBe('‹redacted› ‹redacted›')
+  })
+
   it('ignores short known secrets', () => {
     expect(redact('abc', ['ab'])).toBe('abc')
   })

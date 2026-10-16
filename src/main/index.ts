@@ -6,6 +6,7 @@ import {
   clipboard,
   dialog,
   ipcMain,
+  Menu,
   powerMonitor,
   safeStorage,
   session,
@@ -28,7 +29,7 @@ import { IdentityStore } from './vault/identity-store'
 import { KeyStore } from './vault/key-store'
 import { SecretStore } from './vault/secret-store'
 import { VaultService, type QuickUnlockDeps } from './vault/vault-service'
-import { devRendererUrl, forwardVaultLocks, shouldAllowNavigation, windowOptions } from './window'
+import { appMenuTemplate, devRendererUrl, forwardVaultLocks, shouldAllowNavigation, windowOptions } from './window'
 
 // Keep dev data apart from the packaged app's (same name, same userData otherwise).
 // Must run before anything touches userData, including the single-instance lock.
@@ -48,7 +49,7 @@ let quitAudited = false
 let stopAutoLock: (() => void) | null = null
 
 function createWindow(): void {
-  const win = new BrowserWindow(windowOptions(join(__dirname, '../preload/index.js')))
+  const win = new BrowserWindow(windowOptions(join(__dirname, '../preload/index.js'), app.isPackaged))
   mainWindow = win
 
   win.on('ready-to-show', () => win.show())
@@ -83,6 +84,7 @@ if (!app.requestSingleInstanceLock()) {
     .then(() => {
       session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
       session.defaultSession.setPermissionCheckHandler(() => false)
+      Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(app.isPackaged, process.platform)))
       db = openDatabase(join(app.getPath('userData'), 'opsdeck.db'))
       // Decrypted values are known only while unlocked; the vault drops them on lock. Each store
       // registers its own with the vault; asking the stores first makes each decrypt its values once

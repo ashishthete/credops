@@ -4,10 +4,30 @@ const SENSITIVE_KEY = /pass(word|phrase)?|secret|token|api[_-]?key|private[_-]?k
 // An unterminated block is redacted through the end of the string.
 const PEM_BLOCK = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g
 const MIN_SECRET_LENGTH = 4
+// Shorter secrets (a PIN, a short word) also occur inside unrelated numbers and words, so they
+// are masked only as whole tokens.
+const MIN_ANYWHERE_LENGTH = 8
+const WORD_CHAR = /[\p{L}\p{N}]/u
+
+const isBoundary = (s: string, at: number): boolean => at < 0 || at >= s.length || !WORD_CHAR.test(s[at]!)
+
+/** Replaces each occurrence of `secret` in `s`; short ones only with a non-alphanumeric char or the edge on both sides. */
+function maskOne(s: string, secret: string): string {
+  const anywhere = secret.length >= MIN_ANYWHERE_LENGTH
+  let out = ''
+  let from = 0
+  for (let at = s.indexOf(secret); at !== -1; at = s.indexOf(secret, at + 1)) {
+    if (at < from) continue
+    if (!anywhere && !(isBoundary(s, at - 1) && isBoundary(s, at + secret.length))) continue
+    out += s.slice(from, at) + REDACTED
+    from = at + secret.length
+  }
+  return from === 0 ? s : out + s.slice(from)
+}
 
 /**
- * Longest first, so a secret that contains another is masked whole. Plain string replacement,
- * not one alternation regex: V8 rejects a large pattern ("Regular expression too large", for
+ * Longest first, so a secret that contains another is masked whole. A plain indexOf scan, not
+ * one alternation regex: V8 rejects a large pattern ("Regular expression too large", for
  * example one 64 KiB secret) with a message that quotes every secret in it.
  */
 function buildSecretMasker(knownSecrets: readonly string[]): ((s: string) => string) | null {
@@ -15,7 +35,7 @@ function buildSecretMasker(knownSecrets: readonly string[]): ((s: string) => str
     .filter((s) => s.length >= MIN_SECRET_LENGTH)
     .sort((a, b) => b.length - a.length)
   if (!usable.length) return null
-  return (s) => usable.reduce((acc, secret) => (acc.includes(secret) ? acc.split(secret).join(REDACTED) : acc), s)
+  return (s) => usable.reduce((acc, secret) => (acc.includes(secret) ? maskOne(acc, secret) : acc), s)
 }
 
 function isPlainObject(value: object): boolean {

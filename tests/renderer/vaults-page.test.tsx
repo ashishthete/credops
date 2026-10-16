@@ -203,6 +203,67 @@ describe('vaults page', () => {
     expect(document.body.textContent).not.toContain('abc12345')
   })
 
+  it('keeps the newlines of a multi-line value, masked until shown', async () => {
+    const user = userEvent.setup()
+    const pem = '-----BEGIN CERT-----\nA=1\nB=2\n  indented\n-----END CERT-----\n'
+    const { invoke } = renderPage('/vaults?tab=secrets', { 'secret:create': secret({ id: 's3', name: 'CERT' }) })
+    await row('DATABASE_URL')
+    act(() => {
+      fireEvent.keyDown(window, { key: 'n', metaKey: true })
+    })
+    const dialog = await screen.findByRole('dialog', { name: 'New secret' })
+    await user.type(within(dialog).getByLabelText('Name'), 'CERT')
+    const value = within(dialog).getByLabelText('Value')
+    expect(value.tagName).toBe('TEXTAREA')
+    expect(value).toHaveAttribute('autocomplete', 'off')
+    expect(value).toHaveAttribute('spellcheck', 'false')
+    expect(value).toHaveAttribute('data-masked')
+    fireEvent.change(value, { target: { value: pem } })
+    await user.click(within(dialog).getByRole('button', { name: 'Show password' }))
+    expect(value).not.toHaveAttribute('data-masked')
+    expect(within(dialog).getByRole('button', { name: 'Hide password' })).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Save secret' }))
+    expect(invoke).toHaveBeenCalledWith('secret:create', {
+      vaultId: DEFAULT_VAULT_ID,
+      name: 'CERT',
+      kind: 'password',
+      value: pem,
+    })
+  })
+
+  it('a failed save keeps the value for a retry', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderPage('/vaults?tab=secrets', { 'secret:create': secret({ id: 's3', name: 'API_TOKEN' }) })
+    await row('DATABASE_URL')
+    failOnce(invoke, 'secret:create', 'disk full')
+    act(() => {
+      fireEvent.keyDown(window, { key: 'n', metaKey: true })
+    })
+    const dialog = await screen.findByRole('dialog', { name: 'New secret' })
+    await user.type(within(dialog).getByLabelText('Name'), 'API_TOKEN')
+    await user.type(within(dialog).getByLabelText('Value'), 'abc12345')
+    await user.click(within(dialog).getByRole('button', { name: 'Save secret' }))
+    await waitFor(() => expect(calls(invoke, 'secret:create')).toHaveLength(1))
+    expect(within(dialog).getByLabelText('Value')).toHaveValue('abc12345')
+    await user.click(within(dialog).getByRole('button', { name: 'Save secret' }))
+    await waitFor(() => expect(calls(invoke, 'secret:create')).toHaveLength(2))
+    expect(calls(invoke, 'secret:create').map((c) => (c as unknown[])[1])).toEqual([
+      expect.objectContaining({ value: 'abc12345' }),
+      expect.objectContaining({ value: 'abc12345' }),
+    ])
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('reveals a multi-line value with its line breaks', async () => {
+    const user = userEvent.setup()
+    renderPage('/vaults', { 'secret:reveal': { value: 'A=1\nB=2' } })
+    const r = await row('DATABASE_URL')
+    await user.click(within(r).getByRole('button', { name: 'Reveal' }))
+    const code = await within(r).findByText((_, el) => el?.tagName === 'CODE' && el.textContent === 'A=1\nB=2')
+    expect(code).toHaveClass('whitespace-pre-wrap')
+    expect(code).not.toHaveClass('truncate')
+  })
+
   it('generates a key', async () => {
     const user = userEvent.setup()
     const generated = sshKey()

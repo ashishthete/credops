@@ -1,11 +1,18 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { LockReason } from '../../src/shared/vault'
-import { devRendererUrl, forwardVaultLocks, shouldAllowNavigation, windowOptions } from '../../src/main/window'
+import {
+  appMenuTemplate,
+  devRendererUrl,
+  forwardVaultLocks,
+  shouldAllowNavigation,
+  windowOptions,
+} from '../../src/main/window'
 
 describe('windowOptions', () => {
   it('creates a locked-down window', () => {
-    const o = windowOptions('/p/preload.js')
+    const o = windowOptions('/p/preload.js', true)
     expect(o.webPreferences).toMatchObject({
+      devTools: false,
       preload: '/p/preload.js',
       contextIsolation: true,
       nodeIntegration: false,
@@ -14,6 +21,36 @@ describe('windowOptions', () => {
     })
     expect(o.backgroundColor).toBe('#0b0d12')
     expect(o.titleBarStyle).toBe('hiddenInset')
+  })
+
+  it('allows DevTools only in development', () => {
+    expect(windowOptions('/p/preload.js', false).webPreferences?.devTools).toBe(true)
+    expect(windowOptions('/p/preload.js', true).webPreferences?.devTools).toBe(false)
+  })
+})
+
+describe('appMenuTemplate', () => {
+  const roles = (t: ReturnType<typeof appMenuTemplate>): unknown[] =>
+    t.flatMap((m) => [m.role, ...(Array.isArray(m.submenu) ? m.submenu.map((i) => i.role) : [])]).filter(Boolean)
+
+  it('packaged builds get no reload or DevTools', () => {
+    const r = roles(appMenuTemplate(true, 'darwin'))
+    expect(r).toEqual(expect.arrayContaining(['appMenu', 'quit', 'undo', 'redo', 'cut', 'copy', 'paste', 'selectAll', 'windowMenu']))
+    expect(r).not.toContain('toggleDevTools')
+    expect(r).not.toContain('reload')
+    expect(r).not.toContain('forceReload')
+  })
+
+  it('development adds a View menu with reload and DevTools', () => {
+    const t = appMenuTemplate(false, 'darwin')
+    expect(t.map((m) => m.label ?? m.role)).toEqual(['appMenu', 'Edit', 'View', 'windowMenu'])
+    expect(roles(t)).toEqual(expect.arrayContaining(['reload', 'forceReload', 'toggleDevTools']))
+  })
+
+  it('other platforms put Quit in a File menu', () => {
+    const t = appMenuTemplate(true, 'linux')
+    expect(t[0]).toMatchObject({ label: 'File', submenu: [{ role: 'quit' }] })
+    expect(roles(t)).not.toContain('appMenu')
   })
 })
 

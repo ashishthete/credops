@@ -1,8 +1,9 @@
-import type { BrowserWindowConstructorOptions } from 'electron'
+import type { BrowserWindowConstructorOptions, MenuItemConstructorOptions } from 'electron'
 import type { EventContract, EventName } from '../shared/ipc'
 import type { LockReason } from '../shared/vault'
 
-export function windowOptions(preloadPath: string): BrowserWindowConstructorOptions {
+/** DevTools would let anyone at the keyboard read decrypted vault state, so packaged builds have none. */
+export function windowOptions(preloadPath: string, isPackaged: boolean): BrowserWindowConstructorOptions {
   return {
     title: 'OpsDeck',
     width: 1280,
@@ -18,8 +19,32 @@ export function windowOptions(preloadPath: string): BrowserWindowConstructorOpti
       nodeIntegration: false,
       sandbox: true,
       webviewTag: false,
+      devTools: !isPackaged,
     },
   }
+}
+
+/**
+ * Replaces Electron's default menu, whose View menu offers reload and DevTools in every build.
+ * Edit roles stay so copy and paste keep working in text fields.
+ */
+export function appMenuTemplate(isPackaged: boolean, platform: NodeJS.Platform): MenuItemConstructorOptions[] {
+  const sep: MenuItemConstructorOptions = { type: 'separator' }
+  const app: MenuItemConstructorOptions =
+    platform === 'darwin'
+      ? {
+          role: 'appMenu',
+          submenu: [{ role: 'about' }, sep, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, sep, { role: 'quit' }],
+        }
+      : { label: 'File', submenu: [{ role: 'quit' }] }
+  const edit: MenuItemConstructorOptions = {
+    label: 'Edit',
+    submenu: [{ role: 'undo' }, { role: 'redo' }, sep, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }],
+  }
+  const view: MenuItemConstructorOptions[] = isPackaged
+    ? []
+    : [{ label: 'View', submenu: [{ role: 'reload' }, { role: 'forceReload' }, { role: 'toggleDevTools' }] }]
+  return [app, edit, ...view, { role: 'windowMenu' }]
 }
 
 const withoutHash = (u: URL): string => {

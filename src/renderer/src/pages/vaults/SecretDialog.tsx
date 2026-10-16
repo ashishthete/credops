@@ -10,7 +10,7 @@ import {
 import { api } from '../../lib/api'
 import { Button } from '../../ui/Button'
 import { Dialog } from '../../ui/Dialog'
-import { SecretField, SelectField, TextField } from '../../ui/Field'
+import { SecretAreaField, SelectField, TextField } from '../../ui/Field'
 import { toast } from '../../ui/Toaster'
 import { attempt } from './common'
 
@@ -46,8 +46,6 @@ export function SecretDialog({ open, vaultId, secret, onClose, onSaved }: Secret
     if (!valid || busy) return
     const trimmed = name.trim()
     const v = value
-    // The value leaves the form as soon as it is sent.
-    setValue('')
     setBusy(true)
     const saved = await attempt(editing ? "Couldn't update the secret" : "Couldn't save the secret", () => {
       if (!secret) return api.invoke('secret:create', { vaultId, name: trimmed, kind, value: v })
@@ -59,6 +57,8 @@ export function SecretDialog({ open, vaultId, secret, onClose, onSaved }: Secret
     })
     setBusy(false)
     if (saved) {
+      // Cleared only once stored, so a failed save can be retried without retyping.
+      setValue('')
       toast({ title: editing ? `Updated ${saved.name}` : `Saved ${saved.name}`, tone: 'success' })
       onSaved(saved)
     }
@@ -105,7 +105,7 @@ export function SecretDialog({ open, vaultId, secret, onClose, onSaved }: Secret
             ))}
           </SelectField>
         </div>
-        <SecretField
+        <SecretAreaField
           label="Value"
           maxLength={MAX_SECRET_VALUE}
           value={value}

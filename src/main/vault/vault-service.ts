@@ -242,6 +242,7 @@ export class VaultService {
         this.discardQuickUnlock()
         return fail('cache-stale', UNAVAILABLE)
       }
+      // The OS vouched for the user (Touch ID, or the login keychain), so the password backoff restarts.
       this.resetFailures()
       this.install(kek, opened.keys, opened.corrupt)
       this.audit.append({
@@ -253,8 +254,13 @@ export class VaultService {
     })
   }
 
-  /** Caches the live KEK in the OS keychain for `mode`, or clears the cache for 'off'. */
+  /**
+   * Caches the live KEK in the OS keychain for `mode`, or clears the cache for 'off'. 'login' is
+   * refused: it would unlock with no prompt at all, defeating the app's auth gate. An
+   * existing 'login' row can still be turned off.
+   */
   setQuickUnlock(mode: QuickUnlockMode): VaultStatus {
+    if (mode === 'login') throw new Error('login quick unlock is not offered')
     this.assertUnlocked()
     if (mode === 'off') {
       this.db.prepare("UPDATE vault_state SET quick_unlock = 'off', quick_unlock_blob = NULL WHERE id = 1").run()

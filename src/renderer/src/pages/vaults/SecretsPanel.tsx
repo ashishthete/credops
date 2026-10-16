@@ -171,14 +171,14 @@ function SecretRow({ secret: s, index, stagger, onEdit, onDelete }: SecretRowPro
       </div>
 
       <div className="relative min-w-0 flex-1">
-        <div className="relative flex h-8 items-center overflow-hidden rounded-md bg-canvas/50 px-2.5 shadow-[inset_0_0_0_1px_var(--border)]">
+        <div className="relative flex max-h-32 min-h-8 items-center overflow-auto rounded-md bg-canvas/50 px-2.5 py-1.5 shadow-[inset_0_0_0_1px_var(--border)]">
           {reveal ? (
             <motion.code
               key="value"
               initial={motionSafe ? { opacity: 0, filter: 'blur(6px)', letterSpacing: '0.3em' } : { opacity: 0 }}
               animate={motionSafe ? { opacity: 1, filter: 'blur(0px)', letterSpacing: '0em' } : { opacity: 1 }}
               transition={motionSafe ? { duration: 0.32, ease: 'easeOut' } : fast}
-              className="min-w-0 truncate font-mono text-[12.5px] text-fg select-all"
+              className="min-w-0 font-mono text-[12.5px] leading-5 break-all whitespace-pre-wrap text-fg select-all"
             >
               {reveal.value}
             </motion.code>
