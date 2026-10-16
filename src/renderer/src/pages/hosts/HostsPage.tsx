@@ -326,6 +326,9 @@ function HostRow({ host, envs, index, stagger, selected, tabbable, onSelect }: H
       tabIndex={present && tabbable ? 0 : -1}
       onClick={onSelect}
       onDoubleClick={() => void connect(host.id)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && e.target === e.currentTarget) void connect(host.id)
+      }}
       layout={motionSafe ? 'position' : false}
       initial={motionSafe ? { opacity: 0, y: 8 } : { opacity: 0 }}
       animate={motionSafe ? { opacity: 1, y: 0 } : { opacity: 1 }}
@@ -378,7 +381,7 @@ function HostRow({ host, envs, index, stagger, selected, tabbable, onSelect }: H
       </span>
       <button
         type="button"
-        tabIndex={-1}
+        tabIndex={present ? 0 : -1}
         aria-label={`Connect to ${host.label}`}
         title="Connect"
         onClick={(e) => {
@@ -386,7 +389,7 @@ function HostRow({ host, envs, index, stagger, selected, tabbable, onSelect }: H
           void connect(host.id)
         }}
         onDoubleClick={(e) => e.stopPropagation()}
-        className="relative mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg text-muted opacity-0 transition-[opacity,color,background-color] group-hover:opacity-100 hover:bg-white/[0.06] hover:text-fg focus-visible:opacity-100"
+        className="relative mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg text-muted opacity-0 transition-[opacity,color,background-color] group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-white/[0.06] hover:text-fg focus-visible:opacity-100"
       >
         <SquareTerminal aria-hidden className="size-3.5" />
       </button>

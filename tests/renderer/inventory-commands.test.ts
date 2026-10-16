@@ -96,4 +96,27 @@ describe('inventory commands: terminals', () => {
     expect(getRecents()).toContain('connect:web1')
     unmount()
   })
+
+  it('two rapid connects open one session, and the key frees after it settles', async () => {
+    let release!: (id: string) => void
+    sessions.openSsh.mockImplementationOnce(() => new Promise((r) => (release = r)))
+    const { unmount } = renderHook(useHarness, { wrapper })
+    await act(async () => {
+      command('connect:web1').run()
+      command('connect:web1').run()
+    })
+    expect(sessions.openSsh).toHaveBeenCalledTimes(1)
+    await act(async () => release('s1'))
+    await act(async () => command('connect:web1').run())
+    expect(sessions.openSsh).toHaveBeenCalledTimes(2)
+    // A different target is independent, and so is the local shell.
+    sessions.openLocal.mockImplementationOnce(() => new Promise((r) => (release = r)))
+    await act(async () => {
+      command('terminal.local').run()
+      command('terminal.local').run()
+    })
+    expect(sessions.openLocal).toHaveBeenCalledTimes(1)
+    await act(async () => release('s2'))
+    unmount()
+  })
 })

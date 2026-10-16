@@ -411,6 +411,16 @@ describe('hosts page', () => {
     expect(sessions.openSsh).toHaveBeenCalledWith('edge', undefined)
   })
 
+  it('Enter on a focused row connects, and the row button is keyboard reachable', async () => {
+    const user = userEvent.setup()
+    renderApp(world())
+    await waitFor(() => expect(rowNames()).toEqual(['api-1', 'db-1', 'edge']))
+    expect(within(hostList()).getByRole('button', { name: 'Connect to edge' })).not.toHaveAttribute('tabindex', '-1')
+    act(() => within(hostList()).getByRole('option', { name: 'api-1' }).focus())
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(sessions.openSsh).toHaveBeenCalledWith('api1', undefined))
+  })
+
   it('palette navigates', async () => {
     const user = userEvent.setup()
     const w = world()
