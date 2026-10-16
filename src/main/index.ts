@@ -1,10 +1,13 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, shell } from 'electron'
+import { AuditLog } from './audit/audit-log'
 import { openDatabase, type Db } from './db/connection'
 import { windowOptions } from './window'
 
 let mainWindow: BrowserWindow | null = null
 let db: Db | null = null
+let audit: AuditLog | null = null
+let quitAudited = false
 
 function createWindow(): void {
   const win = new BrowserWindow(windowOptions(join(__dirname, '../preload/index.js')))
@@ -38,6 +41,8 @@ if (!app.requestSingleInstanceLock()) {
     .whenReady()
     .then(() => {
       db = openDatabase(join(app.getPath('userData'), 'opsdeck.db'))
+      audit = new AuditLog(db)
+      audit.append({ action: 'app.start', outcome: 'info', details: { version: app.getVersion() } })
       createWindow()
     })
     .catch((err) => {
@@ -45,7 +50,14 @@ if (!app.requestSingleInstanceLock()) {
       app.quit()
     })
 
+  app.on('before-quit', () => {
+    if (!audit || quitAudited) return
+    quitAudited = true
+    audit.append({ action: 'app.quit', outcome: 'info' })
+  })
+
   app.on('will-quit', () => {
+    audit = null
     db?.close()
     db = null
   })
