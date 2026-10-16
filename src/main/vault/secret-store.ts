@@ -28,6 +28,13 @@ interface SecretRow {
   updated_at: string
 }
 
+interface Copied {
+  value: string
+  /** Date.now() at which the clear is due. */
+  deadline: number
+  timer: ReturnType<typeof setTimeout>
+}
+
 const valueAad = (id: string): string => `secret:${id}:value`
 
 function toMeta(r: SecretRow): SecretMeta {
@@ -57,7 +64,9 @@ function checkValue(value: string): string {
 export class SecretStore {
   private readonly clipboard: ClipboardLike
   /** What copy() last put on the clipboard, until it is cleared. */
-  private copied: { value: string; timer: ReturnType<typeof setTimeout> } | null = null
+  private copied: Copied | null = null
+  /** Clipboard writes and clears still running, for flushClipboard(). */
+  private readonly inflight = new Set<Promise<unknown>>()
   /** Whether this unlock's values are registered with the vault. */
   private loaded = false
   /** Bumped on every lock, so a copy can tell a lock happened while its write was pending. */
@@ -180,25 +189,34 @@ export class SecretStore {
   async copy(id: string): Promise<{ clearsInMs: number }> {
     const { row, value } = this.decrypt(id)
     const locks = this.locks
-    if (this.copied) clearTimeout(this.copied.timer)
-    // Recorded before the write so a lock during it clears the clipboard.
-    const copied = { value, timer: setTimeout(() => void this.clearClipboard(), CLIPBOARD_CLEAR_MS) }
+    const prev = this.copied
+    // Tracked before the write so a lock during it clears the clipboard.
+    const copied = this.arm(value, CLIPBOARD_CLEAR_MS)
     this.copied = copied
     try {
-      await this.clipboard.writeText(value)
+      await this.track(Promise.resolve(this.clipboard.writeText(value)))
     } catch (err) {
-      if (this.copied === copied) this.copied = null
       clearTimeout(copied.timer)
+      // The previous copy is still on the clipboard: keep tracking it, and clear it if we locked meanwhile.
+      const locked = locks !== this.locks
+      if (this.copied === copied || (locked && !this.copied)) {
+        this.copied = prev && this.arm(prev.value, Math.max(0, prev.deadline - Date.now()))
+        if (locked) await this.clearClipboard()
+      }
       throw err
     }
+    if (prev) clearTimeout(prev.timer)
+    const locked = locks !== this.locks
+    // Audited even when locked meanwhile: the value did reach the clipboard.
     this.audit.append({
       action: 'secret.copy',
       outcome: 'success',
       targetType: 'secret',
       targetId: id,
       targetLabel: row.name,
+      ...(locked ? { details: { reason: 'locked' } } : {}),
     })
-    if (locks !== this.locks) {
+    if (locked) {
       // The lock's clear may have read the clipboard before the write landed: check again.
       if (!this.copied) {
         this.copied = copied
@@ -207,6 +225,19 @@ export class SecretStore {
       throw new Error(VAULT_LOCKED)
     }
     return { clearsInMs: CLIPBOARD_CLEAR_MS }
+  }
+
+  /** Whether a copied value is still tracked or a clipboard write or clear is running. */
+  clipboardPending(): boolean {
+    return this.copied !== null || this.inflight.size > 0
+  }
+
+  /** Clears a tracked copy now and waits for every pending clipboard write and clear (used at quit). */
+  async flushClipboard(): Promise<void> {
+    while (this.clipboardPending()) {
+      void this.clearClipboard()
+      await Promise.allSettled([...this.inflight])
+    }
   }
 
   /** Main-process use only (later phases): not audited and never exposed over IPC. */
@@ -246,17 +277,32 @@ export class SecretStore {
     return { row, value: this.vault.open(row.vault_id, valueAad(id), row.value_enc) }
   }
 
-  /** Clears the clipboard only while it still holds what copy() put there. */
-  private async clearClipboard(): Promise<void> {
-    if (!this.copied) return
-    const { value, timer } = this.copied
+  /** Clears the clipboard only while it still holds `target`'s value; a no-op once `target` is replaced. */
+  private clearClipboard(target = this.copied): Promise<void> {
+    if (!target || this.copied !== target) return Promise.resolve()
     this.copied = null
-    clearTimeout(timer)
-    try {
-      if ((await this.clipboard.readText()) === value) await this.clipboard.writeText('')
-    } catch (err) {
-      console.error('clipboard clear failed:', err instanceof Error ? err.name : 'error')
-    }
+    clearTimeout(target.timer)
+    return this.track(
+      (async (): Promise<void> => {
+        try {
+          if ((await this.clipboard.readText()) === target.value) await this.clipboard.writeText('')
+        } catch (err) {
+          console.error('clipboard clear failed:', err instanceof Error ? err.name : 'error')
+        }
+      })(),
+    )
+  }
+
+  private arm(value: string, ms: number): Copied {
+    const copied: Copied = { value, deadline: Date.now() + ms, timer: undefined as never }
+    copied.timer = setTimeout(() => void this.clearClipboard(copied), ms)
+    return copied
+  }
+
+  private track<T>(p: Promise<T>): Promise<T> {
+    this.inflight.add(p)
+    p.finally(() => this.inflight.delete(p)).catch(() => undefined)
+    return p
   }
 
   private assertUsable(vaultId: string): void {

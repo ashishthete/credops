@@ -31,6 +31,7 @@ import { devRendererUrl, shouldAllowNavigation, windowOptions } from './window'
 if (!app.isPackaged) app.setPath('userData', `${app.getPath('userData')}-dev`)
 
 const devServerUrl = devRendererUrl(app.isPackaged, process.env)
+const CLIPBOARD_QUIT_WAIT_MS = 500
 
 let mainWindow: BrowserWindow | null = null
 let db: Db | null = null
@@ -77,8 +78,13 @@ if (!app.requestSingleInstanceLock()) {
       session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
       session.defaultSession.setPermissionCheckHandler(() => false)
       db = openDatabase(join(app.getPath('userData'), 'opsdeck.db'))
-      // Decrypted values are known only while unlocked; the vault drops them on lock.
-      const knownSecrets = (): readonly string[] => secrets?.knownValues() ?? []
+      // Decrypted values are known only while unlocked; the vault drops them on lock. Stores register
+      // theirs with the vault (Task 8 keys and identities too); asking the secret store first makes it
+      // decrypt its values once after an unlock.
+      const knownSecrets = (): readonly string[] => {
+        secrets?.knownValues()
+        return vault?.knownValues() ?? []
+      }
       audit = new AuditLog(db, { knownSecrets })
       audit.append({ action: 'app.start', outcome: 'info', details: { version: app.getVersion() } })
       const log = audit
@@ -140,7 +146,7 @@ if (!app.requestSingleInstanceLock()) {
       app.quit()
     })
 
-  app.on('before-quit', () => {
+  app.on('before-quit', (event) => {
     if (!audit || quitAudited) return
     quitAudited = true
     try {
@@ -152,6 +158,14 @@ if (!app.requestSingleInstanceLock()) {
       audit.append({ action: 'app.quit', outcome: 'info' })
     } catch (err) {
       console.error('Failed to audit app.quit:', err)
+    }
+    // Hold the quit briefly so a copied secret is cleared from the clipboard; quitAudited stops a loop.
+    const store = secrets
+    if (store?.clipboardPending()) {
+      event.preventDefault()
+      void Promise.race([store.flushClipboard(), new Promise((r) => setTimeout(r, CLIPBOARD_QUIT_WAIT_MS))])
+        .catch((err: unknown) => console.error('Failed to clear the clipboard on quit:', err))
+        .finally(() => app.quit())
     }
   })
 

@@ -202,14 +202,26 @@ describe('SecretStore', () => {
     expect(f.clipboard.text).toBe('mine')
   })
 
-  it('a lock while the copy is being written clears it', async () => {
+  it('a lock while the copy is being written clears it once the write lands', async () => {
     const f = await setup()
     const { id } = f.secrets.create(dbPass)
+    const write = f.clipboard.writeText.bind(f.clipboard)
+    let land!: () => void
+    f.clipboard.writeText = (t) =>
+      new Promise<void>((resolve) => {
+        land = () => void Promise.resolve(write(t)).then(resolve)
+      })
     const pending = f.secrets.copy(id)
     f.vault.lock('idle')
+    await settle()
+    // The lock's clear found nothing of ours yet.
+    expect(f.clipboard.text).toBe('')
+    f.clipboard.writeText = write
+    land()
     await expect(pending).rejects.toThrow(VAULT_LOCKED)
     await settle()
     expect(f.clipboard.text).toBe('')
+    expect(secretEvents(f).at(-1)).toMatchObject({ action: 'secret.copy', details: { reason: 'locked' } })
   })
 
   it('a failed clipboard write is not audited as a copy', async () => {
@@ -218,6 +230,62 @@ describe('SecretStore', () => {
     f.clipboard.writeText = () => Promise.reject(new Error('clipboard busy'))
     await expect(f.secrets.copy(id)).rejects.toThrow(/clipboard busy/)
     expect(secretEvents(f).map((e) => e.action)).not.toContain('secret.copy')
+  })
+
+  it('a failed second copy keeps the first one tracked', async () => {
+    const f = await setup()
+    const a = f.secrets.create(dbPass)
+    const b = f.secrets.create({ ...dbPass, name: 'B', value: 'bbbb' })
+    await f.secrets.copy(a.id)
+    expect(secretEvents(f).at(-1)).toMatchObject({ action: 'secret.copy', details: {} })
+    await vi.advanceTimersByTimeAsync(10000)
+    const write = f.clipboard.writeText.bind(f.clipboard)
+    f.clipboard.writeText = () => Promise.reject(new Error('clipboard busy'))
+    await expect(f.secrets.copy(b.id)).rejects.toThrow(/clipboard busy/)
+    f.clipboard.writeText = write
+    expect(f.clipboard.text).toBe('hunter22')
+    await vi.advanceTimersByTimeAsync(20000)
+    expect(f.clipboard.text).toBe('')
+  })
+
+  it('a failed second copy still lets a lock clear the first', async () => {
+    const f = await setup()
+    const a = f.secrets.create(dbPass)
+    const b = f.secrets.create({ ...dbPass, name: 'B', value: 'bbbb' })
+    await f.secrets.copy(a.id)
+    const write = f.clipboard.writeText.bind(f.clipboard)
+    f.clipboard.writeText = () => Promise.reject(new Error('clipboard busy'))
+    await expect(f.secrets.copy(b.id)).rejects.toThrow(/clipboard busy/)
+    f.clipboard.writeText = write
+    f.vault.lock('idle')
+    await settle()
+    expect(f.clipboard.text).toBe('')
+  })
+
+  it('flushClipboard clears a pending copy now and waits for it', async () => {
+    const f = await setup()
+    const { id } = f.secrets.create(dbPass)
+    expect(f.secrets.clipboardPending()).toBe(false)
+    await f.secrets.flushClipboard()
+    await f.secrets.copy(id)
+    expect(f.secrets.clipboardPending()).toBe(true)
+    await f.secrets.flushClipboard()
+    expect(f.clipboard.text).toBe('')
+    expect(f.secrets.clipboardPending()).toBe(false)
+
+    // At quit: lock starts the clear, flush waits for a slow clipboard to finish it.
+    await f.vault.unlock(PW)
+    await f.secrets.copy(id)
+    const write = f.clipboard.writeText.bind(f.clipboard)
+    f.clipboard.writeText = (t) =>
+      new Promise<void>((resolve) => setTimeout(() => void Promise.resolve(write(t)).then(resolve), 100))
+    f.vault.lock('quit')
+    expect(f.secrets.clipboardPending()).toBe(true)
+    const flushed = f.secrets.flushClipboard()
+    await vi.advanceTimersByTimeAsync(100)
+    await flushed
+    expect(f.clipboard.text).toBe('')
+    expect(f.secrets.clipboardPending()).toBe(false)
   })
 
   it('known values follow lock state', async () => {
