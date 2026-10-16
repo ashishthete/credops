@@ -5,6 +5,7 @@
   "description": "OpsDeck - SSH, tunnels and Ansible deployments",
   "main": "./out/main/index.js",
   "scripts": {
+    "postinstall": "node scripts/fix-node-pty-perms.mjs",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",

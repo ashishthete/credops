@@ -26,7 +26,7 @@ import {
   type ProductPatch,
   type SshImportRequest,
 } from '../../shared/inventory'
-import { MAX_COLS, MAX_ROWS, MAX_WRITE_CHARS, type OpenSshRequest, type PromptAnswer } from '../../shared/ssh'
+import { MAX_COLS, MAX_ROWS, MAX_WRITE_CHARS, type OpenLocalRequest, type OpenSshRequest, type PromptAnswer } from '../../shared/ssh'
 import {
   AUTO_LOCK_CHOICES,
   IDENTITY_AUTHS,
@@ -252,6 +252,8 @@ export const asOpenSshRequest: Check<OpenSshRequest> = v.object({
   rows,
 }) as Check<OpenSshRequest>
 
+export const asOpenLocalRequest: Check<OpenLocalRequest> = v.object({ cols, rows }) as Check<OpenLocalRequest>
+
 // More than any real keyboard-interactive round asks.
 const MAX_KEYBOARD_PROMPTS = 32
 // Typed by the user: not trimmed, and empty is allowed. null cancels.
@@ -329,6 +331,7 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'sshconfig:preview': args(),
   'sshconfig:import': args(asSshImportRequest),
   'ssh:open': args(asOpenSshRequest),
+  'shell:open': args(asOpenLocalRequest),
   'session:reconnect': args(v.uuid()),
   'session:write': args(v.uuid(), v.str({ max: MAX_WRITE_CHARS })),
   'session:resize': args(v.uuid(), cols, rows),

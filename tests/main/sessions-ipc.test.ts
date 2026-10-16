@@ -22,6 +22,7 @@ const meta = { id: 'm' } as SessionMeta
 function fakeManager(): { [K in keyof SessionApi]: ReturnType<typeof vi.fn> } {
   return {
     openSsh: vi.fn(() => meta),
+    openLocal: vi.fn(() => meta),
     reconnect: vi.fn(() => meta),
     write: vi.fn(),
     resize: vi.fn(),
@@ -56,6 +57,8 @@ describe('session IPC', () => {
     const { sessions, call } = await setup()
     const id = randomUUID()
     const hostId = randomUUID()
+    await expect(call('shell:open', { cols: 80, rows: 24 })).resolves.toBe(meta)
+    expect(sessions.openLocal).toHaveBeenCalledWith({ cols: 80, rows: 24 })
     await expect(call('ssh:open', { hostId, cols: 80, rows: 24 })).resolves.toBe(meta)
     expect(sessions.openSsh).toHaveBeenCalledWith({ hostId, cols: 80, rows: 24 })
     await call('session:reconnect', id)
@@ -79,6 +82,7 @@ describe('session IPC', () => {
     const { sessions, call } = await setup()
     const id = randomUUID()
     const hostId = randomUUID()
+    await expect(call('shell:open', { cols: 0, rows: 24 })).rejects.toThrow('invalid arguments: [0].cols must be at least 1')
     await expect(call('ssh:open', { hostId, cols: 0, rows: 24 })).rejects.toThrow('invalid arguments: [0].cols must be at least 1')
     await expect(call('ssh:open', { hostId, cols: 80, rows: 501 })).rejects.toThrow('invalid arguments: [0].rows must be at most 500')
     await expect(call('ssh:open', { hostId: 42, cols: 80, rows: 24 })).rejects.toThrow('invalid arguments: [0].hostId must be a uuid')

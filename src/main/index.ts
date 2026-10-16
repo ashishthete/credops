@@ -36,6 +36,7 @@ import { redact } from './security/redact'
 import { authPlan } from './ssh/auth'
 import { connectChain } from './ssh/connect'
 import { KnownHostStore } from './ssh/known-hosts'
+import { spawnLocalShell } from './ssh/local-shell'
 import { SessionManager } from './ssh/sessions'
 import { AutoLock } from './vault/auto-lock'
 import { IdentityStore } from './vault/identity-store'
@@ -168,6 +169,7 @@ if (!app.requestSingleInstanceLock()) {
         connect: connectChain,
         plan: (identity) => authPlan(identity, authDeps),
         knownHosts,
+        openLocal: (req) => spawnLocalShell({ ...req, env: process.env, home: homedir() }),
         audit: log,
         emit: (event, payload) => pushEvent(mainWindow, event, payload),
       })

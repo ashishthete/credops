@@ -17,6 +17,7 @@ import type {
 } from './inventory'
 import type {
   KnownHostMeta,
+  OpenLocalRequest,
   OpenSshRequest,
   PromptAnswer,
   SessionMeta,
@@ -121,6 +122,7 @@ export interface IpcContract {
   'sshconfig:import': { args: [req: SshImportRequest]; result: SshImportResult }
   // Returns at once in the connecting state; progress arrives as session:state events.
   'ssh:open': { args: [req: OpenSshRequest]; result: SessionMeta }
+  'shell:open': { args: [req: OpenLocalRequest]; result: SessionMeta }
   'session:reconnect': { args: [id: string]; result: SessionMeta }
   'session:write': { args: [id: string, data: string]; result: void }
   'session:resize': { args: [id: string, cols: number, rows: number]; result: void }
@@ -192,6 +194,7 @@ export const CHANNELS = [
   'sshconfig:preview',
   'sshconfig:import',
   'ssh:open',
+  'shell:open',
   'session:reconnect',
   'session:write',
   'session:resize',

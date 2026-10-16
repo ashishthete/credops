@@ -188,6 +188,7 @@ function shellPty(stream: ClientChannel): Pty {
 export class SessionManager {
   private readonly sessions = new Map<string, Session>()
   private readonly prompts = new Map<string, PendingPrompt>()
+  private localCount = 0
   private readonly now: () => Date
   private readonly ids: () => string
 
@@ -207,8 +208,9 @@ export class SessionManager {
   openLocal(req: OpenLocalRequest): SessionMeta {
     if (!this.deps.openLocal) throw new Error("The local shell isn't available")
     this.assertRoom()
-    const n = [...this.sessions.values()].filter((x) => x.meta.kind === 'local').length + 1
     const pty = this.deps.openLocal(req)
+    // Counts every local shell this run has opened, so closing one never reuses a number.
+    const n = ++this.localCount
     const s = this.create('local', req, n === 1 ? LOCAL_LABEL : `${LOCAL_LABEL} ${n}`, null, null)
     const attempt = this.newAttempt(s)
     this.ready(s, attempt, pty, () => this.finish(s, attempt, 'remote', null))

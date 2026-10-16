@@ -4,6 +4,7 @@ import type { SessionManager } from '../../ssh/sessions'
 
 type SessionChannel =
   | 'ssh:open'
+  | 'shell:open'
   | 'session:reconnect'
   | 'session:write'
   | 'session:resize'
@@ -16,7 +17,7 @@ type SessionChannel =
 
 export type SessionApi = Pick<
   SessionManager,
-  'openSsh' | 'reconnect' | 'write' | 'resize' | 'close' | 'list' | 'attach' | 'answer'
+  'openSsh' | 'openLocal' | 'reconnect' | 'write' | 'resize' | 'close' | 'list' | 'attach' | 'answer'
 >
 
 export function createSessionHandlers(deps: {
@@ -26,6 +27,7 @@ export function createSessionHandlers(deps: {
   const { sessions, knownHosts } = deps
   return {
     'ssh:open': (req) => sessions.openSsh(req),
+    'shell:open': (req) => sessions.openLocal(req),
     'session:reconnect': (id) => sessions.reconnect(id),
     'session:write': (id, data) => sessions.write(id, data),
     'session:resize': (id, cols, rows) => sessions.resize(id, cols, rows),
