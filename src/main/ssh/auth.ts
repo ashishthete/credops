@@ -1,6 +1,6 @@
 import { lstat, readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { AuthenticationType, AuthHandlerMiddleware } from 'ssh2'
+import type { AuthenticationType, AuthHandlerMiddleware, KeyboardInteractiveAuthMethod } from 'ssh2'
 import type { IdentityRef } from '../../shared/inventory'
 import type { IdentityStore } from '../vault/identity-store'
 import { MAX_PRIVATE_KEY_BYTES, parsePrivateKey } from '../vault/openssh'
@@ -112,21 +112,75 @@ const SERVER_NAME: Record<AuthMethod['type'], AuthenticationType> = {
   password: 'password',
 }
 
+const isLonePassword = (prompts: { echo?: boolean }[]): boolean => prompts.length === 1 && prompts[0].echo !== true
+
 export function answerKeyboard(
   prompts: { prompt: string; echo?: boolean }[],
   password: string | undefined,
 ): string[] | null {
-  if (password === undefined || prompts.length !== 1 || prompts[0].echo === true) return null
+  if (password === undefined || !isLonePassword(prompts)) return null
   return [password]
 }
 
-export function authHandler(plan: AuthPlan, askPassword: () => Promise<string | null>): AuthHandlerMiddleware {
+export type KeyboardPrompt = { prompt: string; echo: boolean }
+export type AskKeyboard = (name: string, instructions: string, prompts: KeyboardPrompt[]) => Promise<string[] | null>
+
+export function authHandler(
+  plan: AuthPlan,
+  askPassword: () => Promise<string | null>,
+  askKeyboard?: AskKeyboard,
+): AuthHandlerMiddleware {
   let index = 0
+  let fellBack = false
   let asked = false
+  // A cancelled prompt ends the attempt at the next call.
+  let cancelled = false
+
+  const ask = async (prompt: () => Promise<string[] | null>): Promise<string[] | null> => {
+    try {
+      return await prompt()
+    } catch {
+      return null
+    }
+  }
+  const typedPassword = async (): Promise<string[] | null> => {
+    const typed = await askPassword()
+    return typed === null ? null : [typed]
+  }
+
+  /** `password` answers a lone password prompt in the first round only; the rest go to `askKeyboard`. */
+  const keyboard = (password: string | undefined): KeyboardInteractiveAuthMethod => {
+    let round = 0
+    return {
+      type: 'keyboard-interactive',
+      username: plan.username,
+      prompt: (name, instructions, _lang, prompts, finish) => {
+        if (prompts.length === 0) return finish([])
+        round++
+        const auto = round === 1 ? answerKeyboard(prompts, password) : null
+        if (auto) return finish(auto)
+        const shown = prompts.map((p) => ({ prompt: p.prompt, echo: p.echo === true }))
+        const lonePassword = round === 1 && password === undefined && !asked && isLonePassword(prompts)
+        if (lonePassword) asked = true
+        void ask(
+          lonePassword ? typedPassword : async () => (askKeyboard ? askKeyboard(name, instructions, shown) : null),
+        ).then((answers) => {
+          if (answers === null) cancelled = true
+          finish(answers ?? prompts.map(() => ''))
+        })
+      },
+    }
+  }
+
   return (methodsLeft, _partialSuccess, next) => {
+    // ssh2 ends the attempt on `false`; its typings omit it.
+    if (cancelled) return next(false as never)
     const offered = (name: AuthenticationType): boolean => !methodsLeft || methodsLeft.includes(name)
     while (index < plan.methods.length) {
       const m = plan.methods[index++]
+      if (m.type === 'password' && !offered('password') && offered('keyboard-interactive')) {
+        return next(keyboard(m.password))
+      }
       if (!offered(SERVER_NAME[m.type])) continue
       if (m.type === 'agent') return next({ type: 'agent', username: plan.username, agent: m.agent })
       if (m.type === 'publickey') {
@@ -139,24 +193,18 @@ export function authHandler(plan: AuthPlan, askPassword: () => Promise<string | 
       }
       return next({ type: 'password', username: plan.username, password: m.password })
     }
-    const canPassword = offered('password')
-    const canKeyboard = offered('keyboard-interactive')
     // Nothing to try on the first call: probe with 'none' so the server lists what it accepts.
     if (!methodsLeft) return next('none')
-    // ssh2 ends the attempt on `false`; its typings omit it.
-    if (asked || (!canPassword && !canKeyboard)) return next(false as never)
+    const canPassword = offered('password')
+    const canKeyboard = offered('keyboard-interactive')
+    if (fellBack || (!canPassword && !canKeyboard)) return next(false as never)
+    fellBack = true
+    // keyboard-interactive asks inside its prompt, where the server says what it wants.
+    if (!canPassword) return next(keyboard(undefined))
     asked = true
-    void askPassword().then(
-      (typed) => {
-        if (typed === null) return next(false as never)
-        if (canPassword) return next({ type: 'password', username: plan.username, password: typed })
-        next({
-          type: 'keyboard-interactive',
-          username: plan.username,
-          prompt: (_name, _instructions, _lang, prompts, finish) => finish(answerKeyboard(prompts, typed) ?? []),
-        })
-      },
-      () => next(false as never),
-    )
+    void ask(typedPassword).then((typed) => {
+      if (typed === null) return next(false as never)
+      next({ type: 'password', username: plan.username, password: typed[0] })
+    })
   }
 }

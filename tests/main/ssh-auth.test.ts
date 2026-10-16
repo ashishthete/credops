@@ -129,6 +129,98 @@ describe('authHandler', () => {
   })
 })
 
+describe('authHandler edge cases', () => {
+  const empty: AuthPlan = { username: 'ops', kind: 'default', notes: [], methods: [] }
+  const never = async (): Promise<string | null> => {
+    throw new Error('not asked')
+  }
+
+  it("probes with 'none' when nothing is known and the plan is empty", () => {
+    const next = vi.fn()
+    authHandler(empty, never)(null as never, false, next)
+    expect(next).toHaveBeenCalledWith('none')
+  })
+
+  it('ends the attempt when the server offers nothing', () => {
+    const next = vi.fn()
+    authHandler(empty, never)([], false, next)
+    expect(next).toHaveBeenCalledWith(false)
+  })
+
+  it('a rejecting askPassword ends the attempt', async () => {
+    const h = authHandler(empty, async () => {
+      throw new Error('prompt closed')
+    })
+    expect(await new Promise((r) => h(['password'], false, r))).toBe(false)
+  })
+})
+
+describe('authHandler keyboard-interactive', () => {
+  type Prompt = { prompt: string; echo: boolean }
+  const pw = (prompt = 'Password:'): Prompt => ({ prompt, echo: false })
+
+  /** Calls the handler once and returns the method it chose. */
+  const pick = (h: ReturnType<typeof authHandler>, left: AuthenticationType[] | null): Promise<unknown> =>
+    new Promise((r) => h(left as never, false, r as never))
+  /** Runs one keyboard-interactive round and resolves with the answers. */
+  const round = (method: unknown, prompts: Prompt[]): Promise<string[]> =>
+    new Promise((r) => {
+      const m = method as { type: string; prompt: (...a: unknown[]) => void }
+      expect(m.type).toBe('keyboard-interactive')
+      m.prompt('Login', 'Answer these', '', prompts, r)
+    })
+
+  it('reuses a stored password for a keyboard-interactive-only server', async () => {
+    const askPassword = vi.fn(async () => 'typed')
+    const h = authHandler({ username: 'ops', kind: 'password', notes: [], methods: [{ type: 'password', password: 'stored' }] }, askPassword)
+    const m = await pick(h, ['keyboard-interactive'])
+    expect(await round(m, [pw()])).toEqual(['stored'])
+    expect(askPassword).not.toHaveBeenCalled()
+  })
+
+  it('the stored password answers the first round only; later rounds go to askKeyboard', async () => {
+    const askKeyboard = vi.fn(async () => ['123456'])
+    const h = authHandler(
+      { username: 'ops', kind: 'password', notes: [], methods: [{ type: 'password', password: 'stored' }] },
+      async () => 'typed',
+      askKeyboard,
+    )
+    const m = await pick(h, ['keyboard-interactive'])
+    expect(await round(m, [pw()])).toEqual(['stored'])
+    expect(await round(m, [pw('OTP:')])).toEqual(['123456'])
+    expect(askKeyboard).toHaveBeenCalledWith('Login', 'Answer these', [{ prompt: 'OTP:', echo: false }])
+  })
+
+  it("sends prompts answerKeyboard can't answer to askKeyboard", async () => {
+    const askPassword = vi.fn(async () => 'typed')
+    const askKeyboard = vi.fn(async () => ['alice', 'pw'])
+    const h = authHandler({ username: 'ops', kind: 'default', notes: [], methods: [] }, askPassword, askKeyboard)
+    const m = await pick(h, ['keyboard-interactive'])
+    const prompts = [{ prompt: 'User:', echo: true }, pw()]
+    expect(await round(m, prompts)).toEqual(['alice', 'pw'])
+    expect(askKeyboard).toHaveBeenCalledWith('Login', 'Answer these', prompts)
+    expect(askPassword).not.toHaveBeenCalled()
+  })
+
+  it('a null askKeyboard answer cancels: the attempt ends', async () => {
+    const h = authHandler({ username: 'ops', kind: 'default', notes: [], methods: [] }, async () => 'typed', async () => null)
+    const m = await pick(h, ['keyboard-interactive'])
+    expect(await round(m, [pw('A:'), pw('B:')])).toEqual(['', ''])
+    expect(await pick(h, ['keyboard-interactive'])).toBe(false)
+  })
+
+  it('asks for a password at most once across keyboard-interactive rounds and retries', async () => {
+    const askPassword = vi.fn(async () => 'typed')
+    const askKeyboard = vi.fn(async () => ['again'])
+    const h = authHandler({ username: 'ops', kind: 'default', notes: [], methods: [] }, askPassword, askKeyboard)
+    const m = await pick(h, ['keyboard-interactive'])
+    expect(await round(m, [pw()])).toEqual(['typed'])
+    expect(await round(m, [pw()])).toEqual(['again'])
+    expect(await pick(h, ['keyboard-interactive', 'password'])).toBe(false)
+    expect(askPassword).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('answerKeyboard', () => {
   it('answers one non-echo prompt only', () => {
     expect(answerKeyboard([{ prompt: 'Password:', echo: false }], 'pw')).toEqual(['pw'])

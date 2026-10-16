@@ -1,0 +1,381 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:net'
+import type { Socket } from 'node:net'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { describe, expect, it, onTestFinished, vi } from 'vitest'
+import { Client, utils } from 'ssh2'
+import type { ParsedKey } from 'ssh2'
+import type { IdentityRef, ResolvedHost } from '../../src/shared/inventory'
+import type { HopState, SessionError } from '../../src/shared/ssh'
+import type { AuthPlan } from '../../src/main/ssh/auth'
+import { connectChain, describeError, HostKeyError, hopsOf } from '../../src/main/ssh/connect'
+import type { ConnectDeps, HopTarget } from '../../src/main/ssh/connect'
+import { KnownHostStore } from '../../src/main/ssh/known-hosts'
+import { startServer } from './ssh-server'
+import type { ServerOpts, TestServer } from './ssh-server'
+import { makeVault } from './vault-helpers'
+
+const globalId: IdentityRef = { source: 'global', username: 'ops', auth: 'default' }
+
+function keyPair(): { privateKey: string; publicKey: ParsedKey } {
+  const pair = utils.generateKeyPairSync('ed25519')
+  const pub = utils.parseKey(pair.public)
+  if (pub instanceof Error) throw pub
+  return { privateKey: pair.private, publicKey: pub }
+}
+const userKey = keyPair()
+const otherKey = keyPair()
+
+const keyPlan = (key = userKey.privateKey): AuthPlan => ({
+  username: 'ops',
+  kind: 'key',
+  notes: [],
+  methods: [{ type: 'publickey', label: 'test key', key }],
+})
+
+async function server(opts: Partial<ServerOpts> = {}): Promise<TestServer> {
+  const s = await startServer({ users: [{ username: 'ops', publicKey: userKey.publicKey }], ...opts })
+  onTestFinished(() => s.close())
+  return s
+}
+
+/** A TCP server that accepts and never speaks. */
+async function silentServer(): Promise<{ port: number; sockets: () => number }> {
+  const sockets = new Set<Socket>()
+  const s = createServer((sock) => {
+    sockets.add(sock)
+    // Read (and drop) input so the client's FIN is seen.
+    sock.resume()
+    sock.on('error', () => {})
+    sock.on('close', () => sockets.delete(sock))
+  })
+  await new Promise<void>((r) => s.listen(0, '127.0.0.1', r))
+  onTestFinished(
+    () =>
+      new Promise<void>((r) => {
+        for (const sock of sockets) sock.destroy()
+        s.close(() => r())
+      }),
+  )
+  return { port: (s.address() as { port: number }).port, sockets: () => sockets.size }
+}
+
+/** A port that nothing listens on. */
+async function closedPort(): Promise<number> {
+  const s = createServer()
+  await new Promise<void>((r) => s.listen(0, '127.0.0.1', r))
+  const { port } = s.address() as { port: number }
+  await new Promise<void>((r) => s.close(() => r()))
+  return port
+}
+
+const hop = (label: string, port: number): HopTarget => ({ label, address: '127.0.0.1', port, identity: globalId })
+
+function deps(over: Partial<ConnectDeps> = {}): ConnectDeps & { hops: [number, HopState][] } {
+  const hops: [number, HopState][] = []
+  return {
+    hops,
+    plan: async () => keyPlan(),
+    verifyHostKey: async () => true,
+    askPassword: vi.fn(async () => null),
+    askKeyboard: vi.fn(async () => null),
+    onHop: (i, state) => hops.push([i, state]),
+    keepaliveSec: 0,
+    ...over,
+  }
+}
+
+async function connect(hops: HopTarget[], d: ConnectDeps, signal = new AbortController().signal) {
+  const conn = await connectChain(hops, d, signal)
+  onTestFinished(() => conn.close())
+  return conn
+}
+
+/** Rejects with the `SessionError` for the hop that failed. */
+async function failure(hops: HopTarget[], d: ConnectDeps & { hops: [number, HopState][] }, signal?: AbortSignal) {
+  const err = await connectChain(hops, d, signal ?? new AbortController().signal).then(
+    () => {
+      throw new Error('expected the dial to fail')
+    },
+    (e: unknown) => e,
+  )
+  const failed = d.hops.find(([, s]) => s === 'failed')?.[0] ?? d.hops.at(-1)?.[0]
+  return { err, described: describeError(err, failed === undefined ? null : hops[failed]) }
+}
+
+/** A KnownHostStore whose known_hosts file is `text`, and a verifier built on it. */
+async function knownHosts(text: string) {
+  const f = makeVault()
+  await f.vault.setup('correct horse')
+  const dir = mkdtempSync(join(tmpdir(), 'opsdeck-connect-'))
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }))
+  const path = join(dir, 'known_hosts')
+  writeFileSync(path, text)
+  const store = new KnownHostStore(f.db, f.vault, f.audit, { knownHostsPath: path })
+  const ask = vi.fn(async () => true)
+  const verifyHostKey: ConnectDeps['verifyHostKey'] = async (h, keyType, keyBase64) => {
+    const { status, info } = await store.check(h.address, h.port, keyType, keyBase64)
+    if (status === 'match') return true
+    if (status === 'changed') throw new HostKeyError('host-key-changed', info)
+    if (status === 'revoked') throw new HostKeyError('host-key-revoked', info)
+    return ask()
+  }
+  return { store, ask, verifyHostKey }
+}
+
+function shellOutput(client: Client, until: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    client.shell((err, stream) => {
+      if (err) return reject(err)
+      let out = ''
+      stream.on('data', (d: Buffer) => {
+        out += d.toString()
+        if (out.includes(until)) {
+          stream.close()
+          resolve(out)
+        }
+      })
+    })
+  })
+}
+
+describe('hopsOf', () => {
+  it('lists the chain first and the target last', () => {
+    const resolved: ResolvedHost = {
+      hostId: 't',
+      environmentId: null,
+      address: 'db.internal',
+      port: { value: 2222, source: 'host' },
+      identity: globalId,
+      jump: { hostId: 'b', source: 'host' },
+      chain: [{ hostId: 'b', label: 'bastion', address: 'bastion.example', port: 22, identity: globalId }],
+      conflicts: [],
+    }
+    expect(hopsOf(resolved, 'db')).toEqual([
+      { label: 'bastion', address: 'bastion.example', port: 22, identity: globalId },
+      { label: 'db', address: 'db.internal', port: 2222, identity: globalId },
+    ])
+  })
+})
+
+describe('connectChain', () => {
+  it('connects with a key and opens a shell', async () => {
+    const s = await server()
+    const { client } = await connect([hop('target', s.port)], deps())
+    expect(await shellOutput(client, 'READY')).toContain('READY')
+  })
+
+  it('connects through a jump host', async () => {
+    const bastion = await server({ allowForward: true })
+    const target = await server()
+    const d = deps()
+    const { client } = await connect([hop('bastion', bastion.port), hop('target', target.port)], d)
+    expect(d.hops).toEqual([
+      [0, 'connecting'],
+      [0, 'up'],
+      [1, 'connecting'],
+      [1, 'up'],
+    ])
+    expect(await shellOutput(client, 'READY')).toContain('READY')
+    expect(target.connections()).toBe(1)
+  })
+
+  it('names the failing hop when the jump target is closed', async () => {
+    const bastion = await server({ allowForward: true })
+    const d = deps()
+    const { described } = await failure([hop('bastion', bastion.port), hop('target', await closedPort())], d)
+    expect(described).toMatchObject({ code: 'refused', hopLabel: 'target' })
+    expect(d.hops.at(-1)).toEqual([1, 'failed'])
+    await vi.waitFor(() => expect(bastion.connections()).toBe(0), { timeout: 1000 })
+  })
+
+  it('refused when nothing listens', async () => {
+    const port = await closedPort()
+    const d = deps()
+    const { described } = await failure([hop('target', port)], d)
+    expect(described).toEqual({
+      code: 'refused',
+      message: `target refused the connection on port ${port}`,
+      hopLabel: 'target',
+    })
+    expect(d.hops).toEqual([
+      [0, 'connecting'],
+      [0, 'failed'],
+    ])
+  })
+
+  it('times out with readyTimeoutMs', async () => {
+    const silent = await silentServer()
+    const started = Date.now()
+    const { described } = await failure([hop('target', silent.port)], deps({ readyTimeoutMs: 300 }))
+    expect(described).toMatchObject({ code: 'timeout', message: "target didn't answer within 20 s", hopLabel: 'target' })
+    expect(Date.now() - started).toBeLessThan(2000)
+    await vi.waitFor(() => expect(silent.sockets()).toBe(0), { timeout: 1000 })
+  })
+
+  it('refuses a changed key without prompting', async () => {
+    const s = await server()
+    const other = keyPair().publicKey.getPublicSSH().toString('base64')
+    const kh = await knownHosts(`[127.0.0.1]:${s.port} ssh-ed25519 ${other}\n`)
+    const { err, described } = await failure([hop('target', s.port)], deps({ verifyHostKey: kh.verifyHostKey }))
+    expect(described.code).toBe('host-key-changed')
+    expect(described.message).toBe(
+      'The host key for target has changed. This could be an attack, so OpenSSH-style protection blocked the connection.',
+    )
+    expect(kh.ask).not.toHaveBeenCalled()
+    expect(err).toBeInstanceOf(HostKeyError)
+    expect((err as HostKeyError).info).toMatchObject({ host: `[127.0.0.1]:${s.port}`, keyType: 'ssh-ed25519' })
+    expect((err as HostKeyError).info.known).toEqual([expect.objectContaining({ keyType: 'ssh-ed25519', source: 'openssh', line: 1 })])
+    expect(described.hostKey).toEqual((err as HostKeyError).info)
+    await vi.waitFor(() => expect(s.connections()).toBe(0), { timeout: 1000 })
+  })
+
+  it('compares an RSA host key by its key type, not the negotiated algorithm', async () => {
+    const rsa = utils.generateKeyPairSync('rsa', { bits: 2048 })
+    const s = await server({ hostKey: rsa.private })
+    expect(s.hostKeyType).toBe('ssh-rsa')
+    const otherRsa = utils.parseKey(utils.generateKeyPairSync('rsa', { bits: 2048 }).public)
+    if (otherRsa instanceof Error) throw otherRsa
+    const kh = await knownHosts(`[127.0.0.1]:${s.port} ssh-rsa ${otherRsa.getPublicSSH().toString('base64')}\n`)
+    const { described } = await failure([hop('target', s.port)], deps({ verifyHostKey: kh.verifyHostKey }))
+    expect(described.code).toBe('host-key-changed')
+    expect(described.hostKey?.keyType).toBe('ssh-rsa')
+    expect(kh.ask).not.toHaveBeenCalled()
+
+    const seen = vi.fn(async () => true)
+    await connect([hop('target', s.port)], deps({ verifyHostKey: seen }))
+    expect(seen).toHaveBeenCalledWith(expect.anything(), 'ssh-rsa', s.hostKeyBase64)
+  })
+
+  it('unknown key asks and rejection stops the dial', async () => {
+    const s = await server()
+    const verifyHostKey = vi.fn(async () => false)
+    const { described } = await failure([hop('target', s.port)], deps({ verifyHostKey }))
+    expect(described).toMatchObject({
+      code: 'host-key-rejected',
+      message: "You didn't trust the host key for target",
+      hopLabel: 'target',
+      hostKey: { host: `[127.0.0.1]:${s.port}`, keyType: 'ssh-ed25519' },
+    })
+    expect(verifyHostKey).toHaveBeenCalledWith(hop('target', s.port), s.hostKeyType, s.hostKeyBase64)
+  })
+
+  it('falls back to one password prompt', async () => {
+    const s = await server({ users: [{ username: 'ops', password: 'pw', publicKey: userKey.publicKey }] })
+    const askPassword = vi.fn(async () => 'pw')
+    const { client } = await connect([hop('target', s.port)], deps({ plan: async () => keyPlan(otherKey.privateKey), askPassword }))
+    expect(askPassword).toHaveBeenCalledTimes(1)
+    expect(askPassword).toHaveBeenCalledWith(hop('target', s.port), 'ops')
+    expect(await shellOutput(client, 'READY')).toContain('READY')
+  })
+
+  it("keyboard-interactive is answered by the renderer when it isn't a lone password prompt", async () => {
+    const s = await server({ users: [{ username: 'ops' }], keyboard: { prompts: ['Password:', 'OTP:'], answers: ['pw', '123456'] } })
+    const askKeyboard = vi.fn(async () => ['pw', '123456'])
+    const askPassword = vi.fn(async () => 'wrong')
+    await connect([hop('target', s.port)], deps({ plan: async () => keyPlan(otherKey.privateKey), askKeyboard, askPassword }))
+    expect(askKeyboard).toHaveBeenCalledTimes(1)
+    expect(askKeyboard).toHaveBeenCalledWith(hop('target', s.port), '', '', [
+      { prompt: 'Password:', echo: false },
+      { prompt: 'OTP:', echo: false },
+    ])
+    expect(askPassword).not.toHaveBeenCalled()
+  })
+
+  it('abort mid-dial ends every opened client', async () => {
+    const bastion = await server({ allowForward: true })
+    const silent = await silentServer()
+    const ac = new AbortController()
+    const d = deps()
+    const onHop = d.onHop
+    d.onHop = (i, state) => {
+      onHop(i, state)
+      if (i === 1 && state === 'connecting') setTimeout(() => ac.abort(), 50)
+    }
+    const { described } = await failure([hop('bastion', bastion.port), hop('target', silent.port)], d, ac.signal)
+    expect(described.code).toBe('closed')
+    expect(d.hops).toContainEqual([0, 'up'])
+    await vi.waitFor(
+      () => {
+        expect(bastion.connections()).toBe(0)
+        expect(silent.sockets()).toBe(0)
+      },
+      { timeout: 1000 },
+    )
+  })
+
+  it('an already aborted signal dials nothing', async () => {
+    const s = await server()
+    const ac = new AbortController()
+    ac.abort()
+    const d = deps()
+    const { described } = await failure([hop('target', s.port)], d, ac.signal)
+    expect(described.code).toBe('closed')
+    expect(s.connections()).toBe(0)
+  })
+
+  it('keepalive 0 disables keepaliveInterval', async () => {
+    const spy = vi.spyOn(Client.prototype, 'connect')
+    onTestFinished(() => spy.mockRestore())
+    const s = await server()
+    await connect([hop('target', s.port)], deps({ keepaliveSec: 0 }))
+    expect(spy.mock.calls[0][0]).toMatchObject({ keepaliveInterval: 0 })
+    await connect([hop('target', s.port)], deps({ keepaliveSec: 15 }))
+    expect(spy.mock.calls[1][0]).toMatchObject({ keepaliveInterval: 15_000, keepaliveCountMax: 3 })
+    expect(spy.mock.calls[1][0]).not.toHaveProperty('hostHash')
+  })
+
+  it('close() ends every hop', async () => {
+    const bastion = await server({ allowForward: true })
+    const target = await server()
+    const conn = await connectChain([hop('bastion', bastion.port), hop('target', target.port)], deps(), new AbortController().signal)
+    expect(bastion.connections()).toBe(1)
+    conn.close()
+    await vi.waitFor(
+      () => {
+        expect(bastion.connections()).toBe(0)
+        expect(target.connections()).toBe(0)
+      },
+      { timeout: 1000 },
+    )
+  })
+})
+
+describe('describeError', () => {
+  const h = hop('db', 2222)
+  const codeErr = (code: string, message = code): Error => Object.assign(new Error(message), { code })
+  const cases: [unknown, SessionError][] = [
+    [codeErr('ENOTFOUND'), { code: 'not-found', message: "Couldn't find 127.0.0.1", hopLabel: 'db' }],
+    [codeErr('EAI_AGAIN'), { code: 'not-found', message: "Couldn't find 127.0.0.1", hopLabel: 'db' }],
+    [
+      new Error('All configured authentication methods failed'),
+      { code: 'auth', message: "db didn't accept any of the keys or passwords tried", hopLabel: 'db' },
+    ],
+    [
+      Object.assign(new Error('(SSH) Channel open failure: Connection refused'), { reason: 2 }),
+      { code: 'refused', message: 'db refused the connection on port 2222', hopLabel: 'db' },
+    ],
+    [
+      new Error('boom -----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----'),
+      { code: 'unknown', message: 'boom ‹redacted›', hopLabel: 'db' },
+    ],
+  ]
+  it.each(cases)('maps %s', (err, expected) => {
+    expect(describeError(err, h)).toEqual(expected)
+  })
+
+  it('host key errors carry their info and message', () => {
+    const info = { host: '[127.0.0.1]:2222', keyType: 'ssh-ed25519', fingerprint: 'SHA256:x', known: [] }
+    expect(describeError(new HostKeyError('host-key-revoked', info), h)).toEqual({
+      code: 'host-key-revoked',
+      message: 'The host key for db is marked revoked in known_hosts',
+      hopLabel: 'db',
+      hostKey: info,
+    })
+  })
+
+  it('leaves out hopLabel without a hop', () => {
+    expect(describeError(new Error('odd'), null)).toEqual({ code: 'unknown', message: 'odd' })
+  })
+})
