@@ -1,0 +1,11 @@
+appId: dev.opsdeck.app
+productName: OpsDeck
+asar: true
+npmRebuild: false
+files:
+  - out/**
+mac:
+  target:
+    - dmg
+    - dir
+  identity: null
