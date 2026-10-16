@@ -4,7 +4,7 @@ import type { Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
-import { Client, utils } from 'ssh2'
+import { Client } from 'ssh2'
 import type { ParsedKey } from 'ssh2'
 import type { IdentityRef, ResolvedHost } from '../../src/shared/inventory'
 import type { HopState, SessionError } from '../../src/shared/ssh'
@@ -12,17 +12,15 @@ import type { AuthPlan } from '../../src/main/ssh/auth'
 import { connectChain, describeError, HostKeyError, hopsOf } from '../../src/main/ssh/connect'
 import type { ConnectDeps, HopTarget } from '../../src/main/ssh/connect'
 import { KnownHostStore } from '../../src/main/ssh/known-hosts'
-import { startServer } from './ssh-server'
+import { generateKey, startServer } from './ssh-server'
 import type { ServerOpts, TestServer } from './ssh-server'
 import { makeVault } from './vault-helpers'
 
 const globalId: IdentityRef = { source: 'global', username: 'ops', auth: 'default' }
 
 function keyPair(): { privateKey: string; publicKey: ParsedKey } {
-  const pair = utils.generateKeyPairSync('ed25519')
-  const pub = utils.parseKey(pair.public)
-  if (pub instanceof Error) throw pub
-  return { privateKey: pair.private, publicKey: pub }
+  const pair = generateKey()
+  return { privateKey: pair.private, publicKey: pair.public }
 }
 const userKey = keyPair()
 const otherKey = keyPair()
@@ -232,11 +230,10 @@ describe('connectChain', () => {
   })
 
   it('compares an RSA host key by its key type, not the negotiated algorithm', async () => {
-    const rsa = utils.generateKeyPairSync('rsa', { bits: 2048 })
+    const rsa = generateKey('rsa')
     const s = await server({ hostKey: rsa.private })
     expect(s.hostKeyType).toBe('ssh-rsa')
-    const otherRsa = utils.parseKey(utils.generateKeyPairSync('rsa', { bits: 2048 }).public)
-    if (otherRsa instanceof Error) throw otherRsa
+    const otherRsa = generateKey('rsa').public
     const kh = await knownHosts(`[127.0.0.1]:${s.port} ssh-rsa ${otherRsa.getPublicSSH().toString('base64')}\n`)
     const { described } = await failure([hop('target', s.port)], deps({ verifyHostKey: kh.verifyHostKey }))
     expect(described.code).toBe('host-key-changed')
@@ -281,6 +278,22 @@ describe('connectChain', () => {
       { prompt: 'OTP:', echo: false },
     ])
     expect(askPassword).not.toHaveBeenCalled()
+  })
+
+  it('a stored password answers a keyboard-only server without asking', async () => {
+    const s = await server({ users: [{ username: 'ops' }], keyboard: { prompts: ['Password:'], answers: ['stored'] } })
+    const askPassword = vi.fn(async () => 'typed')
+    const askKeyboard = vi.fn(async () => null)
+    const plan = async (): Promise<AuthPlan> => ({
+      username: 'ops',
+      kind: 'password',
+      notes: [],
+      methods: [{ type: 'password', password: 'stored' }],
+    })
+    const { client } = await connect([hop('target', s.port)], deps({ plan, askPassword, askKeyboard }))
+    expect(askPassword).not.toHaveBeenCalled()
+    expect(askKeyboard).not.toHaveBeenCalled()
+    expect(await shellOutput(client, 'READY')).toContain('READY')
   })
 
   it('abort mid-dial ends every opened client', async () => {

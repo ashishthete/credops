@@ -133,6 +133,8 @@ export function authHandler(
   let index = 0
   let fellBack = false
   let asked = false
+  let keyboardTried = false
+  const stored = plan.methods.find((m) => m.type === 'password')?.password
   // A cancelled prompt ends the attempt at the next call.
   let cancelled = false
 
@@ -179,6 +181,7 @@ export function authHandler(
     while (index < plan.methods.length) {
       const m = plan.methods[index++]
       if (m.type === 'password' && !offered('password') && offered('keyboard-interactive')) {
+        keyboardTried = true
         return next(keyboard(m.password))
       }
       if (!offered(SERVER_NAME[m.type])) continue
@@ -197,10 +200,18 @@ export function authHandler(
     if (!methodsLeft) return next('none')
     const canPassword = offered('password')
     const canKeyboard = offered('keyboard-interactive')
-    if (fellBack || (!canPassword && !canKeyboard)) return next(false as never)
+    // A stored password also goes to keyboard-interactive, even after the server refused it as `password`.
+    if (canKeyboard && !keyboardTried && stored !== undefined) {
+      keyboardTried = true
+      return next(keyboard(stored))
+    }
+    if (fellBack || !(canPassword || (canKeyboard && !keyboardTried))) return next(false as never)
     fellBack = true
     // keyboard-interactive asks inside its prompt, where the server says what it wants.
-    if (!canPassword) return next(keyboard(undefined))
+    if (!canPassword) {
+      keyboardTried = true
+      return next(keyboard(undefined))
+    }
     asked = true
     void ask(typedPassword).then((typed) => {
       if (typed === null) return next(false as never)

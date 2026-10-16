@@ -2,10 +2,10 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { onTestFinished, describe, expect, it, vi } from 'vitest'
-import { utils } from 'ssh2'
 import type { AuthenticationType } from 'ssh2'
 import type { IdentityRef } from '../../src/shared/inventory'
 import { answerKeyboard, authHandler, authPlan } from '../../src/main/ssh/auth'
+import { generateKey } from './ssh-server'
 import type { AuthPlan } from '../../src/main/ssh/auth'
 
 function tmpHome(): string {
@@ -14,10 +14,7 @@ function tmpHome(): string {
   mkdirSync(join(home, '.ssh'))
   return home
 }
-const keyText = (type: 'ed25519' | 'rsa', opts: object = {}): string => {
-  const k = utils.generateKeyPairSync(type as 'ed25519', opts as never)
-  return k.private
-}
+const keyText = (type: 'ed25519' | 'rsa', opts: object = {}): string => generateKey(type, opts).private
 const noIdentities = { resolve: async () => { throw new Error('unused') } }
 const globalId: IdentityRef = { source: 'global', username: 'ops', auth: 'default' }
 const hostId = (auth: 'agent' | 'key' | 'password'): IdentityRef => ({
@@ -171,6 +168,17 @@ describe('authHandler keyboard-interactive', () => {
     })
 
   it('reuses a stored password for a keyboard-interactive-only server', async () => {
+    const askPassword = vi.fn(async () => 'typed')
+    const h = authHandler({ username: 'ops', kind: 'password', notes: [], methods: [{ type: 'password', password: 'stored' }] }, askPassword)
+    // ssh2's first call knows nothing yet, so the stored password goes out as `password` first.
+    expect(await pick(h, null)).toEqual({ type: 'password', username: 'ops', password: 'stored' })
+    const m = await pick(h, ['keyboard-interactive'])
+    expect(await round(m, [pw()])).toEqual(['stored'])
+    expect(await pick(h, ['keyboard-interactive'])).toBe(false)
+    expect(askPassword).not.toHaveBeenCalled()
+  })
+
+  it('a server offering kbd up front gets the stored password there directly', async () => {
     const askPassword = vi.fn(async () => 'typed')
     const h = authHandler({ username: 'ops', kind: 'password', notes: [], methods: [{ type: 'password', password: 'stored' }] }, askPassword)
     const m = await pick(h, ['keyboard-interactive'])

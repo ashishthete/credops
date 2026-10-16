@@ -29,6 +29,18 @@ export interface TestServer {
   connections(): number
 }
 
+/**
+ * A key pair whose public half parses. ssh2's generator now and then drops a leading zero byte
+ * from an ed25519 key (about 1 in 300), and that key is unusable, so retry.
+ */
+export function generateKey(type: 'ed25519' | 'rsa' = 'ed25519', opts: object = {}): { private: string; public: ParsedKey } {
+  for (;;) {
+    const pair = utils.generateKeyPairSync(type as 'ed25519', (type === 'rsa' ? { bits: 2048, ...opts } : opts) as never)
+    const pub = utils.parseKey(pair.public)
+    if (!(pub instanceof Error)) return { private: pair.private, public: pub }
+  }
+}
+
 const same = (a: Buffer, b: Buffer): boolean => a.length === b.length && timingSafeEqual(a, b)
 
 function authenticate(ctx: AuthContext, opts: ServerOpts): void {
@@ -96,7 +108,7 @@ function serveSessions(conn: Connection, opts: ServerOpts): void {
 }
 
 export async function startServer(opts: ServerOpts): Promise<TestServer> {
-  const hostKey = opts.hostKey ?? utils.generateKeyPairSync('ed25519').private
+  const hostKey = opts.hostKey ?? generateKey().private
   const parsed = utils.parseKey(hostKey)
   if (parsed instanceof Error) throw parsed
   const live = new Set<Connection>()
