@@ -1,4 +1,6 @@
 import type { BrowserWindowConstructorOptions } from 'electron'
+import type { EventContract, EventName } from '../shared/ipc'
+import type { LockReason } from '../shared/vault'
 
 export function windowOptions(preloadPath: string): BrowserWindowConstructorOptions {
   return {
@@ -43,4 +45,21 @@ export function devRendererUrl(
   env: Record<string, string | undefined>,
 ): string | undefined {
   return isPackaged ? undefined : env['ELECTRON_RENDERER_URL'] || undefined
+}
+
+interface LockSource {
+  onLock(fn: (reason: LockReason) => void): () => void
+}
+
+interface PushTarget {
+  isDestroyed(): boolean
+  webContents: { send(channel: EventName, payload: EventContract[EventName]): void }
+}
+
+/** Pushes every vault lock (the reason only) to the window, so its auth gate comes up at once. */
+export function forwardVaultLocks(vault: LockSource, window: () => PushTarget | null): () => void {
+  return vault.onLock((reason) => {
+    const win = window()
+    if (win && !win.isDestroyed()) win.webContents.send('vault:locked', { reason })
+  })
 }

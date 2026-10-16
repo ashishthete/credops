@@ -28,7 +28,7 @@ import { IdentityStore } from './vault/identity-store'
 import { KeyStore } from './vault/key-store'
 import { SecretStore } from './vault/secret-store'
 import { VaultService, type QuickUnlockDeps } from './vault/vault-service'
-import { devRendererUrl, shouldAllowNavigation, windowOptions } from './window'
+import { devRendererUrl, forwardVaultLocks, shouldAllowNavigation, windowOptions } from './window'
 
 // Keep dev data apart from the packaged app's (same name, same userData otherwise).
 // Must run before anything touches userData, including the single-instance lock.
@@ -109,10 +109,7 @@ if (!app.requestSingleInstanceLock()) {
       }
       const service = new VaultService(db, log, { quick })
       vault = service
-      // Push locks (manual, idle, screen, sleep) so the renderer's auth gate comes up at once.
-      service.onLock((reason) => {
-        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('vault:locked', { reason })
-      })
+      forwardVaultLocks(service, () => mainWindow)
       secrets = new SecretStore(db, service, log, { clipboard })
       const actor = { osUser: userInfo().username, machine: hostname() }
       keys = new KeyStore(db, service, log, {

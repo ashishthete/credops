@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
-import { devRendererUrl, shouldAllowNavigation, windowOptions } from '../../src/main/window'
+import { describe, expect, it, vi } from 'vitest'
+import type { LockReason } from '../../src/shared/vault'
+import { devRendererUrl, forwardVaultLocks, shouldAllowNavigation, windowOptions } from '../../src/main/window'
 
 describe('windowOptions', () => {
   it('creates a locked-down window', () => {
@@ -42,5 +43,44 @@ describe('devRendererUrl', () => {
     expect(devRendererUrl(true, env)).toBeUndefined()
     expect(devRendererUrl(false, {})).toBeUndefined()
     expect(devRendererUrl(false, { ELECTRON_RENDERER_URL: '' })).toBeUndefined()
+  })
+})
+
+describe('forwardVaultLocks', () => {
+  function setup() {
+    const listeners = new Set<(r: LockReason) => void>()
+    const vault = {
+      onLock: (fn: (r: LockReason) => void) => {
+        listeners.add(fn)
+        return () => listeners.delete(fn)
+      },
+    }
+    const lock = (r: LockReason) => listeners.forEach((fn) => fn(r))
+    return { vault, lock, listeners }
+  }
+
+  it('sends the reason, and nothing else, on every lock', () => {
+    const { vault, lock } = setup()
+    const send = vi.fn()
+    forwardVaultLocks(vault, () => ({ isDestroyed: () => false, webContents: { send } }))
+    lock('idle')
+    lock('screen')
+    expect(send.mock.calls).toEqual([
+      ['vault:locked', { reason: 'idle' }],
+      ['vault:locked', { reason: 'screen' }],
+    ])
+  })
+
+  it('skips a missing or destroyed window and can be stopped', () => {
+    const { vault, lock, listeners } = setup()
+    const send = vi.fn()
+    let win: { isDestroyed: () => boolean; webContents: { send: typeof send } } | null = null
+    const stop = forwardVaultLocks(vault, () => win)
+    lock('quit')
+    win = { isDestroyed: () => true, webContents: { send } }
+    lock('quit')
+    expect(send).not.toHaveBeenCalled()
+    stop()
+    expect(listeners.size).toBe(0)
   })
 })
