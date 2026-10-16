@@ -1,0 +1,138 @@
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { onTestFinished, describe, expect, it, vi } from 'vitest'
+import { utils } from 'ssh2'
+import type { AuthenticationType } from 'ssh2'
+import type { IdentityRef } from '../../src/shared/inventory'
+import { answerKeyboard, authHandler, authPlan } from '../../src/main/ssh/auth'
+import type { AuthPlan } from '../../src/main/ssh/auth'
+
+function tmpHome(): string {
+  const home = mkdtempSync(join(tmpdir(), 'opsdeck-auth-'))
+  onTestFinished(() => rmSync(home, { recursive: true, force: true }))
+  mkdirSync(join(home, '.ssh'))
+  return home
+}
+const keyText = (type: 'ed25519' | 'rsa', opts: object = {}): string => {
+  const k = utils.generateKeyPairSync(type as 'ed25519', opts as never)
+  return k.private
+}
+const noIdentities = { resolve: async () => { throw new Error('unused') } }
+const globalId: IdentityRef = { source: 'global', username: 'ops', auth: 'default' }
+const hostId = (auth: 'agent' | 'key' | 'password'): IdentityRef => ({
+  source: 'host', identityId: 'i1', label: 'My identity', username: 'ops', auth, vaultId: 'v1',
+})
+
+describe('authPlan', () => {
+  it('identity with agent auth uses SSH_AUTH_SOCK', async () => {
+    const home = tmpHome()
+    const sock = join(home, 'agent.sock')
+    writeFileSync(sock, '')
+    const identities = { resolve: async () => ({ username: 'ops', auth: 'agent' as const }) }
+    const plan = await authPlan(hostId('agent'), { identities, env: { SSH_AUTH_SOCK: sock }, home })
+    expect(plan.methods).toEqual([{ type: 'agent', agent: sock }])
+    const none = await authPlan(hostId('agent'), { identities, env: {}, home })
+    expect(none.methods).toEqual([])
+    expect(none.notes).toContain("ssh-agent isn't running (SSH_AUTH_SOCK is not set)")
+  })
+
+  it('identity with key auth carries key and passphrase', async () => {
+    const identities = { resolve: async () => ({ username: 'ops', auth: 'key' as const, privateKey: 'K', passphrase: 'P' }) }
+    const plan = await authPlan(hostId('key'), { identities, env: {}, home: tmpHome() })
+    expect(plan.methods).toEqual([{ type: 'publickey', label: 'My identity', key: 'K', passphrase: 'P' }])
+  })
+
+  it('identity with password auth', async () => {
+    const identities = { resolve: async () => ({ username: 'ops', auth: 'password' as const, password: 'pw' }) }
+    const plan = await authPlan(hostId('password'), { identities, env: {}, home: tmpHome() })
+    expect(plan.methods).toEqual([{ type: 'password', password: 'pw' }])
+    expect(plan.kind).toBe('password')
+  })
+
+  it('global default: agent, then id_ed25519, then id_rsa', async () => {
+    const home = tmpHome()
+    const sock = join(home, 'agent.sock')
+    writeFileSync(sock, '')
+    writeFileSync(join(home, '.ssh', 'id_ed25519'), keyText('ed25519'))
+    writeFileSync(join(home, '.ssh', 'id_rsa'), keyText('rsa', { bits: 2048 }))
+    const plan = await authPlan(globalId, { identities: noIdentities, env: { SSH_AUTH_SOCK: sock }, home })
+    expect(plan.methods.map((m) => m.type)).toEqual(['agent', 'publickey', 'publickey'])
+    expect(plan.methods.flatMap((m) => (m.type === 'publickey' ? [m.label] : []))).toEqual([
+      '~/.ssh/id_ed25519',
+      '~/.ssh/id_rsa',
+    ])
+    expect(plan.username).toBe('ops')
+    expect(plan.kind).toBe('default')
+  })
+
+  it('global default skips encrypted, symlinked, oversize and missing keys with notes', async () => {
+    const home = tmpHome()
+    writeFileSync(join(home, '.ssh', 'id_ed25519'), keyText('ed25519', { passphrase: 'secret', cipher: 'aes256-ctr' }))
+    writeFileSync(join(home, '.ssh', 'id_rsa'), 'x'.repeat(20000))
+    const plan = await authPlan(globalId, { identities: noIdentities, env: {}, home })
+    expect(plan.methods).toEqual([])
+    expect(plan.notes).toEqual([
+      'id_ed25519 needs a passphrase: add it to ssh-agent (ssh-add) or link it in a vault',
+      'id_rsa is too large to be a key',
+    ])
+    expect(JSON.stringify(plan.notes)).not.toContain('secret')
+
+    const other = tmpHome()
+    writeFileSync(join(other, 'real'), keyText('ed25519'))
+    symlinkSync(join(other, 'real'), join(other, '.ssh', 'id_ed25519'))
+    const linked = await authPlan(globalId, { identities: noIdentities, env: {}, home: other })
+    expect(linked.methods).toEqual([])
+    expect(linked.notes).toEqual(['id_ed25519 is a symlink, so it was skipped'])
+  })
+})
+
+describe('authHandler', () => {
+  const plan: AuthPlan = {
+    username: 'ops',
+    kind: 'default',
+    notes: [],
+    methods: [
+      { type: 'agent', agent: '/s' },
+      { type: 'publickey', label: 'k', key: 'K' },
+    ],
+  }
+
+  it('order and single password ask', async () => {
+    const askPassword = vi.fn(async () => 'typed')
+    const h = authHandler(plan, askPassword)
+    const next = vi.fn()
+    h(null as never, false, next)
+    expect(next).toHaveBeenLastCalledWith({ type: 'agent', username: 'ops', agent: '/s' })
+    h(['publickey', 'password'], false, next)
+    expect(next).toHaveBeenLastCalledWith({ type: 'publickey', username: 'ops', key: 'K' })
+    const done = new Promise<void>((r) => next.mockImplementationOnce(() => r()))
+    h(['publickey', 'password'], false, next)
+    await done
+    expect(next).toHaveBeenLastCalledWith({ type: 'password', username: 'ops', password: 'typed' })
+    h(['publickey', 'password'], false, next)
+    expect(next).toHaveBeenLastCalledWith(false)
+    expect(askPassword).toHaveBeenCalledTimes(1)
+  })
+
+  it("skips methods the server doesn't offer", async () => {
+    const askPassword = vi.fn(async () => 'typed')
+    const h = authHandler(plan, askPassword)
+    const done = new Promise<{ type?: string }>((r) => h(['password'], false, r as never))
+    expect(await done).toMatchObject({ type: 'password', password: 'typed' })
+  })
+
+  it('a null answer ends the attempt', async () => {
+    const h = authHandler({ ...plan, methods: [] }, async () => null)
+    const done = new Promise((r) => h(['password'] as AuthenticationType[], false, r))
+    expect(await done).toBe(false)
+  })
+})
+
+describe('answerKeyboard', () => {
+  it('answers one non-echo prompt only', () => {
+    expect(answerKeyboard([{ prompt: 'Password:', echo: false }], 'pw')).toEqual(['pw'])
+    expect(answerKeyboard([{ prompt: 'a', echo: false }, { prompt: 'b', echo: false }], 'pw')).toBeNull()
+    expect(answerKeyboard([{ prompt: 'User:', echo: true }], 'pw')).toBeNull()
+  })
+})
