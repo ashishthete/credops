@@ -18,11 +18,13 @@ import { openDatabase, type Db } from './db/connection'
 import { createAppHandlers } from './ipc/handlers/app'
 import { createAuditHandlers } from './ipc/handlers/audit'
 import { createIdentityHandlers } from './ipc/handlers/identities'
+import { createInventoryHandlers } from './ipc/handlers/inventory'
 import { createKeyHandlers } from './ipc/handlers/keys'
 import { createSecretHandlers } from './ipc/handlers/secrets'
 import { createVaultHandlers } from './ipc/handlers/vault'
 import { isTrustedSender, registerHandlers } from './ipc/register'
 import { VALIDATORS } from './ipc/validators'
+import { HostStore } from './inventory/host-store'
 import { redact } from './security/redact'
 import { AutoLock } from './vault/auto-lock'
 import { IdentityStore } from './vault/identity-store'
@@ -45,6 +47,7 @@ let vault: VaultService | null = null
 let secrets: SecretStore | null = null
 let keys: KeyStore | null = null
 let identities: IdentityStore | null = null
+let hosts: HostStore | null = null
 let quitAudited = false
 let stopAutoLock: (() => void) | null = null
 
@@ -120,6 +123,7 @@ if (!app.requestSingleInstanceLock()) {
         defaultComment: `${actor.osUser}@${actor.machine}`,
       })
       identities = new IdentityStore(db, service, keys, log)
+      hosts = new HostStore(db, service, log)
       stopAutoLock = new AutoLock({
         idleSeconds: () => powerMonitor.getSystemIdleTime(),
         minutes: () => service.autoLockMinutes(),
@@ -161,6 +165,7 @@ if (!app.requestSingleInstanceLock()) {
             },
           }),
           ...createIdentityHandlers(identities),
+          ...createInventoryHandlers({ hosts }),
         },
         (url) => isTrustedSender(url, { devServerUrl, rendererFile }),
         { validators: VALIDATORS, knownSecrets },
@@ -204,6 +209,7 @@ if (!app.requestSingleInstanceLock()) {
     secrets = null
     keys = null
     identities = null
+    hosts = null
     audit = null
     db?.close()
     db = null

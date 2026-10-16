@@ -1,4 +1,5 @@
 import type { AuditEvent, AuditFilter, ChainVerification } from './audit'
+import type { HostInput, HostMeta, HostPatch } from './inventory'
 import type {
   IdentityInput,
   IdentityMeta,
@@ -77,6 +78,11 @@ export interface IpcContract {
   'identity:create': { args: [input: IdentityInput]; result: IdentityMeta }
   'identity:update': { args: [id: string, patch: IdentityPatch]; result: IdentityMeta }
   'identity:delete': { args: [id: string]; result: void }
+  'host:list': { args: []; result: HostMeta[] }
+  'host:create': { args: [input: HostInput]; result: HostMeta }
+  'host:update': { args: [id: string, patch: HostPatch]; result: HostMeta }
+  'host:delete': { args: [id: string]; result: void }
+  'host:setVaults': { args: [id: string, vaultIds: string[]]; result: HostMeta }
 }
 
 export type Channel = keyof IpcContract
@@ -118,6 +124,11 @@ export const CHANNELS = [
   'identity:create',
   'identity:update',
   'identity:delete',
+  'host:list',
+  'host:create',
+  'host:update',
+  'host:delete',
+  'host:setVaults',
 ] as const satisfies readonly Channel[]
 
 // Fails typecheck if IpcContract gains a channel that CHANNELS does not list.

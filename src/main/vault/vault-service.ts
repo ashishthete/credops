@@ -17,6 +17,7 @@ import {
 import type { AuditLog } from '../audit/audit-log'
 import type { Db } from '../db/connection'
 import { inTransaction } from '../db/tx'
+import { checkHexColor } from '../util/checks'
 import { DEFAULT_KDF, deriveKek, newKdfParams, openSealed, randomKey, seal, type KdfParams } from './crypto'
 
 /** Electron-backed unlock helpers, injected so tests can fake them (used by quick unlock). */
@@ -627,6 +628,5 @@ export class VaultService {
 }
 
 function checkColor(color: string): string {
-  if (!VAULT_COLOR.test(color)) throw new Error('vault color must be #rrggbb')
-  return color.toLowerCase()
+  return checkHexColor(color, 'vault', VAULT_COLOR)
 }

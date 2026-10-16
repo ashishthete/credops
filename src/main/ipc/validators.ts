@@ -1,6 +1,19 @@
 import { AUDIT_ACTIONS, type AuditFilter } from '../../shared/audit'
 import type { Channel, IpcContract } from '../../shared/ipc'
 import {
+  HOST_ADDRESS,
+  HOST_ROLES,
+  MAX_ADDRESS,
+  MAX_LINKS,
+  MAX_NOTES,
+  MAX_TAG,
+  MAX_TAGS,
+  OS_ICONS,
+  TAG,
+  type HostInput,
+  type HostPatch,
+} from '../../shared/inventory'
+import {
   AUTO_LOCK_CHOICES,
   IDENTITY_AUTHS,
   MAX_KEY_COMMENT,
@@ -117,6 +130,39 @@ export const asIdentityPatch: Check<IdentityPatch> = v.object({
   password,
 })
 
+const hostLabel = v.str({ min: 1, max: MAX_LABEL, trim: true })
+const hostAddress = v.str({ min: 1, max: MAX_ADDRESS, pattern: HOST_ADDRESS, trim: true })
+const hostPort = v.nullable(v.int({ min: 1, max: 65535 }))
+const nullableId = v.nullable(v.uuid())
+const hostTags = v.array(v.str({ min: 1, max: MAX_TAG, pattern: TAG, trim: true }), MAX_TAGS)
+const osIcon = v.oneOf(OS_ICONS)
+const hostNotes = v.str({ max: MAX_NOTES })
+const membership = v.object({ environmentId: v.uuid(), role: v.oneOf(HOST_ROLES) })
+
+export const asHostInput: Check<HostInput> = v.object({
+  label: hostLabel,
+  address: hostAddress,
+  port: v.optional(hostPort),
+  identityId: v.optional(nullableId),
+  jumpHostId: v.optional(nullableId),
+  tags: v.optional(hostTags),
+  osIcon: v.optional(osIcon),
+  notes: v.optional(hostNotes),
+  vaultIds: v.optional(v.array(v.uuid(), MAX_LINKS)),
+  environments: v.optional(v.array(membership, MAX_LINKS)),
+}) as Check<HostInput>
+// Links (vaults, memberships) change through their own channels.
+export const asHostPatch: Check<HostPatch> = v.object({
+  label: v.optional(hostLabel),
+  address: v.optional(hostAddress),
+  port: v.optional(hostPort),
+  identityId: v.optional(nullableId),
+  jumpHostId: v.optional(nullableId),
+  tags: v.optional(hostTags),
+  osIcon: v.optional(osIcon),
+  notes: v.optional(hostNotes),
+}) as Check<HostPatch>
+
 /** Every channel must have an entry; each later task adds its own. */
 export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']> } = {
   'app:info': args(),
@@ -154,4 +200,9 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'identity:create': args(asIdentityInput),
   'identity:update': args(v.uuid(), asIdentityPatch),
   'identity:delete': args(v.uuid()),
+  'host:list': args(),
+  'host:create': args(asHostInput),
+  'host:update': args(v.uuid(), asHostPatch),
+  'host:delete': args(v.uuid()),
+  'host:setVaults': args(v.uuid(), v.array(v.uuid(), MAX_LINKS)),
 }

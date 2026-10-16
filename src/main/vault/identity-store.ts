@@ -11,6 +11,7 @@ import {
 } from '../../shared/vault'
 import type { AuditLog } from '../audit/audit-log'
 import type { Db } from '../db/connection'
+import { checkText } from '../util/checks'
 import type { KeyStore } from './key-store'
 import type { VaultService } from './vault-service'
 
@@ -48,12 +49,6 @@ function toMeta(r: IdentityRow): IdentityMeta {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   }
-}
-
-function checkText(raw: string, what: string, max: number): string {
-  const s = typeof raw === 'string' ? raw.trim() : ''
-  if (s.length === 0 || s.length > max) throw new Error(`${what} must be 1-${max} characters`)
-  return s
 }
 
 function checkAuth(auth: string): IdentityAuth {
