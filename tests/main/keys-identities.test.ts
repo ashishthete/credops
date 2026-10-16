@@ -407,9 +407,13 @@ describe('IdentityStore', () => {
     )
     expect(() => f.ids.create({ vaultId: v, label: 'a', username: 'u', auth: 'password' })).toThrow(/password/)
     expect(() => f.ids.create({ vaultId: v, label: 'a', username: ' ', auth: 'agent' })).toThrow(/username/)
+    for (const username of ['-oProxyCommand=x', 'root\u202e', 'a\u2028b', 'a\u0085b', 'a\tb']) {
+      expect(() => f.ids.create({ vaultId: v, label: 'a', username, auth: 'agent' })).toThrow(/username/)
+    }
 
     const pw = f.ids.create({ vaultId: v, label: 'db', username: 'root', auth: 'password', password: 'pw12345' })
     expect(pw).toMatchObject({ auth: 'password', hasPassword: true, sshKeyId: null })
+    expect(() => f.ids.update(pw.id, { username: '-l' })).toThrow(/username/)
     expect(f.ids.knownValues()).toContain('pw12345')
     const updated = f.ids.update(pw.id, { auth: 'agent' })
     expect(updated).toMatchObject({ auth: 'agent', hasPassword: false })

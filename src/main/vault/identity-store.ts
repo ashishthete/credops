@@ -11,6 +11,7 @@ import {
 } from '../../shared/vault'
 import type { AuditLog } from '../audit/audit-log'
 import type { Db } from '../db/connection'
+import { isSafeSshToken } from '../../shared/inventory'
 import { checkText } from '../util/checks'
 import type { KeyStore } from './key-store'
 import type { VaultService } from './vault-service'
@@ -49,6 +50,13 @@ function toMeta(r: IdentityRow): IdentityMeta {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   }
+}
+
+/** ssh gets the username as an argument, so it can't look like an option or hide characters. */
+function checkUsername(raw: string): string {
+  const username = checkText(raw, 'username', MAX_USERNAME)
+  if (!isSafeSshToken(username)) throw new Error("username can't start with - or contain control characters")
+  return username
 }
 
 function checkAuth(auth: string): IdentityAuth {
@@ -102,7 +110,7 @@ export class IdentityStore {
     this.vault.assertUnlocked()
     this.assertUsable(input.vaultId)
     const label = checkText(input.label, 'identity label', MAX_LABEL)
-    const username = checkText(input.username, 'username', MAX_USERNAME)
+    const username = checkUsername(input.username)
     const auth = checkAuth(input.auth)
     const sshKeyId = this.checkKey(input.vaultId, auth, input.sshKeyId)
     if (auth !== 'password' && input.password !== undefined) throw new Error('a password is only for password auth')
@@ -139,7 +147,7 @@ export class IdentityStore {
     this.assertUsable(before.vault_id)
     const label = patch.label === undefined ? before.label : checkText(patch.label, 'identity label', MAX_LABEL)
     const username =
-      patch.username === undefined ? before.username : checkText(patch.username, 'username', MAX_USERNAME)
+      patch.username === undefined ? before.username : checkUsername(patch.username)
     const auth = patch.auth === undefined ? before.auth : checkAuth(patch.auth)
     const keptKey = auth === 'key' && before.auth === 'key' ? before.ssh_key_id! : undefined
     const sshKeyId = this.checkKey(before.vault_id, auth, patch.sshKeyId ?? keptKey)

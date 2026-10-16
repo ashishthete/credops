@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { describe, expect, it, onTestFinished } from 'vitest'
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { IpcMainInvokeEvent } from 'electron'
@@ -239,6 +239,7 @@ describe('SshImporter.import', () => {
   it('falls back to agent auth when an IdentityFile escapes ~/.ssh through a symlink', async () => {
     const f = await withConfig('Host web-1\n  HostName 10.0.0.5\n  User deploy\n  IdentityFile ~/.ssh/escape\n')
     const outside = mkdtempSync(join(tmpdir(), 'opsdeck-outside-'))
+    onTestFinished(() => rmSync(outside, { recursive: true, force: true }))
     writeFileSync(join(outside, 'key'), generateEd25519('x').privateKey, { mode: 0o600 })
     symlinkSync(join(outside, 'key'), join(f.sshDir, 'escape'))
     const r = await makeImporter(f).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'] })
@@ -263,6 +264,75 @@ describe('SshImporter.import', () => {
     const r = await makeImporter(f).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['plain'] })
     expect(r.identitiesCreated).toBe(0)
     expect(r.created[0]).toMatchObject({ identityId: null, vaultIds: [] })
+  })
+
+  it('refuses hostile aliases, addresses and users', async () => {
+    const f = await withConfig(
+      [
+        'Host web\u200b',
+        '  HostName 10.0.0.1',
+        'Host rtl',
+        '  HostName 10.0.0.2\u202e',
+        'Host opt-user',
+        '  HostName 10.0.0.3',
+        '  User -oProxyCommand=x',
+        '  IdentityFile ~/.ssh/id_ed25519',
+        'Host sep-user',
+        '  HostName 10.0.0.4',
+        '  User a\u0085b',
+        'Host fmt-user',
+        '  HostName 10.0.0.5',
+        '  User root\u202e',
+        '',
+      ].join('\n'),
+    )
+    const imp = makeImporter(f)
+    const by = new Map((await imp.preview()).candidates.map((c) => [c.alias, c]))
+    expect(by.get('web\u200b')!.valid).toBe(false)
+    expect(by.get('rtl')!.valid).toBe(false)
+    for (const a of ['opt-user', 'sep-user', 'fmt-user']) {
+      expect(by.get(a)).toMatchObject({ valid: true, user: null, identityFile: null })
+      expect(by.get(a)!.warnings).toContain("User isn't a plain username; the host inherits an identity")
+    }
+    const r = await imp.import({ vaultId: DEFAULT_VAULT_ID, aliases: ['opt-user', 'sep-user', 'fmt-user'] })
+    expect(r.created.map((h) => h.identityId)).toEqual([null, null, null])
+    expect(r).toMatchObject({ identitiesCreated: 0, keysLinked: 0 })
+    expect(f.identities.list()).toEqual([])
+  })
+
+  it('skips a host whose label was taken after the preview', async () => {
+    const f = await withConfig('Host web\n  HostName 10.0.0.1\n  User deploy\nHost api\n  HostName 10.0.0.2\n  User deploy\n')
+    const create = f.identities.create.bind(f.identities)
+    f.identities.create = (input) => {
+      if (!f.hosts.list().some((h) => h.label === 'WEB')) f.hosts.create({ label: 'WEB', address: '10.9.9.9' })
+      return create(input)
+    }
+    const r = await makeImporter(f).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web', 'api'] })
+    expect(r.created.map((h) => h.label)).toEqual(['api'])
+    expect(r.skipped).toEqual([{ alias: 'web', reason: 'exists' }])
+  })
+
+  it('imports without a jump host deleted after the preview', async () => {
+    const f = await withConfig('Host db\n  HostName 10.0.0.1\n  User deploy\n  ProxyJump gate\n')
+    const gate = f.hosts.create({ label: 'gate', address: '10.0.0.254' })
+    const create = f.identities.create.bind(f.identities)
+    f.identities.create = (input) => {
+      f.hosts.delete(gate.id)
+      return create(input)
+    }
+    const r = await makeImporter(f).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['db'] })
+    expect(r.created).toHaveLength(1)
+    expect(r.created[0].jumpHostId).toBeNull()
+    expect(r.warnings).toContain("db: jump host gate wasn't imported; set it by hand")
+  })
+
+  it('rethrows identity errors that are not validation', async () => {
+    const f = await withConfig('Host web\n  HostName 10.0.0.1\n  User deploy\n')
+    f.identities.create = () => {
+      throw new Error('database is locked')
+    }
+    await expect(makeImporter(f).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web'] })).rejects.toThrow('database is locked')
+    expect(counts(f).hosts).toBe(0)
   })
 
   it('keeps secrets out of audit and results', async () => {

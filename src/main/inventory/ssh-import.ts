@@ -1,6 +1,7 @@
 import { readFile, realpath, stat } from 'node:fs/promises'
 import { basename, isAbsolute, relative, resolve } from 'node:path'
 import {
+  isSafeSshToken,
   MAX_SSH_CONFIG_BYTES,
   type HostMeta,
   type SshConfigEntry,
@@ -37,12 +38,14 @@ export interface SshImporterDeps {
 const INVALID_ADDRESS = "address isn't a plain hostname or IP; skipped"
 const INVALID_ALIAS = "alias isn't a usable host label; skipped"
 const JUMP_CHAIN = "ProxyJump chains aren't imported; set the jump host by hand"
+const UNSAFE_USER = "User isn't a plain username; the host inherits an identity"
+/** IdentityStore messages for input the importer derived from the config; anything else is a real failure. */
+const IDENTITY_INPUT_ERROR = /^(identity label|username) /
 /** One ProxyJump hop, `[user@]host[:port]`. */
 const HOP = /^(?:([^@\s]+)@)?([^@:\s[\]]+)(?::(\d+))?$/
-const CONTROL = /[\x00-\x1f\x7f]/
 
 /** Where a candidate's resolvable ProxyJump points: another candidate alias, or an existing host. */
-type JumpPlan = { alias: string } | { hostId: string }
+type JumpPlan = { alias: string } | { hostId: string; label: string }
 
 interface Loaded {
   found: boolean
@@ -95,7 +98,14 @@ export class SshImporter {
     const environments = req.environmentId ? [{ environmentId: req.environmentId, role: req.role ?? 'other' }] : []
     const ids = inTransaction(db, () => {
       const idByAlias = new Map<string, string>()
+      const labelTaken = db.prepare('SELECT 1 FROM hosts WHERE label = ?') // label is COLLATE NOCASE
+      const hostExists = db.prepare('SELECT 1 FROM hosts WHERE id = ?')
       for (const c of toCreate) {
+        // A host may have taken the label while keys were linked.
+        if (labelTaken.get(c.alias)) {
+          skipped.push({ alias: c.alias, reason: 'exists' })
+          continue
+        }
         const identityId = identityFor.get(c.alias) ?? null
         const id = hosts.insertInTx({
           label: c.alias,
@@ -110,15 +120,14 @@ export class SshImporter {
       for (const c of toCreate) {
         const plan = jumps.get(c.alias)
         if (!plan) continue
-        const hostId = idByAlias.get(c.alias)!
-        let jumpId: string | null
-        if ('hostId' in plan) jumpId = plan.hostId
-        else {
-          jumpId = idByAlias.get(plan.alias) ?? byAlias.get(plan.alias)!.existingHostId
-          if (jumpId === null) {
-            warnings.push(`${c.alias}: jump host ${plan.alias} wasn't imported; set it by hand`)
-            continue
-          }
+        const hostId = idByAlias.get(c.alias)
+        if (hostId === undefined) continue
+        const jumpId = 'hostId' in plan ? plan.hostId : (idByAlias.get(plan.alias) ?? byAlias.get(plan.alias)!.existingHostId)
+        // An existing jump host may have been deleted since load().
+        if (jumpId === null || !hostExists.get(jumpId)) {
+          const target = 'hostId' in plan ? plan.label : plan.alias
+          warnings.push(`${c.alias}: jump host ${target} wasn't imported; set it by hand`)
+          continue
         }
         const loop = findJumpLoop(db, hostId, jumpId)
         if (loop) {
@@ -173,11 +182,11 @@ export class SshImporter {
     const candidates = parsed.entries.map((e): SshImportCandidate => {
       const warnings = [...e.warnings]
       let valid = true
-      if (!isValidLabel(e.alias) || e.alias.startsWith('-') || CONTROL.test(e.alias)) {
+      if (!isValidLabel(e.alias) || !isSafeSshToken(e.alias)) {
         valid = false
         warnings.push(INVALID_ALIAS)
       }
-      if (!isValidAddress(e.hostName)) {
+      if (!isValidAddress(e.hostName) || !isSafeSshToken(e.hostName)) {
         valid = false
         warnings.push(INVALID_ADDRESS)
       }
@@ -194,7 +203,11 @@ export class SshImporter {
         const n = e.forwards.length
         warnings.push(`${n} port forward${n === 1 ? '' : 's'} will be offered when Tunnels arrive`)
       }
-      return { ...e, warnings, valid, existingHostId: existingId(e.alias), jumpResolvable: false }
+      // No identity for an unsafe User, not even one with the local user and its key.
+      const unsafeUser = e.user !== null && !isSafeSshToken(e.user)
+      if (unsafeUser) warnings.push(UNSAFE_USER)
+      const login = unsafeUser ? { user: null, identityFile: null } : {}
+      return { ...e, ...login, warnings, valid, existingHostId: existingId(e.alias), jumpResolvable: false }
     })
 
     const byAlias = new Map(candidates.map((c) => [c.alias, c]))
@@ -227,7 +240,7 @@ export class SshImporter {
     if (other && (other.valid || other.existingHostId !== null)) plan = { alias: other.alias }
     else if (target !== undefined && target !== c.alias && !other) {
       const id = existingId(target)
-      if (id !== null) plan = { hostId: id }
+      if (id !== null) plan = { hostId: id, label: target }
     }
     if (!plan) {
       c.warnings.push(`ProxyJump ${c.proxyJump} isn't a host in this config or OpsDeck; set the jump host by hand`)
@@ -329,7 +342,7 @@ export class SshImporter {
             id = identities.create({ vaultId, label, username, auth, sshKeyId: key?.id }).id
             identitiesCreated++
           } catch (err) {
-            if (err instanceof Error && err.message === VAULT_LOCKED) throw err
+            if (!(err instanceof Error) || !IDENTITY_INPUT_ERROR.test(err.message)) throw err
             warnings.push(`${e.alias}: no identity could be made for its User; the host inherits one`)
           }
         }
