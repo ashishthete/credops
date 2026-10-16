@@ -1,3 +1,7 @@
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import { spawnLocalShell } from '../../src/main/ssh/local-shell'
 import { SessionManager, type Pty, type SessionManagerDeps } from '../../src/main/ssh/sessions'
@@ -39,8 +43,8 @@ describe('spawnLocalShell', () => {
 
   it('strips ELECTRON_ and NODE_OPTIONS and sets TERM', async () => {
     const t = spawn({ ELECTRON_RUN_AS_NODE: '1', NODE_OPTIONS: '--x', PATH })
-    t.pty.write('env; echo done-env\r')
-    await t.waitFor('done-env\r')
+    t.pty.write('env; echo done-$((1+1))\r')
+    await t.waitFor('done-2')
     expect(t.out()).not.toContain('ELECTRON_RUN_AS_NODE')
     expect(t.out()).not.toContain('NODE_OPTIONS')
     expect(t.out()).toContain('TERM=xterm-256color')
@@ -103,5 +107,28 @@ describe('SessionManager local shell', () => {
     expect(closes).toHaveLength(2)
     expect(closes[0]).toMatchObject({ targetType: 'shell', targetLabel: 'Local shell' })
     expect(closes[0].details).toMatchObject({ reason: expect.stringMatching(/user|remote/), durationSec: expect.any(Number) })
+  })
+})
+
+describe('shell fallback and packaging', () => {
+  it('an empty SHELL falls back like an unset one', () => {
+    const spawnFn = vi.fn((..._args: unknown[]) => ({ write() {}, resize() {}, onData() {}, onExit() {}, kill() {} }))
+    spawnLocalShell({ cols: 80, rows: 24, home: '/tmp', env: { SHELL: '' } }, (() => ({ spawn: spawnFn })) as never)
+    expect(spawnFn.mock.calls[0].slice(0, 2)).toEqual(['/bin/zsh', ['-l']])
+  })
+
+  it('after-pack chmods every spawn-helper under app.asar.unpacked', () => {
+    const { fixSpawnHelpers } = createRequire(import.meta.url)('../../scripts/after-pack.cjs') as { fixSpawnHelpers(dir: string): string[] }
+    const dir = mkdtempSync(join(tmpdir(), 'opsdeck-afterpack-'))
+    onTestFinished(() => rmSync(dir, { recursive: true, force: true }))
+    const pre = join(dir, 'node_modules', 'node-pty', 'prebuilds')
+    for (const arch of ['darwin-arm64', 'darwin-x64']) {
+      mkdirSync(join(pre, arch), { recursive: true })
+      writeFileSync(join(pre, arch, 'spawn-helper'), '', { mode: 0o644 })
+    }
+    mkdirSync(join(pre, 'win32-x64'), { recursive: true })
+    expect(fixSpawnHelpers(dir)).toHaveLength(2)
+    for (const arch of ['darwin-arm64', 'darwin-x64']) expect(statSync(join(pre, arch, 'spawn-helper')).mode & 0o777).toBe(0o755)
+    expect(fixSpawnHelpers(join(dir, 'missing'))).toEqual([])
   })
 })

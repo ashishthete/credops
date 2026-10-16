@@ -23,7 +23,7 @@ export function spawnLocalShell(opts: LocalShellOptions, load: () => NodePty = (
   env.TERM = 'xterm-256color'
   env.COLORTERM = 'truecolor'
   try {
-    const term = load().spawn(opts.shell ?? opts.env.SHELL ?? '/bin/zsh', ['-l'], {
+    const term = load().spawn(opts.shell || opts.env.SHELL || '/bin/zsh', ['-l'], {
       name: 'xterm-256color',
       cols: opts.cols,
       rows: opts.rows,
