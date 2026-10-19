@@ -99,7 +99,6 @@ describe('release playbook', () => {
     const ps = plays(planFixture())
     const build = cmdOf(flat(ps[0].tasks).find((t) => step(t) === 'build')!)
     expect(build).toContain('docker compose -f {{ d.compose | quote }} build')
-    expect(build).toContain('set -a; [ -f .env ] && . ./.env; set +a')
     expect(build).not.toContain('sed ')
     expect(build).toContain('while IFS= read -r l')
     expect(build).toContain("printf '%s\\t%s\\n' \"$P\" \"$l\"")
@@ -616,5 +615,17 @@ describe('fix round 1', () => {
 
   it('the rundir length error reports bytes', () => {
     expect(() => generateAnsibleCfg(planFixture(), '/var/folders/zz/abcdefghijklmnopqrstuvwxyz012345/T/od-abc123')).toThrow(/\d+ bytes/)
+  })
+})
+
+describe('.env is never sourced', () => {
+  it.each(['preflight', 'release', 'rollback', 'version', 'unlock', 'break-lock'] as PlanKind[])('%s: no command sources .env', (kind) => {
+    const plan = planFixture({ kind, lock: { expectRaw: { 'host-od-1': 'a', 'host-od-2': 'b' } } })
+    for (const p of plays(plan))
+      for (const { t } of every(p.tasks)) {
+        const c = cmdOf(t)
+        expect(c, kind).not.toMatch(/(^|[\s;&|(])(source|\.)\s+(\.\/)?\.env\b/)
+        expect(c, kind).not.toContain('set -a')
+      }
   })
 })

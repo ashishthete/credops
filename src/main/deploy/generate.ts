@@ -156,8 +156,6 @@ function streamed(kind: string, body: string, o: { pre?: string; post?: string }
   ].join('\n')
 }
 
-const SOURCE_ENV = 'set -a; [ -f .env ] && . ./.env; set +a'
-
 function runOf(d: PlanDeployment): string {
   return d.runId
 }
@@ -248,7 +246,8 @@ function hookTask(kind: 'pre_hook' | 'post_hook', d: PlanDeployment): Task {
 
 function composeTask(kind: 'build' | 'up' | 'rb_build' | 'rb_up', d: PlanDeployment): Task {
   const verb = kind.endsWith('build') ? 'build' : 'up -d'
-  const body = [SOURCE_ENV, `docker compose -f {{ d.compose | quote }} ${verb}`].join('\n')
+  // docker compose reads the project's .env itself; the file is never sourced.
+  const body = `docker compose -f {{ d.compose | quote }} ${verb}`
   return sh(nm(kind, d), kind, runOf(d), streamed(kind, body), {
     timeout: kind.endsWith('build') ? clampSec(d.buildTimeoutSec, 'build timeout') : clampSec(d.composeTimeoutSec, 'compose timeout'),
     chdir: IN_REPO,
