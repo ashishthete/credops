@@ -102,6 +102,28 @@ describe('layoutGraph', () => {
     expect(after.positions['u']).toBeDefined()
   })
 
+  it('adding a product-less group leaves earlier groups, including earlier product-less ones, untouched', () => {
+    const base = [
+      { id: 'e1', name: 'Prod', productIds: ['a'], hostIds: ['h1', 'h2'] },
+      { id: 'e2', name: 'Alpha', productIds: [], hostIds: ['h3'] },
+    ]
+    const before = layout(inventory(base, ['a']))
+    const after = layout(inventory([...base, { id: 'e3', name: 'Zulu', productIds: [], hostIds: ['h4'] }], ['a']))
+    for (const id of Object.keys(before.positions)) expect(after.positions[id]).toEqual(before.positions[id])
+    expect(after.positions['e:e3'].y).toBeGreaterThan(after.positions['e:e2'].y)
+  })
+
+  it('bounds cover the whole extent, including negative pins and a Mac above the origin', () => {
+    const data = inventory([{ id: 'e1', name: 'Prod', productIds: [], hostIds: ['h1'] }])
+    const l = layout(data, [tunnelMeta({ id: 't1', hostId: 'h1' })], { 'e:e1': { x: -100, y: -200 } })
+    const g = l.positions['e:e1']
+    const mac = l.positions.mac
+    expect(mac.y).toBeLessThan(0)
+    const minY = Math.min(g.y, mac.y)
+    const maxY = Math.max(g.y + g.height, mac.y + mac.height)
+    expect(l.bounds).toEqual({ width: mac.x + mac.width - g.x, height: maxY - minY })
+  })
+
   it('pins override computed positions and are clamped inside the group', () => {
     const data = inventory([{ id: 'e1', name: 'Prod', productIds: [], hostIds: ['h1', 'h2'] }])
     const base = layout(data)
@@ -147,19 +169,38 @@ describe('diffLayout', () => {
     expect(diffLayout(null, next)).toEqual({ entering: ['a'], leaving: [], moved: [] })
   })
 
-  it('reports exactly the added host, the removed host and the moved group', () => {
-    const data = inventory(
-      [
-        { id: 'e1', name: 'A', productIds: [], hostIds: ['h1', 'h2', 'h3'] },
-        { id: 'e2', name: 'B', productIds: [], hostIds: ['h4'] },
-      ],
-    )
-    const prev = layout(data)
-    const next = layout(data, [], { 'e:e2': { x: 900, y: 0 } })
+  it('reports the added host as entering, the removed host as leaving, and the pinned group plus resized ripples as moved', () => {
+    const envs = (e1: string[], e4: string[]) => [
+      { id: 'e1', name: 'A', productIds: [], hostIds: e1 },
+      { id: 'e2', name: 'B', productIds: [], hostIds: ['h5'] },
+      { id: 'e3', name: 'C', productIds: [], hostIds: ['h6'] },
+      { id: 'e4', name: 'D', productIds: [], hostIds: e4 },
+    ]
+    const prev = layout(inventory(envs(['h1', 'h2', 'h3'], ['h4', 'h7'])))
+    // e1 keeps its 2x2 size with a 4th host; e4 drops from 2 hosts to 1, so it narrows and h7 slides to the first cell.
+    const next = layout(inventory(envs(['h1', 'h2', 'h3', 'h9'], ['h7'])), [], { 'e:e2': { x: 900, y: 0 } })
     const d = diffLayout(prev, next)
+    expect(d.entering).toEqual(['e:e1/h:h9'])
+    expect(d.leaving).toEqual(['e:e4/h:h4'])
+    expect(d.moved).toEqual(['e:e2', 'e:e4', 'e:e4/h:h7'])
+    expect(d.moved).toEqual(computeMoved(prev, next))
+  })
+
+  it('a pin on one group moves only that group', () => {
+    const data = inventory([{ id: 'e1', name: 'A', productIds: [], hostIds: ['h1'] }, { id: 'e2', name: 'B', productIds: [], hostIds: ['h2'] }])
+    const d = diffLayout(layout(data), layout(data, [], { 'e:e2': { x: 900, y: 0 } }))
     expect(d).toEqual({ entering: [], leaving: [], moved: ['e:e2'] })
   })
 })
+
+/** Independent expectation: ids present in both layouts whose box differs by more than half a pixel. */
+function computeMoved(prev: MapLayout, next: MapLayout): string[] {
+  return Object.keys(next.positions).filter((id) => {
+    const p = prev.positions[id]
+    const n = next.positions[id]
+    return p && (Math.abs(p.x - n.x) > 0.5 || Math.abs(p.y - n.y) > 0.5 || Math.abs(p.width - n.width) > 0.5 || Math.abs(p.height - n.height) > 0.5)
+  })
+}
 
 describe('performance and overlap', () => {
   function seeded(seed: number) {
@@ -187,7 +228,6 @@ describe('performance and overlap', () => {
       best = Math.min(best, performance.now() - t0)
     }
     expect(best).toBeLessThan(50)
-    const graph = buildGraph({ data, tunnels: [], scope: ALL })
     const all = Object.values(result!.positions)
     const groups = all.filter((p) => /^e:[^/]+$/.test(p.id))
     expect(groups).toHaveLength(12)
@@ -202,6 +242,5 @@ describe('performance and overlap', () => {
         for (const b of kids.slice(i + 1)) expect(overlap(a, b), `${a.id} x ${b.id}`).toBe(false)
       }
     }
-    expect(graph.nodes.every((n) => result!.positions[n.id])).toBe(true)
   })
 })

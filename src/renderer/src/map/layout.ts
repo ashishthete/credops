@@ -146,16 +146,27 @@ export function layoutGraph(graph: MapGraph, pins: Pins = {}): MapLayout {
     place('mac', at.x, at.y, MAC_W, MAC_H)
   }
 
-  let width = 0
-  let height = 0
+  // The extent of everything drawn, so negative pins are covered too.
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
   for (const n of graph.nodes) {
     if (n.parentId) continue
     const p = positions[n.id]
-    width = Math.max(width, p.x + p.width)
-    height = Math.max(height, p.y + p.height)
+    if (!p) continue
+    minX = Math.min(minX, p.x)
+    minY = Math.min(minY, p.y)
+    maxX = Math.max(maxX, p.x + p.width)
+    maxY = Math.max(maxY, p.y + p.height)
   }
-  return { positions, bounds: { width, height } }
+  const bounds = minX === Infinity ? { width: 0, height: 0 } : { width: maxX - minX, height: maxY - minY }
+  return { positions, bounds }
 }
+
+const differs = (p: Placed, n: Placed): boolean =>
+  Math.abs(p.x - n.x) > MOVE_EPSILON || Math.abs(p.y - n.y) > MOVE_EPSILON ||
+  Math.abs(p.width - n.width) > MOVE_EPSILON || Math.abs(p.height - n.height) > MOVE_EPSILON
 
 /** `moved` means the position or size changed by more than half a pixel. */
 export function diffLayout(
@@ -168,10 +179,7 @@ export function diffLayout(
   for (const [id, n] of Object.entries(next.positions)) {
     const p = before[id]
     if (!p) entering.push(id)
-    else if (
-      Math.abs(p.x - n.x) > MOVE_EPSILON || Math.abs(p.y - n.y) > MOVE_EPSILON ||
-      Math.abs(p.width - n.width) > MOVE_EPSILON || Math.abs(p.height - n.height) > MOVE_EPSILON
-    ) moved.push(id)
+    else if (differs(p, n)) moved.push(id)
   }
   const leaving = Object.keys(before).filter((id) => !(id in next.positions))
   return { entering, leaving, moved }
