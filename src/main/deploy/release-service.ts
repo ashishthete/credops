@@ -280,6 +280,7 @@ export class ReleaseService {
     if (this.live.has(releaseId)) throw new DeployError('INVALID_STATE', 'This release is busy')
     const env = environmentMeta(this.d.db, rel.environmentId)
     await this.guard('release.start', 'release.start', env, this.depIds(rel), releaseId)
+    this.assertStatus(releaseId, ['ready'])
     this.confirmProtected('release.start', rel, env, rel.runs.map((r) => r.hostId).filter((h): h is string => h !== null), confirm.typedName)
     const current = this.d.deploys.settings(env.id)
     if (current.versioned && current.currentVersion !== rel.previousVersion) {
@@ -545,6 +546,7 @@ export class ReleaseService {
     const env = environmentMeta(this.d.db, rel.environmentId)
     if (rel.status !== 'ready' && rel.status !== 'blocked') throw new DeployError('INVALID_STATE', `This release is ${rel.status}`)
     await this.guard('lock.break', 'deploy.lock_break', env, [], releaseId)
+    this.assertStatus(releaseId, ['ready', 'blocked'])
     const lock = rel.preflight?.locks[hostId]
     if (!lock) throw new DeployError('INVALID_STATE', 'No lock was seen on this host in preflight')
     const label = hostMeta(this.d.db, hostId).label
@@ -597,6 +599,15 @@ export class ReleaseService {
 
   // ---- discard / retry ----
 
+  /**
+   * Re-reads the row after a guard await: a discard, start or break that ran meanwhile may have moved it,
+   * and `setStatus` is unconditional, so acting on the pre-await status could overwrite `discarded`.
+   */
+  private assertStatus(releaseId: string, allowed: ReleaseStatus[]): void {
+    const now = this.d.releases.get(releaseId).status
+    if (this.live.has(releaseId) || !allowed.includes(now)) throw new DeployError('INVALID_STATE', `This release is ${now}`)
+  }
+
   async discard(releaseId: string): Promise<void> {
     this.d.vault.assertUnlocked()
     const rel = this.d.releases.get(releaseId)
@@ -620,6 +631,7 @@ export class ReleaseService {
     if (this.live.has(releaseId)) throw new DeployError('INVALID_STATE', 'This release is busy')
     const env = environmentMeta(this.d.db, rel.environmentId)
     await this.guard('release.start', 'release.start', env, this.depIds(rel), releaseId)
+    this.assertStatus(releaseId, ['failed'])
     const tagFailed = rel.kind === 'release' && rel.status === 'failed' && rel.version !== null && (rel.error ?? '').startsWith(TAG_FAILED)
     if (!tagFailed || rel.runs.length === 0 || !rel.runs.every((r) => r.status === 'succeeded')) {
       throw new DeployError('INVALID_STATE', 'Only a release whose deployments all succeeded and whose version tag failed can retry the tag')

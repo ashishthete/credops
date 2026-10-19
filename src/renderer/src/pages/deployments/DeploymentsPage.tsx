@@ -349,7 +349,8 @@ function DeploymentCard({ deployment: d, app, index, first, last, onMove, onEdit
       initial={motionSafe ? { opacity: 0, y: 4 } : { opacity: 0 }}
       animate={motionSafe ? { opacity: 1, y: 0 } : { opacity: 1 }}
       exit={{ opacity: 0, transition: { duration: EXIT } }}
-      transition={{ duration: ENTER, delay: Math.min(index * 0.03, STAGGER_CAP) }}
+      // The stagger delays the enter only: a reordered card's layout move starts at once.
+      transition={{ duration: ENTER, opacity: { duration: ENTER, delay: Math.min(index * 0.03, STAGGER_CAP) }, y: { duration: ENTER, delay: Math.min(index * 0.03, STAGGER_CAP) } }}
     >
       {/* The native drag handlers sit on a plain element: framer-motion's own onDragStart means something else. */}
       <div

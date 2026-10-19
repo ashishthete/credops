@@ -26,7 +26,7 @@ import { registerCommand } from '../ui/commands'
 import { fast, useMotionSafe } from '../ui/motion'
 import { useShortcut } from '../ui/shortcuts'
 import { SECTIONS, sectionShortcut } from './sections'
-import { SECTION_ICONS, Sidebar } from './Sidebar'
+import { Sidebar } from './Sidebar'
 
 /** Sidebar plus routed pages. Needs a router above it (HashRouter in the app, MemoryRouter in tests). */
 export function AppShell() {

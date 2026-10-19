@@ -164,7 +164,7 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
                 value={form.appId}
                 disabled={!form.hostId}
                 onChange={(e) => {
-                  if (e.target.value === '__new') setAppRequest({ kind: 'new', environmentId })
+                  if (e.target.value === '__new') setAppRequest({ kind: 'new', environmentId, hostId: form.hostId })
                   else set({ appId: e.target.value })
                 }}
               >
@@ -293,7 +293,12 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
                       key={v.id}
                       type="button"
                       aria-pressed={on}
-                      onClick={() => set({ vaultIds: on ? form.vaultIds.filter((id) => id !== v.id) : [...form.vaultIds, v.id] })}
+                      onClick={() => {
+                        const vaultIds = on ? form.vaultIds.filter((id) => id !== v.id) : [...form.vaultIds, v.id]
+                        // A become secret from a deselected vault can't be used any more.
+                        const becomeVault = secrets.find((s) => s.id === form.becomeSecretId)?.vaultId
+                        set({ vaultIds, ...(becomeVault && !vaultIds.includes(becomeVault) ? { becomeSecretId: '' } : {}) })
+                      }}
                       className={`inline-flex h-6 items-center gap-1.5 rounded-full border px-2.5 text-[12px] transition-colors ${
                         on ? 'border-accent/50 bg-accent/12 text-fg' : 'border-line text-muted hover:text-fg'
                       }`}

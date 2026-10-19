@@ -7,7 +7,7 @@ import { Button } from '../../ui/Button'
 import { Dialog } from '../../ui/Dialog'
 import { SelectField, TextAreaField, TextField } from '../../ui/Field'
 
-export type AppRequest = { kind: 'new'; environmentId: string } | { kind: 'edit'; id: string }
+export type AppRequest = { kind: 'new'; environmentId: string; hostId?: string } | { kind: 'edit'; id: string }
 
 interface AppDialogProps {
   request: AppRequest | null
@@ -47,7 +47,7 @@ export function AppDialog({ request, onClose, onSaved, onDelete }: AppDialogProp
     if (!request) return
     const a = request.kind === 'edit' ? deployStore.get().apps.find((a) => a.id === request.id) : undefined
     setName(a?.name ?? '')
-    setHostId(a?.hostId ?? '')
+    setHostId(a?.hostId ?? (request.kind === 'new' ? (request.hostId ?? '') : ''))
     setProject(a?.composeProject ?? '')
     setDescription(a?.description ?? '')
     setServerError(null)
@@ -113,7 +113,7 @@ export function AppDialog({ request, onClose, onSaved, onDelete }: AppDialogProp
     >
       <form id={formId} onSubmit={submit} className="flex flex-col gap-3.5">
         <TextField label="Name" autoFocus value={name} onChange={(e) => setName(e.target.value)} error={name ? errors.name : undefined} />
-        <SelectField label="Host" value={hostId} onChange={(e) => setHostId(e.target.value)} disabled={r?.kind === 'edit'}>
+        <SelectField label="Host" value={hostId} onChange={(e) => setHostId(e.target.value)} disabled={r?.kind === 'edit' || (r?.kind === 'new' && !!r.hostId)}>
           <option value="">Choose a host…</option>
           {hosts.map((h) => (
             <option key={h.id} value={h.id}>

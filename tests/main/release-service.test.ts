@@ -823,4 +823,15 @@ describe('ReleaseService', () => {
     await r.svc.whenIdle()
     expect(r.runner.kinds.filter((k) => k === 'release').length).toBeLessThanOrEqual(1)
   })
+
+  it('discard then start: start refuses and the row stays discarded', async () => {
+    const r = await rig()
+    const id = await ready(r)
+    const results = await Promise.allSettled([r.svc.discard(id), r.svc.start(id, {})])
+    expect(results[0]!.status).toBe('fulfilled')
+    expect(results[1]!.status).toBe('rejected')
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).status).toBe('discarded')
+    expect(r.runner.kinds.filter((k) => k === 'release')).toHaveLength(0)
+  })
 })
