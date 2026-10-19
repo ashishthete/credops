@@ -7,7 +7,7 @@ import { SecretStore } from '../../src/main/vault/secret-store'
 import type { QuickUnlockDeps } from '../../src/main/vault/vault-service'
 import { DEFAULT_VAULT_ID, VAULT_RESET_CONFIRM } from '../../src/shared/vault'
 import { makeInventory, type InventoryFixture } from './inventory-helpers'
-import { auditRows } from './vault-helpers'
+import { auditRows, makeVault } from './vault-helpers'
 
 const PW = 'correct horse'
 const SECRET_VALUE = 'hunter2-super-secret'
@@ -95,6 +95,10 @@ const resetRows = (f: InventoryFixture) =>
 describe('VaultService.reset', () => {
   it('while locked erases every secret, keeps the inventory and clears its references', async () => {
     const { f, hostId, plainHostId, envId, productId, otherVaultId } = await seeded()
+    const { quick_unlock_blob: blob } = f.db.prepare('SELECT quick_unlock_blob FROM vault_state WHERE id = 1').get() as {
+      quick_unlock_blob: string | null
+    }
+    expect(blob).toBeTruthy()
     const status = await f.vault.reset(VAULT_RESET_CONFIRM)
     expect(status).toMatchObject({ setUp: false, unlocked: false, quickUnlock: 'off', retryAfterMs: 0 })
 
@@ -123,7 +127,7 @@ describe('VaultService.reset', () => {
       ['vaults', 'hosts', 'environments', 'vault_state'].map((t) => f.db.prepare(`SELECT * FROM ${t}`).all()),
     )
     expect(dump).not.toContain(SECRET_VALUE)
-    expect(dump).not.toContain('kc:')
+    expect(dump).not.toContain(blob)
   })
 
   it('leaves the vaults not set up, and a new setup works', async () => {
@@ -196,6 +200,13 @@ describe('VaultService.reset', () => {
     expect(f.vault.isUnlocked()).toBe(true)
     expect(vaultMaterial(f)).toEqual(before)
     expect(resetRows(f)).toEqual([])
+  })
+
+  it('on a never-set-up install does nothing and audits nothing', async () => {
+    const { vault, audit } = makeVault()
+    const status = await vault.reset(VAULT_RESET_CONFIRM)
+    expect(status).toMatchObject({ setUp: false, unlocked: false })
+    expect(audit.list({ actions: ['vault.reset'] })).toEqual([])
   })
 
   it('audits counts only, and keeps the audit log', async () => {

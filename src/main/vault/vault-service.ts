@@ -411,6 +411,8 @@ export class VaultService {
     return this.serial(async () => {
       if (confirm !== VAULT_RESET_CONFIRM) throw new Error(`type ${VAULT_RESET_CONFIRM} to confirm`)
       if (this.kek) throw new Error('vaults are unlocked: change the master password in settings instead')
+      // Never set up: nothing to erase, and nothing worth an audit row.
+      if (!this.isSetUp()) return this.status()
       let counts = { vaults: 0, items: 0 }
       this.tx(() => {
         const n = (sql: string): number => Number((this.db.prepare(sql).get() as { n: number }).n)

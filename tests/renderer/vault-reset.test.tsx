@@ -11,7 +11,7 @@ import type { VaultStatus } from '../../src/shared/vault'
 import { mockBridge, vaultStatus } from './helpers'
 
 /** A locked, set-up main process whose vault:reset (with the right word) un-sets it up. */
-function fakeVault(start: Partial<VaultStatus> = {}) {
+function fakeVault(start: Partial<VaultStatus> = {}, reset?: () => Promise<VaultStatus>) {
   const state = vaultStatus({ quickUnlock: 'off', ...start })
   const invoke = mockBridge()
   const fallback = invoke.getMockImplementation()!
@@ -19,6 +19,7 @@ function fakeVault(start: Partial<VaultStatus> = {}) {
     if (channel === 'vault:status') return { ...state }
     if (channel === 'vault:reset') {
       if (args[0] !== 'RESET') throw new Error('type RESET to confirm')
+      if (reset) return reset()
       Object.assign(state, { setUp: false, unlocked: false, quickUnlock: 'off' })
       return { ...state }
     }
@@ -71,8 +72,10 @@ describe('forgot password', () => {
     expect(within(dialog).getByText(/permanently erases every secret in every vault/)).toBeInTheDocument()
     expect(within(dialog).getByText(/turns off Touch ID quick unlock/)).toBeInTheDocument()
     expect(within(dialog).getByText('Open terminals and tunnels will be closed.')).toBeInTheDocument()
-    expect(within(dialog).getByText(/Products, environments, hosts, services, tunnels and other settings are kept/)).toBeInTheDocument()
-    expect(within(dialog).getByText(/will need it added again/)).toBeInTheDocument()
+    expect(
+      within(dialog).getByText('Products, environments, hosts, tunnels and other settings are kept. Files in ~/.ssh are not touched.'),
+    ).toBeInTheDocument()
+    expect(within(dialog).getByText('Hosts that used a vault identity will need it added again.')).toBeInTheDocument()
 
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
@@ -120,5 +123,49 @@ describe('forgot password', () => {
     await gate('Your vaults are ready')
     await user.click(screen.getByRole('button', { name: /Continue|Not now/ }))
     expect(await screen.findByRole('navigation')).toBeInTheDocument()
+  })
+
+  it('shows a refused reset under the field and stays open', async () => {
+    const user = userEvent.setup()
+    fakeVault({}, () => Promise.reject(new Error('vaults are unlocked: change the master password in settings instead')))
+    renderGate()
+    const dialog = await openReset(user)
+    await user.type(within(dialog).getByLabelText('Type RESET to confirm'), 'RESET')
+    await user.click(within(dialog).getByRole('button', { name: 'Erase secrets and reset' }))
+    expect(await within(dialog).findByText(/vaults are unlocked: change the master password/)).toBeInTheDocument()
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeEnabled()
+    expect(screen.queryByRole('region', { name: 'Protect your vaults' })).not.toBeInTheDocument()
+  })
+
+  it('while busy, Cancel and Esc are blocked; when idle, Esc closes', async () => {
+    const user = userEvent.setup()
+    let finish: (() => void) | null = null
+    const { state } = fakeVault({}, () =>
+      new Promise<VaultStatus>((resolve) => {
+        finish = () => resolve({ ...Object.assign(state, { setUp: false, unlocked: false }) })
+      }),
+    )
+    renderGate()
+    let dialog = await openReset(user)
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    dialog = await openReset(user)
+    await user.type(within(dialog).getByLabelText('Type RESET to confirm'), 'RESET')
+    await user.click(within(dialog).getByRole('button', { name: 'Erase secrets and reset' }))
+    await waitFor(() => expect(finish).not.toBeNull())
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled()
+    // Esc from inside the dialog, where Dialog listens for it.
+    await user.click(within(dialog).getByLabelText('Type RESET to confirm'))
+    await user.keyboard('{Escape}')
+    // Longer than the idle close above takes to leave the DOM.
+    await expect(
+      waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument(), { timeout: 500 }),
+    ).rejects.toThrow()
+
+    act(() => finish!())
+    await gate('Protect your vaults')
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
 })

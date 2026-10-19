@@ -14,8 +14,8 @@ const POINTS = [
   'Resetting permanently erases every secret in every vault: passwords, private keys, passphrases and other secret items.',
   'It also turns off Touch ID quick unlock.',
   'Open terminals and tunnels will be closed.',
-  'Products, environments, hosts, services, tunnels and other settings are kept.',
-  'Hosts and checkouts that used a vault secret will need it added again.',
+  'Products, environments, hosts, tunnels and other settings are kept. Files in ~/.ssh are not touched.',
+  'Hosts that used a vault identity will need it added again.',
 ]
 
 /**
