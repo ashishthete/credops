@@ -8,6 +8,7 @@ import {
   Search,
   Server,
   SquareTerminal,
+  Wrench,
   type LucideIcon,
 } from 'lucide-react'
 import { useEffect, useState, useSyncExternalStore } from 'react'
@@ -15,6 +16,7 @@ import { NavLink } from 'react-router'
 import type { AppInfo } from '../../../shared/ipc'
 import { api } from '../lib/api'
 import { sessionStore } from '../terminal/sessions'
+import { runningCount, runStore } from '../ops/runs'
 import { tunnelStore } from '../tunnels/store'
 import { openCommandPalette } from '../ui/commands'
 import { plural } from '../ui/common'
@@ -30,6 +32,7 @@ export const SECTION_ICONS: Record<SectionId, LucideIcon> = {
   hosts: Server,
   vaults: KeyRound,
   tunnels: Cable,
+  ops: Wrench,
   deployments: Rocket,
   audit: ScrollText,
 }
@@ -108,6 +111,7 @@ export function Sidebar() {
                   <span className="relative flex-1">{s.label}</span>
                   {s.id === 'terminals' && <LiveCount />}
                   {s.id === 'tunnels' && <TunnelBadge />}
+                  {s.id === 'ops' && <RunBadge />}
                   <Keys
                     combo={sectionShortcut(i)}
                     className="relative opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
@@ -214,6 +218,21 @@ function TunnelBadge() {
     >
       {dot && <span aria-hidden data-dot={failed ? 'failed' : 'busy'} className={`size-1.5 rounded-full ${dot}`} />}
       {up}
+    </span>
+  )
+}
+
+/** Runs in progress; it gives way to the shortcut keys on hover. */
+function RunBadge() {
+  const count = useSyncExternalStore(runStore.subscribe, runningCount)
+  if (!count) return null
+  return (
+    <span
+      data-badge
+      aria-label={`${plural(count, 'run')} running`}
+      className="absolute right-2.5 grid h-[18px] min-w-[18px] place-items-center rounded-full bg-accent/15 px-1.5 text-[10.5px] font-semibold text-accent tabular-nums transition-opacity group-hover:opacity-0 group-focus-visible:opacity-0"
+    >
+      {count}
     </span>
   )
 }

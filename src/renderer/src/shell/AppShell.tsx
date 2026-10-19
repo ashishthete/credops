@@ -5,6 +5,7 @@ import { useInventoryCommands } from '../inventory/commands'
 import { loadInventory } from '../inventory/store'
 import { AuditPage } from '../pages/AuditPage'
 import { HostsPage } from '../pages/hosts/HostsPage'
+import { OpsPage } from '../pages/ops/OpsPage'
 import { PlaceholderPage } from '../pages/PlaceholderPage'
 import { ProductsPage } from '../pages/products/ProductsPage'
 import { KnownHostsDialog, closeKnownHosts, openKnownHosts } from '../pages/terminals/KnownHostsDialog'
@@ -12,6 +13,7 @@ import { PromptHost } from '../pages/terminals/PromptHost'
 import { TerminalDeck } from '../pages/terminals/TerminalDeck'
 import { TunnelsPage } from '../pages/tunnels/TunnelsPage'
 import { VaultsPage } from '../pages/vaults/VaultsPage'
+import { resetOps, startOpsSync } from '../ops/runs'
 import { disposeAll } from '../terminal/registry'
 import { resetSessions, startSessionSync } from '../terminal/sessions'
 import { useTunnelCommands } from '../tunnels/commands'
@@ -52,13 +54,16 @@ export function AppShell() {
   useEffect(() => {
     const stop = startSessionSync()
     const stopTunnels = startTunnelSync()
+    const stopOps = startOpsSync()
     return () => {
       stop()
       stopTunnels()
+      stopOps()
       disposeAll()
       // Events stop while unmounted (the vault locked); the next mount's session list is the truth.
       resetSessions()
       resetTunnels()
+      resetOps()
       closeKnownHosts()
     }
   }, [])
@@ -100,6 +105,8 @@ export function AppShell() {
             <Route path="/environments" element={<Navigate to="/products" replace />} />
             <Route path="/vaults" element={<VaultsPage />} />
             <Route path="/tunnels" element={<TunnelsPage />} />
+            <Route path="/ops" element={<Navigate to="/ops/run" replace />} />
+            <Route path="/ops/:tab" element={<OpsPage />} />
             <Route path="/audit" element={<AuditPage />} />
             <Route path="*" element={<Navigate to={SECTIONS[0].path} replace />} />
           </Routes>
@@ -112,7 +119,7 @@ export function AppShell() {
   )
 }
 
-// mod+1…mod+7 and a "Go to …" palette command per section.
+// mod+1…mod+N and a "Go to …" palette command per section.
 function useSectionNavigation() {
   const navigate = useNavigate()
   const navigateRef = useRef(navigate)

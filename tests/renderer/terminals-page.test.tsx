@@ -110,7 +110,7 @@ describe('terminals page', () => {
   })
 
   it('section order puts Terminals second and mod+2 opens it', async () => {
-    expect(SECTIONS.map((s) => s.id)).toEqual(['products', 'terminals', 'hosts', 'vaults', 'tunnels', 'deployments', 'audit'])
+    expect(SECTIONS.map((s) => s.id).indexOf('terminals')).toBe(1)
     await renderShell('/products')
     expect(screen.queryByRole('searchbox', { name: 'Connect to a host' })).not.toBeInTheDocument()
     key('2')
