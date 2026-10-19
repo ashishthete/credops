@@ -83,8 +83,9 @@ async function checkConfig(configFile: string, out: (line: string) => void): Pro
       accessSync(config.dataDir, constants.W_OK)
       line(true, 'dataDir', 'private and writable')
     }
-  } catch {
-    line(true, 'dataDir', 'does not exist yet; it is created (0700) on first start')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') line(true, 'dataDir', 'does not exist yet; it is created (0700) on first start')
+    else line(false, 'dataDir', `cannot be checked (${(err as NodeJS.ErrnoException).code ?? 'error'})`)
   }
 
   for (const t of TOOLS) {
@@ -94,7 +95,7 @@ async function checkConfig(configFile: string, out: (line: string) => void): Pro
 
   const discovery = `${config.entra.authority.replace(/\/$/, '')}/.well-known/openid-configuration`
   try {
-    const res = await fetch(discovery, { signal: AbortSignal.timeout(5000) })
+    const res = await fetch(discovery, { redirect: 'error', signal: AbortSignal.timeout(5000) })
     await res.body?.cancel()
     line(res.ok, 'Entra discovery', res.ok ? 'reachable' : `HTTP ${res.status}`)
   } catch {

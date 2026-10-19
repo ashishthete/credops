@@ -19,12 +19,14 @@ In the Entra admin center, for the tenant your team signs in with:
 4. Under **Manifest**, set `requestedAccessTokenVersion` to `2`.
 5. Note the **Directory (tenant) ID** and **Application (client) ID**. They go in the config.
 
+These steps have not yet been verified against a live tenant.
+
 No API permissions beyond `openid`, `profile`, `offline_access` and your own `access_as_user` are needed.
 
 ## 2. VM prerequisites
 
 - Linux with systemd, Node.js 24 or newer, and a public DNS name for the Hub.
-- `ansible-playbook` (ansible-core), plus `ssh-agent` and `ssh-add` from OpenSSH.
+- `sqlite3` (for backups), `ansible-playbook` (ansible-core), plus `ssh-agent` and `ssh-add` from OpenSSH.
 - Outbound HTTPS to `login.microsoftonline.com`.
 - Create the service user and directories:
 
@@ -32,6 +34,7 @@ No API permissions beyond `openid`, `profile`, `offline_access` and your own `ac
 sudo useradd --system --home /var/lib/opsdeck-hub --shell /usr/sbin/nologin opsdeck-hub
 sudo install -d -o opsdeck-hub -g opsdeck-hub -m 700 /var/lib/opsdeck-hub
 sudo install -d -m 755 /etc/opsdeck-hub /opt/opsdeck-hub
+sudo install -d -o opsdeck-hub -g opsdeck-hub -m 700 /var/backups/opsdeck-hub
 ```
 
 ## 3. Build and install
@@ -82,7 +85,11 @@ Write `/etc/opsdeck-hub/hub.config.json` (see `hub/hub.config.example.json`):
 ```
 
 The Hub listens on loopback and Caddy terminates TLS. `${CREDENTIALS_DIRECTORY}` is filled in from
-systemd's `LoadCredential=` (the unit hands over `/etc/opsdeck-hub/master.key`).
+systemd's `LoadCredential=` (the unit hands over `/etc/opsdeck-hub/master.key`). systemd leaves that copy
+owned by root with the Hub user's access granted by ACL, so for a file inside `$CREDENTIALS_DIRECTORY` the Hub
+accepts owner root or the Hub user, no write bits and no "other" bits, instead of the strict 0600 check. This
+path is **unverified on a live systemd**: run `systemctl start opsdeck-hub` on Linux and confirm it boots
+before relying on it.
 
 Check it. Run this as root with a copy of the config whose `masterKeyFile` is the literal
 `/etc/opsdeck-hub/master.key`, because `${CREDENTIALS_DIRECTORY}` only exists under systemd:
@@ -102,12 +109,11 @@ hub.example.com {
     reverse_proxy 127.0.0.1:8787 {
         # The live status stream (GET /api/v1/live) is server-sent events: never buffer it.
         flush_interval -1
-        header_up X-Accel-Buffering no
     }
 }
 ```
 
-Caddy gets and renews the certificate on its own. The Hub sends `X-Accel-Buffering: no` and heartbeats
+Caddy gets and renews the certificate on its own. The Hub sends heartbeats
 every 15 seconds, so idle proxies keep the stream open.
 
 ## 7. Start and the first admin

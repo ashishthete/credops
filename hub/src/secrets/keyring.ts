@@ -1,5 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { chmodSync, closeSync, openSync, readFileSync, statSync, writeSync } from 'node:fs'
+import { closeSync, fchmodSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeSync } from 'node:fs'
+import type { Stats } from 'node:fs'
+import { sep } from 'node:path'
 import { openSealed, seal } from '../../../src/main/vault/crypto'
 import type { HubDb } from '../db'
 
@@ -16,19 +18,44 @@ function decode(text: string): Buffer {
   return key
 }
 
+/** True when `file` resolves (symlinks followed) to a path inside `dir`. A link that escapes it is outside. */
+function insideDir(file: string, dir: string | undefined): boolean {
+  if (!dir) return false
+  try {
+    const root = realpathSync(dir)
+    return realpathSync(file).startsWith(root.endsWith(sep) ? root : root + sep)
+  } catch {
+    return false
+  }
+}
+
 /**
  * The 32-byte master key from `file` (mode 0600 or 0400, owned by this user) or, with no file, from the
  * environment. A configured file is never bypassed by the variable. Errors never carry key material.
+ *
+ * Exception: a file that resolves inside $CREDENTIALS_DIRECTORY (systemd LoadCredential=) is owned by root
+ * with the service user's access granted by ACL, so it shows as 0440. There it is enough that the owner is
+ * root or this user, nobody can write, and the file has no "other" bits. Unverified on a live systemd.
  */
-export function loadMasterKey(opts: { file?: string; env?: Record<string, string | undefined> } = {}): Buffer {
+export function loadMasterKey(
+  opts: { file?: string; env?: Record<string, string | undefined>; stat?: (path: string) => Pick<Stats, 'mode' | 'uid'> } = {},
+): Buffer {
   const env = opts.env ?? process.env
+  const stat = opts.stat ?? statSync
   if (opts.file) {
     let text: string
     try {
-      const st = statSync(opts.file)
+      const st = stat(opts.file)
       const mode = st.mode & 0o777
-      if (mode !== 0o600 && mode !== 0o400) throw new Error('masterKeyFile must be chmod 600')
-      if (typeof process.getuid === 'function' && st.uid !== process.getuid()) throw new Error('masterKeyFile must be owned by the Hub user')
+      const uid = typeof process.getuid === 'function' ? process.getuid() : undefined
+      if (insideDir(opts.file, env.CREDENTIALS_DIRECTORY)) {
+        if (mode & 0o222) throw new Error('masterKeyFile must not be writable')
+        if (mode & 0o007) throw new Error('masterKeyFile must not be readable by other users')
+        if (uid !== undefined && st.uid !== 0 && st.uid !== uid) throw new Error('masterKeyFile must be owned by root or the Hub user')
+      } else {
+        if (mode !== 0o600 && mode !== 0o400) throw new Error('masterKeyFile must be chmod 600')
+        if (uid !== undefined && st.uid !== uid) throw new Error('masterKeyFile must be owned by the Hub user')
+      }
       text = readFileSync(opts.file, 'utf8')
     } catch (err) {
       if (err instanceof Error && err.message.startsWith('masterKeyFile must')) throw err
@@ -52,10 +79,18 @@ export function createMasterKeyFile(file: string): void {
   }
   try {
     writeSync(fd, `${randomBytes(KEY_BYTES).toString('base64')}\n`)
-  } finally {
+    fchmodSync(fd, 0o600)
+  } catch {
+    // Only reached for the file this call just created with wx, so removing it cannot touch anyone else's.
     closeSync(fd)
+    try {
+      unlinkSync(file)
+    } catch {
+      /* nothing more to do */
+    }
+    throw new Error('masterKeyFile could not be written')
   }
-  chmodSync(file, 0o600)
+  closeSync(fd)
 }
 
 /** Seals and opens values with the master key. Boot fails if the key is not the one this database was made with. */

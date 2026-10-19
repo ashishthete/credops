@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, symlinkSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Fastify from 'fastify'
@@ -327,6 +327,54 @@ describe('master key', () => {
     expect(() => new KeyRing(db, randomBytes(32))).toThrow('master key does not match this database')
     expect(() => new KeyRing(db, a)).not.toThrow()
     expect(new KeyRing(db, a).keyId).toMatch(/^[0-9a-f]{16}$/)
+  })
+
+  describe('master key under systemd LoadCredential', () => {
+    const rootOwned = (mode: number) => (path: string) => ({ ...statSync(path), mode: 0o100000 | mode, uid: 0 })
+
+    function credential(mode = 0o440) {
+      const dir = tmp()
+      const creds = join(dir, 'creds')
+      mkdirSync(creds)
+      const file = join(creds, 'master-key')
+      const key = randomBytes(32)
+      writeFileSync(file, `${key.toString('base64')}\n`)
+      return { dir, creds, file, key, env: { CREDENTIALS_DIRECTORY: creds }, stat: rootOwned(mode) }
+    }
+
+    it('accepts a root-owned 0440 file inside the credentials directory', () => {
+      const c = credential()
+      expect(loadMasterKey({ file: c.file, env: c.env, stat: c.stat }).equals(c.key)).toBe(true)
+    })
+
+    it('refuses the same file outside the directory (strict check applies)', () => {
+      const c = credential()
+      expect(() => loadMasterKey({ file: c.file, env: { CREDENTIALS_DIRECTORY: join(c.dir, 'elsewhere') }, stat: c.stat })).toThrow('chmod 600')
+      expect(() => loadMasterKey({ file: c.file, env: {}, stat: c.stat })).toThrow('chmod 600')
+    })
+
+    it('refuses other bits and write bits inside the directory', () => {
+      const c = credential()
+      expect(() => loadMasterKey({ file: c.file, env: c.env, stat: rootOwned(0o444) })).toThrow('other users')
+      expect(() => loadMasterKey({ file: c.file, env: c.env, stat: rootOwned(0o640) })).toThrow('not be writable')
+      expect(() => loadMasterKey({ file: c.file, env: c.env, stat: rootOwned(0o460) })).toThrow('not be writable')
+    })
+
+    it('refuses a foreign owner inside the directory', () => {
+      const c = credential()
+      const uid = process.getuid!()
+      const other = (path: string) => ({ ...statSync(path), mode: 0o100440, uid: uid + 1 })
+      expect(() => loadMasterKey({ file: c.file, env: c.env, stat: other })).toThrow('owned by root or the Hub user')
+    })
+
+    it('refuses a symlink that escapes the directory', () => {
+      const c = credential()
+      const outside = join(c.dir, 'outside.key')
+      writeFileSync(outside, `${c.key.toString('base64')}\n`)
+      const link = join(c.creds, 'link')
+      symlinkSync(outside, link)
+      expect(() => loadMasterKey({ file: link, env: c.env, stat: c.stat })).toThrow('chmod 600')
+    })
   })
 
   it('master key file must be 0600', () => {

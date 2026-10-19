@@ -129,4 +129,28 @@ describe('hub build and CLI', () => {
     expect(r.status).toBe(1)
     expect(r.stdout).toMatch(/FAIL\s+dataDir/)
   })
+
+  it('check-config fails dataDir when it cannot be inspected, not only when it is missing', async () => {
+    const keyFile = join(tmp, 'ee.key')
+    expect((await run(['gen-master-key', '--out', keyFile])).status).toBe(0)
+    const cfg = writeConfig('ee', {}, keyFile)
+    const dataDir = JSON.parse(readFileSync(cfg, 'utf8')).dataDir as string
+    const parent = join(tmp, 'locked')
+    mkdirSync(parent, { mode: 0o700 })
+    const inner = join(parent, 'data')
+    mkdirSync(inner, { mode: 0o700 })
+    const cfg2 = join(tmp, 'locked.json')
+    writeFileSync(cfg2, JSON.stringify({ ...JSON.parse(readFileSync(cfg, 'utf8')), dataDir: inner }))
+    chmodSync(parent, 0o000)
+    try {
+      const r = await run(['check-config', '--config', cfg2])
+      expect(r.status).toBe(1)
+      expect(r.stdout).toMatch(/FAIL\s+dataDir/)
+    } finally {
+      chmodSync(parent, 0o700)
+    }
+    // A genuinely missing dataDir stays ok.
+    writeFileSync(cfg2, JSON.stringify({ ...JSON.parse(readFileSync(cfg, 'utf8')), dataDir: join(dataDir, 'nope') }))
+    expect((await run(['check-config', '--config', cfg2])).stdout).toMatch(/ok\s+dataDir/)
+  })
 })

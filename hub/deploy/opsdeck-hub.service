@@ -11,6 +11,7 @@ WorkingDirectory=/opt/opsdeck-hub
 ExecStart=/usr/bin/node /opt/opsdeck-hub/dist/opsdeck-hub.mjs serve --config /etc/opsdeck-hub/hub.config.json
 Restart=on-failure
 RestartSec=5
+UMask=0077
 
 # The master key is handed over as a systemd credential; set "masterKeyFile" in the config
 # to "${CREDENTIALS_DIRECTORY}/master-key"; the Hub expands it from the variable systemd sets.

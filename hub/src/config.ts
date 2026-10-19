@@ -104,7 +104,7 @@ export function loadConfig(file: string): HubConfig {
     // systemd's LoadCredential= puts the key under this directory for the service only.
     const dir = process.env.CREDENTIALS_DIRECTORY
     if (!dir) bad('masterKeyFile', 'uses ${CREDENTIALS_DIRECTORY}, which is only set under systemd LoadCredential=')
-    masterKeyFile = masterKeyFile.replaceAll('${CREDENTIALS_DIRECTORY}', dir as string)
+    masterKeyFile = masterKeyFile.replaceAll('${CREDENTIALS_DIRECTORY}', () => dir as string)
   }
   if (root.masterKey !== undefined) bad('masterKey', 'is not allowed here; use masterKeyFile or OPSDECK_HUB_MASTER_KEY')
 
