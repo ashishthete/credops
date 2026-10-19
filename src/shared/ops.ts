@@ -36,6 +36,9 @@ export const MAX_CHANNELS_PER_LINK = 8
 export const CONTAINER_REF = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/
 export const MAX_CONTAINERS = 500
 
+/** Main's refusal of a protected run or container action without the environment name typed; the renderer recognises it by text. */
+export const CONFIRM_MESSAGE = 'Type the environment name to confirm'
+
 /** Main's refusal of a run whose hosts span protected environments; the Run tab shows it before asking. */
 export const MULTIPLE_PROTECTED_MESSAGE = 'These hosts are in more than one protected environment; run one environment at a time'
 

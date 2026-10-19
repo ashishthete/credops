@@ -169,12 +169,12 @@ export function Composer({ onConfirm }: { onConfirm: (req: ConfirmRequest) => vo
     if (!ready || starting) return
     const req = request()
     if (protection.needed) {
-      onConfirm(confirmFor(protection.needed, targets.map((h) => h.label), (name) => launch({ ...req, confirm: name })))
+      onConfirm(confirmFor(protection.needed, targets.map((h) => h.label), (name) => launch({ ...req, confirm: name }, onConfirm)))
       return
     }
     setStarting(true)
     try {
-      await launch(req)
+      await launch(req, onConfirm)
     } finally {
       setStarting(false)
     }

@@ -3,7 +3,8 @@ import { forwardRef, createElement, type ComponentType } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { inventoryStore } from '../../src/renderer/src/inventory/store'
-import { resetOps, startOpsSync } from '../../src/renderer/src/ops/runs'
+import { rememberRequest, resetOps, startOpsSync } from '../../src/renderer/src/ops/runs'
+import { launch } from '../../src/renderer/src/pages/ops/run/launch'
 import { MULTIPLE_PROTECTED, requestProtection, runProtection } from '../../src/renderer/src/ops/protect'
 import { OpsPage } from '../../src/renderer/src/pages/ops/OpsPage'
 import { RunTab } from '../../src/renderer/src/pages/ops/RunTab'
@@ -621,6 +622,47 @@ describe('run tab', () => {
       fireEvent.click(within(dialog).getByRole('button', { name: 'Run' }))
     })
     expect(calls(invoke, 'runs:start')[1]).toEqual(['runs:start', { ...(calls(invoke, 'runs:start')[0][1] as object), confirm: 'staging' }])
+  })
+
+  it('Run again checks the rendered text of a snippet, so a value that makes it destructive needs the name', async () => {
+    const bare: SnippetMeta = { ...snippet, id: 's2', label: 'Anything', script: '{{cmd}}', variables: [{ name: 'cmd', default: null }] }
+    const done = { ...summary(['h-stg-1']), id: 'r9', state: 'done' as const, endedAt: STAMP, hosts: [hostMeta('h-stg-1', { state: 'ok', exitCode: 0 })] }
+    const { invoke } = await renderTab({
+      'snippets:list': [bare],
+      'snippets:render': 'rm -rf /tmp/old',
+      'runs:list': [done],
+      'runs:get': { run: done, output: [] },
+    })
+    rememberRequest('r9', {
+      target: { kind: 'hosts', hostIds: ['h-stg-1'] },
+      command: { kind: 'snippet', snippetId: 's2', values: { cmd: 'rm -rf /tmp/old' } },
+      concurrency: 4,
+      timeoutSec: 600,
+    } as never)
+    act(() => inventoryStore.set({ ...inventoryStore.get()!, environments: [prod, { ...staging, protected: true }, audit] }))
+    fireEvent.click(within(screen.getByRole('list', { name: 'Recent runs' })).getByRole('button', { name: /^uptime/ }))
+    await flush()
+    fireEvent.click(screen.getByRole('button', { name: 'Run again' }))
+    await flush()
+    expect(calls(invoke, 'snippets:render').at(-1)).toEqual(['snippets:render', 's2', { cmd: 'rm -rf /tmp/old' }])
+    expect(screen.getByRole('dialog', { name: 'Run on 1 host in staging?' })).toBeTruthy()
+    expect(calls(invoke, 'runs:start')).toHaveLength(0)
+  })
+
+  it("main's typed-name refusal opens the confirmation instead of a toast", async () => {
+    const invoke = mockBridge({ 'snippets:list': [] })
+    invoke.mockImplementation(async (channel: string) => {
+      if (channel === 'runs:start') throw new Error("Error invoking remote method 'runs:start': Error: Type the environment name to confirm")
+      return channel === 'snippets:list' ? [] : null
+    })
+    inventoryStore.set({ products: [], environments: [prod, staging, audit], hosts: [...prodHosts, stg, ops], identities: [], vaults: [] })
+    const onConfirm = vi.fn()
+    await launch(
+      { target: { kind: 'hosts', hostIds: ['h-web-1'], environmentId: 'e-prod' }, command: { kind: 'text', text: 'uptime' }, concurrency: 4, timeoutSec: 600 } as never,
+      onConfirm,
+    )
+    expect(onConfirm).toHaveBeenCalledWith(expect.objectContaining({ title: 'Run on 1 host in prod?', typeToConfirm: 'prod' }))
+    expect(vi.mocked(toast)).not.toHaveBeenCalled()
   })
 
   it("a finished host's check doesn't pop when the run is reopened, only when it finishes in view", async () => {

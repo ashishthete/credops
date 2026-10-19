@@ -23,12 +23,16 @@ export function RunTab() {
 
   const inv = useInventory()
   const { snippets } = useSyncExternalStore(snippetStore.subscribe, snippetStore.get)
-  const again = (req: RunRequest) => {
-    // Protection as it is now: the environment may have become protected, or stopped being.
-    const { needed, labels } = requestProtection(req, inv?.environments ?? [], inv?.hosts ?? [], snippets)
+  const again = async (req: RunRequest) => {
+    // Protection as it is now: the environment may have become protected, or stopped being. A snippet is judged
+    // by its rendered text, as main does; a render that fails (a template error) is main's to refuse.
+    const cmd = req.command
+    const rendered = cmd.kind === 'snippet' ? await attempt("Couldn't check the snippet", () => api.invoke('snippets:render', cmd.snippetId, cmd.values)) : undefined
+    if (cmd.kind === 'snippet' && rendered === undefined) return
+    const { needed, labels } = requestProtection(req, inv?.environments ?? [], inv?.hosts ?? [], snippets, rendered)
     const { confirm: _was, ...fresh } = req
-    if (!needed) return void launch(fresh)
-    setConfirm(confirmFor(needed, labels, (name) => launch({ ...fresh, confirm: name })))
+    if (!needed) return void launch(fresh, setConfirm)
+    setConfirm(confirmFor(needed, labels, (name) => launch({ ...fresh, confirm: name }, setConfirm)))
   }
   const req = selected && requestFor(selected.id)
 

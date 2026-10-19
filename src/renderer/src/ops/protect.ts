@@ -39,13 +39,15 @@ export function runProtection(
 /**
  * The protection a request needs as things are now (Run again): its targets and context as the inventory has
  * them, and whether its command looks destructive. A snippet counts if it is flagged or its script looks it, or
- * if it is gone (main then refuses the run anyway). `labels` are the target hosts, in the order main runs them.
+ * if it is gone (main then refuses the run anyway). For a snippet, `rendered` (main's render of it) is what is
+ * tested, as main does; the raw script only when it is not given. `labels` are the target hosts, in the order main runs them.
  */
 export function requestProtection(
   req: RunRequest,
   environments: readonly EnvironmentMeta[],
   hosts: readonly HostMeta[],
   snippets: readonly SnippetMeta[],
+  rendered?: string,
 ): RunProtection & { labels: string[] } {
   const { target, command } = req
   const context = environments.find((e) => e.id === target.environmentId) ?? null
@@ -54,7 +56,7 @@ export function requestProtection(
   )
   const targets = hosts.filter((h) => ids.has(h.id))
   const snippet = command.kind === 'snippet' ? snippets.find((s) => s.id === command.snippetId) : undefined
-  const destructive = command.kind === 'text' ? DESTRUCTIVE_PATTERN.test(command.text) : !snippet || snippet.destructive || DESTRUCTIVE_PATTERN.test(snippet.script)
+  const destructive = command.kind === 'text' ? DESTRUCTIVE_PATTERN.test(command.text) : !snippet || snippet.destructive || DESTRUCTIVE_PATTERN.test(rendered ?? snippet.script)
   const protection = runProtection(context, environments, targets.map((h) => h.id), targets.length, destructive)
   return { ...protection, labels: targets.map((h) => h.label) }
 }

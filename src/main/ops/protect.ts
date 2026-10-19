@@ -3,10 +3,9 @@
  * Protection belongs to the environments the target hosts serve, not to the context a request names:
  * a run with no context on a prod host still needs the name typed.
  */
-import { DESTRUCTIVE_PATTERN, MULTIPLE_PROTECTED_MESSAGE } from '../../shared/ops'
+import { CONFIRM_MESSAGE, DESTRUCTIVE_PATTERN, MULTIPLE_PROTECTED_MESSAGE } from '../../shared/ops'
 
-export const CONFIRM_MESSAGE = 'Type the environment name to confirm'
-export { MULTIPLE_PROTECTED_MESSAGE }
+export { CONFIRM_MESSAGE, MULTIPLE_PROTECTED_MESSAGE }
 
 export class ProtectError extends Error {
   constructor(
