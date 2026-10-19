@@ -481,7 +481,7 @@ export class ReleaseService {
 
     this.assertCapacity(env)
     // The rollback's own record: each entry rolls its deployed commit back to the commit it had before.
-    const entries = eligible.map((r) => r.services.map((e) => ({ ...e, previousCommit: e.deployedCommit ?? r.deployedCommit, deployedCommit: e.previousCommit })))
+    const entries = eligible.map((r) => r.services.map((e) => ({ ...e, previousCommit: shaOrNull(e.deployedCommit ?? r.deployedCommit), deployedCommit: shaOrNull(e.previousCommit) })))
     const rb = this.d.releases.transaction(() => {
       const rel = this.d.releases.createRelease({
         environmentId: env.id,
@@ -1178,7 +1178,7 @@ export class ReleaseService {
   /** After a rollback: each entry's service goes back to its previousCommit and to the release that deployed it before `before`. */
   private restoreServices(entries: RunService[][], before: string): void {
     this.d.services.recordDeployed(
-      entries.flat().map((e) => ({ serviceId: e.id, commit: e.previousCommit, releaseId: this.d.releases.previousTouching(e.id, before)?.releaseId ?? null })),
+      entries.flat().map((e) => ({ serviceId: e.id, commit: shaOrNull(e.previousCommit), releaseId: this.d.releases.previousTouching(e.id, before)?.releaseId ?? null })),
     )
   }
 
@@ -1350,6 +1350,11 @@ export class ReleaseService {
     this.dirty.add(runId)
     if (this.timer === null) this.timer = this.d.clock.setTimeout(() => this.flush(), EVENT_BATCH_MS)
   }
+}
+
+/** A commit as the record keeps it: a full sha, else null (an old or hand-edited value is not a commit). */
+function shaOrNull(commit: string | null | undefined): string | null {
+  return commit != null && SHA.test(commit) ? commit : null
 }
 
 /** A stored run's selection as planning reads it; a run stored before services has none and is its whole checkout. */

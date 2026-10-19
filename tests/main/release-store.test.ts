@@ -276,6 +276,21 @@ describe('ReleaseStore', () => {
       expect(() => f.releases.setRunServices('nope', [])).toThrow('deployment run not found')
     })
 
+    it('runs.services is shape-checked on read: bad JSON or malformed entries read as none', async () => {
+      const { f, d } = await release()
+      const good = entry('s1', { previousCommit: SA })
+      const { id, runId } = rel(f, d, [good])
+      const put = (v: string) => f.db.prepare('UPDATE deployment_runs SET services = ? WHERE id = ?').run(v, runId)
+      put(JSON.stringify([good, { id: 5, name: 'x', composeService: 'x', previousCommit: null, deployedCommit: null }, { id: 's2', name: 's2' }, 'junk', null, { ...good, id: 's3', previousCommit: 7 }]))
+      expect(f.releases.detail(id).runs[0].services).toEqual([good])
+      put(JSON.stringify([{ ...good, extra: 'dropped' }]))
+      expect(f.releases.detail(id).runs[0].services).toEqual([good])
+      for (const bad of ['{"id":"s1"}', 'not json', '"s1"']) {
+        put(bad)
+        expect(f.releases.detail(id).runs[0].services).toEqual([])
+      }
+    })
+
     it('latestTouching ignores releases that never started', async () => {
       const { f, d } = await release()
       const r1 = rel(f, d, [entry('s1'), entry('s2')])

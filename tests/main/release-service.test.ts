@@ -1175,6 +1175,17 @@ describe('per-service record', () => {
     expect(Object.fromEntries(r.f.releases.latestTouching([esg.id, pay.id]))).toEqual({ [esg.id]: releaseId, [pay.id]: releaseId })
   })
 
+  it('a previous commit that is not a full sha is recorded and restored as null', async () => {
+    const { r, esg } = await platformRig()
+    r.f.services.recordDeployed([{ serviceId: esg.id, commit: 'v1.2', releaseId: null }])
+    const r1 = await release(r, [esg.id], A, B)
+    expect(r.svc.detail(r1).runs[0].services[0]).toMatchObject({ previousCommit: 'v1.2', deployedCommit: B })
+    const { releaseId } = await r.svc.rollback(r1, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(releaseId).runs[0].services.map((e) => [e.previousCommit, e.deployedCommit])).toEqual([[B, null]])
+    expect(last(r, esg.id)).toEqual([null, null])
+  })
+
   it('after rolling back R1, rolling back R1 again is refused naming its services', async () => {
     const { r, esg, pay } = await platformRig()
     const r1 = await release(r, [esg.id, pay.id], A, B)

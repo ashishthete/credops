@@ -459,7 +459,26 @@ function runMeta(r: RunRow): DeploymentRunMeta {
     startedAt: r.started_at,
     finishedAt: r.finished_at,
     steps: JSON.parse(r.steps) as DeploymentRunMeta['steps'],
-    services: JSON.parse(r.services) as RunService[],
+    services: runServices(r.services),
     wholeCheckout: r.whole_checkout === 1,
   }
+}
+
+/** A run's stored services, keeping only well-formed entries; anything else (old rows, bad JSON) reads as none. */
+function runServices(json: string): RunService[] {
+  let raw: unknown
+  try {
+    raw = JSON.parse(json)
+  } catch {
+    return []
+  }
+  if (!Array.isArray(raw)) return []
+  const str = (v: unknown): v is string => typeof v === 'string'
+  const opt = (v: unknown): v is string | null => v === null || typeof v === 'string'
+  return raw.flatMap((e: unknown) => {
+    if (typeof e !== 'object' || e === null) return []
+    const o = e as Record<string, unknown>
+    if (!str(o.id) || !str(o.name) || !str(o.composeService) || !opt(o.previousCommit) || !opt(o.deployedCommit)) return []
+    return [{ id: o.id, name: o.name, composeService: o.composeService, previousCommit: o.previousCommit, deployedCommit: o.deployedCommit }]
+  })
 }
