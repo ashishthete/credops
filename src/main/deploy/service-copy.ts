@@ -134,7 +134,7 @@ export function copyServices(deps: CopyDeps, req: CopyServicesRequest): CopyServ
   return result
 }
 
-/** Names, kinds, compose services, engines and descriptions carry over; URLs, history and tunnels do not. */
+/** Names, kinds, compose services, URL check origins, engines and descriptions carry over; URLs, history and tunnels do not. */
 function copyOf(
   s: ServiceMeta,
   environmentId: string,
@@ -149,6 +149,7 @@ function copyOf(
       description: s.description,
       deploymentId: s.deploymentId === null ? null : newCheckout.get(s.deploymentId)!,
       composeService: s.composeService,
+      urlCheckFrom: s.urlCheckFrom,
     }
   }
   const row = dbRows.get(s.id)!

@@ -85,7 +85,7 @@ describe('copyServices', () => {
     expect(worker).toMatchObject({ name: 'worker', repoPath: '/srv/prod/worker', deployTag: 'worker_prod', position: f.worker.position })
     const byName = new Map(f.services.list(f.prod.id).map((s) => [s.name, s]))
     expect(byName.get('esg')).toMatchObject({ kind: 'service', deploymentId: webapp.id, composeService: 'esg', description: 'Front', position: f.esg.position })
-    expect(byName.get('api')).toMatchObject({ deploymentId: webapp.id, composeService: 'fastapi-app', urlCheckFrom: 'mac', position: f.api.position })
+    expect(byName.get('api')).toMatchObject({ deploymentId: webapp.id, composeService: 'fastapi-app', urlCheckFrom: 'host', position: f.api.position })
     expect(byName.get('jobs')).toMatchObject({ deploymentId: worker.id })
     expect(byName.get('docs')).toMatchObject({ deploymentId: null })
     expect(byName.get('main-db')).toMatchObject({ kind: 'db', dbEngine: 'postgres', dbAddress: 'db.prod.internal', dbPort: 5433, viaHostId: null })
