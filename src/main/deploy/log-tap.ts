@@ -1,5 +1,6 @@
 import type { Client } from 'ssh2'
-import { RUNS_SUBDIR } from './generate'
+import { StringDecoder } from 'node:string_decoder'
+import { MAX_LOG_LINE, RUNS_SUBDIR } from '../../shared/deploy'
 
 /* The live log: `tail -F` on the stream.log the generated playbook appends to. */
 
@@ -20,7 +21,7 @@ export const unavailableLine = (host: string): string => `Live output unavailabl
 export function startTap(link: Client, releaseId: string, onLine: (line: string) => void, opts: { host?: string } = {}): { stop(): void } {
   let stopped = false
   let warned = false
-  let channel: { close(): void } | null = null
+  let channel: { close(): void; signal?(name: string): unknown } | null = null
   const unavailable = (): void => {
     if (stopped || warned) return
     warned = true
@@ -38,14 +39,20 @@ export function startTap(link: Client, releaseId: string, onLine: (line: string)
       if (err || !stream) return unavailable()
       if (stopped) return stream.close()
       channel = stream
+      const decoder = new StringDecoder('utf8')
       let buf = ''
       stream.on('data', (chunk: Buffer) => {
-        buf += chunk.toString('utf8')
+        buf += decoder.write(chunk)
         let i: number
         while ((i = buf.indexOf('\n')) >= 0) {
           const line = buf.slice(0, i).replace(/\r$/, '')
           buf = buf.slice(i + 1)
           if (!stopped) onLine(line)
+        }
+        // A line with no end in sight is emitted cut, not buffered without bound.
+        if (buf.length > MAX_LOG_LINE) {
+          if (!stopped) onLine(`${buf.slice(0, MAX_LOG_LINE - 7)} …(cut)`)
+          buf = ''
         }
       })
       stream.stderr?.on('data', () => {})
@@ -60,6 +67,8 @@ export function startTap(link: Client, releaseId: string, onLine: (line: string)
     stop() {
       stopped = true
       try {
+        // Closing an exec channel without a pty doesn't stop the remote tail; ask it to.
+        channel?.signal?.('TERM')
         channel?.close()
       } catch {
         // already closed

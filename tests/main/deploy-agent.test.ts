@@ -145,6 +145,31 @@ describe('private agent', () => {
     await agent.stop()
   })
 
+  it('kills a hung ssh-add after addTimeoutMs and rejects', async () => {
+    const calls: { file: string; child: Fake }[] = []
+    const spawn: SpawnFn = (file, args) => {
+      const child = new Fake()
+      calls.push({ file, child })
+      if (file.endsWith('ssh-agent')) writeFileSync(args[args.indexOf('-a') + 1], '')
+      else child.stdin.end = () => {} // never exits on its own
+      return child
+    }
+    const agent = await startPrivateAgent({ dir: tmp(), tools, spawn, ttlSec: 60, env: { PATH: '/bin' }, addTimeoutMs: 20 })
+    await expect(agent.add({ privateKey: KEY, passphrase: 'x' })).rejects.toThrow(/timed out/)
+    expect(calls[1].child.killed).toBe('SIGKILL')
+    await agent.stop()
+  })
+
+  it('concurrent stops share one shutdown', async () => {
+    const { spawn, calls } = fakeSpawn()
+    const agent = await startPrivateAgent({ dir: tmp(), tools, spawn, ttlSec: 60, env: { PATH: '/bin' } })
+    const a = agent.stop()
+    const b = agent.stop()
+    expect(a).toBe(b)
+    await a
+    expect(calls[0].child.killed).toBe('SIGTERM')
+  })
+
   it('refuses a directory whose socket path would not fit', async () => {
     const { spawn } = fakeSpawn()
     await expect(startPrivateAgent({ dir: `/tmp/${'x'.repeat(80)}`, tools, spawn, ttlSec: 60, env: { PATH: '/bin' } })).rejects.toThrow(/too long/)

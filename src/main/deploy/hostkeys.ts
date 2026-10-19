@@ -1,6 +1,6 @@
 import type { Client } from 'ssh2'
 import type { ResolvedHost } from '../../shared/inventory'
-import type { PreflightCheck } from '../../shared/deploy'
+import { PREPARE_DIAL_TIMEOUT_MS, type PreflightCheck } from '../../shared/deploy'
 import type { IdentityStore } from '../vault/identity-store'
 import { AuthFailedError, describeError, hopsOf, type connectChain, type ConnectDeps, type HopTarget } from '../ssh/connect'
 import { authPlan, type AuthDeps } from '../ssh/auth'
@@ -76,11 +76,17 @@ export async function prepareHosts(plan: DeployPlan, deps: PrepareDeps): Promise
       const block = (id: 'reachable' | 'auth', message: string): void => {
         checks.push({ id, deploymentId: null, hostId: host.hostId, label: host.label, level: 'block', message })
       }
+      if (deps.signal.aborted) break
       let hops: HopTarget[]
       try {
         hops = hopsOf(deps.resolve(host.hostId), host.label)
       } catch (err) {
         block('reachable', err instanceof Error ? err.message : String(err))
+        continue
+      }
+      // The generated ssh_config dials the plan's hops, so the plan is the one source of truth for addresses.
+      if (hops.length !== host.hops.length || hops.some((h, i) => h.address !== host.hops[i].address || h.port !== host.hops[i].port)) {
+        block('reachable', 'Host settings changed since the plan was built')
         continue
       }
 
@@ -125,7 +131,10 @@ export async function prepareHosts(plan: DeployPlan, deps: PrepareDeps): Promise
             isLive: () => !deps.signal.aborted,
             onLocked: () => {},
           })
-          if (ok) recorded.push({ token: hostToken(hop.address, hop.port), keyType, keyBase64 })
+          if (ok) {
+            const planned = host.hops[hops.indexOf(hop)]
+            recorded.push({ token: hostToken(planned.address, planned.port), keyType, keyBase64 })
+          }
           return ok
         },
         askPassword: async () => null,
@@ -134,7 +143,7 @@ export async function prepareHosts(plan: DeployPlan, deps: PrepareDeps): Promise
           if (state === 'failed') failed = hops[i] ?? null
         },
         keepaliveSec: 15,
-        ...(deps.timeoutMs ? { readyTimeoutMs: deps.timeoutMs } : {}),
+        readyTimeoutMs: deps.timeoutMs ?? PREPARE_DIAL_TIMEOUT_MS,
       }
       try {
         const chain = await deps.connectChain(hops, connectDeps, deps.signal)
@@ -158,5 +167,6 @@ export async function prepareHosts(plan: DeployPlan, deps: PrepareDeps): Promise
     close()
     throw err
   }
+  if (deps.signal.aborted) close()
   return { knownHosts: [...entries.values()], links, keys, userAgentNeeded, checks, close }
 }

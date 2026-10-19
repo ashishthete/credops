@@ -6,7 +6,7 @@ import { socketPathFits } from './ssh-files'
 
 export interface ChildLike {
   pid?: number
-  stdin: { write(chunk: string | Buffer): unknown; end(): unknown }
+  stdin: { write(chunk: string | Buffer): unknown; end(): unknown; on?(ev: 'error', cb: (err: Error) => void): unknown }
   stdout: { on(ev: 'data', cb: (c: Buffer) => void): unknown }
   stderr: { on(ev: 'data', cb: (c: Buffer) => void): unknown }
   on(ev: 'exit', cb: (code: number | null, signal: string | null) => void): unknown
@@ -30,7 +30,7 @@ export interface AgentOptions {
   ttlSec: number
   /** Where PATH comes from; defaults to process.env. */
   env?: Record<string, string | undefined>
-  /** ssh-add can loop on a wrong passphrase; it is killed after this long. Default 10 s. */
+  /** ssh-add can loop on a wrong passphrase; it is killed after this long. Default 30 s (a key with many KDF rounds is slow to decrypt). */
   addTimeoutMs?: number
 }
 
@@ -69,7 +69,7 @@ export async function startPrivateAgent(opts: AgentOptions): Promise<PrivateAgen
 
   const child = spawn(tools.sshAgent, ['-D', '-a', sock], { env: childEnv(base, ['PATH']) })
   let exited = false
-  let stopping = false
+  let stopping: Promise<void> | null = null
   const exitWaiters: (() => void)[] = []
   child.on('exit', () => {
     exited = true
@@ -121,22 +121,26 @@ export async function startPrivateAgent(opts: AgentOptions): Promise<PrivateAgen
         const timer = setTimeout(() => {
           add.kill('SIGKILL')
           reject(new Error('ssh-add timed out; the key or its passphrase was probably not accepted'))
-        }, opts.addTimeoutMs ?? 10_000)
+        }, opts.addTimeoutMs ?? 30_000)
         add.on('exit', () => clearTimeout(timer))
-        add.on('error', (e) => reject(new Error(`ssh-add failed to start: ${scrub(e.message, [privateKey, passphrase ?? ''])}`)))
+        add.on('error', (e) => {
+          clearTimeout(timer)
+          reject(new Error(`ssh-add failed to start: ${scrub(e.message, [privateKey, passphrase ?? ''])}`))
+        })
         add.on('exit', (code) => {
           if (code === 0) resolve()
           else reject(new Error(`ssh-add failed (exit ${code}): ${scrub(err, [privateKey, passphrase ?? ''])}`))
         })
       })
+      // An EPIPE when ssh-add exits early surfaces through its exit code, not as an uncaught error.
+      add.stdin.on?.('error', () => {})
       add.stdin.write(privateKey.endsWith('\n') ? privateKey : `${privateKey}\n`)
       add.stdin.end()
       await done
     },
-    async stop() {
-      if (stopping) return
-      stopping = true
-      await kill()
+    stop() {
+      stopping ??= kill()
+      return stopping
     },
   }
 }

@@ -1,4 +1,4 @@
-import { BACKUP_DIR, COMPOSE_FILE, GIT_REF, MAX_URL, REPO_PATH, VERSION } from '../../shared/deploy'
+import { BACKUP_DIR, COMPOSE_FILE, GIT_REF, MAX_URL, REPO_PATH, RUNS_SUBDIR, VERSION } from '../../shared/deploy'
 import { ALIAS, B64, b64, lockJson, need, sanitizeIdent } from './quote'
 import type { DeployPlan, PlanDeployment, PlanHost } from './runner'
 
@@ -129,8 +129,6 @@ const becomes = (d: PlanDeployment): boolean => d.docker !== 'plain'
  * The user's home even under sudo: root's $HOME would put the log in the wrong place.
  * Without SUDO_USER we are the user, so $HOME is right; no getent, so BusyBox hosts work.
  */
-/** Where a release keeps its remote files, under the login user's home. The live log tap reads the same path. */
-export const RUNS_SUBDIR = '.opsdeck/runs'
 const LOG_SETUP = [
   'U="${SUDO_USER:-}"',
   'if [ -n "$U" ]; then H=$(awk -F: -v u="$U" \'$1==u {print $6; exit}\' /etc/passwd 2>/dev/null); fi',

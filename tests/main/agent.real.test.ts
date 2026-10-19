@@ -43,7 +43,7 @@ describe.skipIf(!have)('real ssh-agent and ssh-add', () => {
     unlinkSync(keyFile) // only the string is left
 
     const real: SpawnFn = (file, args, opts) => spawn(file, args, { env: opts.env, stdio: ['pipe', 'pipe', 'pipe'] }) as never
-    agent = await startPrivateAgent({ dir: agentDir, tools: { sshAgent: BIN.agent, sshAdd: BIN.add }, spawn: real, ttlSec: 120, addTimeoutMs: 3000, env: { PATH: '/usr/bin:/bin', SSH_AUTH_SOCK: undefined } })
+    agent = await startPrivateAgent({ dir: agentDir, tools: { sshAgent: BIN.agent, sshAdd: BIN.add }, spawn: real, ttlSec: 120, addTimeoutMs: 1000, env: { PATH: '/usr/bin:/bin', SSH_AUTH_SOCK: undefined } })
     expect(agent.pid).toBeGreaterThan(0)
 
     await expect(agent.add({ privateKey, passphrase: 'wrong passphrase' })).rejects.toThrow(/ssh-add/)

@@ -16,6 +16,8 @@ export const DISK_WARN_KB = 2 * 1024 * 1024
 export const CANCEL_GRACE_MS = 10000
 export const KILL_GRACE_MS = 5000
 export const PREPARE_DIAL_TIMEOUT_MS = 20000
+/** Where a release keeps its remote files, under the login user's home. The playbook and the live log tap share it. */
+export const RUNS_SUBDIR = '.opsdeck/runs'
 
 // ---- Validation rules (they make generated YAML and shell injection impossible) ----
 export const REPO_PATH = /^(?!.*\.\.)(?!.*\/\/)(?!.*\/\.(?:\/|$))\/[A-Za-z0-9._@+/-]{1,255}(?<!\/)$/
