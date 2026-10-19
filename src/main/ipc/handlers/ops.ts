@@ -1,4 +1,5 @@
 import type { Handlers } from '../../../shared/ipc'
+import type { RunManager } from '../../ops/run-manager'
 import type { SnippetStore } from '../../ops/snippet-store'
 
 type OpsChannel = Extract<keyof Handlers, `snippets:${string}` | `runs:${string}` | `containers:${string}`>
@@ -7,20 +8,20 @@ const notYet = (): never => {
   throw new Error('Not available yet')
 }
 
-// Tasks 5 and 6 replace the run and container stubs with their services.
-export function createOpsHandlers(deps: { snippets: SnippetStore }): Pick<Handlers, OpsChannel> {
-  const { snippets } = deps
+// Task 6 replaces the container stubs with its service.
+export function createOpsHandlers(deps: { snippets: SnippetStore; runs: RunManager }): Pick<Handlers, OpsChannel> {
+  const { snippets, runs } = deps
   return {
     'snippets:list': () => snippets.list(),
     'snippets:create': (input) => snippets.create(input),
     'snippets:update': (id, input) => snippets.update(id, input),
     'snippets:delete': (id) => snippets.delete(id),
     'snippets:render': (id, values) => snippets.render(id, values),
-    'runs:start': notYet,
-    'runs:cancel': notYet,
-    'runs:list': notYet,
-    'runs:get': notYet,
-    'runs:dismiss': notYet,
+    'runs:start': (req) => runs.start(req),
+    'runs:cancel': (id) => runs.cancel(id),
+    'runs:list': () => runs.list(),
+    'runs:get': (id) => runs.get(id),
+    'runs:dismiss': (id) => runs.dismiss(id),
     'containers:list': notYet,
     'containers:action': notYet,
     'containers:logs': notYet,

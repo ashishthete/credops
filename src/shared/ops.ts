@@ -16,6 +16,10 @@ export const MAX_CONCURRENCY = 16
 export const DEFAULT_RUN_TIMEOUT_SEC = 600
 export const MAX_RUN_TIMEOUT_SEC = 3600
 export const RUN_OUTPUT_CHARS = 262_144 // per host: a ring trimmed from the front, with a `truncated` flag
+/** Buffered run output across every run in main; past it the oldest finished runs lose their output (`outputDropped`). */
+export const RUN_OUTPUT_TOTAL_CHARS = 33_554_432
+/** Stderr ranges kept per host; past it the oldest two merge into one. */
+export const MAX_ERR_RANGES = 4096
 export const MAX_RUNS_KEPT = 20 // finished runs beyond this are dropped oldest-first
 export const MAX_ACTIVE_RUNS = 4
 export const OUTPUT_FLUSH_MS = 50
@@ -123,6 +127,8 @@ export interface RunSummary {
   hosts: RunHostMeta[]
   startedAt: string
   endedAt: string | null
+  /** The run finished and its output was dropped to stay within `RUN_OUTPUT_TOTAL_CHARS`; the summary stays. */
+  outputDropped: boolean
 }
 
 export interface RunOutput {

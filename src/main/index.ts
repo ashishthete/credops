@@ -37,6 +37,8 @@ import { ProductStore } from './inventory/product-store'
 import { resolveHost } from './inventory/resolve'
 import { hostMeta } from './inventory/rows'
 import { SshImporter } from './inventory/ssh-import'
+import { ExecLinks } from './ops/exec-links'
+import { RunManager } from './ops/run-manager'
 import { SnippetStore } from './ops/snippet-store'
 import { redact } from './security/redact'
 import { authPlan } from './ssh/auth'
@@ -71,6 +73,8 @@ let environments: EnvironmentStore | null = null
 let products: ProductStore | null = null
 let sessions: SessionManager | null = null
 let tunnelManager: TunnelManager | null = null
+let execLinks: ExecLinks | null = null
+let runManager: RunManager | null = null
 let quitAudited = false
 let stopAutoLock: (() => void) | null = null
 
@@ -208,6 +212,31 @@ if (!app.requestSingleInstanceLock()) {
         emit: (event, payload) => pushEvent(mainWindow, event, payload),
       })
       tunnelManager = runner
+      const hostStore = hosts
+      // Pooled exec-only links for runs and containers, apart from interactive sessions.
+      const links = new ExecLinks({
+        resolve,
+        hostInfo: (hostId) => {
+          const h = hostMeta(inventoryDb, hostId)
+          return { label: h.label, keepaliveSec: h.keepaliveSec, envVars: h.envVars }
+        },
+        connect: connectChain,
+        plan: (identity) => authPlan(identity, authDeps),
+        knownHosts,
+        prompts,
+        isLocked,
+      })
+      execLinks = links
+      const runs = new RunManager({
+        links,
+        snippets,
+        environments: () => envStore.list(),
+        hosts: () => hostStore.list(),
+        isLocked,
+        audit: log,
+        emit: (event, payload) => pushEvent(mainWindow, event, payload),
+      })
+      runManager = runs
       tunnels.onRemoved = (id) => runner.removed(id)
       tunnels.onChanged = (before, after) => runner.changed(before, after)
       // Sessions and tunnels keep running across a lock. Connects still dialling fail (sessions) or
@@ -215,6 +244,8 @@ if (!app.requestSingleInstanceLock()) {
       // this order, so one failing never skips the others.
       service.onLock(() => manager.vaultLocked())
       service.onLock(() => runner.vaultLocked())
+      service.onLock(() => runs.vaultLocked())
+      service.onLock(() => links.vaultLocked())
       service.onLock(() => prompts.cancelAll())
       // Resumes paused tunnels; the first unlock also auto-starts.
       service.onUnlock(() => runner.vaultUnlocked())
@@ -269,7 +300,7 @@ if (!app.requestSingleInstanceLock()) {
           ...createSshImportHandlers(importer),
           ...createTunnelHandlers({ store: tunnels, manager: runner }),
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
-          ...createOpsHandlers({ snippets }),
+          ...createOpsHandlers({ snippets, runs }),
         },
         (url) => isTrustedSender(url, { devServerUrl, rendererFile }),
         { validators: VALIDATORS, knownSecrets },
@@ -295,6 +326,17 @@ if (!app.requestSingleInstanceLock()) {
       sessions?.closeAll('quit')
     } catch (err) {
       console.error('Failed to close sessions on quit:', err)
+    }
+    // Each unfinished run writes its run.finish before the vault's lock row and app.quit.
+    try {
+      runManager?.closeAll()
+    } catch (err) {
+      console.error('Failed to cancel runs on quit:', err)
+    }
+    try {
+      execLinks?.closeAll()
+    } catch (err) {
+      console.error('Failed to close exec links on quit:', err)
     }
     try {
       vault?.lock('quit')

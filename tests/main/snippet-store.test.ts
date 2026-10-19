@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createOpsHandlers } from '../../src/main/ipc/handlers/ops'
+import type { RunManager } from '../../src/main/ops/run-manager'
 import { SnippetStore } from '../../src/main/ops/snippet-store'
 import { MAX_SCRIPT, MAX_SNIPPET_DESCRIPTION, MAX_SNIPPETS, type SnippetInput } from '../../src/shared/ops'
 import { auditRows } from './vault-helpers'
@@ -249,7 +250,7 @@ describe('SnippetStore', () => {
 
   it('the ops handlers route snippets:* to the store', async () => {
     const { store, input } = await setup()
-    const h = createOpsHandlers({ snippets: store })
+    const h = createOpsHandlers({ snippets: store, runs: {} as RunManager })
     const s = (await h['snippets:create'](input())) as Awaited<ReturnType<SnippetStore['create']>>
     expect(await h['snippets:list']()).toEqual([s])
     expect(await h['snippets:render'](s.id, { unit: 'a b' })).toBe("systemctl status 'a b'")
