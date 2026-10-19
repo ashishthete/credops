@@ -15,6 +15,8 @@ export class SessionStore {
     const token = `ohs_${randomBytes(32).toString('base64url')}`
     const now = this.opts.now()
     const expiresAt = new Date(now.getTime() + this.opts.ttlHours * 3600_000).toISOString()
+    // Sweep abandoned sessions; expired rows are otherwise removed only when presented.
+    this.db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(now.toISOString())
     this.db
       .prepare('INSERT INTO sessions(token_hash, oid, created_at, expires_at) VALUES (?,?,?,?)')
       .run(hashToken(token), oid, now.toISOString(), expiresAt)

@@ -19,7 +19,10 @@ export function registerSession(app: FastifyInstance, deps: SessionRouteDeps, au
 
   app.post('/api/v1/session', async (req, reply) => {
     const entraToken = bearerOf(req)
-    if (!entraToken) throw new HubHttpError(401, 'unauthenticated', 'Sign in with Microsoft')
+    if (!entraToken) {
+      deps.audit.append({ action: 'session.denied', outcome: 'denied', actor: null, details: { reason: 'missing' } })
+      throw new HubHttpError(401, 'unauthenticated', 'Sign in with Microsoft')
+    }
     let identity
     try {
       identity = await deps.verifier.verify(entraToken)
@@ -28,7 +31,7 @@ export function registerSession(app: FastifyInstance, deps: SessionRouteDeps, au
       deps.audit.append({ action: 'session.denied', outcome: 'denied', actor: null, details: { reason } })
       throw new HubHttpError(401, 'unauthenticated', 'Microsoft sign-in token was not accepted')
     }
-    const { user, created, bootstrapped, recovery } = deps.directory.upsertOnSignIn(identity)
+    const { user, created, bootstrapped, recovery, previousRole } = deps.directory.upsertOnSignIn(identity)
     const actor = { oid: user.oid, upn: user.upn, name: user.name, role: user.role }
     if (user.status === 'disabled') {
       deps.audit.append({ action: 'session.denied', outcome: 'denied', actor, details: { reason: 'disabled' } })
@@ -44,6 +47,18 @@ export function registerSession(app: FastifyInstance, deps: SessionRouteDeps, au
       targetId: user.oid,
       details: { created, bootstrapped, recovery, pending: user.status === 'pending' },
     })
+    if (bootstrapped && previousRole !== null && previousRole !== 'admin') {
+      // Recovery path: an existing user was promoted. Audit the role change as its own event.
+      deps.audit.append({
+        action: 'user.update',
+        outcome: 'success',
+        actor,
+        targetType: 'user',
+        targetId: user.oid,
+        targetLabel: user.upn,
+        details: { op: 'bootstrap.repromote', from: previousRole, to: 'admin' },
+      })
+    }
     const session: HubSession = { token, expiresAt, user: deps.directory.get(user.oid)! }
     return reply.code(201).send(session)
   })

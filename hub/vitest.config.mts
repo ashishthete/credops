@@ -4,5 +4,5 @@ import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
   root: dirname(fileURLToPath(import.meta.url)),
-  test: { environment: 'node', include: ['tests/**/*.test.ts'] },
+  test: { execArgv: ['--disable-warning=ExperimentalWarning'], environment: 'node', include: ['tests/**/*.test.ts'] },
 })

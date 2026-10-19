@@ -95,15 +95,15 @@ export class Directory {
     return rows.map((r) => this.toUser(r))
   }
 
-  status(oid: string): HubUserStatus {
-    return this.get(oid)?.status ?? 'pending'
+  status(oid: string): HubUserStatus | null {
+    return this.get(oid)?.status ?? null
   }
 
   touch(oid: string): void {
     this.db.prepare('UPDATE users SET last_seen_at = ? WHERE oid = ?').run(this.opts.now().toISOString(), oid)
   }
 
-  upsertOnSignIn(id: HubIdentity & { tid: string }): { user: HubUser; created: boolean; bootstrapped: boolean; recovery: boolean } {
+  upsertOnSignIn(id: HubIdentity & { tid: string }): { user: HubUser; created: boolean; bootstrapped: boolean; recovery: boolean; previousRole: HubRole | null } {
     const now = this.opts.now().toISOString()
     const fa = this.opts.firstAdmin
     const matchesFirstAdmin =
@@ -137,7 +137,7 @@ export class Directory {
           .run(DEFAULT_GROUP_ID, id.oid, now, 'bootstrap')
       }
       this.db.exec('COMMIT')
-      return { user: this.get(id.oid) as HubUser, created: !existing, bootstrapped: bootstrap, recovery }
+      return { user: this.get(id.oid) as HubUser, created: !existing, bootstrapped: bootstrap, recovery, previousRole: existing?.role ?? null }
     } catch (err) {
       if (this.db.isTransaction) this.db.exec('ROLLBACK')
       throw err

@@ -126,3 +126,45 @@ describe('bootstrap recovery', () => {
     expect(hub.audit.list({ actions: ['session.create'] })[0].details).toMatchObject({ bootstrapped: false, recovery: false })
   })
 })
+
+describe('bootstrap re-promotion', () => {
+  it('promotes an existing firstAdmin match only once no enabled admin exists, and audits it', async () => {
+    hub = await testHub({ firstAdmin: { oid: BOB.oid } })
+    // An unrelated enabled admin exists first.
+    hub.db.prepare("INSERT INTO users(oid, tid, upn, name, role, disabled, created_at) VALUES (?,?,?,?, 'admin', 0, 't')").run('dddddddd-dddd-4ddd-8ddd-dddddddddddd', hub.config.entra.tenantId, 'd@x.com', 'D')
+    const first = await hub.signIn(BOB)
+    expect(first.body.user).toMatchObject({ role: 'maintainer', status: 'pending' })
+    expect(hub.audit.list({ actions: ['user.update'] })).toHaveLength(0)
+
+    hub.db.prepare('UPDATE users SET disabled = 1 WHERE oid = ?').run('dddddddd-dddd-4ddd-8ddd-dddddddddddd')
+    const second = await hub.signIn(BOB)
+    expect(second.body.user).toMatchObject({ role: 'admin', status: 'active' })
+    const ev = hub.audit.list({ actions: ['user.update'] })
+    expect(ev).toHaveLength(1)
+    expect(ev[0]).toMatchObject({ targetType: 'user', targetId: BOB.oid, outcome: 'success' })
+    expect(ev[0].details).toEqual({ op: 'bootstrap.repromote', from: 'maintainer', to: 'admin' })
+  })
+
+  it('a missing bearer on sign-in is audited as session.denied missing', async () => {
+    hub = await testHub()
+    const r = await hub.app.inject({ method: 'POST', url: '/api/v1/session' })
+    expect(r.statusCode).toBe(401)
+    expect(hub.audit.list({ actions: ['session.denied'] })[0].details).toEqual({ reason: 'missing' })
+  })
+
+  it('abandoned expired sessions are swept when a session is created', async () => {
+    hub = await testHub()
+    await hub.signIn(ADMIN)
+    hub.db.prepare("UPDATE sessions SET expires_at = '2000-01-01T00:00:00.000Z'").run()
+    expect((await hub.signIn(BOB)).status).toBe(201)
+    expect((hub.db.prepare('SELECT COUNT(*) AS n FROM sessions').get() as { n: number }).n).toBe(1)
+  })
+
+  it('me reports the touched lastSeenAt', async () => {
+    hub = await testHub()
+    const { token } = await hub.signIn(BOB)
+    hub.clock.now = new Date(hub.clock.now.getTime() + 5 * 60_000)
+    const me = (await hub.app.inject({ method: 'GET', url: '/api/v1/me', headers: { authorization: `Bearer ${token}` } })).json()
+    expect(me.lastSeenAt).toBe(hub.clock.now.toISOString())
+  })
+})

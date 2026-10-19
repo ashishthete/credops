@@ -39,6 +39,7 @@ export function makeAuth(deps: AuthDeps) {
     const last = user.lastSeenAt ? Date.parse(user.lastSeenAt) : 0
     if (deps.now().getTime() - last >= TOUCH_EVERY_MS) {
       deps.directory.touch(user.oid)
+      user.lastSeenAt = deps.now().toISOString()
     }
     req.user = user
     req.sessionToken = token
