@@ -122,10 +122,29 @@ describe('ops stores', () => {
     const invoke = await sync()
     await send({ runId: 'r1', kind: 'run', run: summary() })
     await send(at('ab', 2))
+    override(invoke, 'runs:get', () => ({ run: summary(), output: [{ hostId: 'h1', text: 'abcdef', errRanges: [], total: 6 }] }))
     await send(at('ef', 6)) // chars 3-4 were missed
-    await send(at('gh', 8))
     await flush()
+    await send(at('gh', 8))
     expect(invoke.mock.calls.filter((c) => c[0] === 'runs:get')).toHaveLength(1)
+    expect(runOutputStore.get().r1.h1.text).toBe('abcdefgh')
+  })
+
+  it('a gap during a load is not applied and ends with the correct text', async () => {
+    const invoke = await sync()
+    await send({ runId: 'r1', kind: 'run', run: summary() })
+    await send(at('ab', 2))
+    const replies: ((v: unknown) => void)[] = []
+    override(invoke, 'runs:get', () => new Promise((r) => replies.push(r)))
+    const loading = loadRun('r1')
+    await send(at('ef', 6)) // chars 3-4 are in neither the snapshot nor an event yet
+    expect(runOutputStore.get().r1.h1.text).toBe('ab')
+    replies[0]({ run: summary(), output: [{ hostId: 'h1', text: 'ab', errRanges: [], total: 2 }] })
+    await act(async () => void (await loading))
+    expect(replies).toHaveLength(2)
+    replies[1]({ run: summary(), output: [{ hostId: 'h1', text: 'abcdef', errRanges: [], total: 6 }] })
+    await flush()
+    expect(runOutputStore.get().r1.h1).toMatchObject({ text: 'abcdef', total: 6 })
   })
 
   it('a failed load leaves the events applied', async () => {

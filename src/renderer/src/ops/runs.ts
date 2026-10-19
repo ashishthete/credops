@@ -29,6 +29,8 @@ let generation = 0
 /** The latest load per run: a reply from a superseded load is ignored. */
 const loads = new Map<string, number>()
 let loadSeq = 0
+/** Runs that saw a gap while a load was in flight; that load is followed by another. */
+const reloadAgain = new Set<string>()
 let syncUsers = 0
 let stopSync: (() => void) | null = null
 
@@ -36,6 +38,7 @@ let stopSync: (() => void) | null = null
 export function resetOps(): void {
   generation++
   loads.clear()
+  reloadAgain.clear()
   runStore.set(EMPTY)
   runOutputStore.set({})
   resetContainers()
@@ -103,10 +106,15 @@ function applyOutput(runId: string, hostId: string, chunk: string, err: boolean,
   // A snapshot may already hold this chunk, or part of it.
   if (end <= applied) return
   const fresh = end - applied < chunk.length ? chunk.slice(chunk.length - (end - applied)) : chunk
+  // Events were missed (this run's output was never loaded, or an event was lost): applying the chunk would
+  // leave a hole, so the reload fills it, once more after a load already in flight.
+  if (end - chunk.length > applied) {
+    if (loads.has(runId)) reloadAgain.add(runId)
+    else void loadRun(runId)
+    return
+  }
   const next = appendOutput(prev, fresh, err)
   runOutputStore.set({ ...all, [runId]: { ...hosts, [hostId]: { ...next, total: end } } })
-  // Events were missed (this run's output was never loaded, or an event was lost): the reload fills the hole.
-  if (end - chunk.length > applied && !loads.has(runId)) void loadRun(runId)
 }
 
 function applyRunEvent(event: RunEvent): void {
@@ -134,8 +142,10 @@ export async function loadRun(id: string): Promise<void> {
       if ((hosts[o.hostId]?.total ?? 0) <= o.total) hosts[o.hostId] = { text: o.text, errRanges: o.errRanges, total: o.total }
     }
     runOutputStore.set({ ...all, [id]: hosts })
+    if (reloadAgain.delete(id)) void loadRun(id)
   } catch (err) {
     if (loads.get(id) === token) loads.delete(id)
+    reloadAgain.delete(id)
     if (started === generation) fail("Couldn't load the run", err)
   }
 }
