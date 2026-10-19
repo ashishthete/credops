@@ -307,6 +307,20 @@ describe('ContainerService', () => {
     expect(t.containerRows()).toEqual([])
   })
 
+  it('unfollowAll ends every follow and still lets new ones start', async () => {
+    const t = await setup()
+    t.fixture('logs.out', 'x')
+    const a = await t.containers.follow(t.ids['app-1']!, null, 'web-1', 10)
+    const b = await t.containers.follow(t.ids['app-1']!, null, 'web-2', 10)
+    t.containers.unfollowAll()
+    expect(t.ends(a)).toEqual([{ followId: a, ended: true, error: null }])
+    expect(t.ends(b)).toEqual([{ followId: b, ended: true, error: null }])
+    await t.waitFor(() => expect(t.sh.running()).toBe(0))
+    const c = await t.containers.follow(t.ids['app-1']!, null, 'web-1', 10)
+    expect(c).not.toBe(a)
+    t.containers.unfollow(c)
+  })
+
   it("a failed logs or follow never reports the container's own stderr lines", async () => {
     const t = await setup()
     const host = t.ids['app-1']!

@@ -53,7 +53,7 @@ import { IdentityStore } from './vault/identity-store'
 import { KeyStore } from './vault/key-store'
 import { SecretStore } from './vault/secret-store'
 import { VaultService, type QuickUnlockDeps } from './vault/vault-service'
-import { appMenuTemplate, devRendererUrl, forwardVaultLocks, pushEvent, shouldAllowNavigation, windowOptions } from './window'
+import { appMenuTemplate, devRendererUrl, dropOnRendererReset, forwardVaultLocks, pushEvent, shouldAllowNavigation, windowOptions } from './window'
 
 // Keep dev data apart from the packaged app's (same name, same userData otherwise).
 // Must run before anything touches userData, including the single-instance lock.
@@ -97,6 +97,8 @@ function createWindow(): void {
   win.webContents.on('will-navigate', (event, url) => {
     if (!shouldAllowNavigation(win.webContents.getURL(), url)) event.preventDefault()
   })
+
+  dropOnRendererReset(win.webContents, () => containerService?.unfollowAll())
 
   if (devServerUrl) void win.loadURL(devServerUrl)
   else void win.loadFile(join(__dirname, '../renderer/index.html'))

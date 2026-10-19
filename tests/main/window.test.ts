@@ -3,6 +3,7 @@ import type { LockReason } from '../../src/shared/vault'
 import {
   appMenuTemplate,
   devRendererUrl,
+  dropOnRendererReset,
   forwardVaultLocks,
   pushEvent,
   shouldAllowNavigation,
@@ -130,5 +131,29 @@ describe('pushEvent', () => {
     pushEvent({ isDestroyed: () => true, webContents: { send } }, 'session:data', { id: 's', data: 'x', end: 1 })
     pushEvent(null, 'session:data', { id: 's', data: 'x', end: 1 })
     expect(send.mock.calls).toEqual([['session:promptDone', { promptId: 'p' }]])
+  })
+})
+
+describe('dropOnRendererReset', () => {
+  function setup() {
+    const handlers = new Map<string, (...a: unknown[]) => void>()
+    const wc = { on: (e: string, fn: (...a: unknown[]) => void) => void handlers.set(e, fn) }
+    const drop = vi.fn()
+    dropOnRendererReset(wc, drop)
+    return { handlers, drop }
+  }
+
+  it('drops on a reload or a crash of the renderer', () => {
+    const { handlers, drop } = setup()
+    handlers.get('did-start-navigation')!({ isMainFrame: true, isSameDocument: false })
+    handlers.get('render-process-gone')!({}, { reason: 'crashed' })
+    expect(drop).toHaveBeenCalledTimes(2)
+  })
+
+  it('ignores hash-route changes and subframes', () => {
+    const { handlers, drop } = setup()
+    handlers.get('did-start-navigation')!({ isMainFrame: true, isSameDocument: true })
+    handlers.get('did-start-navigation')!({ isMainFrame: false, isSameDocument: false })
+    expect(drop).not.toHaveBeenCalled()
   })
 })

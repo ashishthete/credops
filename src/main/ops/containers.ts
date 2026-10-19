@@ -438,14 +438,19 @@ export class ContainerService {
     this.endFollow(f, null)
   }
 
-  /** Quit: stops every follow and one-shot command; nothing starts afterwards. */
-  closeAll(): void {
-    this.closed = true
-    for (const abort of this.inFlight) abort.abort()
+  /** The renderer reloaded or crashed: its follows have no viewer left, so each is stopped and stops counting. */
+  unfollowAll(): void {
     for (const f of [...this.follows.values()]) {
       f.abort.abort()
       this.endFollow(f, null)
     }
+  }
+
+  /** Quit: stops every follow and one-shot command; nothing starts afterwards. */
+  closeAll(): void {
+    this.closed = true
+    for (const abort of this.inFlight) abort.abort()
+    this.unfollowAll()
   }
 
   private assertOpen(): void {
