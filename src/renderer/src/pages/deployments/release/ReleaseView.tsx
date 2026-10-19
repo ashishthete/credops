@@ -173,6 +173,7 @@ export function ReleaseView({ releaseId }: { releaseId: string }) {
         {eta !== null && <span className="text-[12px] text-muted">{`about ${clock(eta)} left`}</span>}
         {state.status === 'succeeded' && sawRunning.current && <Celebrate key="done" />}
         <span className="ml-auto flex items-center gap-1.5">
+          {/* Main lets a rollback finish once it has begun, so a cancel then would do nothing. */}
           {state.status === 'running' && (
             <Button size="sm" variant="ghost" disabled={cancelling} onClick={cancel}>
               Cancel

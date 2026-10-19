@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion'
 import { Ban, Check, Circle, CircleDashed, LoaderCircle, Undo2, X, TriangleAlert, type LucideIcon } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ChipState } from '../../../deploy/pipeline'
 import { spring, useMotionSafe, useShake } from '../../../ui/motion'
 
@@ -43,6 +43,9 @@ const TONE: Record<ChipView, string> = {
   cancelling: 'border-muted/50 text-muted',
 }
 
+/** The done fill draining away when a step is rolled back. */
+export const DRAIN_TRANSITION = spring
+
 /** `m:ss` from milliseconds. */
 export function clock(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000))
@@ -80,9 +83,12 @@ export function StepChip({
 }) {
   const motionSafe = useMotionSafe()
   const view: ChipView = cancelling && (chip.state === 'running' || chip.state === 'pending') ? 'cancelling' : chip.state
+  // A chip shakes when it turns failed, not when it mounts already failed.
   const [shakes, setShakes] = useState(0)
+  const prevState = useRef(chip.state)
   useEffect(() => {
-    if (chip.state === 'failed') setShakes((n) => n + 1)
+    if (chip.state === 'failed' && prevState.current !== 'failed') setShakes((n) => n + 1)
+    prevState.current = chip.state
   }, [chip.state])
   const scope = useShake<HTMLButtonElement>(shakes)
   const now = useNow(view === 'running')
@@ -112,7 +118,7 @@ export function StepChip({
           className="absolute inset-0 origin-left bg-ok/15"
           initial={{ scaleX: 1 }}
           animate={{ scaleX: 0 }}
-          transition={{ duration: 0.3, ease: 'easeOut' }}
+          transition={DRAIN_TRANSITION}
         />
       )}
       {view === 'ok' && motionSafe ? (

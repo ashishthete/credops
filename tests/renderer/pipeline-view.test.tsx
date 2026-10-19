@@ -4,6 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetReleases } from '../../src/renderer/src/deploy/releases'
 import { registerFailureAction, type FailureActionProps } from '../../src/renderer/src/pages/deployments/release/FailurePanel'
 import { ReleaseView } from '../../src/renderer/src/pages/deployments/release/ReleaseView'
+import { DRAIN_TRANSITION, StepChip } from '../../src/renderer/src/pages/deployments/release/StepChip'
+import type { ChipState } from '../../src/renderer/src/deploy/pipeline'
+import { spring } from '../../src/renderer/src/ui/motion'
 import type { ReleaseDetail, RunEvent, RunEventBody } from '../../src/shared/deploy'
 import { events, healthFailure, OK_RUN, REL, releaseDetail } from './fixtures/release-events'
 import { emitBridgeEvent, mockBridge } from './helpers'
@@ -15,7 +18,22 @@ vi.mock('framer-motion', async (importOriginal) => ({
   useReducedMotion: () => reduced.on,
 }))
 
+// Every counter a chip hands useShake, so a test can tell whether it shook.
+const shakes = vi.hoisted(() => ({ seen: [] as number[] }))
+vi.mock('../../src/renderer/src/ui/motion', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('../../src/renderer/src/ui/motion')>()
+  return {
+    ...mod,
+    useShake: (counter: number) => {
+      shakes.seen.push(counter)
+      return mod.useShake(counter)
+    },
+  }
+})
+
 const flush = () => act(async () => {})
+
+const chipOf = (state: ChipState['state']): ChipState => ({ stepId: 'r1:up', kind: 'up', label: 'Up', state, startedAt: null, durationMs: null, error: null })
 
 /** `release:events` pages `stored` by afterSeq and limit, as main does. */
 function world(stored: RunEvent[], detail: ReleaseDetail = releaseDetail({ status: 'running' })) {
@@ -47,6 +65,7 @@ const chip = (stepId: string) => document.querySelector<HTMLElement>(`[data-step
 
 beforeEach(() => {
   reduced.on = false
+  shakes.seen = []
 })
 
 afterEach(() => {
@@ -158,5 +177,55 @@ describe('pipeline view', () => {
     expect(build.querySelector('[data-icon]')).toHaveAttribute('data-icon', 'undo')
     expect(document.querySelector('[data-reverse]')).toBeNull()
     expect(chip('r3:health')).toHaveAccessibleName('Health on app2: failed')
+  })
+
+  it('every step state has its icon and words', () => {
+    const want: [ChipState['state'], string, string][] = [
+      ['pending', 'pending', 'pending'],
+      ['running', 'spinner', 'running'],
+      ['ok', 'check', 'done'],
+      ['warn', 'triangle', 'warning'],
+      ['failed', 'cross', 'failed'],
+      ['skipped', 'dashed', 'skipped'],
+      ['cancelled', 'slash', 'cancelled'],
+      ['rolled_back', 'undo', 'rolled back'],
+    ]
+    for (const [state, icon, word] of want) {
+      render(<StepChip chip={chipOf(state)} host="app1" />)
+      const el = chip('r1:up')
+      expect(el).toHaveAttribute('data-state', state)
+      expect(el).toHaveAccessibleName(`Up on app1: ${word}`)
+      expect(el.querySelector('[data-icon]')).toHaveAttribute('data-icon', icon)
+      cleanup()
+    }
+    // A cancel asked for shows on the running step until it stops.
+    render(<StepChip chip={chipOf('running')} host={null} cancelling />)
+    expect(chip('r1:up')).toHaveAccessibleName('Up: cancelling')
+  })
+
+  it('a rolled-back step drains its fill quickly under motion', () => {
+    render(<StepChip chip={chipOf('rolled_back')} host="app1" />)
+    expect(document.querySelector('[data-reverse]')).not.toBeNull()
+    // The spring settles well inside the 300 ms limit; no fixed 0.3 s tween.
+    expect(DRAIN_TRANSITION).toEqual(spring)
+  })
+
+  it('a chip shakes when it turns failed, not when it mounts failed', () => {
+    render(<StepChip chip={chipOf('failed')} host="app1" />)
+    expect(Math.max(...shakes.seen)).toBe(0)
+    cleanup()
+    shakes.seen = []
+    const live = render(<StepChip chip={chipOf('running')} host="app1" />)
+    live.rerender(<StepChip chip={chipOf('failed')} host="app1" />)
+    expect(Math.max(...shakes.seen)).toBe(1)
+    // Staying failed does not shake again.
+    live.rerender(<StepChip chip={{ ...chipOf('failed'), durationMs: 5000 }} host="app1" />)
+    expect(Math.max(...shakes.seen)).toBe(1)
+  })
+
+  it('a rollback in progress offers no Cancel, since main lets it finish', async () => {
+    await view(healthFailure(true).slice(0, -3))
+    expect(screen.getByText('rolling back')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument()
   })
 })
