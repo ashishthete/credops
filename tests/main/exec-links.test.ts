@@ -566,6 +566,24 @@ describe('ExecLinks on a vault reset', () => {
     expect(await run(fresh, 'echo again')).toMatchObject({ out: 'again\n', exitCode: 0 })
   })
 
+  it('a link whose teardown throws before its close still has its connection closed', async () => {
+    const t = await setup()
+    const srv = await server()
+    await t.lease(t.host(srv))
+    expect(srv.connections()).toBe(1)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    onTestFinished(() => warn.mockRestore())
+    // Cancelling the link's prompts comes before its close.
+    vi.spyOn(t.broker, 'cancel').mockImplementationOnce(() => {
+      throw new Error('-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----')
+    })
+    t.vault.lock('manual')
+    await t.vault.reset('RESET')
+    await t.waitFor(() => expect(srv.connections()).toBe(0))
+    expect(warn.mock.calls.map((c) => c[0])).toEqual(['Exec link close failed:'])
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('b3BlbnNzaC1rZXk')
+  })
+
   it('one link failing to close never leaves the others open; the error is logged redacted', async () => {
     let throws = 1
     const t = await setup({

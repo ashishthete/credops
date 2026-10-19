@@ -144,7 +144,8 @@ describe('SessionManager.closeAll', () => {
     manager.openLocal({ cols: 80, rows: 24 })
 
     manager.closeAll('reset')
-    expect(kills).toEqual(['pty-1', 'pty-2', 'pty-3'])
+    // pty-1's kill gets a second try after its close threw.
+    expect(kills).toEqual(['pty-1', 'pty-1', 'pty-2', 'pty-3'])
     expect(manager.list()).toEqual([])
     expect(() => manager.attach(a.id)).toThrow('session not found')
     expect(error).toHaveBeenCalledOnce()

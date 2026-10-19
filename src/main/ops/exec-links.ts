@@ -9,6 +9,7 @@ import type { ConnectDeps, HopTarget, connectChain } from '../ssh/connect'
 import type { KnownHostStore } from '../ssh/known-hosts'
 import { verifyWithStore, type PromptBody, type PromptBroker } from '../ssh/prompts'
 import { realTimers, type Timers } from '../tunnels/forward'
+import { quietly } from '../util/teardown'
 
 export interface ExecLinksDeps {
   resolve(hostId: string, environmentId?: string): ResolvedHost
@@ -155,8 +156,13 @@ export class ExecLinks {
         this.closeLink(link)
       } catch (err) {
         console.warn('Exec link close failed:', redact(messageOf(err)))
+        // Unpooled, it is out of quit's reach: each close step still gets its own try.
+        link.state = 'down'
         if (this.links.get(link.key) === link) this.links.delete(link.key)
-        for (const turn of link.channelQueue.splice(0)) turn()
+        quietly(() => this.deps.prompts.cancel(link.prompts))
+        quietly(() => link.abort.abort())
+        quietly(() => link.close?.())
+        for (const turn of link.channelQueue.splice(0)) quietly(() => turn())
       }
     }
   }

@@ -25,6 +25,7 @@ import type { SessionError } from '../../shared/ssh'
 import { VAULT_LOCKED } from '../../shared/vault'
 import { redact } from '../security/redact'
 import { realTimers, type Timers } from '../tunnels/forward'
+import { quietly } from '../util/teardown'
 import { ExecFailure, type ExecLinks } from './exec-links'
 import { execOnce, type ExecResult } from './exec'
 import { OutputRing } from './output-ring'
@@ -317,6 +318,8 @@ export class RunManager {
         this.endNow(run)
       } catch (err) {
         console.warn('Run cancel failed:', redact(err instanceof Error ? err.message : String(err)))
+        // Dropped next, it is out of quit's reach: every host's dial or command still gets aborted.
+        for (const h of run.hosts) quietly(() => h.abort.abort())
       }
       try {
         this.drop(run)

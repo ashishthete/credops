@@ -566,6 +566,30 @@ describe('RunManager on a vault reset', () => {
     expect(t.runs.get(after.id).output[0]!.text).toBe('after\n')
   })
 
+  it('a run whose cancel throws still has every host interrupted', async () => {
+    let boom = false
+    const t = await makeRunSetup({
+      emit: () => {
+        if (!boom) return
+        boom = false
+        throw new Error('-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----')
+      },
+    })
+    const run = t.runs.start({ target: onHosts(t, ['app-1', 'app-2']), command: text('sleep 30'), concurrency: 2 })
+    await t.reached(run, 'app-1', 'running')
+    await t.reached(run, 'app-2', 'running')
+    await t.waitFor(() => expect(t.sh.running()).toBe(2))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    onTestFinished(() => warn.mockRestore())
+
+    // The first host's state event throws, before the second host is aborted.
+    boom = true
+    t.vault.lock('manual')
+    await t.vault.reset('RESET')
+    expect(warn.mock.calls.map((c) => c[0])).toEqual(['Run cancel failed:'])
+    await t.waitFor(() => expect(t.server.signals().filter((s) => s === 'INT')).toHaveLength(2))
+  })
+
   it('one run failing to cancel never keeps the others; the error is logged redacted', async () => {
     let boom = false
     const events: unknown[] = []

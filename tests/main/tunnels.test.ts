@@ -982,6 +982,26 @@ describe('vault reset', () => {
     expect(logged).not.toContain('b3BlbnNzaC1rZXk')
   })
 
+  it('a tunnel whose stop throws before doing anything still has its forward and link closed', async () => {
+    const t = await setup()
+    const srv = await server()
+    const echo = await target()
+    const hostId = t.host(srv)
+    const ids = ['a', 'b'].map((label) => t.tunnel(hostId, { label, targetPort: echo.port }).id)
+    for (const id of ids) t.manager.start(id)
+    const ports = await Promise.all(ids.map(async (id) => (await t.waitState(id, 'up')).boundPort!))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    onTestFinished(() => warn.mockRestore())
+    vi.spyOn(t.manager, 'stop').mockImplementationOnce(() => {
+      throw new Error('-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----')
+    })
+    t.vault.lock('manual')
+    await t.vault.reset('RESET')
+    for (const port of ports) await expect(dial(port)).rejects.toThrow()
+    await t.waitFor(() => expect(srv.connections()).toBe(0))
+    expect(warn.mock.calls.flat().join(' ')).not.toContain('b3BlbnNzaC1rZXk')
+  })
+
   it('lets the first unlock after setup auto-start again', async () => {
     const t = await setup()
     const srv = await server()

@@ -20,6 +20,7 @@ import { VAULT_LOCKED } from '../../shared/vault'
 import { checkContainerRef, containerAuditId, containerExecArgv, shortRef } from '../ops/containers'
 import { shJoin } from '../ops/quote'
 import { redact } from '../security/redact'
+import { quietly } from '../util/teardown'
 import type { AuthPlan } from './auth'
 import { describeError, hopsOf } from './connect'
 import type { ConnectDeps, HopTarget, connectChain } from './connect'
@@ -293,11 +294,20 @@ export class SessionManager {
   closeAll(reason: 'quit' | 'reset'): void {
     for (const s of [...this.sessions.values()]) {
       // One session failing to close never leaves the rest open, and it is forgotten regardless.
+      const attempt = s.attempt
       try {
-        if (s.attempt) this.finish(s, s.attempt, reason, null)
+        if (attempt) this.finish(s, attempt, reason, null)
         this.forget(s)
       } catch (err) {
         console.error('Session close failed:', redact(err instanceof Error ? err.message : String(err)))
+        // Forgotten, it is out of quit's reach: each close step still gets its own try.
+        if (attempt) {
+          quietly(() => attempt.abort.abort())
+          quietly(() => this.cancelAttemptPrompts(attempt))
+        }
+        quietly(() => s.pty?.kill())
+        s.pty = null
+        quietly(() => attempt?.close?.())
         this.sessions.delete(s.meta.id)
       }
     }

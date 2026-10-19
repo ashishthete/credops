@@ -27,6 +27,7 @@ import { describeError, hopsOf } from '../ssh/connect'
 import type { ConnectDeps, HopTarget, connectChain } from '../ssh/connect'
 import type { KnownHostStore } from '../ssh/known-hosts'
 import { verifyWithStore, type PromptBody, type PromptBroker } from '../ssh/prompts'
+import { quietly } from '../util/teardown'
 import { backoffMs, isRetryable } from './backoff'
 import { BindError } from './bind'
 import {
@@ -249,12 +250,14 @@ export class TunnelManager {
   }
 
   stopAll(reason: TunnelStopReason): void {
-    for (const id of [...this.runs.keys()]) {
+    for (const [id, run] of [...this.runs]) {
       // One tunnel failing to stop never leaves the rest running, and it is dropped regardless.
       try {
         this.stop(id, reason)
       } catch (err) {
         this.warn('Tunnel stop failed', err)
+        // Dropped, it is out of quit's reach: its forward still gets closed.
+        this.salvage(run)
         this.runs.delete(id)
       }
     }
@@ -609,6 +612,17 @@ export class TunnelManager {
     run.handle = null
     if (handle) void handle.close().catch(() => {})
     this.unsubscribe(run)
+  }
+
+  /** `release` again step by step, each in its own try; every step is a no-op once done. */
+  private salvage(run: Run): void {
+    run.released = true
+    run.gen++
+    quietly(() => this.clearTimers(run))
+    const handle = run.handle
+    run.handle = null
+    if (handle) quietly(() => void handle.close().catch(() => {}))
+    quietly(() => this.unsubscribe(run))
   }
 
   private clearTimers(run: Run): void {
