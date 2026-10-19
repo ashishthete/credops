@@ -1,6 +1,7 @@
 import {
   Background,
   BackgroundVariant,
+  ControlButton,
   Controls,
   MiniMap,
   ReactFlow,
@@ -24,11 +25,12 @@ import {
   type MouseEvent,
   type Ref,
 } from 'react'
+import { Maximize, Minus, Plus } from 'lucide-react'
 import { useMotionSafe } from '../ui/motion'
 import { EdgeActionsContext, edgeTypes, type EdgeActions, type MapFlowEdge } from './edges'
 import type { MapGraph } from './graph'
 import { VIRTUALIZE_AT, type MapLayout } from './layout'
-import { nodeTypes, type MapFlowNode } from './nodes'
+import { MAC_HANDLE, nodeTypes, type MapFlowNode } from './nodes'
 import { cancelGlide, useGraphTransition } from './useGraphTransition'
 import { MAX_ZOOM, MIN_ZOOM, loadViewport, saveViewport } from './viewport'
 
@@ -104,15 +106,17 @@ function alsoIn(graph: MapGraph): Map<string, string[]> {
 
 /**
  * Flow edges for a graph. Tunnels and jumps draw above the group frames, memberships under them;
- * a membership takes its product's colour.
+ * a membership takes its product's colour. A tunnel from this Mac (L, D) keeps its direction, so it
+ * flows the way traffic does, but enters the host on the Mac's side rather than across its row.
  */
-function flowEdges(graph: MapGraph): MapFlowEdge[] {
+export function flowEdges(graph: MapGraph): MapFlowEdge[] {
   const productColor = new Map(graph.nodes.flatMap((n) => (n.data.kind === 'product' ? [[n.id, n.data.color] as const] : [])))
   return graph.edges.map((e): MapFlowEdge => {
     const base = { id: e.id, source: e.source, target: e.target }
     const d = e.data
     if (d.kind === 'membership') return { ...base, type: 'membership', zIndex: 0, data: { ...d, color: productColor.get(e.source) ?? 'var(--muted)' } }
-    return d.kind === 'jump' ? { ...base, type: 'jump', zIndex: 1, data: { ...d } } : { ...base, type: 'tunnel', zIndex: 1, data: { ...d } }
+    if (d.kind === 'jump') return { ...base, type: 'jump', zIndex: 1, data: { ...d } }
+    return { ...base, ...(e.source === 'mac' && { targetHandle: MAC_HANDLE }), type: 'tunnel', zIndex: 1, data: { ...d } }
   })
 }
 
@@ -410,8 +414,38 @@ export const MapCanvas = memo(function MapCanvas({
       >
         <Background variant={BackgroundVariant.Dots} />
         <MiniMap<MapFlowNode> pannable zoomable nodeColor={nodeColor} />
-        <Controls showInteractive={false} />
+        <Controls showZoom={false} showFitView={false} showInteractive={false}>
+          <ZoomButtons />
+        </Controls>
       </ReactFlow>
     </EdgeActionsContext.Provider>
   )
 })
+
+const zoomBounds = (s: { transform: [number, number, number]; minZoom: number; maxZoom: number }) =>
+  `${s.transform[2] <= s.minZoom}|${s.transform[2] >= s.maxZoom}`
+
+/** React Flow's zoom and fit buttons, with the same labels, moving only as far as reduced motion allows. */
+function ZoomButtons() {
+  const flow = useReactFlow()
+  const motionSafe = useMotionSafe()
+  const [atMin, atMax] = useStore(zoomBounds).split('|').map((x) => x === 'true')
+  return (
+    <>
+      <ControlButton className="react-flow__controls-zoomin" title="Zoom In" aria-label="Zoom In" disabled={atMax} onClick={() => void flow.zoomIn({ duration: motionSafe ? ZOOM_MS : 0 })}>
+        <Plus aria-hidden />
+      </ControlButton>
+      <ControlButton className="react-flow__controls-zoomout" title="Zoom Out" aria-label="Zoom Out" disabled={atMin} onClick={() => void flow.zoomOut({ duration: motionSafe ? ZOOM_MS : 0 })}>
+        <Minus aria-hidden />
+      </ControlButton>
+      <ControlButton
+        className="react-flow__controls-fitview"
+        title="Fit View"
+        aria-label="Fit View"
+        onClick={() => void flow.fitView({ padding: FIT_PADDING, duration: motionSafe ? ZOOM_MS : 0 })}
+      >
+        <Maximize aria-hidden />
+      </ControlButton>
+    </>
+  )
+}

@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { inventoryStore, reloadInventory } from '../../src/renderer/src/inventory/store'
+import { VIEWPORT_KEY } from '../../src/renderer/src/map/viewport'
 import { resetSessions } from '../../src/renderer/src/terminal/sessions'
 import { resetTunnels } from '../../src/renderer/src/tunnels/store'
 import { clearToasts } from '../../src/renderer/src/ui/Toaster'
@@ -245,6 +246,28 @@ describe('map camera and live region', () => {
     await key('ArrowDown')
     expect(cam.setCenter).toHaveBeenCalledTimes(1)
     expect(cam.setCenter.mock.calls[0][2]).toEqual({ zoom: 1, duration: 0 })
+  })
+
+  it('the zoom buttons keep their labels and honour reduced motion', async () => {
+    const press = async () => {
+      // A stored mid-range zoom, so neither zoom button is at its limit.
+      localStorage.setItem(VIEWPORT_KEY, JSON.stringify({ all: { x: 0, y: 0, zoom: 1 } }))
+      await renderMap()
+      cam.fitView.mockClear()
+      for (const name of ['Zoom In', 'Zoom Out', 'Fit View']) fireEvent.click(screen.getByRole('button', { name }))
+    }
+    await press()
+    expect(cam.zoomIn).toHaveBeenLastCalledWith({ duration: 200 })
+    expect(cam.zoomOut).toHaveBeenLastCalledWith({ duration: 200 })
+    expect(cam.fitView).toHaveBeenLastCalledWith(expect.objectContaining({ duration: 200 }))
+    cleanup()
+
+    motion.safe = false
+    await press()
+    expect(cam.zoomIn).toHaveBeenLastCalledWith({ duration: 0 })
+    expect(cam.zoomOut).toHaveBeenLastCalledWith({ duration: 0 })
+    expect(cam.fitView).toHaveBeenLastCalledWith(expect.objectContaining({ duration: 0 }))
+    localStorage.removeItem(VIEWPORT_KEY)
   })
 
   it('a node already in view is not panned to', async () => {

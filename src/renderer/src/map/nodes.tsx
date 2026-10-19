@@ -25,9 +25,12 @@ const REACH_DOT: Record<Reach, string> = { ok: 'bg-ok text-ok', busy: 'bg-warn t
 
 // Edges need an anchor in the DOM, but nobody draws new connections: the handles stay, unseen.
 const HIDDEN: CSSProperties = { opacity: 0, pointerEvents: 'none' }
-const Anchor = ({ type, position }: { type: 'source' | 'target'; position: Position }) => (
-  <Handle type={type} position={position} isConnectable={false} style={HIDDEN} />
+const Anchor = ({ type, position, id }: { type: 'source' | 'target'; position: Position; id?: string }) => (
+  <Handle type={type} position={position} id={id} isConnectable={false} style={HIDDEN} />
 )
+
+/** The host's right-side target: where a tunnel from this Mac (L, D) comes in, from the Mac's side. */
+export const MAC_HANDLE = 'mac'
 
 function Chip({ children, className = '', label }: { children: ReactNode; className?: string; label?: string }) {
   return (
@@ -94,7 +97,7 @@ const HostNode = memo(function HostNode({ data, selected }: NodeProps<Node<FlowD
   const extraVaults = data.vaultNames.length - 2
   return (
     <div
-      className={`flex h-full w-full flex-col justify-center gap-1 rounded-[10px] border bg-surface px-2.5 transition-[box-shadow,border-color,translate] ${
+      className={`flex h-full w-full flex-col justify-center gap-1 rounded-[10px] border bg-surface px-2.5 transition-[box-shadow,border-color,translate] motion-reduce:transition-none ${
         selected ? 'border-accent shadow-[0_0_0_3px_color-mix(in_oklab,var(--accent)_35%,transparent)]' : 'border-line hover:border-muted/40'
       } ${motionSafe ? 'hover:-translate-y-0.5 hover:shadow-pop' : ''}`}
     >
@@ -134,7 +137,9 @@ const HostNode = memo(function HostNode({ data, selected }: NodeProps<Node<FlowD
         </span>
       </div>
       {data.attachments.length > 0 && <div data-attachments className="flex gap-1" />}
+      {/* The left target comes first, so edges that name no handle (jumps) keep using it. */}
       <Anchor type="target" position={Position.Left} />
+      <Anchor type="target" position={Position.Right} id={MAC_HANDLE} />
       <Anchor type="source" position={Position.Right} />
     </div>
   )
