@@ -256,6 +256,7 @@ export function ConfirmDialog({ request, onClose }: { request: ConfirmRequest | 
   const confirm = async () => {
     if (!request || !ready || busy) return
     setBusy(true)
+    setRefused(null)
     let keepOpen = false
     try {
       const out = await request.run()
@@ -298,7 +299,10 @@ export function ConfirmDialog({ request, onClose }: { request: ConfirmRequest | 
             autoFocus
             label={`Type ${r.typeToConfirm} to confirm`}
             value={typed}
-            onChange={(e) => setTyped(e.target.value)}
+            onChange={(e) => {
+              setTyped(e.target.value)
+              setRefused(null)
+            }}
             spellCheck={false}
             autoComplete="off"
           />

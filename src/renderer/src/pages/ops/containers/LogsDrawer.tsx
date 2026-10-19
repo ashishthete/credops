@@ -1,6 +1,6 @@
 import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
 import { X } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { LOG_TAIL_DEFAULT } from '../../../../../shared/ops'
 import { api } from '../../../lib/api'
 import { clearFollow, followStore, onContainerLog } from '../../../ops/containers'
@@ -15,16 +15,16 @@ const TAILS = [100, 200, 1000, 5000] as const
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
 /** Keeps Tab inside the sheet. */
-function trapTab(e: KeyboardEvent<HTMLElement>): void {
-  if (e.key !== 'Tab') return
-  const items = [...e.currentTarget.querySelectorAll<HTMLElement>(FOCUSABLE)]
+function trapTab(e: globalThis.KeyboardEvent, sheet: HTMLElement): void {
+  if (e.key !== 'Tab' || e.defaultPrevented) return
+  const items = [...sheet.querySelectorAll<HTMLElement>(FOCUSABLE)]
   if (!items.length) return
   const first = items[0]
   const last = items[items.length - 1]
   if (e.shiftKey && document.activeElement === first) {
     e.preventDefault()
     last.focus()
-  } else if (!e.shiftKey && (document.activeElement === last || !e.currentTarget.contains(document.activeElement))) {
+  } else if (!e.shiftKey && (document.activeElement === last || !sheet.contains(document.activeElement))) {
     e.preventDefault()
     first.focus()
   }
@@ -58,7 +58,6 @@ export function LogsDrawer({
             role="dialog"
             aria-label={`Logs of ${target.ref}`}
             aria-modal="true"
-            onKeyDown={trapTab}
             initial={motionSafe ? { x: '100%' } : { opacity: 0 }}
             animate={{ x: 0, opacity: 1 }}
             exit={motionSafe ? { x: '100%', transition: fast } : { opacity: 0, transition: fast }}
@@ -102,10 +101,18 @@ function LogsBody({ target, onClose }: { target: { hostId: string; environmentId
     },
     [],
   )
-  // Escape closes from anywhere while the sheet is open.
+  // Escape closes and Tab stays inside, from anywhere, while the sheet is open.
   useEffect(() => {
     if (!present) return
-    const onKey = (e: globalThis.KeyboardEvent) => e.key === 'Escape' && onClose()
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      // Something above the sheet (the palette) may have used the key already.
+      if (e.defaultPrevented) return
+      if (e.key === 'Escape') onClose()
+      else if (e.key === 'Tab') {
+        const sheet = closeRef.current?.closest<HTMLElement>('[role="dialog"]')
+        if (sheet) trapTab(e, sheet)
+      }
+    }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [present, onClose])

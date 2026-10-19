@@ -327,4 +327,37 @@ describe('containers tab review fixes', () => {
     expect(screen.getByRole('button', { name: 'Shell in p' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Shell in p' })).toHaveAttribute('title', expect.stringMatching(/paused/i))
   })
+
+  it('Escape already used by something above the drawer does not close it; Tab is pulled back in', async () => {
+    await renderTab({ 'containers:logs': 'x' })
+    fireEvent.click(screen.getByRole('button', { name: 'Logs of web-1' }))
+    await flush()
+    const outside = document.createElement('input')
+    document.body.append(outside)
+    outside.addEventListener('keydown', (e) => e.key === 'Escape' && e.preventDefault())
+    fireEvent.keyDown(outside, { key: 'Escape' })
+    expect(screen.getByRole('dialog', { name: 'Logs of web-1' })).toBeInTheDocument()
+    outside.focus()
+    fireEvent.keyDown(outside, { key: 'Tab' })
+    expect(screen.getByRole('dialog', { name: 'Logs of web-1' }).contains(document.activeElement)).toBe(true)
+    outside.remove()
+  })
+
+  it('a refusal clears when the typed name changes', async () => {
+    const invoke = await renderTab()
+    const base = invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
+    invoke.mockImplementation(async (ch: string, ...a: unknown[]) => {
+      if (ch === 'containers:action') throw new Error('Type the environment name to confirm')
+      return base(ch, ...a)
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Stop web-1' }))
+    const dialog = screen.getByRole('dialog')
+    fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: 'prod' } })
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Stop container' }))
+    })
+    expect(within(dialog).getByRole('alert')).toBeInTheDocument()
+    fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: 'pro' } })
+    expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument()
+  })
 })
