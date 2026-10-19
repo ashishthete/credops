@@ -27,6 +27,8 @@ let generation = 0
 let written = 0
 let syncUsers = 0
 let stopSync: (() => void) | null = null
+/** Events within this window share one refetch: a running release emits many. */
+const SYNC_DEBOUNCE_MS = 100
 
 export function resetDeploy(): void {
   generation++
@@ -79,9 +81,22 @@ export async function loadSettings(envId: string): Promise<void> {
 export function startDeploySync(): () => void {
   if (syncUsers++ === 0) {
     // loadDeploy also refreshes every cached environment's settings (the current version moves after a release).
-    const off = api.on('deploy:changed', ({ environmentId }) => void loadDeploy([environmentId]))
+    const pending = new Set<string>()
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const off = api.on('deploy:changed', ({ environmentId }) => {
+      pending.add(environmentId)
+      timer ??= setTimeout(() => {
+        timer = null
+        const ids = [...pending]
+        pending.clear()
+        void loadDeploy(ids)
+      }, SYNC_DEBOUNCE_MS)
+    })
     void loadDeploy()
-    stopSync = off
+    stopSync = () => {
+      off()
+      if (timer) clearTimeout(timer)
+    }
   }
   let left = false
   return () => {

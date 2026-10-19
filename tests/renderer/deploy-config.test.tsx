@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -7,7 +7,7 @@ import { inventoryStore, loadInventory } from '../../src/renderer/src/inventory/
 import { DeploymentsPage } from '../../src/renderer/src/pages/deployments/DeploymentsPage'
 import { Toaster, clearToasts } from '../../src/renderer/src/ui/Toaster'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
-import { defaultVault, deploymentMeta, envSettings, environment, host, mockBridge, product, toolingOk } from './helpers'
+import { defaultVault, deploymentMeta, envSettings, environment, host, emitBridgeEvent, mockBridge, product, toolingOk } from './helpers'
 
 // framer-motion caches matchMedia, so reduced motion is driven through its hook directly.
 const reduced = vi.hoisted(() => ({ on: false }))
@@ -325,5 +325,18 @@ describe('deployments page', () => {
     for (const li of screen.getAllByRole('listitem')) {
       expect(li.getAttribute('style') ?? '').not.toMatch(/transform/)
     }
+  })
+
+  it('a burst of deploy:changed events shares one refetch', async () => {
+    const invoke = world({ 'deploy:list': [deploymentMeta({ id: 'd1', name: 'api', position: 0 })] })
+    await open()
+    await screen.findByText('api')
+    const before = calls(invoke, 'deploy:list').length
+    act(() => {
+      for (let i = 0; i < 5; i++) emitBridgeEvent('deploy:changed', { environmentId: 'e1' })
+    })
+    await waitFor(() => expect(calls(invoke, 'deploy:list').length).toBe(before + 1))
+    await new Promise((r) => setTimeout(r, 250))
+    expect(calls(invoke, 'deploy:list').length).toBe(before + 1)
   })
 })
