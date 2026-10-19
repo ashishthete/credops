@@ -50,6 +50,7 @@ import { PromptBroker } from './ssh/prompts'
 import { spawnLocalShell } from './ssh/local-shell'
 import { SessionManager } from './ssh/sessions'
 import { AutoLock } from './vault/auto-lock'
+import { wireVaultHooks } from './vault/hooks'
 import { IdentityStore } from './vault/identity-store'
 import { KeyStore } from './vault/key-store'
 import { SecretStore } from './vault/secret-store'
@@ -261,26 +262,12 @@ if (!app.requestSingleInstanceLock()) {
       containerService = containers
       tunnels.onRemoved = (id) => runner.removed(id)
       tunnels.onChanged = (before, after) => runner.changed(before, after)
-      // On lock, in this order: sessions fail their dials and tunnels mark theirs to pause (both keep
-      // what is connected); runs end their queued and dialling hosts as `locked` while running
-      // commands finish; exec links fail their dials as `locked` and close idle links; then every
-      // prompt left is cancelled. Runs go before links so each dial a run aborts is already marked
-      // `locked` for that host. Separate listeners, so one failing never skips the others. Quit
-      // (before-quit) stops tunnels, closes sessions, cancels runs (writing their run.finish), stops
-      // container log follows, closes exec links, and only then locks the vault. Container follows
-      // have no lock listener: one already open keeps streaming through a lock (new calls are
-      // refused while locked), like a connected session.
-      service.onLock(() => manager.vaultLocked())
-      service.onLock(() => runner.vaultLocked())
-      service.onLock(() => runs.vaultLocked())
-      service.onLock(() => links.vaultLocked())
-      service.onLock(() => prompts.cancelAll())
-      // Resumes paused tunnels; the first unlock also auto-starts.
-      service.onUnlock(() => runner.vaultUnlocked())
-      // A reset needs no password, so nothing the old one guarded may survive it: every session
-      // (local shells too, for their scrollback) and every tunnel goes before the gate opens.
-      service.onReset(() => manager.closeAll('reset'))
-      service.onReset(() => runner.vaultReset())
+      // Lock, unlock and reset hooks (order and reasons in vault/hooks.ts). Quit (before-quit) stops
+      // tunnels, closes sessions, cancels runs (writing their run.finish), stops container log
+      // follows, closes exec links, and only then locks the vault. Container follows have no lock
+      // listener: one already open keeps streaming through a lock (new calls are refused while
+      // locked), like a connected session.
+      wireVaultHooks(service, { sessions: manager, tunnels: runner, runs, links, prompts })
       stopAutoLock = new AutoLock({
         idleSeconds: () => powerMonitor.getSystemIdleTime(),
         minutes: () => service.autoLockMinutes(),

@@ -27,6 +27,7 @@ import { ForwardError, startLocal, startRemote, type ForwardHandle } from '../..
 import { TunnelManager, type TunnelManagerDeps } from '../../src/main/tunnels/manager'
 import { startDynamic } from '../../src/main/tunnels/socks5'
 import { TunnelStore } from '../../src/main/tunnels/tunnel-store'
+import { wireVaultHooks, type VaultHookTargets } from '../../src/main/vault/hooks'
 import { makeInventory } from './inventory-helpers'
 import { generateKey, startServer, type ServerOpts, type TestServer } from './ssh-server'
 import { TUNNEL_USER, echoServer, manualTimers, type EchoServer } from './tunnel-helpers'
@@ -107,7 +108,16 @@ function stubbableEngines() {
   return { ctl, engines }
 }
 
+const idle = { vaultLocked() {}, closeAll() {} }
+
+/** wireVaultHooks targets with these tunnels and prompts; the rest idle unless given. */
+function hookTargets(tunnels: TunnelManager, prompts: PromptBroker, sessions: VaultHookTargets['sessions'] = idle): VaultHookTargets {
+  return { sessions, tunnels, runs: idle, links: idle, prompts }
+}
+
 interface SetupOpts {
+  /** false: leave the vault hooks unwired. */
+  wire?: boolean
   deps?: Partial<TunnelManagerDeps>
   whoHolds?: (port: number) => Promise<PortHolder | null>
   plan?: () => AuthPlan
@@ -147,11 +157,8 @@ async function setup(opts: SetupOpts = {}) {
   })
   store.onRemoved = (id) => manager.removed(id)
   store.onChanged = (before, after) => manager.changed(before, after)
-  // The same order as src/main/index.ts.
-  f.vault.onLock(() => manager.vaultLocked())
-  f.vault.onLock(() => broker.cancelAll())
-  f.vault.onUnlock(() => manager.vaultUnlocked())
-  f.vault.onReset(() => manager.vaultReset())
+  // The app's own wiring; a test that needs live sessions wires them itself.
+  if (opts.wire !== false) wireVaultHooks(f.vault, hookTargets(manager, broker))
   onTestFinished(() => manager.stopAll('quit'))
 
   let hostN = 0
@@ -885,7 +892,7 @@ describe('TunnelManager', () => {
 
 describe('vault reset', () => {
   it('closes every session and stops every tunnel, paused ones too, before reset() resolves', async () => {
-    const t = await setup()
+    const t = await setup({ wire: false })
     const srv = await server()
     const unknown = await server()
     const echo = await target()
@@ -901,8 +908,7 @@ describe('vault reset', () => {
       isLocked: () => !t.vault.isUnlocked(),
       emit: () => {},
     })
-    // The same order as src/main/index.ts: sessions first.
-    t.vault.onReset(() => sessions.closeAll('reset'))
+    wireVaultHooks(t.vault, hookTargets(t.manager, t.broker, sessions))
     onTestFinished(() => sessions.closeAll('quit'))
 
     const hostId = t.host(srv)
