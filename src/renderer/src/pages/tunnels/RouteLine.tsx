@@ -45,24 +45,32 @@ type NodeRole = 'local' | 'host' | 'target'
 interface RouteNode {
   role: NodeRole
   label: string
+  /** The `:port` tail of the label; it stays visible while the part before it truncates. */
+  port: string
   icon: LucideIcon
+}
+
+/** A node for `host:port`, split so the port survives truncation. */
+function addressNode(role: NodeRole, address: string, port: number | string, icon: LucideIcon): RouteNode {
+  const label = hostPort(address, port)
+  return { role, label, port: `:${port}`, icon }
 }
 
 /** The three stops traffic passes, in the direction it flows. */
 function routeNodes({ type, hostLabel, bindAddress, bindPort, targetHost, targetPort }: RouteLineProps): RouteNode[] {
-  const target = targetHost === null ? '*' : hostPort(targetHost, targetPort ?? '')
+  const targetIcon = type === 'D' ? Globe : Target
+  const target: RouteNode =
+    targetHost === null
+      ? { role: 'target', label: '*', port: '', icon: targetIcon }
+      : addressNode('target', targetHost, targetPort ?? '', targetIcon)
   if (type === 'R') {
     return [
-      { role: 'host', label: `${hostLabel}:${bindPort}`, icon: Server },
-      { role: 'local', label: 'this Mac', icon: Laptop },
-      { role: 'target', label: target, icon: Target },
+      { role: 'host', label: `${hostLabel}:${bindPort}`, port: `:${bindPort}`, icon: Server },
+      { role: 'local', label: 'this Mac', port: '', icon: Laptop },
+      target,
     ]
   }
-  return [
-    { role: 'local', label: hostPort(bindAddress, bindPort), icon: Laptop },
-    { role: 'host', label: hostLabel, icon: Server },
-    { role: 'target', label: target, icon: type === 'D' ? Globe : Target },
-  ]
+  return [addressNode('local', bindAddress, bindPort, Laptop), { role: 'host', label: hostLabel, port: '', icon: Server }, target]
 }
 
 type Look = 'idle' | 'live' | 'wait' | 'bad' | 'dim'
@@ -100,7 +108,7 @@ function nodeLook(role: NodeRole, state: TunnelState, broken: NodeRole): Look {
 
 /**
  * `127.0.0.1:5433 → db → localhost:5432`, drawn as three nodes and two connectors. Up: the dashes
- * stream, faster with more traffic. Connecting or retrying: amber and still. Failed: red, with a
+ * stream, faster with more traffic. Connecting: amber, the server pulsing. Retrying: amber and still. Failed: red, with a
  * break glyph on the side that failed. Reduced motion keeps colour and text only.
  */
 export function RouteLine(props: RouteLineProps) {
@@ -133,7 +141,8 @@ export function RouteLine(props: RouteLineProps) {
           <Node
             node={node}
             look={nodeLook(node.role, state, broken)}
-            pulsing={motionSafe && node.role === 'host' && (state === 'connecting' || state === 'retrying')}
+            // Only while dialling; a retry backoff or a locked pause stays amber and still.
+            pulsing={motionSafe && node.role === 'host' && state === 'connecting'}
           />
         </div>
       ))}
@@ -152,7 +161,7 @@ function Node({ node, look, pulsing }: { node: RouteNode; look: Look; pulsing: b
   const motionSafe = useMotionSafe()
   const Icon = node.icon
   return (
-    <div className="relative flex w-[84px] min-w-0 shrink-0 flex-col items-center gap-1.5" data-node={node.role}>
+    <div className="relative flex w-[88px] min-w-0 shrink-0 flex-col items-center gap-1.5" data-node={node.role}>
       <motion.span
         aria-hidden
         className={`relative grid size-7 place-items-center rounded-full border transition-colors duration-300 ${NODE[look]} ${pulsing ? 'od-pulse' : ''}`}
@@ -166,9 +175,14 @@ function Node({ node, look, pulsing }: { node: RouteNode; look: Look; pulsing: b
       </motion.span>
       <span
         title={node.label}
-        className={`max-w-full truncate font-mono text-[11px] transition-colors ${look === 'bad' ? 'text-err' : look === 'idle' || look === 'dim' ? 'text-muted' : 'text-fg/90'}`}
+        className={`flex max-w-full font-mono text-[11px] transition-colors ${look === 'bad' ? 'text-err' : look === 'idle' || look === 'dim' ? 'text-muted' : 'text-fg/90'}`}
       >
-        {node.label}
+        <span className="min-w-0 truncate">{node.label.slice(0, node.label.length - node.port.length)}</span>
+        {node.port && (
+          <span data-port className="shrink-0">
+            {node.port}
+          </span>
+        )}
       </span>
     </div>
   )

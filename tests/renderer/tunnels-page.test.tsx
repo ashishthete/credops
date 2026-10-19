@@ -139,6 +139,44 @@ describe('tunnels page', () => {
     expect(calls(invoke, 'tunnel:stop')).toEqual([['tunnel:stop', 't1']])
   })
 
+  it('stop while connecting cancels the start', async () => {
+    const invoke = await renderPage([tunnelMeta({ id: 't1', label: 'pg', hostId: 'h-db' })], [tunnelRuntime({ id: 't1', state: 'stopped' })])
+    state(tunnelRuntime({ id: 't1', state: 'connecting', upAt: null }))
+    const toggle = within(card('pg')).getByRole('switch', { name: 'Run pg' })
+    // The spinner shows, but the switch still takes the click.
+    expect(toggle).toHaveAttribute('aria-busy', 'true')
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(toggle)
+    await flush()
+    expect(calls(invoke, 'tunnel:stop')).toEqual([['tunnel:stop', 't1']])
+
+    // Retrying (backing off) can be stopped too.
+    state(tunnelRuntime({ id: 't1', state: 'retrying', failures: 1, retryAt: new Date(Date.now() + 4000).toISOString() }))
+    fireEvent.click(toggle)
+    await flush()
+    expect(calls(invoke, 'tunnel:stop')).toHaveLength(2)
+  })
+
+  it('a second click waits for the request in flight', async () => {
+    let reply: (v: unknown) => void = () => {}
+    const invoke = await renderPage([tunnelMeta({ id: 't1', label: 'pg', hostId: 'h-db' })], [], {
+      'tunnel:start': new Promise((resolve) => (reply = resolve)),
+    })
+    const toggle = within(card('pg')).getByRole('switch', { name: 'Run pg' })
+    fireEvent.click(toggle)
+    await flush()
+    state(tunnelRuntime({ id: 't1', state: 'connecting', upAt: null }))
+    fireEvent.click(toggle)
+    await flush()
+    expect(calls(invoke, 'tunnel:start')).toHaveLength(1)
+    expect(calls(invoke, 'tunnel:stop')).toEqual([])
+
+    await act(async () => reply(null))
+    fireEvent.click(toggle)
+    await flush()
+    expect(calls(invoke, 'tunnel:stop')).toEqual([['tunnel:stop', 't1']])
+  })
+
   it('up shows how long it has been up', async () => {
     const upAt = new Date(Date.now() - 12 * 60_000).toISOString()
     await renderPage([tunnelMeta({ id: 't1', label: 'pg', hostId: 'h-db' })], [tunnelRuntime({ id: 't1', upAt })])
@@ -159,6 +197,64 @@ describe('tunnels page', () => {
     expect(within(card('pg')).getByText('Retrying in 4 s (attempt 2 of 5)')).toBeInTheDocument()
     await tick(1000)
     expect(within(card('pg')).getByText('Retrying in 3 s (attempt 2 of 5)')).toBeInTheDocument()
+  })
+
+  it('the first retrying frame counts down from now, not from mount', async () => {
+    await renderPage([tunnelMeta({ id: 't1', label: 'pg', hostId: 'h-db' })], [tunnelRuntime({ id: 't1', state: 'stopped' })])
+    state(tunnelRuntime({ id: 't1', state: 'connecting', upAt: null }))
+    // Ten minutes pass with no clock running (stopped and connecting have none).
+    await tick(10 * 60_000)
+
+    // Every text the countdown ever showed, including any frame an effect later corrected
+    // (a corrected text node keeps its first value as the record's oldValue).
+    const observer = new MutationObserver(() => {})
+    observer.observe(card('pg'), { subtree: true, childList: true, characterData: true, characterDataOldValue: true })
+    state(
+      tunnelRuntime({
+        id: 't1',
+        state: 'retrying',
+        failures: 1,
+        retryAt: new Date(Date.now() + 4000).toISOString(),
+        error: { code: 'refused', message: 'Connection refused' },
+      }),
+    )
+    // Taken before any await, so the observer's own callback cannot drain them first.
+    const seen = observer.takeRecords().flatMap((r) => [r.oldValue ?? '', ...Array.from(r.addedNodes, (n) => n.textContent ?? '')])
+    observer.disconnect()
+    seen.push(card('pg').textContent ?? '')
+
+    expect(within(card('pg')).getByText('Retrying in 4 s (attempt 1 of 5)')).toBeInTheDocument()
+    const counts = seen.flatMap((t) => [...t.matchAll(/Retrying in (\d+) s/g)].map((m) => Number(m[1])))
+    expect(counts.length).toBeGreaterThan(0)
+    expect(Math.max(...counts)).toBeLessThanOrEqual(4)
+  })
+
+  it('announces failing and waiting for unlock once, not the countdown', async () => {
+    await renderPage([tunnelMeta({ id: 't1', label: 'pg', hostId: 'h-db' })], [tunnelRuntime({ id: 't1', state: 'stopped' })])
+    const live = within(card('pg')).getByTestId('tunnel-announce')
+    expect(live).toHaveAttribute('aria-live', 'polite')
+    expect(live).toHaveTextContent('')
+
+    state(tunnelRuntime({ id: 't1', state: 'retrying', failures: 1, retryAt: new Date(Date.now() + 4000).toISOString() }))
+    await tick(2000)
+    expect(live).toHaveTextContent('')
+
+    state(tunnelRuntime({ id: 't1', state: 'retrying', retryAt: null, error: { code: 'locked', message: 'Waiting for unlock' } }))
+    expect(live).toHaveTextContent('pg is waiting for unlock')
+
+    state(tunnelRuntime({ id: 't1', state: 'failed', error: { code: 'auth', message: 'Authentication failed' } }))
+    expect(live).toHaveTextContent('pg failed: Authentication failed')
+    // The countdown itself is never in a live region.
+    expect(card('pg').querySelectorAll('[aria-live]')).toHaveLength(1)
+  })
+
+  it('the server node pulses only while connecting', async () => {
+    await renderPage([tunnelMeta({ id: 't1', label: 'pg', hostId: 'h-db' })], [tunnelRuntime({ id: 't1', state: 'connecting', upAt: null })])
+    expect(card('pg').querySelector('[data-node="host"] .od-pulse')).not.toBeNull()
+    state(tunnelRuntime({ id: 't1', state: 'retrying', failures: 1, retryAt: new Date(Date.now() + 4000).toISOString() }))
+    expect(card('pg').querySelector('.od-pulse')).toBeNull()
+    state(tunnelRuntime({ id: 't1', state: 'retrying', retryAt: null, error: { code: 'locked', message: 'Waiting for unlock' } }))
+    expect(card('pg').querySelector('.od-pulse')).toBeNull()
   })
 
   it('locked pause shows waiting for unlock', async () => {
@@ -307,6 +403,23 @@ describe('tunnels page', () => {
     await renderPage([tunnelMeta({ id: 't1', label: 'app', hostId: 'h-db', type: 'R', bindPort: 9000, targetHost: 'localhost', targetPort: 3000 })])
     const route = within(card('app')).getByRole('img', { name: /route/i })
     expect(route.textContent).toMatch(/db:9000.*this Mac.*localhost:3000/)
+  })
+
+  it('node labels keep the port when the address truncates', async () => {
+    await renderPage([
+      tunnelMeta({ id: 't1', label: 'pg', hostId: 'h-db', bindAddress: '127.0.0.1', bindPort: 5433, targetHost: 'localhost', targetPort: 5432 }),
+      tunnelMeta({ id: 't2', label: 'app', hostId: 'h-db', type: 'R', bindPort: 9000, targetHost: 'localhost', targetPort: 3000 }),
+      tunnelMeta({ id: 't3', label: 'v6', hostId: 'h-db', bindAddress: '::1', bindPort: 8443 }),
+    ])
+    const port = (label: string, role: string) => card(label).querySelector(`[data-node="${role}"] [data-port]`)
+    expect(port('pg', 'local')).toHaveTextContent(':5433')
+    expect(port('pg', 'local')?.className).toContain('shrink-0')
+    expect(port('pg', 'local')?.previousElementSibling).toHaveTextContent(/^127\.0\.0\.1$/)
+    expect(port('pg', 'local')?.previousElementSibling?.className).toContain('truncate')
+    expect(port('pg', 'target')).toHaveTextContent(':5432')
+    expect(port('app', 'host')).toHaveTextContent(':9000')
+    expect(port('v6', 'local')?.previousElementSibling).toHaveTextContent('[::1]')
+    expect(port('pg', 'host')).toBeNull()
   })
 
   it('L and SOCKS routes', async () => {

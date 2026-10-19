@@ -319,6 +319,15 @@ describe('Switch', () => {
     expect(sw).toHaveAttribute('aria-checked', 'false')
     expect(sw).toHaveAttribute('aria-busy', 'true')
   })
+
+  it('a pending Switch shows the spinner but still takes clicks', async () => {
+    const onChange = vi.fn()
+    render(<Switch checked onChange={onChange} label="x" pending />)
+    const sw = screen.getByRole('switch')
+    expect(sw).toHaveAttribute('aria-busy', 'true')
+    await userEvent.setup().click(sw)
+    expect(onChange).toHaveBeenCalledWith(false)
+  })
 })
 
 describe('Sparkline', () => {

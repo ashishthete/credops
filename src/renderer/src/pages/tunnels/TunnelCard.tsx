@@ -78,6 +78,8 @@ export const TunnelCard = memo(function TunnelCard({ id, hostLabel, hostAddress,
   const state = runtime?.state ?? 'stopped'
   const transitions = useTransitions(state)
   const shake = useShake<HTMLDivElement>(transitions.failed)
+  // A start or stop request awaiting its reply; only this blocks the switch, so connecting can be cancelled.
+  const [inFlight, setInFlight] = useState(false)
   if (!meta) return null
 
   const glow = GLOW[state]
@@ -136,7 +138,9 @@ export const TunnelCard = memo(function TunnelCard({ id, hostLabel, hostAddress,
             </span>
           )}
           {exposed && (
-            <span title={meta.type === 'R' ? "Exposed on the server's network" : `Reachable by anyone who can reach ${meta.bindAddress}`}>
+            <span
+              className="shrink-0"
+              title={meta.type === 'R' ? "Exposed on the server's network" : `Reachable by anyone who can reach ${meta.bindAddress}`}>
               <Badge tone="warn">Exposed</Badge>
             </span>
           )}
@@ -144,8 +148,12 @@ export const TunnelCard = memo(function TunnelCard({ id, hostLabel, hostAddress,
             <Switch
               label={`Run ${meta.label}`}
               checked={isRunning(state)}
-              busy={state === 'connecting'}
-              onChange={(on) => void (on ? startTunnel(id) : stopTunnel(id))}
+              busy={inFlight}
+              pending={state === 'connecting'}
+              onChange={(on) => {
+                setInFlight(true)
+                void (on ? startTunnel(id) : stopTunnel(id)).finally(() => setInFlight(false))
+              }}
             />
             <RowMenu
               label={`Actions for ${meta.label}`}
@@ -173,6 +181,9 @@ export const TunnelCard = memo(function TunnelCard({ id, hostLabel, hostAddress,
 
         <div className="flex min-h-7 flex-wrap items-center justify-between gap-x-4 gap-y-2">
           <StatusLine runtime={runtime} />
+          <p aria-live="polite" aria-atomic className="sr-only" data-testid="tunnel-announce">
+            {announcement(meta.label, runtime)}
+          </p>
           {(state === 'up' || state === 'retrying') && <Throughput id={id} label={meta.label} live={state === 'up'} />}
         </div>
       </div>
@@ -195,13 +206,27 @@ function useTransitions(state: TunnelState) {
   return counts
 }
 
-/** The clock, re-read every `everyMs` (never when null) and whenever `key` changes. */
-function useNow(everyMs: number | null, key: unknown): number {
-  const [now, setNow] = useState(() => Date.now())
+/** What a screen reader hears: set once on failing or pausing for unlock, not on every countdown tick. */
+function announcement(label: string, runtime: TunnelRuntime | undefined): string {
+  if (runtime?.state === 'failed') return `${label} failed: ${runtime.error?.message ?? 'the tunnel failed.'}`
+  if (runtime?.state === 'retrying' && runtime.error?.code === 'locked') return `${label} is waiting for unlock`
+  return ''
+}
+
+/**
+ * The clock, re-read every `everyMs` (never when null) and whenever `key` changes. A new key reads the
+ * clock during render, so the first frame of a new state never shows a time from long ago.
+ */
+function useNow(everyMs: number | null, key: string): number {
+  const [read, setRead] = useState(() => ({ key, now: Date.now() }))
+  let now = read.now
+  if (read.key !== key) {
+    now = Date.now()
+    setRead({ key, now })
+  }
   useEffect(() => {
-    setNow(Date.now())
     if (everyMs === null) return
-    const timer = setInterval(() => setNow(Date.now()), everyMs)
+    const timer = setInterval(() => setRead((r) => ({ ...r, now: Date.now() })), everyMs)
     return () => clearInterval(timer)
   }, [everyMs, key])
   return now
@@ -293,13 +318,14 @@ function Throughput({ id, label, live }: { id: string; label: string; live: bool
   const stats = useTunnelStats(id)
   if (!stats) return null
   const { rateIn, rateOut, connections } = stats.last
+  const text = `↓ ${formatRate(rateIn)} ↑ ${formatRate(rateOut)} · ${plural(connections, 'connection')}`
   const total = stats.inSamples.map((v, i) => v + (stats.outSamples[i] ?? 0))
   return (
-    <div className="flex shrink-0 items-center gap-2.5">
-      <span className="font-mono text-[11px] text-muted tabular-nums">
-        {`↓ ${formatRate(rateIn)} ↑ ${formatRate(rateOut)} · ${plural(connections, 'connection')}`}
+    <div className="flex min-w-0 items-center gap-2.5">
+      <span title={text} className="min-w-0 truncate font-mono text-[11px] text-muted tabular-nums">
+        {text}
       </span>
-      <Sparkline values={total} tone={live ? 'success' : 'warn'} label={`Throughput of ${label}`} className="h-6 w-20" />
+      <Sparkline values={total} tone={live ? 'success' : 'warn'} label={`Throughput of ${label}`} className="h-6 w-20 shrink-0" />
     </div>
   )
 }
