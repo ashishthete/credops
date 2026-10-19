@@ -183,6 +183,7 @@ function OpenSessions() {
             type="button"
             onClick={() => navigate('/terminals')}
             aria-current={active ? 'page' : undefined}
+            aria-label={count > 0 ? `Open sessions, ${count} live` : 'Open sessions'}
             className={`relative mb-1 flex h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-[13px] font-medium transition-colors select-none ${
               active ? 'bg-accent/12 text-fg shadow-[inset_2px_0_0_0_var(--accent)]' : 'text-muted hover:bg-white/[0.035] hover:text-fg'
             }`}

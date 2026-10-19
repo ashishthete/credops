@@ -82,6 +82,20 @@ async function renderShell(path = '/terminals', results: Record<string, unknown>
   return invoke
 }
 
+// Mounts at `path` as is (a reload keeps the hash route), unlike renderShell's /terminals.
+async function renderAt(path: string, results: Record<string, unknown>) {
+  const invoke = mockBridge({ 'session:attach': { meta: {}, buffer: '', end: 0 }, ...results })
+  toTerminals = null
+  render(
+    <MemoryRouter initialEntries={[path]}>
+      <Nav />
+      <AppShell />
+    </MemoryRouter>,
+  )
+  await flush()
+  return invoke
+}
+
 beforeEach(() => {
   vi.useFakeTimers()
   motion.safe = true
@@ -133,7 +147,7 @@ describe('terminals page', () => {
 
     state(meta('s1', { label: 'Local shell 1' }))
     const button = screen.getByRole('button', { name: /Open sessions/ })
-    expect(button).toHaveTextContent('1')
+    expect(button).toHaveAccessibleName('Open sessions, 1 live')
     expect(button).not.toHaveAttribute('aria-current')
     fireEvent.click(button)
     await flush()
@@ -161,6 +175,32 @@ describe('terminals page', () => {
     await goTo('/terminals')
     await flush()
     expect(screen.getByRole('heading', { name: 'Vaults', level: 1 })).toBeInTheDocument()
+  })
+
+  it('a direct visit with no sessions and no earlier page goes home', async () => {
+    await renderAt('/terminals', { 'session:list': [] })
+    await flush()
+    expect(screen.getByRole('heading', { name: 'Products', level: 1 })).toBeInTheDocument()
+  })
+
+  it('a reload on Terminals keeps it until the session list lands, then shows the restored tabs', async () => {
+    let release!: (list: SessionMeta[]) => void
+    await renderAt('/terminals', { 'session:list': new Promise<SessionMeta[]>((r) => (release = r)) })
+    await flush()
+    expect(screen.queryByRole('heading', { name: 'Products', level: 1 })).toBeNull()
+    await act(async () => release([meta('s1', { label: 'Local shell 1' })]))
+    await flush()
+    expect(tab('Local shell 1')).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Products', level: 1 })).toBeNull()
+  })
+
+  it('a reload on Terminals with no sessions goes home once the list lands empty', async () => {
+    let release!: (list: SessionMeta[]) => void
+    await renderAt('/terminals', { 'session:list': new Promise<SessionMeta[]>((r) => (release = r)) })
+    await flush()
+    await act(async () => release([]))
+    await flush()
+    expect(screen.getByRole('heading', { name: 'Products', level: 1 })).toBeInTheDocument()
   })
 
   it('deck stays mounted across navigation', async () => {

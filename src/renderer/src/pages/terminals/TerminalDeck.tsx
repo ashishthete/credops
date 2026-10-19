@@ -4,7 +4,7 @@ import { useLocation, useNavigate } from 'react-router'
 import type { SessionMeta } from '../../../../shared/ssh'
 import { useInventory } from '../../inventory/store'
 import { useConnect } from '../../terminal/connect'
-import { closeSession, nextTab, openLocal, reconnectSession, sessionStore, setActive } from '../../terminal/sessions'
+import { closeSession, nextTab, openLocal, reconnectSession, sessionsLoaded, sessionStore, setActive } from '../../terminal/sessions'
 import { TerminalView } from '../../terminal/TerminalView'
 import { ConfirmDialog, type ConfirmRequest } from '../../ui/common'
 import { useShortcut } from '../../ui/shortcuts'
@@ -38,9 +38,11 @@ export function TerminalDeck({ visible }: { visible: boolean }) {
   const location = useLocation()
   const before = useRef<string | null>(null)
   if (!location.pathname.startsWith('/terminals')) before.current = location.pathname + location.search
+  // Not before the first session list lands: a reload on this page has no tabs yet.
+  const loaded = useSyncExternalStore(sessionsLoaded.subscribe, sessionsLoaded.get)
   useEffect(() => {
-    if (visible && tabs.length === 0) navigate(before.current ?? '/', { replace: true })
-  }, [tabs.length, visible, navigate])
+    if (loaded && visible && tabs.length === 0) navigate(before.current ?? '/', { replace: true })
+  }, [loaded, tabs.length, visible, navigate])
 
   const envName = (id: string | null) => (id ? inventory?.environments.find((e) => e.id === id)?.name : undefined)
 
@@ -102,7 +104,7 @@ export function TerminalDeck({ visible }: { visible: boolean }) {
 
 /**
  * After a close: the tab itself if it is still open (a cancel or a failed close), else the next
- * tab, else the one before. With none left the deck leaves the page and focus is left be. Focus that went somewhere real is left be.
+ * tab, else the one before. Focus that went somewhere real, or with no tab left, is left be.
  */
 function focusAfterClose(id: string, before: string[]): void {
   const now = document.activeElement

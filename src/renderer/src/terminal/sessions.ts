@@ -12,6 +12,8 @@ export interface SessionsState {
 }
 
 export const sessionStore = createStore<SessionsState>({ sessions: [], activeId: null, order: [] })
+/** Whether the first session list has settled; before it, an empty store may just be a reload. */
+export const sessionsLoaded = createStore(false)
 /** Pending prompts, oldest first; the head is the one on screen. */
 export const promptStore = createStore<SessionPrompt[]>([])
 
@@ -26,6 +28,7 @@ export function resetSessions(): void {
   promptStore.set([])
   removed.clear()
   reconnecting.clear()
+  sessionsLoaded.set(false)
 }
 
 function upsert(meta: SessionMeta, activate = false): void {
@@ -97,6 +100,7 @@ export function startSessionSync(): () => void {
       for (const meta of list ?? []) if (!known.has(meta.id) && !removed.has(meta.id)) upsert(meta)
     })
     .catch((err) => fail("Couldn't load your sessions", err))
+    .finally(() => sessionsLoaded.set(true))
   api
     .invoke('session:prompts')
     .then((pending) => {
