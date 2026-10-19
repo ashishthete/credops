@@ -92,6 +92,8 @@ interface Live {
   /** `<version|kind>`, the audit target label's second half. */
   label: string
   failedStep: string | null
+  /** Aborts finalize's slow work (Claude notes); set only while finalize runs. */
+  finalize: AbortController | null
 }
 
 /** The decrypted values of one release. Held by reference so `drop` can let go of them. */
@@ -450,8 +452,14 @@ export class ReleaseService {
     await Promise.allSettled(all.map((l) => l.done))
   }
 
+  /** A vault lock stops finalize's slow work; the steps fall back (commit-list notes) and the run still succeeds. */
+  vaultLocked(): void {
+    for (const l of this.live.values()) l.finalize?.abort()
+  }
+
   private abort(live: Live): void {
     live.cancelRequested = true
+    live.finalize?.abort()
     // Past the point of no return (rollback, unlock) the run is allowed to finish.
     if (live.runId !== null && (live.phase === 'release' || live.phase === 'version' || live.phase === 'preflight')) this.d.runner.cancel(live.runId)
   }
@@ -761,6 +769,8 @@ export class ReleaseService {
   private async runFinalize(live: Live): Promise<string | null> {
     const fin = this.d.finalize
     const ac = new AbortController()
+    live.finalize = ac
+    if (live.cancelRequested) ac.abort()
     const ctx = { run: this.runMeta(live.id, 'succeeded'), log: (line: string) => this.push(live.id, { type: 'log', stepId: null, hostId: null, stream: 'ansible', line: this.red(live, line) }), signal: ac.signal }
     let notes: string | null = null
     const step = async (kind: StepKind, name: string, noop: boolean, fn: () => Promise<unknown>): Promise<void> => {
@@ -779,6 +789,7 @@ export class ReleaseService {
     await step('finalize_notes', 'Release notes', fin.releaseNotes === noopFinalize.releaseNotes, () => fin.releaseNotes(ctx))
     await step('finalize_notify', 'Notify', fin.notify === noopFinalize.notify, () => fin.notify(ctx))
     await step('finalize_qa', 'QA', fin.qa === noopFinalize.qa, () => fin.qa(ctx))
+    live.finalize = null
     return notes
   }
 
@@ -1081,6 +1092,7 @@ export class ReleaseService {
       known: [],
       label,
       failedStep: null,
+      finalize: null,
     }
     this.live.set(id, live)
     return live

@@ -105,6 +105,16 @@ describe('ReleaseNotesEditor', () => {
     expect(box().value).toBe('## Features\n- mine')
   })
 
+  it('a successful reply that lands after the user typed does not overwrite the edits', async () => {
+    const { requestId, resolve } = await generating()
+    act(() => emitBridgeEvent('ai:delta', { requestId, text: '## Features' }))
+    await frame()
+    fireEvent.change(box(), { target: { value: '## Features\n- mine' } })
+    // Main finished before ai:cancel arrived: the reply is a full success.
+    await resolve(result({ requestId, text: '## Features\n- theirs' }))
+    expect(box().value).toBe('## Features\n- mine')
+  })
+
   it('preview renders sections from markdown', async () => {
     mockBridge({ 'ai:status': READY })
     render(<Harness initial={'## Features\n- **Refunds** from orders\n\n## Fixes\n- Totals'} />)

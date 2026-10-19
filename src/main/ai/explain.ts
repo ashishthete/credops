@@ -1,3 +1,4 @@
+import { isIP } from 'node:net'
 import type { AuditLog } from '../audit/audit-log'
 import {
   AiFailure,
@@ -50,6 +51,8 @@ export interface ExplainContext {
   target: Explanation['target']
   /** Parts redacted as env blocks: every value goes. */
   envBlocks: Set<string>
+  /** Names that are not inventory hosts but must still leave as `‹host-N›` (a tunnel's target and bind address). */
+  hosts?: string[]
 }
 
 const LABEL: Record<string, string> = {
@@ -170,7 +173,9 @@ function tunnelContext(s: Extract<ExplainSubject, { kind: 'tunnel' }>, src: Expl
   parts.health = `state: ${rt.state}, failures: ${rt.failures}, liveness: ${rt.liveness}`
   if (host.line) parts.host = host.line
   if (env.environmentName) parts.environment = env.protected ? `${env.environmentName} (protected)` : env.environmentName
-  return { parts, target: { hostId: meta.hostId, hostLabel: host.label, ...env }, envBlocks: new Set() }
+  // IPs are already placeholders; names (an RDS endpoint) are not inventory hosts, so name them here. Loopback stays.
+  const hosts = [meta.targetHost, meta.bindAddress].filter((h): h is string => h !== null && !isIP(h) && h.toLowerCase() !== 'localhost')
+  return { parts, target: { hostId: meta.hostId, hostLabel: host.label, ...env }, envBlocks: new Set(), hosts }
 }
 
 /** The facts Explain sends, read from main's own state. */
@@ -188,6 +193,7 @@ function addCounts(a: RedactionCounts, b: RedactionCounts): RedactionCounts {
 
 /** Redacts the parts (one placeholder map; env blocks wholesale) and renders the user turn. */
 export function renderContext(c: ExplainContext, redaction: PromptRedactionContext): { user: string; counts: RedactionCounts } {
+  if (c.hosts?.length) redaction = { ...redaction, hostAddresses: [...redaction.hostAddresses, ...c.hosts] }
   const plain = Object.fromEntries(Object.entries(c.parts).filter(([k]) => !c.envBlocks.has(k)))
   const { parts, counts: base } = redactPromptParts(plain, redaction)
   let counts = base

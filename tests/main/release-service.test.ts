@@ -405,6 +405,31 @@ describe('ReleaseService', () => {
     expect(order).toEqual([])
   })
 
+  it('cancel and a vault lock abort a slow finalize; the run stays succeeded', async () => {
+    for (const how of ['cancel', 'lock'] as const) {
+      let entered!: () => void
+      const inNotes = new Promise<void>((res) => (entered = res))
+      const finalize: FinalizeSteps = {
+        releaseNotes: (ctx) =>
+          new Promise((res) => {
+            ctx.signal.addEventListener('abort', () => res('## fallback'))
+            entered()
+          }),
+        notify: async () => undefined,
+        qa: async () => undefined,
+      }
+      const r = await rig({ finalize })
+      const id = await ready(r)
+      await r.svc.start(id, {})
+      await inNotes
+      if (how === 'cancel') await r.svc.cancel(id)
+      else r.svc.vaultLocked()
+      await r.svc.whenIdle()
+      expect(r.svc.detail(id).status, how).toBe('succeeded')
+      expect(r.svc.detail(id).releaseNotes, how).toBe('## fallback')
+    }
+  })
+
   it('noop finalize steps are reported skipped', async () => {
     const r = await rig()
     const id = await ready(r)

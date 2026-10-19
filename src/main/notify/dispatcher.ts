@@ -18,6 +18,8 @@ export const WAITING_FOR_UNLOCK = 'waiting for vault unlock'
 export const EXPIRED_WHILE_LOCKED = 'expired while the vault was locked'
 /** Pending sends older than this are dropped at unlock. */
 export const PENDING_TTL_MS = 60 * 60_000
+/** notification_log keeps this many newest rows; the rest go on each insert. */
+export const NOTIFY_LOG_KEEP = 5000
 const MAX_DETAIL = 200
 
 type SendChannel = Exclude<NotifyChannel, 'qa'>
@@ -41,6 +43,7 @@ export interface DispatcherDeps {
   now?: () => Date
   ids?: () => string
   knownSecrets?: () => readonly string[]
+  logLimit?: number
 }
 
 interface Source {
@@ -286,7 +289,11 @@ export class NotificationDispatcher {
     const res = this.d.db
       .prepare('INSERT OR IGNORE INTO notification_log(id, at, source_type, source_id, event, channel, status, detail) VALUES (?,?,?,?,?,?,?,?)')
       .run(row.id, row.at, row.source_type, row.source_id, row.event, row.channel, row.status, row.detail)
-    return res.changes === 1 ? row : null
+    if (res.changes !== 1) return null
+    this.d.db
+      .prepare('DELETE FROM notification_log WHERE id NOT IN (SELECT id FROM notification_log ORDER BY at DESC, id DESC LIMIT ?)')
+      .run(this.d.logLimit ?? NOTIFY_LOG_KEEP)
+    return row
   }
 
   private async send(row: LogRow, job: Job): Promise<ChannelOutcome> {

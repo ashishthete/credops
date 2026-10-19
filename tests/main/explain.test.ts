@@ -132,6 +132,20 @@ describe('buildContext', () => {
     expect(out.sentContext).toContain('liveness: probe')
     expect(out.target.hostLabel).toBe('web-1')
   })
+
+  it('tunnel DNS targets and bind names become host placeholders everywhere', async () => {
+    const claude = fakeClaude()
+    const rds = 'orders.cluster-abc.eu-west-1.rds.amazonaws.com'
+    const d = deps(claude)
+    const tunnels = {
+      get: () => ({ id: TUN, label: 'db', hostId: HOST, environmentId: ENV, type: 'L', bindAddress: 'bastion-bind.corp', bindPort: 5432, targetHost: rds, targetPort: 5433 }) as TunnelMeta,
+      runtime: () => ({ id: TUN, state: 'failed', error: { code: 'remote-refused', message: `connect to ${rds}:5433 refused` }, failures: 5, liveness: 'probe' }) as TunnelRuntime,
+    }
+    const out = await explain(REQ, { kind: 'tunnel', tunnelId: TUN }, { ...d, sources: { ...d.sources, tunnels } })
+    expect(out.sentContext).not.toContain(rds)
+    expect(out.sentContext).not.toContain('bastion-bind.corp')
+    expect(out.sentContext).toMatch(/‹host-\d›:5433/)
+  })
 })
 
 describe('explain', () => {

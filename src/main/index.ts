@@ -348,6 +348,7 @@ if (!app.requestSingleInstanceLock()) {
         clock: { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: (h) => clearTimeout(h as NodeJS.Timeout) },
       })
       releaseService = release
+      service.onLock(() => release.vaultLocked())
       release.onEvent((batch) => {
         for (const e of batch) void notifyDispatcher.onRunEvent(e)
       })

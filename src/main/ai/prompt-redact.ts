@@ -46,6 +46,10 @@ const IPV6_CANDIDATE = /(?<![\w:.‹])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}
 const COMPOSE_ENV_START = /^(\s*)environment:\s*$/
 const ENV_ASSIGN = /(^|[\s,;(])(-\s+)?([A-Za-z_][A-Za-z0-9_.-]{0,100})=("[^"]*"|'[^']*'|[^\s,;)]*)/g
 const YAML_PAIR = /^(\s*-?\s*)("?)([A-Za-z_][A-Za-z0-9_.-]{0,100})\2:([ \t]+)(\S.*)$/
+/** `--password=x`, `--token x`: a flag whose name is sensitive; a value that starts with `-` is the next flag, so it stays. */
+const SECRET_FLAG = /(^|[\s(])(--?[A-Za-z][\w-]{0,60})(=|[ \t]+)(?!-)("[^"]*"|'[^']*'|[^\s"';)]+)/g
+/** `X-Api-Key: value` anywhere in a line (curl headers); an auth scheme is left to AUTH_SCHEME. */
+const HEADER_PAIR = /(?<![\w-])([A-Za-z][\w-]{0,60}):[ \t]+(?!‹|(?:Bearer|Basic|Token)\s)([^\s"',;]+)/g
 const JSON_PAIR = /"([A-Za-z_][A-Za-z0-9_.-]{0,100})"(\s*:\s*)"((?:[^"\\]|\\.)*)"/g
 const ONE_PLACEHOLDER = /^(?:"|')?‹[a-z]+(?:-\d+)?›(?:"|')?$/
 
@@ -171,6 +175,16 @@ class Pass {
         this.count('env')
         next = `${pair[1]}${pair[2]}${pair[3]}${pair[2]}:${pair[4]}${REDACTED}`
       }
+      next = next.replace(SECRET_FLAG, (m, lead: string, flag: string, sep: string, value: string) => {
+        if (!SENSITIVE_KEY.test(flag) || !take(flag, value)) return m
+        this.count('env')
+        return `${lead}${flag}${sep}${REDACTED}`
+      })
+      next = next.replace(HEADER_PAIR, (m, name: string, value: string) => {
+        if (!SENSITIVE_KEY.test(name) || !take(name, value)) return m
+        this.count('env')
+        return m.slice(0, m.length - value.length) + REDACTED
+      })
       next = next.replace(JSON_PAIR, (m, name: string, colon: string, value: string) => {
         if (!take(name, value)) return m
         this.count('env')

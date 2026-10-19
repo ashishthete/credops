@@ -64,6 +64,27 @@ describe('redactPrompt', () => {
     expect(counts).toEqual({ key: 2, secret: 1, url: 2, token: 8, env: 2, email: 1, user: 3, host: 1, ip: 4 })
   })
 
+  it('secrets in CLI flags and mid-line headers', () => {
+    const lines = [
+      'mysql -u root --password=hunter2xyz db',
+      'docker login --password hunter2xyz registry',
+      'curl -H "X-Api-Key: abcdef1234567" https://api.example',
+      "curl --header 'api-key: abcdef1234567'",
+      'gh --token=abcdef1234567 --repo x',
+      'echo x | docker login --password-stdin -u bob',
+    ]
+    const { text } = redactPrompt(lines.join('\n'), ctx())
+    expect(text).not.toContain('hunter2xyz')
+    expect(text).not.toContain('abcdef1234567')
+    expect(text).toContain('--password=‹redacted› db')
+    expect(text).toContain('--password ‹redacted› registry')
+    expect(text).toContain('"X-Api-Key: ‹redacted›"')
+    expect(text).toContain("'api-key: ‹redacted›'")
+    expect(text).toContain('--token=‹redacted› --repo x')
+    // A flag that takes no value keeps its neighbours.
+    expect(text).toContain('--password-stdin -u bob')
+  })
+
   it('compose environment block redacts every value', () => {
     const compose = [
       'services:',

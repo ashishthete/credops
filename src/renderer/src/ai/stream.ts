@@ -84,11 +84,11 @@ export function useAiStream<T>(opts: { onText?: (text: string) => void } = {}): 
       setState('streaming')
       try {
         const out = await run(me.id)
-        if (live.current === me && !me.stopped) {
-          flush()
-          me.stopped = true
-          setState('done')
-        }
+        // Stopped or superseded: the reply is stale, so the caller never sees it (the user's edits win).
+        if (live.current !== me || me.stopped) return undefined
+        flush()
+        me.stopped = true
+        setState('done')
         return out
       } catch (e) {
         if (live.current === me && !me.stopped) {

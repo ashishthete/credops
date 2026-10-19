@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { noopFinalize, type FinalizeSteps, type ReleaseRunMeta } from '../../src/main/deploy/finalize'
-import { NotificationDispatcher } from '../../src/main/notify/dispatcher'
+import { NotificationDispatcher, type DispatcherDeps } from '../../src/main/notify/dispatcher'
 import { createFinalizeSteps } from '../../src/main/notify/finalize'
 import { IntegrationError } from '../../src/main/notify/http'
 import type { NotificationSink } from '../../src/main/notify/sink'
@@ -60,7 +60,7 @@ async function setup(events: NotifyEventKey[] = [...NOTIFY_EVENTS]) {
   const sink = new FakeSink()
   const clock = { t: T0 }
   const sent: NotificationRecord[] = []
-  const make = () => {
+  const make = (over: Partial<DispatcherDeps> = {}) => {
     const d = new NotificationDispatcher({
       db: f.db,
       sink,
@@ -72,6 +72,7 @@ async function setup(events: NotifyEventKey[] = [...NOTIFY_EVENTS]) {
       tunnels: f.tunnels,
       now: () => new Date(clock.t),
       knownSecrets: () => s.secrets.knownValues(),
+      ...over,
     })
     d.onSent((r) => void sent.push(r))
     return d
@@ -219,6 +220,17 @@ describe('NotificationDispatcher', () => {
     t.settings.update({ macosUnscoped: true })
     await t.d.onTunnelEvent(failed('2026-10-19T12:05:00.000Z'))
     expect(t.sink.calls).toEqual(['macos:tunnel.failed'])
+  })
+
+  it('keeps only the newest log rows, pruning on insert', async () => {
+    const t = await setup()
+    const ins = t.f.db.prepare('INSERT INTO notification_log(id, at, source_type, source_id, event, channel, status, detail) VALUES (?,?,?,?,?,?,?,?)')
+    for (let i = 0; i < 5; i++) ins.run(`old-${i}`, `2026-10-18T0${i}:00:00.000Z`, 'release', `r${i}`, 'release.failed', 'teams', 'sent', null)
+    const d = t.make({ logLimit: 4 })
+    t.meta('rel-1')
+    await d.onRunEvent(t.ev('rel-1', { type: 'run.started', kind: 'release', version: '1.2.0' }))
+    const ids = (t.f.db.prepare('SELECT id, source_id FROM notification_log ORDER BY at DESC, id DESC').all() as { id: string; source_id: string }[]).map((r) => r.source_id)
+    expect(ids).toEqual(['rel-1', 'rel-1', 'r4', 'r3'])
   })
 
   it('queues Teams while locked and flushes on unlock', async () => {
