@@ -41,6 +41,13 @@ describe('services rules', () => {
     expect(deriveTag('staging', 'staging', 'prod')).toBe('prod')
   })
 
+  it('deriveTag inserts the target name literally, so $& or $1 in a name is not a replace pattern', () => {
+    // As a replace string, 'a$&b' would splice the match back in and give the valid ref 'webapp_astagingb'.
+    expect(deriveTag('webapp_staging', 'staging', 'a$&b')).toBeNull()
+    expect(deriveTag('webapp_staging', 'staging', 'q$1')).toBeNull()
+    expect(deriveTag('webapp_$&', '$&', 'prod')).toBe('webapp_prod')
+  })
+
   it('stripSecretRefs blanks every secret reference', () => {
     expect(stripSecretRefs('A=${secret:abc}\nB=1')).toBe('A=\nB=1')
     expect(stripSecretRefs('A=${secret:x}${secret:y}\n# ${secret:z}')).toBe('A=\n# ')

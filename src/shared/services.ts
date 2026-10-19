@@ -110,7 +110,9 @@ export function deriveTag(tag: string, sourceEnv: string, targetEnv: string): st
   const re = new RegExp(`(?<=^|[_.-])${escapeRe(sourceEnv)}(?=$|[_.-])`, 'gi')
   if (!re.test(tag)) return null
   re.lastIndex = 0
-  const out = tag.replace(re, targetEnv.toLowerCase())
+  const target = targetEnv.toLowerCase()
+  // A replacer function, so `$&` or `$1` in an environment name is inserted literally, not as a pattern.
+  const out = tag.replace(re, () => target)
   return GIT_REF.test(out) ? out : null
 }
 
