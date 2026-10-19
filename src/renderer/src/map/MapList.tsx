@@ -20,12 +20,13 @@ const CELL = 'px-3 py-2 align-top text-[12.5px]'
 interface Group {
   id: string
   data: EnvironmentNodeData
-  hosts: { id: string; data: HostNodeData; tunnelIds: string[] }[]
+  hosts: { id: string; data: HostNodeData; tunnelIds: string[]; via: string | null }[]
 }
 
 /**
  * The map as a table: one row group per environment, one row per host placement, in the map's order.
- * The same graph the canvas draws, so a filter or search shapes both alike.
+ * The same graph the canvas draws, so a filter or search shapes both alike; what the canvas says by
+ * frame and line (the group's products, a host's jump) the table says in words.
  */
 export function MapList({ graph, onConnect, onSelect }: MapListProps) {
   const groups = useMemo(() => {
@@ -36,6 +37,13 @@ export function MapList({ graph, onConnect, onSelect }: MapListProps) {
       const end = e.source === 'mac' ? e.target : e.source
       tunnels.set(end, [...(tunnels.get(end) ?? []), e.data.tunnelId])
     }
+    // A drawn jump names its source placement; one not drawn is carried on the host as its label.
+    const label = new Map(graph.nodes.flatMap((n) => (n.data.kind === 'host' ? [[n.id, n.data.label] as const] : [])))
+    const via = new Map<string, string>()
+    for (const e of graph.edges) {
+      const from = e.data.kind === 'jump' ? label.get(e.source) : undefined
+      if (from) via.set(e.target, from)
+    }
     const out: Group[] = []
     const byId = new Map<string, Group>()
     for (const n of graph.nodes) {
@@ -44,7 +52,7 @@ export function MapList({ graph, onConnect, onSelect }: MapListProps) {
         out.push(g)
         byId.set(n.id, g)
       } else if (n.data.kind === 'host' && n.parentId) {
-        byId.get(n.parentId)?.hosts.push({ id: n.id, data: n.data, tunnelIds: tunnels.get(n.id) ?? [] })
+        byId.get(n.parentId)?.hosts.push({ id: n.id, data: n.data, tunnelIds: tunnels.get(n.id) ?? [], via: via.get(n.id) ?? n.data.jumpLabel })
       }
     }
     return out.filter((g) => g.hosts.length)
@@ -82,11 +90,17 @@ export function MapList({ graph, onConnect, onSelect }: MapListProps) {
                   <span className="flex items-center gap-2">
                     <span aria-hidden className="size-2 shrink-0 rounded-full" style={{ background: g.data.color }} />
                     {g.data.name}
+                    {g.data.productNames.length > 0 && (
+                      <span className="font-normal text-muted">
+                        <span className="sr-only">, </span>
+                        {g.data.productNames.join(', ')}
+                      </span>
+                    )}
                   </span>
                 </th>
               </tr>
               {g.hosts.map((h) => (
-                <HostRow key={h.id} id={h.id} d={h.data} tunnelIds={h.tunnelIds} onConnect={onConnect} onSelect={onSelect} />
+                <HostRow key={h.id} id={h.id} d={h.data} tunnelIds={h.tunnelIds} via={h.via} onConnect={onConnect} onSelect={onSelect} />
               ))}
             </tbody>
           ))
@@ -100,18 +114,23 @@ interface HostRowProps {
   id: string
   d: HostNodeData
   tunnelIds: string[]
+  /** The jump host this placement connects through, by label. */
+  via: string | null
   onConnect: MapListProps['onConnect']
   onSelect: MapListProps['onSelect']
 }
 
-const HostRow = memo(function HostRow({ id, d, tunnelIds, onConnect, onSelect }: HostRowProps) {
+const HostRow = memo(function HostRow({ id, d, tunnelIds, via, onConnect, onSelect }: HostRowProps) {
   const { sessions, reach } = useHostPresence(d.hostId)
   return (
     <tr>
       <th scope="row" className={`${CELL} border-t border-line text-left font-semibold text-fg`}>
         {d.label}
       </th>
-      <td className={`${CELL} border-t border-line font-mono text-[11.5px] text-muted`}>{d.address}</td>
+      <td className={`${CELL} border-t border-line font-mono text-[11.5px] text-muted`}>
+        {d.address}
+        {via && <span className="font-sans"> via {via}</span>}
+      </td>
       <td className={`${CELL} border-t border-line`}>{d.role ? ROLE_LABEL[d.role] : 'No role'}</td>
       <td className={`${CELL} border-t border-line ${reach === 'ok' ? 'text-ok' : reach === 'bad' ? 'text-err' : reach === 'busy' ? 'text-warn' : 'text-muted'}`}>
         {REACH_TEXT[reach]}

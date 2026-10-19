@@ -84,10 +84,14 @@ type View = 'map' | 'list'
 /** Keys that move the keyboard's focus around the map. */
 const FOCUS_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'])
 
+/** How long a host's reach must hold before the change is announced, so a flap doesn't chatter. */
+const REACH_SETTLE_MS = 1000
+
 /**
  * The map's one live region. It says what the keyboard just focused, from the same data the node
  * draws (`web, Bastion in Prod, Reachable, 1 session, 2 tunnels`, `Prod environment, 5 hosts`), and
- * how many matches a search found; whichever changed last.
+ * how many matches a search found; whichever changed last. While focus stays on a host, a settled
+ * change of reach is said on its own (`web: Reachable`).
  */
 function MapAnnouncer({ node, graph, count }: { node: MapNode | null; graph: MapGraph | undefined; count: string | null }) {
   const d = node?.data
@@ -105,7 +109,26 @@ function MapAnnouncer({ node, graph, count }: { node: MapNode | null; graph: Map
     text = `${d.label}, ${d.role ? ROLE_LABEL[d.role] : 'No role'} in ${where}, ${REACH_TEXT[reach]}, ${plural(sessions, 'session')}, ${plural(tunnels, 'tunnel')}`
   }
   const [said, setSaid] = useState('')
-  useEffect(() => setSaid(text), [text])
+  const id = node?.id ?? ''
+  const latest = useRef({ text, label: '', reach })
+  // The reach last spoken for the focused node; a change from it is said on its own, once it settles.
+  const heard = useRef(reach)
+  useEffect(() => {
+    latest.current = { text, label: d?.kind === 'host' ? d.label : '', reach }
+  })
+  // The whole description when focus moves; while it stays, only what changed is said.
+  useEffect(() => {
+    setSaid(latest.current.text)
+    heard.current = latest.current.reach
+  }, [id])
+  useEffect(() => {
+    if (!hostId || reach === heard.current) return
+    const t = setTimeout(() => {
+      heard.current = reach
+      setSaid(`${latest.current.label}: ${REACH_TEXT[reach]}`)
+    }, REACH_SETTLE_MS)
+    return () => clearTimeout(t)
+  }, [id, hostId, reach])
   useEffect(() => {
     if (count) setSaid(count)
   }, [count])

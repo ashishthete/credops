@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { inventoryStore, reloadInventory } from '../../src/renderer/src/inventory/store'
 import { VIEWPORT_KEY } from '../../src/renderer/src/map/viewport'
 import { resetSessions } from '../../src/renderer/src/terminal/sessions'
-import { resetTunnels } from '../../src/renderer/src/tunnels/store'
+import { resetTunnels, tunnelStore } from '../../src/renderer/src/tunnels/store'
 import { clearToasts } from '../../src/renderer/src/ui/Toaster'
 import { AppShell } from '../../src/renderer/src/shell/AppShell'
 import { defaultVault, environment, host, mockBridge, product, session, tunnelMeta, tunnelRuntime } from './helpers'
@@ -157,6 +157,41 @@ describe('map keyboard and screen readers', () => {
     // Focus is not selection.
     expect(document.querySelector('.react-flow__node.selected')).toBeNull()
     expect(document.activeElement).toBe(canvas())
+  })
+
+  it('a settled change of reach on the focused host is said on its own; a flap is not', async () => {
+    await renderMap()
+    canvas().focus()
+    for (const k of ['ArrowDown', 'ArrowRight', 'ArrowRight']) await key(k)
+    expect(announced()).toBe('web, Bastion in Prod, Not checked, 0 sessions, 1 tunnel')
+    const run = (state: 'up' | 'stopped') =>
+      act(() => tunnelStore.set({ ...tunnelStore.get(), runtime: { t1: tunnelRuntime({ id: 't1', state }) } }))
+
+    // Up and back down inside a second: nothing new is said.
+    run('up')
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500)
+    })
+    run('stopped')
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1500)
+    })
+    expect(announced()).toBe('web, Bastion in Prod, Not checked, 0 sessions, 1 tunnel')
+
+    run('up')
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(999)
+    })
+    expect(announced()).toBe('web, Bastion in Prod, Not checked, 0 sessions, 1 tunnel')
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1)
+    })
+    expect(announced()).toBe('web: Reachable')
+
+    // Moving focus says the whole description again, with the new reach.
+    await key('ArrowDown')
+    await key('ArrowUp')
+    expect(announced()).toBe('web, Bastion in Prod, Reachable, 0 sessions, 1 tunnel')
   })
 
   it('Enter opens the panel, Enter again connects, Escape closes then lets go', async () => {
@@ -348,7 +383,7 @@ describe('map camera and live region', () => {
 describe('map list view', () => {
   const list = () => screen.getByRole('table', { name: 'Hosts by environment' })
   const row = (name: string, group: string) => {
-    const body = within(list()).getByRole('rowheader', { name: group }).closest('tbody')!
+    const body = within(list()).getByRole('rowheader', { name: new RegExp(`^${group}\\b`) }).closest('tbody')!
     return within(body).getByRole('rowheader', { name }).closest('tr')!
   }
 
@@ -387,21 +422,39 @@ describe('map list view', () => {
 
   it('honours the filter and the search', async () => {
     await renderMap({}, '/map?view=list&env=e2')
-    expect(within(list()).queryByRole('rowheader', { name: 'Prod' })).toBeNull()
+    expect(within(list()).queryByRole('rowheader', { name: /^Prod\b/ })).toBeNull()
     expect(row('web', 'Stage')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear filter' }))
     await flush()
     fireEvent.change(screen.getByLabelText('Find on map'), { target: { value: 'pg' } })
     await flush()
-    expect(within(list()).getAllByRole('rowheader').map((h) => h.textContent)).toEqual(['Prod', 'pg'])
+    expect(within(list()).getAllByRole('rowheader').map((h) => h.textContent)).toEqual(['Prod, Platform', 'pg'])
     // A matching group keeps all its hosts.
     fireEvent.change(screen.getByLabelText('Find on map'), { target: { value: 'stage' } })
     await flush()
-    expect(within(list()).getAllByRole('rowheader').map((h) => h.textContent)).toEqual(['Stage', 'web'])
+    expect(within(list()).getAllByRole('rowheader').map((h) => h.textContent)).toEqual(['Stage, Platform', 'web'])
     fireEvent.change(screen.getByLabelText('Find on map'), { target: { value: 'zzz' } })
     await flush()
     expect(list()).toHaveTextContent('No hosts match.')
+  })
+
+  it('says in words what the map draws: products per group and jumps per host', async () => {
+    const prodJumped = { ...prod, defaultJumpHostId: 'h1' }
+    const stageJumped = { ...stage, hosts: [...stage.hosts, { hostId: 'h3', role: 'app' as const }] }
+    const cache = host({ id: 'h3', label: 'cache', address: '10.0.0.7', jumpHostId: 'h2' })
+    await renderMap({ 'env:list': [prodJumped, stageJumped], 'host:list': [...hosts, cache] }, '/map?view=list')
+    // jsdom's accessible names drop the space a browser keeps, so the words are checked as text.
+    expect(within(list()).getByRole('rowheader', { name: /^Prod\b/ })).toHaveTextContent('Prod, Platform')
+    // Drawn as a jump edge from web's placement.
+    expect(row('pg', 'Prod')).toHaveTextContent('10.0.0.6 via web')
+    expect(row('web', 'Prod')).not.toHaveTextContent('via')
+    expect(row('cache', 'Stage')).toHaveTextContent('10.0.0.7 via pg')
+
+    // Filtered to Stage, pg isn't drawn; the jump is still named.
+    cleanup()
+    await renderMap({ 'env:list': [prodJumped, stageJumped], 'host:list': [...hosts, cache] }, '/map?view=list&env=e2')
+    expect(row('cache', 'Stage')).toHaveTextContent('10.0.0.7 via pg')
   })
 
   it('Show on map switches back and focuses the placement', async () => {

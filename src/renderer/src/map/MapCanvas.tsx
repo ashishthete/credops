@@ -126,7 +126,10 @@ type DomAttributes = MapFlowNode['domAttributes']
 const RELATED = { 'data-related': '' } as DomAttributes
 const DIMMED = { 'data-dimmed': 'true' } as DomAttributes
 const DIMMED_RELATED = { 'data-dimmed': 'true', 'data-related': '' } as DomAttributes
-const focusedAttrs = (attrs: DomAttributes): DomAttributes => ({ ...attrs, 'data-focused': 'true' }) as DomAttributes
+const FOCUSED = { 'data-focused': 'true' } as DomAttributes
+const focusedAttrs = new Map<DomAttributes, DomAttributes>(
+  [RELATED, DIMMED, DIMMED_RELATED].map((attrs) => [attrs, { ...attrs, 'data-focused': 'true' } as DomAttributes]),
+)
 
 /** A node or edge on its way out, still faded as it was drawn; the transition has already made it inert. */
 function fadeLeaving<T extends MapFlowNode | MapFlowEdge>(x: T): T {
@@ -231,29 +234,34 @@ export const MapCanvas = memo(function MapCanvas({
   const onEdgeMouseLeave = useCallback(() => setHoveredEdge(null), [])
   const edgeActions = useMemo((): EdgeActions => ({ select: onEdgeSelect, hover: setHoveredEdge }), [onEdgeSelect])
 
-  // Selection and styling go on at render time, so changing them never moves a dragged node back.
-  const nodes = useMemo(
-    () =>
-      local.nodes.map((n) => {
-        if (n.data.leaving) return drawnFaded.current.nodes.has(n.id) ? fadeLeaving(n) : n
-        const selected = n.id === selectedId
-        const faded = !!dimmed?.has(n.id)
-        const lit = highlightId === n.id
-        // A leaving copy is handled above, so the keyboard's ring only ever lands on a node that stays.
-        const focused = focusedId === n.id
-        // The ring plays once with motion, and simply shows under reduced motion.
-        const className =
-          [n.className, faded && 'od-dimmed', lit && 'od-highlight', lit && motionSafe && 'od-ring', focused && 'od-focused'].filter(Boolean).join(' ') ||
-          undefined
-        const near = !!related?.has(n.id)
-        const plain = faded ? (near ? DIMMED_RELATED : DIMMED) : near ? RELATED : undefined
-        const domAttributes = focused ? focusedAttrs(plain) : plain
-        return !!n.selected === selected && n.className === className && n.domAttributes === domAttributes
-          ? n
-          : { ...n, selected, className, domAttributes }
-      }),
-    [local.nodes, selectedId, dimmed, highlightId, focusedId, related, motionSafe],
-  )
+  // Selection and styling go on at render time, so changing them never moves a dragged node back. The
+  // last styled copy of each node is kept, so a node whose styling didn't change keeps its identity.
+  const styled = useRef(new Map<string, { from: MapFlowNode; out: MapFlowNode }>())
+  const nodes = useMemo(() => {
+    const next = new Map<string, { from: MapFlowNode; out: MapFlowNode }>()
+    const out = local.nodes.map((n) => {
+      if (n.data.leaving) return drawnFaded.current.nodes.has(n.id) ? fadeLeaving(n) : n
+      const selected = n.id === selectedId
+      const faded = !!dimmed?.has(n.id)
+      const lit = highlightId === n.id
+      // A leaving copy is handled above, so the keyboard's ring only ever lands on a node that stays.
+      const focused = focusedId === n.id
+      // The ring plays once with motion, and simply shows under reduced motion.
+      const className =
+        [n.className, faded && 'od-dimmed', lit && 'od-highlight', lit && motionSafe && 'od-ring', focused && 'od-focused'].filter(Boolean).join(' ') ||
+        undefined
+      const near = !!related?.has(n.id)
+      const plain = faded ? (near ? DIMMED_RELATED : DIMMED) : near ? RELATED : undefined
+      const domAttributes = focused ? (plain ? focusedAttrs.get(plain) : FOCUSED) : plain
+      const last = styled.current.get(n.id)
+      const same = (x: MapFlowNode) => !!x.selected === selected && x.className === className && x.domAttributes === domAttributes
+      const result = last && last.from === n && same(last.out) ? last.out : same(n) ? n : { ...n, selected, className, domAttributes }
+      next.set(n.id, { from: n, out: result })
+      return result
+    })
+    styled.current = next
+    return out
+  }, [local.nodes, selectedId, dimmed, highlightId, focusedId, related, motionSafe])
 
   useEffect(() => {
     const faded = (x: { id: string; className?: string }) => (x.className?.split(' ').includes('od-dimmed') ? [x.id] : [])
