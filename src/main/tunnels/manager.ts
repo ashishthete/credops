@@ -249,7 +249,15 @@ export class TunnelManager {
   }
 
   stopAll(reason: TunnelStopReason): void {
-    for (const id of [...this.runs.keys()]) this.stop(id, reason)
+    for (const id of [...this.runs.keys()]) {
+      // One tunnel failing to stop never leaves the rest running, and it is dropped regardless.
+      try {
+        this.stop(id, reason)
+      } catch (err) {
+        this.warn('Tunnel stop failed', err)
+        this.runs.delete(id)
+      }
+    }
     this.last.clear()
   }
 

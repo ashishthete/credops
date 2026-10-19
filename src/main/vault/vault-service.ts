@@ -111,7 +111,7 @@ export class VaultService {
   private readonly known = new Map<string, readonly string[]>()
   private readonly lockListeners = new Set<(reason: LockReason) => unknown>()
   private readonly unlockListeners = new Set<() => unknown>()
-  private readonly resetListeners = new Set<() => unknown>()
+  private readonly resetListeners = new Set<() => void>()
   /** Set by install() on a locked-to-unlocked transition; serial() fires the unlock listeners once the section resolves. */
   private unlockedPending = false
   /** Chains password operations so the throttle check and failure count cannot interleave. */
@@ -331,8 +331,9 @@ export class VaultService {
   /**
    * Fires after a reset has committed, before reset() resolves: whatever the old password guarded
    * and outlives a lock (live sessions, tunnels) must be gone before the gate opens on setup.
+   * Synchronous on purpose: reset() does not wait for a promise, so teardown can't be deferred.
    */
-  onReset(fn: () => unknown): () => void {
+  onReset(fn: () => void): () => void {
     this.resetListeners.add(fn)
     return () => this.resetListeners.delete(fn)
   }

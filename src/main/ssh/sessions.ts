@@ -292,8 +292,14 @@ export class SessionManager {
   /** Ends and forgets every session, SSH and local, scrollback included: on quit and on a vault reset. */
   closeAll(reason: 'quit' | 'reset'): void {
     for (const s of [...this.sessions.values()]) {
-      if (s.attempt) this.finish(s, s.attempt, reason, null)
-      this.forget(s)
+      // One session failing to close never leaves the rest open, and it is forgotten regardless.
+      try {
+        if (s.attempt) this.finish(s, s.attempt, reason, null)
+        this.forget(s)
+      } catch (err) {
+        console.error('Session close failed:', redact(err instanceof Error ? err.message : String(err)))
+        this.sessions.delete(s.meta.id)
+      }
     }
   }
 

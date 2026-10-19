@@ -957,6 +957,31 @@ describe('vault reset', () => {
     expect(t.manager.status().map((r) => r.state)).toEqual(['stopped', 'stopped'])
   })
 
+  it('one tunnel failing to stop never leaves the others running; the error is logged redacted', async () => {
+    const t = await setup()
+    const srv = await server()
+    const echo = await target()
+    const hostId = t.host(srv)
+    const ids = ['a', 'b', 'c'].map((label) => t.tunnel(hostId, { label, targetPort: echo.port }).id)
+    for (const id of ids) t.manager.start(id)
+    const ports = await Promise.all(ids.map(async (id) => (await t.waitState(id, 'up')).boundPort!))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    onTestFinished(() => warn.mockRestore())
+    const realStop = t.manager.stop.bind(t.manager)
+    // The first stop does its work and then throws, as a late failure would.
+    vi.spyOn(t.manager, 'stop').mockImplementationOnce((id, reason) => {
+      realStop(id, reason)
+      throw new Error('-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----')
+    })
+    t.vault.lock('manual')
+    await t.vault.reset('RESET')
+    expect(t.manager.status().map((r) => r.state)).toEqual(['stopped', 'stopped', 'stopped'])
+    for (const port of ports) await expect(dial(port)).rejects.toThrow()
+    const logged = warn.mock.calls.flat().join(' ')
+    expect(logged).toContain('Tunnel stop failed:')
+    expect(logged).not.toContain('b3BlbnNzaC1rZXk')
+  })
+
   it('lets the first unlock after setup auto-start again', async () => {
     const t = await setup()
     const srv = await server()

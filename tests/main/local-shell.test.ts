@@ -112,6 +112,48 @@ describe('SessionManager local shell', () => {
   })
 })
 
+describe('SessionManager.closeAll', () => {
+  it('one session failing to close never leaves the others open; the error is logged redacted', async () => {
+    const f = makeVault()
+    await f.vault.setup('correct horse')
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    onTestFinished(() => error.mockRestore())
+    const pem = '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----'
+    const kills: string[] = []
+    let n = 0
+    const manager = new SessionManager({
+      openLocal: () => {
+        const name = `pty-${++n}`
+        return {
+          write: vi.fn(),
+          resize: vi.fn(),
+          onData: vi.fn(),
+          onExit: vi.fn(),
+          kill: () => {
+            kills.push(name)
+            if (name === 'pty-1') throw new Error(`kill failed near ${pem}`)
+          },
+        }
+      },
+      audit: f.audit,
+      prompts: new PromptBroker({ emit: vi.fn(), isLocked: () => false }),
+      emit: vi.fn(),
+    } as unknown as SessionManagerDeps)
+    const a = manager.openLocal({ cols: 80, rows: 24 })
+    manager.openLocal({ cols: 80, rows: 24 })
+    manager.openLocal({ cols: 80, rows: 24 })
+
+    manager.closeAll('reset')
+    expect(kills).toEqual(['pty-1', 'pty-2', 'pty-3'])
+    expect(manager.list()).toEqual([])
+    expect(() => manager.attach(a.id)).toThrow('session not found')
+    expect(error).toHaveBeenCalledOnce()
+    const logged = error.mock.calls.flat().join(' ')
+    expect(logged).toContain('Session close failed:')
+    expect(logged).not.toContain('b3BlbnNzaC1rZXk')
+  })
+})
+
 describe('shell fallback and packaging', () => {
   it('an empty SHELL falls back like an unset one', () => {
     const spawnFn = vi.fn((..._args: unknown[]) => ({ write() {}, resize() {}, onData() {}, onExit() {}, kill() {} }))
