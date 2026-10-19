@@ -239,9 +239,13 @@ if (!app.requestSingleInstanceLock()) {
       runManager = runs
       tunnels.onRemoved = (id) => runner.removed(id)
       tunnels.onChanged = (before, after) => runner.changed(before, after)
-      // Sessions and tunnels keep running across a lock. Connects still dialling fail (sessions) or
-      // are marked to pause (tunnels), then every prompt left is cancelled. Separate listeners, run in
-      // this order, so one failing never skips the others.
+      // On lock, in this order: sessions fail their dials and tunnels mark theirs to pause (both keep
+      // what is connected); runs end their queued and dialling hosts as `locked` while running
+      // commands finish; exec links fail their dials as `locked` and close idle links; then every
+      // prompt left is cancelled. Runs go before links so each dial a run aborts is already marked
+      // `locked` for that host. Separate listeners, so one failing never skips the others. Quit
+      // (before-quit) stops tunnels, closes sessions, cancels runs (writing their run.finish), closes
+      // exec links, and only then locks the vault.
       service.onLock(() => manager.vaultLocked())
       service.onLock(() => runner.vaultLocked())
       service.onLock(() => runs.vaultLocked())

@@ -13,7 +13,7 @@ import { VAULT_LOCKED } from '../../src/shared/vault'
 import type { AuditEvent } from '../../src/shared/audit'
 import { createOpsHandlers } from '../../src/main/ipc/handlers/ops'
 import { CONFIRM_MESSAGE, MULTIPLE_PROTECTED_MESSAGE } from '../../src/main/ops/protect'
-import { CANCELLED_RUNNING, OutputRing } from '../../src/main/ops/run-manager'
+import { CANCELLED_RUNNING } from '../../src/main/ops/run-manager'
 import { auditRows } from './vault-helpers'
 import { GATED, STAGING_HOSTS, makeRunSetup } from './ops-helpers'
 import { startServer } from './ssh-server'
@@ -128,6 +128,19 @@ describe('RunManager', () => {
     expect(chunks.length).toBeLessThan(100)
   })
 
+  it('flags a host truncated as soon as its output passes RUN_OUTPUT_CHARS, even by a little', async () => {
+    const t = await makeRunSetup()
+    const total = RUN_OUTPUT_CHARS + 1000
+    const run = t.runs.start({ target: onHosts(t, ['app-1']), command: text(`yes | head -c ${total}`) })
+    const done = await t.finished(run.id)
+    expect(done.hosts[0]).toMatchObject({ state: 'ok', truncated: true })
+    const streamed = t.outputEvents(run.id).map((c) => c.chunk).join('')
+    expect(streamed).toHaveLength(total)
+    const { run: got, output } = t.runs.get(run.id)
+    expect(got.hosts[0]!.truncated).toBe(true)
+    expect(output[0]!.text).toBe(streamed.slice(-RUN_OUTPUT_CHARS))
+  })
+
   it('tints stderr: chunks carry stream err and the buffer records their ranges', async () => {
     const t = await makeRunSetup()
     const run = t.runs.start({ target: onHosts(t, ['app-1']), command: text('printf out; sleep 0.1; printf err >&2') })
@@ -178,6 +191,18 @@ describe('RunManager', () => {
     expect(t.server.signals()).toContain('INT')
   })
 
+  it('a run whose only host timed out finishes as a failure', async () => {
+    const t = await makeRunSetup()
+    const run = t.runs.start({ target: onHosts(t, ['app-1']), command: text('sleep 30'), timeoutSec: 1 })
+    const done = await t.finished(run.id)
+    expect(done).toMatchObject({ state: 'done', hosts: [{ state: 'timeout' }] })
+    expect(runRows(t).at(-1)).toMatchObject({
+      action: 'run.finish',
+      outcome: 'failure',
+      details: { ok: 0, failed: 0, cancelled: 0, timeout: 1 },
+    })
+  })
+
   it('a host that fails to resolve fails alone', async () => {
     const t = await makeRunSetup()
     const command = text(`[ "$OD_HOST" != app-1 ] || ${GATED}`)
@@ -205,6 +230,19 @@ describe('RunManager', () => {
     const done = await t.finished(run.id)
     expect(done.hosts.map((h) => h.state)).toEqual(['ok', 'failed'])
     expect(done.hosts[1]!.error?.code).toBe('refused')
+  })
+
+  it('a host id not in the inventory fails alone, labelled by its id', async () => {
+    const t = await makeRunSetup()
+    const stale = randomUUID()
+    const run = t.runs.start({ target: { kind: 'hosts', hostIds: [t.ids['app-1']!, stale] }, command: text('true') })
+    expect(run.hosts.map((h) => h.label)).toEqual(['app-1', stale])
+    const done = await t.finished(run.id)
+    expect(done.state).toBe('done')
+    expect(done.hosts.map((h) => h.state)).toEqual(['ok', 'failed'])
+    expect(done.hosts[1]).toMatchObject({ hostId: stale, error: { code: 'unknown', message: 'Host not found' }, exitCode: null })
+    expect(t.server.execs()).toHaveLength(1)
+    expect(runRows(t).at(-1)).toMatchObject({ action: 'run.finish', outcome: 'failure' })
   })
 
   it('a multi-host run in a protected environment needs the typed name', async () => {
@@ -357,10 +395,29 @@ describe('RunManager', () => {
     try {
       const run = t.runs.start({ target: { kind: 'hosts', hostIds: [id] }, command: text('true') })
       await t.reached(run, 'new-1', 'connecting')
-      await new Promise((r) => setTimeout(r, 100))
+      await t.waitFor(() => expect(t.broker.pending()).toHaveLength(1))
       t.vault.lock('manual')
       const done = await t.finished(run.id)
       expect(done.hosts[0]).toMatchObject({ state: 'cancelled', error: { code: 'locked' } })
+    } finally {
+      await untrusted.close()
+    }
+  })
+
+  it('cancel stops a host that is still dialing', async () => {
+    const t = await makeRunSetup()
+    // An untrusted key asks a host-key prompt, so the dial waits until the cancel.
+    const untrusted = await startServer({ users: [{ username: 'x', password: 'y' }] })
+    const id = t.hosts.create({ label: 'new-1', address: '127.0.0.1', port: untrusted.port }).id
+    try {
+      const run = t.runs.start({ target: { kind: 'hosts', hostIds: [id] }, command: text('true') })
+      await t.reached(run, 'new-1', 'connecting')
+      await t.waitFor(() => expect(t.broker.pending()).toHaveLength(1))
+      const done = await t.runs.cancel(run.id)
+      expect(done.state).toBe('cancelled')
+      expect(done.hosts[0]).toMatchObject({ state: 'cancelled', error: { code: 'closed', message: 'Cancelled' } })
+      expect(untrusted.execs()).toHaveLength(0)
+      expect(runRows(t).at(-1)).toMatchObject({ action: 'run.finish', outcome: 'info' })
     } finally {
       await untrusted.close()
     }
@@ -370,7 +427,12 @@ describe('RunManager', () => {
     const t = await makeRunSetup()
     t.vault.lock('manual')
     expect(() => t.runs.start({ target: onEnv(t, 'staging'), command: text('true') })).toThrow(VAULT_LOCKED)
-    expect(runRows(t).map((e) => [e.action, e.outcome])).toEqual([['run.start', 'denied']])
+    expect(() => t.runs.start({ target: onHosts(t, ['app-1', 'app-2']), command: text('true') })).toThrow(VAULT_LOCKED)
+    expect(runRows(t).map((e) => [e.action, e.outcome, e.targetType, e.targetLabel])).toEqual([
+      ['run.start', 'denied', 'environment', 'staging'],
+      ['run.start', 'denied', 'hosts', '2 hosts'],
+    ])
+    expect(runRows(t)[0]!.targetId).toBe(t.staging.id)
     expect(t.server.execs()).toHaveLength(0)
   })
 
@@ -415,7 +477,10 @@ describe('RunManager', () => {
       ['run.start', 'success'],
       ['run.finish', 'info'],
     ])
-    expect(() => t.runs.start({ target: onHosts(t, ['app-1']), command: text('true') })).toThrow()
+    expect(() => t.runs.start({ target: onHosts(t, ['app-1']), command: text('true') })).toThrow(/quitting/)
+    // The running command got its INT; the queued host never ran.
+    await t.waitFor(() => expect(t.server.signals()).toContain('INT'))
+    expect(t.server.execs()).toHaveLength(1)
   })
 
   it('drops the output of the oldest finished runs past the total budget, keeping their summaries', async () => {
@@ -441,41 +506,5 @@ describe('RunManager', () => {
     expect((await h['runs:cancel'](run.id)).state).toBe('done')
     await h['runs:dismiss'](run.id)
     expect(await h['runs:list']()).toEqual([])
-  })
-})
-
-describe('OutputRing', () => {
-  it('trims from the front and shifts, clips and drops stderr ranges', () => {
-    const ring = new OutputRing(10, 4096, 0)
-    ring.append('aaaa', 'out')
-    ring.append('EEEE', 'err')
-    ring.append('bb', 'out')
-    expect(ring.snapshot()).toEqual({ text: 'aaaaEEEEbb', errRanges: [[4, 8]] })
-    expect(ring.truncated).toBe(false)
-    ring.append('cccccc', 'out')
-    expect(ring.snapshot()).toEqual({ text: 'EEbbcccccc', errRanges: [[0, 2]] })
-    expect(ring.truncated).toBe(true)
-    ring.append('ddd', 'out')
-    expect(ring.snapshot()).toEqual({ text: 'bccccccddd', errRanges: [] })
-  })
-
-  it('merges adjacent stderr chunks and caps the range count by merging the oldest', () => {
-    const ring = new OutputRing(1000, 3, 0)
-    ring.append('e1', 'err')
-    ring.append('e2', 'err')
-    expect(ring.snapshot().errRanges).toEqual([[0, 4]])
-    for (const s of ['o', 'E', 'o', 'E', 'o', 'E']) ring.append(s, s === 'E' ? 'err' : 'out')
-    expect(ring.snapshot().errRanges).toEqual([
-      [0, 6],
-      [7, 8],
-      [9, 10],
-    ])
-  })
-
-  it('never splits a surrogate pair when trimming', () => {
-    const ring = new OutputRing(3, 4096, 0)
-    ring.append('a😀b', 'out')
-    ring.append('c', 'out')
-    expect(ring.snapshot().text).toBe('bc')
   })
 })

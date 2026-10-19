@@ -237,6 +237,7 @@ export async function makeRunSetup(deps: Partial<RunManagerDeps> = {}) {
     sh,
     server,
     links,
+    broker,
     snippets,
     runs,
     events,

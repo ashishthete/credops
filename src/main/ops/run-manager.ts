@@ -6,7 +6,6 @@ import {
   DEFAULT_RUN_TIMEOUT_SEC,
   MAX_ACTIVE_RUNS,
   MAX_CONCURRENCY,
-  MAX_ERR_RANGES,
   MAX_RUN_TARGETS,
   MAX_RUN_TIMEOUT_SEC,
   MAX_RUNS_KEPT,
@@ -28,6 +27,7 @@ import { redact } from '../security/redact'
 import { realTimers, type Timers } from '../tunnels/forward'
 import { ExecFailure, type ExecLinks } from './exec-links'
 import { execOnce, type ExecResult } from './exec'
+import { OutputRing } from './output-ring'
 import { ProtectError, checkConfirm, confirmNeeded, isDestructive, protectionFor } from './protect'
 import { parseTemplate, renderTemplate } from './quote'
 import type { SnippetStore } from './snippet-store'
@@ -35,6 +35,7 @@ import type { SnippetStore } from './snippet-store'
 /** A host stopped while its command ran: without a pty the server need not kill it. */
 export const CANCELLED_RUNNING = 'Cancelled (the command may still be running on the host)'
 const CANCELLED: SessionError = { code: 'closed', message: 'Cancelled' }
+const HOST_NOT_FOUND: SessionError = { code: 'unknown', message: 'Host not found' }
 const LOCKED: SessionError = { code: 'locked', message: 'The vault was locked before this host ran' }
 const NO_HOSTS = 'No hosts match this target'
 const MAX_TITLE = 60
@@ -57,59 +58,6 @@ export interface RunManagerDeps {
   outputCap?: number
 }
 
-/**
- * One host's buffered output: the last `cap` chars, trimmed from the front, with stderr as ranges
- * `[start, end)` into the text. Adjacent stderr chunks share a range; past `maxRanges` the oldest two
- * merge into one. The text may grow `slack` past the cap between trims, so a stream of small chunks
- * doesn't copy the whole buffer each time; `snapshot` always trims to the cap.
- */
-export class OutputRing {
-  private text = ''
-  private ranges: [number, number][] = []
-  truncated = false
-
-  constructor(
-    private readonly cap: number,
-    private readonly maxRanges = MAX_ERR_RANGES,
-    private readonly slack = Math.floor(cap / 4),
-  ) {}
-
-  get length(): number {
-    return this.text.length
-  }
-
-  append(chunk: string, stream: 'out' | 'err'): void {
-    const start = this.text.length
-    this.text += chunk
-    if (stream === 'err' && chunk !== '') {
-      const last = this.ranges.at(-1)
-      if (last && last[1] === start) last[1] = this.text.length
-      else this.ranges.push([start, this.text.length])
-      if (this.ranges.length > this.maxRanges) {
-        const [a, b] = this.ranges as [[number, number], [number, number]]
-        this.ranges.splice(0, 2, [a[0], b[1]])
-      }
-    }
-    if (this.text.length > this.cap + this.slack) this.trim()
-  }
-
-  snapshot(): { text: string; errRanges: [number, number][] } {
-    this.trim()
-    return { text: this.text, errRanges: this.ranges.map(([a, b]) => [a, b]) }
-  }
-
-  private trim(): void {
-    let drop = this.text.length - this.cap
-    if (drop <= 0) return
-    // Never leave half a surrogate pair at the front.
-    const code = this.text.charCodeAt(drop)
-    if (code >= 0xdc00 && code <= 0xdfff) drop += 1
-    this.text = this.text.slice(drop)
-    this.truncated = true
-    this.ranges = this.ranges.flatMap(([a, b]) => (b - drop > 0 ? [[Math.max(a - drop, 0), b - drop] as [number, number]] : []))
-  }
-}
-
 interface Host {
   meta: RunHostMeta
   ring: OutputRing
@@ -119,6 +67,8 @@ interface Host {
   /** Aborts the lease, then the exec: a cancel, or a lock while it dials. */
   abort: AbortController
   lockStop: boolean
+  /** Not in the inventory at start (a stale id): it fails alone at its turn, labelled by its id. */
+  missing: boolean
 }
 
 interface Run {
@@ -143,7 +93,7 @@ interface Run {
 
 interface Target {
   context: EnvironmentMeta | null
-  hosts: HostMeta[]
+  hosts: { id: string; label: string; missing: boolean }[]
   audit: Run['audit']
 }
 
@@ -206,13 +156,7 @@ export class RunManager {
   start(req: RunRequest): RunSummary {
     if (this.closed) throw new Error('OpsDeck is quitting')
     if (this.deps.isLocked()) {
-      this.deps.audit.append({
-        action: 'run.start',
-        outcome: 'denied',
-        targetType: req.target.kind,
-        ...(req.target.environmentId ? { targetId: req.target.environmentId } : {}),
-        details: { reason: 'locked' },
-      })
+      this.deps.audit.append({ action: 'run.start', outcome: 'denied', ...this.lockedTarget(req.target), details: { reason: 'locked' } })
       throw new Error(VAULT_LOCKED)
     }
     const active = [...this.runs.values()].filter((r) => r.state === 'running').length
@@ -270,6 +214,7 @@ export class RunManager {
         pendingChars: 0,
         abort: new AbortController(),
         lockStop: false,
+        missing: h.missing,
       })),
       active: 0,
       flushTimer: null,
@@ -376,6 +321,13 @@ export class RunManager {
     return run
   }
 
+  /** The audit target of a start refused while locked: no protected lookups, just the environment's name or the host count. */
+  private lockedTarget(t: RunRequest['target']): Run['audit'] {
+    if (t.kind === 'hosts') return { targetType: 'hosts', targetLabel: plural(new Set(t.hostIds).size, 'host') }
+    const name = this.deps.environments().find((e) => e.id === t.environmentId)?.name ?? 'unknown environment'
+    return { targetType: 'environment', targetId: t.environmentId, targetLabel: name }
+  }
+
   private resolveTarget(t: RunRequest['target']): Target {
     const hosts = this.deps.hosts()
     const envOf = (id: string): EnvironmentMeta => {
@@ -383,22 +335,22 @@ export class RunManager {
       if (!env) throw new Error('environment not found')
       return env
     }
-    let picked: HostMeta[]
+    let picked: Target['hosts']
     let context: EnvironmentMeta | null = null
     if (t.kind === 'environment') {
       context = envOf(t.environmentId)
       const members = new Set(context.hosts.filter((m) => t.role === undefined || m.role === t.role).map((m) => m.hostId))
       // hosts() is in label order.
-      picked = hosts.filter((h) => members.has(h.id))
+      picked = hosts.filter((h) => members.has(h.id)).map((h) => ({ id: h.id, label: h.label, missing: false }))
     } else {
       const ids = [...new Set(t.hostIds)]
       if (ids.length > MAX_RUN_TARGETS) throw new Error(`too many hosts (${MAX_RUN_TARGETS} at most)`)
       if (t.environmentId !== undefined) context = envOf(t.environmentId)
       const byId = new Map(hosts.map((h) => [h.id, h]))
+      // A stale id (a host deleted since the renderer listed it) fails alone rather than sinking the run.
       picked = ids.map((id) => {
         const h = byId.get(id)
-        if (!h) throw new Error('host not found')
-        return h
+        return h ? { id, label: h.label, missing: false } : { id, label: id, missing: true }
       })
     }
     if (picked.length === 0) throw new Error(NO_HOSTS)
@@ -450,6 +402,7 @@ export class RunManager {
   private async runHost(run: Run, h: Host): Promise<void> {
     const signal = h.abort.signal
     const stopped = (): void => this.endHost(run, h, 'cancelled', { error: h.lockStop ? { ...LOCKED } : { ...CANCELLED } })
+    if (h.missing) return this.endHost(run, h, 'failed', { error: { ...HOST_NOT_FOUND } })
     let lease
     try {
       lease = await this.deps.links.lease(h.meta.hostId, run.environmentId, { id: `runs:${run.id}` }, signal)
