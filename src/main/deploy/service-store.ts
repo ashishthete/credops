@@ -113,57 +113,7 @@ export class ServiceStore {
 
   create(input: ServiceInput): ServiceMeta {
     this.vault.assertUnlocked()
-    const kind = input.kind
-    if (kind !== 'service' && kind !== 'db') throw new Error('kind must be service or db')
-    this.refuseForeign(kind, input)
-    const id = inTransaction(this.db, () => {
-      if (!this.db.prepare('SELECT 1 FROM environments WHERE id = ?').get(input.environmentId)) throw new Error('environment not found')
-      const n = (this.db.prepare('SELECT COUNT(*) AS n FROM services').get() as { n: number }).n
-      if (n >= MAX_SERVICES) throw new Error(`too many services (${MAX_SERVICES})`)
-      const id = this.ids()
-      const ts = this.now().toISOString()
-      const position = this.nextPosition(input.environmentId)
-      if (input.kind === 'service') {
-        const name = this.checkName(input.name, input.environmentId, null)
-        const f = this.validateApp(
-          {
-            name,
-            description: input.description ?? '',
-            deploymentId: input.deploymentId,
-            composeService: input.composeService ?? (COMPOSE_SERVICE.test(name) ? name : ''),
-            url: input.url ?? null,
-            urlCheckFrom: input.urlCheckFrom ?? 'mac',
-          },
-          input.environmentId,
-          null,
-        )
-        this.db
-          .prepare(
-            `INSERT INTO services(id, environment_id, name, kind, position, description, deployment_id, compose_service, url,
-              url_check_from, created_at, updated_at) VALUES (?,?,?,'service',?,?,?,?,?,?,?,?)`,
-          )
-          .run(id, input.environmentId, f.name, position, f.description, f.deploymentId, f.composeService, f.url, f.urlCheckFrom, ts, ts)
-      } else {
-        const name = this.checkName(input.name, input.environmentId, null)
-        const engine = this.checkEngine(input.dbEngine)
-        const f = this.validateDb({
-          name,
-          description: input.description ?? '',
-          dbEngine: engine,
-          dbAddress: input.dbAddress,
-          dbPort: input.dbPort ?? (DB_DEFAULT_PORT[engine] as number),
-          viaHostId: input.viaHostId ?? null,
-          localPort: input.localPort ?? null,
-        })
-        this.db
-          .prepare(
-            `INSERT INTO services(id, environment_id, name, kind, position, description, db_engine, db_address, db_port,
-              via_host_id, local_port, created_at, updated_at) VALUES (?,?,?,'db',?,?,?,?,?,?,?,?,?)`,
-          )
-          .run(id, input.environmentId, f.name, position, f.description, f.dbEngine, f.dbAddress, f.dbPort, f.viaHostId, f.localPort, ts, ts)
-      }
-      return id
-    })
+    const id = inTransaction(this.db, () => this.insertInTx(input))
     const s = this.get(id)
     this.audit.append({
       action: 'service.create',
@@ -175,6 +125,62 @@ export class ServiceStore {
     })
     this.onChanged?.(s.environmentId)
     return s
+  }
+
+  /**
+   * Validates and writes a service; no transaction, no audit and no `onChanged`, so a caller (copy to another
+   * environment) can batch several inside its own `inTransaction`. `position` defaults to the end of the environment.
+   */
+  insertInTx(input: ServiceInput, position?: number): string {
+    const kind = input.kind
+    if (kind !== 'service' && kind !== 'db') throw new Error('kind must be service or db')
+    this.refuseForeign(kind, input)
+    if (!this.db.prepare('SELECT 1 FROM environments WHERE id = ?').get(input.environmentId)) throw new Error('environment not found')
+    const n = (this.db.prepare('SELECT COUNT(*) AS n FROM services').get() as { n: number }).n
+    if (n >= MAX_SERVICES) throw new Error(`too many services (${MAX_SERVICES})`)
+    const id = this.ids()
+    const ts = this.now().toISOString()
+    const pos = position ?? this.nextPosition(input.environmentId)
+    if (input.kind === 'service') {
+      const name = this.checkName(input.name, input.environmentId, null)
+      const f = this.validateApp(
+        {
+          name,
+          description: input.description ?? '',
+          deploymentId: input.deploymentId,
+          composeService: input.composeService ?? (COMPOSE_SERVICE.test(name) ? name : ''),
+          url: input.url ?? null,
+          urlCheckFrom: input.urlCheckFrom ?? 'mac',
+        },
+        input.environmentId,
+        null,
+      )
+      this.db
+        .prepare(
+          `INSERT INTO services(id, environment_id, name, kind, position, description, deployment_id, compose_service, url,
+            url_check_from, created_at, updated_at) VALUES (?,?,?,'service',?,?,?,?,?,?,?,?)`,
+        )
+        .run(id, input.environmentId, f.name, pos, f.description, f.deploymentId, f.composeService, f.url, f.urlCheckFrom, ts, ts)
+    } else {
+      const name = this.checkName(input.name, input.environmentId, null)
+      const engine = this.checkEngine(input.dbEngine)
+      const f = this.validateDb({
+        name,
+        description: input.description ?? '',
+        dbEngine: engine,
+        dbAddress: input.dbAddress,
+        dbPort: input.dbPort ?? (DB_DEFAULT_PORT[engine] as number),
+        viaHostId: input.viaHostId ?? null,
+        localPort: input.localPort ?? null,
+      })
+      this.db
+        .prepare(
+          `INSERT INTO services(id, environment_id, name, kind, position, description, db_engine, db_address, db_port,
+            via_host_id, local_port, created_at, updated_at) VALUES (?,?,?,'db',?,?,?,?,?,?,?,?,?)`,
+        )
+        .run(id, input.environmentId, f.name, pos, f.description, f.dbEngine, f.dbAddress, f.dbPort, f.viaHostId, f.localPort, ts, ts)
+    }
+    return id
   }
 
   /** `undefined` keeps a field; `null` clears the nullable ones. The kind and environment never change. */

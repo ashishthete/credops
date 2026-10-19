@@ -32,6 +32,7 @@ import { noopFinalize } from './deploy/finalize'
 import { ReleaseService } from './deploy/release-service'
 import { DeployStore, dbSecretRefs } from './deploy/deploy-store'
 import { ServiceStore } from './deploy/service-store'
+import { copyServices } from './deploy/service-copy'
 import { ReleaseStore } from './deploy/release-store'
 import { createTunnelHandlers } from './ipc/handlers/tunnels'
 import { createOpsHandlers } from './ipc/handlers/ops'
@@ -185,6 +186,7 @@ if (!app.requestSingleInstanceLock()) {
       deploys.onChanged = (environmentId) => pushEvent(mainWindow, 'deploy:changed', { environmentId })
       const services = new ServiceStore({ db, audit: log, vault: service })
       services.onChanged = (environmentId) => pushEvent(mainWindow, 'deploy:changed', { environmentId })
+      const copyDeps = { db, deploys, services, audit: log, vault: service }
       const releaseStore = new ReleaseStore({ db })
       const importer = new SshImporter({
         db,
@@ -408,7 +410,10 @@ if (!app.requestSingleInstanceLock()) {
           ...createSshImportHandlers(importer),
           ...createTunnelHandlers({ store: tunnels, manager: runner }),
           ...createDeployHandlers({ deploys, releases: release, tooling: () => detectTools(toolDeps) }),
-          ...createServiceHandlers({ services }),
+          ...createServiceHandlers({
+            services,
+            copy: (req) => copyServices(copyDeps, req),
+          }),
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
           ...createOpsHandlers({ snippets, runs, containers }),
         },

@@ -87,7 +87,7 @@ import {
   type SecretPatch,
   type VaultInput,
 } from '../../shared/vault'
-import { MAX_SERVICES, type ServiceInput, type ServicePatch } from '../../shared/services'
+import { MAX_SERVICES, type CopyServicesRequest, type ServiceInput, type ServicePatch } from '../../shared/services'
 import { MAX_PRIVATE_KEY_BYTES } from '../vault/openssh'
 import { InvalidArgs, args, v, type ArgsValidator, type Check } from './validate'
 
@@ -340,6 +340,25 @@ export const asServicePatch: Check<ServicePatch> = v.object({
   description: serviceCommon.description,
   ...Object.fromEntries(Object.entries({ ...appServiceFields, ...dbServiceFields }).map(([k, c]) => [k, v.optional(c as Check<unknown>)])),
 }) as Check<ServicePatch>
+
+export const asCopyServicesRequest: Check<CopyServicesRequest> = v.object({
+  sourceEnvironmentId: v.uuid(),
+  targetEnvironmentId: v.uuid(),
+  checkouts: v.array(
+    v.object({
+      deploymentId: v.uuid(),
+      branch: deployFields.defaultBranch,
+      repoPath: deployPath,
+      hostId: v.uuid(),
+      deployTag: deployFields.deployTag,
+    }),
+    MAX_DEPLOYMENTS,
+  ),
+  dbs: v.array(
+    v.object({ serviceId: v.uuid(), dbAddress: dbServiceFields.dbAddress, dbPort: servicePort, viaHostId: nullableId }),
+    MAX_SERVICES,
+  ),
+}) as Check<CopyServicesRequest>
 
 const tunnelBindAddress = v.str({ min: 1, max: MAX_BIND_ADDRESS, pattern: BIND_ADDRESS, trim: true })
 const tunnelBindPort = v.int({ min: 0, max: 65535 })
@@ -605,6 +624,7 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'service:update': args(v.uuid(), asServicePatch),
   'service:delete': args(v.uuid(), v.object({ deleteTunnel: v.bool() })),
   'service:reorder': args(v.uuid(), v.array(v.uuid(), MAX_SERVICES)),
+  'service:copy': args(asCopyServicesRequest),
   'release:preflight': args(asPreflightRequest),
   'release:start': args(v.uuid(), asReleaseConfirm),
   'release:cancel': args(v.uuid()),

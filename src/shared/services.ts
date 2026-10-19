@@ -81,6 +81,24 @@ export interface ServiceUpdateResult {
   tunnelRestartNeeded: boolean
 }
 
+/** Copy to another environment. The renderer fills one row per source checkout and one per db service. */
+export interface CopyServicesRequest {
+  sourceEnvironmentId: string
+  targetEnvironmentId: string
+  /** One per source checkout that has services or is picked; these four fields differ per environment. */
+  checkouts: { deploymentId: string; branch: string; repoPath: string; hostId: string; deployTag: string }[]
+  /** One per source db service, with its address as seen from the target's via-host. */
+  dbs: { serviceId: string; dbAddress: string; dbPort: number; viaHostId: string | null }[]
+}
+
+export interface CopyServicesResult {
+  created: { services: number; checkouts: number }
+  /** Name conflicts are skipped, never renamed or overwritten. */
+  skipped: { kind: 'service' | 'checkout'; name: string; reason: string }[]
+  /** Hosts that joined the target environment as `app` hosts. */
+  addedHosts: number
+}
+
 // ---- Pure helpers ----
 
 /** "a", "a and b", "a, b and c". */

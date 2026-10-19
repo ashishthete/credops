@@ -156,55 +156,7 @@ export class DeployStore {
 
   create(input: DeploymentInput): DeploymentMeta {
     this.vault.assertUnlocked()
-    const id = inTransaction(this.db, () => {
-      const f = this.validate(
-        {
-          name: input.name,
-          environmentId: input.environmentId,
-          hostId: input.hostId,
-          repoUrl: input.repoUrl ?? null,
-          composeProject: input.composeProject ?? null,
-          repoPath: input.repoPath,
-          defaultBranch: input.defaultBranch,
-          composeFile: input.composeFile ?? 'docker-compose.yml',
-          deployTag: input.deployTag,
-          position: input.position ?? this.nextPosition(input.environmentId),
-          urls: input.urls ?? [],
-          healthStatus: input.healthStatus ?? 200,
-          healthTimeoutSec: input.healthTimeoutSec ?? 60,
-          dbBackup: input.dbBackup ?? false,
-          backupDir: input.backupDir ?? null,
-          preHook: input.preHook ?? null,
-          postHook: input.postHook ?? null,
-          buildTimeoutSec: input.buildTimeoutSec ?? 300,
-          composeTimeoutSec: input.composeTimeoutSec ?? 120,
-          useSudo: input.useSudo ?? 'auto',
-          becomeSecretId: input.becomeSecretId ?? null,
-          managedEnv: input.managedEnv ?? false,
-          envTemplate: input.envTemplate ?? null,
-          vaultIds: input.vaultIds ?? [],
-        },
-        null,
-      )
-      const n = (this.db.prepare('SELECT COUNT(*) AS n FROM deployments').get() as { n: number }).n
-      if (n >= MAX_DEPLOYMENTS) throw new Error(`too many deployments (${MAX_DEPLOYMENTS})`)
-      const id = this.ids()
-      const ts = this.now().toISOString()
-      this.db
-        .prepare(
-          `INSERT INTO deployments(id, name, environment_id, host_id, repo_url, compose_project, repo_path, default_branch, compose_file, deploy_tag,
-            position, urls, health_status, health_timeout_sec, db_backup, backup_dir, pre_hook, post_hook, build_timeout_sec,
-            compose_timeout_sec, use_sudo, become_secret_id, managed_env, env_template, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-        )
-        .run(
-          id, f.name, f.environmentId, f.hostId, f.repoUrl, f.composeProject, f.repoPath, f.defaultBranch, f.composeFile, f.deployTag,
-          f.position, JSON.stringify(f.urls), f.healthStatus, f.healthTimeoutSec, f.dbBackup ? 1 : 0, f.backupDir, f.preHook,
-          f.postHook, f.buildTimeoutSec, f.composeTimeoutSec, f.useSudo, f.becomeSecretId, f.managedEnv ? 1 : 0, f.envTemplate, ts, ts,
-        )
-      this.setVaults(id, f.vaultIds)
-      return id
-    })
+    const id = inTransaction(this.db, () => this.insertInTx(input))
     const d = this.get(id)
     this.audit.append({
       action: 'deploy.create',
@@ -216,6 +168,60 @@ export class DeployStore {
     })
     this.onChanged?.(d.environmentId)
     return d
+  }
+
+  /**
+   * Validates and writes a deployment, adding its host to the environment when needed; no transaction, no audit
+   * and no `onChanged`, so a caller (copy to another environment) can batch several inside its own `inTransaction`.
+   */
+  insertInTx(input: DeploymentInput): string {
+    const f = this.validate(
+      {
+        name: input.name,
+        environmentId: input.environmentId,
+        hostId: input.hostId,
+        repoUrl: input.repoUrl ?? null,
+        composeProject: input.composeProject ?? null,
+        repoPath: input.repoPath,
+        defaultBranch: input.defaultBranch,
+        composeFile: input.composeFile ?? 'docker-compose.yml',
+        deployTag: input.deployTag,
+        position: input.position ?? this.nextPosition(input.environmentId),
+        urls: input.urls ?? [],
+        healthStatus: input.healthStatus ?? 200,
+        healthTimeoutSec: input.healthTimeoutSec ?? 60,
+        dbBackup: input.dbBackup ?? false,
+        backupDir: input.backupDir ?? null,
+        preHook: input.preHook ?? null,
+        postHook: input.postHook ?? null,
+        buildTimeoutSec: input.buildTimeoutSec ?? 300,
+        composeTimeoutSec: input.composeTimeoutSec ?? 120,
+        useSudo: input.useSudo ?? 'auto',
+        becomeSecretId: input.becomeSecretId ?? null,
+        managedEnv: input.managedEnv ?? false,
+        envTemplate: input.envTemplate ?? null,
+        vaultIds: input.vaultIds ?? [],
+      },
+      null,
+    )
+    const n = (this.db.prepare('SELECT COUNT(*) AS n FROM deployments').get() as { n: number }).n
+    if (n >= MAX_DEPLOYMENTS) throw new Error(`too many deployments (${MAX_DEPLOYMENTS})`)
+    const id = this.ids()
+    const ts = this.now().toISOString()
+    this.db
+      .prepare(
+        `INSERT INTO deployments(id, name, environment_id, host_id, repo_url, compose_project, repo_path, default_branch, compose_file, deploy_tag,
+          position, urls, health_status, health_timeout_sec, db_backup, backup_dir, pre_hook, post_hook, build_timeout_sec,
+          compose_timeout_sec, use_sudo, become_secret_id, managed_env, env_template, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(
+        id, f.name, f.environmentId, f.hostId, f.repoUrl, f.composeProject, f.repoPath, f.defaultBranch, f.composeFile, f.deployTag,
+        f.position, JSON.stringify(f.urls), f.healthStatus, f.healthTimeoutSec, f.dbBackup ? 1 : 0, f.backupDir, f.preHook,
+        f.postHook, f.buildTimeoutSec, f.composeTimeoutSec, f.useSudo, f.becomeSecretId, f.managedEnv ? 1 : 0, f.envTemplate, ts, ts,
+      )
+    this.setVaults(id, f.vaultIds)
+    return id
   }
 
   /** `undefined` keeps a field; `null` clears the nullable ones. The environment and host never change. */
