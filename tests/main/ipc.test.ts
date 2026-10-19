@@ -131,6 +131,7 @@ describe('deploy contract', () => {
     'release:rollback',
     'release:break-lock',
     'release:discard',
+    'release:set-notes',
     'release:retry-version',
     'release:list',
     'release:get',

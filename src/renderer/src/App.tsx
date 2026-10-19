@@ -1,4 +1,5 @@
 import { HashRouter } from 'react-router'
+import './ai/register'
 import { AppShell } from './shell/AppShell'
 import { CommandPalette } from './ui/CommandPalette'
 import { Toaster } from './ui/Toaster'

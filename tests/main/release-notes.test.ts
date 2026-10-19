@@ -323,3 +323,38 @@ describe('ai:releaseNotes handler', () => {
     expect(() => requests.start(id)).toThrow(/already running/)
   })
 })
+
+describe('release:set-notes', () => {
+  it('release:set-notes is refused unless the release is ready or blocked', async () => {
+    const { rig, ready } = await import('./release-rig')
+    const { createDeployHandlers } = await import('../../src/main/ipc/handlers/deploy')
+    const r = await rig()
+    const id = await ready(r)
+    const before = r.f.audit.list({}).length
+    const h = createDeployHandlers({ deploys: r.f.deploys, releases: r.svc, tooling: async () => ({}) as never })
+    await h['release:set-notes'](id, '## Features\n- Refunds')
+    expect(r.svc.detail(id).releaseNotes).toBe('## Features\n- Refunds')
+    // An empty string clears the notes so finalize writes them again.
+    r.svc.setNotes(id, '')
+    expect(r.svc.detail(id).releaseNotes).toBeNull()
+    expect(r.f.audit.list({}).length).toBe(before)
+    r.f.vault.lock('manual')
+    expect(() => r.svc.setNotes(id, 'x')).toThrow('vault locked')
+  })
+
+  it('notes cannot change once a release left ready or blocked', async () => {
+    const { rig, ready } = await import('./release-rig')
+    const r = await rig()
+    const id = await ready(r)
+    await r.svc.discard(id)
+    expect(() => r.svc.setNotes(id, 'late')).toThrow('A discarded release cannot take notes')
+    expect(r.svc.detail(id).releaseNotes).toBeNull()
+  })
+
+  it('validator caps notes and needs a uuid', () => {
+    const check = VALIDATORS['release:set-notes']
+    expect(() => check(['nope', 'x'])).toThrow()
+    expect(() => check([API, 'x'.repeat(20001)])).toThrow()
+    expect(check([API, '## Fixes'])).toEqual([API, '## Fixes'])
+  })
+})

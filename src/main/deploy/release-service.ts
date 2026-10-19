@@ -630,6 +630,17 @@ export class ReleaseService {
     if (this.live.has(releaseId) || !allowed.includes(now)) throw new DeployError('INVALID_STATE', `This release is ${now}`)
   }
 
+  /**
+   * Saves the notes edited in the wizard while the release is ready or blocked; '' clears them so finalize
+   * writes its own. Not audited: it carries content, and the release itself is audited.
+   */
+  setNotes(releaseId: string, notes: string): void {
+    this.d.vault.assertUnlocked()
+    const rel = this.d.releases.get(releaseId)
+    if (rel.status !== 'ready' && rel.status !== 'blocked') throw new DeployError('INVALID_STATE', `A ${rel.status} release cannot take notes`)
+    this.d.releases.setStatus(releaseId, rel.status, { releaseNotes: notes.trim() === '' ? null : notes })
+  }
+
   async discard(releaseId: string): Promise<void> {
     this.d.vault.assertUnlocked()
     const rel = this.d.releases.get(releaseId)

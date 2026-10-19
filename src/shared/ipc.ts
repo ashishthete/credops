@@ -199,6 +199,7 @@ export interface IpcContract {
   'release:rollback': { args: [releaseId: string, confirm: ReleaseConfirm]; result: { releaseId: string } }
   'release:break-lock': { args: [releaseId: string, hostId: string, confirm: BreakLockConfirm]; result: void }
   'release:discard': { args: [releaseId: string]; result: void }
+  'release:set-notes': { args: [releaseId: string, notes: string]; result: void }
   'release:retry-version': { args: [releaseId: string]; result: void }
   'release:list': { args: [filter: ReleaseListFilter]; result: ReleaseSummary[] }
   'release:get': { args: [releaseId: string]; result: ReleaseDetail }
@@ -341,6 +342,7 @@ export const CHANNELS = [
   'release:rollback',
   'release:break-lock',
   'release:discard',
+  'release:set-notes',
   'release:retry-version',
   'release:list',
   'release:get',

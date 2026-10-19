@@ -712,6 +712,7 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'release:rollback': args(v.uuid(), asReleaseConfirm),
   'release:break-lock': args(v.uuid(), v.uuid(), asBreakLockConfirm),
   'release:discard': args(v.uuid()),
+  'release:set-notes': args(v.uuid(), v.str({ max: MAX_RELEASE_NOTES })),
   'release:retry-version': args(v.uuid()),
   'release:list': args(asReleaseListFilter),
   'release:get': args(v.uuid()),
