@@ -207,7 +207,7 @@ describe('environment registry', () => {
   it('publish and unpublish are refused while a release lock is held', async () => {
     const { admin } = await setup()
     await put(admin, manifest())
-    hub.db.prepare("INSERT INTO env_locks VALUES (?, 'release', 'r1', 'o', 'Zed', NULL, 't', NULL)").run(ENV_ID)
+    hub.db.prepare("INSERT INTO env_locks(environment_id, kind, release_id, holder_oid, holder_name, reason, created_at, expires_at) VALUES (?, 'release', 'r1', 'o', 'Zed', NULL, 't', NULL)").run(ENV_ID)
     const before = hub.audit.list().length
     for (const r of [await put(admin, manifest()), await call(admin, 'DELETE', `/api/v1/admin/environments/${ENV_ID}`)]) {
       expect(r.statusCode).toBe(409)
@@ -216,7 +216,7 @@ describe('environment registry', () => {
     expect(hub.audit.list().length).toBe(before)
     // A manual freeze does not block a publish.
     hub.db.exec('DELETE FROM env_locks')
-    hub.db.prepare("INSERT INTO env_locks VALUES (?, 'manual', NULL, 'o', 'Zed', 'x', 't', 'later')").run(ENV_ID)
+    hub.db.prepare("INSERT INTO env_locks(environment_id, kind, release_id, holder_oid, holder_name, reason, created_at, expires_at) VALUES (?, 'manual', NULL, 'o', 'Zed', 'x', 't', 'later')").run(ENV_ID)
     expect((await put(admin, manifest())).statusCode).toBe(200)
   })
 

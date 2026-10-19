@@ -62,6 +62,12 @@ describe('environment locks', () => {
         const out: Result[] = []
         for (const w of workers) {
           w.on('error', reject)
+          // A worker that dies without reporting must fail the test now, not after the 15 s timeout.
+          let reported = false
+          w.on('exit', (code) => {
+            // Messages posted before exit are delivered first, so an unreported exit really is silent.
+            if (!reported) reject(new Error(`worker exited (${code}) before reporting`))
+          })
           w.on('message', (m: Result & { ready?: number }) => {
             if (m.ready !== undefined) {
               // Every worker is connected and parked: release them together.
@@ -71,6 +77,7 @@ describe('environment locks', () => {
               }
               return
             }
+            reported = true
             out.push(m)
             if (out.length === N) resolve(out)
           })
@@ -89,7 +96,7 @@ describe('environment locks', () => {
     }
   }, 15_000)
 
-  it('a second connection waits on a writer holding the lock, then loses cleanly', async () => {
+  it('a connection refused while another writer is open then sees that writer\'s committed lock', async () => {
     await setup()
     const file = join(hub.config.dataDir, 'hub.db')
     const a = openHubDb(file)
@@ -98,7 +105,8 @@ describe('environment locks', () => {
       b.exec('PRAGMA busy_timeout = 0')
       a.exec('BEGIN IMMEDIATE')
       a.prepare("INSERT INTO env_locks(environment_id, kind, release_id, holder_oid, holder_name, created_at) VALUES (?, 'release', 'ra', 'oa', 'A', ?)").run(ENV_ID, hub.clock.now.toISOString())
-      // B cannot even read-then-write while A's transaction is open: it is refused, never a second winner.
+      // Not a discriminating test (busy_timeout 0 refuses B for any strategy); the worker test above is the proof of atomicity.
+      // It pins that B is refused while A's write is open and then reports A's committed lock.
       expect(() => new EnvLocks(b, { now: () => hub.clock.now }).acquireRelease(ENV_ID, 'rb', { oid: 'ob', name: 'B' })).toThrow(/locked|busy/i)
       a.exec('COMMIT')
       expect(() => new EnvLocks(b, { now: () => hub.clock.now }).acquireRelease(ENV_ID, 'rb', { oid: 'ob', name: 'B' })).toThrow(/Locked by A since /)
@@ -120,15 +128,41 @@ describe('environment locks', () => {
     const other = await freeze(cat)
     expect(other.statusCode).toBe(409)
     expect(other.json().error).toBe('env_locked')
-    // A frozen environment refuses releases, even the holder's own, and the freeze survives. Lifting it is a separate step.
-    expect(() => locks.acquireRelease(ENV_ID, 'r-1', holder(BOB))).toThrow(/Locked by Bob since .*: db migration/)
-    expect(locks.get(ENV_ID)).toMatchObject({ kind: 'manual', holder: holder(BOB), reason: 'db migration' })
-    expect(hub.db.prepare('SELECT COUNT(*) AS n FROM env_locks').get()).toEqual({ n: 1 })
-    expect((await unfreeze(bob)).statusCode).toBe(204)
+    // The holder's own release takes the freeze over; others are still refused while it is live.
     expect(locks.acquireRelease(ENV_ID, 'r-1', holder(BOB))).toMatchObject({ kind: 'release', releaseId: 'r-1' })
     // A release lock cannot be frozen over or lifted as a freeze.
     expect((await freeze(bob)).statusCode).toBe(409)
     expect((await unfreeze(bob)).statusCode).toBe(409)
+    // When the release ends the freeze is back, with its original reason and expiry.
+    locks.releaseFor('r-1')
+    expect(locks.get(ENV_ID)).toEqual(lock)
+    expect(() => locks.acquireRelease(ENV_ID, 'r-2', holder(CAT))).toThrow(/Locked by Bob since .*: db migration/)
+  })
+
+  it('a freeze that expires during its holder\'s release does not come back', async () => {
+    const { bob, locks } = await setup()
+    await freeze(bob, { reason: 'short', hours: 1 })
+    locks.acquireRelease(ENV_ID, 'r-1', holder(BOB))
+    hub.clock.now = new Date(hub.clock.now.getTime() + 2 * 3_600_000)
+    locks.releaseFor('r-1')
+    expect(locks.get(ENV_ID)).toBeNull()
+    expect(hub.db.prepare('SELECT COUNT(*) AS n FROM env_locks').get()).toEqual({ n: 0 })
+  })
+
+  it('a restart mid-release brings back an unexpired freeze and drops an expired one', async () => {
+    const { bob, locks } = await setup()
+    const frozen = (await freeze(bob, { reason: 'keep me', hours: 2 })).json() as HubEnvLock
+    locks.acquireRelease(ENV_ID, 'r-1', holder(BOB))
+    const boot = () => new EnvLocks(hub.db, { now: () => hub.clock.now }).clearReleaseLocks()
+    expect(boot()).toBe(1)
+    expect(locks.get(ENV_ID)).toEqual(frozen)
+    locks.releaseFor('nothing')
+    locks.unfreeze(ENV_ID, { oid: BOB.oid, role: 'maintainer' })
+    await freeze(bob, { reason: 'gone', hours: 1 })
+    locks.acquireRelease(ENV_ID, 'r-2', holder(BOB))
+    hub.clock.now = new Date(hub.clock.now.getTime() + 2 * 3_600_000)
+    expect(boot()).toBe(1)
+    expect(locks.get(ENV_ID)).toBeNull()
   })
 
   it('clamps hours and requires a reason', async () => {
@@ -304,6 +338,34 @@ describe('environment locks', () => {
     expect(JSON.parse(seen[0])).toMatchObject({ error: 'forbidden' })
     for (const body of seen) for (const leak of ['Bob', 'prod', 'staging', 'qa', 'release']) expect(body).not.toContain(leak)
     expect(hub.db.prepare('SELECT COUNT(*) AS n FROM env_locks').get()).toEqual({ n: 2 })
+  })
+
+  it('an active user with a grant elsewhere gets the same refusal for every id, and it is audited', async () => {
+    const { admin, bob } = await setup()
+    const ENV2 = 'e2222222-2222-4222-8222-222222222222'
+    const ENV3 = 'e3333333-3333-4333-8333-333333333333'
+    for (const [id, name] of [[ENV2, 'staging'], [ENV3, 'qa']]) {
+      const m = manifest()
+      m.environment = { ...m.environment, id, name }
+      m.hosts = []
+      m.deployments = []
+      m.requiredSecrets = []
+      expect((await call(admin, 'PUT', `/api/v1/admin/environments/${id}`, m)).statusCode).toBe(200)
+    }
+    // Eve is active, with a grant on ENV3 only.
+    const EVE = { oid: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', upn: 'eve@example.com', name: 'Eve' }
+    const eve = (await hub.signIn(EVE)).token
+    const g = (await call(admin, 'POST', '/api/v1/admin/groups', { name: 'QA' })).json().id as string
+    await call(admin, 'POST', `/api/v1/admin/groups/${g}/members`, { oids: [EVE.oid] })
+    expect((await call(admin, 'POST', `/api/v1/admin/groups/${g}/grants`, { scope: { kind: 'environment', environmentId: ENV3 } })).statusCode).toBe(201)
+    await freeze(bob)
+    const ids = ['e9999999-9999-4999-8999-999999999999', ENV2, ENV_ID]
+    const bodies = await Promise.all(ids.map(async (id) => (await call(eve, 'DELETE', `/api/v1/environments/${id}/freeze`)).body.replaceAll(id, '<id>')))
+    expect(new Set(bodies).size).toBe(1)
+    expect(JSON.parse(bodies[0])).toMatchObject({ error: 'forbidden' })
+    for (const leak of ['Bob', 'prod', 'staging']) expect(bodies[0]).not.toContain(leak)
+    const denied = hub.audit.list({ actions: ['access.denied'] }).filter((a) => (a.details as { attempted?: string }).attempted === 'lock.unfreeze')
+    expect(denied.map((a) => a.targetId).sort()).toEqual([...ids].sort())
   })
 
   it('a throwing change listener does not undo or fail the lock', async () => {

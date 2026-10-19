@@ -68,7 +68,18 @@ export function registerLocks(
       // Whether an environment exists, is frozen, or who froze it is for its holder, admins and people who can view it.
       if (req.user.role !== 'admin' && locks.get(environmentId)?.holder.oid !== req.user.oid) {
         const d = decide(req.user, directory.listGroups(), 'deploy.view', { environmentId })
-        if (!d.allowed) throw new HubHttpError(403, 'forbidden', d.reason)
+        if (!d.allowed) {
+          // Same uniform refusal for every id, and recorded; nothing about the environment was read.
+          audit.append({
+            action: 'access.denied',
+            outcome: 'denied',
+            actor: actorOf(req),
+            targetType: 'environment',
+            targetId: environmentId,
+            details: { attempted: 'lock.unfreeze', code: 'forbidden', environmentId },
+          })
+          throw new HubHttpError(403, 'forbidden', d.reason)
+        }
       }
       const typed = (req.body as { typedName?: unknown } | null | undefined)?.typedName
       if (typed !== undefined && (typeof typed !== 'string' || typed.length > 200)) throw new HubHttpError(400, 'bad_request', 'typedName must be a string')

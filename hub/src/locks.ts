@@ -12,6 +12,9 @@ interface Row {
   reason: string | null
   created_at: string
   expires_at: string | null
+  frozen_reason: string | null
+  frozen_created_at: string | null
+  frozen_expires_at: string | null
 }
 
 export interface LockHolder {
@@ -87,20 +90,25 @@ export class EnvLocks {
 
   private insert(r: Row): void {
     this.db
-      .prepare('INSERT INTO env_locks(environment_id, kind, release_id, holder_oid, holder_name, reason, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?)')
-      .run(r.environment_id, r.kind, r.release_id, r.holder_oid, r.holder_name, r.reason, r.created_at, r.expires_at)
+      .prepare(
+        'INSERT INTO env_locks(environment_id, kind, release_id, holder_oid, holder_name, reason, created_at, expires_at, frozen_reason, frozen_created_at, frozen_expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+      )
+      .run(r.environment_id, r.kind, r.release_id, r.holder_oid, r.holder_name, r.reason, r.created_at, r.expires_at, r.frozen_reason, r.frozen_created_at, r.frozen_expires_at)
   }
 
   /**
-   * Takes the release lock. Anything live, including a freeze (even the caller's own), is a 409 and is left in
-   * place: a frozen environment refuses releases, and lifting the freeze is a separate, audited step.
+   * Takes the release lock. A live release or someone else's freeze is a 409 and is left in place. The freeze
+   * holder's own release takes the freeze over: it is set aside in the row and comes back, with its original reason
+   * and expiry, when the release lock ends (unless it has expired by then).
    */
   acquireRelease(environmentId: string, releaseId: string, holder: LockHolder): HubEnvLock {
     const row = inTransaction(this.db, (): Row => {
       this.assertEnv(environmentId)
       const existing = this.db.prepare('SELECT * FROM env_locks WHERE environment_id = ?').get(environmentId) as Row | undefined
-      if (existing && !this.expired(existing)) throw blocked(existing)
+      const own = existing !== undefined && existing.kind === 'manual' && existing.holder_oid === holder.oid
+      if (existing && !this.expired(existing) && !own) throw blocked(existing)
       if (existing) this.db.prepare('DELETE FROM env_locks WHERE environment_id = ?').run(environmentId)
+      const keep = existing !== undefined && own && !this.expired(existing)
       const r: Row = {
         environment_id: environmentId,
         kind: 'release',
@@ -110,6 +118,9 @@ export class EnvLocks {
         reason: null,
         created_at: this.opts.now().toISOString(),
         expires_at: null,
+        frozen_reason: keep ? existing.reason : null,
+        frozen_created_at: keep ? existing.created_at : null,
+        frozen_expires_at: keep ? existing.expires_at : null,
       }
       this.insert(r)
       return r
@@ -118,11 +129,35 @@ export class EnvLocks {
     return toLock(row)
   }
 
+  /** Ends a release lock; the holder's set-aside freeze comes back if it has not expired. */
   releaseFor(releaseId: string): void {
-    const rows = this.db.prepare("SELECT environment_id FROM env_locks WHERE kind = 'release' AND release_id = ?").all(releaseId) as { environment_id: string }[]
-    if (rows.length === 0) return
-    this.db.prepare("DELETE FROM env_locks WHERE kind = 'release' AND release_id = ?").run(releaseId)
-    for (const r of rows) this.emit(r.environment_id)
+    const ids = inTransaction(this.db, () => this.endReleases("kind = 'release' AND release_id = ?", [releaseId]))
+    for (const id of ids) this.emit(id)
+  }
+
+  /** Inside a transaction: removes the matching release rows and puts back each unexpired set-aside freeze. */
+  private endReleases(where: string, args: string[]): string[] {
+    const rows = this.db.prepare(`SELECT * FROM env_locks WHERE ${where}`).all(...args) as unknown as Row[]
+    const now = this.opts.now().toISOString()
+    for (const r of rows) {
+      this.db.prepare('DELETE FROM env_locks WHERE environment_id = ?').run(r.environment_id)
+      if (r.frozen_expires_at !== null && r.frozen_expires_at > now) {
+        this.insert({
+          environment_id: r.environment_id,
+          kind: 'manual',
+          release_id: null,
+          holder_oid: r.holder_oid,
+          holder_name: r.holder_name,
+          reason: r.frozen_reason,
+          created_at: r.frozen_created_at as string,
+          expires_at: r.frozen_expires_at,
+          frozen_reason: null,
+          frozen_created_at: null,
+          frozen_expires_at: null,
+        })
+      }
+    }
+    return rows.map((r) => r.environment_id)
   }
 
   /** A manual freeze for `hours` (1 to FREEZE_MAX_HOURS). The holder may refresh their own. */
@@ -143,6 +178,9 @@ export class EnvLocks {
         reason: input.reason,
         created_at: now.toISOString(),
         expires_at: new Date(now.getTime() + hours * 3_600_000).toISOString(),
+        frozen_reason: null,
+        frozen_created_at: null,
+        frozen_expires_at: null,
       }
       this.insert(r)
       return r
@@ -182,12 +220,11 @@ export class EnvLocks {
     return rows.length
   }
 
-  /** At boot no release is running any more: drop their locks (and any expired freeze). Live freezes stay. */
+  /** At boot no release is running any more: drop their locks (set-aside freezes come back) and any expired freeze. Live freezes stay. */
   clearReleaseLocks(): number {
-    const rows = this.db.prepare("SELECT environment_id FROM env_locks WHERE kind = 'release'").all() as { environment_id: string }[]
-    this.db.prepare("DELETE FROM env_locks WHERE kind = 'release'").run()
+    const ids = inTransaction(this.db, () => this.endReleases("kind = 'release'", []))
     this.sweepExpired()
-    for (const r of rows) this.emit(r.environment_id)
-    return rows.length
+    for (const id of ids) this.emit(id)
+    return ids.length
   }
 }
