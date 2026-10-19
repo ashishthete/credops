@@ -11,7 +11,9 @@ import { installErrorHandler } from './errors'
 import { makeAuth } from './auth/plugin'
 import { registerAccess } from './routes/access'
 import { registerAdmin } from './routes/admin'
+import { EnvLocks } from './locks'
 import { Registry } from './registry'
+import { registerLocks } from './routes/locks'
 import { registerRegistry } from './routes/registry'
 import { registerSecrets } from './routes/secrets'
 import { DeployKeys } from './secrets/deploykeys'
@@ -66,8 +68,15 @@ export function buildApp(deps: HubDeps): FastifyInstance {
   registerSession(app, { audit: deps.audit, verifier: deps.verifier, sessions, directory, now: deps.now }, auth)
   registerAdmin(app, { directory, audit: deps.audit, auth })
   registerAccess(app, { directory, auth })
-  const registry = new Registry(deps.db, { audit: deps.audit, directory, now: deps.now })
+  const locks = new EnvLocks(deps.db, { now: deps.now })
+  // A restart ends every release, so their locks go; live freezes stay.
+  locks.clearReleaseLocks()
+  const sweep = setInterval(() => locks.sweepExpired(), 60_000)
+  sweep.unref()
+  app.addHook('onClose', async () => clearInterval(sweep))
+  const registry = new Registry(deps.db, { audit: deps.audit, directory, locks, now: deps.now })
   registerRegistry(app, { registry, directory, auth })
+  registerLocks(app, { locks, directory, audit: deps.audit, auth })
   registerSecrets(app, { secrets, deployKeys, registry, directory, audit: deps.audit, auth })
   return app
 }

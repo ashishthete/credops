@@ -31,6 +31,7 @@ import { decide } from './access/policy'
 import type { Directory } from './access/directory'
 import type { HubAudit } from './audit'
 import type { HubDb } from './db'
+import type { EnvLocks } from './locks'
 import { HubHttpError } from './errors'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -302,6 +303,7 @@ interface AppRow {
 export interface RegistryOptions {
   audit: HubAudit
   directory: Pick<Directory, 'listGroups'>
+  locks: Pick<EnvLocks, 'get'>
   now: () => Date
 }
 
@@ -311,16 +313,8 @@ export class Registry {
     private readonly opts: RegistryOptions,
   ) {}
 
-  /** Later migrations add their tables; until then there is nothing to consult. */
-  private hasTable(name: string): boolean {
-    return this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined
-  }
-
   private assertNoRelease(id: string, name: string): void {
-    if (!this.hasTable('env_locks')) return
-    if (this.db.prepare("SELECT 1 FROM env_locks WHERE environment_id = ? AND kind = 'release'").get(id)) {
-      throw new HubHttpError(409, 'conflict', `A release is running on ${name}`)
-    }
+    if (this.opts.locks.get(id)?.kind === 'release') throw new HubHttpError(409, 'conflict', `A release is running on ${name}`)
   }
 
   private secretIdsPresent(environmentId: string): Set<string> {
@@ -532,6 +526,7 @@ export class Registry {
       deployments: view.deployments,
       missingSecrets: m.requiredSecrets.filter((s) => !present.has(s.secretId)).length,
       deployKey: this.deployKey(r.id),
+      lock: this.opts.locks.get(r.id),
       publishedAt: r.published_at,
       publishedBy: r.published_by,
     }

@@ -9,6 +9,7 @@ const env = (id: string): HubCatalogEnv => ({
   deployments: [],
   missingSecrets: 0,
   deployKey: null,
+  lock: null,
   publishedAt: 't',
   publishedBy: 'a',
 })

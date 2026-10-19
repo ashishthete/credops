@@ -7,6 +7,7 @@ import type {
   HubCatalogEnv,
   HubDecision,
   HubDeployKey,
+  HubEnvLock,
   HubGroup,
   HubSecretList,
   HubUser,
@@ -28,8 +29,15 @@ export function createHubHandlers(deps: {
   audit: { append(input: AuditInput): unknown }
   catalog: Pick<HubCatalog, 'refresh'>
   publisher: Pick<HubPublisher, 'publish' | 'unpublish' | 'uploadSecrets' | 'setIntegrationSecret'>
+  /** Tells the renderer a lock changed (event hub:locks). */
+  onLocksChanged?: () => void
 }): Pick<Handlers, HubChannel> {
   const { conn, vault, audit, catalog, publisher } = deps
+  /** After a lock change: refresh the catalog (it carries each environment's lock) and tell the renderer. */
+  const changed = async (): Promise<void> => {
+    deps.onLocksChanged?.()
+    await catalog.refresh().catch(() => undefined)
+  }
   const record = (op: string, target: string): void => {
     audit.append({ action: 'hub.admin', outcome: 'success', details: { op, target } })
   }
@@ -131,6 +139,19 @@ export function createHubHandlers(deps: {
         }
       }
       return mutate(() => [[rotate ? 'deploykey.rotate' : 'deploykey.create', environmentId]], () => conn.client().post<HubDeployKey>(path))
+    },
+    // Locks: freezing is a Hub write by the signed-in person, audited by the Hub (lock.freeze / lock.unfreeze / lock.break).
+    'hub:locks': () => conn.client().get<HubEnvLock[]>('/api/v1/locks'),
+    'hub:freeze': async (environmentId, reason, hours) => {
+      vault.assertUnlocked()
+      const lock = await conn.client().post<HubEnvLock>(`/api/v1/environments/${environmentId}/freeze`, { reason, ...(hours !== null ? { hours } : {}) })
+      await changed()
+      return lock
+    },
+    'hub:unfreeze': async (environmentId, typedName) => {
+      vault.assertUnlocked()
+      await conn.client().del(`/api/v1/environments/${environmentId}/freeze`, typedName !== null ? { typedName } : undefined)
+      await changed()
     },
     'hub:adminEnvironments': () => conn.client().get<HubCatalogEnv[]>(`${ADMIN}/environments`),
   }

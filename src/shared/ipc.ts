@@ -7,6 +7,7 @@ import type {
   HubAuditFilter,
   HubCatalogEnv,
   HubDeployKey,
+  HubEnvLock,
   HubSecretKind,
   HubSecretMeta,
   HubDecision,
@@ -246,6 +247,10 @@ export interface IpcContract {
   'hub:setIntegrationSecret': { args: [environmentId: string | null, kind: HubSecretKind, secretId: string]; result: void }
   'hub:deleteSecret': { args: [id: string]; result: void }
   'hub:deployKey': { args: [environmentId: string, rotate: boolean]; result: HubDeployKey }
+  'hub:locks': { args: []; result: HubEnvLock[] }
+  'hub:freeze': { args: [environmentId: string, reason: string, hours: number | null]; result: HubEnvLock }
+  // typedName is the exact environment name, needed to lift someone else's freeze on a protected environment.
+  'hub:unfreeze': { args: [environmentId: string, typedName: string | null]; result: void }
   'snippets:list': { args: []; result: SnippetMeta[] }
   'snippets:create': { args: [input: SnippetInput]; result: SnippetMeta }
   'snippets:update': { args: [id: string, input: SnippetInput]; result: SnippetMeta }
@@ -399,6 +404,9 @@ export const CHANNELS = [
   'hub:setIntegrationSecret',
   'hub:deleteSecret',
   'hub:deployKey',
+  'hub:locks',
+  'hub:freeze',
+  'hub:unfreeze',
   'snippets:list',
   'snippets:create',
   'snippets:update',
@@ -446,6 +454,8 @@ export interface EventContract {
   'hub:state': HubStatus
   // The signed-in person's catalog changed; refetch with hub:catalog.
   'hub:catalog': Record<string, never>
+  // A lock was taken or lifted by this client; refetch with hub:locks.
+  'hub:locks': Record<string, never>
 }
 export type EventName = keyof EventContract
 export const EVENTS = [
@@ -464,6 +474,7 @@ export const EVENTS = [
   'release:state',
   'hub:state',
   'hub:catalog',
+  'hub:locks',
 ] as const satisfies readonly EventName[]
 type MissingEvents = Exclude<EventName, (typeof EVENTS)[number]>
 export const eventsAreComplete: [MissingEvents] extends [never] ? true : never = true

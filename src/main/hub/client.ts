@@ -54,8 +54,8 @@ export class HubClient {
   put<T>(path: string, body?: unknown): Promise<T> {
     return this.request<T>('PUT', path, body)
   }
-  async del(path: string): Promise<void> {
-    await this.request<void>('DELETE', path)
+  async del(path: string, body?: unknown): Promise<void> {
+    await this.request<void>('DELETE', path, body)
   }
 
   private async request<T>(method: string, path: string, body?: unknown, query?: Query): Promise<T> {

@@ -12,7 +12,7 @@ const UUID = '11111111-1111-4111-8111-111111111111'
 
 describe('hub ipc validators', () => {
   it('every new channel has a validator', () => {
-    expect(HUB_CHANNELS).toHaveLength(29)
+    expect(HUB_CHANNELS).toHaveLength(32)
     for (const c of HUB_CHANNELS) expect(typeof VALIDATORS[c]).toBe('function')
   })
 
@@ -54,7 +54,8 @@ describe('hub ipc validators', () => {
 
 describe('hub handlers', () => {
   const frame = { senderFrame: { url: 'file:///ok' } } as IpcMainInvokeEvent
-  function setup(client: Record<string, unknown>, secrets: string[] = []) {
+  function setup(client: Record<string, unknown>, extra: { secrets?: string[]; onLocksChanged?: () => void } = {}) {
+    const secrets = extra.secrets ?? []
     const audit = { append: vi.fn() }
     const vault = { assertUnlocked: vi.fn() }
     const conn = {
@@ -67,7 +68,7 @@ describe('hub handlers', () => {
       unlink: vi.fn(),
       me: vi.fn(),
     }
-    const handlers = createHubHandlers({ conn: conn as never, vault, audit, catalog: { refresh: vi.fn(async () => []) }, publisher: { publish: vi.fn(async () => ({ manifestHash: 'h', missingSecrets: [] })), unpublish: vi.fn(async () => undefined), uploadSecrets: vi.fn(async () => ({ uploaded: 0 })), setIntegrationSecret: vi.fn(async () => undefined) } })
+    const handlers = createHubHandlers({ conn: conn as never, vault, audit, catalog: { refresh: vi.fn(async () => []) }, publisher: { publish: vi.fn(async () => ({ manifestHash: 'h', missingSecrets: [] })), unpublish: vi.fn(async () => undefined), uploadSecrets: vi.fn(async () => ({ uploaded: 0 })), setIntegrationSecret: vi.fn(async () => undefined) }, onLocksChanged: extra.onLocksChanged })
     const registered = new Map<string, (...a: unknown[]) => unknown>()
     registerHandlers({ handle: (c: string, fn: never) => void registered.set(c, fn) }, stubHandlers(handlers), (u) => u === 'file:///ok', {
       validators: VALIDATORS,
@@ -112,7 +113,7 @@ describe('hub handlers', () => {
   })
 
   it('a failed Hub call writes no audit and a token in its error text is redacted', async () => {
-    const t = setup({ post: vi.fn(async () => { throw new Error('boom tok-secret-123') }) }, ['tok-secret-123'])
+    const t = setup({ post: vi.fn(async () => { throw new Error('boom tok-secret-123') }) }, { secrets: ['tok-secret-123'] })
     const err = await t.call('hub:createGroup', { name: 'Ops' }).catch((e: unknown) => e)
     expect((err as Error).message).not.toContain('tok-secret-123')
     expect(t.audit.append).not.toHaveBeenCalled()
@@ -137,5 +138,29 @@ describe('hub handlers', () => {
     expect(client.del).toHaveBeenCalledWith(`/api/v1/admin/secrets/${UUID}`)
     const ops = t.audit.append.mock.calls.map((c) => (c[0] as { details: { op: string } }).details.op)
     expect(ops).toEqual(['deploykey.create', 'secret.delete'])
+  })
+
+  it('lock channels validate input, send the freeze to the Hub and announce the change', async () => {
+    expect(VALIDATORS['hub:freeze']([UUID, 'migration', null])).toEqual([UUID, 'migration', null])
+    expect(VALIDATORS['hub:freeze']([UUID, 'migration', 6])).toEqual([UUID, 'migration', 6])
+    expect(VALIDATORS['hub:unfreeze']([UUID, 'prod'])).toEqual([UUID, 'prod'])
+    expect(() => VALIDATORS['hub:freeze']([UUID, 'x'.repeat(281), null])).toThrow()
+    expect(() => VALIDATORS['hub:freeze']([UUID, 'x', 25])).toThrow()
+    expect(() => VALIDATORS['hub:freeze']([UUID, 'x'])).toThrow()
+    expect(() => VALIDATORS['hub:unfreeze'](['nope', null])).toThrow()
+    const lock = { environmentId: UUID, kind: 'manual', releaseId: null, holder: { oid: 'o', name: 'N' }, reason: 'migration', createdAt: 't', expiresAt: 'u' }
+    const client = { get: vi.fn(async () => [lock]), post: vi.fn(async () => lock), del: vi.fn(async () => undefined) }
+    const onLocksChanged = vi.fn()
+    const t = setup(client, { onLocksChanged })
+    await expect(t.call('hub:locks')).resolves.toEqual([lock])
+    await expect(t.call('hub:freeze', UUID, 'migration', 6)).resolves.toEqual(lock)
+    expect(client.post).toHaveBeenCalledWith(`/api/v1/environments/${UUID}/freeze`, { reason: 'migration', hours: 6 })
+    await t.call('hub:unfreeze', UUID, 'prod')
+    expect(client.del).toHaveBeenCalledWith(`/api/v1/environments/${UUID}/freeze`, { typedName: 'prod' })
+    await t.call('hub:unfreeze', UUID, null)
+    expect(client.del).toHaveBeenLastCalledWith(`/api/v1/environments/${UUID}/freeze`, undefined)
+    expect(onLocksChanged).toHaveBeenCalledTimes(3)
+    // The Hub audits lock changes itself; nothing is double-recorded locally.
+    expect(t.audit.append).not.toHaveBeenCalled()
   })
 })

@@ -71,15 +71,24 @@ CREATE TABLE env_deploy_keys(environment_id TEXT PRIMARY KEY REFERENCES environm
   created_at TEXT NOT NULL);
 `
 
+const LOCKS = `
+CREATE TABLE env_locks(environment_id TEXT PRIMARY KEY REFERENCES environments(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('release','manual')), release_id TEXT,
+  holder_oid TEXT NOT NULL, holder_name TEXT NOT NULL, reason TEXT, created_at TEXT NOT NULL, expires_at TEXT,
+  CHECK ((kind = 'release') = (release_id IS NOT NULL)), CHECK ((kind = 'manual') = (expires_at IS NOT NULL)));
+`
+
 export const HUB_MIGRATIONS: Migration[] = [
   { version: 1, name: 'core', up: CORE },
   { version: 2, name: 'registry', up: REGISTRY },
   { version: 3, name: 'secrets', up: SECRETS },
+  { version: 4, name: 'locks', up: LOCKS },
 ]
 
 export function openHubDb(file: string): HubDb {
   const db = new DatabaseSync(file)
   db.exec('PRAGMA foreign_keys = ON')
+  db.exec('PRAGMA busy_timeout = 5000')
   db.exec('PRAGMA journal_mode = WAL')
   migrate(db, HUB_MIGRATIONS)
   if (file !== ':memory:') chmodSync(file, 0o600)

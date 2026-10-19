@@ -195,10 +195,6 @@ describe('environment registry', () => {
   it('publish and unpublish are refused while a release lock is held', async () => {
     const { admin } = await setup()
     await put(admin, manifest())
-    hub.db.exec(`CREATE TABLE env_locks(environment_id TEXT PRIMARY KEY REFERENCES environments(id) ON DELETE CASCADE,
-      kind TEXT NOT NULL CHECK (kind IN ('release','manual')), release_id TEXT,
-      holder_oid TEXT NOT NULL, holder_name TEXT NOT NULL, reason TEXT, created_at TEXT NOT NULL, expires_at TEXT,
-      CHECK ((kind = 'release') = (release_id IS NOT NULL)), CHECK ((kind = 'manual') = (expires_at IS NOT NULL)))`)
     hub.db.prepare("INSERT INTO env_locks VALUES (?, 'release', 'r1', 'o', 'Zed', NULL, 't', NULL)").run(ENV_ID)
     const before = hub.audit.list().length
     for (const r of [await put(admin, manifest()), await call(admin, 'DELETE', `/api/v1/admin/environments/${ENV_ID}`)]) {

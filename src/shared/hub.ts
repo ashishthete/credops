@@ -39,6 +39,8 @@ export type HubErrorCode =
   | 'forbidden'
   | 'not_found'
   | 'conflict'
+  | 'env_locked'
+  | 'confirm_required'
   | 'last_group'
   | 'last_admin'
   | 'builtin_group'
@@ -263,6 +265,16 @@ export interface HubEnvManifest {
 }
 
 /** What any signed-in person with a view grant sees: no addresses, hops or host keys. */
+export interface HubEnvLock {
+  environmentId: string
+  kind: 'release' | 'manual'
+  releaseId: string | null
+  holder: { oid: string; name: string }
+  reason: string | null
+  createdAt: string
+  expiresAt: string | null
+}
+
 export interface HubCatalogEnv {
   environment: HubEnvManifest['environment']
   hosts: { id: string; label: string }[]
@@ -270,6 +282,7 @@ export interface HubCatalogEnv {
   deployments: HubEnvManifest['deployments']
   missingSecrets: number
   deployKey: { fingerprint: string } | null
+  lock: HubEnvLock | null
   publishedAt: string
   publishedBy: string
 }
