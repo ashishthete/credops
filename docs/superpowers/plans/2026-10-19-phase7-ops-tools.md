@@ -20,7 +20,7 @@
 
 All Phase 1–5 constraints still hold: main owns SSH and secrets, renderer is UI only; typed IPC through `IpcContract` + `CHANNELS` + `VALIDATORS` and `EventContract` + `EVENTS` (both lists complete by construction); every store mutation calls `vault.assertUnlocked()`, writes in `inTransaction`, appends audit after COMMIT; error messages are lower-case-safe, name the field and never carry the value; migrations are append-only (never edit 1–5); stores take `{ db, audit, vault, now?, ids? }`; tests use the in-process ssh2 server on `127.0.0.1` only, never `~/.ssh`, `~/.ssh/known_hosts` or `SSH_AUTH_SOCK` (tests pass `env: {}` to auth and a tmp known_hosts path); no new dependencies; reduced motion honoured everywhere.
 
-**Migration 6 (`snippets`), verbatim:**
+**Migration 6 (`snippets`), verbatim.** The number is fixed by controller ruling (Phase 6 none, Phase 7 = 6, Phase 8 = 7, Phase 9 = 8, Phase 10 = 9); never renumber it when merging other phase branches.
 
 ```sql
 CREATE TABLE snippets (
