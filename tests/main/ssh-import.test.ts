@@ -8,6 +8,7 @@ import { registerHandlers } from '../../src/main/ipc/register'
 import { VALIDATORS } from '../../src/main/ipc/validators'
 import { generateEd25519 } from '../../src/main/vault/openssh'
 import { MAX_IMPORT_ALIASES } from '../../src/shared/inventory'
+import { MAX_TUNNELS } from '../../src/shared/tunnels'
 import { DEFAULT_VAULT_ID, VAULT_LOCKED } from '../../src/shared/vault'
 import { stubHandlers } from './ipc-helpers'
 import { makeImporter, makeInventory, type InventoryFixture } from './inventory-helpers'
@@ -158,8 +159,43 @@ describe('SshImporter.import', () => {
       ['web-1 R 9000', 'R', id('web-1'), '127.0.0.1', 9000, 'localhost', 3000, false, true],
       ['web-1 SOCKS 1080', 'D', id('web-1'), '127.0.0.1', 1080, null, null, false, true],
     ])
+    expect(ts.map((t) => t.environmentId)).toEqual([prod, prod, prod])
     expect(f.audit.list({ actions: ['host.import'] })[0].details).toMatchObject({ tunnels: 3 })
     expect(f.audit.list({ actions: ['tunnel.create'] })).toHaveLength(0)
+  })
+
+  it('gives existing-host tunnels the environment only when the host is a member', async () => {
+    const f = await withConfig(fixture('basic.conf'))
+    const prod = prodEnv(f)
+    const other = f.envs.create({ name: 'stage', color: '#33cc33' }).id
+    const imp = makeImporter(f)
+    await imp.import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web-1', 'db-1'], environmentId: prod, forwards: false })
+    const member = await imp.import({ vaultId: DEFAULT_VAULT_ID, aliases: ['db-1'], environmentId: prod })
+    expect(member.tunnelsCreated).toBe(1)
+    const nonMember = await imp.import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'], environmentId: other })
+    expect(nonMember.tunnelsCreated).toBe(2)
+    const byLabel = Object.fromEntries(f.tunnels.list().map((t) => [t.label, t.environmentId]))
+    expect(byLabel).toEqual({ 'db-1 L 5433': prod, 'web-1 R 9000': null, 'web-1 SOCKS 1080': null })
+  })
+
+  it('stops at MAX_TUNNELS with a count-aware warning', async () => {
+    const fill = async (n: number) => {
+      const f = await withConfig(fixture('basic.conf'))
+      const filler = f.hosts.create({ label: 'filler', address: '10.9.9.9' })
+      for (let i = 0; i < n; i++) f.tunnels.create({ label: `t${i}`, hostId: filler.id, type: 'D', bindPort: 20000 + i })
+      return f
+    }
+    const one = await fill(MAX_TUNNELS - 1)
+    const r1 = await makeImporter(one).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'] })
+    expect(r1.tunnelsCreated).toBe(1)
+    expect(r1.warnings).toContain('Tunnel limit reached; 1 forward skipped')
+    expect(one.tunnels.list()).toHaveLength(MAX_TUNNELS)
+
+    const full = await fill(MAX_TUNNELS)
+    const r2 = await makeImporter(full).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web-1', 'db-1'] })
+    expect(r2.created).toHaveLength(2)
+    expect(r2.tunnelsCreated).toBe(0)
+    expect(r2.warnings).toContain('Tunnel limit reached; 3 forwards skipped')
   })
 
   it('forwards: false creates none', async () => {

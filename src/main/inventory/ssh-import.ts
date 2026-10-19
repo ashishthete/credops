@@ -147,6 +147,7 @@ export class SshImporter {
       }
 
       let tunnelsCreated = 0
+      let saved = tunnels.list().length
       let overflow = 0
       if (withForwards) {
         const addTunnels = (c: SshImportCandidate, hostId: string, environmentId?: string): void => {
@@ -158,16 +159,19 @@ export class SshImporter {
             }
             const input = { ...parsed.input, hostId, ...(environmentId ? { environmentId } : {}) }
             if (tunnels.findSame(input)) continue
-            if (tunnels.list().length >= MAX_TUNNELS) {
+            if (saved >= MAX_TUNNELS) {
               overflow++
               continue
             }
             try {
               tunnels.insertInTx(input)
               tunnelsCreated++
+              saved++
             } catch (err) {
-              // Store messages name the rule, never the value.
-              warnings.push(`${c.alias}: ${err instanceof Error ? err.message : "can't read this forward"}`)
+              // Only the store's validation errors become warnings; a database failure must surface.
+              if (!(err instanceof Error) || 'errcode' in err || String((err as NodeJS.ErrnoException).code).startsWith('ERR_SQLITE')) throw err
+              // Validation messages name the rule, never the value.
+              warnings.push(`${c.alias}: ${err.message}`)
             }
           }
         }
@@ -177,7 +181,13 @@ export class SshImporter {
         }
         for (const c of existing) {
           // The host may have been deleted since load().
-          if (c.existingHostId !== null && hostExists.get(c.existingHostId)) addTunnels(c, c.existingHostId)
+          const id = c.existingHostId
+          if (id === null || !hostExists.get(id)) continue
+          // The store only accepts an environment the host is already a member of.
+          const member =
+            req.environmentId !== undefined &&
+            db.prepare('SELECT 1 FROM environment_hosts WHERE environment_id = ? AND host_id = ?').get(req.environmentId, id) !== undefined
+          addTunnels(c, id, member ? req.environmentId : undefined)
         }
         if (overflow > 0) warnings.push(`Tunnel limit reached; ${overflow} forward${overflow === 1 ? '' : 's'} skipped`)
       }
