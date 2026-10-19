@@ -65,7 +65,10 @@ export interface TunnelManagerDeps {
   listen(address: string, port: number, deps: { inUseBy(address: string, port: number): string | null }): Promise<Server>
   audit: { append(input: AuditInput): unknown }
   emit<K extends TunnelPush>(event: K, payload: EventContract[K]): void
-  /** Backoff, probe and stable timers. */
+  /**
+   * Backoff, probe-interval and stable timers. The engines' own probe timeout and grace hold stay on
+   * real timers: they are internal to one probe, and tests stub the probe through `engines`.
+   */
   timers?: Timers
   /** The stats loop's own timers, so stepping one never fires the other; defaults to `timers`. */
   statsTimers?: Timers
@@ -144,6 +147,8 @@ interface Run {
   handle: ForwardHandle | null
   /** An `L`/`D` listener being opened, shared so two attempts never bind twice. */
   opening: Promise<ForwardHandle> | null
+  /** An `R` listen being cancelled on a healthy link; the re-request waits for it. */
+  closing: Promise<void> | null
   counter: Counter
   tokens: ProbeTokens
   retryTimer: unknown
@@ -168,8 +173,8 @@ const cloneRuntime = (rt: TunnelRuntime): TunnelRuntime => ({ ...rt, error: rt.e
  */
 export class TunnelManager {
   private readonly runs = new Map<string, Run>()
-  /** Runtimes of tunnels that failed, kept until they are started or stopped again. */
-  private readonly last = new Map<string, TunnelRuntime>()
+  /** Tunnels that failed, kept until they are started or stopped again. */
+  private readonly last = new Map<string, { meta: TunnelMeta; rt: TunnelRuntime }>()
   private readonly links = new Map<string, HostLink>()
   private readonly listeners = new Set<(e: TunnelEvent) => void>()
   private readonly timers: Timers
@@ -206,6 +211,7 @@ export class TunnelManager {
       link: null,
       handle: null,
       opening: null,
+      closing: null,
       counter: new Counter(() => this.now().getTime()),
       tokens: new ProbeTokens(),
       retryTimer: null,
@@ -218,7 +224,7 @@ export class TunnelManager {
     }
     this.runs.set(id, run)
     this.publish(run.rt)
-    this.event(run, { type: 'connecting', trigger })
+    this.event(run.meta, { type: 'connecting', trigger })
     this.syncStats()
     const snapshot = cloneRuntime(run.rt)
     void this.attempt(run)
@@ -229,14 +235,18 @@ export class TunnelManager {
     const run = this.runs.get(id)
     if (!run) {
       // Clearing a failed tunnel back to stopped.
-      if (this.last.delete(id)) this.publish(this.stoppedRuntime(id))
+      const failed = this.last.get(id)
+      if (!failed) return
+      this.last.delete(id)
+      this.publish(this.stoppedRuntime(id))
+      this.event(failed.meta, { type: 'stopped', reason })
       return
     }
     this.release(run)
     this.runs.delete(id)
     if (run.everUp) this.auditStop(run, reason)
     this.publish(this.stoppedRuntime(id))
-    this.event(run, { type: 'stopped', reason })
+    this.event(run.meta, { type: 'stopped', reason })
     this.syncStats()
   }
 
@@ -247,6 +257,7 @@ export class TunnelManager {
 
   stopForHost(hostId: string, reason: TunnelStopReason): void {
     for (const run of [...this.runs.values()]) if (run.meta.hostId === hostId) this.stop(run.meta.id, reason)
+    for (const [id, failed] of [...this.last]) if (failed.meta.hostId === hostId) this.stop(id, reason)
   }
 
   /** One runtime per saved tunnel, `stopped` for the idle ones. */
@@ -255,7 +266,7 @@ export class TunnelManager {
   }
 
   runtime(id: string): TunnelRuntime {
-    const rt = this.runs.get(id)?.rt ?? this.last.get(id)
+    const rt = this.runs.get(id)?.rt ?? this.last.get(id)?.rt
     return rt ? cloneRuntime(rt) : this.stoppedRuntime(id)
   }
 
@@ -344,6 +355,11 @@ export class TunnelManager {
   /** Null when the result came back stale (it is then closed, or kept for a listener that is still wanted). */
   private async openHandle(run: Run, live: () => boolean): Promise<ForwardHandle | null> {
     if (run.meta.type === 'R') {
+      if (run.closing) {
+        await run.closing
+        run.closing = null
+        if (!live()) return null
+      }
       const handle = await this.openRemote(run)
       if (live()) return handle
       void handle.close().catch(() => {})
@@ -380,12 +396,16 @@ export class TunnelManager {
     const server = await this.deps.listen(meta.bindAddress, meta.bindPort, {
       inUseBy: (address, port) => this.inUseBy(run, address, port),
     })
-    server.on('error', () => {})
+    server.on('error', (err) => this.warn(`Tunnel ${meta.label} listener error`, err))
     const shared = { server, counter: run.counter, tokens: run.tokens, timers: realTimers }
     try {
-      return meta.type === 'L'
-        ? this.engines.startLocal(this.via(run), { ...shared, targetHost: meta.targetHost!, targetPort: meta.targetPort! })
-        : this.engines.startDynamic(this.via(run), shared)
+      const handle =
+        meta.type === 'L'
+          ? this.engines.startLocal(this.via(run), { ...shared, targetHost: meta.targetHost!, targetPort: meta.targetPort! })
+          : this.engines.startDynamic(this.via(run), shared)
+      // Gated until the first probe passes (`up` opens it), and while a failure that raced the bind is retrying.
+      handle.setAccepting(false)
+      return handle
     } catch (err) {
       server.close()
       throw err
@@ -447,7 +467,7 @@ export class TunnelManager {
       this.publish(run.rt)
     }, STABLE_MS)
     this.publish(run.rt)
-    this.event(run, { type: 'up', recovered })
+    this.event(run.meta, { type: 'up', recovered })
   }
 
   private probeTick(run: Run): void {
@@ -460,6 +480,7 @@ export class TunnelManager {
         if (run.gen !== gen || run.released) return
         run.probing = false
         run.rt.lastProbeAt = this.now().toISOString()
+        this.publish(run.rt)
       },
       (err: unknown) => {
         if (run.gen !== gen || run.released) return
@@ -493,9 +514,11 @@ export class TunnelManager {
     run.probing = false
     run.handle?.setAccepting(false)
     if (f.stage === 'link') this.unsubscribe(run)
-    // An R listen lives on the server: a dead link took it, and a failed probe re-requests it.
+    // An R listen lives on the server: a dead link took it, and a failed probe re-requests it once the
+    // cancel is through, so a fixed port is free again.
     if (run.meta.type === 'R' && run.handle) {
-      void run.handle.close().catch(() => {})
+      const closing = run.handle.close().catch(() => {})
+      if (f.stage === 'probe') run.closing = closing
       run.handle = null
     }
     if (f.locked) return this.pause(run)
@@ -509,22 +532,31 @@ export class TunnelManager {
     }, wait)
     Object.assign(run.rt, { state: 'retrying', error: f.error, retryAt: new Date(this.now().getTime() + wait).toISOString() })
     this.publish(run.rt)
-    this.event(run, { type: 'retrying', failures: run.rt.failures, retryInMs: wait, error: f.error })
+    this.event(run.meta, { type: 'retrying', failures: run.rt.failures, retryInMs: wait, error: f.error })
   }
 
   /** Waits for unlock: no timer, and it doesn't count as a failure. */
   private pause(run: Run): void {
+    if (!this.deps.isLocked()) {
+      // The vault was unlocked again before a dial the lock spoiled settled: that unlock's resume has
+      // already run, so retry now rather than wait for one that may never come.
+      const gen = run.gen
+      queueMicrotask(() => {
+        if (run.gen === gen && !run.released) void this.attempt(run)
+      })
+      return
+    }
     run.paused = true
     Object.assign(run.rt, { state: 'retrying', error: { ...LOCKED }, retryAt: null })
     this.publish(run.rt)
-    this.event(run, { type: 'retrying', failures: run.rt.failures, retryInMs: null, error: { ...LOCKED } })
+    this.event(run.meta, { type: 'retrying', failures: run.rt.failures, retryInMs: null, error: { ...LOCKED } })
   }
 
   private finishFailed(run: Run, error: TunnelError): void {
     this.release(run)
     this.runs.delete(run.meta.id)
     Object.assign(run.rt, { state: 'failed', error, retryAt: null })
-    this.last.set(run.meta.id, run.rt)
+    this.last.set(run.meta.id, { meta: run.meta, rt: run.rt })
     if (run.everUp) this.auditStop(run, 'failed')
     else
       this.audit({
@@ -534,7 +566,7 @@ export class TunnelManager {
         details: { ...this.startDetails(run), code: error.code },
       })
     this.publish(run.rt)
-    this.event(run, { type: 'failed', error, wasUp: run.everUp })
+    this.event(run.meta, { type: 'failed', error, wasUp: run.everUp })
     this.syncStats()
   }
 
@@ -751,8 +783,8 @@ export class TunnelManager {
     this.deps.emit('tunnel:state', cloneRuntime(rt))
   }
 
-  private event(run: Run, e: DistributiveOmit<TunnelEvent, 'tunnelId' | 'label' | 'at'>): void {
-    const full = { ...e, tunnelId: run.meta.id, label: run.meta.label, at: this.now().toISOString() } as TunnelEvent
+  private event(meta: TunnelMeta, e: DistributiveOmit<TunnelEvent, 'tunnelId' | 'label' | 'at'>): void {
+    const full = { ...e, tunnelId: meta.id, label: meta.label, at: this.now().toISOString() } as TunnelEvent
     for (const fn of [...this.listeners]) {
       try {
         fn(full)

@@ -20,6 +20,7 @@ import { KnownHostStore } from '../../src/main/ssh/known-hosts'
 import { PromptBroker } from '../../src/main/ssh/prompts'
 import { resolveHost } from '../../src/main/inventory/resolve'
 import { hostMeta } from '../../src/main/inventory/rows'
+import { createInventoryHandlers } from '../../src/main/ipc/handlers/inventory'
 import { listen, type PortHolder } from '../../src/main/tunnels/bind'
 import { ForwardError, startLocal, startRemote, type ForwardHandle } from '../../src/main/tunnels/forward'
 import { TunnelManager, type TunnelManagerDeps } from '../../src/main/tunnels/manager'
@@ -387,6 +388,13 @@ describe('TunnelManager', () => {
     const [start] = t.audits('tunnel.start')
     expect(start).toMatchObject({ outcome: 'failure', details: { code: 'port-in-use', type: 'L', trigger: 'user' } })
     expect(t.audits('tunnel.stop')).toEqual([])
+    // Clearing the failure back to stopped is a state change like any other: one event, no audit.
+    t.manager.stop(tun.id)
+    expect(t.manager.runtime(tun.id).state).toBe('stopped')
+    expect(t.tunnelEvents(tun.id).at(-1)).toMatchObject({ type: 'stopped', reason: 'user' })
+    expect(t.audits('tunnel.stop')).toEqual([])
+    t.manager.stop(tun.id)
+    expect(t.tunnelEvents(tun.id).filter((e) => e.type === 'stopped')).toHaveLength(1)
   })
 
   it('two tunnels on the same port name each other', async () => {
@@ -444,6 +452,59 @@ describe('TunnelManager', () => {
     expect(t.manager.runtime(b.id).failures).toBe(0)
   })
 
+  it('a lock and unlock while a dial is in flight resumes at once', async () => {
+    let settle!: () => void
+    const held = new Promise<void>((r) => (settle = r))
+    // Holds the spoiled dial's failure until after the unlock, as a slow network would.
+    const t = await setup({
+      deps: { connect: (hops, deps, signal) => connectChain(hops, deps, signal).catch(async (err: unknown) => {
+        await held
+        throw err
+      }) },
+    })
+    const srv = await server()
+    const echo = await target()
+    const hostId = t.host(srv, false)
+    const b = t.tunnel(hostId, { label: 'b', targetPort: echo.port })
+    const c = t.tunnel(hostId, { label: 'c', targetPort: echo.port })
+    t.manager.start(b.id)
+    const prompt = await t.waitPrompt()
+    t.vault.lock('manual')
+    expect(t.promptDone()).toEqual([prompt.promptId])
+    await t.vault.unlock('correct horse')
+    // C joins the dial the lock spoiled, after the unlock.
+    t.manager.start(c.id)
+    settle()
+    const again = await t.waitPrompt(2)
+    t.broker.answer(again.promptId, { kind: 'host-key', trust: true })
+    await t.waitState(b.id, 'up')
+    await t.waitState(c.id, 'up')
+    for (const id of [b.id, c.id]) {
+      expect(t.states(id).some((rt) => rt.error?.code === 'locked')).toBe(false)
+      expect(t.manager.runtime(id).failures).toBe(0)
+    }
+    expect(t.prompts()).toHaveLength(2)
+  })
+
+  it('stopping the tunnel that owns a dial keeps its prompt for the others', async () => {
+    const t = await setup()
+    const srv = await server()
+    const echo = await target()
+    const hostId = t.host(srv, false)
+    const a = t.tunnel(hostId, { label: 'a', targetPort: echo.port })
+    const b = t.tunnel(hostId, { label: 'b', targetPort: echo.port })
+    t.manager.start(a.id)
+    const prompt = await t.waitPrompt()
+    expect(prompt.sessionId).toBe(a.id)
+    t.manager.start(b.id)
+    t.manager.stop(a.id)
+    expect(t.promptDone()).toEqual([])
+    t.broker.answer(prompt.promptId, { kind: 'host-key', trust: true })
+    await t.waitState(b.id, 'up')
+    expect(t.manager.runtime(a.id).state).toBe('stopped')
+    expect(srv.connections()).toBe(1)
+  })
+
   it('auto-start runs once on the first unlock', async () => {
     const t = await setup()
     const srv = await server()
@@ -461,6 +522,9 @@ describe('TunnelManager', () => {
     expect(t.manager.runtime(two.id).state).toBe('stopped')
     const starts = t.audits('tunnel.start')
     expect(starts.map((s) => s.targetLabel).sort()).toEqual(['one', 'three'])
+    // Started in label order.
+    const connecting = t.events.flatMap((e) => (e.event === 'tunnel:event' && e.payload.type === 'connecting' ? [e.payload.label] : []))
+    expect(connecting).toEqual(['one', 'three'])
     expect(starts.every((s) => s.details.trigger === 'auto')).toBe(true)
     expect(t.tunnelEvents(one.id)[0]).toMatchObject({ type: 'connecting', trigger: 'auto' })
 
@@ -552,6 +616,8 @@ describe('TunnelManager', () => {
     expect(stop.id).toBeLessThan(del.id)
     expect(t.tunnelEvents(tun.id).at(-1)).toMatchObject({ type: 'stopped', reason: 'deleted' })
     expect(t.manager.status()).toEqual([])
+    expect(t.mt.pending()).toEqual([])
+    expect(t.statsMt.pending()).toEqual([])
     await t.waitFor(() => expect(srv.connections()).toBe(0))
   })
 
@@ -587,6 +653,31 @@ describe('TunnelManager', () => {
     t.manager.stopForHost(hostId, 'deleted')
     expect(t.manager.runtime(tun.id).state).toBe('stopped')
     expect(t.audits('tunnel.stop')[0].details).toMatchObject({ reason: 'deleted' })
+  })
+
+  it('a refused host:delete leaves the host tunnels running', async () => {
+    const t = await setup()
+    const srv = await server()
+    const echo = await target()
+    const hostId = t.host(srv)
+    t.hosts.create({ label: 'behind', address: '10.0.0.9', port: 22, jumpHostId: hostId })
+    const tun = t.tunnel(hostId, { targetPort: echo.port })
+    t.manager.start(tun.id)
+    const up = await t.waitState(tun.id, 'up')
+    const handlers = createInventoryHandlers({
+      hosts: t.hosts,
+      environments: t.envs,
+      products: t.products,
+      resolve: vi.fn(),
+      tunnels: t.manager,
+    })
+    expect(() => handlers['host:delete'](hostId)).toThrow('host is the jump host for behind')
+    t.vault.lock('manual')
+    expect(() => handlers['host:delete'](hostId)).toThrow()
+    await t.vault.unlock('correct horse')
+    expect(t.manager.runtime(tun.id).state).toBe('up')
+    expect(t.audits('tunnel.stop')).toEqual([])
+    await ping(up.boundPort!)
   })
 
   it('R tunnel goes up and its probe falls back to keepalive when prohibited', async () => {
@@ -668,6 +759,8 @@ describe('TunnelManager', () => {
   })
 
   it('errors never leak secrets', async () => {
+    const warn = vi.spyOn(console, 'warn')
+    onTestFinished(() => warn.mockRestore())
     const t = await setup()
     const good = await server()
     const bad = await server({ users: [{ username: TUNNEL_USER.username, password: 'something-else' }] })
@@ -686,7 +779,7 @@ describe('TunnelManager', () => {
     good.dropAll()
     await t.waitState(ok.id, 'retrying')
     t.manager.stop(ok.id)
-    const everything = JSON.stringify(t.events) + auditRows(t.db)
+    const everything = JSON.stringify(t.events) + auditRows(t.db) + JSON.stringify(warn.mock.calls)
     expect(everything).not.toContain(TUNNEL_USER.password)
     expect(everything).not.toContain('typed-secret-42')
   })
