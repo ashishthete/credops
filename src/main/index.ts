@@ -54,6 +54,10 @@ import { appMenuTemplate, devRendererUrl, forwardVaultLocks, pushEvent, shouldAl
 // Keep dev data apart from the packaged app's (same name, same userData otherwise).
 // Must run before anything touches userData, including the single-instance lock.
 if (!app.isPackaged) app.setPath('userData', `${app.getPath('userData')}-dev`)
+// A dev run is the stock Electron binary, so it would call itself "Electron" in the app menu,
+// About and Quit. Named after userData is pinned, so the data folder stays where it was.
+app.setName('OpsDeck')
+app.setAboutPanelOptions({ applicationName: 'OpsDeck', applicationVersion: app.getVersion() })
 
 const devServerUrl = devRendererUrl(app.isPackaged, process.env)
 const CLIPBOARD_QUIT_WAIT_MS = 500
