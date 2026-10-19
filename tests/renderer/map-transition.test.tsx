@@ -83,22 +83,23 @@ const removeHost = (id: string) =>
     environments: d.environments.map((e) => ({ ...e, hosts: e.hosts.filter((m) => m.hostId !== id) })),
   }))
 
-// A real drag through d3-drag; it listens for the moves on `event.view`.
-async function drag(id: string, dx: number) {
+/** A real drag through d3-drag, which listens for the moves on `event.view`, through each offset in turn. */
+async function dragThrough(id: string, offsets: number[]) {
   const mouse = (target: Element | Window, type: 'mouseDown' | 'mouseMove' | 'mouseUp', clientX: number) => {
     const event = createEvent[type](target, { button: 0, buttons: 1, clientX, clientY: 100 })
     Object.defineProperty(event, 'view', { value: window })
     fireEvent(target, event)
   }
   mouse(node(id)!, 'mouseDown', 200)
-  mouse(window, 'mouseMove', 200 + dx / 2)
-  mouse(window, 'mouseMove', 200 + dx)
-  mouse(window, 'mouseUp', 200 + dx)
+  for (const dx of offsets) mouse(window, 'mouseMove', 200 + dx)
+  mouse(window, 'mouseUp', 200 + offsets[offsets.length - 1])
   // d3-drag swallows the click that ends a drag until its next tick.
   await act(async () => {
     await vi.advanceTimersByTimeAsync(0)
   })
 }
+
+const drag = (id: string, dx: number) => dragThrough(id, [dx / 2, dx])
 
 // jsdom lays the canvas out at 0×0, so every pointer would sit on its edge and React Flow would auto-pan
 // the drag in a frame loop that outlives it. The canvas gets the stub viewport's bounds instead.
@@ -210,9 +211,11 @@ describe('map transitions', () => {
     await elapse(150)
     const mid = yOf('e:e2')
 
-    // Back where it came from: it turns around where it is, with no jump.
+    // Back where it came from: it turns around where it is at that moment, with no jump (mid is the last
+    // frame's, a moment earlier).
     await removeHost('h4')
-    expect(yOf('e:e2')).toBe(mid)
+    expect(yOf('e:e2')).toBe(from + ROW * 0.875) // easeOutCubic(0.5)
+    expect(yOf('e:e2')).toBeGreaterThanOrEqual(mid)
     await elapse(100)
     expect(yOf('e:e2')).toBeLessThan(mid)
     expect(yOf('e:e2')).toBeGreaterThan(from)
@@ -299,6 +302,101 @@ describe('map transitions', () => {
   })
 })
 
+describe('map transitions, round 1', () => {
+  it('a drop in place leaves no mark, so the next move still glides', async () => {
+    await renderMap()
+    const start = yOf('e:e2')
+    const x = xOf('e:e2')
+    // Taken hold of and let go where it was (React Flow measures the drag from the move that starts it):
+    // pinned, but not moved.
+    await dragThrough('e:e2', [40, 40])
+    expect(pinsStore.get().all?.['e:e2']).toEqual({ x, y: start })
+    expect(xOf('e:e2')).toBe(x)
+    expect(yOf('e:e2')).toBe(start)
+    // Pinned, so the new row doesn't move it; Reset layout then does.
+    await addHost('h4')
+    await elapse(300)
+    expect(yOf('e:e2')).toBe(start)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset layout' }))
+    await flush()
+    expect(yOf('e:e2')).toBe(start)
+    await elapse(150)
+    expect(yOf('e:e2')).toBeGreaterThan(start)
+    expect(yOf('e:e2')).toBeLessThan(start + ROW)
+    await elapse(150)
+    expect(yOf('e:e2')).toBe(start + ROW)
+  })
+
+  it('a dimmed node fades out from its dimmed strength, and stays inert', async () => {
+    await renderMap()
+    act(() => {
+      fireEvent.keyDown(window, { key: 'f', metaKey: true })
+    })
+    fireEvent.change(screen.getByPlaceholderText('Find host, environment…'), { target: { value: 'web-1' } })
+    await flush()
+    expect(node('e:e1/h:h2')).toHaveClass('od-dimmed')
+
+    await removeHost('h2')
+    let leaving = node('e:e1/h:h2')!
+    expect(leaving).toHaveAttribute('data-leaving', 'true')
+    expect(leaving).toHaveClass('od-leaving')
+    expect(leaving).toHaveClass('od-dimmed')
+    expect(leaving.style.pointerEvents).toBe('none')
+    // Its tunnel goes with it, faded as it was.
+    expect(edge('t:t1')).toHaveAttribute('data-leaving', 'true')
+    expect(edge('t:t1')).toHaveClass('od-dimmed')
+    // Still faded on the frames after, while it goes.
+    await elapse(100)
+    leaving = node('e:e1/h:h2')!
+    expect(leaving).toHaveClass('od-dimmed')
+    expect(leaving.style.pointerEvents).toBe('none')
+    await elapse(100)
+    expect(node('e:e1/h:h2')).toBeNull()
+  })
+
+  it('unmounting mid-glide and mid-leave leaves no timer or frame behind', async () => {
+    // Frames still pending: requested, and neither run nor cancelled.
+    const pending = new Set<number>()
+    const raf = window.requestAnimationFrame.bind(window)
+    const caf = window.cancelAnimationFrame.bind(window)
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+      const id = raf((t) => {
+        pending.delete(id)
+        cb(t)
+      })
+      pending.add(id)
+      return id
+    })
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => {
+      pending.delete(id)
+      caf(id)
+    })
+    const errors = vi.spyOn(console, 'error')
+    await renderMap()
+    // Two new hosts and one gone: Prod still wraps to a second row, so Stage glides while pg leaves.
+    await addHost('h4')
+    await addHost('h5')
+    await removeHost('h2')
+    await elapse(50)
+    expect(node('e:e1/h:h2')).toHaveAttribute('data-leaving', 'true')
+    // Mid-glide (a frame is waiting) and mid-leave.
+    expect(pending.size).toBeGreaterThan(0)
+
+    cleanup()
+    // Its frame is cancelled at once. Any timer still counted here is jsdom's frame clock, which
+    // framer-motion's frame loop (the shell's, not the map's) holds for one more frame; the hook's own
+    // timers are checked straight after unmount in the hook tests below.
+    expect(pending.size).toBe(0)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    expect(vi.getTimerCount()).toBe(0)
+    expect(pending.size).toBe(0)
+    expect(errors).not.toHaveBeenCalled()
+  })
+})
+
 describe('useGraphTransition', () => {
   const n = (id: string, y: number): Node => ({ id, position: { x: 0, y }, width: 10, height: 10, data: {} })
   const target = (nodes: Node[], edges: Edge[] = []) => ({ nodes, edges })
@@ -326,5 +424,28 @@ describe('useGraphTransition', () => {
     expect(y).toBeLessThan(100)
     await elapse(50)
     expect(result.current.nodes[0].position.y).toBe(100)
+  })
+
+  it('a new target mid-glide starts from where the node is at that moment, not at the last frame', async () => {
+    const { result, rerender } = renderHook(({ t }) => useGraphTransition(t, { motionSafe: true, durationMs: 100 }), {
+      initialProps: { t: target([n('a', 0)]) },
+    })
+    rerender({ t: target([n('a', 100)]) })
+    // Half way between frames: the last one drew the node a little short of here.
+    await elapse(50)
+    rerender({ t: target([n('a', 0)]) })
+    expect(result.current.nodes[0].position.y).toBe(87.5) // easeOutCubic(0.5) of the way to 100
+  })
+
+  it('unmounting mid-glide clears its timer and its frame', async () => {
+    const cancel = vi.spyOn(window, 'cancelAnimationFrame')
+    const { rerender, unmount } = renderHook(({ t }) => useGraphTransition(t, { motionSafe: true }), {
+      initialProps: { t: target([n('a', 0)]) },
+    })
+    rerender({ t: target([n('a', 100)]) })
+    expect(vi.getTimerCount()).toBeGreaterThan(0)
+    unmount()
+    expect(cancel).toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
   })
 })

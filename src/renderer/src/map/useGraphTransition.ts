@@ -36,7 +36,10 @@ interface Shown<N extends Node, E extends Edge> {
   glides: Map<string, Glide>
   /** Nodes a drag took out of their glide: they stay where they were let go until the next target. */
   held: Map<string, Placed>
-  /** Nodes a drag cancelled: their next move lands at once, because the drop already put them there. */
+  /**
+   * Nodes a drag cancelled: the move their drop makes lands at once, because the drop already put them
+   * there. The next target uses the marks up, so a drop that moved nothing leaves none for a later move.
+   */
   snap: Set<string>
   entering: Map<string, { until: number; node: N }>
   enteringEdges: Map<string, { until: number; edge: E }>
@@ -94,17 +97,18 @@ function compose<N extends Node, E extends Edge>(s: Shown<N, E>, now: number): S
 }
 
 /** A new target: what moved glides from where it is drawn, what is new fades in, what went lingers. */
-function retarget<N extends Node, E extends Edge>(s: Shown<N, E>, target: FlowGraph<N, E>, now: number, durationMs: number): Shown<N, E> {
+function retarget<N extends Node, E extends Edge>(prev: Shown<N, E>, target: FlowGraph<N, E>, now: number, durationMs: number): Shown<N, E> {
+  // Where things are at this moment, not at the last frame, so a turn mid-glide starts without a jump.
+  const s = compose(prev, now)
   const before = layoutOf(s.nodes)
   const after = layoutOf(target.nodes)
   const drawn = before.positions
   const next = after.positions
   const diff = diffLayout(before, after)
-  const snap = new Set(s.snap)
 
   const glides = new Map<string, Glide>()
   for (const id of diff.moved) {
-    if (snap.delete(id)) continue
+    if (s.snap.has(id)) continue
     const old = s.glides.get(id)
     glides.set(id, old && sameBox(old.to, next[id]) ? old : { from: drawn[id], to: next[id], start: now, end: now + durationMs })
   }
@@ -171,7 +175,7 @@ function retarget<N extends Node, E extends Edge>(s: Shown<N, E>, target: FlowGr
     )
   }
 
-  return compose({ target, nodes: s.nodes, edges: s.edges, glides, held: new Map(), snap, entering, enteringEdges, leaving, leavingEdges }, now)
+  return compose({ target, nodes: s.nodes, edges: s.edges, glides, held: new Map(), snap: new Set(), entering, enteringEdges, leaving, leavingEdges }, now)
 }
 
 /** Settles whatever is due by `now`, and moves the glides on. */

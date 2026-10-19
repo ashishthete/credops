@@ -112,6 +112,11 @@ const RELATED = { 'data-related': '' } as DomAttributes
 const DIMMED = { 'data-dimmed': 'true' } as DomAttributes
 const DIMMED_RELATED = { 'data-dimmed': 'true', 'data-related': '' } as DomAttributes
 
+/** A node or edge on its way out, still faded as it was drawn; the transition has already made it inert. */
+function fadeLeaving<T extends MapFlowNode | MapFlowEdge>(x: T): T {
+  return { ...x, className: `${x.className} od-dimmed`, domAttributes: { ...x.domAttributes, 'data-dimmed': 'true' } }
+}
+
 /** Flow nodes for a laid-out graph: position, size and data only; selection and styling come later. */
 function flowNodes(graph: MapGraph, layout: MapLayout): MapFlowNode[] {
   const shared = alsoIn(graph)
@@ -171,6 +176,9 @@ export const MapCanvas = memo(function MapCanvas({
   const [drawnScope, setDrawnScope] = useState(scopeKey)
   if (drawnScope !== scopeKey) setDrawnScope(scopeKey)
   const shown = useGraphTransition(target, { motionSafe: motionSafe && drawnScope === scopeKey })
+  // What the last commit drew faded. A node or edge that leaves is no longer in the graph a search dims,
+  // so it keeps the fade it was drawn with and fades out from there rather than flashing back.
+  const drawnFaded = useRef({ nodes: new Set<string>(), edges: new Set<string>() })
 
   // Drags and measurements apply to a local copy, which each new frame of the transition resets; a node
   // being dragged keeps its dragged position through those frames.
@@ -187,7 +195,7 @@ export const MapCanvas = memo(function MapCanvas({
   const edges = useMemo(
     () =>
       shown.edges.map((e) => {
-        if (e.data?.leaving) return e
+        if (e.data?.leaving) return drawnFaded.current.edges.has(e.id) ? fadeLeaving(e) : e
         const selected = e.id === selectedId
         const faded = !!dimmed && (dimmed.has(e.source) || dimmed.has(e.target))
         return selected || faded ? { ...e, selected, className: [e.className, faded && 'od-dimmed'].filter(Boolean).join(' ') || undefined } : e
@@ -209,7 +217,7 @@ export const MapCanvas = memo(function MapCanvas({
   const nodes = useMemo(
     () =>
       local.nodes.map((n) => {
-        if (n.data.leaving) return n
+        if (n.data.leaving) return drawnFaded.current.nodes.has(n.id) ? fadeLeaving(n) : n
         const selected = n.id === selectedId
         const faded = !!dimmed?.has(n.id)
         const lit = highlightId === n.id
@@ -223,6 +231,11 @@ export const MapCanvas = memo(function MapCanvas({
       }),
     [local.nodes, selectedId, dimmed, highlightId, related, motionSafe],
   )
+
+  useEffect(() => {
+    const faded = (x: { id: string; className?: string }) => (x.className?.split(' ').includes('od-dimmed') ? [x.id] : [])
+    drawnFaded.current = { nodes: new Set(nodes.flatMap(faded)), edges: new Set(edges.flatMap(faded)) }
+  }, [nodes, edges])
 
   const colors = useMemo(() => minimapColors(graph), [graph])
   const nodeColor = useCallback((n: MapFlowNode) => colors.get(n.id) ?? 'var(--muted)', [colors])
