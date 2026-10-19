@@ -288,6 +288,10 @@ describe('products page', () => {
       expect(invoke).toHaveBeenCalledWith('product:create', { name: 'Essentials', color: '#5b8cff', icon: 'leaf', description: '' }),
     )
     expect(await screen.findByText('Created Essentials')).toBeInTheDocument()
+    // The selection is a navigation, which the router renders in a transition: under load it can
+    // commit after the toast, so wait for it rather than asserting the moment the toast shows.
+    await waitFor(() => expect(new URLSearchParams(where.split('?')[1]).get('node')).toBe('p:new-product'))
+    expect(await screen.findByRole('heading', { name: 'Essentials', level: 2 })).toBeInTheDocument()
     expect(screen.getByRole('treeitem', { name: 'Essentials' })).toHaveAttribute('aria-selected', 'true')
   })
 
