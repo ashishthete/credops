@@ -165,17 +165,14 @@ async function keyChain(
 
   let configured: string[] = []
   try {
-    configured = (target && deps.sshConfig?.(target)?.identityFiles) || []
+    const match = target ? deps.sshConfig?.(target) : null
+    configured = match?.identityFiles ?? []
+    for (const raw of match?.skipped ?? []) notes.push(`${raw} uses a token OpsDeck doesn't expand, so it was skipped`)
   } catch {
     // An unreadable config only drops its IdentityFiles.
   }
   const paths = new Set([...configured, ...DEFAULT_KEYS.map((n) => join(deps.home, '.ssh', n))])
   for (const path of paths) {
-    // Only ~ and %d are expanded; a path still holding a token would name the wrong file.
-    if (path.includes('%')) {
-      notes.push(`${shown(deps.home, path)} uses a token OpsDeck doesn't expand, so it was skipped`)
-      continue
-    }
     const r = await keyFile(deps.home, path)
     if (r.method) {
       methods.push(r.method)

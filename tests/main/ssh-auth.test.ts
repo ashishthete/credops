@@ -141,11 +141,21 @@ describe('authPlan: your SSH keys chain', () => {
   it('an IdentityFile with an unexpanded % token, or one that is not a file, is named in a note', async () => {
     const home = tmpHome()
     mkdirSync(join(home, '.ssh', 'keydir'))
-    const sshConfig = () => ({ user: null, identityFiles: [join(home, '.ssh', 'id_%h'), join(home, '.ssh', 'keydir')] })
+    const sshConfig = () => ({ user: null, identityFiles: [join(home, '.ssh', 'keydir')], skipped: ['~/.ssh/id_%h'] })
     const plan = await authPlan(agentId, { identities: agentIdentity, env: {}, home, sshConfig }, { label: 'alpha', address: 'a' })
     expect(plan.notes).toContain("~/.ssh/id_%h uses a token OpsDeck doesn't expand, so it was skipped")
     expect(plan.notes).toContain("~/.ssh/keydir isn't a file")
     expect(plan.missing).toEqual(['~/.ssh/id_ed25519', '~/.ssh/id_rsa'])
+  })
+
+  it('default keys under a home with a % in its path are still tried', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'opsdeck-100%-'))
+    onTestFinished(() => rmSync(home, { recursive: true, force: true }))
+    mkdirSync(join(home, '.ssh'))
+    writeFileSync(join(home, '.ssh', 'id_rsa'), keyText('rsa', { bits: 2048 }))
+    const plan = await authPlan(agentId, { identities: agentIdentity, env: {}, home })
+    expect(labels(plan)).toEqual(['~/.ssh/id_rsa'])
+    expect(plan.notes.join(' ')).not.toContain('token')
   })
 
   it('an agent that cannot be asked is still offered', async () => {

@@ -314,6 +314,17 @@ describe('connectChain', () => {
     expect(await shellOutput(client, 'READY')).toContain('READY')
   })
 
+  it('an agent that fails mid-dial is named in the failure message when nothing else works', async () => {
+    const s = await server()
+    const dir = mkdtempSync(join(tmpdir(), 'opsdeck-agent-'))
+    onTestFinished(() => rmSync(dir, { recursive: true, force: true }))
+    const stale = join(dir, 'agent.sock')
+    writeFileSync(stale, '')
+    const plan: AuthPlan = { ...keyPlan(otherKey.privateKey), kind: 'agent', methods: [{ type: 'agent', agent: stale }], tried: ['ssh-agent'] }
+    const { described } = await failure([hop('target', s.port)], deps({ plan: async () => plan }))
+    expect(described.message).toBe('target refused user ops. Tried: ssh-agent. ssh-agent failed during login.')
+  })
+
   it('falls back to one password prompt', async () => {
     const s = await server({ users: [{ username: 'ops', password: 'pw', publicKey: userKey.publicKey }] })
     const askPassword = vi.fn(async () => 'pw')

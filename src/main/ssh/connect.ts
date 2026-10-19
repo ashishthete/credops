@@ -153,12 +153,13 @@ async function dialHop(
   if (signal.aborted) throw new ClosedError()
   // What the user typed in, by kind only, for the failure message.
   const typed = new Set<string>()
+  const agentNotes = new Set<string>()
   const authFailed = (): AuthFailedError =>
     new AuthFailedError({
       username: plan.username,
       tried: [...(plan.tried ?? plan.methods.map((m) => (m.type === 'publickey' ? m.label : m.type === 'agent' ? 'ssh-agent' : 'saved password'))), ...typed],
       missing: plan.missing ?? [],
-      notes: plan.notes,
+      notes: [...plan.notes, ...agentNotes],
     })
   const client = new Client()
   // Errors after ready also emit 'close', which is what the caller watches.
@@ -207,7 +208,10 @@ async function dialHop(
     signal.addEventListener('abort', onAbort, { once: true })
     client.on('error', (err: Error & { level?: string }) => {
       // ssh2 reports an agent that fails mid-dial, then goes on to the next method itself.
-      if (err.level === 'agent') return
+      if (err.level === 'agent') {
+        agentNotes.add('ssh-agent failed during login')
+        return
+      }
       fail(hostKeyError ?? (err.message === AUTH_FAILED ? authFailed() : err))
     })
     client.on('close', () => fail(hostKeyError ?? new Error('The server closed the connection')))

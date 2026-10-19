@@ -408,6 +408,8 @@ export interface SshConfigMatch {
   user: string | null
   /** Absolute paths, `~` expanded, in the order ssh tries them. Not checked: the reader decides. */
   identityFiles: string[]
+  /** IdentityFile values left out, as written, because they hold a token other than %d. */
+  skipped?: string[]
 }
 
 /**
@@ -417,7 +419,10 @@ export interface SshConfigMatch {
  */
 export function matchSshConfig(text: string, opts: ParseOptions, target: SshConfigTarget): SshConfigMatch | null {
   if (tooLarge(text)) return null
-  const { blocks, aliases } = readBlocks(text, opts)
+  const read = readBlocks(text, opts)
+  // ssh lowercases both the host it was given and the patterns it matches against.
+  const blocks = read.blocks.map((b) => (b.patterns ? { ...b, patterns: b.patterns.map((p) => p.toLowerCase()) } : b))
+  const aliases = new Set([...read.aliases].map((a) => a.toLowerCase()))
   const candidates = indexBlocks(blocks)
   const budget: GlobBudget = { steps: MAX_GLOB_STEPS }
   /** Blocks that apply to `name`, and whether one names it more closely than `Host *`. */
@@ -426,7 +431,6 @@ export function matchSshConfig(text: string, opts: ParseOptions, target: SshConf
     return { blocks: out, specific: out.some((b) => b.patterns?.some((p) => !p.startsWith('!') && p !== '*')) }
   }
   const first = (bs: Block[], key: string): string | undefined => bs.find((b) => b.values.has(key))?.values.get(key)?.value
-  // ssh lowercases the host it was given before matching.
   const label = target.label.toLowerCase()
   const address = target.address.toLowerCase()
 
@@ -450,13 +454,19 @@ export function matchSshConfig(text: string, opts: ParseOptions, target: SshConf
 
   const user = first(used, 'user')?.trim() ?? null
   const identityFiles = new Set<string>()
+  const skipped: string[] = []
   for (const raw of used.flatMap((b) => b.identityFiles)) {
     if (identityFiles.size >= MAX_IDENTITY_FILES) break
     if (raw.toLowerCase() === 'none') continue
+    // Checked before ~ is expanded, so a % in the home directory itself is fine.
+    if (raw.replace(/%d/g, '').includes('%')) {
+      if (skipped.length < MAX_IDENTITY_FILES) skipped.push(raw)
+      continue
+    }
     const expanded = expandHome(raw, opts.home)
     if (isAbsolute(expanded)) identityFiles.add(resolve(expanded))
   }
-  return { user: user !== null && isSafeSshToken(user) ? user : null, identityFiles: [...identityFiles] }
+  return { user: user !== null && isSafeSshToken(user) ? user : null, identityFiles: [...identityFiles], ...(skipped.length ? { skipped } : {}) }
 }
 
 /**

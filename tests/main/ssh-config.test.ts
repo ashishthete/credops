@@ -345,6 +345,18 @@ describe('matchSshConfig', () => {
     expect(match(text, 'Other', 'DB.Example.com')).toMatchObject({ user: 'deploy' })
   })
 
+  it('lowercases Host patterns and HostNames too, as ssh does', () => {
+    expect(match('Host Alpha\n  User ubuntu\n', 'Alpha', '1.2.3.4')).toMatchObject({ user: 'ubuntu' })
+    expect(match('Host ALPHA\n  User ubuntu\n', 'alpha', '1.2.3.4')).toMatchObject({ user: 'ubuntu' })
+    expect(match('Host Prod-*\n  User deploy\n', 'prod-web', '1.2.3.4')).toMatchObject({ user: 'deploy' })
+    expect(match('Host Box\n  HostName DB.example.COM\n  User deploy\n', 'other', 'db.Example.com')).toMatchObject({ user: 'deploy' })
+  })
+
+  it('an IdentityFile with a token OpsDeck does not expand is reported, not kept', () => {
+    const text = 'Host a\n  IdentityFile ~/.ssh/id_%h\n  IdentityFile %d/.ssh/ok\n'
+    expect(match(text, 'a', 'a')).toEqual({ user: null, identityFiles: ['/home/t/.ssh/ok'], skipped: ['~/.ssh/id_%h'] })
+  })
+
   it('no match and unsafe users give nothing', () => {
     expect(match('Host other\n  User x\n', 'alpha', '1.2.3.4')).toBeNull()
     expect(match('Host alpha\n  User -oProxyCommand=x\n', 'alpha', '1.2.3.4')).toEqual({ user: null, identityFiles: [] })
