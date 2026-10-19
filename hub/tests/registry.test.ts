@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { MAX_MANIFEST_BYTES, type HubEnvManifest } from '../../src/shared/hub'
 import { testHub, type TestHub } from './helpers'
-import { DEP_API, DEP_WEB, ENV_ID, HOST_ID, deployment, manifest, SECRET_DB } from './manifest'
+import { DEP_API, DEP_WEB, ENV_ID, deployment, manifest, SECRET_DB } from './manifest'
 
 let hub: TestHub
 afterEach(async () => hub.close())
@@ -55,6 +55,15 @@ describe('environment registry', () => {
     expect((await put(admin, m)).json().manifestHash).toBe(a)
   })
 
+  it('orders by code point, not by locale', async () => {
+    const { admin } = await setup()
+    // localeCompare puts "a" before "B"; code-point order puts "B" first.
+    const m = manifest({ deployments: [deployment(DEP_WEB, 'a'), deployment(DEP_API, 'B')], requiredSecrets: [] })
+    expect((await put(admin, m)).statusCode).toBe(200)
+    const got = (await call(admin, 'GET', `/api/v1/admin/environments/${ENV_ID}`)).json() as { deployments: { name: string }[] }
+    expect(got.deployments.map((d) => d.name)).toEqual(['B', 'a'])
+  })
+
   it('rejects a deployment on an unknown host', async () => {
     const { admin } = await setup()
     const m = manifest({ deployments: [deployment(DEP_WEB, 'web', { hostId: 'a9999999-9999-4999-8999-999999999999' })], requiredSecrets: [] })
@@ -69,17 +78,23 @@ describe('environment registry', () => {
     const m = manifest({ requiredSecrets: [] })
     const r = await put(admin, m)
     expect(r.statusCode).toBe(400)
+    expect(r.json().message).toContain('uses a secret that is not in requiredSecrets')
     expect(JSON.stringify(r.json())).not.toContain(SECRET_DB)
   })
 
   it('rejects a bad env template, a mismatched id and an oversize manifest', async () => {
     const { admin } = await setup()
     const bad = manifest({ deployments: [deployment(DEP_WEB, 'web', { managedEnv: true, envTemplate: 'not a line' })], requiredSecrets: [] })
-    expect((await put(admin, bad)).statusCode).toBe(400)
+    const badRes = await put(admin, bad)
+    expect(badRes.statusCode).toBe(400)
+    expect(badRes.json().message).toContain('envTemplate is not a valid .env template')
     const other = await call(admin, 'PUT', '/api/v1/admin/environments/e2222222-2222-4222-8222-222222222222', manifest())
     expect(other.statusCode).toBe(400)
+    expect(other.json().message).toBe('invalid request: /environment/id must match the path')
     const big = manifest({ requiredSecrets: [{ secretId: SECRET_DB, name: 'x'.repeat(MAX_MANIFEST_BYTES), usedBy: [] }] })
-    expect([400, 413]).toContain((await put(admin, big)).statusCode)
+    const bigRes = await put(admin, big)
+    expect(bigRes.statusCode).toBe(413)
+    expect(bigRes.json()).toEqual({ error: 'bad_request', message: 'Request body too large' })
   })
 
   it('refuses a hop chain whose last hop is not the host', async () => {
@@ -148,7 +163,6 @@ describe('environment registry', () => {
     expect((await call(bob, 'GET', '/api/v1/admin/environments')).statusCode).toBe(403)
     const list = (await call(admin, 'GET', '/api/v1/admin/environments')).json() as { environment: { name: string } }[]
     expect(list.map((e) => e.environment.name).sort()).toEqual(['prod', 'staging'])
-    expect(HOST_ID).toBeTruthy()
   })
 
   it('unpublish drops grants that reference the environment', async () => {

@@ -123,6 +123,16 @@ describe('KnownHostStore.check', () => {
     expect((await s.store.check('db', 22, k.type, k.b64)).status).toBe('revoked')
   })
 
+  it('pinned() drops a key revoked in the OpenSSH file, from both sources', async () => {
+    const k = gen('ed25519')
+    const other = gen('ed25519')
+    const s = await setup(`@revoked db ${k.type} ${k.b64}\ndb ${other.type} ${other.b64}\n`)
+    s.store.trust('db', 22, k.type, k.b64)
+    expect(await s.store.pinned('db', 22)).toEqual([`db ${other.type} ${other.b64}`])
+    const s2 = await setup(`@revoked db ${k.type} ${k.b64}\ndb ${k.type} ${k.b64}\n`)
+    expect(await s2.store.pinned('db', 22)).toEqual([])
+  })
+
   it('cert-authority lines are ignored', async () => {
     const k = gen('ed25519')
     const s = await setup(`@cert-authority db ${k.type} ${k.b64}\n`)

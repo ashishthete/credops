@@ -109,16 +109,18 @@ function readIntegrations(v: unknown): HubIntegrations {
   }
 }
 
-const byLabel = (a: { label: string; id: string }, b: { label: string; id: string }): number => a.label.localeCompare(b.label) || a.id.localeCompare(b.id)
+/** Plain code-unit comparison: everything that feeds the hash must not depend on the Hub's ICU locale. */
+const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
+const byLabel = (a: { label: string; id: string }, b: { label: string; id: string }): number => cmp(a.label, b.label) || cmp(a.id, b.id)
 
 /** One order for every list, so the same state always hashes and reads back the same. */
 function sortManifest(m: HubEnvManifest): HubEnvManifest {
   return {
     ...m,
     hosts: [...m.hosts].sort(byLabel),
-    apps: [...m.apps].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)),
-    deployments: [...m.deployments].sort((a, b) => a.position - b.position || a.name.localeCompare(b.name) || a.id.localeCompare(b.id)),
-    requiredSecrets: [...m.requiredSecrets].sort((a, b) => a.name.localeCompare(b.name) || a.secretId.localeCompare(b.secretId)),
+    apps: [...m.apps].sort((a, b) => cmp(a.name, b.name) || cmp(a.id, b.id)),
+    deployments: [...m.deployments].sort((a, b) => a.position - b.position || cmp(a.name, b.name) || cmp(a.id, b.id)),
+    requiredSecrets: [...m.requiredSecrets].sort((a, b) => cmp(a.name, b.name) || cmp(a.secretId, b.secretId)),
   }
 }
 
@@ -379,6 +381,7 @@ export class Registry {
           env.versioned ? 1 : 0,
           env.autoRollback ? 1 : 0,
           env.currentVersion,
+          // requiredSecrets rides in this JSON because migration 2 has no column for it.
           JSON.stringify({ integrations: manifest.integrations, requiredSecrets: manifest.requiredSecrets }),
           hash,
           actor.upn,

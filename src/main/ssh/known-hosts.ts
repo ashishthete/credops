@@ -206,11 +206,14 @@ export class KnownHostStore {
   async pinned(address: string, port: number): Promise<string[]> {
     const token = hostToken(address, port)
     const lines = new Set<string>()
+    const file = await this.readLines()
+    // Like check(): a key the OpenSSH file revokes is not a pin, whichever source holds it.
+    const revoked = new Set(file.filter((l) => l.marker === 'revoked' && l.matches(token)).map((l) => l.key))
     for (const r of this.db.prepare('SELECT key_type, key FROM known_hosts WHERE host = ?').all(token) as unknown as Pick<Row, 'key_type' | 'key'>[]) {
-      lines.add(`${token} ${r.key_type} ${r.key}`)
+      if (!revoked.has(r.key)) lines.add(`${token} ${r.key_type} ${r.key}`)
     }
-    for (const l of await this.readLines()) {
-      if (l.marker === null && l.matches(token)) lines.add(`${token} ${l.keyType} ${l.key}`)
+    for (const l of file) {
+      if (l.marker === null && l.matches(token) && !revoked.has(l.key)) lines.add(`${token} ${l.keyType} ${l.key}`)
     }
     return [...lines].sort()
   }
