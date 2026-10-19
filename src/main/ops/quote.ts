@@ -199,12 +199,12 @@ export function parseTemplate(script: string): ParsedTemplate {
 
   /**
    * At `c`, which ends a word in a command frame: notes a declaration builtin, and a command's end. The
-   * ( and ) of an array argument (`declare -a x=(1) …`) end only the word, not the command.
+   * ( and ) of an array argument (`declare -a x=(1) …`), and a newline inside one, end only the word.
    */
   const endWord = (f: Frame, c: string, arrayParen: boolean): void => {
     if (f.wordBegin >= 0 && DECLARATIONS.has(s.slice(f.wordBegin, i).replace(/['"\\]/g, ''))) f.declaration = true
     f.wordBegin = -1
-    if (COMMAND_END.has(c) && !arrayParen) f.declaration = false
+    if (COMMAND_END.has(c) && !arrayParen && f.assign === 0) f.declaration = false
   }
 
   /** At `<<` (not `<<<`): records it, and in a command frame reads the delimiter so its body can be skipped. */

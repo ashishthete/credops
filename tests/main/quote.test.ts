@@ -384,6 +384,7 @@ describe('parseTemplate', () => {
     "export 'a'[$(printf %s $(echo {{n}}))]=1",
     "declare -a x=(1) 'a'[{{n}}]=1",
     "declare -a x=() 'a'[{{n}}]=1",
+    "declare x=(\n1\n) 'a'[{{n}}]=1",
     "declare a$'\\x5b'{{n}}]=1",
     "declare a$'\\133'{{n}}]=1",
     // zsh subscripts special parameters the same way as names
@@ -413,6 +414,7 @@ describe('parseTemplate', () => {
       'export X=$(printf %s {{v}})',
       'declare -a arr=(1 2) x={{v}}',
       'declare -a arr=(1); printf %s {{v}}',
+      "declare -a arr=(\n1\n)\nprintf %s 'a'[{{v}}]",
       "export X=$'\\t'{{v}}",
     ]) {
       expect({ script, variables: parseTemplate(script).variables }).toEqual({ script, variables: ['v'] })
