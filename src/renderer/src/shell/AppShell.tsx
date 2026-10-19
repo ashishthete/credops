@@ -8,7 +8,7 @@ import { AuditPage } from '../pages/AuditPage'
 import { HostsPage } from '../pages/hosts/HostsPage'
 import { MapPage } from '../pages/map/MapPage'
 import { OpsPage } from '../pages/ops/OpsPage'
-import { PlaceholderPage } from '../pages/PlaceholderPage'
+import { DeploymentsPage } from '../pages/deployments/DeploymentsPage'
 import { ProductsPage } from '../pages/products/ProductsPage'
 import { KnownHostsDialog, closeKnownHosts, openKnownHosts } from '../pages/terminals/KnownHostsDialog'
 import { PromptHost } from '../pages/terminals/PromptHost'
@@ -27,11 +27,6 @@ import { fast, useMotionSafe } from '../ui/motion'
 import { useShortcut } from '../ui/shortcuts'
 import { SECTIONS, sectionShortcut } from './sections'
 import { SECTION_ICONS, Sidebar } from './Sidebar'
-
-// Sections a later phase builds out; each renders a placeholder until then.
-const PLACEHOLDERS = [
-  { id: 'deployments', phase: 8, blurb: 'Ansible runs, streamed live' },
-] as const
 
 /** Sidebar plus routed pages. Needs a router above it (HashRouter in the app, MemoryRouter in tests). */
 export function AppShell() {
@@ -92,18 +87,7 @@ export function AppShell() {
         >
           <Routes location={location}>
             <Route path="/" element={<Navigate to={SECTIONS[0].path} replace />} />
-            {PLACEHOLDERS.map((p) => {
-              const section = SECTIONS.find((s) => s.id === p.id)!
-              return (
-                <Route
-                  key={p.id}
-                  path={section.path}
-                  element={
-                    <PlaceholderPage title={section.label} icon={SECTION_ICONS[p.id]} phase={p.phase} blurb={p.blurb} />
-                  }
-                />
-              )
-            })}
+            <Route path="/deployments" element={<DeploymentsPage />} />
             <Route path="/products" element={<ProductsPage />} />
             {/* The deck below draws this page; it stays mounted so terminals survive navigation. */}
             <Route path="/terminals" element={null} />
