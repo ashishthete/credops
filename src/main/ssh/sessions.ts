@@ -17,7 +17,7 @@ import {
   type SessionMeta,
 } from '../../shared/ssh'
 import { VAULT_LOCKED } from '../../shared/vault'
-import { checkContainerRef, containerExecArgv } from '../ops/containers'
+import { checkContainerRef, containerAuditId, containerExecArgv, shortRef } from '../ops/containers'
 import { shJoin } from '../ops/quote'
 import { redact } from '../security/redact'
 import type { AuthPlan } from './auth'
@@ -153,7 +153,7 @@ const once = (fn: () => void): (() => void) => {
 
 /** A container tab reads `<ref>@<host>`, a full id as its 12-char short id. */
 const tabLabel = (container: string | null, hostLabel: string): string =>
-  container === null ? hostLabel : `${/^[0-9a-f]{64}$/.test(container) ? container.slice(0, 12) : container}@${hostLabel}`
+  container === null ? hostLabel : `${shortRef(container)}@${hostLabel}`
 
 /** A drop after ready: never the dial-time "didn't answer within 20 s" text. */
 function lostError(label: string, err: unknown): SessionError {
@@ -574,7 +574,7 @@ export class SessionManager {
       details: {
         hostId: s.meta.hostId,
         environmentId: s.meta.environmentId,
-        ...(/^[0-9a-f]{64}$/.test(ref) ? { containerId: ref.slice(0, 12) } : {}),
+        ...containerAuditId(ref),
       },
     })
   }

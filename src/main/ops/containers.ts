@@ -35,8 +35,8 @@ export const CONTAINER_LEASE_TIMEOUT_MS = PROMPT_TIMEOUT_MS + 30_000
 /** How long one docker command (list, logs, start, stop, restart) may run; `stop` alone waits 10 s by default. */
 export const CONTAINER_EXEC_TIMEOUT_MS = 120_000
 const MAX_ERROR_CHARS = 200
-/** Stderr kept to explain a failure. */
-const MAX_ERR_HEAD = 4096
+/** Stderr kept to explain a failure: the head for list and actions, the tail for logs. */
+const MAX_ERR_KEPT = 4096
 /** A `docker ps` line longer than this is skipped unparsed. */
 const MAX_PS_LINE = 65_536
 const QUITTING = 'OpsDeck is quitting'
@@ -70,7 +70,9 @@ function checkTail(tail: unknown): number {
 
 const FULL_ID = /^[0-9a-f]{64}$/
 /** A full container id reads as its 12-char short id, the way docker shows it. */
-const shortRef = (ref: string): string => (FULL_ID.test(ref) ? ref.slice(0, 12) : ref)
+export const shortRef = (ref: string): string => (FULL_ID.test(ref) ? ref.slice(0, 12) : ref)
+/** The audit `containerId`: only a full id is a verified id, so a name or short id gives none. */
+export const containerAuditId = (ref: string): { containerId?: string } => (FULL_ID.test(ref) ? { containerId: ref.slice(0, 12) } : {})
 
 /** Plain words for the errors an operator can fix; otherwise docker's first stderr line, redacted and capped. */
 export function dockerError(label: string, exitCode: number | null, stderr: string): string {
@@ -86,13 +88,46 @@ export function dockerError(label: string, exitCode: number | null, stderr: stri
   return exitCode === null ? `docker was stopped by a signal on ${label}` : `docker exited with code ${exitCode} on ${label}`
 }
 
+/** Docker's own error lines, as the CLI prints them; nothing a container logs is shown otherwise. */
+const DOCKER_OWN_ERROR = /^(?:Error response from daemon|Error: No such container): /
+const DOCKER_SOCKET_DENIED = /^permission denied while trying to connect to the Docker daemon socket/
+
+/**
+ * `docker logs` relays the container's own stderr on its stderr, so app log lines (which may hold
+ * anything) never become error text: only the last stderr line, and only when it is docker's own
+ * error, else the exit code alone.
+ */
+export function logsError(label: string, exitCode: number | null, stderrTail: string): string {
+  if (exitCode === 127) return `Docker isn't installed on ${label}`
+  const last = stderrTail
+    .split('\n')
+    .map((l) => l.trim())
+    .findLast((l) => l !== '')
+  if (last !== undefined && DOCKER_OWN_ERROR.test(last)) return redact(last).slice(0, MAX_ERROR_CHARS)
+  if (last !== undefined && DOCKER_SOCKET_DENIED.test(last)) return `Docker needs permission on ${label} (add the user to the docker group)`
+  return exitCode === null ? `docker logs was stopped by a signal on ${label}` : `docker logs exited with code ${exitCode} on ${label}`
+}
+
+/** Keeps the first (or, for logs, the last) `MAX_ERR_KEPT` chars of stderr. */
+class StderrKept {
+  text = ''
+  /** `docker logs`: keep the tail and read it with `logsError`. */
+  constructor(readonly isLogs: boolean) {}
+
+  push(chunk: string): void {
+    if (this.isLogs) this.text = (this.text + chunk).slice(-MAX_ERR_KEPT)
+    else if (this.text.length < MAX_ERR_KEPT) this.text += chunk
+  }
+}
+
 /** Null when docker exited 0. A cancelled exec is the caller's to handle. */
-function exitError(label: string, r: ExecResult, stderr: string): SessionError | null {
+function exitError(label: string, r: ExecResult, stderr: StderrKept): SessionError | null {
   if (r.exitCode === 0 && r.signal === null) return null
   if (r.exitCode === null && r.signal === null) {
     return { code: 'closed', message: `The connection to ${label} dropped before docker finished` }
   }
-  return { code: 'unknown', message: dockerError(label, r.exitCode, stderr) }
+  const message = stderr.isLogs ? logsError(label, r.exitCode, stderr.text) : dockerError(label, r.exitCode, stderr.text)
+  return { code: 'unknown', message }
 }
 
 const errorOf = (err: unknown): SessionError =>
@@ -236,7 +271,7 @@ interface Follow {
   abort: AbortController
   pending: string
   flushTimer: unknown
-  errHead: string
+  stderr: StderrKept
   ended: boolean
 }
 
@@ -290,7 +325,7 @@ export class ContainerService {
     checkContainerRef(ref)
     if (!(CONTAINER_ACTIONS as readonly string[]).includes(action)) throw new Error('action must be start, stop or restart')
     const label = this.deps.hostLabel(hostId)
-    const details = { hostId, environmentId, ...(FULL_ID.test(ref) ? { containerId: ref.slice(0, 12) } : {}) }
+    const details = { hostId, environmentId, ...containerAuditId(ref) }
     const audit = (outcome: AuditInput['outcome'], extra: Record<string, unknown> = {}): void =>
       void this.deps.audit.append({
         action: `container.${action}`,
@@ -307,7 +342,10 @@ export class ContainerService {
     try {
       const envs = this.deps.environments()
       const context = environmentId === null ? null : envs.find((e) => e.id === environmentId)
-      if (context === undefined) throw new Error('environment not found')
+      if (context === undefined) {
+        audit('denied', { reason: 'environment' })
+        throw new Error('environment not found')
+      }
       const memberships = envs.filter((e) => e.hosts.some((m) => m.hostId === hostId))
       const needed = confirmNeeded(protectionFor(context, memberships), 1, action !== 'start')
       checkConfirm(needed, confirm)
@@ -333,7 +371,7 @@ export class ContainerService {
     const label = this.deps.hostLabel(hostId)
     this.assertUnlocked()
     const ring = new OutputRing(this.outputCap)
-    await this.runOnce(hostId, environmentId, label, logsArgv(ref, tail, false), (chunk, stream) => ring.append(chunk, stream))
+    await this.runOnce(hostId, environmentId, label, logsArgv(ref, tail, false), (chunk, stream) => ring.append(chunk, stream), true)
     return ring.snapshot().text
   }
 
@@ -357,7 +395,7 @@ export class ContainerService {
       abort: new AbortController(),
       pending: '',
       flushTimer: null,
-      errHead: '',
+      stderr: new StderrKept(true),
       ended: false,
     }
     this.follows.set(f.id, f)
@@ -375,14 +413,21 @@ export class ContainerService {
       onData: (chunk, stream) => this.followData(f, chunk, stream),
     })
       .then(
-        (r) => this.endFollow(f, r.cancelled ? null : exitError(label, r, f.errHead)),
+        (r) => this.endFollow(f, r.cancelled ? null : exitError(label, r, f.stderr)),
         (err: unknown) => this.endFollow(f, errorOf(err)),
       )
       .finally(() => lease.release())
+      // Nothing awaits this chain; a failing emit (a closing window) must not become an unhandled rejection.
+      .catch((err: unknown) => console.warn('Container log follow bookkeeping failed:', redact(err instanceof Error ? err.message : String(err))))
     return f.id
   }
 
-  /** Ends the follow at once (its `ended` event goes out now); an unknown or ended id is a no-op. */
+  /**
+   * Ends the follow at once (its `ended` event goes out now); an unknown or ended id is a no-op. The
+   * follow stops counting toward `MAX_LOG_FOLLOWS` here, but its channel stays open for up to
+   * `STOP_GRACE_MS` after the `INT`. So a quick stop-and-start can briefly hold one channel more
+   * than the cap allows, and a list or action may queue behind it until the old channel closes.
+   */
   unfollow(followId: string): void {
     const f = this.follows.get(followId)
     if (!f) return
@@ -433,12 +478,13 @@ export class ContainerService {
     label: string,
     argv: string[],
     onData: (chunk: string, stream: 'out' | 'err') => void = () => {},
+    isLogs = false,
   ): Promise<void> {
     const abort = new AbortController()
     this.inFlight.add(abort)
     try {
       const lease = await this.lease(hostId, environmentId, label, abort)
-      let errHead = ''
+      const stderr = new StderrKept(isLogs)
       try {
         const r = await execOnce(lease.client, shJoin(argv), {
           env: lease.envVars,
@@ -446,7 +492,7 @@ export class ContainerService {
           timeoutMs: this.execTimeoutMs,
           timers: this.timers,
           onData: (chunk, stream) => {
-            if (stream === 'err' && errHead.length < MAX_ERR_HEAD) errHead += chunk
+            if (stream === 'err') stderr.push(chunk)
             onData(chunk, stream)
           },
         })
@@ -454,7 +500,7 @@ export class ContainerService {
         if (r.timedOut) {
           throw new Error(`docker didn't finish on ${label} within ${Math.round(this.execTimeoutMs / 1000)}s (it may still be running there)`)
         }
-        const error = exitError(label, r, errHead)
+        const error = exitError(label, r, stderr)
         if (error) throw new Error(error.message)
       } finally {
         lease.release()
@@ -466,7 +512,7 @@ export class ContainerService {
 
   private followData(f: Follow, chunk: string, stream: 'out' | 'err'): void {
     if (f.ended) return
-    if (stream === 'err' && f.errHead.length < MAX_ERR_HEAD) f.errHead += chunk
+    if (stream === 'err') f.stderr.push(chunk)
     f.pending += chunk
     if (f.pending.length >= OUTPUT_FLUSH_CHARS) this.flush(f)
     else if (f.flushTimer === null) f.flushTimer = this.timers.setTimeout(() => this.flush(f), OUTPUT_FLUSH_MS)

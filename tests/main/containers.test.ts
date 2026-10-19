@@ -230,6 +230,16 @@ describe('ContainerService', () => {
     await t.containers.action(t.ids['app-2']!, null, 'db', 'stop')
   })
 
+  it('an unknown environment is refused and audited as denied', async () => {
+    const t = await setup()
+    const missing = '0b7c9d2e-4f3a-4e1b-9c8d-7a6b5c4d3e2f'
+    await expect(t.containers.action(t.ids['app-1']!, missing, 'web-1', 'start')).rejects.toThrow(/^environment not found$/)
+    expect(t.dockerArgs()).toEqual([])
+    expect(t.containerRows()).toEqual([
+      expect.objectContaining({ action: 'container.start', outcome: 'denied', details: expect.objectContaining({ reason: 'environment' }) }),
+    ])
+  })
+
   it('audits actions by container@host label', async () => {
     const t = await setup()
     await t.containers.action(t.ids['app-1']!, t.staging.id, 'web-1', 'stop')
@@ -262,12 +272,11 @@ describe('ContainerService', () => {
   it('logs tail returns the last lines and follow streams until unfollow', async () => {
     const t = await setup({ outputCap: 12 })
     t.fixture('logs.out', 'line one\nline two\nline three')
-    t.fixture('logs.err', 'warn four')
     const tail = await t.containers.logs(t.ids['app-1']!, null, 'web-1', 2)
     expect(t.dockerArgs()).toEqual(['logs', '--timestamps', '--tail', '2', 'web-1'])
-    expect(tail.length).toBeLessThanOrEqual(12)
-    expect(tail.endsWith('\n')).toBe(true)
-    expect('line one\nline two\nline three\nwarn four\n'.endsWith(tail) || 'warn four\nline one\nline two\nline three\n'.endsWith(tail)).toBe(true)
+    // Exactly the last 12 chars of what docker wrote.
+    expect(tail).toBe('\nline three\n')
+    t.fixture('logs.err', 'warn four')
 
     t.resetArgs()
     const id = await t.containers.follow(t.ids['app-1']!, null, 'web-1', 50)
@@ -284,6 +293,37 @@ describe('ContainerService', () => {
     await new Promise((r) => setTimeout(r, 100))
     expect(t.ends(id)).toHaveLength(1)
     expect(t.containerRows()).toEqual([])
+  })
+
+  it("a failed logs or follow never reports the container's own stderr lines", async () => {
+    const t = await setup()
+    const host = t.ids['app-1']!
+    const app = 'Error: SENTINEL app said token=abc\nwarn SENTINEL again'
+    // Docker's own error comes last; only a line in docker's own shape is shown.
+    t.fixture('logs.err', `${app}\nError response from daemon: container web-1 is restarting`)
+    t.fixture('logs.code', '1')
+    await expect(t.containers.logs(host, null, 'web-1', 10)).rejects.toThrow(
+      /^Error response from daemon: container web-1 is restarting$/,
+    )
+    let id = await t.containers.follow(host, null, 'web-1', 10)
+    await t.waitFor(() => expect(t.ends(id)).toHaveLength(1))
+    expect(t.ends(id)[0]).toEqual({
+      followId: id,
+      ended: true,
+      error: { code: 'unknown', message: 'Error response from daemon: container web-1 is restarting' },
+    })
+    // App lines alone, even ones that look like errors: only the exit code.
+    t.fixture('logs.err', app)
+    t.fixture('logs.code', '3')
+    const err = (await t.containers.logs(host, null, 'web-1', 10).catch((e: Error) => e)) as Error
+    expect(err.message).toBe('docker logs exited with code 3 on app-1')
+    id = await t.containers.follow(host, null, 'web-1', 10)
+    await t.waitFor(() => expect(t.ends(id)).toHaveLength(1))
+    expect(t.ends(id)[0]).toMatchObject({ error: { message: 'docker logs exited with code 3 on app-1' } })
+    // The lines still stream as log output; they just never become error text.
+    expect(t.chunks(id)).toContain('SENTINEL')
+    const errorText = JSON.stringify(t.logEvents.filter((e) => 'ended' in e))
+    expect(errorText).not.toContain('SENTINEL')
   })
 
   it('a follow whose docker exits ends with its error', async () => {
