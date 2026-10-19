@@ -80,6 +80,9 @@ function checkDescription(raw: string): string {
   return s
 }
 
+/** A defaults object with no prototype, so any name is an own key and nothing is inherited. */
+const noProto = (): Record<string, string> => Object.create(null) as Record<string, string>
+
 const sameList = (a: readonly string[], b: readonly string[]): boolean =>
   a.length === b.length && a.every((x, i) => x === b[i])
 
@@ -132,8 +135,8 @@ export class SnippetStore {
 
   create(input: SnippetInput): SnippetMeta {
     this.vault.assertUnlocked()
-    const id = inTransaction(this.db, () => {
-      const f = this.validate(input, {})
+    const { id, opened } = inTransaction(this.db, () => {
+      const f = this.validate(input, noProto())
       const count = (this.db.prepare('SELECT COUNT(*) AS n FROM snippets').get() as { n: number }).n
       if (count >= MAX_SNIPPETS) throw new Error(`too many snippets (${MAX_SNIPPETS})`)
       this.uniqueLabel(f.label)
@@ -157,8 +160,10 @@ export class SnippetStore {
           ts,
           ts,
         )
-      return id
+      return { id, opened: sealed }
     })
+    // Cached only once committed, so a failed write leaves no plaintext behind.
+    this.cache.set(id, opened)
     const s = this.get(id)
     this.audit.append({
       action: 'snippet.create',
@@ -179,7 +184,7 @@ export class SnippetStore {
     this.vault.assertUnlocked()
     const before = this.get(id)
     const changed = inTransaction(this.db, () => {
-      const beforeDefaults: Record<string, string> = {}
+      const beforeDefaults = noProto()
       for (const v of before.variables) if (v.default !== null) beforeDefaults[v.name] = v.default
       const f = this.validate(input, beforeDefaults)
       const fields = [
@@ -209,8 +214,9 @@ export class SnippetStore {
           this.now().toISOString(),
           id,
         )
-      return fields
+      return { fields, opened: sealed }
     })
+    if (changed !== null) this.cache.set(id, changed.opened)
     const after = this.get(id)
     if (changed === null) return after
     this.audit.append({
@@ -219,7 +225,7 @@ export class SnippetStore {
       targetType: 'snippet',
       targetId: id,
       targetLabel: after.label,
-      details: { fields: changed, ...details(after) },
+      details: { fields: changed.fields, ...details(after) },
     })
     return after
   }
@@ -254,7 +260,7 @@ export class SnippetStore {
     const tags = checkTags(input.tags ?? [])
     const variables = parseTemplate(script).variables
     const given = input.defaults ?? kept
-    const defaults: Record<string, string> = {}
+    const defaults = noProto()
     for (const name of variables) {
       const value = Object.hasOwn(given, name) ? given[name] : null
       if (typeof value === 'string') defaults[name] = checkValue(name, value)
@@ -262,15 +268,14 @@ export class SnippetStore {
     return { label, script, description, tags, variables, defaults, destructive: input.destructive === true }
   }
 
-  /** Seals a validated snippet and caches it under `id`. No defaults seal to NULL, never to `{}`. */
-  private seal(id: string, f: Fields): { scriptSealed: string; defaultsSealed: string | null } {
+  /** Seals a validated snippet for `id`; the caller caches the result after COMMIT. No defaults seal to NULL, never to `{}`. */
+  private seal(id: string, f: Fields): Opened {
     const scriptSealed = this.vault.seal(DEFAULT_VAULT_ID, scriptAad(id), f.script)
     const defaultsSealed =
       Object.keys(f.defaults).length === 0
         ? null
         : this.vault.seal(DEFAULT_VAULT_ID, defaultsAad(id), JSON.stringify(f.defaults))
-    this.cache.set(id, { scriptSealed, defaultsSealed, script: f.script, defaults: f.defaults })
-    return { scriptSealed, defaultsSealed }
+    return { scriptSealed, defaultsSealed, script: f.script, defaults: f.defaults }
   }
 
   private open(r: SnippetRow): Opened {
@@ -279,8 +284,11 @@ export class SnippetStore {
     const script = this.vault.open(DEFAULT_VAULT_ID, scriptAad(r.id), r.script_sealed)
     const defaults =
       r.defaults_sealed === null
-        ? {}
-        : (JSON.parse(this.vault.open(DEFAULT_VAULT_ID, defaultsAad(r.id), r.defaults_sealed)) as Record<string, string>)
+        ? noProto()
+        : Object.assign(
+            noProto(),
+            JSON.parse(this.vault.open(DEFAULT_VAULT_ID, defaultsAad(r.id), r.defaults_sealed)) as Record<string, string>,
+          )
     const opened: Opened = { scriptSealed: r.script_sealed, defaultsSealed: r.defaults_sealed, script, defaults }
     this.cache.set(r.id, opened)
     return opened

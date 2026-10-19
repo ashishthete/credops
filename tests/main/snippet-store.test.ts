@@ -223,6 +223,30 @@ describe('SnippetStore', () => {
     expect(opens).toBe(1)
   })
 
+  it('a failed write leaves no opened text in the cache', async () => {
+    const { f, input } = await setup()
+    const store = new SnippetStore({ db: f.db, audit: f.audit, vault: f.vault, ids: () => 'same-id' })
+    const cache = (store as unknown as { cache: Map<string, { script: string }> }).cache
+    store.create(input({ label: 'a', script: 'echo first' }))
+    expect(() => store.create(input({ label: 'b', script: 'echo s3cr3t-token' }))).toThrow()
+    expect([...cache.values()].map((o) => o.script)).toEqual(['echo first'])
+  })
+
+  it('an Object.prototype name can never be a variable, so no default is lost to it', async () => {
+    const { store, input } = await setup()
+    // Variable names are lower-case snake case: __proto__, constructor and toString are template errors.
+    for (const name of ['__proto__', 'constructor', 'toString']) {
+      expect(message(() => store.create(input({ label: name, script: `echo {{${name}}}`, defaults: { [name]: 'x' } })))).toMatch(
+        /has an invalid name/,
+      )
+    }
+    // A __proto__ key among the defaults is an own key, dropped like any unused name; real defaults survive.
+    const defaults = JSON.parse('{"__proto__": "x", "unit": "nginx"}') as Record<string, string>
+    const s = store.create(input({ defaults }))
+    expect(s.variables).toEqual([{ name: 'unit', default: 'nginx' }])
+    expect(store.render(s.id, {})).toBe('systemctl status nginx')
+  })
+
   it('the ops handlers route snippets:* to the store', async () => {
     const { store, input } = await setup()
     const h = createOpsHandlers({ snippets: store })
