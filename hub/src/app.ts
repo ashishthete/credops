@@ -19,6 +19,8 @@ import { registerSecrets } from './routes/secrets'
 import { DeployKeys } from './secrets/deploykeys'
 import { KeyRing } from './secrets/keyring'
 import { SecretStore } from './secrets/store'
+import { LiveBus } from './live/bus'
+import { registerLive } from './routes/live'
 import { registerMeta } from './routes/meta'
 import { registerSession } from './routes/session'
 
@@ -33,6 +35,13 @@ export interface HubDeps {
   ids: () => string
   /** pino destination; defaults to stdout */
   log?: { write(msg: string): void }
+}
+
+declare module 'fastify' {
+  interface FastifyInstance {
+    /** The live SSE bus; the release service publishes deploy events and release state here. */
+    live: LiveBus
+  }
 }
 
 export function buildApp(deps: HubDeps): FastifyInstance {
@@ -64,6 +73,12 @@ export function buildApp(deps: HubDeps): FastifyInstance {
   registerMeta(app, deps)
   const sessions = new SessionStore(deps.db, { now: deps.now, ttlHours: deps.config.sessionTtlHours })
   const directory = new Directory(deps.db, { firstAdmin: deps.config.firstAdmin, now: deps.now, ids: deps.ids, audit: deps.audit, sessions })
+  const live = new LiveBus({ directory, knownSecrets: () => [...secrets.inflight] })
+  app.decorate('live', live)
+  // Streams must end before the server can close.
+  app.addHook('preClose', async () => live.closeAll())
+  sessions.onRevoke((r) => ('oid' in r ? live.closeUser(r.oid) : live.closeSession(r.tokenHash)))
+  directory.onAccessChange(() => live.publish({ type: 'access.changed' }))
   const auth = makeAuth({ sessions, directory, now: deps.now })
   registerSession(app, { audit: deps.audit, verifier: deps.verifier, sessions, directory, now: deps.now }, auth)
   registerAdmin(app, { directory, audit: deps.audit, auth })
@@ -82,6 +97,9 @@ export function buildApp(deps: HubDeps): FastifyInstance {
   sweep.unref()
   app.addHook('onClose', async () => clearInterval(sweep))
   const registry = new Registry(deps.db, { audit: deps.audit, directory, locks, now: deps.now })
+  registry.onChange(() => live.publish({ type: 'catalog.updated' }))
+  locks.onChange((environmentId) => live.publish({ type: 'lock.updated', environmentId, lock: locks.get(environmentId) }))
+  registerLive(app, { live, auth })
   registerRegistry(app, { registry, directory, auth })
   registerLocks(app, { locks, directory, audit: deps.audit, auth })
   registerSecrets(app, { secrets, deployKeys, registry, locks, directory, audit: deps.audit, auth })

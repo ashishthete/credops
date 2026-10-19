@@ -349,6 +349,24 @@ export class Registry {
     return this.db.prepare('SELECT 1 FROM environments WHERE id = ?').get(environmentId) !== undefined
   }
 
+  private readonly listeners = new Set<() => void>()
+
+  /** Told after a committed publish or unpublish, so live clients refresh their catalog. */
+  onChange(fn: () => void): () => void {
+    this.listeners.add(fn)
+    return () => void this.listeners.delete(fn)
+  }
+
+  private changed(): void {
+    for (const fn of this.listeners) {
+      try {
+        fn()
+      } catch {
+        // Listeners are advisory; the change is already committed.
+      }
+    }
+  }
+
   publish(input: unknown, actor: HubActor): HubPublishResult {
     const manifest = readManifest(input)
     const env = manifest.environment
@@ -435,6 +453,7 @@ export class Registry {
       const present = this.secretIdsPresent(env.id)
       return { manifestHash: hash, missingSecrets: manifest.requiredSecrets.map((s) => s.secretId).filter((id) => !present.has(id)) }
     })
+    this.changed()
     return result
   }
 
@@ -466,6 +485,7 @@ export class Registry {
         details: { name: row.name, ...counts, manifestHash: hash },
       })
     })
+    this.changed()
   }
 
   private envRow(id: string): EnvRow {

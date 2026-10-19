@@ -1,4 +1,4 @@
-import type { DeploymentMeta, UseSudo } from './deploy'
+import type { DeploymentMeta, ReleaseSummary, RunEvent, UseSudo } from './deploy'
 
 export const HUB_API_VERSION = 1
 export const DEFAULT_GROUP_ID = '00000000-0000-4000-8000-000000000001'
@@ -316,3 +316,11 @@ export interface HubPublishResult {
   manifestHash: string
   missingSecrets: string[]
 }
+
+/** One server-sent event on GET /api/v1/live. `deploy.events` and `lock.updated` reach only people who can view the environment. */
+export type HubLiveMessage =
+  | { type: 'deploy.events'; environmentId: string; events: RunEvent[] }
+  | { type: 'release.state'; summary: ReleaseSummary }
+  | { type: 'lock.updated'; environmentId: string; lock: HubEnvLock | null }
+  | { type: 'catalog.updated' }
+  | { type: 'access.changed' }

@@ -51,6 +51,8 @@ function toGrant(r: GrantRow): HubGrant {
 }
 
 export class Directory {
+  private readonly accessListeners = new Set<() => void>()
+
   constructor(
     private readonly db: HubDb,
     private readonly opts: {
@@ -61,6 +63,22 @@ export class Directory {
       sessions: SessionStore
     },
   ) {}
+
+  /** Told after a committed change to who is in which group, what a group may reach, or a person's role or status. */
+  onAccessChange(fn: () => void): () => void {
+    this.accessListeners.add(fn)
+    return () => void this.accessListeners.delete(fn)
+  }
+
+  private accessChanged(): void {
+    for (const fn of this.accessListeners) {
+      try {
+        fn()
+      } catch {
+        // Listeners are advisory; the change is already committed.
+      }
+    }
+  }
 
   private groupIds(oid: string): string[] {
     return (
@@ -261,12 +279,13 @@ export class Directory {
       this.db.prepare('DELETE FROM groups WHERE id = ?').run(id)
       this.audit(actor, 'group.delete', { id, name: g.name }, { name: g.name })
     })
+    this.accessChanged()
   }
 
   addMembers(actor: HubActor, groupId: string, oids: string[]): HubGroup {
     const unique = [...new Set(oids)]
     if (unique.length > MAX_BULK_MEMBERS) throw new HubHttpError(400, 'bad_request', 'Too many members in one call')
-    return inTransaction(this.db, () => {
+    const out = inTransaction(this.db, () => {
       const g = this.groupRow(groupId)
       const missing = unique.filter((oid) => !this.db.prepare('SELECT 1 FROM users WHERE oid = ?').get(oid))
       if (missing.length > 0) throw new HubHttpError(404, 'not_found', 'User not found')
@@ -277,6 +296,8 @@ export class Directory {
       this.audit(actor, 'member.add', { id: groupId, name: g.name }, { oids: unique, added })
       return this.getGroup(groupId)
     })
+    this.accessChanged()
+    return out
   }
 
   removeMember(actor: HubActor, groupId: string, oid: string): void {
@@ -290,10 +311,11 @@ export class Directory {
       this.db.prepare('DELETE FROM group_members WHERE group_id = ? AND oid = ?').run(groupId, oid)
       this.audit(actor, 'member.remove', { id: groupId, name: g.name }, { oid })
     })
+    this.accessChanged()
   }
 
   addGrant(actor: HubActor, groupId: string, scope: GrantScope): HubGrant {
-    return inTransaction(this.db, () => {
+    const out = inTransaction(this.db, () => {
       const g = this.groupRow(groupId)
       if (g.builtin === 1) throw new HubHttpError(409, 'builtin_group', 'The Default group cannot be changed')
       const count = (this.db.prepare('SELECT COUNT(*) AS n FROM grants WHERE group_id = ?').get(groupId) as { n: number }).n
@@ -329,6 +351,8 @@ export class Directory {
       this.audit(actor, 'grant.add', { id: groupId, name: g.name }, { grantId: id, scope })
       return { id, groupId, scope, createdAt: now }
     })
+    this.accessChanged()
+    return out
   }
 
   removeGrant(actor: HubActor, grantId: string): void {
@@ -341,10 +365,11 @@ export class Directory {
       this.db.prepare('DELETE FROM grants WHERE id = ?').run(grantId)
       this.audit(actor, 'grant.remove', { id: g.id, name: g.name }, { grantId, scope: toGrant(r).scope })
     })
+    this.accessChanged()
   }
 
   updateUser(actor: HubActor, oid: string, patch: { role?: HubRole; disabled?: boolean }): HubUser {
-    return inTransaction(this.db, () => {
+    const out = inTransaction(this.db, () => {
       const u = this.db.prepare('SELECT * FROM users WHERE oid = ?').get(oid) as unknown as UserRow | undefined
       if (!u) throw new HubHttpError(404, 'not_found', 'User not found')
       const role = patch.role ?? u.role
@@ -366,5 +391,7 @@ export class Directory {
       )
       return this.get(oid) as HubUser
     })
+    this.accessChanged()
+    return out
   }
 }

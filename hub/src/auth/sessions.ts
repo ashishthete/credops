@@ -3,9 +3,13 @@ import type { HubDb } from '../db'
 
 export const SESSION_TOKEN_RE = /^ohs_[A-Za-z0-9_-]{43}$/
 
-const hashToken = (token: string): string => createHash('sha256').update(token).digest('hex')
+export const hashToken = (token: string): string => createHash('sha256').update(token).digest('hex')
+
+export type SessionRevoked = { tokenHash: string } | { oid: string }
 
 export class SessionStore {
+  private readonly listeners = new Set<(r: SessionRevoked) => void>()
+
   constructor(
     private readonly db: HubDb,
     private readonly opts: { now: () => Date; ttlHours: number },
@@ -36,12 +40,31 @@ export class SessionStore {
     return { oid: row.oid, expiresAt: row.expires_at }
   }
 
+  /** Told after a session (or all of a person's sessions) is revoked, so live streams can end. */
+  onRevoke(fn: (r: SessionRevoked) => void): () => void {
+    this.listeners.add(fn)
+    return () => void this.listeners.delete(fn)
+  }
+
+  private emit(r: SessionRevoked): void {
+    for (const fn of this.listeners) {
+      try {
+        fn(r)
+      } catch {
+        // Listeners are advisory.
+      }
+    }
+  }
+
   revoke(token: string): void {
-    this.db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(hashToken(token))
+    const tokenHash = hashToken(token)
+    this.db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(tokenHash)
+    this.emit({ tokenHash })
   }
 
   revokeAll(oid: string): void {
     this.db.prepare('DELETE FROM sessions WHERE oid = ?').run(oid)
+    this.emit({ oid })
   }
 
   /** The Hub never keeps a token, so there is nothing to redact by value. */
