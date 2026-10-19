@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -173,6 +173,12 @@ describe('HubPage', () => {
     expect(await screen.findByText('Chain intact (7 events)')).toBeTruthy()
   })
 
+  it('non-admins see one "In N groups" line, not identical chips', async () => {
+    await renderHub({ 'hub:status': linked({ user: person({ groupIds: ['a', 'b', 'c'] }) }) })
+    expect(screen.getByText('In 3 groups')).toBeTruthy()
+    expect(screen.queryByText('Group')).toBeNull()
+  })
+
   it('reduced motion renders with no transforms', async () => {
     motion.safe = false
     const user = userEvent.setup()
@@ -189,6 +195,6 @@ describe('HubPage', () => {
     check()
     act(() => emitBridgeEvent('hub:state', admin))
     check()
-    fireEvent.keyDown(window, { key: 'x' })
+    expect(screen.getByRole('tabpanel').getAttribute('data-motion')).toBe('reduced')
   })
 })

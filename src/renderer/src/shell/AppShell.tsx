@@ -119,7 +119,7 @@ export function AppShell() {
   )
 }
 
-// mod+1…mod+N and a "Go to …" palette command per section.
+// mod+1…mod+9 (later sections have none) and a "Go to …" palette command per section.
 function useSectionNavigation() {
   const navigate = useNavigate()
   const navigateRef = useRef(navigate)

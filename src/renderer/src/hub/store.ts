@@ -42,6 +42,7 @@ export const hubStore = createStore<HubState>(initial())
 // Bumped on reset and on each admin load, so a reply that lost the race is dropped.
 let generation = 0
 let adminLoad = 0
+let auditLoad = 0
 let syncUsers = 0
 let stopSync: (() => void) | null = null
 
@@ -112,6 +113,7 @@ export function startHubSync(): () => void {
 export function resetHub(): void {
   generation++
   adminLoad++
+  auditLoad++
   hubStore.set(initial())
 }
 
@@ -168,8 +170,11 @@ export const addGrant = (groupId: string, scope: GrantScope) =>
 export const removeGrant = (grantId: string) => mutate("Couldn't remove the grant", () => done(() => api.invoke('hub:removeGrant', grantId)))
 
 export async function loadHubAudit(filter: HubAuditFilter): Promise<void> {
+  const mine = ++auditLoad
   patch({ auditLoading: true })
   const rows = await attempt("Couldn't load the Hub audit log", () => api.invoke('hub:audit', filter))
+  // A newer filter's request owns the list and the loading flag.
+  if (mine !== auditLoad) return
   patch({ auditLoading: false, ...(rows ? { audit: rows } : {}) })
 }
 

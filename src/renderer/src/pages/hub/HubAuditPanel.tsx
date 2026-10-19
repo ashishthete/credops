@@ -7,7 +7,7 @@ import { Button } from '../../ui/Button'
 import { plural } from '../../ui/common'
 import { EmptyState } from '../../ui/EmptyState'
 import type { Tone } from '../../ui/tone'
-import { ListSkeleton } from './HubPage'
+import { ListSkeleton } from './shared'
 
 const OUTCOME_TONE: Record<string, Tone> = { success: 'success', failure: 'error', denied: 'warn', info: 'info' }
 

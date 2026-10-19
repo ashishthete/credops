@@ -66,8 +66,10 @@ function isEditable(target: EventTarget | null): boolean {
   )
 }
 
-/** Binds a global keyboard shortcut such as `mod+k` or `mod+1` (mod = ⌘ on macOS, Ctrl elsewhere). */
-/** A null combo registers nothing, so callers can loop over a fixed set without conditional hooks. */
+/**
+ * Binds a global keyboard shortcut such as `mod+k` or `mod+1` (mod = ⌘ on macOS, Ctrl elsewhere).
+ * A null combo registers nothing, so callers can loop over a fixed set without conditional hooks.
+ */
 export function useShortcut(combo: string | null, handler: () => void): void {
   const handlerRef = useRef(handler)
   useEffect(() => {

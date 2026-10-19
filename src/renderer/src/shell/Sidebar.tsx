@@ -85,6 +85,7 @@ export function Sidebar() {
       <nav aria-label="Sections" className="flex flex-col gap-0.5 px-3 py-2">
         {SECTIONS.map((s, i) => {
           const Icon = SECTION_ICONS[s.id]
+          const shortcut = sectionShortcut(i)
           return (
             <NavLink
               key={s.id}
@@ -116,9 +117,9 @@ export function Sidebar() {
                   {s.id === 'terminals' && <LiveCount />}
                   {s.id === 'tunnels' && <TunnelBadge />}
                   {s.id === 'ops' && <RunBadge />}
-                  {sectionShortcut(i) && (
+                  {shortcut && (
                     <Keys
-                      combo={sectionShortcut(i)!}
+                      combo={shortcut}
                       className="relative opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
                     />
                   )}

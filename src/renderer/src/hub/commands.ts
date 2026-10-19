@@ -4,8 +4,8 @@ import { registerCommands } from '../ui/commands'
 import { hubStore, signInHub, signOutHub } from './store'
 
 export const hubPath = '/hub'
-/** `/hub?action=connect` focuses the URL field, so the command works from any page. */
-export const connectHubPath = '/hub?action=connect'
+/** The Hub page, whose URL field is focused on arrival; "Connect…" has nowhere else to go. */
+export const connectHubPath = '/hub'
 
 /** Palette commands: Hub: Connect…, Hub: Sign in, Hub: Sign out and Hub: Open. */
 export function useHubCommands(): void {

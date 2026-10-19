@@ -3,10 +3,10 @@ import { useState, type FormEvent } from 'react'
 import { cancelSignIn, connectHub, signInHub, signOutHub, unlinkHub, useHub } from '../../hub/store'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
-import { ConfirmDialog, type ConfirmRequest } from '../../ui/common'
+import { ConfirmDialog, plural, type ConfirmRequest } from '../../ui/common'
 import { EmptyState } from '../../ui/EmptyState'
 import { TextField } from '../../ui/Field'
-import { roleLabel } from './HubPage'
+import { roleLabel } from './shared'
 import { useHubGroupNames } from './names'
 
 /** Connect, sign-in, waiting, signed-in and pending states of the Hub link. */
@@ -100,11 +100,16 @@ export function ConnectCard() {
             <p className="truncate text-[12.5px] text-muted">{u.upn}</p>
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
               <Badge tone={u.role === 'admin' ? 'info' : 'success'}>{roleLabel(u.role)}</Badge>
-              {u.groupIds.map((id) => (
-                <Badge key={id} tone="info">
-                  {groupNames(id)}
-                </Badge>
-              ))}
+              {u.groupIds.every((id) => groupNames(id) !== undefined) ? (
+                u.groupIds.map((id) => (
+                  <Badge key={id} tone="info">
+                    {groupNames(id)}
+                  </Badge>
+                ))
+              ) : (
+                // Only admins can list groups, so for everyone else the names can't be resolved.
+                <span className="text-[12.5px] text-muted">{`In ${plural(u.groupIds.length, 'group')}`}</span>
+              )}
             </div>
           </div>
           <Button variant="ghost" size="sm" icon={<LogOut aria-hidden className="size-3.5" />} loading={busy} onClick={() => void signOutHub()}>

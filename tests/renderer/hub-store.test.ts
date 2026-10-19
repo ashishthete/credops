@@ -1,6 +1,6 @@
 import { act } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { hubStore, loadHub, connectHub, resetHub, startHubSync, refreshAdmin } from '../../src/renderer/src/hub/store'
+import { hubStore, loadHub, loadHubAudit, connectHub, resetHub, startHubSync, refreshAdmin } from '../../src/renderer/src/hub/store'
 import { clearToasts } from '../../src/renderer/src/ui/Toaster'
 import type { HubStatus, HubUser } from '../../src/shared/hub'
 import { emitBridgeEvent, mockBridge } from './helpers'
@@ -86,6 +86,22 @@ describe('hub store', () => {
     expect(calls(inv2, 'hub:users')).toHaveLength(0)
     await refreshAdmin()
     expect(calls(inv2, 'hub:users')).toHaveLength(0)
+  })
+
+  it('a slow audit reply for an older filter does not replace a newer one', async () => {
+    const slow = { resolve: (_: unknown) => {} }
+    const invoke = mockBridge()
+    invoke.mockImplementation((async (ch: string, filter?: { limit?: number }) => {
+      if (ch !== 'hub:audit') return null
+      if (filter?.limit === 1) return new Promise((r) => (slow.resolve = r))
+      return [{ id: 2 }]
+    }) as never)
+    const first = loadHubAudit({ limit: 1 })
+    await loadHubAudit({ limit: 2 })
+    slow.resolve([{ id: 1 }])
+    await first
+    expect(hubStore.get().audit).toEqual([{ id: 2 }])
+    expect(hubStore.get().auditLoading).toBe(false)
   })
 
   it('signing out clears the admin data', async () => {

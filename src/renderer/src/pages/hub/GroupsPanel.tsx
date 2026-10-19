@@ -7,7 +7,7 @@ import { Button } from '../../ui/Button'
 import { ConfirmDialog, plural, type ConfirmRequest } from '../../ui/common'
 import { EmptyState } from '../../ui/EmptyState'
 import { TextField } from '../../ui/Field'
-import { ListSkeleton } from './HubPage'
+import { ListSkeleton } from './shared'
 
 // 10a offers only "all environments"; 10b adds the environment and deployment pickers.
 const ALL: GrantScope = { kind: 'all' }

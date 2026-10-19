@@ -43,8 +43,7 @@ export function HubPage() {
           ) : undefined
         }
       />
-      {(
-        <div role="tablist" aria-label="Hub sections" className="flex gap-1 border-b border-line px-8">
+      <div role="tablist" aria-label="Hub sections" className="flex gap-1 border-b border-line px-8">
           {tabs.map((t) => (
             <button
               key={t.id}
@@ -59,8 +58,7 @@ export function HubPage() {
               {t.label}
             </button>
           ))}
-        </div>
-      )}
+      </div>
       <motion.div
         key={current}
         role="tabpanel"
@@ -89,16 +87,3 @@ export function HubPage() {
     </div>
   )
 }
-
-/** Shared by the admin panels: skeleton rows while the first load runs. */
-export function ListSkeleton() {
-  return (
-    <div aria-label="Loading" className="flex flex-col gap-2">
-      {[0, 1, 2].map((i) => (
-        <Skeleton key={i} className="h-10 w-full" />
-      ))}
-    </div>
-  )
-}
-
-export const roleLabel = (role: string) => (role === 'admin' ? 'Admin' : 'Maintainer')

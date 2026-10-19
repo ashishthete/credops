@@ -5,7 +5,7 @@ import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
 import { EmptyState } from '../../ui/EmptyState'
 import type { Tone } from '../../ui/tone'
-import { ListSkeleton } from './HubPage'
+import { ListSkeleton } from './shared'
 import { useHubGroupNames } from './names'
 
 const STATUS: Record<HubUser['status'], { label: string; tone: Tone }> = {
@@ -79,7 +79,7 @@ export function PeoplePanel() {
               </td>
               <td className="py-2 pr-3">
                 <span className="flex flex-wrap gap-1">
-                  {u.groupIds.length === 0 ? <span className="text-muted">None</span> : u.groupIds.map((id) => <Badge key={id}>{groupName(id)}</Badge>)}
+                  {u.groupIds.length === 0 ? <span className="text-muted">None</span> : u.groupIds.map((id) => <Badge key={id}>{groupName(id) ?? 'Group'}</Badge>)}
                 </span>
               </td>
               <td className="py-2 text-right">
