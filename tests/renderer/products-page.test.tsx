@@ -260,8 +260,8 @@ describe('products page', () => {
     renderPage()
     await screen.findByRole('treeitem', { name: 'Acme' })
     expect(item('prod')).toHaveAccessibleDescription('Environment prod. Protected')
-    expect(item('analytics-db')).toHaveAccessibleDescription('Environment analytics-db. Shared')
-    expect(item('staging')).toHaveAccessibleDescription('Environment staging')
+    expect(item('analytics-db')).toHaveAccessibleDescription('Environment analytics-db. No hosts. Shared')
+    expect(item('staging')).toHaveAccessibleDescription('Environment staging. No hosts')
   })
 
   it('collapsing moves focus out of a hidden row', async () => {
@@ -553,6 +553,31 @@ describe('products page', () => {
     expect(item('web-1')).toHaveFocus()
   })
 
+  it('the role menu flips above and pulls in from the edge when it would overflow', async () => {
+    const { innerHeight, innerWidth } = window
+    Object.assign(window, { innerHeight: 300, innerWidth: 400 })
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const menu = this.getAttribute('role') === 'menu'
+      return { x: 0, y: 0, left: 0, top: 0, right: 0, bottom: 0, width: menu ? 200 : 0, height: menu ? 150 : 0, toJSON() {} } as DOMRect
+    })
+    try {
+      renderPage()
+      const web1 = await screen.findByRole('treeitem', { name: 'web-1' })
+      fireEvent.contextMenu(web1, { clientX: 350, clientY: 250 })
+      const menu = await screen.findByRole('menu', { name: 'Options for web-1' })
+      expect(menu.style.left).toBe('192px')
+      expect(menu.style.top).toBe('96px')
+      fireEvent.keyDown(menu, { key: 'Escape' })
+      fireEvent.contextMenu(web1, { clientX: 20, clientY: 40 })
+      const near = await screen.findByRole('menu', { name: 'Options for web-1' })
+      expect(near.style.left).toBe('20px')
+      expect(near.style.top).toBe('40px')
+    } finally {
+      rect.mockRestore()
+      Object.assign(window, { innerHeight, innerWidth })
+    }
+  })
+
   it('Shift+F10 and the options button open the menu; remove asks first', async () => {
     const user = userEvent.setup()
     renderPage()
@@ -673,7 +698,7 @@ describe('products page', () => {
       const env = same.find((el) => el.getAttribute('aria-level') === '2')!
       const hostRow = same.find((el) => el.getAttribute('aria-level') === '3')!
       expect(env).toHaveAccessibleDescription('Environment alpha')
-      expect(hostRow.getAttribute('aria-describedby')).not.toBe(env.getAttribute('aria-describedby'))
+      expect(hostRow).toHaveAccessibleDescription(/^Host alpha\. Role /)
       expect(within(env).getByTitle('Environment alpha')).toBeInTheDocument()
       expect(within(hostRow).getByTitle('Host alpha')).toBeInTheDocument()
       expect(within(env).queryByTitle(/^Role: /)).not.toBeInTheDocument()

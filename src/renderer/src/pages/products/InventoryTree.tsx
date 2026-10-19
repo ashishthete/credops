@@ -1,6 +1,6 @@
 import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
 import { Check, ChevronRight, Inbox, Link2, Lock, MoreHorizontal, Server, Unlink } from 'lucide-react'
-import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent } from 'react'
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent } from 'react'
 import { HOST_ROLES, type HostRole, type ProductIcon } from '../../../../shared/inventory'
 import { isFocusable, moveFocus, type NodeKey, type TreeRow } from '../../inventory/tree'
 import { fast, spring, useMotionSafe } from '../../ui/motion'
@@ -11,7 +11,7 @@ import { ROLE_LABEL } from './ProductView'
 const ROLE_COLOR: Record<HostRole, string> = {
   app: 'var(--accent)',
   db: 'var(--warn)',
-  bastion: '#a78bfa',
+  bastion: 'var(--violet)',
   other: 'var(--muted)',
 }
 
@@ -190,6 +190,7 @@ export function InventoryTree({
                 onSelect={() => onSelect(row.key)}
                 onToggle={() => toggle(row)}
                 onHover={(on) => setHovered((h) => (on ? (row.sharedCount > 0 ? row : null) : h?.key === row.key ? null : h))}
+                menuOpen={menu?.host.key === row.key}
                 onMenu={
                   row.kind === 'host' && rows.some((r) => r.key === row.parentKey && r.kind === 'environment')
                     ? (x, y) => openMenu(row, x, y)
@@ -235,6 +236,8 @@ interface TreeItemProps {
   onHover: (on: boolean) => void
   /** Host rows under an environment: opens the role menu at a point. */
   onMenu?: (x: number, y: number) => void
+  /** The role menu is open on this row. */
+  menuOpen?: boolean
   onDragStart: (e: DragEvent) => void
   onDragOver: (e: DragEvent) => void
   onDragLeave: (e: DragEvent) => void
@@ -255,6 +258,7 @@ function TreeItem({
   onToggle,
   onHover,
   onMenu,
+  menuOpen,
   ...drag
 }: TreeItemProps) {
   const motionSafe = useMotionSafe()
@@ -272,6 +276,7 @@ function TreeItem({
         kindLabel,
         row.kind === 'host' && row.role && `Role ${ROLE_LABEL[row.role]}`,
         row.protected && 'Protected',
+        row.kind === 'environment' && row.childCount === 0 && 'No hosts',
         row.kind === 'environment' && row.sharedCount > 0 && 'Shared',
         alsoIn,
       ]
@@ -436,6 +441,7 @@ function TreeItem({
             tabIndex={-1}
             aria-label={`Options for ${row.label}`}
             aria-haspopup="menu"
+            aria-expanded={menuOpen || false}
             onClick={(e) => {
               e.stopPropagation()
               const box = e.currentTarget.getBoundingClientRect()
@@ -544,14 +550,35 @@ function RoleMenu({
   const ref = useRef<HTMLDivElement>(null)
   const { host, env } = menu
 
+  // Keep the menu on screen: flip above its anchor when it would run off the bottom, and pull it in from the right.
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const { width, height } = el.getBoundingClientRect()
+    const gap = 8
+    el.style.left = `${Math.max(gap, Math.min(menu.x, window.innerWidth - width - gap))}px`
+    el.style.top = `${menu.y + height > window.innerHeight - gap ? Math.max(gap, menu.y - height - 4) : menu.y}px`
+  }, [menu.x, menu.y])
+
   useEffect(() => {
     const items = ref.current?.querySelectorAll<HTMLElement>('[role^="menuitem"]')
     ;(ref.current?.querySelector<HTMLElement>('[aria-checked="true"]') ?? items?.[0])?.focus()
     const onDown = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) onClose()
+      const t = e.target as Element
+      if (ref.current?.contains(t)) return
+      // The options button toggles; a mousedown on it must not close the menu and let the click reopen it.
+      if (t.closest?.('button[aria-haspopup="menu"][aria-expanded="true"]')) return
+      onClose()
     }
+    const away = () => onClose()
     document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
+    window.addEventListener('resize', away)
+    window.addEventListener('scroll', away, true)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      window.removeEventListener('resize', away)
+      window.removeEventListener('scroll', away, true)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- opens once per menu
   }, [])
 
@@ -584,6 +611,7 @@ function RoleMenu({
       style={{ left: menu.x, top: menu.y }}
       className="fixed z-50 w-[200px] rounded-ui border border-line bg-surface-2/95 p-1 shadow-pop backdrop-blur-xl"
     >
+      <div role="group" aria-label="Role">
       {HOST_ROLES.map((role) => (
         <button
           key={role}
@@ -600,6 +628,7 @@ function RoleMenu({
           Role: {ROLE_LABEL[role]}
         </button>
       ))}
+      </div>
       <div role="separator" className="my-1 h-px bg-line/70" />
       <button
         type="button"

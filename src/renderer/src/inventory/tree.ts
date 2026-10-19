@@ -71,7 +71,7 @@ export function buildTree(data: InventoryData, expanded: ReadonlySet<NodeKey>): 
     h.environments.flatMap((m) => {
       const env = envById.get(m.environmentId)
       if (!env) return []
-      if (env.productIds.length === 0) return [{ key: `u/e:${env.id}`, label: env.name }]
+      if (env.productIds.length === 0) return [{ key: `u/e:${env.id}`, label: `Unassigned › ${env.name}` }]
       return env.productIds.map((pid) => ({ key: `p:${pid}/e:${env.id}`, label: `${productName.get(pid) ?? pid} › ${env.name}` }))
     })
 

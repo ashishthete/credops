@@ -24,7 +24,7 @@ export function MembershipEditor({ host, data, onRemove }: MembershipEditorProps
       const env = data.environments.find((e) => e.id === m.environmentId)
       return env ? [{ env, role: m.role }] : []
     })
-    .sort((a, b) => a.env.name.localeCompare(b.env.name))
+    .sort((a, b) => `${where(a.env)} ${a.env.name}`.localeCompare(`${where(b.env)} ${b.env.name}`))
   const joined = new Set(host.environments.map((m) => m.environmentId))
   const list = useRef<HTMLUListElement>(null)
   const available = data.environments.filter((e) => !joined.has(e.id)).sort((a, b) => a.name.localeCompare(b.name))
