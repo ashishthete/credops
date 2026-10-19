@@ -45,24 +45,6 @@ export const DESTRUCTIVE_PATTERN = new RegExp(
   'i',
 )
 
-// A value that starts with `{{` or `$` is a variable or an env reference, not a secret written into the script.
-const NOT_A_REFERENCE = String.raw`(?!\{\{|\$|"\$)`
-const SECRET_PATTERNS: readonly RegExp[] = [
-  // NAME=value where the name is, or ends in, one of these words (API_TOKEN, db-password).
-  new RegExp(String.raw`(?<![$\w])(?:[A-Za-z0-9]+[_-])*(?:token|password|passwd|secret|key|pat)\s*=\s*${NOT_A_REFERENCE}\S`, 'i'),
-  new RegExp(String.raw`\bmysql(?:dump|admin)?\b[^\n|;&]*\s-p${NOT_A_REFERENCE}\S`),
-  new RegExp(String.raw`:\/\/[^/\s:@]+:${NOT_A_REFERENCE}[^@\s]+@`),
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
-  /\bBearer [A-Za-z0-9._-]{16,}/i,
-]
-
-export const SECRET_IN_SNIPPET = 'This looks like a secret — use a {{variable}} instead'
-
-/** Snippets are stored as plaintext, so a save that looks like it holds a secret is refused (main) or flagged (renderer). */
-export function looksLikeSecret(text: string): boolean {
-  return SECRET_PATTERNS.some((p) => p.test(text))
-}
-
 export interface SnippetVariable {
   name: string
   default: string | null

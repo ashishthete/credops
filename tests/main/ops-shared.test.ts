@@ -1,47 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CONTAINER_REF, DESTRUCTIVE_PATTERN, looksLikeSecret, VARIABLE_NAME } from '../../src/shared/ops'
-
-describe('looksLikeSecret', () => {
-  it('flags assignments, mysql passwords, url credentials, private keys and bearer tokens', () => {
-    for (const text of [
-      'TOKEN=abc123 ./deploy.sh',
-      'export DB_PASSWORD=hunter22',
-      'GITHUB_PAT = ghp_x',
-      'curl -d password=hunter22 https://x',
-      "PASSWD='x' run",
-      'API-KEY=x',
-      'SECRET=x',
-      'mysql -u root -pS3cret -e "select 1"',
-      'mysqldump -pS3cret db',
-      'git clone https://user:pw@example.com/r.git',
-      '-----BEGIN OPENSSH PRIVATE KEY-----',
-      '-----BEGIN PRIVATE KEY-----',
-      "curl -H 'Authorization: Bearer abcdefghijklmnop1234' https://x",
-    ]) {
-      expect(looksLikeSecret(text), text).toBe(true)
-    }
-  })
-
-  it('lets variables, env references and ordinary scripts through', () => {
-    for (const text of [
-      'TOKEN={{token}} ./deploy.sh',
-      'PASSWORD=$DB_PASS mysql',
-      'PASSWORD="$DB_PASS" mysql',
-      'mysql -u root -p -e "select 1"',
-      'mysql -P 3306 -p{{pw}}',
-      'git clone https://user:{{pw}}@example.com/r.git',
-      'git clone https://example.com/r.git',
-      'curl --compat=1 x',
-      'path=/srv/app; ls $path',
-      'systemctl restart nginx',
-      '[ "$TOKEN" = "" ] && exit 1',
-      'Bearer {{token}}',
-      '',
-    ]) {
-      expect(looksLikeSecret(text), text).toBe(false)
-    }
-  })
-})
+import { CONTAINER_REF, DESTRUCTIVE_PATTERN, VARIABLE_NAME } from '../../src/shared/ops'
 
 describe('DESTRUCTIVE_PATTERN', () => {
   it('matches the listed commands as words', () => {

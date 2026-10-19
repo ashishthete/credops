@@ -34,6 +34,20 @@ describe('database migrations', () => {
     expect(tableExists(fresh, 'b')).toBe(false)
   })
 
+  it('applies a version missing below the highest one, and only that one', () => {
+    const fresh = new (process.getBuiltinModule('node:sqlite').DatabaseSync)(':memory:')
+    const m = (version: number): Migration => ({ version, name: `m${version}`, up: `CREATE TABLE t${version}(x)` })
+    expect(migrate(fresh, [m(1), m(2), m(4)])).toEqual({ from: 0, to: 4 })
+    const before = fresh.prepare('SELECT version, applied_at FROM schema_migrations ORDER BY version').all()
+    expect(migrate(fresh, [m(1), m(2), m(3), m(4)])).toEqual({ from: 4, to: 4 })
+    const after = fresh.prepare('SELECT version, applied_at FROM schema_migrations ORDER BY version').all()
+    expect(after.map((r) => r.version)).toEqual([1, 2, 3, 4])
+    // 1, 2 and 4 were not re-run.
+    expect(after.filter((r) => r.version !== 3)).toEqual(before)
+    expect(tableExists(fresh, 't3')).toBe(true)
+    expect(migrate(fresh, [m(1), m(2), m(3), m(4)])).toEqual({ from: 4, to: 4 })
+  })
+
   it('enables foreign keys', () => {
     const db = openDatabase(':memory:')
     expect(db.prepare('PRAGMA foreign_keys').get()).toEqual({ foreign_keys: 1 })
@@ -90,8 +104,10 @@ describe('migration versions', () => {
 describe('snippets schema', () => {
   const insert = (db: ReturnType<typeof openDatabase>, id: string, label: string, destructive = 0) =>
     db
-      .prepare('INSERT INTO snippets(id,label,script,destructive,created_at,updated_at) VALUES (?,?,?,?,?,?)')
-      .run(id, label, 'uptime', destructive, 't', 't')
+      .prepare(
+        'INSERT INTO snippets(id,label,script_enc,defaults_enc,destructive,created_at,updated_at) VALUES (?,?,?,?,?,?,?)',
+      )
+      .run(id, label, 'sealed', 'sealed', destructive, 't', 't')
 
   it('migration 6 creates snippets with a case-insensitive unique label', () => {
     const db = openDatabase(':memory:')
@@ -99,11 +115,16 @@ describe('snippets schema', () => {
     expect(migrations.find((m) => m.version === 6)?.name).toBe('snippets')
     insert(db, 's1', 'Deploy')
     expect(() => insert(db, 's2', 'deploy')).toThrow(/UNIQUE constraint failed/)
+    const cols = db.prepare("SELECT name FROM pragma_table_info('snippets')").all().map((r) => (r as { name: string }).name)
+    // The script and defaults exist only sealed.
+    expect(cols).toContain('script_enc')
+    expect(cols).toContain('defaults_enc')
+    expect(cols).not.toContain('script')
     const row = db.prepare('SELECT description, tags, variables, destructive FROM snippets').get()
     expect({ ...row }).toEqual({ description: '', tags: '[]', variables: '[]', destructive: 0 })
     // Migration 5's table is untouched.
-    const cols = db.prepare("SELECT name FROM pragma_table_info('tunnels')").all().map((r) => (r as { name: string }).name)
-    expect(cols).toEqual([
+    const tunnelCols = db.prepare("SELECT name FROM pragma_table_info('tunnels')").all().map((r) => (r as { name: string }).name)
+    expect(tunnelCols).toEqual([
       'id', 'label', 'host_id', 'environment_id', 'type', 'bind_address', 'bind_port',
       'target_host', 'target_port', 'auto_start', 'auto_reconnect', 'created_at', 'updated_at',
     ])
