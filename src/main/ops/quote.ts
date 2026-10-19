@@ -74,6 +74,10 @@ interface Frame {
   bracket: number
   /** top and subshell only: open ( of an array assignment `NAME=(…)` or `NAME+=(…)`. */
   assign: number
+  /** top and subshell only: where the current word began, or -1 between words. */
+  wordBegin: number
+  /** top and subshell only: an earlier word of this simple command is a declaration builtin. */
+  declaration: boolean
 }
 
 const QUOTED = (name: string) => `{{${name}}} is inside quotes; remove them, OpsDeck quotes values itself`
@@ -92,7 +96,8 @@ const AMBIGUOUS = {
   doubleBracket: "a script with variables can't use [[ ]]; use case or pass the value through a variable and validate it",
   commentText: 'a script with variables can only have comments made of letters, digits, spaces and . , : _ / = + -',
   arrayLiteral: "a script with variables can't use [ inside an array assignment ( ); assign the elements one by one",
-  globQualifier: "a script with variables can't use a zsh glob qualifier (e: or (+",
+  globQualifier: "a script with variables can't put ( right after a word (a zsh glob qualifier or extglob group); put a space before it",
+  declarationSubscript: "a script with variables can't pass declare, typeset, local, export or readonly a name with [ before its =",
   lineContinuation: "a script with variables can't use a backslash-newline line continuation; join the line or end it",
   unterminated: 'a script with variables has an unterminated quote, bracket or substitution',
 } as const
@@ -104,6 +109,12 @@ const BOUNDARY = new Set([' ', '\t', '\n', ';', '&', '|', '(', ')', '<', '>'])
 const COMMENT_TEXT = /^[A-Za-z0-9 \t.,:_/=+-]*$/
 /** A character before `[` that makes it an array subscript the shell evaluates, not a test or glob bracket. */
 const NAME_BEFORE_BRACKET = /[A-Za-z0-9_\]}]/
+/** Special parameters zsh subscripts like a name when they follow `$` (`$@[`, `$#[`). */
+const SPECIAL_BEFORE_BRACKET = /[@*#?$!-]/
+/** Builtins that read an argument's `NAME[…]` as a subscript after quote removal. */
+const DECLARATIONS = new Set(['declare', 'typeset', 'local', 'export', 'readonly'])
+/** Ends a simple command; a blank or redirection only ends a word. */
+const COMMAND_END = new Set(['\n', ';', '&', '|', '(', ')'])
 const DOUBLE_ESCAPES = new Set(['$', '`', '"', '\\', '\n'])
 const PLACEHOLDER = /\{\{[ \t]*([^{}\s]*)[ \t]*\}\}/y
 
@@ -158,7 +169,15 @@ export function parseTemplate(script: string): ParsedTemplate {
   const s = script
   if (s.length > MAX_SCRIPT) throw new TemplateError(`the script is longer than ${MAX_SCRIPT} characters`)
 
-  const frame = (kind: FrameKind, close: ')' | ']' = ')'): Frame => ({ kind, depth: 0, close, bracket: 0, assign: 0 })
+  const frame = (kind: FrameKind, close: ')' | ']' = ')'): Frame => ({
+    kind,
+    depth: 0,
+    close,
+    bracket: 0,
+    assign: 0,
+    wordBegin: -1,
+    declaration: false,
+  })
   const stack: Frame[] = [frame('top')]
   const parts: ParsedTemplate['parts'] = []
   const variables: string[] = []
@@ -177,6 +196,13 @@ export function parseTemplate(script: string): ParsedTemplate {
     wordStart = false
   }
   const inside = (kind: FrameKind): boolean => stack.some((f) => f.kind === kind)
+
+  /** At `c`, which ends a word in a command frame: notes a declaration builtin, and a command's end. */
+  const endWord = (f: Frame, c: string): void => {
+    if (f.wordBegin >= 0 && DECLARATIONS.has(s.slice(f.wordBegin, i).replace(/['"\\]/g, ''))) f.declaration = true
+    f.wordBegin = -1
+    if (COMMAND_END.has(c)) f.declaration = false
+  }
 
   /** At `<<` (not `<<<`): records it, and in a command frame reads the delimiter so its body can be skipped. */
   const hereDocument = (f: Frame): void => {
@@ -271,6 +297,15 @@ export function parseTemplate(script: string): ParsedTemplate {
       const error = contextError(stack, name)
       if (error) throw new TemplateError(error)
       if (s[i - 1] === '$') throw new TemplateError(`{{${name}}} can't follow a $`)
+      // A declaration builtin reads `'a'[…]` as a subscript once quotes are removed, so any [ before the
+      // word's first = counts, quoted or not.
+      if (wordStart) f.wordBegin = i
+      if (f.declaration && f.wordBegin >= 0) {
+        const head = s.slice(f.wordBegin, i)
+        const bracket = head.indexOf('[')
+        const equals = head.indexOf('=')
+        if (bracket !== -1 && (equals === -1 || bracket < equals)) ambiguity ??= 'declarationSubscript'
+      }
       if (!variables.includes(name)) {
         if (variables.length === MAX_VARIABLES) throw new TemplateError(`a script can have at most ${MAX_VARIABLES} variables`)
         variables.push(name)
@@ -324,6 +359,7 @@ export function parseTemplate(script: string): ParsedTemplate {
 
     // Unquoted frames: top, subshell, cond, arith, param.
     const command = f.kind === 'top' || f.kind === 'subshell'
+    if (command && wordStart && !BOUNDARY.has(c)) f.wordBegin = i
     if (c === '\\') {
       const before: boolean = wordStart
       if (s[i + 1] === '\n') ambiguity ??= 'lineContinuation'
@@ -357,6 +393,7 @@ export function parseTemplate(script: string): ParsedTemplate {
     }
     if (c === '$' && dollar(false)) continue
     if (c === '<' && s[i + 1] === '<') {
+      if (command) endWord(f, c)
       if (s[i + 2] === '<') {
         i += 3
         wordStart = true
@@ -408,8 +445,6 @@ export function parseTemplate(script: string): ParsedTemplate {
     if (command) {
       // `[[` and `((` open code the moment they appear, after a reserved word or `(` just as at a word
       // start (`for((`, `if((`, `then((`, `[[(`); refuse the token anywhere, not only where it is clean.
-      // zsh glob qualifiers run code: *(e:…:), *(+fn)
-      if (c === '(' && /^\((?:e[:'"]|\+)/.test(s.slice(i, i + 3))) ambiguity ??= 'globQualifier'
       if (s.startsWith('[[', i)) {
         ambiguity ??= 'doubleBracket'
         push(frame('cond'))
@@ -423,6 +458,10 @@ export function parseTemplate(script: string): ParsedTemplate {
         continue
       }
       if (wordStart && f.kind === 'subshell' && /^case[ \t\n]/.test(s.slice(i, i + 5))) ambiguity ??= 'case'
+      // A ( glued to a word is a zsh glob qualifier (*(e:…:) runs code, in any position and with any
+      // delimiter) or an extglob group. Allowed: NAME=( and NAME+=( arrays, and NAME() definitions.
+      // $( <( >( and =( never get here glued to a word: $ opens its own frame, < > end the word.
+      if (c === '(' && !wordStart && s[i - 1] !== '=' && s[i + 1] !== ')') ambiguity ??= 'globQualifier'
     }
     if (c === '(' && f.kind === 'subshell') f.depth++
     if (c === ')' && f.kind === 'subshell') {
@@ -439,11 +478,14 @@ export function parseTemplate(script: string): ParsedTemplate {
       // operators and newlines, so it closes only on its matching `]`. A bare `[` (the test command)
       // or a `[...]` glob is not a subscript. Inside an array assignment `NAME=(…)` any `[` is refused.
       if (c === '[' && f.assign > 0) ambiguity ??= 'arrayLiteral'
-      if (c === '[' && (f.bracket > 0 || NAME_BEFORE_BRACKET.test(s[i - 1] ?? ''))) f.bracket++
+      const prev = s[i - 1] ?? ''
+      const subscript = NAME_BEFORE_BRACKET.test(prev) || (s[i - 2] === '$' && SPECIAL_BEFORE_BRACKET.test(prev))
+      if (c === '[' && (f.bracket > 0 || subscript)) f.bracket++
       else if (c === ']' && f.bracket > 0) f.bracket--
       if (c === '(' && (f.assign > 0 || s[i - 1] === '=')) f.assign++
       else if (c === ')' && f.assign > 0) f.assign--
     }
+    if (command && BOUNDARY.has(c)) endWord(f, c)
     wordStart = BOUNDARY.has(c)
     i++
     if (c === '\n' && command && heredocs.length > 0) skipBodies()

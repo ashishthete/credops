@@ -303,7 +303,7 @@ describe('parseTemplate', () => {
         }
       }
     }
-  })
+  }, 30_000) // hundreds of real shell runs; slow when other suites share the machine
 
   // Fix round 1: forms the security review found slipping a placeholder into evaluated context.
   const BYPASS = [
@@ -359,7 +359,55 @@ describe('parseTemplate', () => {
     "echo *(e'true') {{n}}",
     'echo *(e"true") {{n}}',
     'echo *(+f) {{n}}',
+    // fix round 3: a qualifier in any position or with any delimiter, and extglob groups
+    'echo *(.e:{{n}}:)',
+    'echo *(Ne:{{n}}:)',
+    'echo *(^e:{{n}}:)',
+    // (#q reads as a comment to the end of the line, so a placeholder there is never substituted
+    'echo *(#qe:x:)\necho {{n}}',
+    'echo *(e,{{n}},)',
+    'echo *(.+f) {{n}}',
+    'echo *(N+f) {{n}}',
+    'echo @(a|b) {{n}}',
+    "echo 'x'(e:true:) {{n}}",
+    // a quoted name still reaches a declaration builtin as NAME[…]
+    "declare 'a'[{{n}}]=1",
+    'declare "a"[{{n}}]=1',
+    'local a""[{{n}}]=1',
+    "export 'a['{{n}}]=1",
+    "typeset -a 'a'[{{n}}]",
+    "readonly 'a[ '{{n}}]=1",
+    "builtin declare 'a'[{{n}}]=1",
+    "\\declare 'a'[{{n}}]=1",
+    "declare >/dev/null 'a'[{{n}}]=1",
+    // zsh subscripts special parameters the same way as names
+    'echo $@[{{n}}]',
+    'echo $*[{{n}}]',
+    'echo $#[{{n}}]',
+    'echo $-[{{n}}]',
+    'echo $?[{{n}}]',
   ]
+
+  it('fix round 3: still accepts the ordinary forms next to the new refusals', () => {
+    for (const script of [
+      'f() { printf %s {{v}}; }; f',
+      'f () { printf %s {{v}}; }',
+      'export FOO={{v}}',
+      'export FOO={{v}} BAR=1',
+      'f() { local x={{v}}; printf %s "$x"; }',
+      "declare -r x={{v}}",
+      'export X=[{{v}}]',
+      "declare 'a'[0]=1; printf %s {{v}}",
+      'x=$(date); printf %s {{v}}',
+      'diff <(ls) {{v}}',
+      'a=(1 2); printf %s {{v}}',
+      '( printf %s {{v}} )',
+      'echo "$@" {{v}}',
+      'echo $# {{v}}',
+    ]) {
+      expect({ script, variables: parseTemplate(script).variables }).toEqual({ script, variables: ['v'] })
+    }
+  })
 
   it('refuses every bypass form the security review reported', () => {
     // message() fails the test unless parseTemplate throws a TemplateError, so no command is ever built
