@@ -25,6 +25,8 @@ export const LOG_TAIL_MAX = 5000
 export const MAX_LOG_FOLLOWS = 8
 export const LINK_IDLE_MS = 30_000
 export const MAX_EXEC_LINKS = 24
+/** Exec channels open at once on one link; below OpenSSH's default `MaxSessions 10`. */
+export const MAX_CHANNELS_PER_LINK = 8
 /** A container id or name: one word that can never read as an option. */
 export const CONTAINER_REF = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/
 export const MAX_CONTAINERS = 500

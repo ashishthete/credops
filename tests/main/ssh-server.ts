@@ -17,6 +17,13 @@ export interface ServerOpts {
   keyboard?: { prompts: string[]; answers: string[] }
   onShell?: (stream: ServerChannel, info: { env: Record<string, string>; pty: PseudoTtyInfo | null }) => void
   /**
+   * Accepts `exec` requests and hands each one here; without it exec is rejected. `onSignal` receives
+   * the channel's `signal` requests by name (`INT`), which the server also records.
+   */
+  onExec?: (command: string, stream: ServerChannel, info: ExecInfo) => void
+  /** Refuses a session channel while this many are open, like OpenSSH's `MaxSessions`. */
+  maxSessions?: number
+  /**
    * Accepts `direct-tcpip` and pipes it to 127.0.0.1:<destPort>. Without it no `tcpip` listener is
    * registered, so ssh2 refuses the channel with reason 1 (administratively prohibited).
    */
@@ -26,6 +33,12 @@ export interface ServerOpts {
    * each accepted socket back to the client as `forwarded-tcpip`. Without it both global requests fail.
    */
   allowRemoteForward?: boolean
+}
+
+export interface ExecInfo {
+  env: Record<string, string>
+  pty: PseudoTtyInfo | null
+  onSignal(cb: (name: string) => void): void
 }
 
 export interface TestServer {
@@ -41,6 +54,10 @@ export interface TestServer {
   remoteListeners(): number[]
   /** Destroys every client connection's socket, like a dead network. */
   dropAll(): void
+  /** The commands of the `exec` requests seen, in order (recorded only with `onExec`). */
+  execs(): string[]
+  /** The names of the `signal` requests seen, in order. */
+  signals(): string[]
 }
 
 /**
@@ -103,9 +120,19 @@ function echoShell(stream: ServerChannel): void {
   })
 }
 
-function serveSessions(conn: Connection, opts: ServerOpts): void {
-  conn.on('session', (acceptSession) => {
+interface ExecLog {
+  execs: string[]
+  signals: string[]
+}
+
+function serveSessions(conn: Connection, opts: ServerOpts, log: ExecLog): void {
+  let open = 0
+  conn.on('session', (acceptSession, rejectSession) => {
+    if (opts.maxSessions !== undefined && open >= opts.maxSessions) return rejectSession()
     const session = acceptSession()
+    open += 1
+    session.on('close', () => (open -= 1))
+    const signalled: ((name: string) => void)[] = []
     const env: Record<string, string> = {}
     let pty: PseudoTtyInfo | null = null
     session.on('env', (accept, _reject, info) => {
@@ -121,6 +148,16 @@ function serveSessions(conn: Connection, opts: ServerOpts): void {
       const stream = accept()
       if (opts.onShell) opts.onShell(stream, { env, pty })
       else echoShell(stream)
+    })
+    session.on('signal', (accept, _reject, info) => {
+      log.signals.push(info.name)
+      accept?.()
+      for (const cb of signalled) cb(info.name)
+    })
+    session.on('exec', (accept, reject, info) => {
+      if (!opts.onExec) return reject?.()
+      log.execs.push(info.command)
+      opts.onExec(info.command, accept(), { env, pty, onSignal: (cb) => void signalled.push(cb) })
     })
   })
 }
@@ -166,13 +203,14 @@ export async function startServer(opts: ServerOpts): Promise<TestServer> {
   const live = new Set<Connection>()
   const remoteListeners = new Map<Connection, Map<string, NetServer>>()
   let tcpipRequests = 0
+  const log: ExecLog = { execs: [], signals: [] }
 
   const server = new Server({ hostKeys: [hostKey] }, (conn) => {
     live.add(conn)
     conn.on('close', () => live.delete(conn))
     conn.on('error', () => {})
     conn.on('authentication', (ctx) => authenticate(ctx, opts))
-    conn.on('ready', () => serveSessions(conn, opts))
+    conn.on('ready', () => serveSessions(conn, opts, log))
     if (opts.allowRemoteForward) {
       const listeners = new Map<string, NetServer>()
       remoteListeners.set(conn, listeners)
@@ -204,6 +242,8 @@ export async function startServer(opts: ServerOpts): Promise<TestServer> {
     tcpipRequests: () => tcpipRequests,
     remoteListeners: () =>
       [...remoteListeners.values()].flatMap((byKey) => [...byKey.values()].map((l) => (l.address() as { port: number }).port)),
+    execs: () => [...log.execs],
+    signals: () => [...log.signals],
     dropAll: () => {
       for (const conn of live) (conn as unknown as { _sock: { destroy(): void } })._sock.destroy()
     },
