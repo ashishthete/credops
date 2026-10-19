@@ -63,6 +63,19 @@ export const AUDIT_ACTIONS = [
   'container.stop',
   'container.restart',
   'container.exec',
+  'app.create',
+  'app.update',
+  'app.delete',
+  'deploy.create',
+  'deploy.update',
+  'deploy.delete',
+  'deploy.lock_break',
+  'deploy.settings',
+  'release.preflight',
+  'release.start',
+  'release.finish',
+  'release.cancel',
+  'release.rollback',
 ] as const // later phases extend
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]
 

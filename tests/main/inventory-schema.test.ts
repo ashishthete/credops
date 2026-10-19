@@ -121,3 +121,67 @@ describe('inventory schema', () => {
     expect(db.prepare('SELECT COUNT(*) AS n FROM tunnels').get()).toEqual({ n: 0 })
   })
 })
+
+describe('migration 7 (deployments)', () => {
+  const cols = (db: ReturnType<typeof openDatabase>, t: string): string[] =>
+    (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((r) => r.name)
+
+  function seed(db: ReturnType<typeof openDatabase>): void {
+    db.prepare('INSERT INTO hosts(id, label, address, created_at, updated_at) VALUES (?,?,?,?,?)').run('h1', 'web', '10.0.0.1', NOW, NOW)
+    db.prepare('INSERT INTO environments(id, name, color, created_at, updated_at) VALUES (?,?,?,?,?)').run('e1', 'prod', '#aabbcc', NOW, NOW)
+  }
+  const dep = (db: ReturnType<typeof openDatabase>, extra = '', vals: (string | number)[] = []): void => {
+    db.prepare(
+      `INSERT INTO deployments(id, name, environment_id, host_id, ${extra}repo_path, default_branch, deploy_tag, created_at, updated_at) VALUES (?,?,?,?,${vals.map(() => '?,').join('')}?,?,?,?,?)`,
+    ).run('d1', 'api', 'e1', 'h1', ...vals, '/srv/app', 'main', 'deploy_prod', NOW, NOW)
+  }
+
+  it('adds deployment tables, checks, cascades and the append-only trigger', () => {
+    const db = openDatabase(':memory:')
+    expect(migrations.some((m) => m.version === 7 && m.name === 'deployments')).toBe(true)
+    expect(cols(db, 'apps')).toEqual(['id', 'environment_id', 'host_id', 'name', 'compose_project', 'description', 'created_at', 'updated_at'])
+    expect(cols(db, 'deployments')).toContain('become_secret_id')
+    expect(cols(db, 'releases')).toContain('playbook')
+    expect(cols(db, 'run_events')).toEqual(['id', 'release_id', 'seq', 'at', 'type', 'payload'])
+    expect(cols(db, 'deployment_vaults')).toEqual(['deployment_id', 'vault_id'])
+
+    seed(db)
+    expect(() => dep(db, 'db_backup, ', [1])).toThrow()
+    db.prepare('INSERT INTO apps(id, environment_id, host_id, name, created_at, updated_at) VALUES (?,?,?,?,?,?)').run('a1', 'e1', 'h1', 'app', NOW, NOW)
+    dep(db, 'app_id, ', ['a1'])
+    db.prepare("INSERT INTO releases(id, environment_id, kind, status, triggered_by, created_at) VALUES ('r1','e1','release','ready','me@box',?)").run(NOW)
+    db.prepare("INSERT INTO run_events(id, release_id, seq, at, type, payload) VALUES ('ev1','r1',1,?,'log','{}')").run(NOW)
+    expect(() => db.exec("UPDATE run_events SET type = 'x'")).toThrow(/run_events is append-only/)
+
+    db.prepare('DELETE FROM apps WHERE id = ?').run('a1')
+    expect(db.prepare('SELECT app_id FROM deployments WHERE id = ?').get('d1')).toEqual({ app_id: null })
+
+    db.prepare('DELETE FROM environments WHERE id = ?').run('e1')
+    for (const t of ['apps', 'deployments', 'releases']) {
+      expect(db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get()).toEqual({ n: 0 })
+    }
+  })
+
+  it('deleting a host cascades to its deployments', () => {
+    const db = openDatabase(':memory:')
+    seed(db)
+    dep(db)
+    db.prepare('DELETE FROM hosts WHERE id = ?').run('h1')
+    expect(db.prepare('SELECT COUNT(*) AS n FROM deployments').get()).toEqual({ n: 0 })
+  })
+
+  it('gives environments the deploy columns with defaults, and a nullable domain', () => {
+    const db = openDatabase(':memory:')
+    seed(db)
+    expect(db.prepare('SELECT versioned, auto_rollback, current_version, domain FROM environments').get()).toEqual({
+      versioned: 0,
+      auto_rollback: 1,
+      current_version: null,
+      domain: null,
+    })
+    const d = (db.prepare('PRAGMA table_info(environments)').all() as { name: string; type: string; notnull: number; dflt_value: unknown }[]).find(
+      (c) => c.name === 'domain',
+    )
+    expect(d).toMatchObject({ type: 'TEXT', notnull: 0, dflt_value: null })
+  })
+})
