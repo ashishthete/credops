@@ -56,7 +56,7 @@ type Invoke = Awaited<ReturnType<typeof sync>>
 /** Changes one channel's reply without reinstalling the bridge (that would drop the event subscriptions). */
 function override(invoke: Invoke, channel: string, impl: (...args: unknown[]) => unknown) {
   const prev = invoke.getMockImplementation()!
-  invoke.mockImplementation(async (c: string, ...args: unknown[]) => (c === channel ? impl(...args) : prev(c, ...args)))
+  invoke.mockImplementation(async (c: string, ...args: unknown[]) => (c === channel ? impl(...args) : (prev as (...a: unknown[]) => unknown)(c, ...args)))
 }
 
 async function sync(results: Record<string, unknown> = {}) {
