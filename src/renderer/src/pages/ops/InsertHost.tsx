@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react'
 import { useNavigate } from 'react-router'
 import type { SnippetMeta } from '../../../../shared/ops'
-import { insertSnippet, insertStore, requestInsert } from '../../ops/insert'
+import { insertSnippet, insertStore, onInserted, requestInsert } from '../../ops/insert'
 import { loadSnippets, snippetStore } from '../../ops/snippets'
 import { Button } from '../../ui/Button'
 import { Dialog } from '../../ui/Dialog'
@@ -13,6 +13,11 @@ import { TextField } from '../../ui/Field'
  */
 export function InsertHost() {
   const request = useSyncExternalStore(insertStore.subscribe, insertStore.get)
+  const navigate = useNavigate()
+  useEffect(() => {
+    onInserted(() => navigate('/terminals'))
+    return () => onInserted(null)
+  }, [navigate])
   const { snippets, loaded } = useSyncExternalStore(snippetStore.subscribe, snippetStore.get)
   useEffect(() => {
     if (request && !loaded) void loadSnippets()
@@ -59,7 +64,6 @@ export function InsertHost() {
 }
 
 function FillDialog({ snippet, onClose }: { snippet: SnippetMeta | undefined; onClose: () => void }) {
-  const navigate = useNavigate()
   const last = useRef(snippet)
   if (snippet) last.current = snippet
   const s = snippet ?? last.current
@@ -84,10 +88,7 @@ function FillDialog({ snippet, onClose }: { snippet: SnippetMeta | undefined; on
     const filled = Object.fromEntries(Object.entries(values).filter(([, v]) => v !== ''))
     const ok = await insertSnippet(snippet, filled, setError)
     setBusy(false)
-    if (ok) {
-      onClose()
-      navigate('/terminals')
-    }
+    if (ok) onClose()
   }
 
   return (
@@ -117,7 +118,7 @@ function FillDialog({ snippet, onClose }: { snippet: SnippetMeta | undefined; on
             className="font-mono"
             autoComplete="off"
             spellCheck={false}
-            placeholder={v.default === null ? 'Required' : ''}
+            placeholder={v.default === null ? 'Required' : 'Blank uses the default'}
             value={values[v.name] ?? ''}
             onChange={(e) => setValues((cur) => ({ ...cur, [v.name]: e.target.value }))}
           />

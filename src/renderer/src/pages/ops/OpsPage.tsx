@@ -12,7 +12,7 @@ const TABS = [
   { id: 'containers', label: 'Containers', icon: Boxes, blurb: 'Docker containers on a host' },
 ] as const satisfies readonly { id: string; label: string; icon: LucideIcon; blurb: string }[]
 
-/** The Ops section: tabs over `/ops/:tab`.  */
+/** The Ops section: tabs over `/ops/:tab`. */
 export function OpsPage() {
   const { tab } = useParams()
   // While the page shows, a finished run is in its recent runs; it is toasted only when the page is away.

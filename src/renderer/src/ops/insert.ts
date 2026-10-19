@@ -11,6 +11,12 @@ import { snippetStore } from './snippets'
 export type InsertRequest = { kind: 'pick' } | { kind: 'fill'; snippetId: string }
 export const insertStore = createStore<InsertRequest | null>(null)
 
+let afterInsert: (() => void) | null = null
+/** What follows a successful insert (the shell shows the terminals page); set by the mounted InsertHost. */
+export function onInserted(fn: (() => void) | null): void {
+  afterInsert = fn
+}
+
 /** The active tab when a snippet can be typed into it: ready, and either an ssh or a local shell. */
 export function insertTarget(): SessionMeta | undefined {
   const { sessions, activeId } = sessionStore.get()
@@ -34,7 +40,10 @@ export async function insertSnippet(snippet: SnippetMeta, values: Record<string,
     await api.invoke('session:write', target.id, text)
     return true
   }, onError)
-  if (done) toast({ title: `Inserted ${snippet.label}`, tone: 'success' })
+  if (done) {
+    toast({ title: `Inserted ${snippet.label}`, tone: 'success' })
+    afterInsert?.()
+  }
   return !!done
 }
 
@@ -42,6 +51,7 @@ export async function insertSnippet(snippet: SnippetMeta, values: Record<string,
 export function requestInsert(snippetId: string): void {
   const snippet = snippetStore.get().snippets.find((s) => s.id === snippetId)
   if (!snippet) return
+  if (!insertTarget()) return void toast({ title: 'No terminal is ready', description: 'Open a connected terminal tab to insert a snippet.', tone: 'info' })
   if (snippet.variables.length) insertStore.set({ kind: 'fill', snippetId })
   else void insertSnippet(snippet, {})
 }

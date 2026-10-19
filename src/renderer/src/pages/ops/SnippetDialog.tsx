@@ -44,7 +44,7 @@ export function SnippetDialog({ request, onClose }: { request: SnippetRequest | 
   if (request) last.current = request
   const r = request ?? last.current
   const [form, setForm] = useState<Form>(() => formFor(r))
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<{ field: 'tags' | 'script'; message: string } | null>(null)
   const [busy, setBusy] = useState(false)
 
   const key = request ? (request.kind === 'new' ? 'new' : `${request.kind}:${request.id}`) : null
@@ -71,7 +71,7 @@ export function SnippetDialog({ request, onClose }: { request: SnippetRequest | 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
     if (busy || !request) return
-    if (!form.label.trim() || !form.script.trim()) return setError('A snippet needs a label and a script.')
+    if (!form.label.trim() || !form.script.trim()) return setError({ field: 'script', message: 'A snippet needs a label and a script.' })
     const input: SnippetInput = {
       label: form.label.trim(),
       script: form.script,
@@ -81,7 +81,7 @@ export function SnippetDialog({ request, onClose }: { request: SnippetRequest | 
       destructive: form.destructive,
     }
     setBusy(true)
-    const saved = await saveSnippet(request.kind === 'edit' ? request.id : null, input, setError)
+    const saved = await saveSnippet(request.kind === 'edit' ? request.id : null, input, (message) => setError({ field: /\btags?\b/i.test(message) ? 'tags' : 'script', message }))
     setBusy(false)
     if (saved) onClose()
   }
@@ -108,15 +108,16 @@ export function SnippetDialog({ request, onClose }: { request: SnippetRequest | 
       <form id={formId} onSubmit={submit} className="flex flex-col gap-3">
         <TextField label="Label" autoFocus maxLength={MAX_LABEL} value={form.label} onChange={(e) => set('label', e.target.value)} />
         <TextField label="Description" maxLength={MAX_SNIPPET_DESCRIPTION} value={form.description} onChange={(e) => set('description', e.target.value)} />
-        <TextField label="Tags" hint="Separated by commas." value={form.tags} onChange={(e) => set('tags', e.target.value)} />
+        <TextField label="Tags" hint="Separate tags with commas or spaces." error={error?.field === 'tags' ? error.message : undefined} value={form.tags} onChange={(e) => set('tags', e.target.value)} />
+        <p className="text-[12px] leading-4 text-muted">Label, description and tags aren't encrypted, so keep secrets out of them.</p>
         <TextAreaField
           label="Script"
           className="min-h-40 font-mono text-[12.5px]"
           spellCheck={false}
           autoComplete="off"
           maxLength={MAX_SCRIPT}
-          hint="Don't put passwords or tokens in a script: it is stored encrypted, but it is still shown in plain text here, and a run's output is kept."
-          error={error ?? undefined}
+          hint="Snippets are encrypted in your Default vault. Values you type at run time are never stored."
+          error={error?.field === 'script' ? error.message : undefined}
           value={form.script}
           onChange={(e) => set('script', e.target.value)}
         />
