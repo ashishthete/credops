@@ -34,6 +34,20 @@ describe('database migrations', () => {
     expect(tableExists(fresh, 'b')).toBe(false)
   })
 
+  it('applies a version missing below the highest one, and only that one', () => {
+    const fresh = new (process.getBuiltinModule('node:sqlite').DatabaseSync)(':memory:')
+    const m = (version: number): Migration => ({ version, name: `m${version}`, up: `CREATE TABLE t${version}(x)` })
+    expect(migrate(fresh, [m(1), m(2), m(4)])).toEqual({ from: 0, to: 4 })
+    const before = fresh.prepare('SELECT version, applied_at FROM schema_migrations ORDER BY version').all()
+    expect(migrate(fresh, [m(1), m(2), m(3), m(4)])).toEqual({ from: 4, to: 4 })
+    const after = fresh.prepare('SELECT version, applied_at FROM schema_migrations ORDER BY version').all()
+    expect(after.map((r) => r.version)).toEqual([1, 2, 3, 4])
+    // 1, 2 and 4 were not re-run.
+    expect(after.filter((r) => r.version !== 3)).toEqual(before)
+    expect(tableExists(fresh, 't3')).toBe(true)
+    expect(migrate(fresh, [m(1), m(2), m(3), m(4)])).toEqual({ from: 4, to: 4 })
+  })
+
   it('enables foreign keys', () => {
     const db = openDatabase(':memory:')
     expect(db.prepare('PRAGMA foreign_keys').get()).toEqual({ foreign_keys: 1 })
@@ -78,5 +92,47 @@ describe('vault schema', () => {
       "INSERT INTO identities(id,vault_id,label,username,auth,ssh_key_id,created_at,updated_at) VALUES ('i',?,'l','u','key','k','t','t')",
     ).run(v)
     expect(db.prepare('SELECT COUNT(*) AS n FROM identities').get()).toEqual({ n: 1 })
+  })
+})
+
+describe('migration versions', () => {
+  it('are contiguous from 1 and strictly increasing', () => {
+    expect(migrations.map((m) => m.version)).toEqual(migrations.map((_, i) => i + 1))
+  })
+})
+
+describe('snippets schema', () => {
+  const insert = (db: ReturnType<typeof openDatabase>, id: string, label: string, destructive = 0) =>
+    db
+      .prepare(
+        'INSERT INTO snippets(id,label,script_sealed,destructive,created_at,updated_at) VALUES (?,?,?,?,?,?)',
+      )
+      .run(id, label, 'sealed', destructive, 't', 't')
+
+  it('migration 6 creates snippets with a case-insensitive unique label', () => {
+    const db = openDatabase(':memory:')
+    expect(currentVersion(db)).toBeGreaterThanOrEqual(6)
+    expect(migrations.find((m) => m.version === 6)?.name).toBe('snippets')
+    insert(db, 's1', 'Deploy')
+    expect(() => insert(db, 's2', 'deploy')).toThrow(/UNIQUE constraint failed/)
+    const cols = db.prepare("SELECT name FROM pragma_table_info('snippets')").all().map((r) => (r as { name: string }).name)
+    // The script and defaults exist only sealed.
+    expect(cols).toContain('script_sealed')
+    expect(cols).toContain('defaults_sealed')
+    expect(cols).not.toContain('script')
+    const row = db.prepare('SELECT description, tags, variables, defaults_sealed, destructive FROM snippets').get()
+    expect({ ...row }).toEqual({ description: '', tags: '[]', variables: '[]', defaults_sealed: null, destructive: 0 })
+    // Migration 5's table is untouched.
+    const tunnelCols = db.prepare("SELECT name FROM pragma_table_info('tunnels')").all().map((r) => (r as { name: string }).name)
+    expect(tunnelCols).toEqual([
+      'id', 'label', 'host_id', 'environment_id', 'type', 'bind_address', 'bind_port',
+      'target_host', 'target_port', 'auto_start', 'auto_reconnect', 'created_at', 'updated_at',
+    ])
+  })
+
+  it('destructive is 0 or 1', () => {
+    const db = openDatabase(':memory:')
+    expect(() => insert(db, 's1', 'a', 2)).toThrow(/CHECK constraint failed/)
+    insert(db, 's1', 'a', 1)
   })
 })

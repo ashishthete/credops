@@ -230,6 +230,7 @@ export interface ConfirmRequest {
   typeToConfirm?: string
   /** The action can't go ahead yet; `description` says why and the confirm button stays off. */
   blocked?: boolean
+  /** Resolving `{ refused }` keeps the dialog open and shows the message in it; anything else closes it. */
   run: () => Promise<unknown>
 }
 
@@ -237,6 +238,7 @@ export interface ConfirmRequest {
 export function ConfirmDialog({ request, onClose }: { request: ConfirmRequest | null; onClose: () => void }) {
   const [typed, setTyped] = useState('')
   const [busy, setBusy] = useState(false)
+  const [refused, setRefused] = useState<string | null>(null)
   const formId = useId()
   // Keep the last request while the dialog animates out.
   const last = useRef(request)
@@ -244,18 +246,27 @@ export function ConfirmDialog({ request, onClose }: { request: ConfirmRequest | 
   const r = request ?? last.current
 
   useEffect(() => {
-    if (request) setTyped('')
+    if (request) {
+      setTyped('')
+      setRefused(null)
+    }
   }, [request])
 
   const ready = !r?.blocked && (!r?.typeToConfirm || typed === r.typeToConfirm)
   const confirm = async () => {
     if (!request || !ready || busy) return
     setBusy(true)
+    setRefused(null)
+    let keepOpen = false
     try {
-      await request.run()
+      const out = await request.run()
+      if (out && typeof out === 'object' && 'refused' in out && typeof out.refused === 'string') {
+        keepOpen = true
+        setRefused(out.refused)
+      }
     } finally {
       setBusy(false)
-      onClose()
+      if (!keepOpen) onClose()
     }
   }
 
@@ -288,12 +299,20 @@ export function ConfirmDialog({ request, onClose }: { request: ConfirmRequest | 
             autoFocus
             label={`Type ${r.typeToConfirm} to confirm`}
             value={typed}
-            onChange={(e) => setTyped(e.target.value)}
+            onChange={(e) => {
+              setTyped(e.target.value)
+              setRefused(null)
+            }}
             spellCheck={false}
             autoComplete="off"
           />
         ) : (
           <p className="text-[12.5px] text-muted">This can't be undone.</p>
+        )}
+        {refused && (
+          <p role="alert" className="mt-2 text-[12.5px] text-err">
+            {refused}
+          </p>
         )}
       </form>
     </Dialog>

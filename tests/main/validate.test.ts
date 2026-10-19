@@ -2,6 +2,21 @@ import { describe, expect, it } from 'vitest'
 import { args, InvalidArgs, v } from '../../src/main/ipc/validate'
 import { asFilter, VALIDATORS } from '../../src/main/ipc/validators'
 import { DEFAULT_VAULT_ID, MAX_MASTER_PASSWORD } from '../../src/shared/vault'
+import { MAX_VARIABLE_VALUE, MAX_VARIABLES, VARIABLE_NAME } from '../../src/shared/ops'
+
+const ID = '11111111-2222-4333-8444-555555555555'
+const ID2 = '66666666-7777-4888-9999-aaaaaaaaaaaa'
+
+/** Runs `fn`, expects InvalidArgs, and returns its message. */
+function failure(fn: () => unknown): string {
+  try {
+    fn()
+  } catch (err) {
+    expect(err).toBeInstanceOf(InvalidArgs)
+    return (err as Error).message
+  }
+  throw new Error('expected InvalidArgs')
+}
 
 describe('validate', () => {
   it('checks shapes without echoing values', () => {
@@ -77,5 +92,144 @@ describe('validate', () => {
     expect(V['vault:setAutoLock']([60])).toEqual([60])
     expect(() => V['vault:setAutoLock']([7])).toThrow(/not an allowed value/)
     expect(() => V['vault:setAutoLock'](['5'])).toThrow(/not an allowed value/)
+  })
+
+  it('record builds a null-prototype copy and checks keys without echoing them', () => {
+    const check = v.record(VARIABLE_NAME, v.str({ max: 3 }), { maxKeys: 2 })
+    const out = check({ a: 'x', b_2: 'yz' }, '[0]')
+    expect(out).toEqual({ a: 'x', b_2: 'yz' })
+    expect(Object.getPrototypeOf(out)).toBeNull()
+    const input = { a: 'x' }
+    expect(check(input, '[0]')).not.toBe(input)
+    expect(failure(() => check(JSON.parse('{"__proto__":"x"}'), '[0]'))).toBe('invalid arguments: [0] has an invalid key')
+    expect(failure(() => check({ constructor: 'x' }, '[0]'))).toBe('invalid arguments: [0] has an invalid key')
+    expect(failure(() => check({ 'Hunter22': 'x' }, '[0]'))).not.toContain('Hunter22')
+    expect(failure(() => check({ a: 'x', b: 'y', c: 'z' }, '[0]'))).toBe('invalid arguments: [0] must have at most 2 keys')
+    expect(failure(() => check({ a: 'hunter22' }, '[0]'))).toBe('invalid arguments: [0].a must be at most 3 chars')
+    expect(failure(() => check({ a: 1 }, '[0]'))).toBe('invalid arguments: [0].a must be a string')
+    expect(failure(() => check(['x'], '[0]'))).toBe('invalid arguments: [0] must be an object')
+    expect(failure(() => check(null, '[0]'))).toBe('invalid arguments: [0] must be an object')
+  })
+
+  it('tagged picks the shape by its tag', () => {
+    const check = v.tagged('kind', {
+      a: v.object({ kind: v.oneOf(['a'] as const), n: v.int() }),
+      b: v.object({ kind: v.oneOf(['b'] as const), s: v.str() }),
+    })
+    expect(check({ kind: 'a', n: 1 }, '[0]')).toEqual({ kind: 'a', n: 1 })
+    expect(check({ kind: 'b', s: 'x' }, '[0]')).toEqual({ kind: 'b', s: 'x' })
+    expect(failure(() => check({ kind: 'a', s: 'x' }, '[0]'))).toBe('invalid arguments: [0].s is not an allowed key')
+    expect(failure(() => check({ kind: 'toString' }, '[0]'))).toBe('invalid arguments: [0].kind is not an allowed value')
+    expect(failure(() => check({ kind: 'hunter22' }, '[0]'))).not.toContain('hunter22')
+    expect(failure(() => check({}, '[0]'))).toBe('invalid arguments: [0].kind is not an allowed value')
+    expect(failure(() => check('a', '[0]'))).toBe('invalid arguments: [0] must be an object')
+  })
+
+  it('ops validators reject out-of-range concurrency, unknown target kinds and bad container refs', () => {
+    const V = VALIDATORS
+    const run = (over: Record<string, unknown>) =>
+      V['runs:start']([{ target: { kind: 'hosts', hostIds: [ID] }, command: { kind: 'text', text: 'uptime' }, ...over }])
+    expect(failure(() => run({ concurrency: 0 }))).toBe('invalid arguments: [0].concurrency must be at least 1')
+    expect(failure(() => run({ concurrency: 17 }))).toBe('invalid arguments: [0].concurrency must be at most 16')
+    expect(failure(() => run({ timeoutSec: 3601 }))).toBe('invalid arguments: [0].timeoutSec must be at most 3600')
+    expect(failure(() => run({ target: { kind: 'all' } }))).toBe('invalid arguments: [0].target.kind is not an allowed value')
+    expect(failure(() => run({ target: { kind: 'hosts', hostIds: [] } }))).toBe(
+      'invalid arguments: [0].target.hostIds must have at least 1 item',
+    )
+    expect(failure(() => run({ command: { kind: 'snippet', snippetId: ID, values: { prototype: 'x' } } }))).toBe(
+      'invalid arguments: [0].command.values has an invalid key',
+    )
+    expect(failure(() => run({ command: { kind: 'text', text: '' } }))).toBe('invalid arguments: [0].command.text must be at least 1 chars')
+    expect(failure(() => run({ command: { kind: 'text', text: 'x'.repeat(16_385) } }))).toBe(
+      'invalid arguments: [0].command.text must be at most 16384 chars',
+    )
+    expect(
+      failure(() => run({ command: { kind: 'snippet', snippetId: ID, values: { 'Bad Key': 'x' } } })),
+    ).toBe('invalid arguments: [0].command.values has an invalid key')
+    const big = 'x'.repeat(MAX_VARIABLE_VALUE + 1)
+    expect(failure(() => run({ command: { kind: 'snippet', snippetId: ID, values: { v: big } } }))).toBe(
+      `invalid arguments: [0].command.values.v must be at most ${MAX_VARIABLE_VALUE} chars`,
+    )
+    const many = Object.fromEntries(Array.from({ length: MAX_VARIABLES + 1 }, (_, i) => [`v${i}`, 'x']))
+    expect(failure(() => run({ command: { kind: 'snippet', snippetId: ID, values: many } }))).toBe(
+      `invalid arguments: [0].command.values must have at most ${MAX_VARIABLES} keys`,
+    )
+
+    expect(failure(() => run({ command: { kind: 'text', text: 'ls\0x' } }))).toBe('invalid arguments: [0].command.text has an invalid format')
+    expect(failure(() => run({ command: { kind: 'snippet', snippetId: ID, values: { v: 'a\0' } } }))).toBe(
+      'invalid arguments: [0].command.values.v has an invalid format',
+    )
+    expect(failure(() => run({ confirm: 'Prod\0' }))).toBe('invalid arguments: [0].confirm has an invalid format')
+    expect(failure(() => V['containers:action']([ID, null, 'web', 'stop', 'Prod\0']))).toBe('invalid arguments: [4] has an invalid format')
+    expect(failure(() => V['snippets:render']([ID, { v: '\0' }]))).toBe('invalid arguments: [1].v has an invalid format')
+
+    const action = (ref: string) => V['containers:action']([ID, null, ref, 'stop'])
+    for (const ref of ['a b', '-rm', 'a'.repeat(129), '$(x)']) {
+      const message = failure(() => action(ref))
+      expect(message).toBe('invalid arguments: [2] has an invalid format')
+      expect(message).not.toContain(ref)
+    }
+    expect(failure(() => V['containers:action']([ID, null, 'web', 'kill']))).toBe('invalid arguments: [3] is not an allowed value')
+    expect(failure(() => V['containers:logs']([ID, null, 'web', 5001]))).toBe('invalid arguments: [3] must be at most 5000')
+    expect(failure(() => V['ssh:open']([{ hostId: ID, cols: 80, rows: 24, container: '$(x)' }]))).toBe(
+      'invalid arguments: [0].container has an invalid format',
+    )
+    expect(failure(() => V['snippets:create']([{ label: 'x', script: 'uptime', destructive: 1 }]))).toBe(
+      'invalid arguments: [0].destructive must be a boolean',
+    )
+    expect(failure(() => V['snippets:create']([{ label: 'x', script: 'uptime', defaults: { X: 'y' } }]))).toBe(
+      'invalid arguments: [0].defaults has an invalid key',
+    )
+  })
+
+  it('ops validators keep surrounding whitespace in text, values and confirm', () => {
+    const V = VALIDATORS
+    const req = {
+      target: { kind: 'hosts', hostIds: [ID] },
+      command: { kind: 'snippet', snippetId: ID, values: { v: '  a b \n' } },
+      confirm: ' Prod ',
+    }
+    expect(V['runs:start']([req])).toEqual([req])
+    const text = { target: { kind: 'hosts', hostIds: [ID] }, command: { kind: 'text', text: '  uptime\n' } }
+    expect(V['runs:start']([text])).toEqual([text])
+    expect(V['snippets:render']([ID, { v: ' x ' }])).toEqual([ID, { v: ' x ' }])
+    expect(V['containers:action']([ID, null, 'web', 'stop', ' Prod '])).toEqual([ID, null, 'web', 'stop', ' Prod '])
+  })
+
+  it('ops validators accept a minimal valid request for every new channel', () => {
+    const V = VALIDATORS
+    expect(V['snippets:list']([])).toEqual([])
+    expect(V['snippets:create']([{ label: ' Restart ', script: 'systemctl restart {{unit}}' }])).toEqual([
+      { label: 'Restart', script: 'systemctl restart {{unit}}' },
+    ])
+    const full = { label: 'x', script: 's', description: 'd', tags: ['ops'], defaults: { unit: null, n: '1' }, destructive: true }
+    expect(V['snippets:update']([ID, full])).toEqual([ID, full])
+    expect(V['snippets:delete']([ID])).toEqual([ID])
+    expect(V['snippets:render']([ID, { unit: 'nginx' }])).toEqual([ID, { unit: 'nginx' }])
+    expect(V['runs:start']([{ target: { kind: 'hosts', hostIds: [ID] }, command: { kind: 'text', text: 'uptime' } }])).toEqual([
+      { target: { kind: 'hosts', hostIds: [ID] }, command: { kind: 'text', text: 'uptime' } },
+    ])
+    const env = {
+      target: { kind: 'environment', environmentId: ID, role: 'db' },
+      command: { kind: 'snippet', snippetId: ID2, values: {} },
+      concurrency: 16,
+      timeoutSec: 1,
+      confirm: 'Prod',
+    }
+    expect(V['runs:start']([env])).toEqual([env])
+    expect(V['runs:cancel']([ID])).toEqual([ID])
+    expect(V['runs:list']([])).toEqual([])
+    expect(V['runs:get']([ID])).toEqual([ID])
+    expect(V['runs:dismiss']([ID])).toEqual([ID])
+    expect(V['containers:list']([ID, null])).toEqual([ID, null])
+    expect(V['containers:list']([ID, ID2])).toEqual([ID, ID2])
+    expect(V['containers:action']([ID, null, 'web-1', 'restart'])).toEqual([ID, null, 'web-1', 'restart', undefined])
+    expect(V['containers:action']([ID, ID2, 'a'.repeat(128), 'stop', 'Prod'])).toEqual([ID, ID2, 'a'.repeat(128), 'stop', 'Prod'])
+    expect(V['containers:logs']([ID, null, 'web', 200])).toEqual([ID, null, 'web', 200])
+    expect(V['containers:follow']([ID, null, 'web', 0])).toEqual([ID, null, 'web', 0])
+    expect(V['containers:unfollow']([ID])).toEqual([ID])
+    expect(V['ssh:open']([{ hostId: ID, cols: 80, rows: 24, container: 'app_web.1' }])).toEqual([
+      { hostId: ID, cols: 80, rows: 24, container: 'app_web.1' },
+    ])
   })
 })

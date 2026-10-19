@@ -19,6 +19,7 @@ import { createAppHandlers } from './ipc/handlers/app'
 import { createAuditHandlers } from './ipc/handlers/audit'
 import { createIdentityHandlers } from './ipc/handlers/identities'
 import { createTunnelHandlers } from './ipc/handlers/tunnels'
+import { createOpsHandlers } from './ipc/handlers/ops'
 import { listen, realExecFile, whoHolds } from './tunnels/bind'
 import { TunnelManager } from './tunnels/manager'
 import { TunnelStore } from './tunnels/tunnel-store'
@@ -37,6 +38,10 @@ import { resolveHost } from './inventory/resolve'
 import { hostMeta } from './inventory/rows'
 import { readSshConfigMatch } from './inventory/ssh-config'
 import { SshImporter } from './inventory/ssh-import'
+import { ContainerService } from './ops/containers'
+import { ExecLinks } from './ops/exec-links'
+import { RunManager } from './ops/run-manager'
+import { SnippetStore } from './ops/snippet-store'
 import { redact } from './security/redact'
 import { authPlan } from './ssh/auth'
 import { connectChain } from './ssh/connect'
@@ -49,7 +54,7 @@ import { IdentityStore } from './vault/identity-store'
 import { KeyStore } from './vault/key-store'
 import { SecretStore } from './vault/secret-store'
 import { VaultService, type QuickUnlockDeps } from './vault/vault-service'
-import { appMenuTemplate, devRendererUrl, forwardVaultLocks, pushEvent, shouldAllowNavigation, windowOptions } from './window'
+import { appMenuTemplate, devRendererUrl, dropOnRendererReset, forwardVaultLocks, pushEvent, shouldAllowNavigation, windowOptions } from './window'
 
 // Keep dev data apart from the packaged app's (same name, same userData otherwise).
 // Must run before anything touches userData, including the single-instance lock.
@@ -70,6 +75,9 @@ let environments: EnvironmentStore | null = null
 let products: ProductStore | null = null
 let sessions: SessionManager | null = null
 let tunnelManager: TunnelManager | null = null
+let execLinks: ExecLinks | null = null
+let runManager: RunManager | null = null
+let containerService: ContainerService | null = null
 let quitAudited = false
 let stopAutoLock: (() => void) | null = null
 
@@ -90,6 +98,8 @@ function createWindow(): void {
   win.webContents.on('will-navigate', (event, url) => {
     if (!shouldAllowNavigation(win.webContents.getURL(), url)) event.preventDefault()
   })
+
+  dropOnRendererReset(win.webContents, () => containerService?.unfollowAll())
 
   if (devServerUrl) void win.loadURL(devServerUrl)
   else void win.loadFile(join(__dirname, '../renderer/index.html'))
@@ -151,6 +161,7 @@ if (!app.requestSingleInstanceLock()) {
       environments = new EnvironmentStore(db, service, log)
       products = new ProductStore(db, service, log)
       const tunnels = new TunnelStore({ db, audit: log, vault: service })
+      const snippets = new SnippetStore({ db, audit: log, vault: service })
       const importer = new SshImporter({
         db,
         vault: service,
@@ -210,13 +221,55 @@ if (!app.requestSingleInstanceLock()) {
         emit: (event, payload) => pushEvent(mainWindow, event, payload),
       })
       tunnelManager = runner
+      const hostStore = hosts
+      // Pooled exec-only links for runs and containers, apart from interactive sessions.
+      const links = new ExecLinks({
+        resolve,
+        hostInfo: (hostId) => {
+          const h = hostMeta(inventoryDb, hostId)
+          return { label: h.label, keepaliveSec: h.keepaliveSec, envVars: h.envVars }
+        },
+        connect: connectChain,
+        plan: (identity) => authPlan(identity, authDeps),
+        knownHosts,
+        prompts,
+        isLocked,
+      })
+      execLinks = links
+      const runs = new RunManager({
+        links,
+        snippets,
+        environments: () => envStore.list(),
+        hosts: () => hostStore.list(),
+        isLocked,
+        audit: log,
+        emit: (event, payload) => pushEvent(mainWindow, event, payload),
+      })
+      runManager = runs
+      const containers = new ContainerService({
+        links,
+        environments: () => envStore.list(),
+        hostLabel: (hostId) => hostMeta(inventoryDb, hostId).label,
+        isLocked,
+        audit: log,
+        emit: (event, payload) => pushEvent(mainWindow, event, payload),
+      })
+      containerService = containers
       tunnels.onRemoved = (id) => runner.removed(id)
       tunnels.onChanged = (before, after) => runner.changed(before, after)
-      // Sessions and tunnels keep running across a lock. Connects still dialling fail (sessions) or
-      // are marked to pause (tunnels), then every prompt left is cancelled. Separate listeners, run in
-      // this order, so one failing never skips the others.
+      // On lock, in this order: sessions fail their dials and tunnels mark theirs to pause (both keep
+      // what is connected); runs end their queued and dialling hosts as `locked` while running
+      // commands finish; exec links fail their dials as `locked` and close idle links; then every
+      // prompt left is cancelled. Runs go before links so each dial a run aborts is already marked
+      // `locked` for that host. Separate listeners, so one failing never skips the others. Quit
+      // (before-quit) stops tunnels, closes sessions, cancels runs (writing their run.finish), stops
+      // container log follows, closes exec links, and only then locks the vault. Container follows
+      // have no lock listener: one already open keeps streaming through a lock (new calls are
+      // refused while locked), like a connected session.
       service.onLock(() => manager.vaultLocked())
       service.onLock(() => runner.vaultLocked())
+      service.onLock(() => runs.vaultLocked())
+      service.onLock(() => links.vaultLocked())
       service.onLock(() => prompts.cancelAll())
       // Resumes paused tunnels; the first unlock also auto-starts.
       service.onUnlock(() => runner.vaultUnlocked())
@@ -271,6 +324,7 @@ if (!app.requestSingleInstanceLock()) {
           ...createSshImportHandlers(importer),
           ...createTunnelHandlers({ store: tunnels, manager: runner }),
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
+          ...createOpsHandlers({ snippets, runs, containers }),
         },
         (url) => isTrustedSender(url, { devServerUrl, rendererFile }),
         { validators: VALIDATORS, knownSecrets },
@@ -296,6 +350,22 @@ if (!app.requestSingleInstanceLock()) {
       sessions?.closeAll('quit')
     } catch (err) {
       console.error('Failed to close sessions on quit:', err)
+    }
+    // Each unfinished run writes its run.finish before the vault's lock row and app.quit.
+    try {
+      runManager?.closeAll()
+    } catch (err) {
+      console.error('Failed to cancel runs on quit:', err)
+    }
+    try {
+      containerService?.closeAll()
+    } catch (err) {
+      console.error('Failed to stop container log follows on quit:', err)
+    }
+    try {
+      execLinks?.closeAll()
+    } catch (err) {
+      console.error('Failed to close exec links on quit:', err)
     }
     try {
       vault?.lock('quit')

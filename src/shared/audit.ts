@@ -54,6 +54,15 @@ export const AUDIT_ACTIONS = [
   'tunnel.delete',
   'tunnel.start',
   'tunnel.stop',
+  'snippet.create',
+  'snippet.update',
+  'snippet.delete',
+  'run.start',
+  'run.finish',
+  'container.start',
+  'container.stop',
+  'container.restart',
+  'container.exec',
 ] as const // later phases extend
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]
 

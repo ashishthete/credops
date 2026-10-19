@@ -67,6 +67,8 @@ export interface SessionMeta {
   closedAt: string | null
   /** Starts at 1; each reconnect adds 1. */
   attempt: number
+  /** The container ref of a container exec tab; null for a host shell or a local shell. */
+  container: string | null
 }
 
 export interface OpenSshRequest {
@@ -74,6 +76,8 @@ export interface OpenSshRequest {
   environmentId?: string
   cols: number
   rows: number
+  /** Opens `docker exec` into this container instead of a login shell. */
+  container?: string
 }
 export interface OpenLocalRequest {
   cols: number

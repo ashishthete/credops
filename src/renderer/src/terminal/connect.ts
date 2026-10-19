@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router'
-import { openLocal, openSsh } from './sessions'
+import { openContainer, openLocal, openSsh } from './sessions'
 
 // Opens still pending, shared by every caller: a double-click or a repeated Enter must not open twice.
 const pending = new Set<string>()
@@ -29,8 +29,11 @@ export function useConnect() {
   const connect = useCallback(async (hostId: string, environmentId?: string) => {
     if (await once(`${hostId}:${environmentId ?? ''}`, () => openSsh(hostId, environmentId))) navigateRef.current('/terminals')
   }, [])
+  const connectContainer = useCallback(async (hostId: string, environmentId: string | null, ref: string) => {
+    if (await once(`${hostId}:${environmentId ?? ''}:${ref}`, () => openContainer(hostId, environmentId, ref))) navigateRef.current('/terminals')
+  }, [])
   const connectLocal = useCallback(async () => {
     if (await once(LOCAL_KEY, openLocal)) navigateRef.current('/terminals')
   }, [])
-  return { connect, connectLocal }
+  return { connect, connectContainer, connectLocal }
 }

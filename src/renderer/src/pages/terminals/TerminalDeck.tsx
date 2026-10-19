@@ -2,6 +2,7 @@ import { AnimatePresence } from 'framer-motion'
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { useNavigate } from 'react-router'
 import type { SessionMeta } from '../../../../shared/ssh'
+import { insertStore } from '../../ops/insert'
 import { useInventory } from '../../inventory/store'
 import { closeSession, nextTab, openLocal, reconnectSession, sessionStore, setActive } from '../../terminal/sessions'
 import { TerminalView } from '../../terminal/TerminalView'
@@ -74,6 +75,7 @@ export function TerminalDeck({ visible }: { visible: boolean }) {
             onSelect={setActive}
             onClose={requestClose}
             onNew={() => void openLocal()}
+            onSnippets={() => insertStore.set({ kind: 'pick' })}
           />
           <div className="relative min-h-0 flex-1">
             {tabs.map((s) => (

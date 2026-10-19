@@ -26,6 +26,22 @@ import {
   type ProductPatch,
   type SshImportRequest,
 } from '../../shared/inventory'
+import {
+  CONTAINER_ACTIONS,
+  CONTAINER_REF,
+  LOG_TAIL_MAX,
+  MAX_COMMAND,
+  MAX_CONCURRENCY,
+  MAX_SNIPPET_DESCRIPTION,
+  MAX_RUN_TARGETS,
+  MAX_RUN_TIMEOUT_SEC,
+  MAX_SCRIPT,
+  MAX_VARIABLE_VALUE,
+  MAX_VARIABLES,
+  VARIABLE_NAME,
+  type RunRequest,
+  type SnippetInput,
+} from '../../shared/ops'
 import { BIND_ADDRESS, MAX_BIND_ADDRESS, type TunnelInput, type TunnelPatch } from '../../shared/tunnels'
 import { MAX_COLS, MAX_ROWS, MAX_WRITE_CHARS, type OpenLocalRequest, type OpenSshRequest, type PromptAnswer } from '../../shared/ssh'
 import {
@@ -277,11 +293,15 @@ export const asSshImportRequest: Check<SshImportRequest> = v.object({
 const cols = v.int({ min: 1, max: MAX_COLS })
 const rows = v.int({ min: 1, max: MAX_ROWS })
 
+// Defence in depth: the ref is also shell-quoted as one word wherever it is sent.
+const containerRef = v.str({ pattern: CONTAINER_REF })
+
 export const asOpenSshRequest: Check<OpenSshRequest> = v.object({
   hostId: v.uuid(),
   environmentId: v.optional(v.uuid()),
   cols,
   rows,
+  container: v.optional(containerRef),
 }) as Check<OpenSshRequest>
 
 export const asOpenLocalRequest: Check<OpenLocalRequest> = v.object({ cols, rows }) as Check<OpenLocalRequest>
@@ -305,6 +325,52 @@ export const asPromptAnswer: Check<PromptAnswer> = (value, path) => {
   if (!check) throw new InvalidArgs(`${path}.kind`, 'is not an allowed value')
   return check(value, path)
 }
+
+// No NUL in anything that reaches a remote shell or a comparison.
+const NO_NUL = /^[^\0]*$/
+// Values are not trimmed: whitespace can be part of a value. The store re-checks control characters.
+const variableValue = v.str({ max: MAX_VARIABLE_VALUE, pattern: NO_NUL })
+const variableValues = v.record(VARIABLE_NAME, variableValue, { maxKeys: MAX_VARIABLES })
+
+// Scripts are not trimmed: they are sent as written. The store derives variables and re-checks tags.
+export const asSnippetInput: Check<SnippetInput> = v.object({
+  label: hostLabel,
+  script: v.str({ min: 1, max: MAX_SCRIPT }),
+  description: v.optional(v.str({ max: MAX_SNIPPET_DESCRIPTION })),
+  tags: v.optional(hostTags),
+  defaults: v.optional(v.record(VARIABLE_NAME, v.nullable(variableValue), { maxKeys: MAX_VARIABLES })),
+  destructive: v.optional(v.bool()),
+}) as Check<SnippetInput>
+
+const runTarget = v.tagged('kind', {
+  hosts: v.object({
+    kind: v.oneOf(['hosts'] as const),
+    hostIds: v.array(v.uuid(), MAX_RUN_TARGETS, { min: 1 }),
+    environmentId: v.optional(v.uuid()),
+  }),
+  environment: v.object({
+    kind: v.oneOf(['environment'] as const),
+    environmentId: v.uuid(),
+    role: v.optional(v.oneOf(HOST_ROLES)),
+  }),
+})
+const runCommand = v.tagged('kind', {
+  // Typed shell input, sent as-is: not trimmed.
+  text: v.object({ kind: v.oneOf(['text'] as const), text: v.str({ min: 1, max: MAX_COMMAND, pattern: NO_NUL }) }),
+  snippet: v.object({ kind: v.oneOf(['snippet'] as const), snippetId: v.uuid(), values: variableValues }),
+})
+// The typed environment name; compared exactly, so not trimmed.
+const confirmName = v.optional(v.str({ max: MAX_NAME, pattern: NO_NUL }))
+
+export const asRunRequest: Check<RunRequest> = v.object({
+  target: runTarget,
+  command: runCommand,
+  concurrency: v.optional(v.int({ min: 1, max: MAX_CONCURRENCY })),
+  timeoutSec: v.optional(v.int({ min: 1, max: MAX_RUN_TIMEOUT_SEC })),
+  confirm: confirmName,
+}) as Check<RunRequest>
+
+const logTail = v.int({ min: 0, max: LOG_TAIL_MAX })
 
 /** Every channel must have an entry; each later task adds its own. */
 export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']> } = {
@@ -381,4 +447,19 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'tunnel:start': args(v.uuid()),
   'tunnel:stop': args(v.uuid()),
   'tunnel:status': args(),
+  'snippets:list': args(),
+  'snippets:create': args(asSnippetInput),
+  'snippets:update': args(v.uuid(), asSnippetInput),
+  'snippets:delete': args(v.uuid()),
+  'snippets:render': args(v.uuid(), variableValues),
+  'runs:start': args(asRunRequest),
+  'runs:cancel': args(v.uuid()),
+  'runs:list': args(),
+  'runs:get': args(v.uuid()),
+  'runs:dismiss': args(v.uuid()),
+  'containers:list': args(v.uuid(), nullableId),
+  'containers:action': args(v.uuid(), nullableId, containerRef, v.oneOf(CONTAINER_ACTIONS), confirmName),
+  'containers:logs': args(v.uuid(), nullableId, containerRef, logTail),
+  'containers:follow': args(v.uuid(), nullableId, containerRef, logTail),
+  'containers:unfollow': args(v.uuid()),
 }

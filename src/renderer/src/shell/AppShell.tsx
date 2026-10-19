@@ -7,6 +7,7 @@ import { useMapCommands } from '../map/commands'
 import { AuditPage } from '../pages/AuditPage'
 import { HostsPage } from '../pages/hosts/HostsPage'
 import { MapPage } from '../pages/map/MapPage'
+import { OpsPage } from '../pages/ops/OpsPage'
 import { PlaceholderPage } from '../pages/PlaceholderPage'
 import { ProductsPage } from '../pages/products/ProductsPage'
 import { KnownHostsDialog, closeKnownHosts, openKnownHosts } from '../pages/terminals/KnownHostsDialog'
@@ -14,8 +15,11 @@ import { PromptHost } from '../pages/terminals/PromptHost'
 import { TerminalDeck } from '../pages/terminals/TerminalDeck'
 import { TunnelsPage } from '../pages/tunnels/TunnelsPage'
 import { VaultsPage } from '../pages/vaults/VaultsPage'
+import { resetOps, startOpsSync } from '../ops/runs'
 import { disposeAll } from '../terminal/registry'
 import { resetSessions, startSessionSync } from '../terminal/sessions'
+import { InsertHost } from '../pages/ops/InsertHost'
+import { useOpsCommands } from '../ops/commands'
 import { useTunnelCommands } from '../tunnels/commands'
 import { resetTunnels, startTunnelSync } from '../tunnels/store'
 import { registerCommand } from '../ui/commands'
@@ -37,6 +41,7 @@ export function AppShell() {
   useInventoryCommands()
   useTunnelCommands()
   useMapCommands()
+  useOpsCommands()
   // The shell mounts only while unlocked, so every unlock reloads (F22).
   useEffect(() => {
     void loadInventory()
@@ -55,13 +60,16 @@ export function AppShell() {
   useEffect(() => {
     const stop = startSessionSync()
     const stopTunnels = startTunnelSync()
+    const stopOps = startOpsSync()
     return () => {
       stop()
       stopTunnels()
+      stopOps()
       disposeAll()
       // Events stop while unmounted (the vault locked); the next mount's session list is the truth.
       resetSessions()
       resetTunnels()
+      resetOps()
       closeKnownHosts()
     }
   }, [])
@@ -104,6 +112,8 @@ export function AppShell() {
             <Route path="/vaults" element={<VaultsPage />} />
             <Route path="/tunnels" element={<TunnelsPage />} />
             <Route path="/map" element={<MapPage />} />
+            <Route path="/ops" element={<Navigate to="/ops/run" replace />} />
+            <Route path="/ops/:tab" element={<OpsPage />} />
             <Route path="/audit" element={<AuditPage />} />
             <Route path="*" element={<Navigate to={SECTIONS[0].path} replace />} />
           </Routes>
@@ -111,12 +121,13 @@ export function AppShell() {
         <TerminalDeck visible={location.pathname === '/terminals'} />
       </main>
       <PromptHost />
+      <InsertHost />
       <KnownHostsDialog />
     </div>
   )
 }
 
-// mod+1…mod+8 and a "Go to …" palette command per section.
+// mod+1…mod+N and a "Go to …" palette command per section.
 function useSectionNavigation() {
   const navigate = useNavigate()
   const navigateRef = useRef(navigate)

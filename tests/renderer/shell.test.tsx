@@ -3,13 +3,27 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { AppShell } from '../../src/renderer/src/shell/AppShell'
-import { SECTIONS, type SectionId } from '../../src/renderer/src/shell/sections'
+import { SECTIONS, sectionShortcut, type SectionId } from '../../src/renderer/src/shell/sections'
 import { commandStore } from '../../src/renderer/src/ui/commands'
+import type { RunSummary } from '../../src/shared/ops'
 import { mockBridge, tunnelMeta, tunnelRuntime } from './helpers'
 
 // Shortcuts follow SECTIONS order, so a section inserted later shifts these without a rewrite.
 const digitOf = (id: SectionId) => String(SECTIONS.findIndex((s) => s.id === id) + 1)
 const shortcutOf = (id: SectionId) => `mod+${digitOf(id)}`
+
+const runSummary: RunSummary = {
+  id: 'r1',
+  state: 'running',
+  title: 'uptime',
+  environmentId: null,
+  environmentName: null,
+  concurrency: 4,
+  hosts: [],
+  startedAt: '2026-01-01T00:00:00.000Z',
+  endedAt: null,
+  outputDropped: false,
+}
 
 function renderShell(path = '/') {
   return render(
@@ -75,6 +89,7 @@ describe('shell', () => {
 
   it(`${shortcutOf('audit')} jumps to Audit`, async () => {
     renderShell()
+    expect(SECTIONS.at(-1)!.id).toBe('audit')
     act(() => {
       fireEvent.keyDown(window, { key: digitOf('audit'), metaKey: true })
     })
@@ -120,6 +135,25 @@ describe('shell', () => {
     const badge = await screen.findByLabelText('2 tunnels up, 1 failed')
     expect(badge).toHaveTextContent('2')
     expect(badge.querySelector('[data-dot="failed"]')).not.toBeNull()
+  })
+
+  it('the Ops section is in the sidebar with its shortcut and badge', async () => {
+    mockBridge({ 'runs:list': [runSummary] })
+    renderShell()
+    const nav = screen.getByRole('navigation', { name: 'Sections' })
+    expect(within(nav).getByRole('link', { name: /Ops/ })).toBeInTheDocument()
+    expect(await screen.findByLabelText('1 run running')).toHaveTextContent('1')
+    const i = SECTIONS.findIndex((s) => s.id === 'ops')
+    act(() => {
+      fireEvent.keyDown(window, { key: String(i + 1), metaKey: true })
+    })
+    expect(await screen.findByRole('heading', { name: 'Ops', level: 1 })).toBeInTheDocument()
+    expect(within(nav).getByRole('link', { name: /Ops/ })).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('/ops redirects to /ops/run', async () => {
+    renderShell('/ops')
+    expect(await screen.findByRole('link', { name: 'Run', current: 'page' })).toBeInTheDocument()
   })
 
   it('sections are palette commands while mounted', async () => {

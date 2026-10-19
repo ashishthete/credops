@@ -90,3 +90,18 @@ export function pushEvent<K extends EventName>(win: PushTarget | null, name: K, 
 export function forwardVaultLocks(vault: LockSource, window: () => PushTarget | null): () => void {
   return vault.onLock((reason) => pushEvent(window(), 'vault:locked', { reason }))
 }
+
+/**
+ * Calls `drop` when the page is replaced (a reload) or its process dies, as main-frame loads only: a hash-route
+ * change is a same-document navigation and keeps the page, so it does not count. What the page held in main
+ * (log follows) has no one left to stop it.
+ */
+export function dropOnRendererReset(
+  wc: { on(event: string, listener: (...args: any[]) => void): unknown },
+  drop: () => void,
+): void {
+  wc.on('did-start-navigation', (details: { isMainFrame: boolean; isSameDocument: boolean }) => {
+    if (details.isMainFrame && !details.isSameDocument) drop()
+  })
+  wc.on('render-process-gone', () => drop())
+}

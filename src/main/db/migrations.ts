@@ -114,6 +114,28 @@ CREATE TABLE tunnels(id TEXT PRIMARY KEY, label TEXT NOT NULL,
 CREATE INDEX tunnels_host ON tunnels(host_id);
 `,
   },
+  {
+    version: 6,
+    name: 'snippets',
+    // NOCASE folds ASCII only; labels are mostly ASCII, so that is accepted for v1.
+    // The script and the variable defaults are sealed with the Default vault (AAD snippet:<id>:script and
+    // snippet:<id>:defaults); label, description, tags, variable names and destructive stay plaintext metadata.
+    up: `
+CREATE TABLE snippets (
+  id TEXT PRIMARY KEY,
+  label TEXT NOT NULL,
+  script_sealed TEXT NOT NULL,            -- sealed script
+  description TEXT NOT NULL DEFAULT '',
+  tags TEXT NOT NULL DEFAULT '[]',        -- JSON array of TAG strings, sorted, unique
+  variables TEXT NOT NULL DEFAULT '[]',   -- JSON array of variable names in first-use order
+  defaults_sealed TEXT,                   -- sealed JSON object { name: default }, or NULL when there are none
+  destructive INTEGER NOT NULL DEFAULT 0 CHECK (destructive IN (0,1)), -- 1 = always needs the protected-env confirmation
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX snippets_label ON snippets (label COLLATE NOCASE);
+`,
+  },
 ]
 
 const ENSURE_TABLE = `CREATE TABLE IF NOT EXISTS schema_migrations(
@@ -127,14 +149,21 @@ export function currentVersion(db: Db): number {
   return row.v ?? 0
 }
 
+/**
+ * Applies every listed migration missing from schema_migrations, in ascending order, so a version merged in
+ * after a later one (parallel phase branches) still runs. `to` is the highest version recorded afterwards.
+ */
 export function migrate(db: Db, list: Migration[] = migrations): { from: number; to: number } {
   const from = currentVersion(db)
   let to = from
+  const applied = new Set(
+    (db.prepare('SELECT version FROM schema_migrations').all() as { version: number }[]).map((r) => r.version),
+  )
   const insert = db.prepare(
     'INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)',
   )
-  for (const m of list) {
-    if (m.version <= from) continue
+  for (const m of [...list].sort((a, b) => a.version - b.version)) {
+    if (applied.has(m.version)) continue
     db.exec('BEGIN IMMEDIATE')
     try {
       db.exec(m.up)
@@ -145,7 +174,7 @@ export function migrate(db: Db, list: Migration[] = migrations): { from: number;
       const reason = err instanceof Error ? err.message : String(err)
       throw new Error(`migration ${m.version} (${m.name}) failed: ${reason}`, { cause: err })
     }
-    to = m.version
+    to = Math.max(to, m.version)
   }
   return { from, to }
 }

@@ -21,6 +21,9 @@ export class FakeTerminal {
   getSelection: Mock<(...args: any[]) => any> = vi.fn(() => '')
   dataListeners: ((d: string) => void)[] = []
   selectionListeners: (() => void)[] = []
+  modes = { bracketedPasteMode: false }
+  /** Like xterm's: what a paste sends is typed, with line breaks as Enter. */
+  paste: Mock<(...args: any[]) => any> = vi.fn((text: string) => this.type(text.replace(/\r?\n/g, '\r')))
   keyHandler: (e: KeyboardEvent) => boolean = () => true
   constructor(public options: Record<string, unknown>) {
     fake.terms.push(this)

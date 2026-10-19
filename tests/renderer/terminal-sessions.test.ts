@@ -36,6 +36,7 @@ function meta(id: string, over: Partial<SessionMeta> = {}): SessionMeta {
     readyAt: null,
     closedAt: null,
     attempt: 1,
+    container: null,
     ...over,
   }
 }

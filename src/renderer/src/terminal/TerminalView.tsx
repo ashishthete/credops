@@ -25,7 +25,7 @@ function isAppCombo(e: KeyboardEvent): boolean {
   const modPressed = isMac() ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
   if (!modPressed || e.altKey) return false
   if (e.shiftKey) return e.code === 'BracketRight' || e.code === 'BracketLeft'
-  return /^[twfk1-8]$/i.test(e.key)
+  return /^[twfk1-9]$/i.test(e.key)
 }
 
 /** Mounted only for the visible view: a hidden view's listener would preventDefault mod+f first. */
