@@ -808,4 +808,19 @@ describe('ReleaseService', () => {
     expect(r.svc.detail(id).status).toBe('failed')
     expect(r.svc.events(id, 0).filter((e) => e.type === 'run.finished').length).toBeGreaterThan(0)
   })
+
+  it('concurrent start and discard on one release cannot both pass the guard', async () => {
+    const r = await rig()
+    const g = gate()
+    r.runner.on.release = async () => {
+      await g.p
+    }
+    const id = await ready(r)
+    const results = await Promise.allSettled([r.svc.start(id, {}), r.svc.start(id, {}), r.svc.discard(id)])
+    expect(results.filter((x) => x.status === 'fulfilled')).toHaveLength(1)
+    expect(results.filter((x) => x.status === 'rejected')).toHaveLength(2)
+    g.open()
+    await r.svc.whenIdle()
+    expect(r.runner.kinds.filter((k) => k === 'release').length).toBeLessThanOrEqual(1)
+  })
 })

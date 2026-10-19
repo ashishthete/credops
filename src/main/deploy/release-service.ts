@@ -604,6 +604,9 @@ export class ReleaseService {
     if (rel.status !== 'ready' && rel.status !== 'blocked') throw new DeployError('INVALID_STATE', `A ${rel.status} release cannot be discarded`)
     const env = environmentMeta(this.d.db, rel.environmentId)
     await this.guard('deploy.edit', 'release.discard', env, [], releaseId)
+    // Re-check after the await: a start that began meanwhile has registered and moved the row to running.
+    const now = this.d.releases.get(releaseId).status
+    if (this.live.has(releaseId) || (now !== 'ready' && now !== 'blocked')) throw new DeployError('INVALID_STATE', 'This release is busy')
     this.push(releaseId, { type: 'run.finished', status: 'cancelled' })
     this.flush()
     this.d.releases.setStatus(releaseId, 'discarded', { finishedAt: this.d.now().toISOString() })
@@ -1020,6 +1023,8 @@ export class ReleaseService {
   }
 
   private register(id: string, env: { id: string; name: string }, phase: Phase, label: string): Live {
+    // The guards above ran before an await; the check here is the one that cannot interleave.
+    if (this.live.has(id)) throw new DeployError('INVALID_STATE', 'This release is busy')
     const live: Live = {
       id,
       environmentId: env.id,
