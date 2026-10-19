@@ -264,6 +264,17 @@ describe('ops stores', () => {
     expect(snippetStore.get().snippets).toEqual([snip])
   })
 
+  it('keeps saved snippets in label order, case-insensitive, then id', async () => {
+    const snip = (id: string, label: string) => ({ id, label, script: 'ls', description: '', tags: [], variables: [], destructive: false, createdAt: STAMP, updatedAt: STAMP })
+    const invoke = mockBridge({ 'snippets:list': [snip('1', 'alpha'), snip('2', 'Charlie')] })
+    await loadSnippets()
+    invoke.mockImplementation(async (c: string) => (c === 'snippets:create' ? snip('3', 'bravo') : c === 'snippets:update' ? snip('1', 'Zulu') : null))
+    await saveSnippet(null, { label: 'bravo', script: 'ls' })
+    expect(snippetStore.get().snippets.map((s) => s.label)).toEqual(['alpha', 'bravo', 'Charlie'])
+    await saveSnippet('1', { label: 'Zulu', script: 'ls' })
+    expect(snippetStore.get().snippets.map((s) => s.label)).toEqual(['bravo', 'Charlie', 'Zulu'])
+  })
+
   it('lists placeholders once, in order', () => {
     expect(placeholders('echo {{b}} {{a}} {{b}} {{ Bad }} {x}')).toEqual(['b', 'a'])
   })

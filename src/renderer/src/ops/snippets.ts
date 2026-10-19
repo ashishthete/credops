@@ -20,6 +20,9 @@ export function resetSnippets(): void {
   snippetStore.set(EMPTY)
 }
 
+/** Main's order: label (case-insensitive), then id. */
+const byLabel = (a: SnippetMeta, b: SnippetMeta) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }) || a.id.localeCompare(b.id)
+
 export async function loadSnippets(): Promise<void> {
   const started = generation
   try {
@@ -39,8 +42,7 @@ export async function saveSnippet(id: string | null, input: SnippetInput, onErro
   )
   if (meta) {
     const s = snippetStore.get()
-    const known = s.snippets.some((x) => x.id === meta.id)
-    snippetStore.set({ ...s, snippets: known ? s.snippets.map((x) => (x.id === meta.id ? meta : x)) : [...s.snippets, meta] })
+    snippetStore.set({ ...s, snippets: [...s.snippets.filter((x) => x.id !== meta.id), meta].sort(byLabel) })
   }
   return meta
 }
