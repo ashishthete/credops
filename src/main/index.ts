@@ -9,6 +9,7 @@ import {
   dialog,
   ipcMain,
   Menu,
+  Notification,
   powerMonitor,
   safeStorage,
   session,
@@ -23,6 +24,9 @@ import { createIdentityHandlers } from './ipc/handlers/identities'
 import { createDeployHandlers } from './ipc/handlers/deploy'
 import { createServiceHandlers } from './ipc/handlers/services'
 import { createSettingsHandlers } from './ipc/handlers/settings'
+import { createNotifyHandlers } from './ipc/handlers/notify'
+import { MacNotifier } from './notify/macos'
+import { LocalSink } from './notify/sink'
 import { IntegrationStore } from './settings/integration-store'
 import { SettingsStore } from './settings/settings-store'
 import { detectTools } from './deploy/tooling'
@@ -186,6 +190,26 @@ if (!app.requestSingleInstanceLock()) {
       const tunnels = new TunnelStore({ db, audit: log, vault: service })
       const settingsStore = new SettingsStore({ db, audit: log, vault: service, secrets })
       const integrations = new IntegrationStore({ db, audit: log, vault: service, secrets })
+      const macNotifier = new MacNotifier({
+        Notification,
+        enabled: () => settingsStore.get().macos,
+        onClick: (route) => {
+          if (!mainWindow) return
+          if (mainWindow.isMinimized()) mainWindow.restore()
+          mainWindow.show()
+          mainWindow.focus()
+          pushEvent(mainWindow, 'app:navigate', { route })
+        },
+      })
+      const notifySink = new LocalSink({
+        secrets,
+        settings: settingsStore,
+        integrations,
+        fetch: globalThis.fetch,
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        notifier: macNotifier,
+        knownSecrets,
+      })
       const snippets = new SnippetStore({ db, audit: log, vault: service })
       const deploys = new DeployStore({ db, audit: log, vault: service, secrets: dbSecretRefs(db) })
       deploys.onChanged = (environmentId) => pushEvent(mainWindow, 'deploy:changed', { environmentId })
@@ -421,6 +445,7 @@ if (!app.requestSingleInstanceLock()) {
             copy: (req) => copyServices(copyDeps, req),
           }),
           ...createSettingsHandlers({ settings: settingsStore, integrations }),
+          ...createNotifyHandlers({ db, sink: notifySink, settings: settingsStore, integrations, mac: macNotifier, audit: log, actor }),
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
           ...createOpsHandlers({ snippets, runs, containers }),
         },

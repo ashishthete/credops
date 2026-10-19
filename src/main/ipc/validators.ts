@@ -91,8 +91,12 @@ import {
   MAX_EMAIL,
   MAX_GIT_REF,
   MAX_RECIPIENTS,
+  MAX_NOTIFY_LOG,
   NOTIFY_EVENTS,
+  NOTIFY_SOURCES,
   type EnvironmentIntegrationsPatch,
+  type NotifyLogFilter,
+  type NotifyTestTarget,
   type IntegrationSettingsPatch,
 } from '../../shared/settings'
 import { MAX_SERVICES, type CopyServicesRequest, type ServiceInput, type ServicePatch } from '../../shared/services'
@@ -374,6 +378,18 @@ export const asIntegrationPatch: Check<EnvironmentIntegrationsPatch> = v.object(
   ),
   qaWait: v.optional(v.bool()),
 }) as Check<EnvironmentIntegrationsPatch>
+
+export const asNotifyTestTarget: Check<NotifyTestTarget> = v.tagged('channel', {
+  teams: v.object({ channel: v.oneOf(['teams'] as const), environmentId: v.uuid() }),
+  email: v.object({ channel: v.oneOf(['email'] as const), environmentId: v.uuid() }),
+  macos: v.object({ channel: v.oneOf(['macos'] as const) }),
+}) as Check<NotifyTestTarget>
+
+export const asNotifyLogFilter: Check<NotifyLogFilter> = v.object({
+  sourceType: v.optional(v.oneOf(NOTIFY_SOURCES)),
+  sourceId: v.optional(v.str({ min: 1, max: 64 })),
+  limit: v.optional(v.int({ min: 1, max: MAX_NOTIFY_LOG })),
+}) as Check<NotifyLogFilter>
 
 export const asCopyServicesRequest: Check<CopyServicesRequest> = v.object({
   sourceEnvironmentId: v.uuid(),
@@ -664,6 +680,8 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'settings:status': args(),
   'integration:get': args(v.uuid()),
   'integration:update': args(v.uuid(), asIntegrationPatch),
+  'notify:test': args(asNotifyTestTarget),
+  'notify:log': args(asNotifyLogFilter),
   'release:preflight': args(asPreflightRequest),
   'release:start': args(v.uuid(), asReleaseConfirm),
   'release:cancel': args(v.uuid()),

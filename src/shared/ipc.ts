@@ -47,6 +47,9 @@ import type {
   EnvironmentIntegrationsPatch,
   IntegrationSettings,
   IntegrationSettingsPatch,
+  NotificationRecord,
+  NotifyLogFilter,
+  NotifyTestTarget,
   IntegrationStatus,
 } from './settings'
 import type { TunnelEvent, TunnelInput, TunnelMeta, TunnelPatch, TunnelRuntime, TunnelStats } from './tunnels'
@@ -213,6 +216,9 @@ export interface IpcContract {
   'settings:status': { args: []; result: IntegrationStatus }
   'integration:get': { args: [environmentId: string]; result: EnvironmentIntegrations }
   'integration:update': { args: [environmentId: string, patch: EnvironmentIntegrationsPatch]; result: EnvironmentIntegrations }
+  // Sends a "Test from OpsDeck" card, email or alert; audited as notify.test. Errors never hold a URL or key.
+  'notify:test': { args: [target: NotifyTestTarget]; result: void }
+  'notify:log': { args: [filter: NotifyLogFilter]; result: NotificationRecord[] }
   'snippets:list': { args: []; result: SnippetMeta[] }
   'snippets:create': { args: [input: SnippetInput]; result: SnippetMeta }
   'snippets:update': { args: [id: string, input: SnippetInput]; result: SnippetMeta }
@@ -344,6 +350,8 @@ export const CHANNELS = [
   'settings:status',
   'integration:get',
   'integration:update',
+  'notify:test',
+  'notify:log',
   'snippets:list',
   'snippets:create',
   'snippets:update',
@@ -388,6 +396,8 @@ export interface EventContract {
   // Batched run events of a release (about every EVENT_BATCH_MS), already persisted with their seq.
   'deploy:event': DeployRunEvent[]
   'release:state': ReleaseSummary
+  // A clicked macOS alert: the renderer navigates to this hash route.
+  'app:navigate': { route: string }
 }
 export type EventName = keyof EventContract
 export const EVENTS = [
@@ -404,6 +414,7 @@ export const EVENTS = [
   'deploy:changed',
   'deploy:event',
   'release:state',
+  'app:navigate',
 ] as const satisfies readonly EventName[]
 type MissingEvents = Exclude<EventName, (typeof EVENTS)[number]>
 export const eventsAreComplete: [MissingEvents] extends [never] ? true : never = true

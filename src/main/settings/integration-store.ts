@@ -166,6 +166,11 @@ export class IntegrationStore {
     return this.get(environmentId)
   }
 
+  /** The environment's name; throws `environment not found`. */
+  environmentName(id: string): string {
+    return this.envName(id)
+  }
+
   private envName(id: string): string {
     const row = this.db.prepare('SELECT name FROM environments WHERE id = ?').get(id) as { name: string } | undefined
     if (!row) throw new Error('environment not found')

@@ -88,3 +88,32 @@ export interface IntegrationStatus {
   github: boolean
   macosSupported: boolean
 }
+
+// ---- Notification log ----
+export const NOTIFY_CHANNELS = ['teams', 'email', 'macos', 'qa'] as const
+export type NotifyChannel = (typeof NOTIFY_CHANNELS)[number]
+export const NOTIFY_STATUSES = ['pending', 'sent', 'skipped', 'failed'] as const
+export type NotifyStatus = (typeof NOTIFY_STATUSES)[number]
+export const NOTIFY_SOURCES = ['release', 'tunnel', 'test'] as const
+export type NotifySourceType = (typeof NOTIFY_SOURCES)[number]
+export const MAX_NOTIFY_LOG = 200
+
+/** One `notification_log` row. `detail` is redacted fixed text, never a URL. */
+export interface NotificationRecord {
+  id: string
+  at: string
+  sourceType: NotifySourceType
+  sourceId: string
+  event: string
+  channel: NotifyChannel
+  status: NotifyStatus
+  detail: string | null
+}
+
+export interface NotifyLogFilter {
+  sourceType?: NotifySourceType
+  sourceId?: string
+  limit?: number
+}
+
+export type NotifyTestTarget = { channel: 'teams' | 'email'; environmentId: string } | { channel: 'macos' }
