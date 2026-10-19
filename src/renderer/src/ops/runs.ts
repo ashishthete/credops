@@ -1,8 +1,18 @@
 import { useSyncExternalStore } from 'react'
-import { MAX_ERR_RANGES, RUN_OUTPUT_CHARS, type RunEvent, type RunHostMeta, type RunOutput, type RunSummary } from '../../../shared/ops'
+import {
+  MAX_ERR_RANGES,
+  RUN_OUTPUT_CHARS,
+  type RunEvent,
+  type RunHostMeta,
+  type RunHostState,
+  type RunOutput,
+  type RunRequest,
+  type RunSummary,
+} from '../../../shared/ops'
 import { api } from '../lib/api'
 import { fail } from '../ui/common'
 import { createStore } from '../ui/store'
+import { toast } from '../ui/Toaster'
 import { resetContainers, applyContainerLog } from './containers'
 import { resetSnippets } from './snippets'
 
@@ -33,12 +43,20 @@ let loadSeq = 0
 const reloadAgain = new Set<string>()
 let syncUsers = 0
 let stopSync: (() => void) | null = null
+/**
+ * The request each run was started with from this window, for Run again. Memory only, since it holds variable
+ * values; it goes with the stores (a lock unmounts the shell and resets them).
+ */
+const requests = new Map<string, RunRequest>()
+/** Run views on screen; while there is one, a finished run needs no toast. */
+let viewers = 0
 
 /** Empties every Ops store (the shell unmounting, the vault locking, tests). */
 export function resetOps(): void {
   generation++
   loads.clear()
   reloadAgain.clear()
+  requests.clear()
   runStore.set(EMPTY)
   runOutputStore.set({})
   resetContainers()
@@ -73,11 +91,46 @@ function dropOutput(runId: string): void {
   runOutputStore.set(rest)
 }
 
-function upsertRun(run: RunSummary): void {
+export function rememberRequest(id: string, req: RunRequest): void {
+  requests.set(id, req)
+}
+
+export const requestFor = (id: string): RunRequest | undefined => requests.get(id)
+
+/** Marks a run view as showing; returns the unmark. Finished runs are toasted only while none shows. */
+export function showRunView(): () => void {
+  viewers++
+  let left = false
+  return () => {
+    if (!left) viewers--
+    left = true
+  }
+}
+
+/** `Run finished: 4 ok, 1 failed (db-2)`: counts and host labels only, never the command or its output. */
+export function finishTitle(run: RunSummary): string {
+  const of = (state: RunHostState) => run.hosts.filter((h) => h.state === state)
+  const failed = of('failed')
+  const names = failed.slice(0, 3).map((h) => h.label).join(', ') + (failed.length > 3 ? ` +${failed.length - 3}` : '')
+  const parts = [
+    of('ok').length ? `${of('ok').length} ok` : '',
+    failed.length ? `${failed.length} failed (${names})` : '',
+    of('timeout').length ? `${of('timeout').length} timed out` : '',
+    of('cancelled').length ? `${of('cancelled').length} cancelled` : '',
+  ].filter(Boolean)
+  return `${run.state === 'cancelled' ? 'Run cancelled' : 'Run finished'}: ${parts.join(', ') || 'no hosts'}`
+}
+
+/** Adds or replaces a run (an event, a load, or a start this window asked for). */
+export function upsertRun(run: RunSummary): void {
   const s = runStore.get()
-  const known = s.runs.some((r) => r.id === run.id)
-  runStore.set({ ...s, runs: known ? s.runs.map((r) => (r.id === run.id ? run : r)) : [run, ...s.runs] })
+  const prev = s.runs.find((r) => r.id === run.id)
+  runStore.set({ ...s, runs: prev ? s.runs.map((r) => (r.id === run.id ? run : r)) : [run, ...s.runs] })
   if (run.state !== 'running' && s.selectedId !== run.id) dropOutput(run.id)
+  if (prev?.state === 'running' && run.state !== 'running' && viewers === 0) {
+    const bad = run.hosts.some((h) => h.state === 'failed' || h.state === 'timeout')
+    toast({ title: finishTitle(run), tone: bad ? 'warn' : run.state === 'cancelled' ? 'info' : 'success' })
+  }
 }
 
 function applyHost(runId: string, host: RunHostMeta): void {
@@ -164,6 +217,7 @@ export function selectRun(id: string | null): void {
 export function removeRun(id: string): void {
   const s = runStore.get()
   runStore.set({ runs: s.runs.filter((r) => r.id !== id), selectedId: s.selectedId === id ? null : s.selectedId })
+  requests.delete(id)
   dropOutput(id)
 }
 

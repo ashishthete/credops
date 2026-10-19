@@ -36,6 +36,9 @@ export const MAX_CHANNELS_PER_LINK = 8
 export const CONTAINER_REF = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/
 export const MAX_CONTAINERS = 500
 
+/** Main's refusal of a run whose hosts span protected environments; the Run tab shows it before asking. */
+export const MULTIPLE_PROTECTED_MESSAGE = 'These hosts are in more than one protected environment; run one environment at a time'
+
 /**
  * A command that needs the protected-environment confirmation. Word matches, case-insensitive (`DROP TABLE`).
  * A redirect to /dev/ counts except to null, stdout, stderr, tty and fd/, which every script uses.
