@@ -1,6 +1,7 @@
 import type { SnippetMeta } from '../../../shared/ops'
 import type { SessionMeta } from '../../../shared/ssh'
 import { api } from '../lib/api'
+import { getTerminal } from '../terminal/registry'
 import { sessionStore } from '../terminal/sessions'
 import { attempt } from '../ui/common'
 import { toast } from '../ui/Toaster'
@@ -30,7 +31,7 @@ function noTerminal(): false {
 }
 
 /**
- * Renders the snippet in main and types the result into the active terminal, without a newline, so it can be
+ * Renders the snippet in main and pastes the result into the active terminal, without a newline, so it can be
  * read and edited before Enter. The toast names the snippet, never its text. `onError` shows a template error
  * inline (the fill dialog) instead of as a toast. Resolves true once written.
  */
@@ -38,8 +39,16 @@ export async function insertSnippet(snippet: SnippetMeta, values: Record<string,
   const target = insertTarget()
   if (!target) return noTerminal()
   const done = await attempt("Couldn't insert the snippet", async () => {
-    const text = await api.invoke('snippets:render', snippet.id, values)
-    await api.invoke('session:write', target.id, text)
+    // Trailing breaks would run the line by themselves.
+    const text = (await api.invoke('snippets:render', snippet.id, values)).replace(/[\r\n]+$/, '')
+    const { term } = getTerminal(target.id)
+    // Without bracketed paste the shell reads every line break as Enter and a tab as completion; xterm's paste
+    // wraps the text when the shell asked for it, and only then is a multi-line snippet safe to type.
+    if (!term.modes.bracketedPasteMode && /[\r\n\t]/.test(text)) {
+      toast({ title: 'This snippet has several lines; run it from Ops › Run', tone: 'info' })
+      return false
+    }
+    term.paste(text)
     return true
   }, onError)
   if (done) {

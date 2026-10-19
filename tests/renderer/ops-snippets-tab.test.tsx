@@ -7,11 +7,18 @@ import { InsertHost } from '../../src/renderer/src/pages/ops/InsertHost'
 import { RunTab } from '../../src/renderer/src/pages/ops/RunTab'
 import { SnippetsTab } from '../../src/renderer/src/pages/ops/SnippetsTab'
 import { TabStrip } from '../../src/renderer/src/pages/terminals/TabStrip'
+import { disposeAll, getTerminal } from '../../src/renderer/src/terminal/registry'
 import { resetSessions, sessionStore } from '../../src/renderer/src/terminal/sessions'
 import { clearToasts, toast } from '../../src/renderer/src/ui/Toaster'
 import type { SnippetMeta } from '../../src/shared/ops'
 import type { SessionMeta } from '../../src/shared/ssh'
 import { mockBridge } from './helpers'
+import { fake, resetFakeXterm } from './terminal-fakes'
+
+vi.mock('@xterm/xterm', async () => ({ Terminal: (await import('./terminal-fakes')).FakeTerminal }))
+vi.mock('@xterm/addon-fit', async () => ({ FitAddon: (await import('./terminal-fakes')).FakeFit }))
+vi.mock('@xterm/addon-search', async () => ({ SearchAddon: (await import('./terminal-fakes')).FakeSearch }))
+vi.mock('@xterm/addon-web-links', async () => ({ WebLinksAddon: (await import('./terminal-fakes')).FakeWebLinks }))
 
 vi.mock('../../src/renderer/src/ui/Toaster', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/renderer/src/ui/Toaster')>()),
@@ -83,10 +90,12 @@ const openMenu = (label: string) => fireEvent.click(screen.getByRole('button', {
 const pick = (name: string) => fireEvent.click(screen.getByRole('menuitem', { name }))
 
 beforeEach(() => {
+  resetFakeXterm()
   vi.mocked(toast).mockClear()
 })
 afterEach(() => {
   cleanup()
+  disposeAll()
   resetSnippets()
   resetSessions()
   clearToasts()
@@ -146,7 +155,7 @@ describe('Snippets tab', () => {
     await flush()
 
     expect(calls(invoke, 'snippets:render')[0].slice(1)).toEqual(['s-logs', { lines: '20', file: '/var/log/syslog' }])
-    expect(calls(invoke, 'session:write')[0].slice(1)).toEqual(['sess-1', 'tail -n 20 /var/log/syslog'])
+    expect(fake.terms[0].paste).toHaveBeenCalledWith('tail -n 20 /var/log/syslog')
     expect(vi.mocked(toast)).toHaveBeenCalledWith(expect.objectContaining({ title: 'Inserted Tail logs' }))
     expect(JSON.stringify(vi.mocked(toast).mock.calls)).not.toContain('syslog')
   })
@@ -156,14 +165,14 @@ describe('Snippets tab', () => {
     openMenu('Disk usage')
     pick('Insert into terminal')
     await flush()
-    expect(calls(invoke, 'session:write')).toHaveLength(0)
+    expect(fake.terms).toHaveLength(0)
     expect(vi.mocked(toast)).toHaveBeenCalledWith(expect.objectContaining({ title: 'No terminal is ready' }))
 
     sessionStore.set({ sessions: [session({ kind: 'local', hostId: null })], order: ['sess-1'], activeId: 'sess-1' })
     openMenu('Disk usage')
     pick('Insert into terminal')
     await flush()
-    expect(calls(invoke, 'session:write')[0].slice(1)).toEqual(['sess-1', 'df -h'])
+    expect(fake.terms[0].paste).toHaveBeenCalledWith('df -h')
   })
 
   it('delete asks for confirmation', async () => {
@@ -259,7 +268,7 @@ describe('Snippets tab', () => {
     const dialog = await screen.findByRole('dialog')
     fireEvent.click(within(dialog).getByRole('button', { name: /Disk usage/ }))
     await flush()
-    expect(calls(invoke, 'session:write')[0].slice(1)).toEqual(['sess-1', 'df -h'])
+    expect(fake.terms[0].paste).toHaveBeenCalledWith('df -h')
   })
 
   it('the fill dialog path ends on the terminals page too', async () => {
@@ -272,6 +281,49 @@ describe('Snippets tab', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Insert' }))
     await flush()
     expect(where).toBe('/terminals')
+  })
+})
+
+describe('insert and line breaks', () => {
+  const multi = snip('s-multi', 'Rotate', { script: 'cd /srv\nrm -rf old' })
+  const tabbed = snip('s-tab', 'Tabbed', { script: 'echo a\tb' })
+  const run = async (label: string) => {
+    openMenu(label)
+    pick('Insert into terminal')
+    await flush()
+  }
+
+  it('a multi-line snippet is refused while bracketed paste is off, and nothing is typed', async () => {
+    sessionStore.set({ sessions: [session()], order: ['sess-1'], activeId: 'sess-1' })
+    await renderTab({ 'snippets:list': [multi], 'snippets:render': 'cd /srv\nrm -rf old' })
+    await run('Rotate')
+    expect(fake.terms[0].paste).not.toHaveBeenCalled()
+    expect(vi.mocked(toast)).toHaveBeenCalledWith(expect.objectContaining({ title: 'This snippet has several lines; run it from Ops › Run' }))
+    expect(JSON.stringify(vi.mocked(toast).mock.calls)).not.toContain('rm -rf')
+  })
+
+  it('a tab is refused while bracketed paste is off', async () => {
+    sessionStore.set({ sessions: [session()], order: ['sess-1'], activeId: 'sess-1' })
+    await renderTab({ 'snippets:list': [tabbed], 'snippets:render': 'echo a\tb' })
+    await run('Tabbed')
+    expect(fake.terms[0].paste).not.toHaveBeenCalled()
+    expect(vi.mocked(toast)).toHaveBeenCalledWith(expect.objectContaining({ title: 'This snippet has several lines; run it from Ops › Run' }))
+  })
+
+  it('a multi-line snippet is pasted whole when bracketed paste is on', async () => {
+    sessionStore.set({ sessions: [session()], order: ['sess-1'], activeId: 'sess-1' })
+    await renderTab({ 'snippets:list': [multi], 'snippets:render': 'cd /srv\nrm -rf old' })
+    Object.assign(getTerminal('sess-1').term.modes, { bracketedPasteMode: true })
+    await run('Rotate')
+    expect(fake.terms[0].paste).toHaveBeenCalledWith('cd /srv\nrm -rf old')
+    expect(vi.mocked(toast)).toHaveBeenCalledWith(expect.objectContaining({ title: 'Inserted Rotate' }))
+  })
+
+  it('trailing line breaks are dropped so a single line never runs by itself', async () => {
+    sessionStore.set({ sessions: [session()], order: ['sess-1'], activeId: 'sess-1' })
+    await renderTab({ 'snippets:render': 'df -h\n' })
+    await run('Disk usage')
+    expect(fake.terms[0].paste).toHaveBeenCalledWith('df -h')
   })
 })
 
