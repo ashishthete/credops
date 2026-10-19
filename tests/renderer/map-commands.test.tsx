@@ -2,7 +2,7 @@ import './flow-stubs'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { inventoryStore } from '../../src/renderer/src/inventory/store'
+import { inventoryStore, reloadInventory } from '../../src/renderer/src/inventory/store'
 import { pinsStore } from '../../src/renderer/src/map/viewport'
 import { AppShell } from '../../src/renderer/src/shell/AppShell'
 import { resetSessions } from '../../src/renderer/src/terminal/sessions'
@@ -95,6 +95,24 @@ describe('map commands', () => {
     expect(command('Show prod on map').keywords).toContain('Platform')
     unmount()
     expect(titles()).toEqual([])
+  })
+
+  it('follows the inventory: a renamed host and a deleted environment', async () => {
+    await renderShell('/products')
+    mockBridge({
+      'product:list': [platform],
+      'env:list': [prod],
+      'host:list': [{ ...hosts[0], label: 'web-1' }, hosts[1]],
+      'identity:list': [],
+      'vault:list': [defaultVault],
+      'tunnel:list': [],
+      'tunnel:status': [],
+    })
+    await act(() => reloadInventory())
+    expect(titles()).toEqual(['Find on map', 'Reset map layout', 'Show pg on map', 'Show prod on map', 'Show web-1 on map'])
+    await run('Show web-1 on map')
+    expect(at.search).toBe('')
+    expect(focused()).toBe('e:e1/h:h1')
   })
 
   it('Show prod on map scopes the map to that environment', async () => {

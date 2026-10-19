@@ -22,6 +22,39 @@ vi.mock('../../src/renderer/src/ui/motion', async (importOriginal) => ({
   useMotionSafe: () => motion.safe,
 }))
 
+// The real canvas still renders; these spy on the camera, and getViewport can be pinned to put
+// nodes in or out of view.
+type Viewport = { x: number; y: number; zoom: number }
+const cam = vi.hoisted(() => ({
+  setCenter: vi.fn(),
+  zoomIn: vi.fn(),
+  zoomOut: vi.fn(),
+  fitView: vi.fn(),
+  viewport: null as Viewport | null,
+}))
+vi.mock('@xyflow/react', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@xyflow/react')>()
+  return {
+    ...actual,
+    useReactFlow: () => {
+      const real = actual.useReactFlow()
+      return {
+        ...real,
+        setCenter: cam.setCenter,
+        zoomIn: cam.zoomIn,
+        zoomOut: cam.zoomOut,
+        fitView: (...args: Parameters<typeof real.fitView>) => {
+          cam.fitView(...args)
+          return real.fitView(...args)
+        },
+        getViewport: () => cam.viewport ?? real.getViewport(),
+      }
+    },
+  }
+})
+const IN_VIEW: Viewport = { x: 100, y: 100, zoom: 0.01 }
+const OFF_SCREEN: Viewport = { x: -100000, y: -100000, zoom: 1 }
+
 const platform = product({ id: 'p1', name: 'Platform' })
 const prod = environment({ id: 'e1', name: 'Prod', productIds: ['p1'], hosts: [{ hostId: 'h1', role: 'bastion' }, { hostId: 'h2', role: 'db' }] })
 const stage = environment({ id: 'e2', name: 'Stage', productIds: ['p1'], hosts: [{ hostId: 'h1', role: 'app' }] })
@@ -79,6 +112,8 @@ async function key(k: string) {
 beforeEach(() => {
   vi.useFakeTimers()
   motion.safe = true
+  cam.viewport = null
+  for (const spy of [cam.setCenter, cam.zoomIn, cam.zoomOut, cam.fitView]) spy.mockClear()
   inventoryStore.set(null)
   resetTunnels()
   resetSessions()
@@ -187,6 +222,103 @@ describe('map keyboard and screen readers', () => {
     await settle()
     expect(focused()).toBeNull()
     expect(announced()).toBe('')
+  })
+})
+
+describe('map camera and live region', () => {
+  const search = () => screen.getByLabelText('Find on map')
+
+  it('focusing an off-screen node pans to it, instantly under reduced motion', async () => {
+    await renderMap()
+    cam.viewport = OFF_SCREEN
+    canvas().focus()
+    await key('ArrowDown')
+    expect(cam.setCenter).toHaveBeenCalledTimes(1)
+    expect(cam.setCenter.mock.calls[0][2]).toEqual({ zoom: 1, duration: 250 })
+    cleanup()
+
+    motion.safe = false
+    cam.setCenter.mockClear()
+    await renderMap()
+    cam.viewport = OFF_SCREEN
+    canvas().focus()
+    await key('ArrowDown')
+    expect(cam.setCenter).toHaveBeenCalledTimes(1)
+    expect(cam.setCenter.mock.calls[0][2]).toEqual({ zoom: 1, duration: 0 })
+  })
+
+  it('a node already in view is not panned to', async () => {
+    await renderMap()
+    cam.viewport = IN_VIEW
+    canvas().focus()
+    for (const k of ['ArrowDown', 'ArrowRight', 'ArrowRight', 'ArrowDown']) await key(k)
+    expect(focused()).toBe('e:e1/h:h2')
+    expect(cam.setCenter).not.toHaveBeenCalled()
+  })
+
+  it('a node a search zoomed to is still panned to when focused later', async () => {
+    await renderMap()
+    cam.viewport = IN_VIEW
+    fireEvent.change(search(), { target: { value: 'Platform' } })
+    fireEvent.keyDown(search(), { key: 'Enter' })
+    await flush()
+    expect(cam.fitView).toHaveBeenLastCalledWith(expect.objectContaining({ nodes: [{ id: 'p:p1' }] }))
+    fireEvent.change(search(), { target: { value: '' } })
+    await flush()
+    cam.viewport = OFF_SCREEN
+    canvas().focus()
+    await key('ArrowDown')
+    expect(focused()).toBe('p:p1')
+    expect(cam.setCenter).toHaveBeenCalledTimes(1)
+  })
+
+  it('keys typed in the search box neither zoom nor move focus', async () => {
+    await renderMap()
+    search().focus()
+    cam.fitView.mockClear()
+    for (const k of ['/', '+', '=', '-', '0']) {
+      fireEvent.keyDown(search(), { key: k })
+      fireEvent.change(search(), { target: { value: k } })
+      await flush()
+    }
+    expect(document.activeElement).toBe(search())
+    expect(cam.zoomIn).not.toHaveBeenCalled()
+    expect(cam.zoomOut).not.toHaveBeenCalled()
+    expect(cam.fitView).not.toHaveBeenCalled()
+    expect(cam.setCenter).not.toHaveBeenCalled()
+    expect(focused()).toBeNull()
+  })
+
+  it('has one live region, which also announces the search count', async () => {
+    await renderMap()
+    const page = screen.getByRole('heading', { name: 'Map', level: 1 }).closest('header')!.parentElement!
+    expect(page.querySelectorAll('[aria-live]')).toHaveLength(1)
+    expect(page.querySelector('[aria-live]')).toBe(screen.getByTestId('map-announce'))
+    // React Flow's own (assertive) region is off with its keyboard a11y.
+    expect(document.querySelector('.a11y-live-region, [id^="react-flow__aria-live"]')).toBeNull()
+
+    fireEvent.change(search(), { target: { value: 'pg' } })
+    await flush()
+    expect(announced()).toBe('1 match')
+    // The count stays on screen, not as a second region.
+    expect(within(screen.getByRole('toolbar', { name: 'Map tools' })).getByText('1 match')).not.toHaveAttribute('aria-live')
+    canvas().focus()
+    await key('ArrowDown')
+    expect(announced()).toBe('Platform product, 2 environments')
+    fireEvent.change(search(), { target: { value: 'nothing-here' } })
+    await flush()
+    expect(announced()).toBe('0 matches')
+    expect(page.querySelectorAll('[aria-live]')).toHaveLength(1)
+  })
+
+  it('a host placed twice counts its tunnels where they are drawn', async () => {
+    await renderMap()
+    canvas().focus()
+    for (const k of ['ArrowDown', 'ArrowRight', 'ArrowRight']) await key(k)
+    expect(announced()).toBe('web, Bastion in Prod, Not checked, 0 sessions, 1 tunnel')
+    for (const k of ['ArrowLeft', 'ArrowDown', 'ArrowRight']) await key(k)
+    expect(focused()).toBe('e:e2/h:h1')
+    expect(announced()).toBe('web, App in Stage, Not checked, 0 sessions, 0 tunnels')
   })
 })
 

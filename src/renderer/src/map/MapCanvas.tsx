@@ -360,6 +360,11 @@ export const MapCanvas = memo(function MapCanvas({
       left >= VIEW_MARGIN && top >= VIEW_MARGIN && left + box.width * zoom <= width - VIEW_MARGIN && top + box.height * zoom <= height - VIEW_MARGIN
     if (!inView) void flow.setCenter(x + box.width / 2, y + box.height / 2, { zoom, duration: motionSafe ? PAN_MS : 0 })
   }, [focusedId])
+  // A zoom-to only covers the focus change that comes with it, in the next commit; past that, a later
+  // focus on the same node is panned to like any other.
+  useEffect(() => {
+    framing.current = null
+  })
 
   return (
     <EdgeActionsContext.Provider value={edgeActions}>

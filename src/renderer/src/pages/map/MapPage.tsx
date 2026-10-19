@@ -85,14 +85,14 @@ type View = 'map' | 'list'
 const FOCUS_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'])
 
 /**
- * What the live region says about the focused node, from the same data the node draws:
- * `web, Bastion in Prod, Reachable, 1 session, 2 tunnels` or `Prod environment, 5 hosts`.
+ * The map's one live region. It says what the keyboard just focused, from the same data the node
+ * draws (`web, Bastion in Prod, Reachable, 1 session, 2 tunnels`, `Prod environment, 5 hosts`), and
+ * how many matches a search found; whichever changed last.
  */
-function FocusAnnouncer({ node, graph }: { node: MapNode | null; graph: MapGraph | undefined }) {
+function MapAnnouncer({ node, graph, count }: { node: MapNode | null; graph: MapGraph | undefined; count: string | null }) {
   const d = node?.data
   const hostId = d?.kind === 'host' ? d.hostId : ''
   const { sessions, reach } = useHostPresence(hostId)
-  const metas = useTunnelMetas()
   let text = ''
   if (d?.kind === 'product') text = `${d.name} product, ${plural(d.environmentCount, 'environment')}`
   else if (d?.kind === 'environment') text = `${d.environmentId === null ? d.name : `${d.name} environment`}, ${plural(d.hostCount, 'host')}`
@@ -100,12 +100,18 @@ function FocusAnnouncer({ node, graph }: { node: MapNode | null; graph: MapGraph
   else if (d?.kind === 'host') {
     const group = graph?.nodes.find((n) => n.id === node?.parentId)?.data
     const where = group?.kind === 'environment' ? group.name : 'Unassigned'
-    const tunnels = metas.filter((t) => t.hostId === hostId).length
+    // Counted as drawn: a host placed twice has its tunnels on one placement only.
+    const tunnels = graph?.edges.filter((e) => e.data.kind === 'tunnel' && (e.source === node?.id || e.target === node?.id)).length ?? 0
     text = `${d.label}, ${d.role ? ROLE_LABEL[d.role] : 'No role'} in ${where}, ${REACH_TEXT[reach]}, ${plural(sessions, 'session')}, ${plural(tunnels, 'tunnel')}`
   }
+  const [said, setSaid] = useState('')
+  useEffect(() => setSaid(text), [text])
+  useEffect(() => {
+    if (count) setSaid(count)
+  }, [count])
   return (
     <div aria-live="polite" aria-atomic className="sr-only" data-testid="map-announce">
-      {text}
+      {said}
     </div>
   )
 }
@@ -465,7 +471,7 @@ function MapBody() {
               />
             </label>
             {count && (
-              <span aria-live="polite" className="text-[12px] whitespace-nowrap text-muted tabular-nums">
+              <span className="text-[12px] whitespace-nowrap text-muted tabular-nums">
                 {count}
               </span>
             )}
@@ -523,11 +529,11 @@ function MapBody() {
               onPin={onPin}
               ref={canvas}
             />
-            <FocusAnnouncer node={focusedNode} graph={mapped.graph} />
             <DetailPanel selection={live} graph={mapped.graph} onClose={onClose} onFilter={onFilter} />
           </>
         )}
       </div>
+      {toolbarShown && <MapAnnouncer node={view === 'map' ? focusedNode : null} graph={mapped?.graph} count={count} />}
     </div>
   )
 }
