@@ -66,6 +66,8 @@ async function renderCanvas(over: Partial<MapCanvasProps> = {}) {
     selectedId: null,
     dimmed: null,
     highlightId: null,
+    focusedId: null,
+    onCanvasKey: () => false,
     onSelect: () => {},
     onActivate: () => {},
     onEdgeSelect: () => {},
@@ -179,8 +181,8 @@ describe('map canvas', () => {
   it('the canvas is one labelled tab stop', async () => {
     await renderCanvas()
     expect(canvas()).toHaveAttribute('tabindex', '0')
-    expect(canvas()).toHaveAttribute('aria-roledescription', 'map')
-    expect(canvas()).toHaveAttribute('aria-label', 'Topology map')
+    expect(canvas()).toHaveAttribute('aria-roledescription', 'topology map')
+    expect(canvas()).toHaveAttribute('aria-label', 'Topology map, use arrow keys to move between nodes')
   })
 
   it('dimmed and highlighted ids map to their classes', async () => {

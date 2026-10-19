@@ -200,6 +200,22 @@ samp {
   }
 }
 
+/* The keyboard's place on the map, ringed while the canvas has focus; separate from the selection. */
+.react-flow:focus .react-flow__node.od-focused {
+  border-radius: 10px;
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.react-flow:focus .react-flow__node-product.od-focused {
+  border-radius: 9999px;
+}
+
+.react-flow:focus .react-flow__node-environment.od-focused,
+.react-flow:focus .react-flow__node-mac.od-focused {
+  border-radius: 12px;
+}
+
 /* Map edges: React Flow owns the edge paths, so their transitions and hover glow live here. */
 .od-edge {
   transition: stroke 200ms ease-out;

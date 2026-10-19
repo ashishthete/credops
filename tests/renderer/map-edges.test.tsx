@@ -259,6 +259,8 @@ describe('map edges', () => {
           layout={layoutGraph(graph)}
           scopeKey="all"
           selectedId={null}
+          focusedId={null}
+          onCanvasKey={() => false}
           dimmed={null}
           highlightId={null}
           onSelect={() => {}}

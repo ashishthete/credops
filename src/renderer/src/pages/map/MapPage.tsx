@@ -4,9 +4,13 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, use
 import { useNavigate, useSearchParams } from 'react-router'
 import { useInventory, type InventoryData } from '../../inventory/store'
 import { byName } from '../../inventory/tree'
+import { FIND_PARAM, FOCUS_PARAM } from '../../map/commands'
 import { DetailPanel, selectionSubject, type MapSelection } from '../../map/DetailPanel'
-import { parseScope, scopeKey, type MapGraph, type MapScope } from '../../map/graph'
+import { parseScope, scopeKey, type MapGraph, type MapNode, type MapScope } from '../../map/graph'
+import { focusModel, nextFocus } from '../../map/keyboard'
 import { MapCanvas, type MapCanvasHandle } from '../../map/MapCanvas'
+import { MapList } from '../../map/MapList'
+import { REACH_TEXT, useHostPresence } from '../../map/presence'
 import { searchGraph } from '../../map/search'
 import { fullGraph, useMapGraph, useTunnelMetas } from '../../map/useMapGraph'
 import { clearPins, setPin, usePins } from '../../map/viewport'
@@ -18,6 +22,7 @@ import { EmptyState } from '../../ui/EmptyState'
 import { useMotionSafe } from '../../ui/motion'
 import { useShortcut } from '../../ui/shortcuts'
 import { Skeleton } from '../../ui/Skeleton'
+import { ROLE_LABEL } from '../products/ProductView'
 
 const FIT_MS = 300
 const FIT_PADDING = 0.15
@@ -74,6 +79,37 @@ function useSummary(graph: MapGraph | undefined): string | null {
   return `${plural(environments, 'environment')} · ${plural(hosts.size, 'host')} · ${plural(up, 'tunnel')} up`
 }
 
+type View = 'map' | 'list'
+
+/** Keys that move the keyboard's focus around the map. */
+const FOCUS_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'])
+
+/**
+ * What the live region says about the focused node, from the same data the node draws:
+ * `web, Bastion in Prod, Reachable, 1 session, 2 tunnels` or `Prod environment, 5 hosts`.
+ */
+function FocusAnnouncer({ node, graph }: { node: MapNode | null; graph: MapGraph | undefined }) {
+  const d = node?.data
+  const hostId = d?.kind === 'host' ? d.hostId : ''
+  const { sessions, reach } = useHostPresence(hostId)
+  const metas = useTunnelMetas()
+  let text = ''
+  if (d?.kind === 'product') text = `${d.name} product, ${plural(d.environmentCount, 'environment')}`
+  else if (d?.kind === 'environment') text = `${d.environmentId === null ? d.name : `${d.name} environment`}, ${plural(d.hostCount, 'host')}`
+  else if (d?.kind === 'mac') text = `This Mac, ${plural(d.tunnelCount, 'tunnel')}`
+  else if (d?.kind === 'host') {
+    const group = graph?.nodes.find((n) => n.id === node?.parentId)?.data
+    const where = group?.kind === 'environment' ? group.name : 'Unassigned'
+    const tunnels = metas.filter((t) => t.hostId === hostId).length
+    text = `${d.label}, ${d.role ? ROLE_LABEL[d.role] : 'No role'} in ${where}, ${REACH_TEXT[reach]}, ${plural(sessions, 'session')}, ${plural(tunnels, 'tunnel')}`
+  }
+  return (
+    <div aria-live="polite" aria-atomic className="sr-only" data-testid="map-announce">
+      {text}
+    </div>
+  )
+}
+
 export function MapPage() {
   return (
     <ReactFlowProvider>
@@ -96,18 +132,31 @@ function MapBody() {
   const graph = mapped?.graph
   const summary = useSummary(graph)
   const [selection, setSelection] = useState<MapSelection | null>(null)
-  // Where keyboard focus belongs after the selected host vanishes: its group, if that's still drawn (Task 8 reads it).
-  const focusAfterRemoval = useRef<string | null>(null)
   const empty = data !== null && data.hosts.length === 0 && data.products.length === 0
+  const view: View = params.get('view') === 'list' ? 'list' : 'map'
 
   // A selection whose node or edge has left the graph (deleted, or filtered out) closes the panel.
   const live = graph && selectionSubject(selection, graph) ? selection : null
   useEffect(() => {
-    if (!graph || !selection || live) return
-    const group = selection.kind === 'node' && selection.id.includes('/h:') ? selection.id.slice(0, selection.id.indexOf('/h:')) : null
-    focusAfterRemoval.current = group && graph.nodes.some((n) => n.id === group) ? group : null
-    setSelection(null)
+    if (graph && selection && !live) setSelection(null)
   }, [graph, selection, live])
+
+  // Keyboard focus: separate from selection, and tied to the scope it was set in, so another scope
+  // starts with none. It is checked against the target graph, never against what is still leaving.
+  const model = useMemo(() => (graph ? focusModel(graph) : null), [graph])
+  const [focus, setFocusState] = useState<{ scope: string; id: string | null }>({ scope: key, id: null })
+  const focusedId = focus.scope === key ? focus.id : null
+  const setFocus = useCallback((id: string | null) => setFocusState({ scope: key, id }), [key])
+  const focusedNode = useMemo(() => (focusedId && graph?.nodes.find((n) => n.id === focusedId)) || null, [graph, focusedId])
+  // A focused node that leaves hands focus to its parent, if that is still drawn, else to the first node.
+  const lastModel = useRef(model)
+  useEffect(() => {
+    const before = lastModel.current
+    lastModel.current = model
+    if (!model || !focusedId || focusedId in model.parent) return
+    const up = before?.parent[focusedId]
+    setFocus(up && up in model.parent ? up : (model.order[0] ?? null))
+  }, [model, focusedId, setFocus])
 
   const onSelect = useCallback((id: string | null) => setSelection(id ? { kind: 'node', id } : null), [])
   // Only tunnels have a panel; a jump edge click does nothing.
@@ -118,6 +167,7 @@ function MapBody() {
   const onFilter = useCallback((next: MapScope) => setParams((p) => scopeParams(next, p)), [setParams])
   const onPin = useCallback((id: string, pos: { x: number; y: number }) => setPin(key, id, pos), [key])
   const canvas = useRef<MapCanvasHandle>(null)
+  const stage = useRef<HTMLDivElement>(null)
 
   // Filters: the selects show what the URL asks for, when it names something that exists.
   const productId = data?.products.some((p) => p.id === params.get('product')) ? params.get('product')! : ''
@@ -159,6 +209,7 @@ function MapBody() {
   const [highlightId, setHighlightId] = useState<string | null>(null)
   const lastFound = useRef<string | null>(null)
   const keepSearchFocus = useRef(false)
+  const keepCanvasFocus = useRef(false)
   const [pendingZoom, setPendingZoom] = useState<string | null>(null)
   const zoomTo = useCallback((id: string) => {
     lastFound.current = id
@@ -167,6 +218,18 @@ function MapBody() {
     setHighlightId(id)
     canvas.current?.zoomTo(id)
   }, [])
+  // Show on map (the list, a host's page, the palette): zoom to the node, select it and put the
+  // keyboard's focus there. It waits for the canvas, which the list view doesn't draw.
+  const [pendingReveal, setPendingReveal] = useState<string | null>(null)
+  useEffect(() => {
+    if (!pendingReveal || view !== 'map' || !canvas.current || !graph?.nodes.some((n) => n.id === pendingReveal)) return
+    const id = pendingReveal
+    setPendingReveal(null)
+    setFocus(id)
+    setSelection({ kind: 'node', id })
+    setHighlightId(id)
+    canvas.current.zoomTo(id)
+  }, [pendingReveal, view, graph, setFocus])
   useEffect(() => {
     if (!highlightId) return
     const timer = setTimeout(() => setHighlightId(null), HIGHLIGHT_MS)
@@ -175,10 +238,64 @@ function MapBody() {
   // The panel takes focus when it opens (its effect runs first); hand it back to the search box. This
   // runs after every commit, so the request never outlives the zoom that made it.
   useEffect(() => {
-    if (!keepSearchFocus.current) return
-    keepSearchFocus.current = false
-    searchBox.current?.focus()
+    if (keepSearchFocus.current) {
+      keepSearchFocus.current = false
+      searchBox.current?.focus()
+    } else if (keepCanvasFocus.current) {
+      // A panel opened from the keyboard leaves focus on the canvas, so Enter again connects.
+      keepCanvasFocus.current = false
+      stage.current?.querySelector<HTMLElement>('.react-flow')?.focus()
+    }
   })
+
+  const setView = useCallback(
+    (next: View) =>
+      setParams((p) => {
+        const out = new URLSearchParams(p)
+        if (next === 'list') out.set('view', 'list')
+        else out.delete('view')
+        return out
+      }),
+    [setParams],
+  )
+  const showOnMap = useCallback(
+    (id: string) => {
+      setView('map')
+      setPendingReveal(id)
+    },
+    [setView],
+  )
+
+  // Entry points from elsewhere, read once and then dropped from the URL: `focus` shows a host's first
+  // placement; `find` puts the caret in the search box.
+  useEffect(() => {
+    const hostId = params.get(FOCUS_PARAM)
+    if (hostId === null || !graph) return
+    setParams(
+      (p) => {
+        const out = new URLSearchParams(p)
+        out.delete(FOCUS_PARAM)
+        out.delete('view')
+        return out
+      },
+      { replace: true },
+    )
+    const id = graph.placementsByHost[hostId]?.[0]
+    if (id) setPendingReveal(id)
+  }, [params, graph, setParams])
+  const toolbarShown = !!data && !empty
+  useEffect(() => {
+    if (!params.has(FIND_PARAM) || !toolbarShown) return
+    setParams(
+      (p) => {
+        const out = new URLSearchParams(p)
+        out.delete(FIND_PARAM)
+        return out
+      },
+      { replace: true },
+    )
+    searchBox.current?.focus()
+  }, [params, toolbarShown, setParams])
   // A match outside the filter: the filter is cleared first, and the zoom waits for the wider graph.
   useEffect(() => {
     if (pendingZoom && graph?.nodes.some((n) => n.id === pendingZoom)) {
@@ -227,6 +344,56 @@ function MapBody() {
     else if (d) void latest.flow.fitView({ nodes: [{ id }], duration: latest.motionSafe ? FIT_MS : 0, padding: FIT_PADDING })
   }, [])
 
+  // Keys on the canvas: arrows walk the hierarchy, Enter or Space opens the panel (Enter again on a
+  // host connects), Escape closes the panel and then lets go of focus, `/` jumps to search. Read through
+  // a ref, so the canvas keeps one handler.
+  const keysWith = useRef({ model, focusedId, focusedNode, live, connect, setFocus })
+  useLayoutEffect(() => {
+    keysWith.current = { model, focusedId, focusedNode, live, connect, setFocus }
+  })
+  const onCanvasKey = useCallback((e: KeyboardEvent) => {
+    const { model, focusedId, focusedNode, live, connect, setFocus } = keysWith.current
+    if (e.key === '/') {
+      searchBox.current?.focus()
+      return true
+    }
+    if (FOCUS_KEYS.has(e.key)) {
+      if (model) setFocus(nextFocus(model, focusedId, e.key))
+      return true
+    }
+    if (e.key === 'Enter' || e.key === ' ') {
+      if (!focusedNode) return false
+      const d = focusedNode.data
+      if (e.key === 'Enter' && d.kind === 'host' && live?.kind === 'node' && live.id === focusedNode.id) {
+        void connect(d.hostId, d.environmentId ?? undefined)
+      } else {
+        keepCanvasFocus.current = true
+        setSelection({ kind: 'node', id: focusedNode.id })
+      }
+      return true
+    }
+    if (e.key === 'Escape') {
+      // An open panel closes on its own Escape handler; with none open, Escape lets go of focus.
+      if (live || !focusedId) return false
+      setFocus(null)
+      return true
+    }
+    return false
+  }, [])
+
+  // The list hides what the search doesn't find, rather than fading it: a host stays when it, its
+  // environment or its product matches.
+  const listGraph = useMemo(() => {
+    if (!graph || !model || !searching) return graph
+    const keep = new Set(found.matches)
+    const kept = (id: string): boolean => {
+      for (let at: string | null = id; at; at = model.parent[at] ?? null) if (keep.has(at)) return true
+      return false
+    }
+    return { ...graph, nodes: graph.nodes.filter((n) => n.data.kind !== 'host' || kept(n.id)) }
+  }, [graph, model, searching, found])
+  const onListConnect = useCallback((hostId: string, environmentId: string | null) => void connect(hostId, environmentId ?? undefined), [connect])
+
   return (
     <div className="flex h-full flex-col">
       <header className="app-drag flex h-16 shrink-0 items-end justify-between gap-4 px-8 pb-3">
@@ -237,6 +404,21 @@ function MapBody() {
         {/* The toolbar: scope and search (Task 6), layout and export (Task 8). */}
         {data && !empty && (
           <div role="toolbar" aria-label="Map tools" className="flex min-w-0 items-center gap-2">
+            <div role="group" aria-label="View" className="flex h-7 shrink-0 items-center rounded-lg border border-line bg-surface-2/60 p-0.5">
+              {(['map', 'list'] as const).map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  aria-pressed={view === v}
+                  onClick={() => setView(v)}
+                  className={`h-full rounded-md px-2.5 text-[12px] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-accent ${
+                    view === v ? 'bg-surface text-fg shadow-sm' : 'text-muted hover:text-fg'
+                  }`}
+                >
+                  {v === 'map' ? 'Map' : 'List'}
+                </button>
+              ))}
+            </div>
             <select aria-label="Product" value={productId} onChange={(e) => setFilter(e.target.value, environmentId)} className={FIELD}>
               <option value="">All products</option>
               {products.map((p) => (
@@ -287,19 +469,21 @@ function MapBody() {
                 {count}
               </span>
             )}
-            {Object.keys(pins).length > 0 && (
+            {view === 'map' && Object.keys(pins).length > 0 && (
               <Button variant="ghost" size="sm" icon={<RotateCcw aria-hidden className="size-3.5" />} onClick={() => clearPins(key)}>
                 Reset layout
               </Button>
             )}
-            <Button variant="ghost" size="sm" icon={<Maximize aria-hidden className="size-3.5" />} onClick={fitAll}>
-              Fit view
-            </Button>
+            {view === 'map' && (
+              <Button variant="ghost" size="sm" icon={<Maximize aria-hidden className="size-3.5" />} onClick={fitAll}>
+                Fit view
+              </Button>
+            )}
           </div>
         )}
       </header>
       {/* data-panel: the minimap steps aside while the detail panel is open (tokens.css). */}
-      <div className="relative min-h-0 flex-1 overflow-hidden border-t border-line" data-panel={live ? 'open' : undefined}>
+      <div ref={stage} className="relative min-h-0 flex-1 overflow-hidden border-t border-line" data-panel={live && view === 'map' ? 'open' : undefined}>
         {!data || !mapped ? (
           <div aria-label="Loading map" aria-busy className="h-full p-8">
             <Skeleton className="h-full w-full rounded-xl" />
@@ -320,6 +504,8 @@ function MapBody() {
               </>
             }
           />
+        ) : view === 'list' ? (
+          <MapList graph={listGraph ?? mapped.graph} onConnect={onListConnect} onSelect={showOnMap} />
         ) : (
           <>
             <MapCanvas
@@ -329,12 +515,15 @@ function MapBody() {
               selectedId={live?.id ?? null}
               dimmed={dimmed}
               highlightId={highlightId}
+              focusedId={focusedId}
+              onCanvasKey={onCanvasKey}
               onSelect={onSelect}
               onActivate={onActivate}
               onEdgeSelect={onEdgeSelect}
               onPin={onPin}
               ref={canvas}
             />
+            <FocusAnnouncer node={focusedNode} graph={mapped.graph} />
             <DetailPanel selection={live} graph={mapped.graph} onClose={onClose} onFilter={onFilter} />
           </>
         )}

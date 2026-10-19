@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router'
 import { useInventoryCommands } from '../inventory/commands'
 import { loadInventory } from '../inventory/store'
+import { useMapCommands } from '../map/commands'
 import { AuditPage } from '../pages/AuditPage'
 import { HostsPage } from '../pages/hosts/HostsPage'
 import { MapPage } from '../pages/map/MapPage'
@@ -35,6 +36,7 @@ export function AppShell() {
   useSectionNavigation()
   useInventoryCommands()
   useTunnelCommands()
+  useMapCommands()
   // The shell mounts only while unlocked, so every unlock reloads (F22).
   useEffect(() => {
     void loadInventory()

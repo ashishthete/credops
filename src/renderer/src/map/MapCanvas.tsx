@@ -6,6 +6,7 @@ import {
   ReactFlow,
   applyNodeChanges,
   useReactFlow,
+  useStore,
   type NodeChange,
   type Viewport,
 } from '@xyflow/react'
@@ -48,6 +49,13 @@ export interface MapCanvasProps {
   /** Nodes drawn faded (a search or filter elsewhere); null fades nothing. */
   dimmed: Set<string> | null
   highlightId: string | null
+  /** The keyboard's place on the map, separate from selection: ringed, and panned into view. */
+  focusedId: string | null
+  /**
+   * Keys pressed on the canvas itself, beyond its own zoom keys (`+`, `-`, `0`); returns whether the
+   * page handled it.
+   */
+  onCanvasKey: (e: KeyboardEvent) => boolean
   onSelect: (id: string | null) => void
   onActivate: (id: string) => void
   onEdgeSelect: (id: string) => void
@@ -60,6 +68,9 @@ const ZOOM_MS = 200
 const FIT_PADDING = 0.15
 const ZOOM_TO_MS = 450
 const SAVE_DEBOUNCE_MS = 300
+const PAN_MS = 250
+// A focused node closer than this to the canvas edge counts as out of view.
+const VIEW_MARGIN = 24
 const FIT_OPTIONS = { padding: FIT_PADDING }
 
 /** The minimap tints everything by its environment; groups stay faint so their hosts read on top. */
@@ -111,6 +122,7 @@ type DomAttributes = MapFlowNode['domAttributes']
 const RELATED = { 'data-related': '' } as DomAttributes
 const DIMMED = { 'data-dimmed': 'true' } as DomAttributes
 const DIMMED_RELATED = { 'data-dimmed': 'true', 'data-related': '' } as DomAttributes
+const focusedAttrs = (attrs: DomAttributes): DomAttributes => ({ ...attrs, 'data-focused': 'true' }) as DomAttributes
 
 /** A node or edge on its way out, still faded as it was drawn; the transition has already made it inert. */
 function fadeLeaving<T extends MapFlowNode | MapFlowEdge>(x: T): T {
@@ -153,6 +165,8 @@ export const MapCanvas = memo(function MapCanvas({
   selectedId,
   dimmed,
   highlightId,
+  focusedId,
+  onCanvasKey,
   onSelect,
   onActivate,
   onEdgeSelect,
@@ -221,15 +235,20 @@ export const MapCanvas = memo(function MapCanvas({
         const selected = n.id === selectedId
         const faded = !!dimmed?.has(n.id)
         const lit = highlightId === n.id
+        // A leaving copy is handled above, so the keyboard's ring only ever lands on a node that stays.
+        const focused = focusedId === n.id
         // The ring plays once with motion, and simply shows under reduced motion.
-        const className = [n.className, faded && 'od-dimmed', lit && 'od-highlight', lit && motionSafe && 'od-ring'].filter(Boolean).join(' ') || undefined
+        const className =
+          [n.className, faded && 'od-dimmed', lit && 'od-highlight', lit && motionSafe && 'od-ring', focused && 'od-focused'].filter(Boolean).join(' ') ||
+          undefined
         const near = !!related?.has(n.id)
-        const domAttributes = faded ? (near ? DIMMED_RELATED : DIMMED) : near ? RELATED : undefined
+        const plain = faded ? (near ? DIMMED_RELATED : DIMMED) : near ? RELATED : undefined
+        const domAttributes = focused ? focusedAttrs(plain) : plain
         return !!n.selected === selected && n.className === className && n.domAttributes === domAttributes
           ? n
           : { ...n, selected, className, domAttributes }
       }),
-    [local.nodes, selectedId, dimmed, highlightId, related, motionSafe],
+    [local.nodes, selectedId, dimmed, highlightId, focusedId, related, motionSafe],
   )
 
   useEffect(() => {
@@ -250,10 +269,13 @@ export const MapCanvas = memo(function MapCanvas({
   // Input wins: a node taken hold of mid-glide stops gliding, and its drop lands where it was let go.
   const onNodeDragStart = useCallback((_: unknown, n: MapFlowNode) => cancelGlide(n.id), [])
 
+  // The node a zoom-to is framing; keeping focus in view leaves that one to the zoom.
+  const framing = useRef<string | null>(null)
   useImperativeHandle(
     ref,
     () => ({
       zoomTo(id) {
+        framing.current = id
         const { flow, motionSafe } = latest.current
         void flow.fitView({ nodes: [{ id }], padding: 0.6, maxZoom: 1.25, duration: motionSafe ? ZOOM_TO_MS : 0 })
       },
@@ -305,11 +327,39 @@ export const MapCanvas = memo(function MapCanvas({
       if (e.key === '+' || e.key === '=') void flow.zoomIn({ duration })
       else if (e.key === '-') void flow.zoomOut({ duration })
       else if (e.key === '0') void flow.fitView({ duration, padding: FIT_PADDING })
-      else return
+      else if (!onCanvasKey(e)) return
       e.preventDefault()
     },
-    [flow, motionSafe],
+    [flow, motionSafe, onCanvasKey],
   )
+
+  // The focused node is kept in view. Its place comes from the layout, where it is headed, not from a
+  // glide's frame, so a node mid-glide is framed where it lands.
+  const width = useStore((s) => s.width)
+  const height = useStore((s) => s.height)
+  const placed = useRef({ graph, layout, width, height })
+  useLayoutEffect(() => {
+    placed.current = { graph, layout, width, height }
+  })
+  useEffect(() => {
+    const framed = framing.current === focusedId
+    framing.current = null
+    if (!focusedId || framed) return
+    const { graph, layout, width, height } = placed.current
+    const box = layout.positions[focusedId]
+    if (!box || !width || !height) return
+    const parentId = graph.nodes.find((n) => n.id === focusedId)?.parentId
+    const offset = parentId ? layout.positions[parentId] : undefined
+    const x = box.x + (offset?.x ?? 0)
+    const y = box.y + (offset?.y ?? 0)
+    const { flow, motionSafe } = latest.current
+    const { x: vx, y: vy, zoom } = flow.getViewport()
+    const left = x * zoom + vx
+    const top = y * zoom + vy
+    const inView =
+      left >= VIEW_MARGIN && top >= VIEW_MARGIN && left + box.width * zoom <= width - VIEW_MARGIN && top + box.height * zoom <= height - VIEW_MARGIN
+    if (!inView) void flow.setCenter(x + box.width / 2, y + box.height / 2, { zoom, duration: motionSafe ? PAN_MS : 0 })
+  }, [focusedId])
 
   return (
     <EdgeActionsContext.Provider value={edgeActions}>
@@ -349,8 +399,8 @@ export const MapCanvas = memo(function MapCanvas({
         colorMode="dark"
         // These land on React Flow's own role="application" root, the canvas's one tab stop.
         tabIndex={0}
-        aria-roledescription="map"
-        aria-label="Topology map"
+        aria-roledescription="topology map"
+        aria-label="Topology map, use arrow keys to move between nodes"
         onKeyDown={onKeyDown}
       >
         <Background variant={BackgroundVariant.Dots} />

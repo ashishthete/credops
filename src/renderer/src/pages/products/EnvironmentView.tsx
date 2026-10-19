@@ -1,10 +1,12 @@
 import { motion } from 'framer-motion'
 import { KeyRound, Link2, Lock, Network, Pencil, Plus, Route, Server, SquareTerminal, Trash2, Unlink, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
+import { useNavigate } from 'react-router'
 import { DEFAULT_SSH_PORT, type EnvironmentMeta } from '../../../../shared/inventory'
 import { sourceLabel } from '../../inventory/choices'
 import type { InventoryData } from '../../inventory/store'
 import type { NodeKey } from '../../inventory/tree'
+import { showEnvironmentOnMapPath } from '../../map/commands'
 import { useConnect } from '../../terminal/connect'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
@@ -28,6 +30,7 @@ interface EnvironmentViewProps {
 export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onNewHost, onEdit, onDelete, removeFrom }: EnvironmentViewProps) {
   const motionSafe = useMotionSafe()
   const { connect } = useConnect()
+  const navigate = useNavigate()
   const hostById = new Map(data.hosts.map((h) => [h.id, h]))
   const identity = env.defaultIdentityId ? data.identities.find((i) => i.id === env.defaultIdentityId) : undefined
   const jump = env.defaultJumpHostId ? hostById.get(env.defaultJumpHostId) : undefined
@@ -70,6 +73,9 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
             </Button>
             <Button size="sm" variant="ghost" icon={<Pencil aria-hidden className="size-3.5" />} onClick={onEdit}>
               Edit
+            </Button>
+            <Button size="sm" variant="ghost" icon={<Network aria-hidden className="size-3.5" />} onClick={() => navigate(showEnvironmentOnMapPath(env.id))}>
+              Show on map
             </Button>
             <RowMenu
               label={`${env.name} options`}

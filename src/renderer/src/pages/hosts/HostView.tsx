@@ -1,8 +1,10 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { Cable, Check, Layers, Pencil, SquareTerminal, StickyNote, Trash2, Vault, X } from 'lucide-react'
+import { Cable, Check, Layers, Network, Pencil, SquareTerminal, StickyNote, Trash2, Vault, X } from 'lucide-react'
 import { useRef, useState, type ReactNode } from 'react'
+import { useNavigate } from 'react-router'
 import type { EnvironmentMeta, HostMeta } from '../../../../shared/inventory'
 import { inv, inventoryStore, useInventory, type InventoryData } from '../../inventory/store'
+import { showHostOnMapPath } from '../../map/commands'
 import { useConnect } from '../../terminal/connect'
 import { Button } from '../../ui/Button'
 import { ConfirmDialog, RowMenu, useMenuPopover, type ConfirmRequest } from '../../ui/common'
@@ -30,6 +32,7 @@ export function HostView({ hostId, environmentId, onDeleted }: HostViewProps) {
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   const [context, setContext] = useState<string | null>(environmentId ?? null)
   const { connect } = useConnect()
+  const navigate = useNavigate()
   const host = data?.hosts.find((h) => h.id === hostId)
 
   if (!data) {
@@ -98,6 +101,7 @@ export function HostView({ hostId, environmentId, onDeleted }: HostViewProps) {
               label={`${host.label} options`}
               items={[
                 { label: 'Edit', icon: Pencil, run: () => setEditing(true) },
+                { label: 'Show on map', icon: Network, run: () => navigate(showHostOnMapPath(host.id)) },
                 { label: 'Delete', icon: Trash2, run: askDelete, danger: true },
               ]}
             />

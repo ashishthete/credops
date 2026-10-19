@@ -1,9 +1,11 @@
 import { motion } from 'framer-motion'
-import { Layers, Link2, Lock, Pencil, Plus, Trash2, Unlink } from 'lucide-react'
+import { Layers, Link2, Lock, Network, Pencil, Plus, Trash2, Unlink } from 'lucide-react'
 import type { ReactNode } from 'react'
+import { useNavigate } from 'react-router'
 import type { EnvironmentMeta, ProductMeta } from '../../../../shared/inventory'
 import type { InventoryData } from '../../inventory/store'
 import { ROLE_ORDER } from '../../inventory/tree'
+import { showProductOnMapPath } from '../../map/commands'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
 import { plural, RowMenu } from '../../ui/common'
@@ -48,6 +50,7 @@ interface ProductViewProps {
 export function ProductView({ product, data, stagger, onOpen, onNewEnvironment, onEdit, onDelete, onRemoveEnvironment }: ProductViewProps) {
   const envs = data.environments.filter((e) => e.productIds.includes(product.id)).sort((a, b) => a.name.localeCompare(b.name))
   const productName = new Map(data.products.map((p) => [p.id, p.name]))
+  const navigate = useNavigate()
 
   return (
     <>
@@ -62,6 +65,9 @@ export function ProductView({ product, data, stagger, onOpen, onNewEnvironment, 
             </Button>
             <Button size="sm" variant="ghost" icon={<Pencil aria-hidden className="size-3.5" />} onClick={onEdit}>
               Edit
+            </Button>
+            <Button size="sm" variant="ghost" icon={<Network aria-hidden className="size-3.5" />} onClick={() => navigate(showProductOnMapPath(product.id))}>
+              Show on map
             </Button>
             <RowMenu label={`${product.name} options`} items={[{ label: 'Delete', icon: Trash2, run: onDelete, danger: true }]} />
           </>
