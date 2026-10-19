@@ -11,7 +11,7 @@ import type { AuditLog } from '../audit/audit-log'
 import type { Db } from '../db/connection'
 import { inTransaction } from '../db/tx'
 import type { VaultService } from '../vault/vault-service'
-import { checkColor, checkName, checkPort, environmentMeta, hostRow } from './rows'
+import { checkColor, checkName, checkPort, environmentMeta, environmentMetas, hostRow } from './rows'
 
 const exists = (db: Db, table: string, id: string): boolean => db.prepare(`SELECT 1 FROM ${table} WHERE id = ?`).get(id) !== undefined
 
@@ -25,8 +25,7 @@ export class EnvironmentStore {
 
   /** Works while locked. Environments with no product are included (shown as unassigned). */
   list(): EnvironmentMeta[] {
-    const rows = this.db.prepare('SELECT id FROM environments ORDER BY name COLLATE NOCASE, id').all() as { id: string }[]
-    return rows.map((r) => environmentMeta(this.db, r.id))
+    return environmentMetas(this.db)
   }
 
   create(input: EnvironmentInput): EnvironmentMeta {

@@ -12,7 +12,7 @@ import type { AuditLog } from '../audit/audit-log'
 import type { Db } from '../db/connection'
 import { inTransaction } from '../db/tx'
 import type { VaultService } from '../vault/vault-service'
-import { checkAddress, checkEnvVars, checkKeepalive, checkLabel, checkPort, checkTags, hostMeta, hostRow } from './rows'
+import { checkAddress, checkEnvVars, checkKeepalive, checkLabel, checkPort, checkTags, hostMeta, hostMetas, hostRow } from './rows'
 
 const labelOf = (db: Db, id: string): string => hostRow(db, id).label
 
@@ -47,8 +47,7 @@ export class HostStore {
 
   /** Works while locked: labels and addresses are not secret. */
   list(): HostMeta[] {
-    const rows = this.db.prepare('SELECT id FROM hosts ORDER BY label COLLATE NOCASE, id').all() as { id: string }[]
-    return rows.map((r) => hostMeta(this.db, r.id))
+    return hostMetas(this.db)
   }
 
   create(input: HostInput, opts: { auditDetails?: Record<string, unknown> } = {}): HostMeta {

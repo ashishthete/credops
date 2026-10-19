@@ -13,7 +13,7 @@ import { KnownHostsDialog, closeKnownHosts, openKnownHosts } from '../pages/term
 import { PromptHost } from '../pages/terminals/PromptHost'
 import { TerminalDeck } from '../pages/terminals/TerminalDeck'
 import { TunnelsPage } from '../pages/tunnels/TunnelsPage'
-import { VaultsPage } from '../pages/vaults/VaultsPage'
+import { resetVaultsCache, VaultsPage } from '../pages/vaults/VaultsPage'
 import { disposeAll } from '../terminal/registry'
 import { resetSessions, startSessionSync } from '../terminal/sessions'
 import { useTunnelCommands } from '../tunnels/commands'
@@ -62,6 +62,7 @@ export function AppShell() {
       // Events stop while unmounted (the vault locked); the next mount's session list is the truth.
       resetSessions()
       resetTunnels()
+      resetVaultsCache()
       closeKnownHosts()
     }
   }, [])
