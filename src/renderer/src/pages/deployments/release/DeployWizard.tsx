@@ -91,8 +91,10 @@ export function DeployWizard({ environmentId, preselect, onClose }: { environmen
   const held = useRef<string | null>(null)
   // Bumped by every preflight run and every drop; a preflight that answers for an older attempt is discarded.
   const attemptRef = useRef(0)
-  const mounted = useRef(false)
-  const discard = (id: string) => void api.invoke('release:discard', id).catch(() => {})
+  // Main aborts a preflight still checking, so this only fails when the release moved on (started, locked
+  // vault, IPC gone). Nothing to show for a release the user already left; the log line names no release.
+  const discard = (id: string) =>
+    void api.invoke('release:discard', id).catch(() => console.warn("Couldn't discard an unused preflight release"))
   const drop = () => {
     attemptRef.current++
     const id = held.current
@@ -101,13 +103,8 @@ export function DeployWizard({ environmentId, preselect, onClose }: { environmen
     closeRelease(id)
     discard(id)
   }
-  useEffect(() => {
-    mounted.current = true
-    return () => {
-      mounted.current = false
-      drop()
-    }
-  }, [])
+  // Unmount drops too, which bumps the attempt: a preflight still in flight is discarded when it answers.
+  useEffect(() => drop, [])
 
   const close = () => {
     if (starting) return
@@ -169,7 +166,7 @@ export function DeployWizard({ environmentId, preselect, onClose }: { environmen
       },
     )
     // Closed, rewound or run again meanwhile: this release was never held, so it goes now.
-    if (token !== attemptRef.current || !mounted.current) {
+    if (token !== attemptRef.current) {
       if (out) discard(out.releaseId)
       return
     }

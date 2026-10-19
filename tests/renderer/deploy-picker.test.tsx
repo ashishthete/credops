@@ -1,7 +1,7 @@
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { checkoutNotice, pickerGroups, selectionRequest } from '../../src/renderer/src/deploy/picker'
 import { resetReleases } from '../../src/renderer/src/deploy/releases'
 import { loadDeploy, resetDeploy } from '../../src/renderer/src/deploy/store'
@@ -330,6 +330,26 @@ describe('deploy wizard', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     expect(calls(invoke, 'release:discard').map((c) => c[1])).toEqual([REL, REL])
     expect(closed()).toBe(1)
+  })
+
+  it('a refused discard stays out of the UI and logs no release detail', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const { user, dialog, invoke } = await mount({ preselect: ['s1'] })
+      const base = invoke.getMockImplementation()!
+      invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+        if (channel === 'release:discard') throw new Error(`This release is busy: ${args[0] as string}`)
+        return base(channel)
+      })
+      await preflight(user, dialog)
+      await user.click(within(dialog).getByRole('button', { name: 'Back' }))
+      await waitFor(() => expect(warn).toHaveBeenCalledTimes(1))
+      expect(warn.mock.calls[0]).toEqual(["Couldn't discard an unused preflight release"])
+      expect(within(dialog).queryByText(/busy/)).not.toBeInTheDocument()
+      expect(within(dialog).getByRole('button', { name: 'Run preflight' })).toBeInTheDocument()
+    } finally {
+      warn.mockRestore()
+    }
   })
 })
 

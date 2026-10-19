@@ -645,18 +645,40 @@ export class ReleaseService {
     if (this.live.has(releaseId) || !allowed.includes(now)) throw new DeployError('INVALID_STATE', `This release is ${now}`)
   }
 
+  /**
+   * Ends a ready or blocked release. A release whose first preflight is still checking is aborted and settled
+   * first: the wizard drops a preflight it no longer wants as soon as `release:preflight` answers, which is
+   * always while the checks run. Any other live release (a start, a break-lock re-check) stays busy.
+   */
   async discard(releaseId: string): Promise<void> {
     this.d.vault.assertUnlocked()
     const rel = this.d.releases.get(releaseId)
-    if (this.live.has(releaseId)) throw new DeployError('INVALID_STATE', 'This release is busy')
-    if (rel.status !== 'ready' && rel.status !== 'blocked') throw new DeployError('INVALID_STATE', `A ${rel.status} release cannot be discarded`)
+    const checking = (): Live | null => {
+      const live = this.live.get(releaseId)
+      if (!live) return null
+      if (live.phase !== 'preflight' || this.d.releases.get(releaseId).status !== 'preflight') throw new DeployError('INVALID_STATE', 'This release is busy')
+      return live
+    }
+    if (!checking() && rel.status !== 'ready' && rel.status !== 'blocked') throw new DeployError('INVALID_STATE', `A ${rel.status} release cannot be discarded`)
     const env = environmentMeta(this.d.db, rel.environmentId)
     await this.guard('deploy.edit', 'release.discard', env, [], releaseId)
     // Re-check after the await: a start that began meanwhile has registered and moved the row to running.
+    const live = checking()
+    let settled: ReleaseStatus[] = ['ready', 'blocked']
+    if (live) {
+      // runPreflight sees cancelRequested once its run returns and ends the row cancelled; once `done`
+      // settles it can no longer write ready or blocked, so the discarded status below is final.
+      this.abort(live)
+      await live.done
+      settled = ['ready', 'blocked', 'cancelled']
+    }
     const now = this.d.releases.get(releaseId).status
-    if (this.live.has(releaseId) || (now !== 'ready' && now !== 'blocked')) throw new DeployError('INVALID_STATE', 'This release is busy')
-    this.push(releaseId, { type: 'run.finished', status: 'cancelled' })
-    this.flush()
+    if (this.live.has(releaseId) || !settled.includes(now)) throw new DeployError('INVALID_STATE', 'This release is busy')
+    // An aborted preflight already closed its stream as cancelled.
+    if (now !== 'cancelled') {
+      this.push(releaseId, { type: 'run.finished', status: 'cancelled' })
+      this.flush()
+    }
     this.d.releases.setStatus(releaseId, 'discarded', { finishedAt: this.d.now().toISOString() })
     this.emitState(releaseId)
     this.auditRelease('release.discard', 'success', releaseId, env.name, rel.version ?? 'release', {})

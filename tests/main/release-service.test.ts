@@ -843,6 +843,84 @@ describe('ReleaseService', () => {
     expect(r.runner.kinds.filter((k) => k === 'release').length).toBeLessThanOrEqual(1)
   })
 
+  it('discard during preflight aborts the checks and ends the release discarded', async () => {
+    const r = await rig()
+    const g = gate()
+    r.runner.on.preflight = async () => {
+      await g.p
+    }
+    r.runner.onCancel = () => g.open()
+    const d = dep(r, 'api')
+    const { releaseId: id } = await r.svc.preflight({ environmentId: r.f.staging.id, serviceIds: tracked(r, d).map((s) => s.id), bump: 'none', options: DEFAULT_RELEASE_OPTIONS })
+    expect(r.svc.detail(id).status).toBe('preflight')
+    await r.svc.discard(id)
+    expect(r.runner.cancels).toHaveLength(1)
+    expect(r.svc.detail(id).status).toBe('discarded')
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).status).toBe('discarded')
+    expect(r.states.filter((x) => x === `${id}:ready` || x === `${id}:blocked`)).toEqual([])
+    expect(r.f.db.prepare("SELECT count(*) AS n FROM releases WHERE status IN ('ready', 'blocked', 'preflight')").get()).toEqual({ n: 0 })
+    expect(audits(r, 'release.discard')).toHaveLength(1)
+    // The stream closes once.
+    expect(r.svc.events(id, 0).filter((e) => e.type === 'run.finished')).toHaveLength(1)
+  })
+
+  it('discard during preflight still ends discarded when the checks finish at the same moment', async () => {
+    for (const blocked of [false, true]) {
+      const r = await rig()
+      const g = gate()
+      if (blocked) r.runner.checks = [{ id: 'disk', deploymentId: null, hostId: r.f.host.id, label: 'disk', level: 'block', message: 'full' }]
+      // The run ignores the cancel and completes normally as soon as the discard is under way.
+      r.runner.on.preflight = async () => {
+        await g.p
+      }
+      const d = dep(r, 'api')
+      const { releaseId: id } = await r.svc.preflight({ environmentId: r.f.staging.id, serviceIds: tracked(r, d).map((s) => s.id), bump: 'none', options: DEFAULT_RELEASE_OPTIONS })
+      const discard = r.svc.discard(id)
+      g.open()
+      await discard
+      await r.svc.whenIdle()
+      expect(r.svc.detail(id).status).toBe('discarded')
+      expect(r.states.filter((x) => x === `${id}:ready` || x === `${id}:blocked`)).toEqual([])
+    }
+    // Checks that finished before the discard reached the row: discarded from ready.
+    const r = await rig()
+    const id = await ready(r)
+    await r.svc.discard(id)
+    expect(r.svc.detail(id).status).toBe('discarded')
+  })
+
+  it('a denied discard during preflight leaves the checks running', async () => {
+    const access: DeployAccess = { check: async (_a, action) => (action === 'deploy.edit' ? { allowed: false, reason: 'read only' } : { allowed: true }) }
+    const r = await rig({ access })
+    const g = gate()
+    r.runner.on.preflight = async () => {
+      await g.p
+    }
+    const d = dep(r, 'api')
+    const { releaseId: id } = await r.svc.preflight({ environmentId: r.f.staging.id, serviceIds: tracked(r, d).map((s) => s.id), bump: 'none', options: DEFAULT_RELEASE_OPTIONS })
+    await expect(r.svc.discard(id)).rejects.toThrow()
+    expect(r.runner.cancels).toEqual([])
+    g.open()
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).status).toBe('ready')
+  })
+
+  it('discard still refuses a release that is running', async () => {
+    const r = await rig()
+    const g = gate()
+    r.runner.on.release = async () => {
+      await g.p
+    }
+    const id = await ready(r)
+    await r.svc.start(id, {})
+    await expect(r.svc.discard(id)).rejects.toThrow('This release is busy')
+    expect(r.runner.cancels).toEqual([])
+    g.open()
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).status).toBe('succeeded')
+  })
+
   it('discard then start: start refuses and the row stays discarded', async () => {
     const r = await rig()
     const id = await ready(r)
