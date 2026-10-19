@@ -318,8 +318,7 @@ export class RunManager {
         this.endNow(run)
       } catch (err) {
         console.warn('Run cancel failed:', redact(err instanceof Error ? err.message : String(err)))
-        // Dropped next, it is out of quit's reach: every host's dial or command still gets aborted.
-        for (const h of run.hosts) quietly(() => h.abort.abort())
+        this.salvage(run)
       }
       try {
         this.drop(run)
@@ -328,6 +327,32 @@ export class RunManager {
         this.runs.delete(run.id)
       }
     }
+  }
+
+  /**
+   * `endNow` threw, and the run is dropped next, out of quit's reach: every host's dial or command
+   * still gets aborted, and the run is finished quietly, so its hosts ending later emit nothing and
+   * write no `run.finish`, and a `cancel` waiting on it returns.
+   */
+  private salvage(run: Run): void {
+    for (const h of run.hosts) quietly(() => h.abort.abort())
+    quietly(() => {
+      if (run.flushTimer !== null) this.timers.clearTimeout(run.flushTimer)
+    })
+    run.flushTimer = null
+    const endedAt = this.now().toISOString()
+    for (const h of run.hosts) {
+      h.pending.length = 0
+      h.pendingChars = 0
+      if (isFinal(h)) continue
+      h.meta.state = 'cancelled'
+      h.meta.endedAt = endedAt
+    }
+    if (run.state === 'running') {
+      run.state = 'cancelled'
+      run.endedAt = endedAt
+    }
+    quietly(() => run.resolveFinished())
   }
 
   /** Every unfinished host ends `cancelled` now and its command gets its `INT`; the run finishes. */

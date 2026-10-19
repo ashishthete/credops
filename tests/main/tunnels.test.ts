@@ -1002,6 +1002,27 @@ describe('vault reset', () => {
     expect(warn.mock.calls.flat().join(' ')).not.toContain('b3BlbnNzaC1rZXk')
   })
 
+  it("a tunnel whose link teardown throws still has its host link closed", async () => {
+    const t = await setup()
+    const srv = await server()
+    const echo = await target()
+    const tunnel = t.tunnel(t.host(srv), { label: 'a', targetPort: echo.port })
+    t.manager.start(tunnel.id)
+    await t.waitState(tunnel.id, 'up')
+    expect(srv.connections()).toBe(1)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    onTestFinished(() => warn.mockRestore())
+    t.vault.lock('manual')
+    // Cancelling the link's prompts comes after it is unpooled and before its close.
+    vi.spyOn(t.broker, 'cancel').mockImplementationOnce(() => {
+      throw new Error('-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----')
+    })
+    await t.vault.reset('RESET')
+    await t.waitFor(() => expect(srv.connections()).toBe(0))
+    expect(warn.mock.calls.length).toBeGreaterThan(0)
+    expect(warn.mock.calls.flat().join(' ')).not.toContain('b3BlbnNzaC1rZXk')
+  })
+
   it('lets the first unlock after setup auto-start again', async () => {
     const t = await setup()
     const srv = await server()

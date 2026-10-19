@@ -11,6 +11,7 @@ import {
 } from '../../src/shared/ops'
 import { VAULT_LOCKED } from '../../src/shared/vault'
 import type { AuditEvent } from '../../src/shared/audit'
+import type { EventContract } from '../../src/shared/ipc'
 import { createOpsHandlers } from '../../src/main/ipc/handlers/ops'
 import type { ContainerService } from '../../src/main/ops/containers'
 import { CONFIRM_MESSAGE, MULTIPLE_PROTECTED_MESSAGE } from '../../src/main/ops/protect'
@@ -566,10 +567,12 @@ describe('RunManager on a vault reset', () => {
     expect(t.runs.get(after.id).output[0]!.text).toBe('after\n')
   })
 
-  it('a run whose cancel throws still has every host interrupted', async () => {
+  it('a run whose cancel throws still has every host interrupted, and nothing comes from it later', async () => {
     let boom = false
+    let late = 0
     const t = await makeRunSetup({
       emit: () => {
+        late++
         if (!boom) return
         boom = false
         throw new Error('-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----')
@@ -582,12 +585,52 @@ describe('RunManager on a vault reset', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     onTestFinished(() => warn.mockRestore())
 
-    // The first host's state event throws, before the second host is aborted.
+    // The first host's state event throws, before the second host is aborted. Called directly: on
+    // a real reset the links close next, and that would end the commands without any INT.
+    boom = true
+    t.vault.lock('manual')
+    t.runs.vaultReset()
+    expect(warn.mock.calls.map((c) => c[0])).toEqual(['Run cancel failed:'])
+    late = 0
+    await t.waitFor(() => expect(t.server.signals().filter((s) => s === 'INT')).toHaveLength(2))
+    // Its hosts end without a host event, a run event or a run.finish.
+    await t.waitFor(() => expect(t.sh.running()).toBe(0))
+    await new Promise((r) => setTimeout(r, 200))
+    expect(late).toBe(0)
+    expect(t.audit.list().filter((e) => e.action === 'run.finish')).toEqual([])
+  })
+
+  it('a run whose finish throws on reset is finished quietly: a waiting cancel returns, nothing comes later', async () => {
+    let boom = false
+    const seen: EventContract['run:event'][] = []
+    const t = await makeRunSetup({
+      emit: (_event, payload) => {
+        seen.push(payload)
+        if (!boom || payload.kind !== 'run') return
+        boom = false
+        throw new Error('-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----')
+      },
+    })
+    const run = t.runs.start({ target: onHosts(t, ['app-1', 'app-2']), command: text('sleep 30'), concurrency: 2 })
+    await t.reached(run, 'app-1', 'running')
+    await t.reached(run, 'app-2', 'running')
+    await t.waitFor(() => expect(t.sh.running()).toBe(2))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    onTestFinished(() => warn.mockRestore())
+
+    // The cancel waits for both commands to end; the reset comes first and its run event throws,
+    // after the run is already marked finished.
+    const cancelled = t.runs.cancel(run.id)
     boom = true
     t.vault.lock('manual')
     await t.vault.reset('RESET')
     expect(warn.mock.calls.map((c) => c[0])).toEqual(['Run cancel failed:'])
-    await t.waitFor(() => expect(t.server.signals().filter((s) => s === 'INT')).toHaveLength(2))
+    const after = seen.length
+    await expect(cancelled).resolves.toMatchObject({ state: 'cancelled' })
+    await t.waitFor(() => expect(t.sh.running()).toBe(0))
+    await new Promise((r) => setTimeout(r, 200))
+    expect(seen.slice(after)).toEqual([])
+    expect(t.audit.list().filter((e) => e.action === 'run.finish')).toEqual([])
   })
 
   it('one run failing to cancel never keeps the others; the error is logged redacted', async () => {

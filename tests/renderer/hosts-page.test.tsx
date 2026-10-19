@@ -195,12 +195,13 @@ function renderApp(w: World, path = '/hosts', { strict = false } = {}) {
   return { invoke, ...view }
 }
 
+/** Labelled by the host's label, as the real open does. */
 const openedSession = (hostId: string, environmentId?: string): SessionMeta => ({
   id: 's1',
   kind: 'ssh',
   hostId,
   environmentId: environmentId ?? null,
-  label: hostId,
+  label: world().hosts.find((h) => h.id === hostId)?.label ?? hostId,
   color: null,
   state: 'ready',
   hops: [],
@@ -489,7 +490,7 @@ describe('hosts page', () => {
     await sessionsLanded()
     // api-1 is in prod, yet the Hosts page has no environment context.
     await user.dblClick(within(hostList()).getByRole('option', { name: 'api-1' }))
-    await onTerminals('api1')
+    await onTerminals('api-1')
     expect(sessions.openSsh).toHaveBeenCalledWith('api1', undefined)
   })
 

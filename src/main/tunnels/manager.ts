@@ -655,9 +655,13 @@ export class TunnelManager {
     if (link.subscribers.size > 0) return
     link.state = 'down'
     if (this.links.get(link.key) === link) this.links.delete(link.key)
-    this.deps.prompts.cancel(link.prompts)
-    link.abort.abort()
-    link.close?.()
+    try {
+      this.deps.prompts.cancel(link.prompts)
+    } finally {
+      // Unpooled already, it is out of quit's reach: it still gets closed when a step above threw.
+      quietly(() => link.abort.abort())
+      quietly(() => link.close?.())
+    }
   }
 
   private dial(run: Run): HostLink {
