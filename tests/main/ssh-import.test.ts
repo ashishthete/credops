@@ -52,7 +52,8 @@ describe('SshImporter.preview', () => {
     expect(p.candidates.every((c) => c.valid && c.existingHostId === null)).toBe(true)
     const db1 = p.candidates.find((c) => c.alias === 'db-1')!
     expect(db1.jumpResolvable).toBe(true)
-    expect(db1.warnings).toContain('1 port forward will be offered when Tunnels arrive')
+    expect(db1.warnings).toContain('1 port forward will become tunnel')
+    expect(p.candidates.find((c) => c.alias === 'web-1')!.warnings).toContain('2 port forwards will become tunnels')
     expect(p.candidates.find((c) => c.alias === 'web-1')!.jumpResolvable).toBe(false)
   })
 
@@ -140,9 +141,56 @@ describe('SshImporter.import', () => {
     expect(a.filter((x) => x === 'host.import')).toHaveLength(1)
     const imp = f.audit.list({ actions: ['host.import'] })[0]
     expect(imp).toMatchObject({ targetType: 'ssh_config' })
-    expect(imp.details).toEqual({ created: 3, skipped: 0, keysLinked: 1, identitiesCreated: 2 })
+    expect(imp.details).toEqual({ created: 3, skipped: 0, keysLinked: 1, identitiesCreated: 2, tunnels: 3 })
     const create = f.audit.list({ actions: ['host.create'] })[0]
     expect(create.details).toMatchObject({ source: 'ssh_config', vaults: 1, environments: 1 })
+  })
+
+  it('import creates tunnels for forwards', async () => {
+    const f = await withConfig(fixture('basic.conf'))
+    const prod = prodEnv(f)
+    const r = await makeImporter(f).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web-1', 'db-1'], environmentId: prod })
+    expect(r.tunnelsCreated).toBe(3)
+    const id = (l: string) => r.created.find((h) => h.label === l)!.id
+    const ts = f.tunnels.list()
+    expect(ts.map((t) => [t.label, t.type, t.hostId, t.bindAddress, t.bindPort, t.targetHost, t.targetPort, t.autoStart, t.autoReconnect])).toEqual([
+      ['db-1 L 5433', 'L', id('db-1'), '127.0.0.1', 5433, 'localhost', 5432, false, true],
+      ['web-1 R 9000', 'R', id('web-1'), '127.0.0.1', 9000, 'localhost', 3000, false, true],
+      ['web-1 SOCKS 1080', 'D', id('web-1'), '127.0.0.1', 1080, null, null, false, true],
+    ])
+    expect(f.audit.list({ actions: ['host.import'] })[0].details).toMatchObject({ tunnels: 3 })
+    expect(f.audit.list({ actions: ['tunnel.create'] })).toHaveLength(0)
+  })
+
+  it('forwards: false creates none', async () => {
+    const f = await withConfig(fixture('basic.conf'))
+    const r = await makeImporter(f).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web-1', 'db-1'], forwards: false })
+    expect(r.tunnelsCreated).toBe(0)
+    expect(f.tunnels.list()).toEqual([])
+  })
+
+  it('re-import adds forwards to an existing host without duplicates', async () => {
+    const f = await withConfig(fixture('basic.conf'))
+    const imp = makeImporter(f)
+    await imp.import({ vaultId: DEFAULT_VAULT_ID, aliases: ['db-1'], forwards: false })
+    const again = await imp.import({ vaultId: DEFAULT_VAULT_ID, aliases: ['db-1'] })
+    expect(again.skipped).toEqual([{ alias: 'db-1', reason: 'exists' }])
+    expect(again.tunnelsCreated).toBe(1)
+    const third = await imp.import({ vaultId: DEFAULT_VAULT_ID, aliases: ['db-1'] })
+    expect(third.tunnelsCreated).toBe(0)
+    expect(f.tunnels.list()).toHaveLength(1)
+  })
+
+  it('bad forward becomes a warning, not a failure', async () => {
+    const f = await withConfig('Host a\n  HostName 10.0.0.1\n  LocalForward /tmp/s localhost:1\n  LocalForward nonsense\n  RemoteForward 9000\n  LocalForward 5000 db:80\n')
+    const r = await makeImporter(f).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['a'] })
+    expect(r.created).toHaveLength(1)
+    expect(r.tunnelsCreated).toBe(1)
+    expect(r.warnings).toEqual([
+      "a: unix socket forwards aren't supported",
+      "a: can't read this forward",
+      "a: reverse dynamic forwards aren't supported",
+    ])
   })
 
   it('is idempotent on re-import', async () => {

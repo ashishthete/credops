@@ -83,7 +83,7 @@ function world(over: Partial<World> = {}): World {
       path: '/home/tester/.ssh/config',
       found: true,
       candidates: [
-        candidate({ alias: 'web-1', hostName: '10.0.1.7', user: 'deploy', port: 2222, identityFile: '/home/tester/.ssh/id_web', proxyJump: 'bastion', jumpResolvable: true }),
+        candidate({ alias: 'web-1', hostName: '10.0.1.7', user: 'deploy', port: 2222, identityFile: '/home/tester/.ssh/id_web', proxyJump: 'bastion', jumpResolvable: true, forwards: [{ type: 'L', spec: '5433 localhost:5432' }, { type: 'R', spec: '9000 localhost:3000' }, { type: 'D', spec: '1080' }] }),
         candidate({ alias: 'bastion', existingHostId: 'bastion' }),
         candidate({ alias: 'evil', hostName: '-oProxyCommand=x', valid: false, warnings: ["HostName isn't a usable address; skipped"] }),
       ],
@@ -167,7 +167,7 @@ function renderApp(w: World, path = '/hosts', { strict = false } = {}) {
         w.environments = w.environments.map((e) =>
           e.id === req.environmentId ? { ...e, hosts: [...e.hosts, ...created.map((h) => ({ hostId: h.id, role: req.role ?? 'other' }))] } : e,
         )
-        return { created, skipped: [], keysLinked: 1, identitiesCreated: 1, warnings: ['1 port forward will be offered when Tunnels arrive'] }
+        return { created, skipped: [], keysLinked: 1, identitiesCreated: 1, tunnelsCreated: req.forwards === false ? 0 : 3, warnings: ['3 port forwards will become tunnels'] }
       }
     }
     return base(channel, ...args)
@@ -278,10 +278,36 @@ describe('hosts page', () => {
 
     expect(invoke).toHaveBeenCalledWith('sshconfig:import', { vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'], environmentId: 'prod', role: 'app' })
     expect(await within(dialog).findByText('Imported 1 host')).toBeInTheDocument()
-    expect(within(dialog).getByText('1 port forward will be offered when Tunnels arrive')).toBeInTheDocument()
+    expect(within(dialog).getByText('3 port forwards will become tunnels')).toBeInTheDocument()
 
     await user.click(within(dialog).getByRole('button', { name: 'Done' }))
     await waitFor(() => expect(rowNames()).toContain('web-1'))
+  })
+
+  it('import dialog offers forwards and reports tunnels', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderApp(world())
+    await user.click(await screen.findByRole('button', { name: 'Import from ~/.ssh/config' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(await within(dialog).findByRole('checkbox', { name: 'Select all' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Next' }))
+    const box = within(dialog).getByRole('checkbox', { name: 'Also create tunnels for 3 port forwards' })
+    expect(box).toBeChecked()
+    await user.click(box)
+    await user.click(within(dialog).getByRole('button', { name: 'Import 1 host' }))
+    expect(invoke).toHaveBeenCalledWith('sshconfig:import', { vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'], forwards: false })
+    expect(await within(dialog).findByText('Imported 1 host')).toBeInTheDocument()
+  })
+
+  it('import dialog reports the tunnels it created', async () => {
+    const user = userEvent.setup()
+    renderApp(world())
+    await user.click(await screen.findByRole('button', { name: 'Import from ~/.ssh/config' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(await within(dialog).findByRole('checkbox', { name: 'Select all' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Next' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Import 1 host' }))
+    expect(await within(dialog).findByText(/, 3 tunnels/)).toBeInTheDocument()
   })
 
   it('import wizard reaches its summary under StrictMode', async () => {
@@ -387,7 +413,7 @@ describe('hosts page', () => {
     const imports = () => invoke.mock.calls.filter(([c]) => c === 'sshconfig:import')
     await waitFor(() => expect(imports()).toHaveLength(2))
     expect(imports()[1]).toEqual(['sshconfig:import', { vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'] }])
-    expect(await screen.findByText('Imported 1 host')).toBeInTheDocument()
+    expect(await screen.findByText('Imported 1 host, 3 tunnels')).toBeInTheDocument()
     await waitFor(() => expect(rowNames()).toContain('web-1'))
   })
 

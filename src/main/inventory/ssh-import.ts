@@ -10,13 +10,16 @@ import {
   type SshImportRequest,
   type SshImportResult,
 } from '../../shared/inventory'
+import { MAX_TUNNELS } from '../../shared/tunnels'
 import { MAX_LABEL, VAULT_LOCKED, type SshKeyMeta } from '../../shared/vault'
 import type { AuditLog } from '../audit/audit-log'
 import type { Db } from '../db/connection'
 import { inTransaction } from '../db/tx'
 import type { IdentityStore } from '../vault/identity-store'
+import type { TunnelStore } from '../tunnels/tunnel-store'
 import type { KeyStore } from '../vault/key-store'
 import type { VaultService } from '../vault/vault-service'
+import { parseForwardSpec } from './forward-spec'
 import { findJumpLoop, type HostStore } from './host-store'
 import { isValidAddress, isValidLabel } from './rows'
 import { parseSshConfig, readSshIncludes } from './ssh-config'
@@ -28,6 +31,7 @@ export interface SshImporterDeps {
   hosts: HostStore
   keys: KeyStore
   identities: IdentityStore
+  tunnels: TunnelStore
   sshConfigPath: string
   sshDir: string
   home: string
@@ -73,18 +77,23 @@ export class SshImporter {
   }
 
   async import(req: SshImportRequest): Promise<SshImportResult> {
-    const { db, vault, audit, hosts } = this.deps
+    const { db, vault, audit, hosts, tunnels } = this.deps
     vault.assertUnlocked()
     this.checkTargets(req)
     const { candidates, jumps } = await this.load()
     const byAlias = new Map(candidates.map((c) => [c.alias, c]))
     const skipped: SshImportResult['skipped'] = []
     const toCreate: SshImportCandidate[] = []
+    const existing: SshImportCandidate[] = []
+    const withForwards = req.forwards !== false
     for (const alias of new Set(req.aliases)) {
       const c = byAlias.get(alias)
       if (!c) skipped.push({ alias, reason: 'not-found' })
       else if (!c.valid) skipped.push({ alias, reason: 'invalid' })
-      else if (c.existingHostId !== null) skipped.push({ alias, reason: 'exists' })
+      else if (c.existingHostId !== null) {
+        skipped.push({ alias, reason: 'exists' })
+        existing.push(c)
+      }
       else toCreate.push(c)
     }
 
@@ -96,7 +105,7 @@ export class SshImporter {
     // The vault may have locked while key files were read.
     vault.assertUnlocked()
     const environments = req.environmentId ? [{ environmentId: req.environmentId, role: req.role ?? 'other' }] : []
-    const ids = inTransaction(db, () => {
+    const { ids, tunnelsCreated } = inTransaction(db, () => {
       const idByAlias = new Map<string, string>()
       const labelTaken = db.prepare('SELECT 1 FROM hosts WHERE label = ?') // label is COLLATE NOCASE
       const hostExists = db.prepare('SELECT 1 FROM hosts WHERE id = ?')
@@ -136,7 +145,43 @@ export class SshImporter {
         }
         db.prepare('UPDATE hosts SET jump_host_id = ? WHERE id = ?').run(jumpId, hostId)
       }
-      return [...idByAlias.values()]
+
+      let tunnelsCreated = 0
+      let overflow = 0
+      if (withForwards) {
+        const addTunnels = (c: SshImportCandidate, hostId: string, environmentId?: string): void => {
+          for (const f of c.forwards) {
+            const parsed = parseForwardSpec(f, c.alias)
+            if ('error' in parsed) {
+              warnings.push(`${c.alias}: ${parsed.error}`)
+              continue
+            }
+            const input = { ...parsed.input, hostId, ...(environmentId ? { environmentId } : {}) }
+            if (tunnels.findSame(input)) continue
+            if (tunnels.list().length >= MAX_TUNNELS) {
+              overflow++
+              continue
+            }
+            try {
+              tunnels.insertInTx(input)
+              tunnelsCreated++
+            } catch (err) {
+              // Store messages name the rule, never the value.
+              warnings.push(`${c.alias}: ${err instanceof Error ? err.message : "can't read this forward"}`)
+            }
+          }
+        }
+        for (const c of toCreate) {
+          const hostId = idByAlias.get(c.alias)
+          if (hostId !== undefined) addTunnels(c, hostId, req.environmentId)
+        }
+        for (const c of existing) {
+          // The host may have been deleted since load().
+          if (c.existingHostId !== null && hostExists.get(c.existingHostId)) addTunnels(c, c.existingHostId)
+        }
+        if (overflow > 0) warnings.push(`Tunnel limit reached; ${overflow} forward${overflow === 1 ? '' : 's'} skipped`)
+      }
+      return { ids: [...idByAlias.values()], tunnelsCreated }
     })
 
     const created: HostMeta[] = ids.map((id) => hosts.auditCreated(id, { source: 'ssh_config' }))
@@ -144,9 +189,9 @@ export class SshImporter {
       action: 'host.import',
       outcome: 'success',
       targetType: 'ssh_config',
-      details: { created: created.length, skipped: skipped.length, keysLinked, identitiesCreated },
+      details: { created: created.length, skipped: skipped.length, keysLinked, identitiesCreated, tunnels: tunnelsCreated },
     })
-    return { created, skipped, keysLinked, identitiesCreated, warnings }
+    return { created, skipped, keysLinked, identitiesCreated, tunnelsCreated, warnings }
   }
 
   /** Fails before any key or identity is made, so a bad target leaves no rows behind. */
@@ -201,7 +246,7 @@ export class SshImporter {
       }
       if (e.forwards.length > 0) {
         const n = e.forwards.length
-        warnings.push(`${n} port forward${n === 1 ? '' : 's'} will be offered when Tunnels arrive`)
+        warnings.push(`${n} port forward${n === 1 ? '' : 's'} will become tunnel${n === 1 ? '' : 's'}`)
       }
       // No identity for an unsafe User, not even one with the local user and its key.
       const unsafeUser = e.user !== null && !isSafeSshToken(e.user.trim())

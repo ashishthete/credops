@@ -20,7 +20,15 @@ describe('parseSshConfig', () => {
       proxyJump: 'bastion',
       forwards: [{ type: 'L', spec: '5433 localhost:5432' }],
     })
+    expect(entries[0].forwards).toEqual([
+      { type: 'D', spec: '1080' },
+      { type: 'R', spec: '9000 localhost:3000' },
+    ])
     expect(entries[2]).toMatchObject({ hostName: '52.1.2.3', port: 22 })
+  })
+
+  it('parses DynamicForward', () => {
+    expect(parse('Host a\n DynamicForward 1080\n').entries[0].forwards).toEqual([{ type: 'D', spec: '1080' }])
   })
 
   it('first value wins', () => {

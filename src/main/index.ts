@@ -155,6 +155,7 @@ if (!app.requestSingleInstanceLock()) {
         hosts,
         keys,
         identities,
+        tunnels,
         sshConfigPath: join(homedir(), '.ssh', 'config'),
         sshDir: join(homedir(), '.ssh'),
         home: homedir(),

@@ -271,6 +271,7 @@ export const asSshImportRequest: Check<SshImportRequest> = v.object({
   aliases: v.array(v.str({ min: 1, max: MAX_LABEL }), MAX_IMPORT_ALIASES),
   environmentId: v.optional(v.uuid()),
   role: v.optional(v.oneOf(HOST_ROLES)),
+  forwards: v.optional(v.bool()),
 }) as Check<SshImportRequest>
 
 const cols = v.int({ min: 1, max: MAX_COLS })

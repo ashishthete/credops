@@ -47,6 +47,7 @@ export function ImportDialog({ open, onClose, onImported }: ImportDialogProps) {
   const [vaultId, setVaultId] = useState(DEFAULT_VAULT_ID)
   const [environmentId, setEnvironmentId] = useState('')
   const [role, setRole] = useState<HostRole>('app')
+  const [withForwards, setWithForwards] = useState(true)
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<SshImportResult | null>(null)
   // A lock mid-import unmounts the app until the unlock, so the outcome may land with nobody to show it.
@@ -79,6 +80,7 @@ export function ImportDialog({ open, onClose, onImported }: ImportDialogProps) {
     setVaultId(DEFAULT_VAULT_ID)
     setEnvironmentId('')
     setRole('app')
+    setWithForwards(true)
     setResult(null)
     loadPreview()
     return () => {
@@ -97,7 +99,9 @@ export function ImportDialog({ open, onClose, onImported }: ImportDialogProps) {
   const environments = useMemo(() => [...(data?.environments ?? [])].sort((a, b) => a.name.localeCompare(b.name)), [data])
 
   const candidates = preview?.candidates ?? []
-  const aliases = candidates.filter((c) => importable(c) && chosen.has(c.alias)).map((c) => c.alias)
+  const picked = candidates.filter((c) => importable(c) && chosen.has(c.alias))
+  const aliases = picked.map((c) => c.alias)
+  const forwardCount = picked.reduce((n, c) => n + c.forwards.length, 0)
 
   const run = async () => {
     setBusy(true)
@@ -105,9 +109,10 @@ export function ImportDialog({ open, onClose, onImported }: ImportDialogProps) {
       vaultId: vault,
       aliases,
       ...(environmentId ? { environmentId, role } : {}),
+      ...(forwardCount > 0 && !withForwards ? { forwards: false } : {}),
     })
     if (!mounted.current) {
-      if (res) toast({ title: `Imported ${plural(res.created.length, 'host')}`, tone: 'success' })
+      if (res) toast({ title: `Imported ${plural(res.created.length, 'host')}${res.tunnelsCreated > 0 ? `, ${plural(res.tunnelsCreated, 'tunnel')}` : ''}`, tone: 'success' })
       return
     }
     setBusy(false)
@@ -187,6 +192,12 @@ export function ImportDialog({ open, onClose, onImported }: ImportDialogProps) {
                 ))}
               </SelectField>
             </div>
+            {forwardCount > 0 && (
+              <label className="flex items-center gap-2.5 text-[12.5px] text-fg/90">
+                <input type="checkbox" className="size-4 accent-accent" checked={withForwards} onChange={(e) => setWithForwards(e.target.checked)} />
+                {`Also create tunnels for ${plural(forwardCount, 'port forward')}`}
+              </label>
+            )}
           </div>
         )}
         {step === 'done' && result && <ResultStep result={result} />}
@@ -377,6 +388,7 @@ function ResultStep({ result }: { result: SshImportResult }) {
           <h3 className="text-[14px] font-semibold text-fg">{`Imported ${plural(n, 'host')}`}</h3>
           <p className="text-[12.5px] text-muted">
             {plural(result.identitiesCreated, 'identity', 'identities')} created, {plural(result.keysLinked, 'key')} linked
+            {result.tunnelsCreated > 0 && `, ${plural(result.tunnelsCreated, 'tunnel')}`}
           </p>
         </div>
       </div>

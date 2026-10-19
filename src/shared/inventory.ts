@@ -147,7 +147,7 @@ export interface ResolvedHost {
 }
 
 export interface SshForward {
-  type: 'L' | 'R'
+  type: 'L' | 'R' | 'D'
   spec: string
 }
 export interface SshConfigEntry {
@@ -176,11 +176,14 @@ export interface SshImportRequest {
   aliases: string[]
   environmentId?: string
   role?: HostRole
+  /** Also create tunnels for the hosts' forwards. Default true. */
+  forwards?: boolean
 }
 export interface SshImportResult {
   created: HostMeta[]
   skipped: { alias: string; reason: 'exists' | 'not-found' | 'invalid' }[]
   keysLinked: number
   identitiesCreated: number
+  tunnelsCreated: number
   warnings: string[]
 }

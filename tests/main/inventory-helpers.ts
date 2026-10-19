@@ -8,6 +8,7 @@ import { ProductStore } from '../../src/main/inventory/product-store'
 import { resolveHost } from '../../src/main/inventory/resolve'
 import { SshImporter } from '../../src/main/inventory/ssh-import'
 import { IdentityStore } from '../../src/main/vault/identity-store'
+import { TunnelStore } from '../../src/main/tunnels/tunnel-store'
 import { KeyStore } from '../../src/main/vault/key-store'
 import type { IdentityMeta } from '../../src/shared/vault'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
@@ -19,6 +20,7 @@ export type InventoryFixture = VaultFixture & {
   products: ProductStore
   keys: KeyStore
   identities: IdentityStore
+  tunnels: TunnelStore
   /** A tmp home; `sshDir` is its `.ssh`, which KeyStore confines key links to. */
   home: string
   sshDir: string
@@ -39,6 +41,7 @@ export async function makeInventory(): Promise<InventoryFixture> {
   const hosts = new HostStore(f.db, f.vault, f.audit)
   const envs = new EnvironmentStore(f.db, f.vault, f.audit)
   const products = new ProductStore(f.db, f.vault, f.audit)
+  const tunnels = new TunnelStore({ db: f.db, audit: f.audit, vault: f.vault })
   return {
     ...f,
     hosts,
@@ -46,6 +49,7 @@ export async function makeInventory(): Promise<InventoryFixture> {
     products,
     keys,
     identities,
+    tunnels,
     home,
     sshDir,
     makeIdentity: (vaultId = DEFAULT_VAULT_ID) =>
@@ -72,6 +76,7 @@ export function makeImporter(f: InventoryFixture, sshConfigPath = join(f.sshDir,
     hosts: f.hosts,
     keys: f.keys,
     identities: f.identities,
+    tunnels: f.tunnels,
     sshConfigPath,
     sshDir: f.sshDir,
     home: f.home,

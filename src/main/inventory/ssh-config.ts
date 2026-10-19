@@ -42,7 +42,7 @@ const MAX_WILDCARD_PATTERN_LENGTH = 256
 const MAX_GLOB_STEPS = 50_000_000
 const MAX_INCLUDE_DIRECTIVES = 1000
 const MAX_WARNINGS = 200
-/** Per host; the importer only shows the count until Tunnels arrive. */
+/** Per host. */
 const MAX_FORWARDS = 64
 /** Folder entries the Include reader looks at per parse, matched or not. */
 const MAX_INCLUDE_ENTRIES = 10_000
@@ -66,9 +66,10 @@ interface Block {
 const newBlock = (patterns: string[] | null): Block => ({ patterns, values: new Map(), forwards: [], moreForwards: false })
 
 function addDirective(block: Block, key: string, args: string[], line: number): void {
-  if (key === 'localforward' || key === 'remoteforward') {
+  if (key === 'localforward' || key === 'remoteforward' || key === 'dynamicforward') {
     if (!args.length) return
-    if (block.forwards.length < MAX_FORWARDS) block.forwards.push({ type: key === 'localforward' ? 'L' : 'R', spec: args.join(' ') })
+    const type = key === 'localforward' ? 'L' : key === 'remoteforward' ? 'R' : 'D'
+    if (block.forwards.length < MAX_FORWARDS) block.forwards.push({ type, spec: args.join(' ') })
     else block.moreForwards = true
     return
   }
