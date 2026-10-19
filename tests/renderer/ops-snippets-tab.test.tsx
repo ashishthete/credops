@@ -302,12 +302,23 @@ describe('insert and line breaks', () => {
     expect(JSON.stringify(vi.mocked(toast).mock.calls)).not.toContain('rm -rf')
   })
 
-  it('a tab is refused while bracketed paste is off', async () => {
+  it('a control character is refused even with bracketed paste on, and nothing is written', async () => {
+    const esc = snip('s-esc', 'Escapey', { script: 'x' })
+    sessionStore.set({ sessions: [session()], order: ['sess-1'], activeId: 'sess-1' })
+    await renderTab({ 'snippets:list': [esc], 'snippets:render': 'echo a\x1bb' })
+    Object.assign(getTerminal('sess-1').term.modes, { bracketedPasteMode: true })
+    await run('Escapey')
+    expect(fake.terms[0].paste).not.toHaveBeenCalled()
+    expect(vi.mocked(toast)).toHaveBeenCalledWith(expect.objectContaining({ title: 'This snippet has control characters; run it from Ops › Run' }))
+    expect(JSON.stringify(vi.mocked(toast).mock.calls)).not.toContain('echo')
+  })
+
+  it('a tab is a control character and is refused', async () => {
     sessionStore.set({ sessions: [session()], order: ['sess-1'], activeId: 'sess-1' })
     await renderTab({ 'snippets:list': [tabbed], 'snippets:render': 'echo a\tb' })
     await run('Tabbed')
-    expect(fake.terms[0].paste).not.toHaveBeenCalled()
-    expect(vi.mocked(toast)).toHaveBeenCalledWith(expect.objectContaining({ title: 'This snippet has several lines; run it from Ops › Run' }))
+    expect(fake.terms[0]?.paste).toBeUndefined()
+    expect(vi.mocked(toast)).toHaveBeenCalledWith(expect.objectContaining({ title: 'This snippet has control characters; run it from Ops › Run' }))
   })
 
   it('a multi-line snippet is pasted whole when bracketed paste is on', async () => {

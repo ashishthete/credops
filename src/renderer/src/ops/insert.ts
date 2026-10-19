@@ -41,10 +41,15 @@ export async function insertSnippet(snippet: SnippetMeta, values: Record<string,
   const done = await attempt("Couldn't insert the snippet", async () => {
     // Trailing breaks would run the line by themselves.
     const text = (await api.invoke('snippets:render', snippet.id, values)).replace(/[\r\n]+$/, '')
+    // Anything but a line break could end the paste early or be read as a key (ESC), even when bracketed.
+    if (/[\x00-\x09\x0b-\x1f\x7f-\x9f]/.test(text)) {
+      toast({ title: 'This snippet has control characters; run it from Ops › Run', tone: 'info' })
+      return false
+    }
     const { term } = getTerminal(target.id)
     // Without bracketed paste the shell reads every line break as Enter and a tab as completion; xterm's paste
     // wraps the text when the shell asked for it, and only then is a multi-line snippet safe to type.
-    if (!term.modes.bracketedPasteMode && /[\r\n\t]/.test(text)) {
+    if (!term.modes.bracketedPasteMode && /\n/.test(text)) {
       toast({ title: 'This snippet has several lines; run it from Ops › Run', tone: 'info' })
       return false
     }
