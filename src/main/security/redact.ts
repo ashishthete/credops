@@ -1,6 +1,6 @@
 export const REDACTED = '‹redacted›'
 
-const SENSITIVE_KEY = /pass(word|phrase)?|secret|token|api[_-]?key|private[_-]?key|authorization|cookie|webhook/i
+export const SENSITIVE_KEY = /pass(word|phrase)?|secret|token|api[_-]?key|private[_-]?key|authorization|cookie|webhook/i
 // An unterminated block is redacted through the end of the string.
 const PEM_BLOCK = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g
 const MIN_SECRET_LENGTH = 4
@@ -13,7 +13,7 @@ const WORD_CHAR = /[\p{L}\p{N}]/u
 const isBoundary = (s: string, at: number): boolean => at < 0 || at >= s.length || !WORD_CHAR.test(s[at]!)
 
 /** Replaces each occurrence of `secret` in `s`; short ones only with a non-alphanumeric char or the edge on both sides. */
-function maskOne(s: string, secret: string): string {
+function maskOne(s: string, secret: string, counter?: { n: number }): string {
   const anywhere = secret.length >= MIN_ANYWHERE_LENGTH
   let out = ''
   let from = 0
@@ -22,8 +22,17 @@ function maskOne(s: string, secret: string): string {
     if (!anywhere && !(isBoundary(s, at - 1) && isBoundary(s, at + secret.length))) continue
     out += s.slice(from, at) + REDACTED
     from = at + secret.length
+    if (counter) counter.n++
   }
   return from === 0 ? s : out + s.slice(from)
+}
+
+/** Masks `knownSecrets` in `s` with the same rules as `redact`, and says how many occurrences it masked. */
+export function maskKnownSecrets(s: string, knownSecrets: readonly string[]): { text: string; count: number } {
+  const counter = { n: 0 }
+  const usable = [...new Set(knownSecrets)].filter((x) => x.length >= MIN_SECRET_LENGTH).sort((a, b) => b.length - a.length)
+  const text = usable.reduce((acc, secret) => (acc.includes(secret) ? maskOne(acc, secret, counter) : acc), s)
+  return { text, count: counter.n }
 }
 
 /**
