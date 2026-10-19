@@ -63,3 +63,22 @@ export async function releaseOptionDefaults(environmentId: string): Promise<Part
     return {}
   }
 }
+
+/** Props of the action the release failure panel shows beside a failed step. */
+export interface FailureActionProps {
+  releaseId: string
+  stepId: string
+}
+
+let failureAction: ComponentType<FailureActionProps> | null = null
+
+/** Fills the failure panel's action slot (Phase 9 registers `Explain`). */
+export function registerFailureAction(component: ComponentType<FailureActionProps>): void {
+  failureAction = component
+}
+
+/** Rendered by the release failure panel for its failed step; nothing until registered. */
+export function FailureActionSlot(props: FailureActionProps) {
+  const Action = failureAction
+  return Action ? <Action {...props} /> : null
+}

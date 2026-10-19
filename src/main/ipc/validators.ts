@@ -102,7 +102,7 @@ import {
 } from '../../shared/settings'
 import { MAX_SERVICES, type CopyServicesRequest, type ServiceInput, type ServicePatch } from '../../shared/services'
 import { MAX_PRIVATE_KEY_BYTES } from '../vault/openssh'
-import { MAX_NOTES_SUBJECT, type ReleaseNotesRequest } from '../../shared/ai'
+import { MAX_COMMANDS, MAX_NOTES_SUBJECT, type ExplainSubject, type ReleaseNotesRequest } from '../../shared/ai'
 import { InvalidArgs, args, v, type ArgsValidator, type Check } from './validate'
 
 const OUTCOMES = ['success', 'failure', 'denied', 'info'] as const
@@ -410,6 +410,12 @@ export const asReleaseNotesRequest: Check<ReleaseNotesRequest> = v.object({
   ),
 }) as Check<ReleaseNotesRequest>
 
+export const asExplainSubject: Check<ExplainSubject> = v.tagged('kind', {
+  release: v.object({ kind: v.oneOf(['release'] as const), releaseId: v.uuid(), stepId: v.str({ min: 1, max: 200 }) }),
+  session: v.object({ kind: v.oneOf(['session'] as const), sessionId: v.uuid() }),
+  tunnel: v.object({ kind: v.oneOf(['tunnel'] as const), tunnelId: v.uuid() }),
+}) as Check<ExplainSubject>
+
 export const asCopyServicesRequest: Check<CopyServicesRequest> = v.object({
   sourceEnvironmentId: v.uuid(),
   targetEnvironmentId: v.uuid(),
@@ -706,6 +712,8 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'ai:status': args(),
   'ai:cancel': args(v.uuid()),
   'ai:releaseNotes': args(v.uuid(), asReleaseNotesRequest),
+  'ai:explain': args(v.uuid(), asExplainSubject),
+  'ai:command': args(v.uuid(), v.int({ min: 0, max: MAX_COMMANDS - 1 }), v.oneOf(['copy', 'run'] as const)),
   'release:preflight': args(asPreflightRequest),
   'release:start': args(v.uuid(), asReleaseConfirm),
   'release:cancel': args(v.uuid()),

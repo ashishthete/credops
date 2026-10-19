@@ -1,4 +1,4 @@
-import type { ReleaseNotesRequest, ReleaseNotesResult } from './ai'
+import type { ExplainSubject, Explanation, ReleaseNotesRequest, ReleaseNotesResult } from './ai'
 import type { AuditEvent, AuditFilter, ChainVerification } from './audit'
 import type {
   EnvironmentInput,
@@ -227,6 +227,8 @@ export interface IpcContract {
   'ai:status': { args: []; result: IntegrationStatus['ai'] }
   'ai:cancel': { args: [requestId: string]; result: void }
   'ai:releaseNotes': { args: [requestId: string, req: ReleaseNotesRequest]; result: ReleaseNotesResult }
+  'ai:explain': { args: [requestId: string, subject: ExplainSubject]; result: Explanation }
+  'ai:command': { args: [requestId: string, index: number, mode: 'copy' | 'run']; result: void }
   'snippets:list': { args: []; result: SnippetMeta[] }
   'snippets:create': { args: [input: SnippetInput]; result: SnippetMeta }
   'snippets:update': { args: [id: string, input: SnippetInput]; result: SnippetMeta }
@@ -366,6 +368,8 @@ export const CHANNELS = [
   'ai:status',
   'ai:cancel',
   'ai:releaseNotes',
+  'ai:explain',
+  'ai:command',
   'snippets:list',
   'snippets:create',
   'snippets:update',

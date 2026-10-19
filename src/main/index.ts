@@ -28,6 +28,7 @@ import { createNotifyHandlers, createQaHandlers } from './ipc/handlers/notify'
 import { createAiHandlers } from './ipc/handlers/ai'
 import { AiRequests, ClaudeClient } from './ai/claude'
 import { promptContext } from './ai/prompt-redact'
+import { ExplainMemory, type ExplainSources } from './ai/explain'
 import { releaseNotesFinalizeStep, type NotesDeps } from './ai/release-notes'
 import { MacNotifier } from './notify/macos'
 import { LocalSink } from './notify/sink'
@@ -423,6 +424,35 @@ if (!app.requestSingleInstanceLock()) {
         emit: (event, payload) => pushEvent(mainWindow, event, payload),
       })
       containerService = containers
+      const explainSources: ExplainSources = {
+        release,
+        sessions: manager,
+        tunnels: { get: (id) => tunnels.get(id), runtime: (id) => runner.runtime(id) },
+        host: (hostId) => {
+          try {
+            const h = hostMeta(inventoryDb, hostId)
+            return { label: h.label, os: h.osIcon }
+          } catch {
+            return null
+          }
+        },
+        environment: (id) => {
+          try {
+            const e = envStore.get(id)
+            return { name: e.name, protected: e.protected }
+          } catch {
+            return null
+          }
+        },
+        sessionAuth: (hostId, environmentId) => {
+          try {
+            const r = resolve(hostId, environmentId ?? undefined)
+            return { auth: r.identity.auth, port: r.port.value }
+          } catch {
+            return null
+          }
+        },
+      }
       tunnels.onRemoved = (id) => runner.removed(id)
       tunnels.onChanged = (before, after) => runner.changed(before, after)
       // On lock, in this order: sessions fail their dials and tunnels mark theirs to pause (both keep
@@ -503,6 +533,7 @@ if (!app.requestSingleInstanceLock()) {
             settings: settingsStore,
             requests: aiRequests,
             notes: notesDeps,
+            explain: { claude, audit: log, redaction: notesDeps.redaction, sources: explainSources, memory: new ExplainMemory() },
             onDelta: (delta) => pushEvent(mainWindow, 'ai:delta', delta),
           }),
           ...createNotifyHandlers({ db, sink: notifySink, settings: settingsStore, integrations, mac: macNotifier, audit: log, actor }),

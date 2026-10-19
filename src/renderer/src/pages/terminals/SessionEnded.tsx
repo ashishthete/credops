@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion'
 import { RotateCw } from 'lucide-react'
 import type { SessionMeta } from '../../../../shared/ssh'
+import { ExplainButton } from '../../ai/ExplainPanel'
 import { Button } from '../../ui/Button'
 import { fast, spring, useMotionSafe } from '../../ui/motion'
 
@@ -27,11 +28,12 @@ export function SessionEnded({
       <span aria-hidden className="size-1.5 rounded-full bg-muted/60" />
       <span className="font-medium text-fg">Session ended</span>
       {meta.error && <span className="min-w-0 truncate text-muted">{meta.error.message}</span>}
+      {meta.kind === 'ssh' && meta.error && <ExplainButton className="ml-auto" subject={{ kind: 'session', sessionId: meta.id }} />}
       {meta.kind === 'ssh' && (
         <Button
           size="sm"
           variant="ghost"
-          className="ml-auto"
+          className={meta.error ? '' : 'ml-auto'}
           icon={<RotateCw aria-hidden className="size-3" />}
           loading={reconnecting}
           onClick={onReconnect}

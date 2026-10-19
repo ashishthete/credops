@@ -216,6 +216,7 @@ describe('ai handlers', () => {
       settings: { status: () => ({ ai: { configured: true, model: 'claude-opus-5-5' } }) as never },
       requests: reqs,
       notes: {} as never,
+      explain: {} as never,
       onDelta: () => {},
     })
     expect(await h['ai:status']()).toEqual({ configured: true, model: 'claude-opus-5-5' })

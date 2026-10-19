@@ -303,6 +303,7 @@ describe('ai:releaseNotes handler', () => {
       settings: { status: () => ({ ai: { configured: true, model: 'm' } }) as never },
       requests,
       notes: deps(claude),
+      explain: {} as never,
       onDelta: (d) => void deltas.push(d),
     })
     const id = '44444444-4444-4444-8444-444444444444'

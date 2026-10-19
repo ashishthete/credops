@@ -1,4 +1,5 @@
 import { HashRouter } from 'react-router'
+import { ExplainPanel } from './ai/ExplainPanel'
 import './ai/register'
 import { AppShell } from './shell/AppShell'
 import { CommandPalette } from './ui/CommandPalette'
@@ -13,6 +14,7 @@ export function App() {
       <AuthGate>
         <AppShell />
         <CommandPalette />
+        <ExplainPanel />
         <VaultSettingsDialog />
       </AuthGate>
       <Toaster />

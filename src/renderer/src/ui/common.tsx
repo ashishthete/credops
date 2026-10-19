@@ -230,6 +230,8 @@ export interface ConfirmRequest {
   typeToConfirm?: string
   /** The action can't go ahead yet; `description` says why and the confirm button stays off. */
   blocked?: boolean
+  /** Exact text the action uses (a command), shown verbatim in a mono block. */
+  code?: string
   /** Resolving `{ refused }` keeps the dialog open and shows the message in it; anything else closes it. */
   run: () => Promise<unknown>
 }
@@ -294,6 +296,11 @@ export function ConfirmDialog({ request, onClose }: { request: ConfirmRequest | 
           void confirm()
         }}
       >
+        {r?.code && (
+          <pre className="mb-3 max-h-40 overflow-auto rounded-lg border border-line bg-canvas/60 px-3 py-2 font-mono text-[12px] leading-5 break-all whitespace-pre-wrap text-fg">
+            {r.code}
+          </pre>
+        )}
         {r?.blocked ? null : r?.typeToConfirm ? (
           <TextField
             autoFocus
