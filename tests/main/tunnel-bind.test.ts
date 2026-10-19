@@ -38,6 +38,13 @@ describe('whoHolds', () => {
     expect(r?.command).toBe('x'.repeat(64))
   })
 
+  it('strips bidi, zero-width and separator characters, cutting by code points', async () => {
+    const fake: ExecFile = (_f, _a, _o, cb) => cb(null, 'p7\ncev\u202Eil\u200Bx\u2028\uFEFF\n')
+    expect((await whoHolds(5433, { execFile: fake }))?.command).toBe('evilx')
+    const emoji: ExecFile = (_f, _a, _o, cb) => cb(null, `p7\nc${'\u{1F600}'.repeat(70)}\n`)
+    expect(Array.from((await whoHolds(5433, { execFile: emoji }))!.command)).toHaveLength(64)
+  })
+
   it('gives null on error', async () => {
     expect(await whoHolds(5433, { execFile: (_f, _a, _o, cb) => cb(new Error('exit 1'), '') })).toBeNull()
   })
@@ -80,6 +87,25 @@ describe('listen', () => {
     expect(err.code).toBe('port-in-use')
     expect(err.message).toBe('Port 5433 on 127.0.0.1 is used by tunnel "db replica"')
     expect(createServer).not.toHaveBeenCalled()
+  })
+
+  it('skips the tunnel check for port 0', async () => {
+    const inUseBy = vi.fn(() => 'x')
+    const s = await listen('127.0.0.1', 0, { whoHolds: async () => null, inUseBy })
+    open.push(s)
+    expect(inUseBy).not.toHaveBeenCalled()
+  })
+
+  it('wraps unmapped listen errors in a BindError', async () => {
+    const stub = Object.assign(new EventEmitter(), {
+      listen() {
+        queueMicrotask(() => stub.emit('error', Object.assign(new Error('secret'), { code: 'EMFILE' })))
+      },
+      close() {}
+    }) as unknown as net.Server
+    const err = await listen('127.0.0.1', 9, { whoHolds: async () => null, createServer: () => stub }).catch((e) => e)
+    expect(err).toBeInstanceOf(BindError)
+    expect(err.message).toBe("Couldn't listen on 127.0.0.1:9 (EMFILE)")
   })
 
   it('binds and returns the server', async () => {

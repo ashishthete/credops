@@ -1,5 +1,6 @@
 import { execFile as nodeExecFile } from 'node:child_process'
 import net from 'node:net'
+import { UNSAFE_SSH_CHAR } from '../../shared/inventory'
 import { isLoopback, LSOF_TIMEOUT_MS } from '../../shared/tunnels'
 
 export { isLoopback }
@@ -32,9 +33,11 @@ export const realExecFile: ExecFile = (file, args, options, callback) =>
 
 const MAX_COMMAND_LEN = 64
 
+// Control, format (bidi, zero-width, BOM) and line/paragraph separators, the same set ssh tokens reject.
+const UNSAFE_CHARS = new RegExp(`${UNSAFE_SSH_CHAR.source}|\\p{Zl}|\\p{Zp}`, 'gu')
+
 function cleanCommand(raw: string): string {
-  // eslint-disable-next-line no-control-regex
-  return raw.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').slice(0, MAX_COMMAND_LEN)
+  return Array.from(raw.replace(UNSAFE_CHARS, '')).slice(0, MAX_COMMAND_LEN).join('')
 }
 
 /** Parses `lsof -Fpc` output (`p812\ncpostgres\n`) and returns the first process. */
@@ -103,7 +106,7 @@ export interface ListenDeps {
 /** Binds a listener, mapping the common bind failures to `BindError` with readable messages. */
 export async function listen(address: string, port: number, deps: ListenDeps): Promise<net.Server> {
   const host = address.trim().toLowerCase() === 'localhost' ? '127.0.0.1' : address
-  const other = deps.inUseBy?.(host, port)
+  const other = port === 0 ? null : deps.inUseBy?.(host, port) // port 0 picks a free port, so it can't clash
   if (other) throw new BindError('port-in-use', `Port ${port} on ${host} is used by tunnel "${other}"`)
 
   const server = (deps.createServer ?? (() => net.createServer()))()
@@ -129,7 +132,9 @@ export async function listen(address: string, port: number, deps: ListenDeps): P
     }
     if (code === 'EACCES') throw new BindError('bind-denied', `Port ${port} needs admin rights; pick a port above 1023`)
     if (code === 'EADDRNOTAVAIL') throw new BindError('bind-denied', `${host} isn't an address on this machine`)
-    throw err
+    // Anything else (EMFILE, EINVAL, ...) still surfaces as a BindError; only the errno code is shown.
+    const errno = typeof code === 'string' && /^E[A-Z0-9]{2,20}$/.test(code) ? ` (${code})` : ''
+    throw new BindError('bind-denied', `Couldn't listen on ${host}:${port}${errno}`)
   }
   return server
 }
