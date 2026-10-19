@@ -197,11 +197,14 @@ export function parseTemplate(script: string): ParsedTemplate {
   }
   const inside = (kind: FrameKind): boolean => stack.some((f) => f.kind === kind)
 
-  /** At `c`, which ends a word in a command frame: notes a declaration builtin, and a command's end. */
-  const endWord = (f: Frame, c: string): void => {
+  /**
+   * At `c`, which ends a word in a command frame: notes a declaration builtin, and a command's end. The
+   * ( and ) of an array argument (`declare -a x=(1) …`) end only the word, not the command.
+   */
+  const endWord = (f: Frame, c: string, arrayParen: boolean): void => {
     if (f.wordBegin >= 0 && DECLARATIONS.has(s.slice(f.wordBegin, i).replace(/['"\\]/g, ''))) f.declaration = true
     f.wordBegin = -1
-    if (COMMAND_END.has(c)) f.declaration = false
+    if (COMMAND_END.has(c) && !arrayParen) f.declaration = false
   }
 
   /** At `<<` (not `<<<`): records it, and in a command frame reads the delimiter so its body can be skipped. */
@@ -298,12 +301,13 @@ export function parseTemplate(script: string): ParsedTemplate {
       if (error) throw new TemplateError(error)
       if (s[i - 1] === '$') throw new TemplateError(`{{${name}}} can't follow a $`)
       // A declaration builtin reads `'a'[…]` as a subscript once quotes are removed, so any [ before the
-      // word's first = counts, quoted or not; so does one in an enclosing word (`'a'[$(echo {{n}})]`).
+      // word's first = counts, quoted or not; so does one in an enclosing word (`'a'[$(echo {{n}})]`), and
+      // a $'…' that can spell one (`a$'\x5b'`).
       if (wordStart) f.wordBegin = i
       for (const g of stack) {
         if (!g.declaration || g.wordBegin < 0) continue
         const head = s.slice(g.wordBegin, i)
-        const bracket = head.indexOf('[')
+        const bracket = head.search(/\[|\$'/)
         const equals = head.indexOf('=')
         if (bracket !== -1 && (equals === -1 || bracket < equals)) ambiguity ??= 'declarationSubscript'
       }
@@ -394,7 +398,7 @@ export function parseTemplate(script: string): ParsedTemplate {
     }
     if (c === '$' && dollar(false)) continue
     if (c === '<' && s[i + 1] === '<') {
-      if (command) endWord(f, c)
+      if (command) endWord(f, c, false)
       if (s[i + 2] === '<') {
         i += 3
         wordStart = true
@@ -474,6 +478,7 @@ export function parseTemplate(script: string): ParsedTemplate {
         continue
       }
     }
+    const arrayParen = command && ((c === '(' && (f.assign > 0 || s[i - 1] === '=')) || (c === ')' && f.assign > 0))
     if (command) {
       // A subscript is a `[` stuck to a name (`a[`, `$x[`, `a[0][`); bash keeps it open across blanks,
       // operators and newlines, so it closes only on its matching `]`. A bare `[` (the test command)
@@ -486,7 +491,7 @@ export function parseTemplate(script: string): ParsedTemplate {
       if (c === '(' && (f.assign > 0 || s[i - 1] === '=')) f.assign++
       else if (c === ')' && f.assign > 0) f.assign--
     }
-    if (command && BOUNDARY.has(c)) endWord(f, c)
+    if (command && BOUNDARY.has(c)) endWord(f, c, arrayParen)
     wordStart = BOUNDARY.has(c)
     i++
     if (c === '\n' && command && heredocs.length > 0) skipBodies()
