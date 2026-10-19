@@ -134,7 +134,7 @@ describe('shJoin', () => {
 
 describe('parseTemplate', () => {
   it('parseTemplate finds variables in first-use order and ignores comments', () => {
-    const t = parseTemplate('echo {{a}} {{ b }} {{a}} # {{c}}')
+    const t = parseTemplate('echo {{a}} {{ b }} {{a}} # note c')
     expect(t.variables).toEqual(['a', 'b'])
     expect(t.parts).toEqual([
       { text: 'echo ' },
@@ -143,15 +143,17 @@ describe('parseTemplate', () => {
       { variable: 'b' },
       { text: ' ' },
       { variable: 'a' },
-      { text: ' # {{c}}' },
+      { text: ' # note c' },
     ])
   })
 
   it('treats # as a comment only at the start of a word', () => {
     expect(parseTemplate('echo a#{{v}}').variables).toEqual(['v'])
     expect(parseTemplate('echo ${#x} $# {{v}}').variables).toEqual(['v'])
-    expect(parseTemplate('echo a # note {{c}}\necho {{v}}').variables).toEqual(['v'])
-    expect(parseTemplate('echo $(echo a # {{c}} )\n) {{v}}').variables).toEqual(['v'])
+    expect(parseTemplate('echo a # note c\necho {{v}}').variables).toEqual(['v'])
+    // a comment swallows the ) on its line; only plain prose is allowed next to a variable
+    expect(parseTemplate('echo $(echo a # {{c}} )\n) x').variables).toEqual([])
+    expect(() => parseTemplate('echo $(echo a # note )\n) {{v}}')).toThrow(/comments/)
   })
 
   it('rejects a placeholder inside single or double quotes', () => {
@@ -280,7 +282,7 @@ describe('parseTemplate', () => {
       "printf %s $'a\\\\' {{v}}",
       'printf %s "\\`" {{v}}',
       'printf %s \\"{{v}}',
-      'printf %s a # note {{c}}\nprintf %s {{v}}',
+      'printf %s a # note c\nprintf %s {{v}}',
       'printf %s ${HOME} "${x:-a}" ${#x} {{v}}',
       'case {{v}} in x) echo x;; *) printf %s other;; esac',
       '[ {{v}} = x ] || printf %s no',
@@ -329,21 +331,43 @@ describe('parseTemplate', () => {
     'echo x \\\n{{n}}',
     '(\\\n( {{n}} ))',
     'cat <\\\n<EOF\n{{n}}\nEOF',
+    // fix round 2: [ inside an array assignment, including after declare
+    'a=([{{n}}]=1)',
+    'a=( [{{n}}]=1 )',
+    'a=([1]=x [{{n}}]=1)',
+    'a+=([{{n}}]=1)',
+    'declare -A m=([{{n}}]=1)',
+    'local -a a=( [{{n}}]=1 )',
+    // a subscript closes only on its matching ], whatever operators or newlines sit inside
+    'a[1|{{n}}]=1',
+    'a[1||{{n}}]=1',
+    'a[1&{{n}}]=1',
+    'a[1&&{{n}}]=1',
+    'a[1;{{n}}]=1',
+    'a[x\n{{n}}]=1',
+    'a[b[0]+{{n}}]=1',
+    'echo {{n}}; a[1',
+    // comment text beyond plain prose, which zsh -i reads as code
+    '#<<EOF\necho {{n}}',
+    '# $((\necho {{n}}',
+    '#;((\necho {{n}}',
+    '#;[[\necho {{n}}',
+    'echo {{n}} # $HOME',
+    'echo {{n}} # a{b}',
+    // zsh glob qualifiers that run code
+    'echo *(e:{{n}}:)',
+    "echo *(e'true') {{n}}",
+    'echo *(e"true") {{n}}',
+    'echo *(+f) {{n}}',
   ]
 
-  it('fix round 1: refuses every reported bypass form', () => {
-    for (const script of BYPASS) {
-      expect(message(() => parseTemplate(script))).toMatch(
-        /can't|arithmetic|\[\[|line continuation|comment|here-document/,
-      )
-    }
+  it('refuses every bypass form the security review reported', () => {
+    // message() fails the test unless parseTemplate throws a TemplateError, so no command is ever built
+    for (const script of BYPASS) expect({ script, refused: message(() => parseTemplate(script)) !== '' }).toEqual({ script, refused: true })
   })
 
-  it('fix round 1: a refused form never builds a command, so no shell runs it', () => {
-    // The guard throws at parse, so the render pipeline never produces a string for any shell.
-    for (const script of BYPASS) {
-      expect(() => renderTemplate(parseTemplate(script), { n: '$(touch "$MARKER")' }, {})).toThrow(TemplateError)
-    }
+  it('leaves scripts without variables alone, whatever they contain', () => {
+    for (const script of BYPASS) expect(parseTemplate(script.replaceAll('{{n}}', 'x')).variables).toEqual([])
   })
 
   it('fix round 1: the raw subscript and (( vectors really do run, which is why they are refused', () => {

@@ -16,7 +16,7 @@
  *   runs as such: `eval`, `sh -c`, `bash -c`, `let`, `declare -i`, `typeset`, `local`, `export`,
  *   `readonly`, `unset`, `read`, `read -t`, `printf -v`, `printf %d`, `shift`, `ulimit -n`,
  *   zsh glob qualifiers. That is the same as any trusted script text. So is `n={{n}}; echo $((n+1))`,
- *   which evaluates the value at runtime.
+ *   which evaluates the value at runtime, and a `typeset -A` / `declare -A` literal built at runtime.
  */
 import { MAX_SCRIPT, MAX_VARIABLE_VALUE, MAX_VARIABLES, VARIABLE_NAME } from '../../shared/ops'
 
@@ -70,8 +70,10 @@ interface Frame {
   depth: number
   /** arith only: what closes it. */
   close: ')' | ']'
-  /** top and subshell only: unclosed [ in the current word, an array subscript the shell evaluates. */
+  /** top and subshell only: unclosed [ of an array subscript the shell evaluates, with nesting. */
   bracket: number
+  /** top and subshell only: open ( of an array assignment `NAME=(…)` or `NAME+=(…)`. */
+  assign: number
 }
 
 const QUOTED = (name: string) => `{{${name}}} is inside quotes; remove them, OpsDeck quotes values itself`
@@ -88,7 +90,9 @@ const AMBIGUOUS = {
   arithParen: "a script with variables can't open $(( or (( as a subshell; put a space between the parentheses",
   doubleParen: "a script with variables can't use (( arithmetic; pass the value through a variable and validate it",
   doubleBracket: "a script with variables can't use [[ ]]; use case or pass the value through a variable and validate it",
-  quotedComment: "a script with variables can't have a comment that contains ' \" ` or \\",
+  commentText: 'a script with variables can only have comments made of letters, digits, spaces and . , : _ / = + -',
+  arrayLiteral: "a script with variables can't use [ inside an array assignment ( ); assign the elements one by one",
+  globQualifier: "a script with variables can't use a zsh glob qualifier (e: or (+",
   lineContinuation: "a script with variables can't use a backslash-newline line continuation; join the line or end it",
   unterminated: 'a script with variables has an unterminated quote, bracket or substitution',
 } as const
@@ -96,8 +100,8 @@ const AMBIGUOUS = {
 const BLANK = new Set([' ', '\t'])
 /** Ends a word in unquoted shell text. */
 const BOUNDARY = new Set([' ', '\t', '\n', ';', '&', '|', '(', ')', '<', '>'])
-/** Closes an open array subscript `[`: a shell keeps one open across blanks, operators and parens. */
-const BRACKET_END = new Set(['\n', ';', '&', '|'])
+/** What a comment in a script with variables may contain after the `#`. */
+const COMMENT_TEXT = /^[A-Za-z0-9 \t.,:_/=+-]*$/
 /** A character before `[` that makes it an array subscript the shell evaluates, not a test or glob bracket. */
 const NAME_BEFORE_BRACKET = /[A-Za-z0-9_\]}]/
 const DOUBLE_ESCAPES = new Set(['$', '`', '"', '\\', '\n'])
@@ -154,7 +158,7 @@ export function parseTemplate(script: string): ParsedTemplate {
   const s = script
   if (s.length > MAX_SCRIPT) throw new TemplateError(`the script is longer than ${MAX_SCRIPT} characters`)
 
-  const frame = (kind: FrameKind, close: ')' | ']' = ')'): Frame => ({ kind, depth: 0, close, bracket: 0 })
+  const frame = (kind: FrameKind, close: ')' | ']' = ')'): Frame => ({ kind, depth: 0, close, bracket: 0, assign: 0 })
   const stack: Frame[] = [frame('top')]
   const parts: ParsedTemplate['parts'] = []
   const variables: string[] = []
@@ -395,15 +399,17 @@ export function parseTemplate(script: string): ParsedTemplate {
     if (wordStart && c === '#' && f.kind !== 'cond') {
       const nl = s.indexOf('\n', i)
       const comment = s.slice(i, nl === -1 ? s.length : nl)
-      // Shells with interactive_comments off (zsh -i) read # literally, so a quote or escape in a
-      // "comment" keeps parsing; refuse those rather than guess which shell reads it.
-      if (/['"`\\]/.test(comment)) ambiguity ??= 'quotedComment'
+      // Shells with interactive_comments off (zsh -i) read # literally, so comment text keeps
+      // parsing as code; allow only plain prose rather than chase each construct.
+      if (!COMMENT_TEXT.test(comment.slice(1))) ambiguity ??= 'commentText'
       i = nl === -1 ? s.length : nl
       continue
     }
     if (command) {
       // `[[` and `((` open code the moment they appear, after a reserved word or `(` just as at a word
       // start (`for((`, `if((`, `then((`, `[[(`); refuse the token anywhere, not only where it is clean.
+      // zsh glob qualifiers run code: *(e:…:), *(+fn)
+      if (c === '(' && /^\((?:e[:'"]|\+)/.test(s.slice(i, i + 3))) ambiguity ??= 'globQualifier'
       if (s.startsWith('[[', i)) {
         ambiguity ??= 'doubleBracket'
         push(frame('cond'))
@@ -422,18 +428,21 @@ export function parseTemplate(script: string): ParsedTemplate {
     if (c === ')' && f.kind === 'subshell') {
       if (f.depth > 0) f.depth--
       else {
+        if (f.bracket > 0) ambiguity ??= 'unterminated'
         pop()
         i++
         continue
       }
     }
     if (command) {
-      // A subscript is a `[` stuck to a name (`a[`, `$x[`, `a[0][`); a shell keeps it open across
-      // blanks and operators, so `a[ {{n}} ]` and `a[1 + {{n}}]` evaluate the value. Keep it open until
-      // a `]`, newline, `;`, `&` or `|`. A bare `[` (the test command) or a `[...]` glob is not a subscript.
-      if (c === '[' && NAME_BEFORE_BRACKET.test(s[i - 1] ?? '')) f.bracket++
+      // A subscript is a `[` stuck to a name (`a[`, `$x[`, `a[0][`); bash keeps it open across blanks,
+      // operators and newlines, so it closes only on its matching `]`. A bare `[` (the test command)
+      // or a `[...]` glob is not a subscript. Inside an array assignment `NAME=(…)` any `[` is refused.
+      if (c === '[' && f.assign > 0) ambiguity ??= 'arrayLiteral'
+      if (c === '[' && (f.bracket > 0 || NAME_BEFORE_BRACKET.test(s[i - 1] ?? ''))) f.bracket++
       else if (c === ']' && f.bracket > 0) f.bracket--
-      else if (f.bracket > 0 && BRACKET_END.has(c)) f.bracket = 0
+      if (c === '(' && (f.assign > 0 || s[i - 1] === '=')) f.assign++
+      else if (c === ')' && f.assign > 0) f.assign--
     }
     wordStart = BOUNDARY.has(c)
     i++
@@ -444,7 +453,7 @@ export function parseTemplate(script: string): ParsedTemplate {
   if (variables.length > 0) {
     if (hasHeredoc) throw new TemplateError(HEREDOC)
     if (ambiguity) throw new TemplateError(AMBIGUOUS[ambiguity])
-    if (stack.length > 1) throw new TemplateError(AMBIGUOUS.unterminated)
+    if (stack.length > 1 || stack[0].bracket > 0) throw new TemplateError(AMBIGUOUS.unterminated)
   }
   return { parts, variables }
 }
