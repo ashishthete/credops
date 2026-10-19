@@ -136,12 +136,17 @@ export interface RunOutput {
   hostId: string
   text: string
   errRanges: [number, number][]
+  /** Chars ever appended for this host (not trimmed): the `end` of its latest output event once flushed. */
+  total: number
 }
 
-/** stdout and stderr interleave into one stream per host; stderr chunks carry `stream: 'err'`. */
+/**
+ * stdout and stderr interleave into one stream per host; stderr chunks carry `stream: 'err'`.
+ * `end` is the host's total chars appended after the chunk, so a reader can tell what a snapshot already holds.
+ */
 export type RunEvent =
   | { runId: string; kind: 'host'; host: RunHostMeta }
-  | { runId: string; kind: 'output'; hostId: string; chunk: string; stream?: 'err' }
+  | { runId: string; kind: 'output'; hostId: string; chunk: string; stream?: 'err'; end: number }
   | { runId: string; kind: 'run'; run: RunSummary }
 
 export const CONTAINER_STATES = ['running', 'exited', 'paused', 'restarting', 'created', 'dead', 'removing', 'unknown'] as const

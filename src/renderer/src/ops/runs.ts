@@ -1,4 +1,4 @@
-import { useRef, useSyncExternalStore } from 'react'
+import { useSyncExternalStore } from 'react'
 import { MAX_ERR_RANGES, RUN_OUTPUT_CHARS, type RunEvent, type RunHostMeta, type RunOutput, type RunSummary } from '../../../shared/ops'
 import { api } from '../lib/api'
 import { fail } from '../ui/common'
@@ -13,6 +13,7 @@ export interface RunsState {
 
 /** A host's buffered text; `errRanges` are [start, end) offsets into it where stderr wrote. */
 export type HostOutput = Omit<RunOutput, 'hostId'>
+// `total` is the host's chars ever appended that this text has applied; events at or below it are duplicates.
 
 const EMPTY: RunsState = { runs: [], selectedId: null }
 
@@ -25,7 +26,7 @@ export const runOutputStore = createStore<Record<string, Record<string, HostOutp
 
 /** Bumped by resetOps; a load that started before it must not repopulate the stores. */
 let generation = 0
-/** The latest load per run; output events for a run being loaded are older than its snapshot and are dropped. */
+/** The latest load per run: a reply from a superseded load is ignored. */
 const loads = new Map<string, number>()
 let loadSeq = 0
 let syncUsers = 0
@@ -47,20 +48,19 @@ export function resetOps(): void {
  */
 export function appendOutput(prev: HostOutput | undefined, chunk: string, err: boolean): HostOutput {
   let text = (prev?.text ?? '') + chunk
-  let ranges = (prev?.errRanges ?? []).map((r): [number, number] => [r[0], r[1]])
+  let ranges = prev?.errRanges ?? []
   if (err && chunk) {
     const start = text.length - chunk.length
     const last = ranges[ranges.length - 1]
-    if (last && last[1] === start) last[1] = text.length
-    else ranges.push([start, text.length])
+    ranges = last && last[1] === start ? [...ranges.slice(0, -1), [last[0], text.length]] : [...ranges, [start, text.length]]
   }
   const cut = text.length - RUN_OUTPUT_CHARS
   if (cut > 0) {
     text = text.slice(cut)
     ranges = ranges.map((r): [number, number] => [Math.max(0, r[0] - cut), r[1] - cut]).filter((r) => r[1] > r[0])
   }
-  while (ranges.length > MAX_ERR_RANGES) ranges.splice(0, 2, [ranges[0][0], ranges[1][1]])
-  return { text, errRanges: ranges }
+  while (ranges.length > MAX_ERR_RANGES) ranges = [[ranges[0][0], ranges[1][1]], ...ranges.slice(2)]
+  return { text, errRanges: ranges, total: (prev?.total ?? 0) + chunk.length }
 }
 
 function dropOutput(runId: string): void {
@@ -91,24 +91,31 @@ function applyHost(runId: string, host: RunHostMeta): void {
   })
 }
 
-function applyOutput(runId: string, hostId: string, chunk: string, err: boolean): void {
-  if (loads.has(runId)) return
+function applyOutput(runId: string, hostId: string, chunk: string, err: boolean, end: number): void {
   const { runs, selectedId } = runStore.get()
   const run = runs.find((r) => r.id === runId)
   // Output is kept for the selected run and active ones; a run not seen yet is about to be.
   if (run && run.state !== 'running' && selectedId !== runId) return
   const all = runOutputStore.get()
   const hosts = all[runId] ?? {}
-  runOutputStore.set({ ...all, [runId]: { ...hosts, [hostId]: appendOutput(hosts[hostId], chunk, err) } })
+  const prev = hosts[hostId]
+  const applied = prev?.total ?? 0
+  // A snapshot may already hold this chunk, or part of it.
+  if (end <= applied) return
+  const fresh = end - applied < chunk.length ? chunk.slice(chunk.length - (end - applied)) : chunk
+  const next = appendOutput(prev, fresh, err)
+  runOutputStore.set({ ...all, [runId]: { ...hosts, [hostId]: { ...next, total: end } } })
+  // Events were missed (this run's output was never loaded, or an event was lost): the reload fills the hole.
+  if (end - chunk.length > applied && !loads.has(runId)) void loadRun(runId)
 }
 
 function applyRunEvent(event: RunEvent): void {
   if (event.kind === 'run') upsertRun(event.run)
   else if (event.kind === 'host') applyHost(event.runId, event.host)
-  else applyOutput(event.runId, event.hostId, event.chunk, event.stream === 'err')
+  else applyOutput(event.runId, event.hostId, event.chunk, event.stream === 'err', event.end)
 }
 
-/** Fills a run from `runs:get`; output events that arrived before the reply are in the snapshot and are dropped. */
+/** Fills a run from `runs:get`. Output the snapshot already holds is skipped by offset; a failed load loses nothing. */
 export async function loadRun(id: string): Promise<void> {
   const started = generation
   const token = ++loadSeq
@@ -118,10 +125,15 @@ export async function loadRun(id: string): Promise<void> {
     if (started !== generation || loads.get(id) !== token) return
     loads.delete(id)
     upsertRun(run)
-    const hosts: Record<string, HostOutput> = {}
-    for (const o of output) hosts[o.hostId] = { text: o.text, errRanges: o.errRanges }
     const { selectedId } = runStore.get()
-    if (run.state === 'running' || selectedId === id) runOutputStore.set({ ...runOutputStore.get(), [id]: hosts })
+    if (run.state !== 'running' && selectedId !== id) return
+    const all = runOutputStore.get()
+    const hosts = { ...all[id] }
+    for (const o of output) {
+      // Events applied after the snapshot was taken are newer than it.
+      if ((hosts[o.hostId]?.total ?? 0) <= o.total) hosts[o.hostId] = { text: o.text, errRanges: o.errRanges, total: o.total }
+    }
+    runOutputStore.set({ ...all, [id]: hosts })
   } catch (err) {
     if (loads.get(id) === token) loads.delete(id)
     if (started === generation) fail("Couldn't load the run", err)
@@ -150,11 +162,13 @@ async function loadRuns(): Promise<void> {
   try {
     const list = await api.invoke('runs:list')
     if (started !== generation || !list) return
-    runStore.set({ ...runStore.get(), runs: list })
-    const kept = new Set(list.map((r) => r.id))
-    for (const id of Object.keys(runOutputStore.get())) if (!kept.has(id)) dropOutput(id)
+    // Events applied since subscribing are newer than the list; a run only the list knows is added.
+    const s = runStore.get()
+    const mine = new Map(s.runs.map((r) => [r.id, r]))
+    const listed = new Set(list.map((r) => r.id))
+    runStore.set({ ...s, runs: [...s.runs.filter((r) => !listed.has(r.id)), ...list.map((r) => mine.get(r.id) ?? r)] })
     // A run already going when the shell mounted has output we never saw.
-    for (const r of list) if (r.state === 'running' && !runOutputStore.get()[r.id]) void loadRun(r.id)
+    for (const r of runStore.get().runs) if (r.state === 'running' && !runOutputStore.get()[r.id] && !loads.has(r.id)) void loadRun(r.id)
   } catch (err) {
     fail("Couldn't load your runs", err)
   }
@@ -185,12 +199,7 @@ export function startOpsSync(): () => void {
 
 export const runningCount = () => runStore.get().runs.filter((r) => r.state === 'running').length
 
-/** One run with a stable identity until it changes. */
+/** One run, re-rendering only when it changes. */
 export function useRun(id: string | null): RunSummary | undefined {
-  const cache = useRef<RunSummary | undefined>(undefined)
-  return useSyncExternalStore(runStore.subscribe, () => {
-    const run = id ? runStore.get().runs.find((r) => r.id === id) : undefined
-    if (cache.current !== run) cache.current = run
-    return cache.current
-  })
+  return useSyncExternalStore(runStore.subscribe, () => (id ? runStore.get().runs.find((r) => r.id === id) : undefined))
 }

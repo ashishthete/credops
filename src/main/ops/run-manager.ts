@@ -62,7 +62,7 @@ interface Host {
   meta: RunHostMeta
   ring: OutputRing
   /** Output not yet emitted, in order; consecutive chunks of one stream are joined. */
-  pending: { stream: 'out' | 'err'; text: string }[]
+  pending: { stream: 'out' | 'err'; text: string; end: number }[]
   pendingChars: number
   /** Aborts the lease, then the exec: a cancel, or a lock while it dials. */
   abort: AbortController
@@ -270,7 +270,7 @@ export class RunManager {
           const before = h.ring.length
           const { text, errRanges } = h.ring.snapshot()
           this.total -= before - text.length
-          return { hostId: h.meta.hostId, text, errRanges }
+          return { hostId: h.meta.hostId, text, errRanges, total: h.ring.total }
         })
     return { run: this.summary(run), output }
   }
@@ -449,8 +449,10 @@ export class RunManager {
     h.ring.append(chunk, stream)
     this.total += h.ring.length - before
     const last = h.pending.at(-1)
-    if (last?.stream === stream) last.text += chunk
-    else h.pending.push({ stream, text: chunk })
+    if (last?.stream === stream) {
+      last.text += chunk
+      last.end = h.ring.total
+    } else h.pending.push({ stream, text: chunk, end: h.ring.total })
     h.pendingChars += chunk.length
     if (h.pendingChars >= OUTPUT_FLUSH_CHARS) this.flushHost(run, h)
     else if (run.flushTimer === null) run.flushTimer = this.timers.setTimeout(() => this.flush(run), OUTPUT_FLUSH_MS)
@@ -471,6 +473,7 @@ export class RunManager {
         kind: 'output',
         hostId: h.meta.hostId,
         chunk: p.text,
+        end: p.end,
         ...(p.stream === 'err' ? { stream: 'err' as const } : {}),
       })
     }

@@ -11,6 +11,7 @@ export class OutputRing {
   private text = ''
   private ranges: [number, number][] = []
   truncated = false
+  private appended = 0
 
   constructor(
     private readonly cap: number,
@@ -22,7 +23,13 @@ export class OutputRing {
     return this.text.length
   }
 
+  /** Chars ever appended, never trimmed: the offset a chunk ends at, for the renderer to dedupe by. */
+  get total(): number {
+    return this.appended
+  }
+
   append(chunk: string, stream: 'out' | 'err'): void {
+    this.appended += chunk.length
     const start = this.text.length
     this.text += chunk
     if (stream === 'err' && chunk !== '') {

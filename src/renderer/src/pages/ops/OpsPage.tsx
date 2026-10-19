@@ -18,13 +18,12 @@ export function OpsPage() {
       <header className="app-drag flex h-16 shrink-0 items-end px-8 pb-3">
         <h1 className="text-[19px] font-semibold tracking-tight text-fg">Ops</h1>
       </header>
-      <div role="tablist" aria-label="Ops" className="flex gap-1 border-b border-line px-8">
+      <nav aria-label="Ops sections" className="flex gap-1 border-b border-line px-8">
         {TABS.map((t) => (
           <NavLink
             key={t.id}
             to={`/ops/${t.id}`}
-            role="tab"
-            aria-selected={t.id === current.id}
+            aria-current={t.id === current.id ? 'page' : undefined}
             className={`-mb-px flex h-9 items-center gap-2 border-b-2 px-3 text-[13px] font-medium transition-colors ${
               t.id === current.id ? 'border-accent text-fg' : 'border-transparent text-muted hover:text-fg'
             }`}
@@ -33,7 +32,7 @@ export function OpsPage() {
             {t.label}
           </NavLink>
         ))}
-      </div>
+      </nav>
       <div className="flex flex-1 items-center justify-center pb-16">
         <EmptyState icon={current.icon} title={current.blurb} text="" />
       </div>

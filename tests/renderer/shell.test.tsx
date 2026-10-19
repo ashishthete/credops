@@ -128,7 +128,7 @@ describe('shell', () => {
 
   it('/ops redirects to /ops/run', async () => {
     renderShell('/ops')
-    expect(await screen.findByRole('tab', { name: 'Run', selected: true })).toBeInTheDocument()
+    expect(await screen.findByRole('link', { name: 'Run', current: 'page' })).toBeInTheDocument()
   })
 
   it('sections are palette commands while mounted', async () => {

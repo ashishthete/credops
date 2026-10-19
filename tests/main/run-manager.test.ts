@@ -142,12 +142,38 @@ describe('RunManager', () => {
     expect(output[0]!.text).toBe(streamed.slice(-RUN_OUTPUT_CHARS))
   })
 
+  it('output events carry monotonic end offsets that add up to the snapshot total', async () => {
+    const t = await makeRunSetup()
+    const total = RUN_OUTPUT_CHARS + 1000
+    const run = t.runs.start({ target: onHosts(t, ['app-1']), command: text(`yes | head -c ${total}`) })
+    await t.finished(run.id)
+    const chunks = t.outputEvents(run.id)
+    let end = 0
+    for (const c of chunks) {
+      end += c.chunk.length
+      expect(c.end).toBe(end)
+    }
+    expect(end).toBe(total)
+    expect(t.runs.get(run.id).output[0]!.total).toBe(total)
+  })
+
+  it('a snapshot taken while output is still pending reports its total', async () => {
+    const t = await makeRunSetup()
+    const run = t.runs.start({ target: onHosts(t, ['app-1']), command: text('printf abc; sleep 30') })
+    await t.waitFor(() => {
+      if (t.runs.get(run.id).output[0]?.total !== 3) throw new Error('no output yet')
+    })
+    t.runs.cancel(run.id)
+    await t.finished(run.id)
+    expect(t.outputEvents(run.id).at(-1)).toMatchObject({ end: 3 })
+  })
+
   it('tints stderr: chunks carry stream err and the buffer records their ranges', async () => {
     const t = await makeRunSetup()
     const run = t.runs.start({ target: onHosts(t, ['app-1']), command: text('printf out; sleep 0.1; printf err >&2') })
     await t.finished(run.id)
     const { output } = t.runs.get(run.id)
-    expect(output[0]).toEqual({ hostId: t.ids['app-1'], text: 'outerr', errRanges: [[3, 6]] })
+    expect(output[0]).toEqual({ hostId: t.ids['app-1'], text: 'outerr', errRanges: [[3, 6]], total: 6 })
     const chunks = t.outputEvents(run.id)
     expect(chunks.find((c) => c.chunk === 'err')).toMatchObject({ stream: 'err' })
     expect(chunks.find((c) => c.chunk === 'out')).not.toHaveProperty('stream')

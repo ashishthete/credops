@@ -11,6 +11,7 @@ vi.mock('../../src/renderer/src/ui/Toaster', () => ({ toast: vi.fn(() => 'toast-
 
 let stop: (() => void) | null = null
 afterEach(() => {
+  sent = 0
   stop?.()
   stop = null
   resetOps()
@@ -45,7 +46,18 @@ const summary = (over: Partial<RunSummary> = {}): RunSummary => ({
   ...over,
 })
 const send = (e: RunEvent) => act(() => emitBridgeEvent('run:event', e))
-const out = (chunk: string, stream?: 'err'): RunEvent => ({ runId: 'r1', kind: 'output', hostId: 'h1', chunk, stream })
+// Chunks are numbered the way main numbers them: `end` is the host's total after the chunk.
+let sent = 0
+const out = (chunk: string, stream?: 'err'): RunEvent => ({ runId: 'r1', kind: 'output', hostId: 'h1', chunk, stream, end: (sent += chunk.length) })
+const at = (chunk: string, end: number): RunEvent => ({ runId: 'r1', kind: 'output', hostId: 'h1', chunk, end })
+
+type Invoke = Awaited<ReturnType<typeof sync>>
+
+/** Changes one channel's reply without reinstalling the bridge (that would drop the event subscriptions). */
+function override(invoke: Invoke, channel: string, impl: (...args: unknown[]) => unknown) {
+  const prev = invoke.getMockImplementation()!
+  invoke.mockImplementation(async (c: string, ...args: unknown[]) => (c === channel ? impl(...args) : prev(c, ...args)))
+}
 
 async function sync(results: Record<string, unknown> = {}) {
   const invoke = mockBridge(results)
@@ -81,29 +93,111 @@ describe('ops stores', () => {
     expect(runOutputStore.get().r1.h1.errRanges).toEqual([])
   })
 
-  it('a load discards events older than it', async () => {
-    await sync()
+  it('a chunk both in the snapshot and delivered after the reply is applied once', async () => {
+    const invoke = await sync()
     await send({ runId: 'r1', kind: 'run', run: summary() })
+    await send(out('abc'))
     let release!: (v: unknown) => void
-    const gate = new Promise((r) => (release = r))
-    const invoke = mockBridge({ 'runs:get': gate })
-    stop?.()
-    stop = startOpsSync()
-    await flush()
+    override(invoke, 'runs:get', () => new Promise((r) => (release = r)))
     const loading = loadRun('r1')
-    await send(out('old\n'))
-    release({ run: summary(), output: [{ hostId: 'h1', text: 'snapshot\n', errRanges: [] }] })
+    release({ run: summary(), output: [{ hostId: 'h1', text: 'abcdef', errRanges: [], total: 6 }] })
     await act(async () => void (await loading))
-    await send(out('new\n'))
-    expect(runOutputStore.get().r1.h1.text).toBe('snapshot\nnew\n')
-    expect(invoke).toHaveBeenCalledWith('runs:get', 'r1')
+    await send(at('def', 6)) // in the snapshot already
+    await send(at('gh', 8))
+    expect(runOutputStore.get().r1.h1).toMatchObject({ text: 'abcdefgh', total: 8 })
+  })
+
+  it('applies only the part of a chunk the snapshot lacks, keeping stderr ranges right', async () => {
+    const invoke = await sync()
+    await send({ runId: 'r1', kind: 'run', run: summary() })
+    override(invoke, 'runs:get', () => ({ run: summary(), output: [{ hostId: 'h1', text: 'abcd', errRanges: [], total: 4 }] }))
+    await act(async () => loadRun('r1'))
+    await send({ runId: 'r1', kind: 'output', hostId: 'h1', chunk: 'cdEE', stream: 'err', end: 6 })
+    const o = runOutputStore.get().r1.h1
+    expect(o.text).toBe('abcdEE')
+    expect(o.errRanges).toEqual([[4, 6]])
+  })
+
+  it('a gap in the offsets reloads the run once', async () => {
+    const invoke = await sync()
+    await send({ runId: 'r1', kind: 'run', run: summary() })
+    await send(at('ab', 2))
+    await send(at('ef', 6)) // chars 3-4 were missed
+    await send(at('gh', 8))
+    await flush()
+    expect(invoke.mock.calls.filter((c) => c[0] === 'runs:get')).toHaveLength(1)
+  })
+
+  it('a failed load leaves the events applied', async () => {
+    const invoke = await sync()
+    await send({ runId: 'r1', kind: 'run', run: summary() })
+    await send(out('one '))
+    override(invoke, 'runs:get', () => {
+      throw new Error('boom')
+    })
+    await act(async () => loadRun('r1'))
+    await send(out('two'))
+    expect(runOutputStore.get().r1.h1.text).toBe('one two')
+  })
+
+  it('a reply after resetOps does not repopulate the stores', async () => {
+    const invoke = await sync()
+    let releaseRun!: (v: unknown) => void
+    let releaseList!: (v: unknown) => void
+    override(invoke, 'runs:get', () => new Promise((r) => (releaseRun = r)))
+    override(invoke, 'containers:list', () => new Promise((r) => (releaseList = r)))
+    const loading = loadRun('r1')
+    const containers = loadContainers('h1', null)
+    resetOps()
+    releaseRun({ run: summary(), output: [] })
+    releaseList({ containers: [], truncated: false, skipped: 0, fetchedAt: 'x' })
+    await act(async () => void (await Promise.all([loading, containers])))
+    expect(runStore.get().runs).toEqual([])
+    expect(containerStore.get()).toEqual({})
+  })
+
+  it('the reply of a superseded load is ignored', async () => {
+    const invoke = await sync()
+    const replies: ((v: unknown) => void)[] = []
+    override(invoke, 'runs:get', () => new Promise((r) => replies.push(r)))
+    const first = loadRun('r1')
+    const second = loadRun('r1')
+    replies[0]({ run: summary({ title: 'old' }), output: [] })
+    await act(async () => void (await first))
+    expect(runStore.get().runs).toEqual([])
+    replies[1]({ run: summary({ title: 'new' }), output: [] })
+    await act(async () => void (await second))
+    expect(runStore.get().runs[0].title).toBe('new')
+  })
+
+  it('the last latest container load wins', async () => {
+    const invoke = await sync()
+    const replies: ((v: unknown) => void)[] = []
+    override(invoke, 'containers:list', () => new Promise((r) => replies.push(r)))
+    const a = loadContainers('h1', null)
+    const b = loadContainers('h1', null)
+    const list = (fetchedAt: string) => ({ containers: [], truncated: false, skipped: 0, fetchedAt })
+    replies[1](list('new'))
+    replies[0](list('old'))
+    await act(async () => void (await Promise.all([a, b])))
+    expect(containerStore.get()[containerKey('h1', null)].list?.fetchedAt).toBe('new')
+  })
+
+  it('a run list reply keeps entries that events already updated', async () => {
+    mockBridge({ 'runs:list': [summary({ title: 'stale' })] })
+    stop = startOpsSync()
+    await send({ runId: 'r1', kind: 'run', run: summary({ title: 'fresh' }) })
+    await flush()
+    expect(runStore.get().runs.map((r) => r.title)).toEqual(['fresh'])
   })
 
   it('keeps output only for the selected and active runs', async () => {
-    await sync({ 'runs:get': { run: summary({ state: 'done' }), output: [{ hostId: 'h1', text: 'back\n', errRanges: [] }] } })
+    await sync({ 'runs:get': { run: summary({ state: 'done' }), output: [{ hostId: 'h1', text: 'back\n', errRanges: [], total: 5 }] } })
     await send({ runId: 'r1', kind: 'run', run: summary() })
     await send(out('live\n'))
     await send({ runId: 'r1', kind: 'run', run: summary({ state: 'done', endedAt: STAMP }) })
+    expect(runOutputStore.get().r1).toBeUndefined()
+    await send(at('late', 100)) // a finished, unselected run keeps nothing
     expect(runOutputStore.get().r1).toBeUndefined()
     await act(async () => selectRun('r1'))
     await flush()
@@ -119,9 +213,13 @@ describe('ops stores', () => {
     expect(invoke.mock.calls.filter((c) => c[0] === 'runs:list')).toHaveLength(1)
     await send({ runId: 'r1', kind: 'run', run: summary({ id: 'r2', state: 'running' }) })
     // One event, one subscription: a duplicate would double the output.
-    await send({ runId: 'r2', kind: 'output', hostId: 'h1', chunk: 'a' })
+    await send({ runId: 'r2', kind: 'output', hostId: 'h1', chunk: 'a', end: 1 })
     expect(runOutputStore.get().r2.h1.text).toBe('a')
     stop2()
+    stop?.()
+    stop = null
+    await send({ runId: 'r2', kind: 'output', hostId: 'h1', chunk: 'b', end: 2 })
+    expect(runOutputStore.get().r2.h1.text).toBe('a') // the last user left: no subscription
     followStore.set({ f1: 'text' })
     containerStore.set({ k: { list: null, loading: false, error: null, busy: {} } })
     snippetStore.set({ snippets: [], loaded: true })
@@ -138,6 +236,15 @@ describe('ops stores', () => {
     act(() => emitBridgeEvent('containers:logs', { followId: 'f1', chunk: 'a' }))
     act(() => emitBridgeEvent('containers:logs', { followId: 'f1', chunk: 'b' }))
     expect(followStore.get().f1).toBe('ab')
+  })
+
+  it('keeps the text of at most six ended follows', async () => {
+    await sync()
+    for (let i = 0; i < 8; i++) {
+      act(() => emitBridgeEvent('containers:logs', { followId: `f${i}`, chunk: 'x' }))
+      act(() => emitBridgeEvent('containers:logs', { followId: `f${i}`, ended: true, error: null }))
+    }
+    expect(Object.keys(followStore.get())).toEqual(['f2', 'f3', 'f4', 'f5', 'f6', 'f7'])
   })
 
   it('loads containers per host and environment', async () => {
