@@ -45,7 +45,7 @@ every failure can be explained, all without a single secret leaving the machine:
     - `dispatcher.ts`: routes run and tunnel events to channels, dedupes
       through `notification_log`, and queues sends while the vault is locked;
     - `qa.ts`: GitHub dispatch and the optional wait.
-  - **`notify/finalize.ts`:** implements Phase 8's local finalize steps (release
+  - **`notify/finalize.ts`:** implements Phase 8's `FinalizeSteps` (release
     notes, Teams, email, QA) on top of the modules above.
 - **Secret values are read only in main**, through `SecretStore.value(id)`, at
   the moment of sending. They are never cached past one send, never put in an
@@ -58,7 +58,8 @@ every failure can be explained, all without a single secret leaving the machine:
     `ExplainPanel` drawer;
   - `pages/settings/` holds `IntegrationsPage`;
   - the Notifications section lives in `EnvironmentDialog`;
-  - Explain entry points go on the Phase 8 run view, `SessionEnded` and
+  - Explain entry points go on the Phase 8 `FailurePanel`
+    (`registerFailureAction`), `SessionEnded` and
     `TunnelCard`.
 
 **Tech Stack:**
@@ -92,75 +93,105 @@ every failure can be explained, all without a single secret leaving the machine:
 Roadmap and contracts: `docs/superpowers/plans/2026-10-16-roadmap.md`.
 Conventions: the Phase 3–5 plans in the same folder.
 
-## Assumed upstream interfaces (FLAG: Phase 8 plan not available when this was written)
+## Upstream interfaces (Phase 8, reconciled)
 
-The Phase 8 plan (`2026-10-19-phase8-deployments*.md`) did not exist in the
-phase8 worktree while this plan was written, and neither did the Phase 7 plan.
-Phase 9 consumes **only** the names below. **Before Task 1, the controller
-rebases onto Phase 8 and maps each name to what Phase 8 really shipped.** A
-rename is a mechanical edit to this plan. A missing capability is added as a
-small Phase 8 follow-up inside Task 6, and the controller rules on it.
+Reconciled against the real Phase 8 plans at `dec242a` on
+`phase8-deployments`: `2026-10-19-phase8-deployments.md` (8a) and
+`2026-10-19-phase8-deployments-8b.md` (8b). Phase 9 consumes only the names
+below.
 
-From `src/shared/deploy.ts` (Phase 8):
-- **`RunEvent`**, the append-only stream (§8.4): `{ id: string /* UUIDv7 */; runId: string; at: string } & (...)`.
-  It is a union on `type`:
-  - `'run.started'`;
-  - `'step.started' { stepId; name; hostId? }`;
-  - `'log' { stepId; line }`;
-  - `'step.done' { stepId }`;
-  - `'step.failed' { stepId; error: string }`;
-  - `'rollback.started'`;
-  - `'rollback.done'`;
-  - `'run.finished' { status: 'succeeded' | 'failed' | 'rolled_back' | 'cancelled' }`.
-- **`ReleaseRunMeta`**, read through the store/runner:
-  - `id`, `releaseId`, `deploymentId`, `deploymentName`;
-  - `productId`, `productName`;
-  - `environmentId`;
-  - `hostIds: string[]`;
-  - `version: string | null`, `previousVersion: string | null`;
-  - `commits: CommitInfo[]`, where `CommitInfo = { sha: string; subject: string; body?: string }`;
-  - `options: { backup: boolean; notify: boolean; qa: boolean }`;
-  - `releaseNotes: string | null`;
-  - `startedAt`, `finishedAt: string | null`;
-  - `actor: { osUser; machine }`;
-  - `urls: string[]`, the app URLs shown in messages, if Phase 8 has them;
-    otherwise `[]`.
-- **The `DeployRunner` boundary** (main):
-  - `onEvent(fn: (e: RunEvent) => void): () => void`, the main-side
-    subscription, which plays the same role as `TunnelManager.onEvent`;
-  - `runMeta(runId): ReleaseRunMeta`;
-  - `events(runId)`, used to read the last log lines of a failed step;
-  - the renderer receives `deploy:event`.
-- **The finalize seam.** Phase 8 runs its local finalize steps after the
-  playbook, through an injectable object that is a no-op by default:
+From `src/shared/deploy.ts` and `src/main/deploy/` (8a):
+- **`RunEvent = RunEventBase & RunEventBody`**, where `RunEventBase` is
+  `{ id /* UUIDv7 */; runId /* = releaseId */; seq; at }`. The **release id is
+  the stream id**. Phase 9 reads these body types:
+  - `run.started { kind: ReleaseKind; version }`;
+  - `step.started { stepId; kind: StepKind; name; hostId; deploymentRunId }`;
+  - `step.failed { stepId; error; durationMs }`;
+  - `log { stepId; hostId; stream; line }`;
+  - `preflight.done { report: PreflightReport }`;
+  - `run.finished { status: 'succeeded' | 'failed' | 'rolled_back' | 'cancelled'; error? }`.
+- **`CommitInfo { sha; subject; author; date; deploymentId }`.** It has no
+  body. `author` is **never** sent to Claude.
+- **`ReleaseOptions { backup; notify; qa }`**, with defaults `notify: true`
+  and `qa: false`. Phase 8 stores `notify` and `qa` for Phase 9.
+- **`ReleaseRunMeta`** (`finalize.ts`):
+  - `id` (= `releaseId`), `kind`, `status`;
+  - `environmentId`, `environmentName`, `productId`, `productName`;
+  - `deployments: { id; name; hostId; hostLabel; status; previousCommit; deployedCommit }[]`.
+    Phase 9 uses the deployment names and host *labels* from here; there is
+    no single `deploymentName`;
+  - `hostIds`, `version`, `previousVersion`;
+  - `commits`, `options`, `releaseNotes`, **`redeploy: boolean`**;
+  - `startedAt`, `finishedAt`, `actor: Actor`, `urls`.
+- **`FinalizeSteps` / `FinalizeContext`**, adopted verbatim, with
+  `noopFinalize` as the default:
   ```ts
-  interface FinalizeSteps {
-    releaseNotes(ctx: FinalizeContext): Promise<string | null>   // returns notes stored on the release
-    notify(ctx: FinalizeContext): Promise<void>                   // Teams + email for 'succeeded'
-    qa(ctx: FinalizeContext): Promise<void>                       // workflow_dispatch
-  }
   interface FinalizeContext { run: ReleaseRunMeta; log(line: string): void; signal: AbortSignal }
+  interface FinalizeSteps {
+    releaseNotes(ctx: FinalizeContext): Promise<string | null>
+    notify(ctx: FinalizeContext): Promise<void>
+    qa(ctx: FinalizeContext): Promise<void>
+  }
   ```
-  Each call shows as its own step in the pipeline, and a throw marks only that
-  step as failed. A failed notification never fails or rolls back a release.
-- **Pre-run commits.** The deploy confirm dialog (Phase 8) has the commit list
-  before the run starts: `deploy:plan → { commits: CommitInfo[], ... }`. It
-  accepts an optional `releaseNotes` that is stored on the release. Phase 9
-  mounts `ReleaseNotesEditor` in that dialog.
-- **The run view** (renderer, Phase 8) has a failed-step area where Task 11
-  mounts the *Explain & fix* button. The selector is `stepId`.
-- **Compose snippet:** `DeployStore.composeSnippet(deploymentId): string | null`.
-  If Phase 8 has no such accessor, the snippet is left out of the AI context
-  and nothing else changes.
-- **Environment columns:** Phase 8 may already add `qa_on_deploy`,
-  `qa_workflow` or `email_to`/`email_cc` (§7). Task 1's
-  `environment_integrations` table owns them **unless** Phase 8 did. For each
-  one Phase 8 owns, Task 1 drops that column from its table, and
-  `IntegrationStore` reads and writes Phase 8's column. The shared
-  `EnvironmentIntegrations` type doesn't change.
-- **Migrations:** by controller ruling (recorded in the Phase 7 plan), Phase 7
-  = 6, Phase 8 = 7 and **Phase 9 = 8**. The number is never renumbered when
-  other phase branches merge.
+  - They run **only after a successful release**, in the order notes →
+    notify → qa.
+  - The steps are `release:finalize_notes`, `release:finalize_notify` and
+    `release:finalize_qa`. A throw fails only that step; the release stays
+    `succeeded`.
+  - Phase 9 passes `createFinalizeSteps(...)` as `ReleaseService`'s
+    `finalize` dep in `index.ts`.
+- **On `ReleaseService`** (main):
+  - `onEvent(fn: (e: RunEvent) => void): () => void`, the main-side
+    subscription;
+  - `runMeta(id): ReleaseRunMeta`;
+  - `detail(id): ReleaseDetail`;
+  - `events(id, afterSeq, limit)`.
+
+  The runner's own `DeployRunner.onEvent` is internal, and Phase 9 doesn't
+  use it.
+- **IPC used by Phase 9's renderer:**
+  - `release:preflight [PreflightRequest] → { releaseId }`. The request
+    carries `releaseNotes?` and `options`;
+  - `release:get [releaseId] → ReleaseDetail`, with `preflight.commits` per
+    deployment and `releaseNotes`;
+  - the `deploy:event` batches, where commits arrive in `preflight.done`;
+  - `release:start(id, { typedName, redeploy })`.
+- **`composeSnippet(id)` always returns `null`**, because the compose file
+  lives on the host. The run context calls it and leaves the snippet out.
+  The `envBlocks` redaction path is still built and is tested with a fake
+  snippet.
+- **Environment columns:** Phase 8 leaves `qa_on_deploy`, `qa_workflow`,
+  `email_to/cc`, `notify_events` and `teams_webhook_secret_id` to Phase 9.
+  `environment_integrations` owns all of them, as specified.
+- **Migrations:** by controller ruling, Phase 7 = 6, Phase 8 = 7 and **Phase
+  9 = 8**. The number is never renumbered when other phase branches merge.
+
+From 8b (renderer):
+- **`registerReleaseNotesEditor(component)`** fills the `ReleaseNotesSlot`
+  in the `ReleaseWizard` *Choose* step. Its value is passed to
+  `release:preflight`.
+- **`registerFailureAction(component)`** fills `FailurePanel` in
+  `ReleaseView`, keyed by `stepId`. Task 11 mounts *Explain & fix* there.
+- **Release route:** `#/deployments/release/<id>`.
+- The wizard's **notify/QA toggles** are disabled with
+  `Available with notifications (Phase 9)` "until Phase 9 registers them".
+
+**Remaining gaps.** These are the only Phase 8 edits left in Phase 9. Both
+are renderer-side or small, and both are listed in the owning task's commit
+body:
+1. **Notes need commits, but the slot sits before preflight.** The *Choose*
+   step comes before preflight, so there are no commits yet.
+   - Task 10 also renders `ReleaseNotesSlot` in the *Confirm* step, with the
+     `releaseId` and the preflight commits. That is a one-line wizard edit.
+   - It adds `release:set-notes [releaseId, notes] → void`:
+     `ReleaseService.setNotes` writes `releases.release_notes` while the
+     status is `ready` or `blocked`, needs the vault unlocked, and is not
+     audited (no content, and the release itself is audited).
+   - In *Choose*, the editor shows only the line "Notes are drafted from the
+     commits after preflight".
+2. **Enabling the notify/QA toggles.** 8b names no registration API. If the
+   rebased code has none, Task 10 adds `registerReleaseOptions({ notify: true, qa: true })`
+   next to `registerReleaseNotesEditor`, in the same registry module.
 
 From Phase 5 (shipped): `TunnelManager.onEvent`, and `TunnelEvent` `failed`
 with `wasUp: true`, meaning "dropped and not recovered".
@@ -202,7 +233,7 @@ renderer `openSsh`, `openLocal` and `session:write`.
   CREATE TABLE notification_log(
     id TEXT PRIMARY KEY,                                    -- UUIDv7
     at TEXT NOT NULL,
-    source_type TEXT NOT NULL CHECK (source_type IN ('run','tunnel','test')),
+    source_type TEXT NOT NULL CHECK (source_type IN ('release','tunnel','test')),  -- release id = run stream id
     source_id TEXT NOT NULL,
     event TEXT NOT NULL,
     channel TEXT NOT NULL CHECK (channel IN ('teams','email','macos','qa')),
@@ -242,8 +273,10 @@ renderer `openSsh`, `openLocal` and `session:write`.
 
   | Source | Event key |
   |---|---|
-  | `run.started` | `release.started` |
-  | `run.finished` `succeeded` | `release.succeeded`, sent **from finalize `notify`**, once notes exist, never from the raw event |
+  | `run.started`, `kind: 'release'` | `release.started` |
+  | `run.started`, `kind: 'rollback'` | nothing (the outcome is what matters) |
+  | `run.finished` `succeeded`, `kind: 'release'` | `release.succeeded`, sent **from finalize `notify`**, once notes exist, never from the raw event |
+  | `run.finished` `succeeded`, `kind: 'rollback'` (a manual rollback) | `release.rolled_back`, from the raw event, because finalize doesn't run for rollbacks |
   | `run.finished` `failed` | `release.failed` |
   | `run.finished` `rolled_back` | `release.rolled_back` |
   | `run.finished` `cancelled` | nothing |
@@ -257,7 +290,8 @@ renderer `openSsh`, `openLocal` and `session:write`.
     `notify.macos`.
   - **The run's `options.notify === false`** turns off Teams and email for
     that run. macOS still fires.
-  - **Zero-commit redeploy (§8.4):** a run with `commits.length === 0` sends
+  - **Zero-commit redeploy (§8.4):** a release with `ReleaseRunMeta.redeploy === true`
+    (Phase 8 sets it when zero commits were confirmed as a redeploy) sends
     no `release.started` and no `release.succeeded` on any channel, writes no
     notes and sends no email. `release.failed` and `release.rolled_back`
     still go out, because an outage is news even on a redeploy. QA follows
@@ -366,12 +400,12 @@ renderer `openSsh`, `openLocal` and `session:write`.
   |---|---|
   | `settings.update` | `fields` (key names only) |
   | `integration.update` | target environment, `fields` |
-  | `notify.send` | `channel`, `event`, `sourceType`, `status`, `code?`; target run or tunnel |
+  | `notify.send` | `channel`, `event`, `sourceType`, `status`, `code?`; target release or tunnel |
   | `notify.test` | `channel` |
   | `qa.dispatch` | `repo`, `workflow`, `ref`, `trigger: 'deploy'|'manual'`; target environment |
   | `qa.finished` | `conclusion` |
   | `ai.release_notes` | `model`, `commits` (count), `redactions` (total), `outcome`, `trigger: 'editor'|'finalize'` |
-  | `ai.explain` | `model`, `subject: 'run'|'session'|'tunnel'`, `redactions`, `outcome`; target is the subject |
+  | `ai.explain` | `model`, `subject: 'release'|'session'|'tunnel'`, `redactions`, `outcome`; target is the subject |
   | `ai.command` | `mode: 'copy'|'run'`, `risk`, `command` (redacted, ≤ 300 chars); target host |
 
   These are **never** recorded:
@@ -526,7 +560,7 @@ src/renderer/src/settings/commands.ts    palette commands (T12)
 - **Produces, in `src/shared/ai.ts`:**
   - `AiErrorCode`, `interface AiError`;
   - `RedactionKind = 'secret'|'key'|'token'|'env'|'url'|'ip'|'host'|'user'|'email'`;
-  - `type ExplainSubject = { kind: 'run'; runId: string; stepId?: string } | { kind: 'session'; sessionId: string } | { kind: 'tunnel'; tunnelId: string }`;
+  - `type ExplainSubject = { kind: 'release'; releaseId: string; stepId: string } | { kind: 'session'; sessionId: string } | { kind: 'tunnel'; tunnelId: string }`;
   - `interface ExplainCommand { title: string; command: string; where: 'host' | 'local'; risk: 'read-only' | 'changes-state' | 'destructive' }`;
   - `interface Explanation`, with these fields:
     - `requestId`;
@@ -819,7 +853,7 @@ src/renderer/src/settings/commands.ts    palette commands (T12)
     `<env> · <deployment|tunnel label> <status>`, and the body is the version
     and duration. `silent` is false for failures only.
   - Clicking emits `app:navigate`, a **new event**, with a renderer hash
-    route such as `#/deployments/runs/<runId>` or `#/tunnels?focus=<id>`.
+    route such as `#/deployments/release/<releaseId>` or `#/tunnels?focus=<id>`.
 - **`interface NotificationSink { teams(envId, facts): Promise<void>; email(envId, facts, notes): Promise<void>; macos(facts, route): void; qa?: … }`.**
   `LocalSink({ secrets, settings, integrations, fetch, sleep, Notification, knownSecrets })`
   resolves the secret values at call time.
@@ -848,15 +882,15 @@ src/renderer/src/settings/commands.ts    palette commands (T12)
 
 **Files:**
 - Create: `src/main/notify/dispatcher.ts`, `src/main/notify/finalize.ts`.
-- Modify: `src/main/index.ts` (subscribe to `deployRunner.onEvent` and
+- Modify: `src/main/index.ts` (subscribe to `releaseService.onEvent` and
   `tunnelManager.onEvent`, flush on `vault.onUnlock`, and pass the finalize
-  steps to Phase 8's runner), `src/main/ipc/handlers/notify.ts`,
+  steps as `ReleaseService`'s `finalize` dep), `src/main/ipc/handlers/notify.ts`,
   `src/shared/ipc.ts`.
 - Test: `tests/main/notify-dispatcher.test.ts` (new).
 
 **Interfaces:**
 - **Consumes:**
-  - `RunEvent`, `ReleaseRunMeta` and `FinalizeSteps` (assumed, Phase 8);
+  - `RunEvent`, `ReleaseRunMeta`, `FinalizeSteps` and `ReleaseService.onEvent`/`runMeta` (Phase 8a);
   - `TunnelEvent` and `TunnelManager.get(id)`;
   - `IntegrationStore`, `SettingsStore`, `NotificationSink`, `VaultService`
     and `AuditLog`;
@@ -895,13 +929,15 @@ src/renderer/src/settings/commands.ts    palette commands (T12)
   - `finalize notify failure never fails the run`: the sink throws on Teams
     and email succeeds; `notify` resolves and logs `Teams: failed (HTTP 500)`.
     When both throw, `notify` rejects, and the test asserts that Phase 8's
-    run status is still `succeeded` (use the real Phase 8 runner with a fake
-    playbook if it is cheap; otherwise assert the seam's contract);
+    release is still `succeeded`. Use `ReleaseService` with a fake
+    `DeployRunner` (the 8a test fixture) and this module's `FinalizeSteps`,
+    and assert that only `release:finalize_notify` is `failed`;
   - `audit notify.send has channel, event, status and no URL`.
 - [ ] **Step 2: Run them and watch them fail.**
-- [ ] **Step 3: Implement.** Any Phase 8 seam that is missing at this point
-  (`onEvent`, the `FinalizeSteps` injection) is added here as a minimal
-  Phase 8 edit, listed in the commit body.
+- [ ] **Step 3: Implement.** No Phase 8 edit: `ReleaseService.onEvent`,
+  `runMeta` and the `finalize` dep already exist in 8a.
+  - `factsForRun` joins `run.deployments[].name` for the deployment field
+    and uses `deployments[].hostLabel` for the hosts.
 - [ ] **Step 4: Run the full suite and typecheck.**
 - [ ] **Step 5: Commit**: `feat(notify): dispatcher with per-env routing, dedupe, lock queue; finalize notify`
 
@@ -917,7 +953,7 @@ src/renderer/src/settings/commands.ts    palette commands (T12)
 
 **Interfaces:**
 - **`QaDispatcher({ secrets, settings, integrations, fetch, sleep, now, audit, dispatcher })`:**
-  - `dispatch(environmentId, { trigger, runId? }): Promise<QaDispatch>`. It
+  - `dispatch(environmentId, { trigger, releaseId? }): Promise<QaDispatch>`. It
     POSTs to `https://api.github.com/repos/{owner}/{repo}/actions/workflows/{workflow}/dispatches`
     with `{ ref, inputs: { environment: <env name>, version?: <version> } }`
     and these headers:
@@ -936,12 +972,13 @@ src/renderer/src/settings/commands.ts    palette commands (T12)
 
     Every poll goes through the injected `sleep`.
 - **`interface QaDispatch`:**
-  - `{ id; environmentId; runId: string | null; repo; workflow; ref; dispatchedAt; state: 'dispatched' | 'running' | 'passed' | 'failed' | 'unknown'; htmlUrl: string | null }`;
+  - `{ id; environmentId; releaseId: string | null; repo; workflow; ref; dispatchedAt; state: 'dispatched' | 'running' | 'passed' | 'failed' | 'unknown'; htmlUrl: string | null }`;
   - it lives in memory and is pushed as `qa:state`.
 - **Finalize `qa(ctx)`:**
   - It runs when `ctx.run.options.qa` is true and the environment has a
-    workflow. The run's `options.qa` is set by the Phase 8 dialog, defaulting
-    to `EnvironmentIntegrations.qaOnDeploy`.
+    workflow. The run's `options.qa` is set by the toggle in the Phase 8
+    `ReleaseWizard`, which defaults to `EnvironmentIntegrations.qaOnDeploy`
+    (Task 10 wires the default).
   - It logs `QA: dispatched <repo>/<workflow>@<ref>`.
   - When `qaWait` is on, the wait runs **detached** from finalize, so the run
     finishes, and `dispatcher.notifyQa` fires on `qa.finished`.
@@ -1059,9 +1096,9 @@ src/renderer/src/settings/commands.ts    palette commands (T12)
 
 **Interfaces:**
 - **`interface ReleaseNotesRequest`:**
-  - `{ environmentId: string; productName: string; deploymentName: string; version: string | null; commits: CommitInfo[] }`;
-  - at most 500 commits; a subject is at most 300 chars and a body at most
-    2000.
+  - `{ environmentId: string; productName: string | null; deploymentNames: string[]; version: string | null; commits: CommitInfo[] }`;
+  - at most 500 commits (Phase 8 already truncates); a subject is at most
+    300 chars. `CommitInfo` has no body.
 - **`notesPrompt(req, redaction)` → `{ system, user }`:**
   - **system** (fixed):
     - write release notes for sales and marketing, in plain language;
@@ -1073,8 +1110,8 @@ src/renderer/src/settings/commands.ts    palette commands (T12)
     - Markdown subset only (headings, bullets, bold, inline code);
     - redaction placeholders such as `‹redacted›` are left as they are.
   - **user:** the product, environment name, version, then the commits as
-    `- <subject>\n  <body first 5 lines>`.
-  - **Authors and emails are never sent.** Subjects and bodies pass through
+    `- <subject>`, grouped by deployment name when there is more than one.
+  - **`author`, `date` and `sha` are never sent.** Subjects pass through
     `redactPromptParts`.
 - **`generateNotes(req, { claude, onText?, signal, trigger }): Promise<ReleaseNotesResult>`.**
   `ReleaseNotesResult = { requestId; text; model: string | null; source: 'claude' | 'fallback'; truncated: boolean; redactions; error?: AiError }`.
@@ -1086,7 +1123,7 @@ src/renderer/src/settings/commands.ts    palette commands (T12)
 - **Finalize `releaseNotes(ctx)`:**
   - If `ctx.run.releaseNotes` is non-empty (edited in the dialog), it is kept
     as is.
-  - With zero commits it returns `null` and logs
+  - When `ctx.run.redeploy` is true it returns `null` and logs
     `Release notes: skipped (no new commits)`.
   - Otherwise it calls Claude. On any `AiError` it uses `fallbackNotes`, logs
     `Release notes: Claude unavailable (<code>); used commit list`, and
@@ -1098,12 +1135,12 @@ src/renderer/src/settings/commands.ts    palette commands (T12)
 - [ ] **Step 1: Write the failing tests:**
   - `prompt orders sections and excludes authors`: a snapshot of `system`
     and `user` for 4 commits; no author or email appears;
-  - `commit text is redacted before sending`: a commit body holding
+  - `commit text is redacted before sending`: a commit subject holding
     `token=abc…` and a known secret;
   - `streams via claude and returns text`;
   - `fallback groups conventional commits deterministically`;
   - `finalize keeps edited notes`;
-  - `finalize zero commits → null, no claude call`;
+  - `finalize redeploy → null, no claude call`;
   - `finalize uses fallback when claude errors and never throws`;
   - `audit ai.release_notes has counts but no content`.
 - [ ] **Step 2: Run them and watch them fail.**
@@ -1120,9 +1157,17 @@ src/renderer/src/settings/commands.ts    palette commands (T12)
   - `src/renderer/src/ai/stream.ts`;
   - `src/renderer/src/ai/ReleaseNotesEditor.tsx`;
   - `src/renderer/src/ai/NotesPreview.tsx`.
-- Modify: the Phase 8 deploy confirm dialog (it mounts the editor and passes
-  `releaseNotes` into `deploy:start`) and the Phase 8 run view (read-only
-  notes with a copy button).
+- Modify:
+  - `src/renderer/src/ai/register.ts` (new), imported once from `App.tsx`.
+    It calls `registerReleaseNotesEditor(ReleaseNotesSlotEditor)` and
+    enables the wizard's notify/QA toggles (gap 2 in Upstream interfaces);
+  - `pages/deployments/release/ReleaseWizard.tsx`: also render
+    `ReleaseNotesSlot` in the *Confirm* step, with `{ releaseId, commits }`
+    (gap 1);
+  - main: `ReleaseService.setNotes` and the `release:set-notes` channel and
+    validator (gap 1);
+  - `ReleaseView`: read-only notes with a copy button, from
+    `ReleaseDetail.releaseNotes`.
 - Test: `tests/renderer/release-notes-editor.test.tsx` (new).
 
 **Interfaces:**
@@ -1130,7 +1175,15 @@ src/renderer/src/settings/commands.ts    palette commands (T12)
   - It subscribes to `ai:delta` filtered by `requestId`.
   - Deltas batch into one state update per animation frame.
   - `stop` calls `ai:cancel`.
-- **`<ReleaseNotesEditor commits value onChange context={{ environmentId, productName, deploymentName, version }} />`.** The feel:
+- **`ReleaseNotesSlotEditor`** adapts the slot props to the editor:
+  - in *Choose* (no `releaseId` yet) it shows one muted line, "Notes are
+    drafted from the commits after preflight";
+  - in *Confirm* it flattens `ReleaseDetail.preflight.commits` (or the
+    `preflight.done` report) into `CommitInfo[]` and mounts the editor;
+  - it saves through `release:set-notes`, debounced by 400 ms and flushed
+    before *Start*;
+  - it defaults the wizard's QA toggle to `EnvironmentIntegrations.qaOnDeploy`.
+- **`<ReleaseNotesEditor commits value onChange context={{ environmentId, productName, deploymentNames, version }} />`.** The feel:
   - **Header:**
     - the commit count as a chip that expands into the commit list;
     - a model badge;
@@ -1162,6 +1215,9 @@ src/renderer/src/settings/commands.ts    palette commands (T12)
   - `typing during a stream stops it and keeps edits`;
   - `preview renders sections from markdown` (via `parseNotes`);
   - `zero commits shows the redeploy empty state and no generate button`;
+  - `slot in Choose shows the after-preflight hint; in Confirm mounts the editor with preflight commits`;
+  - `edits save through release:set-notes, flushed before Start`;
+  - main `release:set-notes is refused unless the release is ready or blocked` (in `tests/main/release-notes.test.ts`);
   - `not configured shows settings link and fallback`;
   - `error shows the AiError message and keeps the text`;
   - `reduced motion renders without caret and transforms`.
@@ -1187,7 +1243,8 @@ src/renderer/src/settings/commands.ts    palette commands (T12)
   - `src/main/ssh/sessions.ts`: expose `meta(id)` if it isn't public;
   - `src/renderer/src/pages/terminals/SessionEnded.tsx` (button);
   - `src/renderer/src/pages/tunnels/TunnelCard.tsx` (button on `failed`);
-  - the Phase 8 run view (button on the failed step);
+  - `src/renderer/src/ai/register.ts`: `registerFailureAction(ExplainFailureAction)`,
+    which renders the button in Phase 8's `FailurePanel` for its `{ releaseId, stepId }`;
   - `src/renderer/src/App.tsx` (mount `ExplainPanel`).
 - Test: `tests/main/explain.test.ts` (new),
   `tests/renderer/explain-panel.test.tsx` (new).
@@ -1195,11 +1252,15 @@ src/renderer/src/settings/commands.ts    palette commands (T12)
 **Interfaces:**
 - **Main, `explain.ts`.** `buildContext(subject, deps) → { parts: Record<string,string>; target; envBlocks: Set<string> }`
   is built **in main from main's own state**. The renderer sends only ids:
-  - **run:**
-    - the failed step name and command (from Phase 8 run meta/events);
-    - the last 200 `log` lines of that step;
-    - the host OS from the inventory, if known;
-    - `composeSnippet` (envBlocks mode), if any;
+  - **release** (from `ReleaseService.detail` and `events`):
+    - the failed step's `STEP_LABEL[kind]`, its `name` and the `step.failed`
+      error. Phase 8 events carry no shell command, so none is sent;
+    - the last 200 `log` lines whose `stepId` matches, read back through
+      `events(id, afterSeq, 5000)` pages;
+    - the step's `hostId` from `step.started`, which gives the host label
+      and the host OS from the inventory, if known;
+    - `composeSnippet(deploymentId)`, which is always `null` in Phase 8, so
+      it is left out (the `envBlocks` path is tested with a fake);
     - the environment name and whether it is protected.
   - **session:**
     - the `SessionError` code and message;
@@ -1260,13 +1321,13 @@ src/renderer/src/settings/commands.ts    palette commands (T12)
     - **Nothing else writes AI text to a session.**
   - **Entry points:**
     - `Explain` buttons with a sparkle icon on `SessionEnded` (ssh with error),
-      `TunnelCard` (state `failed`) and the Phase 8 failed step;
+      `TunnelCard` (state `failed`) and the Phase 8 `FailurePanel`;
     - the palette's `Explain last failure`.
     - Each button is disabled with a tooltip when AI isn't configured.
 
 - [ ] **Step 1: Write the failing tests**
   - `explain.test.ts`:
-    - `run context has step, last 200 lines, compose snippet — redacted`: 300
+    - `release context has step, last 200 lines of that step only, redacted`: 300
       log lines in, 200 out; a vault value and an IP in the log come out
       redacted;
     - `session context never includes usernames or key names`;
@@ -1341,7 +1402,7 @@ src/renderer/src/settings/commands.ts    palette commands (T12)
   and `Run QA for <env>`.
 - **Toasts:** `notify:sent` with status `failed` shows an error toast,
   `Teams notification to <env> failed`, with a *View* action that opens the log.
-  Successes are quiet: no toast, and the run view shows the per-channel log.
+  Successes are quiet: no toast, and `ReleaseView` shows the per-channel log lines in the finalize steps.
 - **Roadmap row 9:** `done (branch phase9-notify-ai)` when merged; until
   then, `planned`.
 
