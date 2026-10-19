@@ -33,6 +33,8 @@ export interface HubDeps {
   verifier: Pick<EntraVerifier, 'verify'>
   now: () => Date
   ids: () => string
+  /** Extra values the live stream must mask (tests; the Hub also masks secrets in flight). */
+  liveKnownSecrets?: () => readonly string[]
   /** pino destination; defaults to stdout */
   log?: { write(msg: string): void }
 }
@@ -73,7 +75,7 @@ export function buildApp(deps: HubDeps): FastifyInstance {
   registerMeta(app, deps)
   const sessions = new SessionStore(deps.db, { now: deps.now, ttlHours: deps.config.sessionTtlHours })
   const directory = new Directory(deps.db, { firstAdmin: deps.config.firstAdmin, now: deps.now, ids: deps.ids, audit: deps.audit, sessions })
-  const live = new LiveBus({ directory, knownSecrets: () => [...secrets.inflight] })
+  const live = new LiveBus({ directory, now: deps.now, knownSecrets: () => [...secrets.inflight, ...(deps.liveKnownSecrets?.() ?? [])] })
   app.decorate('live', live)
   // Streams must end before the server can close.
   app.addHook('preClose', async () => live.closeAll())
@@ -99,7 +101,7 @@ export function buildApp(deps: HubDeps): FastifyInstance {
   const registry = new Registry(deps.db, { audit: deps.audit, directory, locks, now: deps.now })
   registry.onChange(() => live.publish({ type: 'catalog.updated' }))
   locks.onChange((environmentId) => live.publish({ type: 'lock.updated', environmentId, lock: locks.get(environmentId) }))
-  registerLive(app, { live, auth })
+  registerLive(app, { live, auth, now: deps.now })
   registerRegistry(app, { registry, directory, auth })
   registerLocks(app, { locks, directory, audit: deps.audit, auth })
   registerSecrets(app, { secrets, deployKeys, registry, locks, directory, audit: deps.audit, auth })

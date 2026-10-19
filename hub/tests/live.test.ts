@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { connect } from 'node:net'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { LIVE_HEARTBEAT_MS, LIVE_MAX_STREAMS_PER_USER, type HubLiveMessage } from '../../src/shared/hub'
 import type { RunEvent } from '../../src/shared/deploy'
 import { LiveBus } from '../src/live/bus'
@@ -97,8 +98,8 @@ async function open(token: string | null): Promise<Reader> {
 const events = (n: number, line = 'building'): RunEvent[] =>
   Array.from({ length: n }, (_, i) => ({ id: `ev${i}`, runId: 'rel-1', seq: i, at: '2026-10-19T00:00:00.000Z', type: 'log', stepId: null, hostId: null, stream: 'out', line }) as RunEvent)
 
-async function setup() {
-  hub = await testHub()
+async function setup(appDeps: Parameters<typeof testHub>[1] = {}, config: Parameters<typeof testHub>[0] = {}) {
+  hub = await testHub(config, appDeps)
   live = true
   const admin = (await hub.signIn(ADMIN)).token
   const bob = (await hub.signIn(BOB)).token
@@ -184,7 +185,7 @@ describe('live bus over SSE', () => {
     expect((await call(admin, 'PATCH', `/api/v1/admin/users/${BOB.oid}`, { disabled: true })).statusCode).toBe(200)
     await b.closed()
     const again = await fetch(`${baseUrl}/api/v1/live`, { headers: { authorization: `Bearer ${bob}` } })
-    expect(again.status).toBeGreaterThanOrEqual(401)
+    expect(again.status).toBe(401)
     await again.body?.cancel()
   })
 
@@ -238,6 +239,64 @@ describe('live bus over SSE', () => {
     expect(b.text()).toContain('redacted')
   })
 
+  it('a no-op user update does not announce access.changed', async () => {
+    const { admin, bob, cat } = await setup()
+    const c = await open(cat)
+    expect((await call(admin, 'PATCH', `/api/v1/admin/users/${BOB.oid}`, { disabled: false })).statusCode).toBe(200)
+    hub.app.live.publish({ type: 'catalog.updated' })
+    await c.until((t) => t.includes('catalog.updated'))
+    expect(c.frames().map((f) => f.event)).toEqual(['catalog.updated'])
+    void bob
+  })
+
+  it('a frame published after the session expired is not delivered, and the stream ends', async () => {
+    const { bob } = await setup()
+    const b = await open(bob)
+    hub.app.live.publish(deployEvents(ENV_ID, 'while valid'))
+    await b.until((t) => t.includes('while valid'))
+    hub.clock.now = new Date(hub.clock.now.getTime() + 13 * 3_600_000)
+    hub.app.live.publish(deployEvents(ENV_ID, 'after expiry'))
+    await b.closed()
+    expect(b.text()).not.toContain('after expiry')
+  })
+
+  it('an idle stream ends when its session expires', async () => {
+    const { bob } = await setup()
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    let b: Reader
+    try {
+      b = await open(bob)
+      hub.clock.now = new Date(hub.clock.now.getTime() + 13 * 3_600_000)
+      vi.advanceTimersByTime(13 * 3_600_000)
+    } finally {
+      vi.useRealTimers()
+    }
+    await b.closed()
+  })
+
+  it('hub.close() resolves while a stream is open and nobody reads it', async () => {
+    const { bob } = await setup()
+    const port = (hub.app.server.address() as { port: number }).port
+    const sock = connect(port, '127.0.0.1')
+    sock.pause()
+    await new Promise<void>((r) => sock.once('connect', () => r()))
+    sock.write(`GET /api/v1/live HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer ${bob}\r\n\r\n`)
+    await new Promise((r) => setTimeout(r, 100))
+    const closed = hub.close().then(() => 'closed')
+    live = false
+    expect(await Promise.race([closed, new Promise((r) => setTimeout(() => r('hung'), 3000))])).toBe('closed')
+    sock.destroy()
+  })
+
+  it('SSE frames mask values the Hub knows are secret', async () => {
+    const { bob } = await setup({ liveKnownSecrets: () => ['s3cr3t-value-123'] })
+    const b = await open(bob)
+    hub.app.live.publish(deployEvents(ENV_ID, 'token=s3cr3t-value-123 end'))
+    await b.until((t) => t.includes('deploy.events'))
+    expect(b.text()).not.toContain('s3cr3t-value-123')
+    expect(b.text()).toContain('end')
+  })
+
   it('no auth header is 401', async () => {
     await setup()
     const r = await open(null)
@@ -267,6 +326,29 @@ describe('LiveBus unit', () => {
     })
     return { bus, tick: () => tick?.(), isTicking: () => tick !== null, cancelled: () => cancelled }
   }
+
+  it('drops an expired stream before a frame or a ping', () => {
+    let now = 1_000
+    const admin = { oid: 'a', role: 'admin', status: 'active', groupIds: [] } as never
+    let tick: () => void = () => {}
+    const bus = new LiveBus({ directory: { get: () => admin, listGroups: () => [] }, knownSecrets: () => [], now: () => new Date(now), every: (fn) => ((tick = fn), () => {}) })
+    const out: string[] = []
+    let closed = 0
+    bus.subscribe('a', (f) => out.push(f), () => closed++, null, 2_000)
+    tick()
+    expect(out).toEqual([': ping\n\n'])
+    now = 2_000
+    tick()
+    expect(out).toHaveLength(1)
+    expect(closed).toBe(1)
+    const out2: string[] = []
+    now = 1_000
+    bus.subscribe('a', (f) => out2.push(f), () => closed++, null, 2_000)
+    now = 2_500
+    bus.publish({ type: 'catalog.updated' })
+    expect(out2).toEqual([])
+    expect(closed).toBe(2)
+  })
 
   it('heartbeats on a manual clock', () => {
     const { bus, tick, isTicking } = mk()

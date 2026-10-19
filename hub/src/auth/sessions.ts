@@ -62,8 +62,13 @@ export class SessionStore {
     this.emit({ tokenHash })
   }
 
-  revokeAll(oid: string): void {
+  /** `announce: false` lets a caller inside a transaction tell listeners itself, after COMMIT, with `announceRevoked`. */
+  revokeAll(oid: string, opts: { announce?: boolean } = {}): void {
     this.db.prepare('DELETE FROM sessions WHERE oid = ?').run(oid)
+    if (opts.announce !== false) this.emit({ oid })
+  }
+
+  announceRevoked(oid: string): void {
     this.emit({ oid })
   }
 

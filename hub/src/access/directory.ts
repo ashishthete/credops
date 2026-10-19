@@ -191,9 +191,31 @@ export class Directory {
     return this.toGroup(this.groupRow(id))
   }
 
+  /** Three queries however many groups there are. */
   listGroups(): HubGroup[] {
     const rows = this.db.prepare('SELECT * FROM groups ORDER BY created_at, name').all() as unknown as Parameters<Directory['toGroup']>[0][]
-    return rows.map((r) => this.toGroup(r))
+    const members = new Map<string, string[]>()
+    for (const m of this.db.prepare('SELECT group_id, oid FROM group_members ORDER BY added_at, oid').all() as { group_id: string; oid: string }[]) {
+      const l = members.get(m.group_id)
+      if (l) l.push(m.oid)
+      else members.set(m.group_id, [m.oid])
+    }
+    const grants = new Map<string, HubGrant[]>()
+    for (const g of this.db.prepare('SELECT * FROM grants ORDER BY created_at, id').all() as unknown as GrantRow[]) {
+      const l = grants.get(g.group_id)
+      if (l) l.push(toGrant(g))
+      else grants.set(g.group_id, [toGrant(g)])
+    }
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      description: r.description,
+      builtin: r.builtin === 1,
+      memberOids: members.get(r.id) ?? [],
+      grants: grants.get(r.id) ?? [],
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    }))
   }
 
   private validateGroup(name: string | undefined, description: string | undefined): void {
@@ -369,6 +391,8 @@ export class Directory {
   }
 
   updateUser(actor: HubActor, oid: string, patch: { role?: HubRole; disabled?: boolean }): HubUser {
+    let changed = false
+    let disabledNow = false
     const out = inTransaction(this.db, () => {
       const u = this.db.prepare('SELECT * FROM users WHERE oid = ?').get(oid) as unknown as UserRow | undefined
       if (!u) throw new HubHttpError(404, 'not_found', 'User not found')
@@ -381,7 +405,10 @@ export class Directory {
         if (n <= 1) throw new HubHttpError(409, 'last_admin', 'There must be at least one enabled admin')
       }
       this.db.prepare('UPDATE users SET role = ?, disabled = ? WHERE oid = ?').run(role, disabled ? 1 : 0, oid)
-      if (disabled) this.opts.sessions.revokeAll(oid)
+      // The rows go with the transaction; live streams are told only once it has committed.
+      if (disabled) this.opts.sessions.revokeAll(oid, { announce: false })
+      changed = true
+      disabledNow = disabled
       this.audit(
         actor,
         'user.update',
@@ -391,7 +418,8 @@ export class Directory {
       )
       return this.get(oid) as HubUser
     })
-    this.accessChanged()
+    if (disabledNow) this.opts.sessions.announceRevoked(oid)
+    if (changed) this.accessChanged()
     return out
   }
 }

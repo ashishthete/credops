@@ -9,6 +9,8 @@ declare module 'fastify' {
     user: HubUser
     /** The Hub session token of an authenticated request; never logged. */
     sessionToken: string
+    /** When the session ends (ms since epoch). */
+    sessionExpiresAt: number
   }
 }
 
@@ -43,6 +45,7 @@ export function makeAuth(deps: AuthDeps) {
     }
     req.user = user
     req.sessionToken = token
+    req.sessionExpiresAt = Date.parse(session.expiresAt)
   }
   const requireAdmin = async (req: FastifyRequest, reply?: FastifyReply): Promise<void> => {
     await requireUser(req, reply)

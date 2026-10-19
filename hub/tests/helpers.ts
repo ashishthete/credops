@@ -6,7 +6,7 @@ import type { FastifyInstance } from 'fastify'
 import { startFakeEntra, type FakeEntra } from '../../tests/main/fake-entra'
 import { EntraVerifier } from '../src/auth/entra'
 import { HubAudit } from '../src/audit'
-import { buildApp } from '../src/app'
+import { buildApp, type HubDeps } from '../src/app'
 import type { HubConfig } from '../src/config'
 import { openHubDb, type HubDb } from '../src/db'
 
@@ -28,7 +28,7 @@ export interface TestHub {
   close: () => Promise<void>
 }
 
-export async function testHub(overrides: Partial<HubConfig> = {}): Promise<TestHub> {
+export async function testHub(overrides: Partial<HubConfig> = {}, appDeps: Partial<HubDeps> = {}): Promise<TestHub> {
   const entra = await startFakeEntra({ tenantId: TENANT, clientId: CLIENT })
   const dataDir = mkdtempSync(join(tmpdir(), 'opsdeck-hub-'))
   const config: HubConfig = {
@@ -54,7 +54,7 @@ export async function testHub(overrides: Partial<HubConfig> = {}): Promise<TestH
   const masterKey = randomBytes(32)
   const clock = { now: new Date() }
   const verifier = new EntraVerifier(config.entra, { now: () => clock.now, jwksCooldownMs: 0 })
-  const app = buildApp({ config, db, audit, masterKey, verifier, now: () => clock.now, ids: randomUUID, log: { write: (m) => void logs.push(m) } })
+  const app = buildApp({ config, db, audit, masterKey, verifier, now: () => clock.now, ids: randomUUID, log: { write: (m) => void logs.push(m) }, ...appDeps })
   await app.ready()
   const signIn: TestHub['signIn'] = async (user) => {
     if (user) entra.setUser(user)

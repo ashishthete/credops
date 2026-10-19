@@ -7,6 +7,8 @@ interface Sub {
   oid: string
   /** sha-256 of the session token, never the token. */
   sessionKey: string | null
+  /** ms since epoch; null for no limit. */
+  expiresAt: number | null
   write: (frame: string) => void
   close: () => void
 }
@@ -15,6 +17,7 @@ export interface LiveBusOpts {
   directory: Pick<Directory, 'get' | 'listGroups'>
   /** Values that must never reach a client, on top of the pattern-based redaction. */
   knownSecrets: () => readonly string[]
+  now?: () => Date
   /** Starts a repeating timer and returns its canceller; tests pass a manual clock. */
   every?: (fn: () => void, ms: number) => () => void
 }
@@ -35,11 +38,11 @@ export class LiveBus {
 
   constructor(private readonly opts: LiveBusOpts) {}
 
-  subscribe(oid: string, write: (frame: string) => void, close: () => void, sessionKey: string | null = null): () => void {
+  subscribe(oid: string, write: (frame: string) => void, close: () => void, sessionKey: string | null = null, expiresAt: number | null = null): () => void {
     const mine = [...this.subs].filter((s) => s.oid === oid)
     // Past the cap the oldest stream goes; Set iteration is insertion order.
     for (const old of mine.slice(0, Math.max(0, mine.length - LIVE_MAX_STREAMS_PER_USER + 1))) this.drop(old)
-    const sub: Sub = { oid, sessionKey, write, close }
+    const sub: Sub = { oid, sessionKey, expiresAt, write, close }
     this.subs.add(sub)
     this.stopBeat ??= (this.opts.every ?? defaultEvery)(() => this.beat(), LIVE_HEARTBEAT_MS)
     return () => this.remove(sub)
@@ -73,6 +76,10 @@ export class LiveBus {
     }
     let frame: string | null = null
     for (const sub of [...this.subs]) {
+      if (this.expired(sub)) {
+        this.drop(sub)
+        continue
+      }
       if (msg.type !== 'catalog.updated' && msg.type !== 'access.changed') {
         const environmentId = msg.type === 'release.state' ? msg.summary.environmentId : msg.environmentId
         if (!users.has(sub.oid)) users.set(sub.oid, this.opts.directory.get(sub.oid))
@@ -90,7 +97,20 @@ export class LiveBus {
   }
 
   private beat(): void {
-    for (const sub of [...this.subs]) this.send(sub, ': ping\n\n')
+    for (const sub of [...this.subs]) {
+      if (this.expired(sub)) this.drop(sub)
+      else this.send(sub, ': ping\n\n')
+    }
+  }
+
+  /** The authoritative expiry check: a session's stream never outlives the session. */
+  private expired(sub: Sub): boolean {
+    return sub.expiresAt !== null && (this.opts.now ?? (() => new Date()))().getTime() >= sub.expiresAt
+  }
+
+  /** Ends the streams whose session has expired; the route's timer calls this at the deadline. */
+  closeExpired(): void {
+    for (const s of [...this.subs]) if (this.expired(s)) this.drop(s)
   }
 
   private send(sub: Sub, frame: string): void {
