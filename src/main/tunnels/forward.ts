@@ -32,7 +32,7 @@ const SSH_OPEN_ADMINISTRATIVELY_PROHIBITED = 1
 
 export class ForwardError extends Error {
   constructor(
-    readonly code: Extract<TunnelErrorCode, 'probe-failed' | 'remote-refused'>,
+    readonly code: Extract<TunnelErrorCode, 'probe-failed' | 'remote-refused' | 'closed'>,
     message: string,
   ) {
     super(message)
@@ -54,7 +54,10 @@ export class Counter {
     this.last = { at: now(), bytesIn: 0, bytesOut: 0 }
   }
 
-  /** The totals, with rates in bytes per second since the previous sample. */
+  /**
+   * The totals, with rates in bytes per second since the previous sample. Each call moves the rate
+   * baseline, so only the stats loop should sample a live tunnel.
+   */
   sample(): Omit<TunnelStats, 'id'> {
     const at = this.now()
     const sec = (at - this.last.at) / 1000
@@ -86,11 +89,22 @@ export class ProbeTokens {
   consume(chunk: Buffer): boolean {
     return chunk.length === PROBE_TOKEN_BYTES && this.live.delete(chunk.toString('hex'))
   }
+
+  /** True when `chunk` is the start of a live token, so a token split across chunks can be waited for. */
+  startsToken(chunk: Buffer): boolean {
+    if (chunk.length >= PROBE_TOKEN_BYTES) return false
+    const hex = chunk.toString('hex')
+    for (const token of this.live) if (token.startsWith(hex)) return true
+    return false
+  }
 }
 
 export interface ForwardHandle {
   readonly accepting: boolean
-  /** Off: new connections are destroyed at once and counted in `rejected`. Open ones carry on. */
+  /**
+   * Off: new connections are destroyed and counted in `rejected` once the hold shows they aren't a
+   * probe (at most `PROBE_GRACE_MS`). Probes still pass, and open connections carry on.
+   */
   setAccepting(on: boolean): void
   /**
    * Resolves `'probe'` when the forward answered, or `'keepalive'` for an `R` forward whose server
@@ -103,31 +117,6 @@ export interface ForwardHandle {
   readonly address: { address: string; port: number }
 }
 
-/** Admission for new connections: closed while not accepting, and capped at `MAX_TUNNEL_CHANNELS` open. */
-export class ConnectionGate {
-  accepting = true
-  private readonly open = new Set<Duplex>()
-
-  constructor(private readonly counter: Counter) {}
-
-  /** False, counted in `rejected`, when a new connection must be turned away. */
-  admit(): boolean {
-    if (this.accepting && this.open.size < MAX_TUNNEL_CHANNELS) return true
-    this.counter.rejected += 1
-    return false
-  }
-
-  track(stream: Duplex): void {
-    this.open.add(stream)
-    stream.once('close', () => this.open.delete(stream))
-  }
-
-  destroyAll(): void {
-    for (const stream of this.open) stream.destroy()
-    this.open.clear()
-  }
-}
-
 /**
  * Ends a stream for good. It is resumed first: an ssh2 channel emits `close` only after its readable
  * side has ended, and a paused channel never gets there.
@@ -138,29 +127,74 @@ function discard(stream: Duplex): void {
 }
 
 /**
- * Holds a new connection's outbound leg until its first chunk or `PROBE_GRACE_MS`, whichever comes
- * first. A first chunk that is a live probe token is consumed and the connection ended, so the target
- * never sees a probe. Otherwise the chunk is put back and `onReal` opens the outbound leg; the stream
- * stays paused until it is piped.
+ * Admission for new connections: closed while not accepting, and capped at `MAX_TUNNEL_CHANNELS`
+ * admitted. Connections are tracked from arrival, so `destroyAll` also ends those still held for a
+ * probe; admission comes after the hold, so probes pass the gate and the cap.
+ */
+export class ConnectionGate {
+  accepting = true
+  private readonly all = new Set<Duplex>()
+  private readonly admitted = new Set<Duplex>()
+
+  constructor(private readonly counter: Counter) {}
+
+  track(stream: Duplex): void {
+    this.all.add(stream)
+    stream.once('close', () => {
+      this.all.delete(stream)
+      this.admitted.delete(stream)
+    })
+  }
+
+  /** False, counted in `rejected`, when a connection must be turned away. */
+  admit(stream: Duplex): boolean {
+    if (!this.accepting || this.admitted.size >= MAX_TUNNEL_CHANNELS) {
+      this.counter.rejected += 1
+      return false
+    }
+    this.admitted.add(stream)
+    return true
+  }
+
+  destroyAll(): void {
+    for (const stream of this.all) discard(stream)
+    this.all.clear()
+    this.admitted.clear()
+  }
+}
+
+/**
+ * Holds a new connection's outbound leg until its first data or `PROBE_GRACE_MS`, whichever comes
+ * first. Data that is a live probe token is consumed and the connection ended, so the target never
+ * sees a probe; data that starts a token is waited on, in case the token was split. Otherwise the data
+ * is put back and `onReal` opens the outbound leg; the stream stays paused until it is piped.
+ * When the grace timer fires, the decision waits one `setImmediate`, so a token already pending
+ * behind a busy event loop is still read first.
  */
 export function holdForProbe(stream: Duplex, tokens: ProbeTokens, timers: Timers, onReal: () => void): void {
+  let held = true
+  let buffered: Buffer = Buffer.alloc(0)
   const release = (): void => {
+    held = false
     stream.pause()
-    stream.off('data', onFirst)
+    stream.off('data', onData)
     stream.off('close', release)
     timers.clearTimeout(grace)
   }
-  const onFirst = (chunk: Buffer): void => {
+  const passOn = (): void => {
     release()
-    if (tokens.consume(chunk)) return void stream.resume().end()
-    stream.unshift(chunk)
+    if (buffered.length > 0) stream.unshift(buffered)
     onReal()
   }
-  const grace = timers.setTimeout(() => {
-    release()
-    onReal()
-  }, PROBE_GRACE_MS)
-  stream.on('data', onFirst)
+  const onData = (chunk: Buffer): void => {
+    buffered = buffered.length === 0 ? chunk : Buffer.concat([buffered, chunk])
+    if (tokens.consume(buffered)) {
+      release()
+      stream.resume().end()
+    } else if (!tokens.startsToken(buffered)) passOn()
+  }
+  const grace = timers.setTimeout(() => setImmediate(() => held && passOn()), PROBE_GRACE_MS)
+  stream.on('data', onData)
   stream.once('close', release)
 }
 
@@ -232,7 +266,7 @@ const reachable = (address: string): string => (address === '0.0.0.0' ? '127.0.0
 
 /**
  * The `L` engine: connections to `server` are forwarded over `client` to `targetHost:targetPort`.
- * The probe connects to the listener, sends a token and passes when the listener closes cleanly.
+ * The probe connects to the listener, sends a token and passes when our listener consumed it.
  */
 export function startLocal(client: Client, opts: LocalOpts): ForwardHandle {
   const { server, counter, tokens, timers } = opts
@@ -242,9 +276,9 @@ export function startLocal(client: Client, opts: LocalOpts): ForwardHandle {
 
   const onConnection = (sock: Socket): void => {
     sock.on('error', () => {})
-    if (!gate.admit()) return void sock.destroy()
     gate.track(sock)
     holdForProbe(sock, tokens, timers, () => {
+      if (!gate.admit(sock)) return void sock.destroy()
       const opened = (err: Error | undefined, channel: ClientChannel): void => {
         if (err) return void sock.destroy()
         if (sock.destroyed) return void discard(channel)
@@ -273,7 +307,9 @@ export function startLocal(client: Client, opts: LocalOpts): ForwardHandle {
         const failed = (): void => settle(new ForwardError('probe-failed', `Nothing is listening on ${address.address}:${address.port}`))
         sock.once('connect', () => sock.write(token))
         sock.on('error', failed)
-        sock.once('close', (hadError) => (hadError ? failed() : settle('probe')))
+        // Only our own listener consumes the token; any other close means something else answered.
+        const stranger = (): void => settle(new ForwardError('probe-failed', `Something else answered on ${address.address}:${address.port}`))
+        sock.once('close', (hadError) => (hadError ? failed() : tokens.consume(token) ? stranger() : settle('probe')))
         return () => {
           tokens.consume(token)
           sock.destroy()
@@ -304,10 +340,13 @@ const remoteProbeHost = (bindAddress: string): string => {
 export function startRemote(client: Client, opts: RemoteOpts): Promise<ForwardHandle> {
   return new Promise((resolve, reject) => {
     client.forwardIn(opts.bindAddress, opts.bindPort, (err, port) => {
-      if (err) {
+      // ssh2 says `Unable to bind` for the server's REQUEST_FAILURE; a link that closes first fails
+      // every pending request with `No response from server`, which is a retryable drop.
+      if (err && /^Unable to bind/.test(err.message)) {
         const message = `The server refused to listen on port ${opts.bindPort} (it may be in use, or remote forwarding is disabled)`
         return reject(new ForwardError('remote-refused', message))
       }
+      if (err) return reject(new ForwardError('closed', 'The connection closed before the server answered the listen request'))
       resolve(remoteHandle(client, opts, port))
     })
   })
@@ -319,11 +358,12 @@ function remoteHandle(client: Client, opts: RemoteOpts, port: number): ForwardHa
 
   const onTcp = (info: TcpConnectionDetails, accept: () => ClientChannel, reject: () => void): void => {
     if (info.destIP !== bindAddress || info.destPort !== port) return
-    if (!gate.admit()) return reject()
+    if (closing) return reject()
     const channel = accept()
     channel.on('error', () => {})
     gate.track(channel)
     holdForProbe(channel, tokens, timers, () => {
+      if (!gate.admit(channel)) return discard(channel)
       const sock = connect(opts.targetPort, opts.targetHost)
       const drop = (): void => void sock.destroy()
       sock.on('error', () => discard(channel))
