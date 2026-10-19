@@ -184,6 +184,84 @@ describe('hub connection', () => {
     expect({ ...(row as object) }).toEqual({ session_enc: null, refresh_enc: null, session_expires_at: null })
   })
 
+  it('a refresh that fails on the network reports unreachable and keeps the session', async () => {
+    const conn = make()
+    await conn.connect(hubUrl)
+    await conn.signIn()
+    expireHubSessions()
+    const offline: typeof fetch = async (input, init) => {
+      if (String(input).includes('/token')) throw new TypeError('fetch failed')
+      return fetch(input, init)
+    }
+    const c2 = make({ fetch: offline })
+    await expect(c2.me()).rejects.toMatchObject({ code: 'network' })
+    expect(c2.status()).toMatchObject({ signedIn: true })
+    const row = db.prepare('SELECT session_enc, refresh_enc FROM hub_link').get() as { session_enc: Buffer | null; refresh_enc: Buffer | null }
+    expect(row.session_enc).not.toBeNull()
+    expect(row.refresh_enc).not.toBeNull()
+  })
+
+  it('connecting to a different hub signs the old session out in the audit and clears its env links', async () => {
+    // The Hub mints its id once per process, so the second Hub's /meta is given its own id here.
+    let rename = false
+    const renaming: typeof fetch = async (input, init) => {
+      const res = await fetch(input, init)
+      if (!rename || !String(input).endsWith('/api/v1/meta')) return res
+      const body = (await res.json()) as Record<string, unknown>
+      return new Response(JSON.stringify({ ...body, hubId: '22222222-2222-4222-8222-222222222222' }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    const conn = make({ fetch: renaming })
+    await conn.connect(hubUrl)
+    await conn.signIn()
+    db.exec("PRAGMA foreign_keys = OFF; INSERT INTO hub_env_links(environment_id, hub_id, published_at, manifest_hash) VALUES ('e1', 'old', 'x', 'y')")
+    const other = await testHub()
+    try {
+      await other.app.listen({ host: '127.0.0.1', port: 0 })
+      const url = `http://127.0.0.1:${(other.app.server.address() as { port: number }).port}`
+      const before = actions().filter((a) => a === 'hub.signout').length
+      rename = true
+      const s = await conn.connect(url)
+      expect(s).toMatchObject({ linked: true, signedIn: false })
+      expect(actions().filter((a) => a === 'hub.signout')).toHaveLength(before + 1)
+      expect({ ...(db.prepare('SELECT COUNT(*) AS n FROM hub_env_links').get() as object) }).toEqual({ n: 0 })
+    } finally {
+      await other.close()
+    }
+  })
+
+  it('new Entra and refresh tokens are redactable before they are exchanged or stored', async () => {
+    const seen: { access: string[]; refresh: string[] } = { access: [], refresh: [] }
+    const missing: string[] = []
+    let conn!: HubConnection
+    const spy: typeof fetch = async (input, init) => {
+      const url = String(input)
+      if (url.includes('/api/v1/session') && init?.method === 'POST') {
+        const known = conn.knownValues()
+        for (const t of [...seen.access, ...seen.refresh]) if (!known.includes(t)) missing.push('token')
+      }
+      const res = await fetch(input, init)
+      if (url.includes('/token')) {
+        const body = (await res.clone().json()) as { access_token?: string; refresh_token?: string }
+        if (body.access_token) seen.access.push(body.access_token)
+        if (body.refresh_token) seen.refresh.push(body.refresh_token)
+      }
+      return res
+    }
+    conn = make({ fetch: spy })
+    await conn.connect(hubUrl)
+    await conn.signIn()
+    expect(seen.access.length).toBeGreaterThan(0)
+    expect(missing).toEqual([])
+    seen.access.length = 0
+    seen.refresh.length = 0
+    expireHubSessions()
+    await conn.me()
+    expect(seen.access.length).toBeGreaterThan(0)
+    expect(missing).toEqual([])
+    // Nothing transient lingers after the exchange.
+    expect(conn.knownValues()).toHaveLength(2)
+  })
+
   it('status and errors never carry tokens', async () => {
     const conn = make()
     await conn.connect(hubUrl)

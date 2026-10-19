@@ -9,6 +9,7 @@ import type {
   HubUser,
 } from '../../../shared/hub'
 import type { Handlers } from '../../../shared/ipc'
+import { HubError } from '../../hub/client'
 import type { HubConnection } from '../../hub/connection'
 
 type HubChannel = Extract<keyof Handlers, `hub:${string}`>
@@ -30,6 +31,13 @@ export function createHubHandlers(deps: {
     const result = await run()
     for (const [op, target] of ops(result)) record(op, target)
     return result
+  }
+  /** Re-lists the groups for one that a mutation just changed; it may have been deleted meanwhile. */
+  const reread = async (groupId: string): Promise<HubGroup> => {
+    const groups = await conn.client().get<HubGroup[]>(`${ADMIN}/groups`)
+    const found = groups.find((g) => g.id === groupId)
+    if (!found) throw new HubError('not_found', 'That group no longer exists')
+    return found
   }
   return {
     'hub:status': () => conn.status(),
@@ -79,8 +87,7 @@ export function createHubHandlers(deps: {
         () => [['member.remove', groupId]],
         async () => {
           await conn.client().del(`${ADMIN}/groups/${groupId}/members/${oid}`)
-          const groups = await conn.client().get<HubGroup[]>(`${ADMIN}/groups`)
-          return groups.find((g) => g.id === groupId) as HubGroup
+          return reread(groupId)
         },
       ),
     'hub:addGrant': (groupId, scope: GrantScope) =>
@@ -88,8 +95,7 @@ export function createHubHandlers(deps: {
         () => [['grant.add', groupId]],
         async () => {
           await conn.client().post(`${ADMIN}/groups/${groupId}/grants`, { scope })
-          const groups = await conn.client().get<HubGroup[]>(`${ADMIN}/groups`)
-          return groups.find((g) => g.id === groupId) as HubGroup
+          return reread(groupId)
         },
       ),
     'hub:removeGrant': (grantId) =>

@@ -84,6 +84,16 @@ describe('hub handlers', () => {
     expect(client.del).toHaveBeenCalledWith(`/api/v1/admin/grants/${UUID}`)
   })
 
+  it('removeMember and addGrant never return undefined when the group is gone', async () => {
+    const client = { del: vi.fn(async () => undefined), post: vi.fn(async () => undefined), get: vi.fn(async (): Promise<unknown[]> => []) }
+    const t = setup(client)
+    await expect(t.call('hub:removeMember', UUID, UUID)).rejects.toThrow(/no longer exists/)
+    await expect(t.call('hub:addGrant', UUID, { kind: 'all' })).rejects.toThrow(/no longer exists/)
+    expect(t.audit.append).not.toHaveBeenCalled()
+    client.get.mockImplementation(async () => [{ id: UUID, name: 'Ops' }])
+    await expect(t.call('hub:removeMember', UUID, UUID)).resolves.toMatchObject({ id: UUID })
+  })
+
   it('a locked vault stops a mutation before any Hub call', async () => {
     const client = { post: vi.fn() }
     const t = setup(client)

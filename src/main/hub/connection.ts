@@ -57,6 +57,8 @@ export class HubConnection {
   private abort: AbortController | null = null
   private meta: HubMeta | null = null
   private renewing: Promise<boolean> | null = null
+  // Entra tokens between being received and being traded or stored: redactable, never kept.
+  private readonly transient = new Set<string>()
   private readonly listeners: (() => void)[] = []
 
   constructor(private readonly d: HubConnectionDeps) {}
@@ -124,7 +126,15 @@ export class HubConnection {
     const now = this.iso()
     const prev = this.row()
     const changed = prev !== undefined && prev.hub_id !== meta.hubId
-    if (changed) this.dropSession()
+    if (changed && prev) {
+      const had = prev.session_enc !== null
+      this.dropSession()
+      // Env links point at the old hub; keeping them would route checks to the new one.
+      this.d.db.exec('DELETE FROM hub_env_links')
+      if (had) {
+        this.d.audit.append({ action: 'hub.signout', outcome: 'success', targetType: 'hub', targetId: prev.hub_id, targetLabel: prev.hub_name })
+      }
+    }
     this.d.db
       .prepare(
         `INSERT INTO hub_link(id,url,hub_id,hub_name,linked_at,updated_at) VALUES (1,?,?,?,?,?)
@@ -178,8 +188,15 @@ export class HubConnection {
   }
 
   /** Trades an Entra access token for a Hub session. The Entra token is not kept. */
-  private exchange(baseUrl: string, tokens: TokenSet): Promise<HubSession> {
-    return this.plain({ baseUrl, token: () => tokens.accessToken }).post<HubSession>('/api/v1/session')
+  private async exchange(baseUrl: string, tokens: TokenSet): Promise<HubSession> {
+    // Redactable from the moment they exist, before any await or error path can echo them.
+    const mine = [tokens.accessToken, ...(tokens.refreshToken ? [tokens.refreshToken] : [])]
+    for (const t of mine) this.transient.add(t)
+    try {
+      return await this.plain({ baseUrl, token: () => tokens.accessToken }).post<HubSession>('/api/v1/session')
+    } finally {
+      for (const t of mine) this.transient.delete(t)
+    }
   }
 
   private store(session: HubSession, refresh: string | null): void {
@@ -293,6 +310,9 @@ export class HubConnection {
     } catch (err) {
       if (err instanceof OidcError && err.code === 'refresh_expired') return this.signedOut()
       if (err instanceof HubError && (err.status === 401 || err.status === 403)) return this.signedOut()
+      // Unreachable is not rejected: keep the session and say so.
+      if (err instanceof HubError && (err.code === 'network' || err.code === 'timeout')) throw err
+      if (err instanceof OidcError && (err.code === 'network' || err.code === 'timeout')) throw new HubError('network', "Can't reach the Hub")
       return false
     }
   }
@@ -313,6 +333,6 @@ export class HubConnection {
   /** The decrypted tokens while held, for redaction. Never leaves the main process. */
   knownValues(): string[] {
     const h = this.load()
-    return h ? [h.session, ...(h.refresh ? [h.refresh] : [])] : []
+    return [...(h ? [h.session, ...(h.refresh ? [h.refresh] : [])] : []), ...this.transient]
   }
 }

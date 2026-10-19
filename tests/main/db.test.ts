@@ -100,8 +100,8 @@ describe('migration versions', () => {
   it('are strictly increasing and unique, skipping only the other branch\'s version 8', () => {
     const versions = migrations.map((m) => m.version)
     expect(versions).toEqual([...new Set(versions)].sort((a, b) => a - b))
-    expect(versions.filter((v, i) => v !== i + 1 && v !== i + 2)).toEqual([])
-    expect(versions.slice(0, 7)).toEqual([1, 2, 3, 4, 5, 6, 7])
+    const rest = versions.filter((v) => v !== 8)
+    expect(rest).toEqual(rest.map((_, i) => (i < 7 ? i + 1 : i + 2)))
   })
 })
 
