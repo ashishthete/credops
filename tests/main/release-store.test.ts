@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { uuidv7Time } from '../../src/main/deploy/uuidv7'
-import { DEFAULT_RELEASE_OPTIONS, type PreflightReport, type RunEventBody } from '../../src/shared/deploy'
+import { DEFAULT_RELEASE_OPTIONS, type PreflightReport, type RunEventBody, type RunService } from '../../src/shared/deploy'
 import { makeDeployFixture } from './deploy-helpers'
 
 const log = (line: string): RunEventBody => ({ type: 'log', stepId: null, hostId: null, stream: 'out', line })
@@ -242,5 +242,59 @@ describe('ReleaseStore', () => {
     expect(f.releases.failInterrupted()).toEqual([pre.id])
     expect(f.releases.get(pre.id)).toMatchObject({ status: 'failed', error: 'interrupted: OpsDeck quit during the run' })
     expect(f.releases.get(r.id).status).toBe('ready')
+  })
+
+  describe('per-service record', () => {
+    const SA = 'a'.repeat(40)
+    const SB = 'b'.repeat(40)
+    const entry = (id: string, over: Partial<RunService> = {}): RunService => ({ id, name: id, composeService: id, previousCommit: null, deployedCommit: null, ...over })
+    type F = Awaited<ReturnType<typeof release>>['f']
+    type D = Awaited<ReturnType<typeof release>>['d']
+    /** One release with one run listing `services`; started unless `started` is false. */
+    const rel = (f: F, d: D, services: RunService[], o: { started?: boolean; runStatus?: 'succeeded' | 'failed'; kind?: 'release' | 'rollback' } = {}) => {
+      const r = f.releases.createRelease({
+        environmentId: f.staging.id, kind: o.kind ?? 'release', status: 'ready', version: null, previousVersion: null, versionBump: 'none',
+        redeploy: false, rollbackOf: null, options: DEFAULT_RELEASE_OPTIONS, triggeredBy: 'ana@mbp', serviceIds: services.map((s) => s.id),
+      })
+      const [run] = f.releases.createRuns(r.id, [
+        { deploymentId: d.id, deploymentName: 'api', hostId: d.hostId, hostLabel: 'app1', position: 0, branch: 'main', steps: [], services, wholeCheckout: false },
+      ])
+      if (o.started !== false) f.releases.setStatus(r.id, 'succeeded', { startedAt: '2026-01-01T00:00:00.000Z' })
+      if (o.runStatus) f.releases.updateRun(run.id, { status: o.runStatus })
+      return { id: r.id, runId: run.id }
+    }
+
+    it('service_ids and runs.services round-trip; summary has serviceIds and serviceCount', async () => {
+      const { f, d } = await release()
+      const services = [entry('s1', { previousCommit: SA }), entry('s2')]
+      const { id, runId } = rel(f, d, services)
+      expect(f.releases.get(id)).toMatchObject({ serviceIds: ['s1', 's2'], serviceCount: 2 })
+      expect(f.releases.list({ limit: 5 })[0]).toMatchObject({ serviceIds: ['s1', 's2'], serviceCount: 2 })
+      expect(f.releases.detail(id).runs[0]).toMatchObject({ services, wholeCheckout: false })
+      f.releases.setRunServices(runId, services.map((s) => ({ ...s, deployedCommit: SB })))
+      expect(f.releases.detail(id).runs[0].services.map((s) => s.deployedCommit)).toEqual([SB, SB])
+      expect(() => f.releases.setRunServices('nope', [])).toThrow('deployment run not found')
+    })
+
+    it('latestTouching ignores releases that never started', async () => {
+      const { f, d } = await release()
+      const r1 = rel(f, d, [entry('s1'), entry('s2')])
+      const r2 = rel(f, d, [entry('s2')], { kind: 'rollback' })
+      rel(f, d, [entry('s1'), entry('s2')], { started: false })
+      const m = f.releases.latestTouching(['s1', 's2', 's3'])
+      expect(Object.fromEntries(m)).toEqual({ s1: r1.id, s2: r2.id })
+      expect(f.releases.latestTouching([]).size).toBe(0)
+    })
+
+    it('previousTouching returns the earlier succeeded deploy of that service', async () => {
+      const { f, d } = await release()
+      const r1 = rel(f, d, [entry('s1', { deployedCommit: SA })], { runStatus: 'succeeded' })
+      rel(f, d, [entry('s1', { deployedCommit: SB })], { runStatus: 'failed' })
+      rel(f, d, [entry('s1', { deployedCommit: SB })], { runStatus: 'succeeded', started: false })
+      const r4 = rel(f, d, [entry('s1', { deployedCommit: SB })], { runStatus: 'succeeded' })
+      expect(f.releases.previousTouching('s1', r4.id)).toEqual({ releaseId: r1.id, commit: SA })
+      expect(f.releases.previousTouching('s1', r1.id)).toBeNull()
+      expect(f.releases.previousTouching('s2', r4.id)).toBeNull()
+    })
   })
 })

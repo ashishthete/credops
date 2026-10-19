@@ -91,6 +91,7 @@ interface ReleaseRow {
   redeploy: number
   rollback_of: string | null
   options: string
+  service_ids: string
   release_notes: string | null
   error: string | null
   playbook: string | null
@@ -120,6 +121,8 @@ interface RunRow {
   backup_file: string | null
   started_at: string | null
   finished_at: string | null
+  services: string
+  whole_checkout: number
 }
 
 interface EventRow {
@@ -266,17 +269,43 @@ export class ReleaseStore {
     })
   }
 
+  setRunServices(runId: string, services: RunService[]): void {
+    const res = this.db.prepare('UPDATE deployment_runs SET services = ? WHERE id = ?').run(JSON.stringify(services), runId)
+    if (res.changes === 0) throw new Error('deployment run not found')
+  }
+
+  /** Each service → the newest started release (either kind) with a run that lists it. */
+  latestTouching(serviceIds: string[]): Map<string, string> {
+    const out = new Map<string, string>()
+    if (serviceIds.length === 0) return out
+    const rows = this.db
+      .prepare(
+        `SELECT j.value ->> '$.id' AS service_id, MAX(r.id) AS release_id
+         FROM releases r JOIN deployment_runs d ON d.release_id = r.id, json_each(d.services) j
+         WHERE r.started_at IS NOT NULL AND j.value ->> '$.id' IN (SELECT value FROM json_each(?))
+         GROUP BY service_id`,
+      )
+      .all(JSON.stringify(serviceIds)) as { service_id: string; release_id: string }[]
+    for (const r of rows) out.set(r.service_id, r.release_id)
+    return out
+  }
+
   /**
-   * Each run's stored services and form, by run id, for planning start and rollback. The typed read side
-   * (DeploymentRunMeta) comes with the release record (Task 6).
+   * The newest started release before `beforeReleaseId` whose run for the service succeeded, with the commit it
+   * deployed. A rollback release's runs end `rolled_back` when they succeed; a release that was rolled back no longer counts.
    */
-  runSelections(releaseId: string): Map<string, { services: RunService[]; wholeCheckout: boolean }> {
-    const rows = this.db.prepare('SELECT id, services, whole_checkout FROM deployment_runs WHERE release_id = ?').all(releaseId) as unknown as {
-      id: string
-      services: string
-      whole_checkout: number
-    }[]
-    return new Map(rows.map((r) => [r.id, { services: JSON.parse(r.services) as RunService[], wholeCheckout: r.whole_checkout === 1 }]))
+  previousTouching(serviceId: string, beforeReleaseId: string): { releaseId: string; commit: string | null } | null {
+    const row = this.db
+      .prepare(
+        `SELECT r.id AS release_id, j.value ->> '$.deployedCommit' AS commit_sha
+         FROM releases r JOIN deployment_runs d ON d.release_id = r.id, json_each(d.services) j
+         WHERE r.started_at IS NOT NULL AND r.id < ? AND j.value ->> '$.id' = ?
+           AND ((r.kind = 'release' AND r.status <> 'rolled_back' AND d.status = 'succeeded' AND d.rolled_back = 0)
+             OR (r.kind = 'rollback' AND d.status = 'rolled_back'))
+         ORDER BY r.id DESC LIMIT 1`,
+      )
+      .get(beforeReleaseId, serviceId) as { release_id: string; commit_sha: string | null } | undefined
+    return row ? { releaseId: row.release_id, commit: row.commit_sha } : null
   }
 
   updateRun(runId: string, patch: RunPatch): void {
@@ -388,6 +417,7 @@ export class ReleaseStore {
 }
 
 function summary(r: ReleaseRow): ReleaseSummary {
+  const serviceIds = JSON.parse(r.service_ids) as string[]
   return {
     id: r.id,
     environmentId: r.environment_id,
@@ -404,6 +434,8 @@ function summary(r: ReleaseRow): ReleaseSummary {
     finishedAt: r.finished_at,
     deploymentCount: r.deployment_count,
     hostCount: r.host_count,
+    serviceIds,
+    serviceCount: serviceIds.length,
     error: r.error,
   }
 }
@@ -427,5 +459,7 @@ function runMeta(r: RunRow): DeploymentRunMeta {
     startedAt: r.started_at,
     finishedAt: r.finished_at,
     steps: JSON.parse(r.steps) as DeploymentRunMeta['steps'],
+    services: JSON.parse(r.services) as RunService[],
+    wholeCheckout: r.whole_checkout === 1,
   }
 }

@@ -27,6 +27,7 @@ import {
 } from '../../shared/deploy'
 import type { AuditAction } from '../../shared/audit'
 import { CONFIRM_MESSAGE } from '../../shared/ops'
+import { listNames } from '../../shared/services'
 import { ProtectError, confirmNeeded, protectionFor } from '../ops/protect'
 import type { ResolvedHost } from '../../shared/inventory'
 import type { AuditLog } from '../audit/audit-log'
@@ -53,7 +54,7 @@ import { ToolingError } from './tooling'
 export interface ReleaseServiceDeps {
   db: Db
   deploys: DeployStore
-  services: Pick<ServiceStore, 'list'>
+  services: Pick<ServiceStore, 'list' | 'recordDeployed'>
   releases: ReleaseStore
   runner: DeployRunner
   access: DeployAccess
@@ -187,7 +188,7 @@ export class ReleaseService {
         targetType: 'release',
         targetId: id,
         targetLabel: `${r.environmentName} ${r.version ?? r.kind}`,
-        details: { status: 'failed', version: r.version, durationSec: null, interrupted: true },
+        details: { status: 'failed', version: r.version, durationSec: null, interrupted: true, serviceCount: r.serviceCount, deploymentCount: r.deploymentCount, hostCount: r.hostCount },
       })
     }
     return ids
@@ -281,7 +282,7 @@ export class ReleaseService {
     this.push(id, { type: 'preflight.done', report })
     this.flush()
     this.setStatus(id, report.blocked ? 'blocked' : 'ready')
-    this.audit('release.preflight', 'success', live, { deployments: infos.map((i) => i.dep.id), commits: report.commitsTotal, blockers: report.checks.filter((c) => c.level === 'block').length })
+    this.audit('release.preflight', 'success', live, { deployments: infos.map((i) => i.dep.id), commits: report.commitsTotal, blockers: report.checks.filter((c) => c.level === 'block').length, hostCount: this.hostCount(infos), ...this.counts(infos) })
     this.clearSteps(live)
   }
 
@@ -303,6 +304,7 @@ export class ReleaseService {
     if (current.versioned && current.currentVersion !== rel.previousVersion) {
       throw new DeployError('INVALID_STATE', 'The version changed since preflight; run preflight again')
     }
+    this.assertSelectionCurrent(rel)
     const redeploy = (rel.preflight?.commitsTotal ?? 0) === 0
     if (redeploy && confirm.redeploy !== true) throw new DeployError('CONFIRM_REQUIRED', REDEPLOY_CONFIRM_MESSAGE)
 
@@ -335,6 +337,7 @@ export class ReleaseService {
         redeploy,
         deployments: infos.map((i) => i.dep.id),
         hostCount: this.hostCount(infos),
+        ...this.counts(infos),
         credentialIds: holder.secretIds,
       })
       live.done = this.runRelease(live, ctx, plan, docker, rel.options.backup).catch((e: unknown) => this.crash(live, e)).finally(() => this.unregister(live))
@@ -359,6 +362,8 @@ export class ReleaseService {
       this.push(id, { type: 'run.started', kind: 'release', version: c.version })
       live.phase = 'release'
       const res = await this.exec(live, plan, c.holder.secrets ?? EMPTY)
+      // Whatever else happens next (rollback, tag, finalize), the runs that succeeded now run this code.
+      this.recordDeployedRuns(live, res.out)
       if (live.cancelRequested || res.out?.cancelled) {
         status = 'cancelled'
         error = 'Cancelled'
@@ -426,6 +431,7 @@ export class ReleaseService {
       for (const t of targets) {
         if (live.runStatus.get(t.info.run.id) !== 'rolled_back') this.applyRun(live, { type: 'deployment.updated', deploymentRunId: t.info.run.id, status: 'rolled_back' })
       }
+      this.restoreServices(targets.map((t) => t.info.sel.services), id)
     }
     this.push(id, { type: 'rollback.done', ok })
     return { ok, reason: this.reason(live, res.out, res.err, 'Rollback') }
@@ -464,8 +470,9 @@ export class ReleaseService {
     if (this.live.has(releaseId)) throw new DeployError('INVALID_STATE', 'This release is busy')
     const env = environmentMeta(this.d.db, src.environmentId)
     await this.guard('release.rollback', 'release.rollback', env, this.depIds(src), releaseId)
-    const latest = this.d.releases.list({ environmentId: env.id, limit: 50 }).find((r) => r.kind === 'release' && (r.status === 'succeeded' || r.status === 'failed'))
-    if (src.kind !== 'release' || !latest || latest.id !== src.id) throw new DeployError('INVALID_STATE', `Only the latest release of ${env.name} can be rolled back`)
+    if (src.kind !== 'release') throw new DeployError('INVALID_STATE', 'Only a release can be rolled back')
+    if (src.status !== 'succeeded' && src.status !== 'failed' && src.status !== 'rolled_back') throw new DeployError('INVALID_STATE', `This release is ${src.status}`)
+    this.assertLatestTouching(src)
     this.confirmProtected('release.rollback', src, env, src.runs.map((r) => r.hostId).filter((h): h is string => h !== null), confirm.typedName)
     const eligible = src.runs
       .filter((r) => (r.status === 'succeeded' || r.status === 'failed') && r.previousCommit !== null && SHA.test(r.previousCommit) && r.deploymentId !== null)
@@ -473,7 +480,8 @@ export class ReleaseService {
     if (eligible.length === 0) throw new DeployError('INVALID_STATE', 'Nothing to roll back: every deployment was a first deploy')
 
     this.assertCapacity(env)
-    const srcSel = this.d.releases.runSelections(src.id)
+    // The rollback's own record: each entry rolls its deployed commit back to the commit it had before.
+    const entries = eligible.map((r) => r.services.map((e) => ({ ...e, previousCommit: e.deployedCommit ?? r.deployedCommit, deployedCommit: e.previousCommit })))
     const rb = this.d.releases.transaction(() => {
       const rel = this.d.releases.createRelease({
         environmentId: env.id,
@@ -486,8 +494,7 @@ export class ReleaseService {
         rollbackOf: src.id,
         options: src.options,
         triggeredBy: this.who(),
-        // The rollback record (its services and per-run entries) is written with per-service rollback (Task 6).
-        serviceIds: [],
+        serviceIds: entries.flat().map((e) => e.id),
       })
       const runs = this.d.releases.createRuns(
         rel.id,
@@ -499,8 +506,8 @@ export class ReleaseService {
           position: i,
           branch: r.branch,
           steps: [],
-          services: [],
-          wholeCheckout: srcSel.get(r.id)?.wholeCheckout ?? true,
+          services: entries[i],
+          wholeCheckout: r.wholeCheckout,
         })),
       )
       this.d.releases.setStatus(rel.id, 'running', { startedAt: this.d.now().toISOString() })
@@ -508,7 +515,7 @@ export class ReleaseService {
     })
     const live = this.register(rb.rel.id, env, 'rollback', 'rollback')
     try {
-      const infos: Info[] = eligible.map((r, i) => ({ run: rb.runs[i], dep: this.d.deploys.get(r.deploymentId as string), sel: selectionOf(srcSel.get(r.id)) }))
+      const infos: Info[] = eligible.map((r, i) => ({ run: rb.runs[i], dep: this.d.deploys.get(r.deploymentId as string), sel: selectionOf(rb.runs[i]) }))
       for (const i of infos) live.runIds.add(i.run.id)
       this.seedSteps(infos, 'rollback', false)
       const holder = this.resolveSecrets(infos, { env: true })
@@ -518,7 +525,7 @@ export class ReleaseService {
       const plan = this.plan('rollback', live, infos, { version: null, holder, docker, backup: false, previous })
       this.d.releases.setStatus(rb.rel.id, 'running', { playbook: generatePlaybook(plan) })
       this.emitState(rb.rel.id)
-      this.audit('release.rollback', 'success', live, { rollbackOf: src.id, deployments: infos.map((i) => i.dep.id), hostCount: this.hostCount(infos) })
+      this.audit('release.rollback', 'success', live, { rollbackOf: src.id, deployments: infos.map((i) => i.dep.id), hostCount: this.hostCount(infos), ...this.counts(infos) })
       live.done = this.runRollback(live, src, infos, holder, plan).catch((e: unknown) => this.crash(live, e)).finally(() => this.unregister(live))
       return { releaseId: rb.rel.id }
     } catch (e) {
@@ -546,6 +553,8 @@ export class ReleaseService {
         }
         status = 'succeeded'
         this.setStatus(src.id, 'rolled_back')
+        // The rolled-back entries carry the restored commit as deployedCommit; history before the source decides last_release_id.
+        this.restoreServices(infos.map((i) => i.sel.services.map((e) => ({ ...e, previousCommit: e.deployedCommit }))), src.id)
       } else {
         status = live.cancelRequested || res.out?.cancelled ? 'cancelled' : 'failed'
         error = status === 'cancelled' ? 'Cancelled' : this.reason(live, res.out, res.err, 'Rollback')
@@ -665,7 +674,7 @@ export class ReleaseService {
       for (const i of infos) live.runIds.add(i.run.id)
       const tag = rel.version as string
       this.setStatus(releaseId, 'running', { error: null, finishedAt: null })
-      this.audit('release.start', 'success', live, { kind: 'release', version: rel.version, bump: 'none', redeploy: false, retryVersion: true, deployments: infos.map((i) => i.dep.id), hostCount: this.hostCount(infos), credentialIds: [] })
+      this.audit('release.start', 'success', live, { kind: 'release', version: rel.version, bump: 'none', redeploy: false, retryVersion: true, deployments: infos.map((i) => i.dep.id), hostCount: this.hostCount(infos), ...this.counts(infos), credentialIds: [] })
       live.done = this.runRetry(live, infos, tag, rel.previousVersion).catch((e: unknown) => this.crash(live, e)).finally(() => this.unregister(live))
     } catch (e) {
       this.unregister(live)
@@ -867,6 +876,9 @@ export class ReleaseService {
       version: row.version,
       durationSec,
       ...(live.failedStep ? { failedStep: live.failedStep } : {}),
+      serviceCount: row.serviceCount,
+      deploymentCount: row.deploymentCount,
+      hostCount: row.hostCount,
     })
     this.drop(holder)
     live.known = []
@@ -1005,11 +1017,10 @@ export class ReleaseService {
   // ---- bookkeeping ----
 
   private infosOf(rel: ReleaseDetail): Info[] {
-    const sels = this.d.releases.runSelections(rel.id)
     return rel.runs.map((run) => {
       if (run.deploymentId === null) throw new DeployError('INVALID_STATE', `${run.deploymentName} was removed since preflight; run preflight again`)
       if (!this.steps.has(run.id)) this.steps.set(run.id, run.steps.map((x) => ({ ...x })))
-      return { run, dep: this.d.deploys.get(run.deploymentId), sel: selectionOf(sels.get(run.id)) }
+      return { run, dep: this.d.deploys.get(run.deploymentId), sel: selectionOf(run) }
     })
   }
 
@@ -1114,6 +1125,61 @@ export class ReleaseService {
 
   private hostCount(infos: Info[]): number {
     return new Set(infos.map((i) => i.dep.hostId)).size
+  }
+
+  private counts(infos: Info[]): { serviceCount: number; deploymentCount: number } {
+    return { serviceCount: infos.reduce((n, i) => n + i.sel.services.length, 0), deploymentCount: infos.length }
+  }
+
+  /** Each run's services must still be what preflight saw: same checkout, same compose name, and no checkout gained or lost one. */
+  private assertSelectionCurrent(rel: ReleaseDetail): void {
+    const now = new Map(this.d.services.list(rel.environmentId).flatMap((s) => (s.kind === 'service' ? [[s.id, s] as const] : [])))
+    for (const run of rel.runs) {
+      for (const e of run.services) {
+        const cur = now.get(e.id)
+        if (!cur || cur.deploymentId !== run.deploymentId || cur.composeService !== e.composeService) {
+          throw new DeployError('INVALID_STATE', `${e.name} changed since preflight; run preflight again`)
+        }
+      }
+      if (run.deploymentId === null || run.services.length === 0) continue
+      const inCheckout = [...now.values()].filter((s) => s.deploymentId === run.deploymentId).map((s) => s.id)
+      const mine = new Set(run.services.map((e) => e.id))
+      // A whole run lists every service the checkout had; a partial one left at least one out.
+      const changed = run.wholeCheckout ? inCheckout.length !== mine.size || inCheckout.some((id) => !mine.has(id)) : inCheckout.length <= mine.size
+      if (changed) throw new DeployError('INVALID_STATE', `${run.deploymentName} changed since preflight; run preflight again`)
+    }
+  }
+
+  /** Manual rollback only while no later release (of either kind) has touched any service this one deployed. */
+  private assertLatestTouching(src: ReleaseDetail): void {
+    const entries = src.runs.filter((r) => r.status === 'succeeded' || r.status === 'failed').flatMap((r) => r.services)
+    const latest = this.d.releases.latestTouching(entries.map((e) => e.id))
+    const names = [...new Set(entries.filter((e) => (latest.get(e.id) ?? src.id) !== src.id).map((e) => e.name))]
+    if (names.length > 0) throw new DeployError('INVALID_STATE', `Can't roll back: ${listNames(names)} ${names.length === 1 ? 'was' : 'were'} deployed again since this release`)
+  }
+
+  /** Runs that ended succeeded fill their entries' deployedCommit and become their services' last deploy. */
+  private recordDeployedRuns(live: Live, out: RunOutcome | null): void {
+    try {
+      const recorded: { serviceId: string; commit: string | null; releaseId: string | null }[] = []
+      for (const run of this.d.releases.detail(live.id).runs) {
+        if (run.status !== 'succeeded' || run.rolledBack || run.services.length === 0) continue
+        const commit = out?.commits[run.id]?.deployed ?? run.deployedCommit
+        if (commit !== run.deployedCommit) this.d.releases.updateRun(run.id, { deployedCommit: commit })
+        this.d.releases.setRunServices(run.id, run.services.map((e) => ({ ...e, deployedCommit: commit })))
+        for (const e of run.services) recorded.push({ serviceId: e.id, commit, releaseId: live.id })
+      }
+      this.d.services.recordDeployed(recorded)
+    } catch (e) {
+      this.push(live.id, { type: 'log', stepId: null, hostId: null, stream: 'err', line: this.red(live, `Recording the deployed commits failed: ${e instanceof Error ? e.message : String(e)}`) })
+    }
+  }
+
+  /** After a rollback: each entry's service goes back to its previousCommit and to the release that deployed it before `before`. */
+  private restoreServices(entries: RunService[][], before: string): void {
+    this.d.services.recordDeployed(
+      entries.flat().map((e) => ({ serviceId: e.id, commit: e.previousCommit, releaseId: this.d.releases.previousTouching(e.id, before)?.releaseId ?? null })),
+    )
   }
 
   /** The typed-name rule of Phase 7: every protected environment the target hosts serve counts, not only this one. */
@@ -1286,9 +1352,9 @@ export class ReleaseService {
   }
 }
 
-/** A stored run selection as planning reads it; a run without one (before services) is its whole checkout. */
-function selectionOf(stored: { services: RunService[]; wholeCheckout: boolean } | undefined): RunSelection {
-  return stored ? { services: stored.services, whole: stored.wholeCheckout } : { services: [], whole: true }
+/** A stored run's selection as planning reads it; a run stored before services has none and is its whole checkout. */
+function selectionOf(run: Pick<DeploymentRunMeta, 'services' | 'wholeCheckout'>): RunSelection {
+  return { services: run.services, whole: run.wholeCheckout }
 }
 
 /**

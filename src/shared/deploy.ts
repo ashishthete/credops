@@ -409,6 +409,9 @@ export interface ReleaseSummary {
   finishedAt: string | null
   deploymentCount: number
   hostCount: number
+  /** The services this release was confirmed for; a rollback release names the services it rolls back. */
+  serviceIds: string[]
+  serviceCount: number
   error: string | null
 }
 
@@ -430,6 +433,10 @@ export interface DeploymentRunMeta {
   startedAt: string | null
   finishedAt: string | null
   steps: { stepId: string; kind: StepKind; state: StepState; startedAt: string | null; finishedAt: string | null; error?: string }[]
+  /** The selected services this run deploys, with their commits. */
+  services: RunService[]
+  /** True when the run rebuilds the whole checkout (`services` null in the plan). */
+  wholeCheckout: boolean
 }
 
 export interface ReleaseDetail extends ReleaseSummary {
