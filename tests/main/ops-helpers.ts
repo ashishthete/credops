@@ -13,9 +13,14 @@ import { SnippetStore } from '../../src/main/ops/snippet-store'
 import { connectChain } from '../../src/main/ssh/connect'
 import { KnownHostStore } from '../../src/main/ssh/known-hosts'
 import { PromptBroker } from '../../src/main/ssh/prompts'
+import { wireVaultHooks } from '../../src/main/vault/hooks'
 import { makeInventory } from './inventory-helpers'
 import { startServer, type ServerOpts } from './ssh-server'
 import { TUNNEL_USER } from './tunnel-helpers'
+
+/** Hook targets for what a run setup doesn't build. */
+export const idleSessions = { vaultLocked() {}, closeAll() {} }
+export const idleTunnels = { vaultLocked() {}, vaultUnlocked() {}, vaultReset() {} }
 
 export interface ShellHost {
   /** The tmp dir every command runs in; also its `HOME`. */
@@ -185,10 +190,8 @@ export async function makeRunSetup(deps: Partial<RunManagerDeps> = {}) {
     emit: (_event, payload) => void events.push(payload),
     ...deps,
   })
-  // The same order as src/main/index.ts: runs, then links, then the broker.
-  f.vault.onLock(() => runs.vaultLocked())
-  f.vault.onLock(() => links.vaultLocked())
-  f.vault.onLock(() => broker.cancelAll())
+  // The app's own wiring: runs, then links, then the broker on lock; runs, then links on reset.
+  wireVaultHooks(f.vault, { sessions: idleSessions, tunnels: idleTunnels, runs, links, prompts: broker })
   onTestFinished(() => {
     runs.closeAll()
     links.closeAll()

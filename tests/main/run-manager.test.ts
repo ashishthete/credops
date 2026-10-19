@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import {
   MAX_ACTIVE_RUNS,
   MAX_RUN_TARGETS,
@@ -533,5 +533,66 @@ describe('RunManager', () => {
     expect((await h['runs:cancel'](run.id)).state).toBe('done')
     await h['runs:dismiss'](run.id)
     expect(await h['runs:list']()).toEqual([])
+  })
+})
+
+describe('RunManager on a vault reset', () => {
+  it('cancels every run in flight, forgets every run and closes its links; runs start again after setup', async () => {
+    const t = await makeRunSetup()
+    const done = t.runs.start({ target: onHosts(t, ['app-3']), command: text('echo before') })
+    await t.finished(done.id)
+    const run = t.runs.start({ target: onHosts(t, ['app-1', 'app-2']), command: text('sleep 30'), concurrency: 1 })
+    await t.reached(run, 'app-1', 'running')
+    await t.waitFor(() => expect(t.sh.running()).toBe(1))
+
+    t.vault.lock('manual')
+    await t.vault.reset('RESET')
+    // Gone before reset() resolves: the runs, with their output, and every link.
+    expect(t.runs.list()).toEqual([])
+    expect(() => t.runs.get(run.id)).toThrow('run not found')
+    expect(() => t.runs.get(done.id)).toThrow('run not found')
+    const last = t.events.filter((e) => e.runId === run.id && e.kind === 'run').at(-1)
+    expect(last).toMatchObject({ kind: 'run', run: { state: 'cancelled' } })
+    expect(t.hostEvents(run.id, t.ids['app-2']!)).toEqual(['queued', 'cancelled'])
+    expect(runRows(t).filter((e) => e.action === 'run.finish').map((e) => e.outcome)).toEqual(['success', 'info'])
+    await t.waitFor(() => expect(t.server.connections()).toBe(0))
+    await t.waitFor(() => expect(t.sh.running()).toBe(0))
+    expect(t.server.execs()).toHaveLength(2)
+
+    expect(() => t.runs.start({ target: onHosts(t, ['app-1']), command: text('true') })).toThrow(VAULT_LOCKED)
+    await t.vault.setup('a new password')
+    const after = t.runs.start({ target: onHosts(t, ['app-1']), command: text('echo after') })
+    expect(await t.finished(after.id)).toMatchObject({ state: 'done' })
+    expect(t.runs.get(after.id).output[0]!.text).toBe('after\n')
+  })
+
+  it('one run failing to cancel never keeps the others; the error is logged redacted', async () => {
+    let boom = false
+    const events: unknown[] = []
+    const t = await makeRunSetup({
+      emit: (_event, payload) => {
+        if (boom && payload.kind === 'host') {
+          boom = false
+          throw new Error('-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----')
+        }
+        events.push(payload)
+      },
+    })
+    const first = t.runs.start({ target: onHosts(t, ['app-1']), command: text('sleep 30') })
+    const second = t.runs.start({ target: onHosts(t, ['app-2']), command: text('sleep 30') })
+    await t.reached(first, 'app-1', 'running')
+    await t.reached(second, 'app-2', 'running')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    onTestFinished(() => warn.mockRestore())
+
+    boom = true
+    t.vault.lock('manual')
+    await t.vault.reset('RESET')
+    expect(t.runs.list()).toEqual([])
+    expect(warn.mock.calls.map((c) => c[0])).toEqual(['Run cancel failed:'])
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('b3BlbnNzaC1rZXk')
+    // The second run still ended as cancelled, and both commands are gone with their links.
+    expect(events).toContainEqual(expect.objectContaining({ runId: second.id, kind: 'run', run: expect.objectContaining({ state: 'cancelled' }) }))
+    await t.waitFor(() => expect(t.sh.running()).toBe(0))
   })
 })

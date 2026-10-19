@@ -303,16 +303,40 @@ export class RunManager {
    */
   closeAll(): void {
     this.closed = true
-    for (const run of this.runs.values()) {
-      if (run.state !== 'running') continue
-      for (const h of run.hosts) {
-        if (isFinal(h)) continue
-        const running = h.meta.state === 'running'
-        h.abort.abort()
-        this.endHost(run, h, 'cancelled', { error: running ? { code: 'closed', message: CANCELLED_RUNNING } : { ...CANCELLED } })
+    for (const run of this.runs.values()) this.endNow(run)
+  }
+
+  /**
+   * Vault reset: every unfinished run ends as on quit, then every run, finished ones too, is
+   * forgotten with its output, so nothing from before the reset can be read after it. Unlike
+   * `closeAll`, runs start again once the vault is set up. One run failing never skips the rest.
+   */
+  vaultReset(): void {
+    for (const run of [...this.runs.values()]) {
+      try {
+        this.endNow(run)
+      } catch (err) {
+        console.warn('Run cancel failed:', redact(err instanceof Error ? err.message : String(err)))
       }
-      this.maybeFinish(run)
+      try {
+        this.drop(run)
+      } catch (err) {
+        console.warn('Run drop failed:', redact(err instanceof Error ? err.message : String(err)))
+        this.runs.delete(run.id)
+      }
     }
+  }
+
+  /** Every unfinished host ends `cancelled` now and its command gets its `INT`; the run finishes. */
+  private endNow(run: Run): void {
+    if (run.state !== 'running') return
+    for (const h of run.hosts) {
+      if (isFinal(h)) continue
+      const running = h.meta.state === 'running'
+      h.abort.abort()
+      this.endHost(run, h, 'cancelled', { error: running ? { code: 'closed', message: CANCELLED_RUNNING } : { ...CANCELLED } })
+    }
+    this.maybeFinish(run)
   }
 
   private run(runId: string): Run {

@@ -108,7 +108,7 @@ function stubbableEngines() {
   return { ctl, engines }
 }
 
-const idle = { vaultLocked() {}, closeAll() {} }
+const idle = { vaultLocked() {}, closeAll() {}, vaultReset() {}, closeForReset() {} }
 
 /** wireVaultHooks targets with these tunnels and prompts; the rest idle unless given. */
 function hookTargets(tunnels: TunnelManager, prompts: PromptBroker, sessions: VaultHookTargets['sessions'] = idle): VaultHookTargets {

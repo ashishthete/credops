@@ -9,8 +9,8 @@ function recording() {
   const targets: VaultHookTargets = {
     sessions: { vaultLocked: rec('sessions.vaultLocked'), closeAll: (reason) => void calls.push(`sessions.closeAll(${reason})`) },
     tunnels: { vaultLocked: rec('tunnels.vaultLocked'), vaultUnlocked: rec('tunnels.vaultUnlocked'), vaultReset: rec('tunnels.vaultReset') },
-    runs: { vaultLocked: rec('runs.vaultLocked') },
-    links: { vaultLocked: rec('links.vaultLocked') },
+    runs: { vaultLocked: rec('runs.vaultLocked'), vaultReset: rec('runs.vaultReset') },
+    links: { vaultLocked: rec('links.vaultLocked'), closeForReset: rec('links.closeForReset') },
     prompts: { cancelAll: rec('prompts.cancelAll') },
   }
   return { calls, targets }
@@ -33,7 +33,7 @@ describe('wireVaultHooks', () => {
       'prompts.cancelAll',
     ])
     await vault.reset('RESET')
-    expect(calls.splice(0)).toEqual(['sessions.closeAll(reset)', 'tunnels.vaultReset'])
+    expect(calls.splice(0)).toEqual(['sessions.closeAll(reset)', 'tunnels.vaultReset', 'runs.vaultReset', 'links.closeForReset'])
   })
 
   it('a throwing hook never skips the ones after it', async () => {
@@ -50,7 +50,7 @@ describe('wireVaultHooks', () => {
     vault.lock('manual')
     await vault.reset('RESET')
     expect(calls).toContain('prompts.cancelAll')
-    expect(calls.at(-1)).toBe('tunnels.vaultReset')
+    expect(calls.at(-1)).toBe('links.closeForReset')
     expect(error.mock.calls.map((c) => c[0])).toEqual(['vault lock listener failed:', 'vault reset listener failed:'])
     error.mockRestore()
   })

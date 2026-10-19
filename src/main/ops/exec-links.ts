@@ -127,11 +127,38 @@ export class ExecLinks {
     }
   }
 
-  /** Quit: ends every dial and connection, and fails everything waiting. */
+  /** Quit: ends every dial and connection, and fails everything waiting. No lease is served afterwards. */
   closeAll(): void {
     this.closed = true
-    for (const turn of this.slotQueue.splice(0)) turn(new ExecFailure(CANCELLED))
-    for (const link of [...this.links.values()]) this.closeLink(link)
+    this.closeEverything()
+  }
+
+  /**
+   * Vault reset: the same teardown as quit, leased links included, but undoable: leases are served
+   * again once the vault is set up and unlocked.
+   */
+  closeForReset(): void {
+    this.closeEverything()
+  }
+
+  /** One link or waiter failing never leaves the rest open; a link that throws is still unpooled. */
+  private closeEverything(): void {
+    for (const turn of this.slotQueue.splice(0)) {
+      try {
+        turn(new ExecFailure(CANCELLED))
+      } catch (err) {
+        console.warn('Exec link waiter failed:', redact(messageOf(err)))
+      }
+    }
+    for (const link of [...this.links.values()]) {
+      try {
+        this.closeLink(link)
+      } catch (err) {
+        console.warn('Exec link close failed:', redact(messageOf(err)))
+        if (this.links.get(link.key) === link) this.links.delete(link.key)
+        for (const turn of link.channelQueue.splice(0)) turn()
+      }
+    }
   }
 
   private async join(link: Link, signal: AbortSignal): Promise<Lease> {
