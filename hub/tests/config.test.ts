@@ -14,6 +14,20 @@ function write(cfg: unknown): string {
 }
 
 describe('loadConfig', () => {
+  it('expands ${CREDENTIALS_DIRECTORY} in masterKeyFile, and refuses it when unset', () => {
+    const file = write({ ...base(), masterKeyFile: '${CREDENTIALS_DIRECTORY}/master-key' })
+    const prev = process.env.CREDENTIALS_DIRECTORY
+    try {
+      process.env.CREDENTIALS_DIRECTORY = '/run/credentials/opsdeck-hub.service'
+      expect(loadConfig(file).masterKeyFile).toBe('/run/credentials/opsdeck-hub.service/master-key')
+      delete process.env.CREDENTIALS_DIRECTORY
+      expect(() => loadConfig(file)).toThrow(/masterKeyFile.*CREDENTIALS_DIRECTORY/)
+    } finally {
+      if (prev === undefined) delete process.env.CREDENTIALS_DIRECTORY
+      else process.env.CREDENTIALS_DIRECTORY = prev
+    }
+  })
+
   it('loads the example config with defaults', () => {
     const c = loadConfig(EXAMPLE)
     expect(c.listen).toEqual({ host: '127.0.0.1', port: 8787 })

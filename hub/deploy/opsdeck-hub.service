@@ -1,0 +1,30 @@
+[Unit]
+Description=OpsDeck Hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=opsdeck-hub
+Group=opsdeck-hub
+WorkingDirectory=/opt/opsdeck-hub
+ExecStart=/usr/bin/node /opt/opsdeck-hub/dist/opsdeck-hub.mjs serve --config /etc/opsdeck-hub/hub.config.json
+Restart=on-failure
+RestartSec=5
+
+# The master key is handed over as a systemd credential; set "masterKeyFile" in the config
+# to "${CREDENTIALS_DIRECTORY}/master-key"; the Hub expands it from the variable systemd sets.
+LoadCredential=master-key:/etc/opsdeck-hub/master.key
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/opsdeck-hub
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

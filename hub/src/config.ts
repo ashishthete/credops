@@ -99,7 +99,13 @@ export function loadConfig(file: string): HubConfig {
   const ttl = root.sessionTtlHours === undefined ? SESSION_TTL_HOURS : root.sessionTtlHours
   if (typeof ttl !== 'number' || !Number.isInteger(ttl) || ttl < 1 || ttl > 72) bad('sessionTtlHours', 'must be 1-72')
 
-  const masterKeyFile = root.masterKeyFile === undefined ? undefined : str(root.masterKeyFile, 'masterKeyFile')
+  let masterKeyFile = root.masterKeyFile === undefined ? undefined : str(root.masterKeyFile, 'masterKeyFile')
+  if (masterKeyFile?.includes('${CREDENTIALS_DIRECTORY}')) {
+    // systemd's LoadCredential= puts the key under this directory for the service only.
+    const dir = process.env.CREDENTIALS_DIRECTORY
+    if (!dir) bad('masterKeyFile', 'uses ${CREDENTIALS_DIRECTORY}, which is only set under systemd LoadCredential=')
+    masterKeyFile = masterKeyFile.replaceAll('${CREDENTIALS_DIRECTORY}', dir as string)
+  }
   if (root.masterKey !== undefined) bad('masterKey', 'is not allowed here; use masterKeyFile or OPSDECK_HUB_MASTER_KEY')
 
   return {

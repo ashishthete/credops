@@ -1,5 +1,5 @@
 import { builtinModules } from 'node:module'
-import { readFileSync } from 'node:fs'
+import { chmodSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
@@ -14,13 +14,21 @@ const external = [
   ...Object.keys(pkg.dependencies ?? {}),
 ]
 
-// Finished in 10b T9.
 export default defineConfig({
   root: here,
   build: {
-    ssr: resolve(here, 'src/main.ts'),
+    ssr: resolve(here, 'src/cli.ts'),
     outDir: resolve(here, 'dist'),
     target: 'node24',
-    rollupOptions: { external, output: { entryFileNames: 'opsdeck-hub.mjs', format: 'es' } },
+    rollupOptions: { external, output: { entryFileNames: 'opsdeck-hub.mjs', format: 'es', banner: '#!/usr/bin/env node' } },
   },
+  plugins: [
+    {
+      name: 'executable-bin',
+      apply: 'build',
+      writeBundle(opts) {
+        if (opts.dir) chmodSync(resolve(opts.dir, 'opsdeck-hub.mjs'), 0o755)
+      },
+    },
+  ],
 })
