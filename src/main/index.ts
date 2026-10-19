@@ -37,6 +37,7 @@ import { ProductStore } from './inventory/product-store'
 import { resolveHost } from './inventory/resolve'
 import { hostMeta } from './inventory/rows'
 import { SshImporter } from './inventory/ssh-import'
+import { SnippetStore } from './ops/snippet-store'
 import { redact } from './security/redact'
 import { authPlan } from './ssh/auth'
 import { connectChain } from './ssh/connect'
@@ -149,6 +150,7 @@ if (!app.requestSingleInstanceLock()) {
       environments = new EnvironmentStore(db, service, log)
       products = new ProductStore(db, service, log)
       const tunnels = new TunnelStore({ db, audit: log, vault: service })
+      const snippets = new SnippetStore({ db, audit: log, vault: service })
       const importer = new SshImporter({
         db,
         vault: service,
@@ -267,7 +269,7 @@ if (!app.requestSingleInstanceLock()) {
           ...createSshImportHandlers(importer),
           ...createTunnelHandlers({ store: tunnels, manager: runner }),
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
-          ...createOpsHandlers(),
+          ...createOpsHandlers({ snippets }),
         },
         (url) => isTrustedSender(url, { devServerUrl, rendererFile }),
         { validators: VALIDATORS, knownSecrets },

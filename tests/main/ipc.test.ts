@@ -10,6 +10,7 @@ import { isTrustedSender, registerHandlers } from '../../src/main/ipc/register'
 import { VALIDATORS } from '../../src/main/ipc/validators'
 import { CHANNELS, EVENTS } from '../../src/shared/ipc'
 import { createOpsHandlers } from '../../src/main/ipc/handlers/ops'
+import type { SnippetStore } from '../../src/main/ops/snippet-store'
 import { stubHandlers } from './ipc-helpers'
 
 const actor = { osUser: 'tester', machine: 'box' }
@@ -103,10 +104,12 @@ describe('ops contract', () => {
     expect(EVENTS).toEqual(expect.arrayContaining(['run:event', 'containers:logs']))
   })
 
-  it('stubs each ops channel until its task lands', async () => {
-    const handlers = createOpsHandlers() as unknown as Record<string, () => unknown>
+  it('stubs each run and container channel until its task lands', async () => {
+    const handlers = createOpsHandlers({ snippets: {} as SnippetStore }) as unknown as Record<string, () => unknown>
     expect(Object.keys(handlers).sort()).toEqual([...OPS_CHANNELS].sort())
-    for (const channel of OPS_CHANNELS) expect(() => handlers[channel]!()).toThrow(/^Not available yet$/)
+    for (const channel of OPS_CHANNELS.filter((c) => !c.startsWith('snippets:'))) {
+      expect(() => handlers[channel]!()).toThrow(/^Not available yet$/)
+    }
   })
 })
 

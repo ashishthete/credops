@@ -1,4 +1,5 @@
 import type { Handlers } from '../../../shared/ipc'
+import type { SnippetStore } from '../../ops/snippet-store'
 
 type OpsChannel = Extract<keyof Handlers, `snippets:${string}` | `runs:${string}` | `containers:${string}`>
 
@@ -6,14 +7,15 @@ const notYet = (): never => {
   throw new Error('Not available yet')
 }
 
-// Tasks 3, 5 and 6 replace these stubs with the snippet, run and container services.
-export function createOpsHandlers(): Pick<Handlers, OpsChannel> {
+// Tasks 5 and 6 replace the run and container stubs with their services.
+export function createOpsHandlers(deps: { snippets: SnippetStore }): Pick<Handlers, OpsChannel> {
+  const { snippets } = deps
   return {
-    'snippets:list': notYet,
-    'snippets:create': notYet,
-    'snippets:update': notYet,
-    'snippets:delete': notYet,
-    'snippets:render': notYet,
+    'snippets:list': () => snippets.list(),
+    'snippets:create': (input) => snippets.create(input),
+    'snippets:update': (id, input) => snippets.update(id, input),
+    'snippets:delete': (id) => snippets.delete(id),
+    'snippets:render': (id, values) => snippets.render(id, values),
     'runs:start': notYet,
     'runs:cancel': notYet,
     'runs:list': notYet,
