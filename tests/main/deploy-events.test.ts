@@ -288,7 +288,7 @@ describe('preflight parsing', () => {
     expect(r.commits['dep-1'].commits.map((c) => c.sha[0])).toEqual(['1', '4'])
     expect(r.commits['dep-1'].commits[0]).toEqual({ sha: '1'.repeat(40), subject: 'Add search', author: 'ana', date: '2026-10-18T09:00:00+00:00', deploymentId: 'dep-1' })
     expect(r.commits['dep-1']).toMatchObject({ hiddenPairs: 1, truncated: 0, firstDeploy: false, head: '1'.repeat(40) })
-    expect(r.commits['dep-3']).toMatchObject({ firstDeploy: true, hiddenPairs: 0 })
+    expect(r.commits['dep-3']).toMatchObject({ firstDeploy: true, hiddenPairs: 0, tagCommit: null })
     expect(r.commits['dep-3'].commits).toHaveLength(2)
     expect(r.commitsTotal).toBe(4)
     expect(msg(r, 'docker', 'dep-3')).toEqual(['block: docker needs sudo on label od-2 and no sudo password is set'])
@@ -330,7 +330,7 @@ describe('preflight parsing', () => {
     }
     const r = parsePreflight(p, out, { now: NOW })
     expect(r.commitsTotal).toBe(0)
-    expect(r.commits['dep-3']).toMatchObject({ commits: [], firstDeploy: false, truncated: 0, head: null })
+    expect(r.commits['dep-3']).toMatchObject({ commits: [], firstDeploy: false, truncated: 0, head: null, tagCommit: 'c'.repeat(40) })
     expect(r.blocked).toBe(false)
   })
 

@@ -10,6 +10,7 @@ import {
   type ReleaseStatus,
   type ReleaseSummary,
   type RunEvent,
+  type RunService,
   type RunEventBody,
   type StepKind,
   type VersionBump,
@@ -36,6 +37,8 @@ export interface NewRelease {
   rollbackOf: string | null
   options: ReleaseOptions
   triggeredBy: string
+  /** The services the release was confirmed for (releases.service_ids). */
+  serviceIds: string[]
 }
 
 export interface ReleaseStatusExtra {
@@ -58,6 +61,8 @@ export interface RunPlan {
   position: number
   branch: string
   steps: { stepId: string; kind: StepKind }[]
+  services: RunService[]
+  wholeCheckout: boolean
 }
 
 export interface RunPatch {
@@ -157,11 +162,12 @@ export class ReleaseStore {
     this.db
       .prepare(
         `INSERT INTO releases(id, environment_id, kind, status, version, previous_version, version_bump, redeploy,
-          rollback_of, options, triggered_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+          rollback_of, options, service_ids, triggered_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         id, input.environmentId, input.kind, input.status, input.version, input.previousVersion, input.versionBump,
-        input.redeploy ? 1 : 0, input.rollbackOf, JSON.stringify(input.options), input.triggeredBy, this.now().toISOString(),
+        input.redeploy ? 1 : 0, input.rollbackOf, JSON.stringify(input.options), JSON.stringify(input.serviceIds), input.triggeredBy,
+        this.now().toISOString(),
       )
     return this.get(id)
   }
@@ -242,16 +248,33 @@ export class ReleaseStore {
     this.row(releaseId)
     return this.transaction(() => {
       const ins = this.db.prepare(
-        `INSERT INTO deployment_runs(id, release_id, deployment_id, deployment_name, host_id, host_label, position, branch, steps, status)
-         VALUES (?,?,?,?,?,?,?,?,?, 'pending')`,
+        `INSERT INTO deployment_runs(id, release_id, deployment_id, deployment_name, host_id, host_label, position, branch, steps,
+           services, whole_checkout, status)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?, 'pending')`,
       )
       return plans.map((p) => {
         const id = uuidv7()
         const steps = p.steps.map((s) => ({ stepId: s.stepId, kind: s.kind, state: 'pending' as const, startedAt: null, finishedAt: null }))
-        ins.run(id, releaseId, p.deploymentId, p.deploymentName, p.hostId, p.hostLabel, p.position, p.branch, JSON.stringify(steps))
+        ins.run(
+          id, releaseId, p.deploymentId, p.deploymentName, p.hostId, p.hostLabel, p.position, p.branch, JSON.stringify(steps),
+          JSON.stringify(p.services), p.wholeCheckout ? 1 : 0,
+        )
         return runMeta(this.db.prepare('SELECT * FROM deployment_runs WHERE id = ?').get(id) as unknown as RunRow)
       })
     })
+  }
+
+  /**
+   * Each run's stored services and form, by run id, for planning start and rollback. The typed read side
+   * (DeploymentRunMeta) comes with the release record (Task 6).
+   */
+  runSelections(releaseId: string): Map<string, { services: RunService[]; wholeCheckout: boolean }> {
+    const rows = this.db.prepare('SELECT id, services, whole_checkout FROM deployment_runs WHERE release_id = ?').all(releaseId) as unknown as {
+      id: string
+      services: string
+      whole_checkout: number
+    }[]
+    return new Map(rows.map((r) => [r.id, { services: JSON.parse(r.services) as RunService[], wholeCheckout: r.whole_checkout === 1 }]))
   }
 
   updateRun(runId: string, patch: RunPatch): void {

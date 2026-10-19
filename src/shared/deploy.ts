@@ -332,11 +332,18 @@ export interface PreflightReport {
   checks: PreflightCheck[]
   commits: Record<
     string,
-    { commits: CommitInfo[]; hiddenPairs: number; truncated: number; firstDeploy: boolean; head: string | null }
+    /** `tagCommit`: the deploy tag's commit on origin, null on a first deploy. */
+    { commits: CommitInfo[]; hiddenPairs: number; truncated: number; firstDeploy: boolean; head: string | null; tagCommit: string | null }
   >
   dockerModes: Record<string, DockerMode>
   /** Per deployment: the compose file's services (`docker compose config --services`), null when unknown. */
   composeServices: Record<string, string[] | null>
+  /**
+   * Per service in the selection: `since` is its last deployed commit, else the deploy tag's commit; `count` is
+   * how many commits of its checkout's list (newest first) come before `since`. `known` is false when `since`
+   * is not in the list, and then `count` is the list length.
+   */
+  serviceCommits: Record<string, { since: string | null; count: number; known: boolean }>
   locks: Record<string, { holder: LockHolder; stale: boolean; raw: string } | null>
   commitsTotal: number
   blocked: boolean
@@ -435,9 +442,21 @@ export interface ReleaseDetail extends ReleaseSummary {
   lastSeq: number
 }
 
+/** One service of a run; at preflight `previousCommit` is its last deployed commit and `deployedCommit` is null. */
+export interface RunService {
+  id: string
+  name: string
+  composeService: string
+  previousCommit: string | null
+  deployedCommit: string | null
+}
+
 export interface PreflightRequest {
   environmentId: string
-  deploymentIds: string[]
+  /** App services to deploy; the checkouts they belong to are the ones planned. */
+  serviceIds: string[]
+  /** Checkouts with no services, each deployed whole; refused for a checkout that has services. */
+  checkoutIds?: string[]
   bump: VersionBump
   options: ReleaseOptions
   releaseNotes?: string

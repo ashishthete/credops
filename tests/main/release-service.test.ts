@@ -8,8 +8,9 @@ import { ToolingError } from '../../src/main/deploy/tooling'
 import { resolveHost } from '../../src/main/inventory/resolve'
 import { SecretStore } from '../../src/main/vault/secret-store'
 import { CONFIRM_MESSAGE } from '../../src/shared/ops'
-import { BREAK_LOCK_CONFIRM_MESSAGE, DEFAULT_RELEASE_OPTIONS, type PreflightCheck, type PreflightReport, type RunEvent, type RunEventBody } from '../../src/shared/deploy'
+import { BREAK_LOCK_CONFIRM_MESSAGE, DEFAULT_RELEASE_OPTIONS, type CommitInfo, type DeploymentMeta, type PreflightCheck, type PreflightReport, type RunEvent, type RunEventBody } from '../../src/shared/deploy'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
+import type { AppServiceMeta } from '../../src/shared/services'
 import { makeDeployFixture, type DeployFixture } from './deploy-helpers'
 
 const A = 'a'.repeat(40)
@@ -52,7 +53,7 @@ class FakeRunner implements DeployRunner {
         if (plan.kind === 'preflight') {
           base.preflight = {
             checks: this.checks,
-            commits: Object.fromEntries(plan.deployments.map((d) => [d.deploymentId, { commits: [], hiddenPairs: 0, truncated: 0, firstDeploy: false, head: A }])),
+            commits: Object.fromEntries(plan.deployments.map((d) => [d.deploymentId, { commits: [], hiddenPairs: 0, truncated: 0, firstDeploy: false, head: A, tagCommit: null }])),
             dockerModes: Object.fromEntries(plan.deployments.map((d) => [d.deploymentId, 'plain' as const])),
             composeServices: Object.fromEntries(plan.deployments.map((d) => [d.deploymentId, null])),
             locks: this.locks,
@@ -116,6 +117,7 @@ async function rig(over: { access?: DeployAccess; finalize?: FinalizeSteps; maxE
   const svc = new ReleaseService({
     db: f.db,
     deploys: f.deploys,
+    services: f.services,
     releases: f.releases,
     runner,
     access: setup.access,
@@ -141,10 +143,24 @@ async function rig(over: { access?: DeployAccess; finalize?: FinalizeSteps; maxE
 const dep = (r: Rig, name: string, over: Record<string, unknown> = {}) =>
   r.f.deploys.create(r.f.input({ name, repoPath: `/srv/${name}`, deployTag: `deploy_${name}`, ...over }))
 
-async function ready(r: Rig, deps = [dep(r, 'api')], over: { bump?: 'major' | 'minor' | 'patch' | 'none'; envId?: string } = {}): Promise<string> {
+/** The checkout's tracked services, or one new service named after it (`<name>-<n>`) when it has none. */
+const tracked = (r: Rig, d: DeploymentMeta): AppServiceMeta[] => {
+  const have = r.f.services.forCheckout(d.id)
+  if (have.length) return have
+  const n = r.f.services.list(d.environmentId).length
+  return [r.f.services.create({ kind: 'service', environmentId: d.environmentId, name: `${d.name}-${n}`, deploymentId: d.id }) as AppServiceMeta]
+}
+
+/** Preflights every tracked service of `deps` (each checkout whole), or exactly `serviceIds`/`checkoutIds` when given. */
+async function ready(
+  r: Rig,
+  deps = [dep(r, 'api')],
+  over: { bump?: 'major' | 'minor' | 'patch' | 'none'; envId?: string; serviceIds?: string[]; checkoutIds?: string[] } = {},
+): Promise<string> {
   const { releaseId } = await r.svc.preflight({
     environmentId: over.envId ?? r.f.staging.id,
-    deploymentIds: deps.map((d) => d.id),
+    serviceIds: over.serviceIds ?? deps.flatMap((d) => tracked(r, d).map((s) => s.id)),
+    ...(over.checkoutIds ? { checkoutIds: over.checkoutIds } : {}),
     bump: over.bump ?? 'none',
     options: DEFAULT_RELEASE_OPTIONS,
   })
@@ -632,6 +648,7 @@ describe('ReleaseService', () => {
       rollbackOf: null,
       options: DEFAULT_RELEASE_OPTIONS,
       triggeredBy: 'tester@box',
+      serviceIds: [],
     })
     r.f.releases.appendEvents(release.id, Array.from({ length: 5 }, (_, i) => ({ type: 'log' as const, stepId: null, hostId: null, stream: 'out' as const, line: `l${i}` })))
     expect(r.f.releases.events(release.id, 0, 50).map((e) => e.type)).toEqual(['log', 'log'])
@@ -834,5 +851,158 @@ describe('ReleaseService', () => {
     await r.svc.whenIdle()
     expect(r.svc.detail(id).status).toBe('discarded')
     expect(r.runner.kinds.filter((k) => k === 'release')).toHaveLength(0)
+  })
+})
+
+describe('service selection', () => {
+  const D = 'd'.repeat(40)
+  const E = 'e'.repeat(40)
+  const svcIn = (r: Rig, d: DeploymentMeta, name: string, over: { url?: string; urlCheckFrom?: 'host' | 'mac'; composeService?: string } = {}) =>
+    r.f.services.create({ kind: 'service', environmentId: d.environmentId, name, deploymentId: d.id, ...over }) as AppServiceMeta
+  const runRows = (r: Rig, id: string) =>
+    r.f.db.prepare('SELECT deployment_name AS name, services, whole_checkout AS whole FROM deployment_runs WHERE release_id = ? ORDER BY position').all(id) as unknown as { name: string; services: string; whole: number }[]
+  /** shop (web, worker), billing (pay) and an untouched checkout, in that position order. */
+  const shopRig = async () => {
+    const r = await rig()
+    const shop = dep(r, 'shop')
+    const billing = dep(r, 'billing', { urls: [{ url: 'https://billing.example/up', from: 'mac' }] })
+    const idle = dep(r, 'idle')
+    const web = svcIn(r, shop, 'web', { url: 'https://web.example/up', urlCheckFrom: 'host' })
+    const worker = svcIn(r, shop, 'worker', { composeService: 'queue-worker' })
+    const pay = svcIn(r, billing, 'pay')
+    svcIn(r, idle, 'idler')
+    return { r, shop, billing, idle, web, worker, pay }
+  }
+
+  it('preflight plans only affected checkouts, with services null when whole and the list when partial', async () => {
+    const { r, web, worker, pay } = await shopRig()
+    const id = await ready(r, [], { serviceIds: [pay.id, web.id] })
+    expect(r.svc.detail(id).status).toBe('ready')
+    const pf = r.runner.call('preflight').deployments
+    expect(pf.map((d) => [d.name, d.services])).toEqual([
+      ['shop', ['web']],
+      ['billing', null],
+    ])
+    // Start plans the same form from the stored runs.
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    expect(r.runner.call('release').deployments.map((d) => [d.name, d.services])).toEqual([
+      ['shop', ['web']],
+      ['billing', null],
+    ])
+    const all = await ready(r, [], { serviceIds: [worker.id, web.id] })
+    expect(r.runner.call('preflight', 1).deployments.map((d) => [d.name, d.services])).toEqual([['shop', null]])
+    expect(r.svc.detail(all).runs).toHaveLength(1)
+  })
+
+  it("health uses the selected services' urls with url_check_from, else the checkout's urls", async () => {
+    const { r, shop, web, worker, pay, idle } = await shopRig()
+    const id = await ready(r, [], { serviceIds: [web.id, worker.id, pay.id, ...r.f.services.forCheckout(idle.id).map((s) => s.id)] })
+    const plan = r.runner.call('preflight')
+    expect(plan.deployments.map((d) => [d.name, d.urls])).toEqual([
+      ['shop', [{ url: 'https://web.example/up', from: 'host' }]],
+      ['billing', [{ url: 'https://billing.example/up', from: 'mac' }]],
+      ['idle', []],
+    ])
+    const steps = r.svc.detail(id).runs.map((run) => [run.deploymentName, run.steps.some((s) => s.kind === 'health')])
+    expect(steps).toEqual([
+      ['shop', true],
+      ['billing', true],
+      ['idle', false],
+    ])
+    // a partial selection without a url falls back to the checkout's urls (shop has none: no health)
+    const partial = await ready(r, [], { serviceIds: [worker.id] })
+    expect(r.runner.call('preflight', 1).deployments[0].urls).toEqual(shop.urls)
+    expect(r.svc.detail(partial).runs[0].steps.some((s) => s.kind === 'health')).toBe(false)
+  })
+
+  it('preflight stores service_ids and per-run services with previous commits', async () => {
+    const { r, shop, web, worker, pay } = await shopRig()
+    r.f.services.recordDeployed([{ serviceId: web.id, commit: A, releaseId: null }])
+    const id = await ready(r, [], { serviceIds: [pay.id, web.id] })
+    const row = r.f.db.prepare('SELECT service_ids FROM releases WHERE id = ?').get(id) as { service_ids: string }
+    expect(JSON.parse(row.service_ids)).toEqual([web.id, pay.id])
+    expect(runRows(r, id).map((x) => ({ ...x, services: JSON.parse(x.services) }))).toEqual([
+      { name: 'shop', whole: 0, services: [{ id: web.id, name: 'web', composeService: 'web', previousCommit: A, deployedCommit: null }] },
+      { name: 'billing', whole: 1, services: [{ id: pay.id, name: 'pay', composeService: 'pay', previousCommit: null, deployedCommit: null }] },
+    ])
+    // a whole checkout stores every tracked service
+    const whole = await ready(r, [], { serviceIds: [worker.id, web.id] })
+    expect(runRows(r, whole).map((x) => [x.whole, JSON.parse(x.services).map((e: { composeService: string }) => e.composeService)])).toEqual([[1, ['web', 'queue-worker']]])
+    // a checkout with no services is chosen by checkoutIds and stores none
+    const bare = dep(r, 'bare')
+    const b = await ready(r, [], { serviceIds: [], checkoutIds: [bare.id] })
+    expect(runRows(r, b).map((x) => [x.name, x.whole, x.services])).toEqual([['bare', 1, '[]']])
+    expect(JSON.parse((r.f.db.prepare('SELECT service_ids FROM releases WHERE id = ?').get(b) as { service_ids: string }).service_ids)).toEqual([])
+    await expect(r.svc.preflight({ environmentId: r.f.staging.id, serviceIds: [], checkoutIds: [shop.id], bump: 'none', options: DEFAULT_RELEASE_OPTIONS })).rejects.toThrow(
+      'shop has services; pick them instead',
+    )
+  })
+
+  it('access receives deploy.view with the affected checkout ids', async () => {
+    const seen: { action: string; deploymentIds: string[] }[] = []
+    const access: DeployAccess = {
+      check: async (_a, action, scope) => {
+        seen.push({ action, deploymentIds: scope.deploymentIds ?? [] })
+        return { allowed: true }
+      },
+    }
+    const r = await rig({ access })
+    const shop = dep(r, 'shop')
+    const billing = dep(r, 'billing')
+    dep(r, 'idle')
+    const web = svcIn(r, shop, 'web')
+    svcIn(r, shop, 'worker')
+    const pay = svcIn(r, billing, 'pay')
+    const id = await ready(r, [], { serviceIds: [web.id, pay.id] })
+    expect(seen[0]).toEqual({ action: 'deploy.view', deploymentIds: [shop.id, billing.id] })
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    expect(seen.find((x) => x.action === 'release.start')).toEqual({ action: 'release.start', deploymentIds: [shop.id, billing.id] })
+  })
+
+  it('partial preflight passes the deps warning through to the report', async () => {
+    const { r, shop, web } = await shopRig()
+    const warn: PreflightCheck = { id: 'deps', deploymentId: shop.id, hostId: r.f.host.id, label: 'shop', level: 'warn', message: "web depends on db, which isn't running. --no-deps won't start it" }
+    r.runner.checks = [warn]
+    const id = await ready(r, [], { serviceIds: [web.id] })
+    const d = r.svc.detail(id)
+    expect(d.status).toBe('ready')
+    expect(d.preflight?.checks).toContainEqual(warn)
+    expect(r.svc.events(id, 0).some((e) => e.type === 'preflight.check' && e.check.id === 'deps')).toBe(true)
+  })
+
+  it("serviceCommits counts commits since each service's last commit and falls back to the tag", async () => {
+    const { r, shop, billing, web, worker, pay } = await shopRig()
+    const api = svcIn(r, shop, 'api')
+    r.f.services.recordDeployed([
+      { serviceId: web.id, commit: B, releaseId: null },
+      { serviceId: api.id, commit: E, releaseId: null },
+    ])
+    const ci = (sha: string, deploymentId: string): CommitInfo => ({ sha, subject: `s ${sha[0]}`, author: 'dev', date: '2026-10-18T00:00:00Z', deploymentId })
+    r.runner.on.preflight = (plan) => ({
+      preflight: {
+        checks: [],
+        commits: {
+          [shop.id]: { commits: [D, C, B, A].map((x) => ci(x, shop.id)), hiddenPairs: 0, truncated: 0, firstDeploy: false, head: D, tagCommit: A },
+          [billing.id]: { commits: [C].map((x) => ci(x, billing.id)), hiddenPairs: 0, truncated: 0, firstDeploy: true, head: C, tagCommit: null },
+        },
+        dockerModes: Object.fromEntries(plan.deployments.map((d) => [d.deploymentId, 'plain' as const])),
+        composeServices: {},
+        locks: {},
+        commitsTotal: 5,
+        blocked: false,
+      },
+    })
+    const id = await ready(r, [], { serviceIds: [web.id, worker.id, api.id, pay.id] })
+    expect(r.svc.detail(id).preflight?.serviceCommits).toEqual({
+      [web.id]: { since: B, count: 2, known: true },
+      // no last commit: the tag's commit
+      [worker.id]: { since: A, count: 3, known: true },
+      // not in the list: the whole list
+      [api.id]: { since: E, count: 4, known: false },
+      // first deploy, no tag: every commit
+      [pay.id]: { since: null, count: 1, known: false },
+    })
   })
 })

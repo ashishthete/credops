@@ -17,7 +17,7 @@ import {
 } from '../../shared/deploy'
 import { redact } from '../security/redact'
 import { MARK, RC_BREAK_KEPT, RC_LOCK_BUSY, parseMarker, parsePfLine, parsePrev, parseStreamLine } from './markers'
-import type { DeployPlan, PlanDeployment, PlanHost } from './runner'
+import type { DeployPlan, PlanDeployment, PlanHost, RunnerPreflight } from './runner'
 
 export { parseStreamLine }
 
@@ -522,7 +522,7 @@ export interface ParsePreflightOptions {
  * Builds the preflight report from the OD-PF lines of each run's stdout. A check whose lines are missing is
  * never reported as clean: a missing repo blocks, and anything else that printed nothing blocks as "no result".
  */
-export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, string>, o: ParsePreflightOptions): Omit<PreflightReport, 'releaseId'> {
+export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, string>, o: ParsePreflightOptions): RunnerPreflight {
   const checks: PreflightCheck[] = []
   const commits: PreflightReport['commits'] = {}
   const dockerModes: Record<string, DockerMode> = {}
@@ -662,7 +662,8 @@ export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, str
         if (truncated > 0) add('commits', 'warn', `the commit list is not complete (at least ${truncated} more not shown); showing the newest ${list.length}`)
       }
       commitsTotal += list.length
-      commits[d.deploymentId] = { commits: list, hiddenPairs: hidden, truncated, firstDeploy, head: newest }
+      const tagCommit = tag?.exists === '1' && tag.commit && /^[0-9a-f]{40}$/.test(tag.commit) ? tag.commit : null
+      commits[d.deploymentId] = { commits: list, hiddenPairs: hidden, truncated, firstDeploy, head: newest, tagCommit }
     }
   }
 

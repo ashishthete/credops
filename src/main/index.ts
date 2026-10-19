@@ -252,6 +252,7 @@ if (!app.requestSingleInstanceLock()) {
       const release = new ReleaseService({
         db,
         deploys,
+        services,
         releases: releaseStore,
         runner: localRunner,
         access: localAllowAll,

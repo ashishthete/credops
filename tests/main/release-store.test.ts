@@ -19,6 +19,7 @@ async function release(maxEvents?: number) {
     rollbackOf: null,
     options: DEFAULT_RELEASE_OPTIONS,
     triggeredBy: 'ana@mbp',
+    serviceIds: [],
   })
   return { f, d, r }
 }
@@ -98,6 +99,8 @@ describe('ReleaseStore', () => {
           { stepId: 'X:record', kind: 'record' },
           { stepId: 'X:fetch', kind: 'fetch' },
         ],
+        services: [],
+        wholeCheckout: true,
       },
     ])
     expect(run).toMatchObject({ status: 'pending', rolledBack: false, previousCommit: null, commits: [] })
@@ -111,13 +114,13 @@ describe('ReleaseStore', () => {
   it('detail joins runs with parsed steps and commits', async () => {
     const { f, d, r } = await release()
     const [run] = f.releases.createRuns(r.id, [
-      { deploymentId: d.id, deploymentName: 'api', hostId: d.hostId, hostLabel: 'app1', position: 0, branch: 'main', steps: [{ stepId: 's1', kind: 'record' }] },
+      { deploymentId: d.id, deploymentName: 'api', hostId: d.hostId, hostLabel: 'app1', position: 0, branch: 'main', steps: [{ stepId: 's1', kind: 'record' }], services: [], wholeCheckout: true },
     ])
     const commits = [{ sha: 'abc', subject: 's', author: 'a', date: 'd', deploymentId: d.id }]
     const steps = [{ stepId: 's1', kind: 'record' as const, state: 'ok' as const, startedAt: 't0', finishedAt: 't1' }]
     f.releases.updateRun(run.id, { status: 'running', previousCommit: 'p1', deployedCommit: 'd1', commits, steps, backupFile: '/b/x.sql', startedAt: 't0' })
     f.releases.updateRun(run.id, { rolledBack: true })
-    const report = { releaseId: r.id, checks: [], commits: {}, dockerModes: {}, composeServices: {}, locks: {}, commitsTotal: 0, blocked: false }
+    const report = { releaseId: r.id, checks: [], commits: {}, dockerModes: {}, composeServices: {}, serviceCommits: {}, locks: {}, commitsTotal: 0, blocked: false }
     f.releases.appendEvents(r.id, [{ type: 'preflight.done', report }, log('hi')])
     f.releases.setStatus(r.id, 'ready', { releaseNotes: 'notes', playbook: '{"p":1}' })
     const detail = f.releases.detail(r.id)
@@ -140,7 +143,7 @@ describe('ReleaseStore', () => {
     const mk = (environmentId: string) =>
       f.releases.createRelease({
         environmentId, kind: 'release', status: 'ready', version: null, previousVersion: null,
-        versionBump: 'none', redeploy: false, rollbackOf: null, options: DEFAULT_RELEASE_OPTIONS, triggeredBy: 'u@m',
+        versionBump: 'none', redeploy: false, rollbackOf: null, options: DEFAULT_RELEASE_OPTIONS, triggeredBy: 'u@m', serviceIds: [],
       })
     const a = mk(f.staging.id)
     const b = mk(f.staging.id)
@@ -159,13 +162,13 @@ describe('ReleaseStore', () => {
     const mk = () =>
       f.releases.createRelease({
         environmentId: f.prod.id, kind: 'release', status: 'running', version: null, previousVersion: null,
-        versionBump: 'none', redeploy: false, rollbackOf: null, options: DEFAULT_RELEASE_OPTIONS, triggeredBy: 'u@m',
+        versionBump: 'none', redeploy: false, rollbackOf: null, options: DEFAULT_RELEASE_OPTIONS, triggeredBy: 'u@m', serviceIds: [],
       })
     const run = mk()
     const rb = mk()
     f.releases.setStatus(rb.id, 'rolling_back')
     const [dr] = f.releases.createRuns(run.id, [
-      { deploymentId: d.id, deploymentName: 'api', hostId: d.hostId, hostLabel: 'app1', position: 0, branch: 'main', steps: [] },
+      { deploymentId: d.id, deploymentName: 'api', hostId: d.hostId, hostLabel: 'app1', position: 0, branch: 'main', steps: [], services: [], wholeCheckout: true },
     ])
     f.releases.updateRun(dr.id, { status: 'running' })
     const ids = f.releases.failInterrupted()
@@ -181,7 +184,7 @@ describe('ReleaseStore', () => {
   it('updateRun and appendEvents can share one transaction', async () => {
     const { f, d, r } = await release()
     const [run] = f.releases.createRuns(r.id, [
-      { deploymentId: d.id, deploymentName: 'api', hostId: d.hostId, hostLabel: 'app1', position: 0, branch: 'main', steps: [] },
+      { deploymentId: d.id, deploymentName: 'api', hostId: d.hostId, hostLabel: 'app1', position: 0, branch: 'main', steps: [], services: [], wholeCheckout: true },
     ])
     f.releases.transaction(() => {
       f.releases.updateRun(run.id, { status: 'running' })
@@ -201,11 +204,11 @@ describe('ReleaseStore', () => {
     const { f, d } = await release()
     const rel = f.releases.createRelease({
       environmentId: f.prod.id, kind: 'release', status: 'running', version: null, previousVersion: null,
-      versionBump: 'none', redeploy: false, rollbackOf: null, options: DEFAULT_RELEASE_OPTIONS, triggeredBy: 'u@m',
+      versionBump: 'none', redeploy: false, rollbackOf: null, options: DEFAULT_RELEASE_OPTIONS, triggeredBy: 'u@m', serviceIds: [],
     })
     const [dr] = f.releases.createRuns(rel.id, [
       { deploymentId: d.id, deploymentName: 'api', hostId: d.hostId, hostLabel: 'app1', position: 0, branch: 'main',
-        steps: [{ stepId: 'a', kind: 'record' }, { stepId: 'b', kind: 'fetch' }, { stepId: 'c', kind: 'unlock' }] },
+        steps: [{ stepId: 'a', kind: 'record' }, { stepId: 'b', kind: 'fetch' }, { stepId: 'c', kind: 'unlock' }], services: [], wholeCheckout: true },
     ])
     f.releases.updateRun(dr.id, {
       status: 'running',
@@ -227,7 +230,7 @@ describe('ReleaseStore', () => {
     const { f, r } = await release()
     const pre = f.releases.createRelease({
       environmentId: f.prod.id, kind: 'release', status: 'preflight', version: null, previousVersion: null,
-      versionBump: 'none', redeploy: false, rollbackOf: null, options: DEFAULT_RELEASE_OPTIONS, triggeredBy: 'u@m',
+      versionBump: 'none', redeploy: false, rollbackOf: null, options: DEFAULT_RELEASE_OPTIONS, triggeredBy: 'u@m', serviceIds: [],
     })
     expect(f.releases.failInterrupted()).toEqual([pre.id])
     expect(f.releases.get(pre.id)).toMatchObject({ status: 'failed', error: 'interrupted: OpsDeck quit during the run' })

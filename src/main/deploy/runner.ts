@@ -92,7 +92,7 @@ export interface RunOutcome {
   signal: string | null
   cancelled: boolean
   /** Set for preflight plans. */
-  preflight?: Omit<PreflightReport, 'releaseId'>
+  preflight?: RunnerPreflight
   failedDeploymentRunIds: string[]
   /** Deployment runs whose checkout step started, so a rollback has something to undo. */
   reachedCheckout: string[]
@@ -111,3 +111,6 @@ export interface DeployRunner {
   cancel(runId: string): void
   onEvent(fn: (releaseId: string, body: RunEventBody) => void): () => void
 }
+
+/** What a runner reports from preflight; the release service adds `serviceCommits` from its selection. */
+export type RunnerPreflight = Omit<PreflightReport, 'releaseId' | 'serviceCommits'>

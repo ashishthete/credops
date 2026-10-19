@@ -277,7 +277,8 @@ export const asEnvDeploySettingsPatch: Check<EnvDeploySettingsPatch> = v.object(
 }) as Check<EnvDeploySettingsPatch>
 export const asPreflightRequest: Check<PreflightRequest> = v.object({
   environmentId: v.uuid(),
-  deploymentIds: v.array(v.uuid(), MAX_DEPLOYMENTS, { min: 1 }),
+  serviceIds: v.array(v.uuid(), MAX_SERVICES),
+  checkoutIds: v.optional(v.array(v.uuid(), MAX_DEPLOYMENTS)),
   bump: v.oneOf(['major', 'minor', 'patch', 'none'] as const),
   options: v.object({ backup: v.bool(), notify: v.bool(), qa: v.bool() }),
   releaseNotes: v.optional(v.str({ max: MAX_RELEASE_NOTES })),
