@@ -257,7 +257,7 @@ export class ReleaseService {
       const msg = this.red(live, e instanceof Error ? e.message : String(e))
       report = { releaseId: id, checks: [this.block(e instanceof ToolingError ? 'ansible' : 'tools', msg)], commits: {}, dockerModes: {}, locks: {}, commitsTotal: 0, blocked: true }
     } finally {
-      if (holder) holder.secrets = null
+      this.drop(holder)
     }
     report.blocked = report.blocked || report.checks.some((c) => c.level === 'block')
     for (const check of report.checks) this.push(id, { type: 'preflight.check', check })
@@ -578,7 +578,7 @@ export class ReleaseService {
         this.flush()
         this.setStatus(releaseId, next.blocked ? 'blocked' : 'ready')
       } finally {
-        holder.secrets = null
+        this.drop(holder)
       }
     }
     let failure: unknown = null
@@ -831,7 +831,7 @@ export class ReleaseService {
       durationSec,
       ...(live.failedStep ? { failedStep: live.failedStep } : {}),
     })
-    if (holder) holder.secrets = null
+    this.drop(holder)
     live.known = []
     this.clearSteps(live)
   }
@@ -1067,6 +1067,16 @@ export class ReleaseService {
   /** Audit rows name the release and carry ids and counts only: never a host label, address, path or secret. */
   private auditRelease(action: AuditAction, outcome: 'success' | 'failure' | 'denied' | 'info', releaseId: string, envName: string, label: string, details: Record<string, unknown>): void {
     this.d.audit.append({ action, outcome, targetType: 'release', targetId: releaseId, targetLabel: `${envName} ${label}`, details })
+  }
+
+  /** Wipes the decrypted values in place (anything still holding the object sees nothing) and lets go of it. */
+  private drop(holder: Holder | null | undefined): void {
+    if (!holder) return
+    if (holder.secrets) {
+      for (const k of Object.keys(holder.secrets.values)) delete holder.secrets.values[k]
+      holder.secrets.known.length = 0
+    }
+    holder.secrets = null
   }
 
   private hostCount(infos: Info[]): number {

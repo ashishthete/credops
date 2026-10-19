@@ -22,7 +22,7 @@ type Emit = (body: RunEventBody) => void
 type Handler = (plan: DeployPlan, secrets: RunSecrets, emit: Emit, runId: string) => Promise<Partial<RunOutcome> | void> | Partial<RunOutcome> | void
 
 class FakeRunner implements DeployRunner {
-  calls: { plan: DeployPlan; secrets: RunSecrets }[] = []
+  calls: { plan: DeployPlan; secrets: RunSecrets; seen: { values: Record<string, string>; known: string[] } }[] = []
   cancels: string[] = []
   commitsTotal = 1
   checks: PreflightCheck[] = []
@@ -41,7 +41,7 @@ class FakeRunner implements DeployRunner {
   }
 
   start(plan: DeployPlan, secrets: RunSecrets) {
-    this.calls.push({ plan, secrets })
+    this.calls.push({ plan, secrets, seen: { values: { ...secrets.values }, known: [...secrets.known] } })
     const runId = `fake-run-${++this.n}`
     const emit: Emit = (b) => this.listeners.forEach((l) => l(plan.releaseId, b))
     const done = Promise.resolve()
@@ -569,14 +569,17 @@ describe('ReleaseService', () => {
     const rb = r.runner.calls.find((c) => c.plan.kind === 'rollback')!
     expect(rb.secrets).toBe(rel.secrets)
     const key = rel.plan.deployments[0].envSecretKey as string
-    expect(rel.secrets.values[key]).toContain(SECRET)
-    expect(rel.secrets.known).toEqual(expect.arrayContaining([SECRET, 'prod']))
+    expect(rel.seen.values[key]).toContain(SECRET)
+    expect(rel.seen.known).toEqual(expect.arrayContaining([SECRET, 'prod']))
     // The unlock plan needs no secrets.
     const unlock = r.runner.calls.find((c) => c.plan.kind === 'unlock')!
-    expect(unlock.secrets.values).toEqual({})
+    expect(unlock.seen.values).toEqual({})
     expect(unlock.plan.secretRefs).toEqual({})
     expect(JSON.stringify(rel.plan)).not.toContain(SECRET)
     expect((r.svc as unknown as { live: Map<string, unknown> }).live.size).toBe(0)
+    // Dropped for real: the object the runner was given has been wiped, not merely unreferenced.
+    expect(rel.secrets.values).toEqual({})
+    expect(rel.secrets.known).toEqual([])
 
     const ref = new WeakRef(rel.secrets)
     r.runner.calls.length = 0
