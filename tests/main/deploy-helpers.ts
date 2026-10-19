@@ -5,6 +5,14 @@ import type { DeploymentInput } from '../../src/shared/deploy'
 import { SecretStore } from '../../src/main/vault/secret-store'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import { makeInventory, type InventoryFixture } from './inventory-helpers'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import type { Client } from 'ssh2'
+import type { PrivateAgent } from '../../src/main/deploy/agent'
+import type { PreparedHosts } from '../../src/main/deploy/hostkeys'
+import type { startTap } from '../../src/main/deploy/log-tap'
+import type { RunChild, RunFs, RunSpawn } from '../../src/main/deploy/local-runner'
+import type { PreflightCheck, Tooling } from '../../src/shared/deploy'
 
 export type DeployFixture = InventoryFixture & {
   staging: { id: string }
@@ -141,13 +149,6 @@ export function planFixture(over: Partial<DeployPlan> = {}): DeployPlan {
 
 // ---- LocalRunner fakes (Task 6) ----
 
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
-import type { Client } from 'ssh2'
-import type { PrivateAgent } from '../../src/main/deploy/agent'
-import type { PreparedHosts } from '../../src/main/deploy/hostkeys'
-import type { RunChild, RunSpawn } from '../../src/main/deploy/local-runner'
-import type { PreflightCheck, Tooling } from '../../src/shared/deploy'
 
 export const FIXTURE_DIR = join(__dirname, 'fixtures/ansible')
 export const fixtureLines = (file: string): string[] => readFileSync(join(FIXTURE_DIR, file), 'utf8').split('\n').filter((l) => l !== '')
@@ -240,7 +241,7 @@ export function fakeTap() {
     taps.push(t)
     return { stop: () => void (t.stopped = true) }
   }
-  return { fn: fn as never, taps }
+  return { fn: fn as unknown as typeof startTap, taps }
 }
 
 export function fakePrepare(opts: { checks?: PreflightCheck[]; keys?: PreparedHosts['keys']; userAgentNeeded?: boolean; throws?: Error; hostKeys?: PreparedHosts['knownHosts'] } = {}) {
@@ -262,7 +263,6 @@ export function fakePrepare(opts: { checks?: PreflightCheck[]; keys?: PreparedHo
   return { fn, log }
 }
 
-import type { RunFs } from '../../src/main/deploy/local-runner'
 
 /** In-memory RunFs: no disk, and `files` can be snapshotted mid-run. */
 export function memFs(): RunFs & { dirs: Set<string>; files: Map<string, string>; removed: string[] } {

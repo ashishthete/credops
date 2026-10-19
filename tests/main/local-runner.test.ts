@@ -221,6 +221,55 @@ describe('LocalRunner', () => {
     expect(t.tap.taps.every((x) => x.stopped)).toBe(true)
   })
 
+  const down = (hostId: string) => ({ hostId, id: 'reachable', level: 'block' as const, message: 'Cannot reach host' }) as never
+
+  it('a release is refused when one host fails prepare', async () => {
+    const t = setup({}, fakePrepare({ checks: [down('host-od-2')] }))
+    const out = await t.runner.start(planFixture(), SECRETS).done
+    expect(t.ansible.calls).toHaveLength(0)
+    expect(out.exitCode).toBe(1)
+    expect(out.failedDeploymentRunIds).toEqual(['0190a1b2-c3d4-7e5f-8a6b-000000000003'])
+    expect(t.events.filter((e) => e.type === 'preflight.check')).toHaveLength(1)
+    expect(t.fs.dirs.size).toBe(0)
+  })
+
+  it.each(['rollback', 'unlock'] as const)('%s still runs on the reachable host and reports the unreachable one failed', async (kind) => {
+    const t = setup({}, fakePrepare({ checks: [down('host-od-2')] }))
+    let inv = ''
+    t.ansible.onSpawn = () => void (inv = [...t.fs.files].find(([f]) => f.endsWith('/inventory'))![1])
+    const out = await t.runner.start(planFixture({ kind }), SECRETS).done
+    expect(t.ansible.calls).toHaveLength(1)
+    expect(inv).toContain('od-1')
+    expect(inv).not.toContain('od-2')
+    expect(out.failedDeploymentRunIds).toEqual(['0190a1b2-c3d4-7e5f-8a6b-000000000003'])
+  })
+
+  it('a cancel during prepare spawns nothing, emits no checks, and double or unknown cancels are no-ops', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const prep = fakePrepare({ checks: [down('host-od-2')] })
+    const t = setup({ prepare: async (p) => (await gate, prep.fn(p)) })
+    const h = t.runner.start(planFixture(), SECRETS)
+    await Promise.resolve()
+    t.runner.cancel(h.runId)
+    t.runner.cancel(h.runId)
+    t.runner.cancel('nope')
+    release()
+    const out = await h.done
+    expect(out.cancelled).toBe(true)
+    expect(t.ansible.calls).toHaveLength(0)
+    expect(t.events).toEqual([])
+    expect(t.fs.dirs.size).toBe(0)
+    t.runner.cancel(h.runId)
+  })
+
+  it('cleans up when the agent fails to start', async () => {
+    const t = setup({ agent: async () => { throw new Error('agent died') } }, fakePrepare({ keys: [{ privateKey: 'K' }] }))
+    await expect(t.runner.start(planFixture(), SECRETS).done).rejects.toThrow('agent died')
+    expect(t.fs.dirs.size).toBe(0)
+    expect(t.prep.log.closed).toBe(1)
+  })
+
   it('creates the real run dir 0700', async () => {
     const base = mkdtempSync(join(tmpdir(), 'od-fs-'))
     try {

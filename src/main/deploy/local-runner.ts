@@ -66,7 +66,10 @@ const dirOf = (p: string): string => p.slice(0, Math.max(0, p.lastIndexOf('/')))
 
 /** The agent's key lifetime: every timeout the playbook can wait for, plus 10 minutes. */
 export function totalTimeoutSec(plan: DeployPlan): number {
-  const sum = plan.deployments.reduce((n, d) => n + d.buildTimeoutSec + 2 * d.composeTimeoutSec + d.healthTimeoutSec + 300, 0)
+  const sum = plan.deployments.reduce(
+    (n, d) => n + d.buildTimeoutSec + 2 * d.composeTimeoutSec + d.healthTimeoutSec + (d.backup ? 1800 : 0) + (d.preHookB64 ? 600 : 0) + (d.postHookB64 ? 600 : 0) + 5 * 120,
+    0,
+  )
   return sum + 600
 }
 
@@ -195,13 +198,19 @@ export class LocalRunner implements DeployRunner {
         if (failed.size) {
           effective = { ...plan, hosts: plan.hosts.filter((h) => !failed.has(h.hostId)), deployments: plan.deployments.filter((d) => !failed.has(d.hostId)) }
         }
-        for (const c of checks) send({ type: 'preflight.check', check: { ...c, message: red(c.message) } })
+        // a cancel aborts the dials: those "unreachable" checks are noise
+        if (state.cancelRequested) return { ...outcome, cancelled: true }
+        checks.splice(0, checks.length, ...checks.map((c) => ({ ...c, message: red(c.message) })))
+        for (const c of checks) send({ type: 'preflight.check', check: c })
       }
       if (state.cancelRequested) return { ...outcome, cancelled: true }
       if (checks.length && plan.kind !== 'preflight') {
-        // a release never runs on part of its hosts
-        outcome.exitCode = 1
+        // the deployments on unreachable hosts failed whatever else happens
         outcome.failedDeploymentRunIds = plan.deployments.filter((d) => checks.some((c) => c.hostId === d.hostId)).map((d) => d.runId)
+      }
+      if (checks.length && plan.kind === 'release') {
+        // a release never runs on part of its hosts; rollback, unlock and the rest run on whoever is reachable
+        outcome.exitCode = 1
         return outcome
       }
 
@@ -261,18 +270,18 @@ export class LocalRunner implements DeployRunner {
         if (plan.kind === 'preflight') outcome.preflight = this.report(effective, translator, checks, known, now)
       } else {
         outcome.cancelled = state.cancelRequested
-        outcome.exitCode = state.cancelRequested ? null : 0
+        outcome.exitCode = state.cancelRequested ? null : outcome.failedDeploymentRunIds.length ? 1 : 0
         if (plan.kind === 'preflight') outcome.preflight = this.report(effective, translator, checks, known, now)
       }
       return outcome
     } catch (err) {
-      throw err instanceof Error ? Object.assign(err, { message: red(err.message) }) : err
+      throw err instanceof Error ? new Error(red(err.message)) : err
     } finally {
       // taps first: closing the link first would make every tap report "unavailable"
       for (const t of taps) swallow(() => t.stop())
       if (prepared) swallow(() => prepared!.close())
       if (agent) await agent.stop().catch(() => {})
-      await o.fs.rm(rundir).catch(() => {})
+      await o.fs.rm(rundir).catch(() => console.warn(`could not remove the deploy run directory ${rundir}`))
     }
   }
 
@@ -326,6 +335,7 @@ export class LocalRunner implements DeployRunner {
       child.stderr.on('data', (c) => err.push(c))
       child.on('error', (e) => reject(new Error(`ansible-playbook could not start: ${red(e.message)}`)))
       child.on('close', (code, signal) => {
+        state.child = null
         out.end()
         err.end()
         resolve({ code, signal })
