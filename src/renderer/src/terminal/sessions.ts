@@ -26,7 +26,6 @@ export function resetSessions(): void {
   promptStore.set([])
   removed.clear()
   reconnecting.clear()
-  lastRemovalWasExit = false
 }
 
 function upsert(meta: SessionMeta, activate = false): void {
@@ -51,15 +50,8 @@ function applyReply(meta: SessionMeta, activate: boolean): boolean {
   return true
 }
 
-/** Whether the last tab to go was closed by its shell exiting (the deck then leaves Terminals). */
-let lastRemovalWasExit = false
-export function lastCloseWasExit(): boolean {
-  return lastRemovalWasExit
-}
-
-function remove(id: string, exited = false): void {
+function remove(id: string): void {
   removed.add(id)
-  lastRemovalWasExit = exited
   const s = sessionStore.get()
   const at = s.order.indexOf(id)
   if (at < 0) return
@@ -87,7 +79,7 @@ export function startSessionSync(): () => void {
       upsert(meta)
       // The shell ended on its own (`exit`, logout): the tab goes, like closing it. A drop has an
       // error and keeps its tab for Reconnect.
-      if (current?.state === 'ready' && meta.state === 'closed' && !meta.error) void closeSession(meta.id, true)
+      if (current?.state === 'ready' && meta.state === 'closed' && !meta.error) void closeSession(meta.id)
     }),
     api.on('session:prompt', (prompt) => {
       if (!promptStore.get().some((p) => p.promptId === prompt.promptId)) promptStore.set([...promptStore.get(), prompt])
@@ -137,14 +129,14 @@ export function openLocal(): Promise<string | undefined> {
   return open("Couldn't open a shell", () => api.invoke('shell:open', { cols, rows }))
 }
 
-export async function closeSession(id: string, exited = false): Promise<void> {
+export async function closeSession(id: string): Promise<void> {
   try {
     await api.invoke('session:close', id)
   } catch (err) {
     fail("Couldn't close the session", err)
     return
   }
-  remove(id, exited)
+  remove(id)
 }
 
 /** One reconnect per session at a time; a reply for a tab closed meanwhile is dropped. */

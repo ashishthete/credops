@@ -91,7 +91,7 @@ describe('map commands', () => {
     const { unmount } = await renderShell('/products')
     expect(titles()).toEqual(['Find on map', 'Reset map layout', 'Show pg on map', 'Show prod on map', 'Show stage on map', 'Show web on map'])
     // Opening the map is the section's own command.
-    expect(command('Go to Map').shortcut).toBe('mod+6')
+    expect(command('Go to Map').shortcut).toBe('mod+5')
     expect(command('Show prod on map').keywords).toContain('Platform')
     unmount()
     expect(titles()).toEqual([])

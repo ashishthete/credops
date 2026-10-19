@@ -4,7 +4,6 @@ import type { SessionMeta, SessionPrompt } from '../../src/shared/ssh'
 import { attachSession, disposeAll, disposeTerminal, getTerminal, TERMINAL_FONT, writeData } from '../../src/renderer/src/terminal/registry'
 import {
   closeSession,
-  lastCloseWasExit,
   moveTab,
   nextTab,
   openLocal,
@@ -90,7 +89,6 @@ describe('session store', () => {
     await act(async () => {})
     expect(invoke).toHaveBeenCalledWith('session:close', 'a')
     expect(sessionStore.get().order).toEqual(['b', 'c'])
-    expect(lastCloseWasExit()).toBe(true)
 
     await state(meta('b', { state: 'failed', error: { code: 'closed', message: 'The connection to b was lost' } }))
     await act(async () => {})
@@ -98,7 +96,6 @@ describe('session store', () => {
     expect(invoke).not.toHaveBeenCalledWith('session:close', 'b')
 
     await act(() => closeSession('c'))
-    expect(lastCloseWasExit()).toBe(false)
     stop()
   })
 

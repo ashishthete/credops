@@ -3,13 +3,13 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 import type { SessionMeta } from '../../../../shared/ssh'
 import { useInventory } from '../../inventory/store'
-import { closeSession, lastCloseWasExit, nextTab, openLocal, reconnectSession, sessionStore, setActive } from '../../terminal/sessions'
+import { useConnect } from '../../terminal/connect'
+import { closeSession, nextTab, openLocal, reconnectSession, sessionStore, setActive } from '../../terminal/sessions'
 import { TerminalView } from '../../terminal/TerminalView'
 import { ConfirmDialog, type ConfirmRequest } from '../../ui/common'
 import { useShortcut } from '../../ui/shortcuts'
 import { ConnectOverlay } from './ConnectOverlay'
 import { openKnownHosts } from './KnownHostsDialog'
-import { QuickConnect } from './QuickConnect'
 import { SessionEnded } from './SessionEnded'
 import { paneId, TabStrip, tabId } from './TabStrip'
 
@@ -21,6 +21,7 @@ export const useSessions = () => useSyncExternalStore(sessionStore.subscribe, se
  */
 export function TerminalDeck({ visible }: { visible: boolean }) {
   const navigate = useNavigate()
+  const { connectLocal } = useConnect()
   const { sessions, order, activeId } = useSessions()
   const inventory = useInventory()
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
@@ -32,16 +33,13 @@ export function TerminalDeck({ visible }: { visible: boolean }) {
   const tabs = order.flatMap((id) => byId.get(id) ?? [])
   const active = activeId ? byId.get(activeId) : undefined
 
-  // Where you were before Terminals; when the last tab's shell exits, the deck goes back there
-  // (or home). Closing the last tab by hand stays here, on QuickConnect.
+  // Where you were before Terminals; with no tab left to show (a direct visit, the last tab closed
+  // or its shell exited) the deck goes back there, or home.
   const location = useLocation()
   const before = useRef<string | null>(null)
   if (!location.pathname.startsWith('/terminals')) before.current = location.pathname + location.search
-  const hadTabs = useRef(tabs.length > 0)
   useEffect(() => {
-    const had = hadTabs.current
-    hadTabs.current = tabs.length > 0
-    if (had && tabs.length === 0 && visible && lastCloseWasExit()) navigate(before.current ?? '/')
+    if (visible && tabs.length === 0) navigate(before.current ?? '/', { replace: true })
   }, [tabs.length, visible, navigate])
 
   const envName = (id: string | null) => (id ? inventory?.environments.find((e) => e.id === id)?.name : undefined)
@@ -67,17 +65,13 @@ export function TerminalDeck({ visible }: { visible: boolean }) {
     focusAfterClose(refocus.id, refocus.order)
   }, [refocus])
 
-  useShortcut('mod+t', () => {
-    navigate('/terminals')
-    void openLocal()
-  })
+  // The shell opens first; going to an empty Terminals page would bounce straight back.
+  useShortcut('mod+t', () => void connectLocal())
 
   return (
     <section aria-label="Terminals" hidden={!visible} className="absolute inset-0 z-[1] flex flex-col bg-canvas">
       {visible && <TabShortcuts onClose={() => active && requestClose(active)} />}
-      {tabs.length === 0 ? (
-        <QuickConnect visible={visible} />
-      ) : (
+      {tabs.length > 0 && (
         <>
           <TabStrip
             sessions={tabs}
@@ -108,7 +102,7 @@ export function TerminalDeck({ visible }: { visible: boolean }) {
 
 /**
  * After a close: the tab itself if it is still open (a cancel or a failed close), else the next
- * tab, else the one before, else QuickConnect's search. Focus that went somewhere real is left be.
+ * tab, else the one before. With none left the deck leaves the page and focus is left be. Focus that went somewhere real is left be.
  */
 function focusAfterClose(id: string, before: string[]): void {
   const now = document.activeElement
@@ -119,8 +113,7 @@ function focusAfterClose(id: string, before: string[]): void {
   const next = order.includes(id)
     ? id
     : (before.slice(at + 1).find((x) => order.includes(x)) ?? before.slice(0, at).reverse().find((x) => order.includes(x)))
-  const el = next ? document.getElementById(tabId(next)) : document.querySelector<HTMLElement>('[aria-label="Connect to a host"]')
-  el?.focus()
+  if (next) document.getElementById(tabId(next))?.focus()
 }
 
 /** Bound only while the deck is on screen, so mod+w never closes a tab you can't see. */
