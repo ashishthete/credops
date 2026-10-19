@@ -27,6 +27,8 @@ import { createSettingsHandlers } from './ipc/handlers/settings'
 import { createNotifyHandlers, createQaHandlers } from './ipc/handlers/notify'
 import { createAiHandlers } from './ipc/handlers/ai'
 import { AiRequests, ClaudeClient } from './ai/claude'
+import { promptContext } from './ai/prompt-redact'
+import { releaseNotesFinalizeStep, type NotesDeps } from './ai/release-notes'
 import { MacNotifier } from './notify/macos'
 import { LocalSink } from './notify/sink'
 import { NotificationDispatcher } from './notify/dispatcher'
@@ -245,6 +247,14 @@ if (!app.requestSingleInstanceLock()) {
       const aiRequests = new AiRequests()
       const claude = new ClaudeClient({ settings: settingsStore, secrets, vault: service, knownSecrets })
       service.onLock(() => aiRequests.cancelAll())
+      const notesIdentities = identities
+      const notesHosts = hosts
+      const notesDeps: NotesDeps = {
+        claude,
+        audit: log,
+        redaction: () => promptContext({ knownSecrets, identities: notesIdentities, hosts: notesHosts }),
+        environmentName: (id) => integrations.environmentName(id),
+      }
       const snippets = new SnippetStore({ db, audit: log, vault: service })
       const deploys = new DeployStore({ db, audit: log, vault: service, secrets: dbSecretRefs(db) })
       deploys.onChanged = (environmentId) => pushEvent(mainWindow, 'deploy:changed', { environmentId })
@@ -320,7 +330,11 @@ if (!app.requestSingleInstanceLock()) {
         releases: releaseStore,
         runner: localRunner,
         access: localAllowAll,
-        finalize: createFinalizeSteps({ dispatcher: notifyDispatcher, qa: qaFinalizeStep({ qa, integrations }) }),
+        finalize: createFinalizeSteps({
+          dispatcher: notifyDispatcher,
+          notes: releaseNotesFinalizeStep(notesDeps),
+          qa: qaFinalizeStep({ qa, integrations }),
+        }),
         audit: log,
         vault: service,
         resolve,
@@ -485,7 +499,12 @@ if (!app.requestSingleInstanceLock()) {
           }),
           ...createSettingsHandlers({ settings: settingsStore, integrations }),
           ...createQaHandlers({ qa, integrations }),
-          ...createAiHandlers({ settings: settingsStore, requests: aiRequests }),
+          ...createAiHandlers({
+            settings: settingsStore,
+            requests: aiRequests,
+            notes: notesDeps,
+            onDelta: (delta) => pushEvent(mainWindow, 'ai:delta', delta),
+          }),
           ...createNotifyHandlers({ db, sink: notifySink, settings: settingsStore, integrations, mac: macNotifier, audit: log, actor }),
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
           ...createOpsHandlers({ snippets, runs, containers }),

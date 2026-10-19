@@ -1,3 +1,4 @@
+import type { ReleaseNotesRequest, ReleaseNotesResult } from './ai'
 import type { AuditEvent, AuditFilter, ChainVerification } from './audit'
 import type {
   EnvironmentInput,
@@ -224,6 +225,7 @@ export interface IpcContract {
   'qa:list': { args: []; result: QaDispatch[] }
   'ai:status': { args: []; result: IntegrationStatus['ai'] }
   'ai:cancel': { args: [requestId: string]; result: void }
+  'ai:releaseNotes': { args: [requestId: string, req: ReleaseNotesRequest]; result: ReleaseNotesResult }
   'snippets:list': { args: []; result: SnippetMeta[] }
   'snippets:create': { args: [input: SnippetInput]; result: SnippetMeta }
   'snippets:update': { args: [id: string, input: SnippetInput]; result: SnippetMeta }
@@ -361,6 +363,7 @@ export const CHANNELS = [
   'qa:list',
   'ai:status',
   'ai:cancel',
+  'ai:releaseNotes',
   'snippets:list',
   'snippets:create',
   'snippets:update',

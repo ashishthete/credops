@@ -60,6 +60,7 @@ import {
   type PreflightRequest,
   type ReleaseConfirm,
   type ReleaseListFilter,
+  MAX_COMMITS,
 } from '../../shared/deploy'
 import { BIND_ADDRESS, MAX_BIND_ADDRESS, type TunnelInput, type TunnelPatch } from '../../shared/tunnels'
 import { MAX_COLS, MAX_ROWS, MAX_WRITE_CHARS, type OpenLocalRequest, type OpenSshRequest, type PromptAnswer } from '../../shared/ssh'
@@ -101,6 +102,7 @@ import {
 } from '../../shared/settings'
 import { MAX_SERVICES, type CopyServicesRequest, type ServiceInput, type ServicePatch } from '../../shared/services'
 import { MAX_PRIVATE_KEY_BYTES } from '../vault/openssh'
+import { MAX_NOTES_SUBJECT, type ReleaseNotesRequest } from '../../shared/ai'
 import { InvalidArgs, args, v, type ArgsValidator, type Check } from './validate'
 
 const OUTCOMES = ['success', 'failure', 'denied', 'info'] as const
@@ -390,6 +392,23 @@ export const asNotifyLogFilter: Check<NotifyLogFilter> = v.object({
   sourceId: v.optional(v.str({ min: 1, max: 64 })),
   limit: v.optional(v.int({ min: 1, max: MAX_NOTIFY_LOG })),
 }) as Check<NotifyLogFilter>
+
+export const asReleaseNotesRequest: Check<ReleaseNotesRequest> = v.object({
+  environmentId: v.uuid(),
+  productName: v.nullable(v.str({ max: 200 })),
+  deployments: v.array(v.object({ id: v.uuid(), name: v.str({ min: 1, max: 200 }) }), 200),
+  version: v.nullable(v.str({ max: 200 })),
+  commits: v.array(
+    v.object({
+      sha: v.str({ max: 64 }),
+      subject: v.str({ max: MAX_NOTES_SUBJECT }),
+      author: v.str({ max: 400 }),
+      date: v.str({ max: 64 }),
+      deploymentId: v.uuid(),
+    }),
+    MAX_COMMITS,
+  ),
+}) as Check<ReleaseNotesRequest>
 
 export const asCopyServicesRequest: Check<CopyServicesRequest> = v.object({
   sourceEnvironmentId: v.uuid(),
@@ -686,6 +705,7 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'qa:list': args(),
   'ai:status': args(),
   'ai:cancel': args(v.uuid()),
+  'ai:releaseNotes': args(v.uuid(), asReleaseNotesRequest),
   'release:preflight': args(asPreflightRequest),
   'release:start': args(v.uuid(), asReleaseConfirm),
   'release:cancel': args(v.uuid()),

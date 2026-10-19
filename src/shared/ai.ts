@@ -1,5 +1,7 @@
 // Imported by the renderer: keep runtime code to plain constants and pure functions (no node or electron imports).
 
+import type { CommitInfo } from './deploy'
+
 export type AiErrorCode = 'no-key' | 'auth' | 'rate-limit' | 'network' | 'refused' | 'truncated' | 'bad-output' | 'cancelled' | 'api'
 
 export interface AiError {
@@ -132,4 +134,29 @@ export function parseExplanation(json: string): ParsedExplanation {
     steps: (steps as string[]).slice(0, MAX_STEPS).map((s) => cap(s, MAX_STEP)),
     commands: kept,
   }
+}
+
+/** What release notes are written from. `author`, `date` and `sha` of each commit are never sent to Claude. */
+export interface ReleaseNotesRequest {
+  environmentId: string
+  productName: string | null
+  /** Commits are grouped under these names when there is more than one. */
+  deployments: { id: string; name: string }[]
+  version: string | null
+  /** At most MAX_COMMITS; a subject is at most MAX_NOTES_SUBJECT chars. */
+  commits: CommitInfo[]
+}
+
+export const MAX_NOTES_SUBJECT = 300
+
+export interface ReleaseNotesResult {
+  requestId: string
+  text: string
+  model: string | null
+  source: 'claude' | 'fallback'
+  /** Claude stopped at the length limit; `text` is what it wrote so far. */
+  truncated: boolean
+  redactions: Partial<Record<RedactionKind, number>>
+  /** Why the commit-list fallback was used. */
+  error?: AiError
 }

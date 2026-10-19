@@ -180,8 +180,9 @@ export class ClaudeClient {
 export class AiRequests {
   private readonly live = new Map<string, AbortController>()
 
-  start(): { id: string; signal: AbortSignal } {
-    const id = randomUUID()
+  /** Registers a request under the renderer's id (or a fresh one); a live id cannot be reused. */
+  start(id: string = randomUUID()): { id: string; signal: AbortSignal } {
+    if (this.live.has(id)) throw new Error('AI request already running')
     const controller = new AbortController()
     this.live.set(id, controller)
     return { id, signal: controller.signal }

@@ -212,7 +212,12 @@ describe('AiRequests', () => {
 describe('ai handlers', () => {
   it('status and cancel', async () => {
     const reqs = new AiRequests()
-    const h = createAiHandlers({ settings: { status: () => ({ ai: { configured: true, model: 'claude-opus-5-5' } }) as never }, requests: reqs })
+    const h = createAiHandlers({
+      settings: { status: () => ({ ai: { configured: true, model: 'claude-opus-5-5' } }) as never },
+      requests: reqs,
+      notes: {} as never,
+      onDelta: () => {},
+    })
     expect(await h['ai:status']()).toEqual({ configured: true, model: 'claude-opus-5-5' })
     const r = reqs.start()
     await h['ai:cancel'](r.id)
