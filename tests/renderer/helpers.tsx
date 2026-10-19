@@ -2,6 +2,7 @@ import { vi } from 'vitest'
 import type { AuditEvent } from '../../src/shared/audit'
 import type { DeploymentMeta, EnvDeploySettings, Tooling } from '../../src/shared/deploy'
 import type { EnvironmentMeta, HostMeta, ProductMeta } from '../../src/shared/inventory'
+import type { AppServiceMeta, DbServiceMeta } from '../../src/shared/services'
 import type { AppInfo } from '../../src/shared/ipc'
 import type { SessionMeta } from '../../src/shared/ssh'
 import type { TunnelMeta, TunnelRuntime } from '../../src/shared/tunnels'
@@ -117,7 +118,7 @@ export function mockBridge(results: Record<string, unknown> = {}) {
     if (channel === 'product:list' || channel === 'env:list' || channel === 'host:list') return []
     if (channel === 'tunnel:list' || channel === 'tunnel:status') return []
     if (channel === 'runs:list' || channel === 'snippets:list') return []
-    if (channel === 'deploy:list') return []
+    if (channel === 'deploy:list' || channel === 'service:list') return []
     return null
   })
   bridgeListeners.clear()
@@ -252,6 +253,42 @@ export function toolingOk(over: Partial<Tooling> = {}): Tooling {
     sshAdd: '/usr/bin/ssh-add',
     ssh: '/usr/bin/ssh',
     problems: [],
+    ...over,
+  }
+}
+
+export function appService(over: Partial<AppServiceMeta> & { id: string; name: string }): AppServiceMeta {
+  return {
+    kind: 'service',
+    environmentId: 'e1',
+    position: 0,
+    description: '',
+    deploymentId: 'd1',
+    composeService: over.name,
+    url: null,
+    urlCheckFrom: 'mac',
+    lastDeployedCommit: null,
+    lastReleaseId: null,
+    createdAt: STAMP,
+    updatedAt: STAMP,
+    ...over,
+  }
+}
+
+export function dbService(over: Partial<DbServiceMeta> & { id: string; name: string }): DbServiceMeta {
+  return {
+    kind: 'db',
+    environmentId: 'e1',
+    position: 0,
+    description: '',
+    dbEngine: 'postgres',
+    dbAddress: '10.0.0.5',
+    dbPort: 5432,
+    viaHostId: null,
+    localPort: null,
+    tunnelId: null,
+    createdAt: STAMP,
+    updatedAt: STAMP,
     ...over,
   }
 }

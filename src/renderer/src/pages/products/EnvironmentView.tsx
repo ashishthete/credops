@@ -1,9 +1,10 @@
 import { motion } from 'framer-motion'
 import { ExternalLink, Globe, KeyRound, Link2, Lock, Network, Pencil, Plus, Route, Server, SquareTerminal, Trash2, Unlink } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { useEffect, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import { DEFAULT_SSH_PORT, type EnvironmentMeta } from '../../../../shared/inventory'
+import { startDeploySync } from '../../deploy/store'
 import { sourceLabel } from '../../inventory/choices'
 import { openEnvironmentDomain, type InventoryData } from '../../inventory/store'
 import type { NodeKey } from '../../inventory/tree'
@@ -12,8 +13,9 @@ import { useConnect } from '../../terminal/connect'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
 import { RowMenu } from '../../ui/common'
-import { fast, spring, useMotionSafe } from '../../ui/motion'
+import { fast, spring, staggerDelay, useMotionSafe } from '../../ui/motion'
 import { GlowDot, PaneHeader, ROLE_LABEL, ROLE_ORDER } from './ProductView'
+import { ServicesSection } from './services/ServicesSection'
 
 interface EnvironmentViewProps {
   env: EnvironmentMeta
@@ -32,6 +34,8 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
   const motionSafe = useMotionSafe()
   const { connect } = useConnect()
   const navigate = useNavigate()
+  // The services and checkouts the Services section shows.
+  useEffect(() => startDeploySync(), [])
   const hostById = new Map(data.hosts.map((h) => [h.id, h]))
   const identity = env.defaultIdentityId ? data.identities.find((i) => i.id === env.defaultIdentityId) : undefined
   const jump = env.defaultJumpHostId ? hostById.get(env.defaultJumpHostId) : undefined
@@ -131,6 +135,8 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
           />
         </dl>
 
+        <ServicesSection env={env} data={data} />
+
         {groups.length === 0 ? (
           <div className="mt-6 flex flex-col items-center gap-2 rounded-xl border border-dashed border-line px-6 py-10 text-center">
             <Server aria-hidden className="size-5 text-muted" strokeWidth={1.8} />
@@ -152,7 +158,7 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
                     key={h.id}
                     initial={motionSafe ? { opacity: 0, x: -4 } : { opacity: 0 }}
                     animate={{ opacity: 1, x: 0 }}
-                    transition={motionSafe ? { ...spring, delay: i * 0.02 } : fast}
+                    transition={motionSafe ? { ...spring, delay: staggerDelay(i) } : fast}
                     className="group relative"
                   >
                     <button

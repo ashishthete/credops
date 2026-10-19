@@ -4,13 +4,14 @@ import { MAX_URLS } from '../../../../shared/deploy'
 import type { SecretMeta } from '../../../../shared/vault'
 import { blankForm, checkForm, formFrom, toInput, toPatch, type DeploymentForm, type FormField } from '../../deploy/form'
 import { createDeployment, deployStore, updateDeployment } from '../../deploy/store'
-import { useInventory } from '../../inventory/store'
+import { reloadInventory, useInventory } from '../../inventory/store'
 import { api } from '../../lib/api'
 import { Button } from '../../ui/Button'
 import { Dialog } from '../../ui/Dialog'
 import { SelectField, TextAreaField, TextField } from '../../ui/Field'
 import { Segmented } from '../../ui/Segmented'
 import { Switch } from '../../ui/Switch'
+import { toast } from '../../ui/Toaster'
 import { EnvTemplateEditor } from './EnvTemplateEditor'
 
 export type DeploymentRequest = { kind: 'new'; environmentId: string } | { kind: 'edit'; id: string }
@@ -72,11 +73,13 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key])
 
-  const hosts = useMemo(() => {
-    const env = data?.environments.find((e) => e.id === environmentId)
-    const byId = new Map(data?.hosts.map((h) => [h.id, h]))
-    return (env?.hosts ?? []).flatMap((m) => (byId.has(m.hostId) ? [byId.get(m.hostId)!] : [])).sort((a, b) => a.label.localeCompare(b.label))
-  }, [data, environmentId])
+  const env = data?.environments.find((e) => e.id === environmentId)
+  // Members first; any other host can be picked too, and saving adds it to the environment as an app host.
+  const { hosts, others } = useMemo(() => {
+    const members = new Set(env?.hosts.map((m) => m.hostId))
+    const all = [...(data?.hosts ?? [])].sort((a, b) => a.label.localeCompare(b.label))
+    return { hosts: all.filter((h) => members.has(h.id)), others: all.filter((h) => !members.has(h.id)) }
+  }, [data, env])
   const vaults = data?.vaults ?? []
   const available = useMemo(() => secrets.filter((s) => form.vaultIds.includes(s.vaultId)), [secrets, form.vaultIds])
 
@@ -117,7 +120,13 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
           onError,
         )
     setBusy(false)
-    if (meta) onClose()
+    if (!meta) return
+    const joined = others.find((h) => h.id === meta.hostId)
+    if (joined && env) {
+      toast({ title: `Added ${joined.label} to ${env.name} as an app host`, tone: 'success' })
+      void reloadInventory()
+    }
+    onClose()
   }
 
   const setUrl = (i: number, change: Partial<(typeof form.urls)[number]>) =>
@@ -153,6 +162,15 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
                   {h.label}
                 </option>
               ))}
+              {others.length > 0 && (
+                <optgroup label="Other hosts (joins as an app host)">
+                  {others.map((h) => (
+                    <option key={h.id} value={h.id}>
+                      {h.label}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </SelectField>
             <TextField
               label="Compose project"
