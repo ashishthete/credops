@@ -168,13 +168,17 @@ describe('L forwards', () => {
   it('L probe token arriving as the grace timer fires is still consumed', async () => {
     const r = await rig()
     const mt = manualTimers()
-    const { handle } = await local(r, mt.timers)
+    const { handle, server } = await local(r, mt.timers)
+    // The grace timer fires just as the token reaches the listener, ahead of the hold's own `data`
+    // handler: the decision it defers must still see the token. Firing from the test side instead
+    // races the loopback delivery.
+    server.once('connection', (s: Socket) => s.prependOnceListener('data', () => mt.fire()))
     const sock = await dial(handle.address.port)
     await vi.waitFor(() => expect(mt.pending()).toEqual([{ ms: PROBE_GRACE_MS, kind: 'timeout' }]))
     const token = r.tokens.issue()
     sock.write(token)
-    mt.fire()
     await closed(sock)
+    expect(mt.pending()).toEqual([])
     expect(r.tokens.consume(token)).toBe(false)
     expect(r.srv.tcpipRequests()).toBe(0)
   })
