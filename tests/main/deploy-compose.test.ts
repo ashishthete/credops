@@ -33,8 +33,8 @@ describe('compose helper', () => {
     expect(plain).toEqual(['docker', 'compose', '-f', 'deploy/compose.yml', 'up', '-d', '--no-deps', 'web'])
     expect(shellWords(composeCommand(T, ['build'], [], { sudo: false }))).toEqual(['docker', 'compose', '-f', 'deploy/compose.yml', 'build'])
     expect(shellWords(composeCommand({ ...T, composeProject: 'p1' }, ['build'], ['web'], { sudo: true }))).toEqual(['sudo', '-n', 'docker', 'compose', '-f', 'deploy/compose.yml', '-p', 'p1', 'build', 'web'])
-    // option-like sub tokens are quoted, so each stays one word
-    expect(composeCommand(T, ['up', '-d'])).toContain("'-d'")
+    // option-like sub tokens stay one word each
+    expect(shellWords(composeCommand(T, ['up', '-d']))).toEqual(['docker', 'compose', '-f', 'deploy/compose.yml', 'up', '-d'])
   })
 
   it('composeCommand auto sets D from docker info and runs $D', () => {

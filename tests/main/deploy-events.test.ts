@@ -367,6 +367,31 @@ describe('preflight parsing', () => {
     expect(whole.checks.find((c) => c.id === 'commits')).toBeUndefined()
   })
 
+  it('only a cut commits task marks the commit list as cut; a cut deps task does not', () => {
+    const p = planFixture({ kind: 'preflight' })
+    const tags = ['od_step=preflight', `od_run=${R3}`]
+    const feed = (task: string) => {
+      const tr = new EventTranslator({ plan: p, secrets: () => [], now: clock().now })
+      tr.feed(JSON.stringify({ event: 'task_start', name: task, tags }))
+      tr.feed(JSON.stringify({ event: 'ok', host: 'od-2', task, tags, rc: 0, stdout: 'OD-PF deps config_b64=abc', truncated: ['stdout'] }))
+      return tr.preflightCut()
+    }
+    expect(feed('preflight deps dep3')).toEqual([])
+    expect(feed('preflight commits dep3')).toEqual([R3])
+    // a task whose check can't be read is treated as possibly the commits one
+    expect(feed('something else')).toEqual([R3])
+    // end to end: the cut list from a cut deps task leaves an uncut commit list without a truncation warning
+    const one = planFixture({ kind: 'preflight' })
+    one.deployments = [one.deployments[2]]
+    one.hosts = [one.hosts[1]]
+    const rec = `${'1'.repeat(40)}\x1fsubject\x1fana\x1f2026-10-18T09:00:00+00:00\x1e\n`
+    const lines = ['tools missing=', 'docker plain=ok sudo=ok mode=plain use=auto', 'repo exists=1 git=1', 'clean ok=1', 'branch fetched=1 exists=1', 'compose exists=1', 'disk avail_kb=9999999', `tag exists=1 commit=${'c'.repeat(40)}`, 'version-tag exists=0', `commits log_b64=${Buffer.from(rec).toString('base64')}`]
+    const out = { [R3]: lines.map((l) => `OD-PF ${l}`).join('\n'), 'host:host-od-2': 'OD-PF lock repo=/srv/apps/alpha3 held=0 raw_b64=' }
+    const r = parsePreflight(one, out, { now: NOW, cut: feed('preflight deps dep3') })
+    expect(r.commits['dep-3']).toMatchObject({ truncated: 0 })
+    expect(r.checks.find((c) => c.id === 'commits')).toBeUndefined()
+  })
+
   it('caps commits at MAX_COMMITS and reports the rest as truncated', () => {
     const p = planFixture({ kind: 'preflight' })
     p.deployments = [p.deployments[2]]
@@ -558,6 +583,20 @@ describe('compose services and dependencies', () => {
     expect(parseDeps(CONFIG, PS_ARRAY, ['web', 'api'])).toEqual([])
     expect(parseDeps(CONFIG, '', ['api'])).toEqual([{ service: 'api', missing: ['db'] }])
     expect(parseDeps(CONFIG, '[]', ['solo'])).toEqual([])
+  })
+
+  it('parseDeps skips one-shot dependencies and drops names that are not service names', () => {
+    const config = JSON.stringify({
+      services: {
+        web: { depends_on: { migrate: { condition: 'service_completed_successfully' }, cache: { condition: 'service_started' }, 'bad name;rm': {} } },
+        api: { depends_on: ['$(x)', 'queue'] },
+      },
+    })
+    expect(parseDeps(config, '[]', ['web', 'api'])).toEqual([
+      { service: 'web', missing: ['cache'] },
+      { service: 'api', missing: ['queue'] },
+    ])
+    expect(parseDeps(JSON.stringify({ services: { web: { depends_on: { migrate: { condition: 'service_completed_successfully' } } } } }), '[]', ['web'])).toEqual([])
   })
 
   it("parseDeps failure gives the couldn't check warn and no deps warning", () => {

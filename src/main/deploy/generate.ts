@@ -14,7 +14,8 @@ export type { SshConfigOptions } from './ssh-files'
  * Injection rules. Every user-derived value is either (a) rejected here unless it matches the shared
  * validators, or (b) carried as base64 (hooks, lock content). Shell commands then read values only
  * through `{{ d.<field> | quote }}`, except compose command lines and commit bases, which are built here
- * from validated values (shJoin-quoted; none can hold a brace); task names never carry user text.
+ * from validated values: compose lines shJoin-quoted (none can hold a brace), commit bases SHA-checked hex
+ * inserted unquoted. Task names never carry user text.
  */
 
 type Task = Record<string, unknown>
@@ -463,7 +464,7 @@ function preflightTasks(plan: DeployPlan, d: PlanDeployment): Task[] {
   // Partial checkouts only: --no-deps won't start what the selection depends on, so preflight warns.
   if (d.services !== null)
     out.push(pf(d, 'deps', [
-      `c=$(${composeCommand(composeOf(d), ['config', '--format', 'json'], [], { sudo: 'auto' })} 2>/dev/null | base64 | tr -d '\\n')`,
+      `c=$(${composeCommand(composeOf(d), ['config', '--no-interpolate', '--format', 'json'], [], { sudo: 'auto' })} 2>/dev/null | base64 | tr -d '\\n')`,
       `p=$(${composeCommand(composeOf(d), ['ps', '--status', 'running', '--format', 'json'], [], { sudo: 'auto' })} 2>/dev/null | base64 | tr -d '\\n')`,
       'echo "OD-PF deps config_b64=$c ps_b64=$p"',
     ].join('\n')))

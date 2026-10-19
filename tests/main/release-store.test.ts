@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { uuidv7Time } from '../../src/main/deploy/uuidv7'
-import { DEFAULT_RELEASE_OPTIONS, type RunEventBody } from '../../src/shared/deploy'
+import { DEFAULT_RELEASE_OPTIONS, type PreflightReport, type RunEventBody } from '../../src/shared/deploy'
 import { makeDeployFixture } from './deploy-helpers'
 
 const log = (line: string): RunEventBody => ({ type: 'log', stepId: null, hostId: null, stream: 'out', line })
@@ -109,6 +109,13 @@ describe('ReleaseStore', () => {
       { stepId: 'X:fetch', kind: 'fetch', state: 'pending', startedAt: null, finishedAt: null },
     ])
     expect(f.releases.get(r.id)).toMatchObject({ deploymentCount: 1, hostCount: 1 })
+  })
+
+  it('detail gives a report stored before services empty composeServices and serviceCommits', async () => {
+    const { f, r } = await release()
+    const old = { releaseId: r.id, checks: [], commits: {}, dockerModes: {}, locks: {}, commitsTotal: 0, blocked: false }
+    f.releases.appendEvents(r.id, [{ type: 'preflight.done', report: old as unknown as PreflightReport }])
+    expect(f.releases.detail(r.id).preflight).toEqual({ ...old, composeServices: {}, serviceCommits: {} })
   })
 
   it('detail joins runs with parsed steps and commits', async () => {

@@ -765,7 +765,7 @@ describe('compose service lists', () => {
     const w = shellWords(cmdOf(deps).replace(/\{\{[^}]*\}\}/g, 'x'))
     expect(w).toContain('OD-PF deps config_b64=$c ps_b64=$p')
     const at = (seq: string[]): boolean => w.some((_, i) => seq.every((x, j) => w[i + j] === x))
-    expect(at(['compose', '-f', FIX.compose, 'config', '--format', 'json'])).toBe(true)
+    expect(at(['compose', '-f', FIX.compose, 'config', '--no-interpolate', '--format', 'json'])).toBe(true)
     expect(at(['compose', '-f', FIX.compose, 'ps', '--status', 'running', '--format', 'json'])).toBe(true)
     expect(at(['D=sudo -n docker'])).toBe(true)
     for (const dep of [1, 2]) expect(pfTask(plan, 'deps', dep)).toBeUndefined()

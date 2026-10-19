@@ -207,7 +207,9 @@ export class ReleaseStore {
     const pf = this.db
       .prepare("SELECT payload FROM run_events WHERE release_id = ? AND type = 'preflight.done' ORDER BY seq DESC LIMIT 1")
       .get(id) as { payload: string } | undefined
-    const preflight = pf ? ((JSON.parse(pf.payload) as { report: PreflightReport }).report ?? null) : null
+    const stored = pf ? ((JSON.parse(pf.payload) as { report: PreflightReport | undefined }).report ?? null) : null
+    // Reports stored before services lack these maps.
+    const preflight = stored ? { ...stored, composeServices: stored.composeServices ?? {}, serviceCommits: stored.serviceCommits ?? {} } : null
     return {
       ...summary(r),
       options: JSON.parse(r.options) as ReleaseOptions,
