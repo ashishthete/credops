@@ -110,6 +110,8 @@ if (!app.requestSingleInstanceLock()) {
       session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
       session.defaultSession.setPermissionCheckHandler(() => false)
       Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(app.isPackaged, process.platform)))
+      // Packaged builds take build/icon.icns; a dev run shows the same icon in the Dock.
+      if (!app.isPackaged && process.platform === 'darwin') app.dock?.setIcon(join(app.getAppPath(), 'resources', 'icon.png'))
       db = openDatabase(join(app.getPath('userData'), 'opsdeck.db'))
       // Decrypted values are known only while unlocked; the vault drops them on lock. Each store
       // registers its own with the vault; asking the stores first makes each decrypt its values once
