@@ -1,4 +1,4 @@
-import { connect as netConnect } from 'node:net'
+import { connect as netConnect, createServer as netServer, type Server as NetServer } from 'node:net'
 import { timingSafeEqual } from 'node:crypto'
 import { Server, utils } from 'ssh2'
 import type { AuthContext, Connection, ParsedKey, PseudoTtyInfo, ServerChannel } from 'ssh2'
@@ -16,8 +16,16 @@ export interface ServerOpts {
   /** Offers keyboard-interactive: one round asking `prompts`, accepted when the replies equal `answers`. */
   keyboard?: { prompts: string[]; answers: string[] }
   onShell?: (stream: ServerChannel, info: { env: Record<string, string>; pty: PseudoTtyInfo | null }) => void
-  /** Accepts `direct-tcpip` and pipes it to 127.0.0.1:<destPort>. */
+  /**
+   * Accepts `direct-tcpip` and pipes it to 127.0.0.1:<destPort>. Without it no `tcpip` listener is
+   * registered, so ssh2 refuses the channel with reason 1 (administratively prohibited).
+   */
   allowForward?: boolean
+  /**
+   * Accepts `tcpip-forward` with a real listener on 127.0.0.1:<bindPort> (0 picks a free port) and opens
+   * each accepted socket back to the client as `forwarded-tcpip`. Without it both global requests fail.
+   */
+  allowRemoteForward?: boolean
 }
 
 export interface TestServer {
@@ -27,6 +35,12 @@ export interface TestServer {
   close(): Promise<void>
   /** Live client connections. */
   connections(): number
+  /** `direct-tcpip` channel requests seen (counted only with `allowForward`). */
+  tcpipRequests(): number
+  /** The ports of the live `tcpip-forward` listeners. */
+  remoteListeners(): number[]
+  /** Destroys every client connection's socket, like a dead network. */
+  dropAll(): void
 }
 
 /**
@@ -111,11 +125,47 @@ function serveSessions(conn: Connection, opts: ServerOpts): void {
   })
 }
 
+/** Serves `tcpip-forward` and `cancel-tcpip-forward` for one connection. */
+function serveRemoteForwards(conn: Connection, listeners: Map<string, NetServer>): void {
+  const key = (addr: string, port: number): string => `${addr}:${port}`
+  conn.on('request', (accept, reject, name, info) => {
+    if (name === 'cancel-tcpip-forward') {
+      const listener = listeners.get(key(info.bindAddr, info.bindPort))
+      if (!listener) return reject?.()
+      listeners.delete(key(info.bindAddr, info.bindPort))
+      listener.close()
+      return accept?.()
+    }
+    if (name !== 'tcpip-forward') return reject?.()
+    const listener = netServer((sock) => {
+      sock.on('error', () => {})
+      conn.forwardOut(info.bindAddr, port(), sock.remoteAddress ?? '127.0.0.1', sock.remotePort ?? 0, (err, channel) => {
+        if (err) return void sock.destroy()
+        channel.on('error', () => sock.destroy())
+        sock.on('error', () => channel.close())
+        channel.pipe(sock).pipe(channel)
+      })
+    })
+    const port = (): number => (listener.address() as { port: number }).port
+    listener.once('error', () => reject?.())
+    listener.listen(info.bindPort, '127.0.0.1', () => {
+      listeners.set(key(info.bindAddr, port()), listener)
+      accept?.(port())
+    })
+  })
+  conn.on('close', () => {
+    for (const listener of listeners.values()) listener.close()
+    listeners.clear()
+  })
+}
+
 export async function startServer(opts: ServerOpts): Promise<TestServer> {
   const hostKey = opts.hostKey ?? generateKey().private
   const parsed = utils.parseKey(hostKey)
   if (parsed instanceof Error) throw parsed
   const live = new Set<Connection>()
+  const remoteListeners = new Map<Connection, Map<string, NetServer>>()
+  let tcpipRequests = 0
 
   const server = new Server({ hostKeys: [hostKey] }, (conn) => {
     live.add(conn)
@@ -123,17 +173,25 @@ export async function startServer(opts: ServerOpts): Promise<TestServer> {
     conn.on('error', () => {})
     conn.on('authentication', (ctx) => authenticate(ctx, opts))
     conn.on('ready', () => serveSessions(conn, opts))
-    conn.on('tcpip', (accept, reject, info) => {
-      if (!opts.allowForward) return reject()
-      const sock = netConnect(info.destPort, '127.0.0.1')
-      sock.once('error', () => reject())
-      sock.once('connect', () => {
-        const channel = accept()
-        channel.on('error', () => sock.destroy())
-        sock.on('error', () => channel.close())
-        channel.pipe(sock).pipe(channel)
+    if (opts.allowRemoteForward) {
+      const listeners = new Map<string, NetServer>()
+      remoteListeners.set(conn, listeners)
+      conn.on('close', () => remoteListeners.delete(conn))
+      serveRemoteForwards(conn, listeners)
+    }
+    if (opts.allowForward) {
+      conn.on('tcpip', (accept, reject, info) => {
+        tcpipRequests += 1
+        const sock = netConnect(info.destPort, '127.0.0.1')
+        sock.once('error', () => reject())
+        sock.once('connect', () => {
+          const channel = accept()
+          channel.on('error', () => sock.destroy())
+          sock.on('error', () => channel.close())
+          channel.pipe(sock).pipe(channel)
+        })
       })
-    })
+    }
   })
 
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -143,6 +201,12 @@ export async function startServer(opts: ServerOpts): Promise<TestServer> {
     hostKeyType: parsed.type,
     hostKeyBase64: parsed.getPublicSSH().toString('base64'),
     connections: () => live.size,
+    tcpipRequests: () => tcpipRequests,
+    remoteListeners: () =>
+      [...remoteListeners.values()].flatMap((byKey) => [...byKey.values()].map((l) => (l.address() as { port: number }).port)),
+    dropAll: () => {
+      for (const conn of live) (conn as unknown as { _sock: { destroy(): void } })._sock.destroy()
+    },
     close: () =>
       new Promise<void>((resolve) => {
         for (const conn of live) conn.end()
