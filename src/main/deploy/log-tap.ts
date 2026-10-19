@@ -4,7 +4,7 @@ import { MAX_LOG_LINE, RUNS_SUBDIR } from '../../shared/deploy'
 
 /* The live log: `tail -F` on the stream.log the generated playbook appends to. */
 
-const REL_ID = /^[A-Za-z0-9._-]{1,64}$/
+const REL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 /**
  * The tap runs as the login user, so `~` is the same home the playbook resolves with `$HOME`.

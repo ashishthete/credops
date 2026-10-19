@@ -45,7 +45,9 @@ import {
 import {
   MAX_DEPLOYMENTS,
   MAX_ENV_TEMPLATE,
+  MAX_EVENTS_PAGE,
   MAX_HOOK,
+  MAX_RELEASE_NOTES,
   MAX_URL as MAX_HEALTH_URL,
   MAX_URLS,
   VERSION,
@@ -53,8 +55,12 @@ import {
   type AppPatch,
   type DeploymentInput,
   type DeploymentPatch,
+  type BreakLockConfirm,
   type EnvDeploySettingsPatch,
   type HealthUrl,
+  type PreflightRequest,
+  type ReleaseConfirm,
+  type ReleaseListFilter,
 } from '../../shared/deploy'
 import { BIND_ADDRESS, MAX_BIND_ADDRESS, type TunnelInput, type TunnelPatch } from '../../shared/tunnels'
 import { MAX_COLS, MAX_ROWS, MAX_WRITE_CHARS, type OpenLocalRequest, type OpenSshRequest, type PromptAnswer } from '../../shared/ssh'
@@ -272,6 +278,23 @@ export const asEnvDeploySettingsPatch: Check<EnvDeploySettingsPatch> = v.object(
   autoRollback: v.optional(v.bool()),
   currentVersion: v.optional(v.nullable(v.str({ max: 64, pattern: VERSION }))),
 }) as Check<EnvDeploySettingsPatch>
+export const asPreflightRequest: Check<PreflightRequest> = v.object({
+  environmentId: v.uuid(),
+  deploymentIds: v.array(v.uuid(), MAX_DEPLOYMENTS, { min: 1 }),
+  bump: v.oneOf(['major', 'minor', 'patch', 'none'] as const),
+  options: v.object({ backup: v.bool(), notify: v.bool(), qa: v.bool() }),
+  releaseNotes: v.optional(v.str({ max: MAX_RELEASE_NOTES })),
+}) as Check<PreflightRequest>
+export const asReleaseConfirm: Check<ReleaseConfirm> = v.object({
+  typedName: v.optional(v.str({ max: MAX_NAME })),
+  redeploy: v.optional(v.bool()),
+}) as Check<ReleaseConfirm>
+export const asBreakLockConfirm: Check<BreakLockConfirm> = v.object({ typedLabel: v.str({ max: MAX_NAME }) }) as Check<BreakLockConfirm>
+export const asReleaseListFilter: Check<ReleaseListFilter> = v.object({
+  environmentId: v.optional(v.uuid()),
+  limit: v.optional(v.int({ min: 1, max: 200 })),
+  before: v.optional(v.uuid()),
+}) as Check<ReleaseListFilter>
 const appName = v.str({ min: 1, max: MAX_NAME, trim: true })
 const composeProject = v.nullable(v.str({ min: 1, max: 63 }))
 const appDescription = v.str({ max: 1000 })
@@ -540,6 +563,17 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'deploy:settings': args(v.uuid()),
   'deploy:updateSettings': args(v.uuid(), asEnvDeploySettingsPatch),
   'deploy:tooling': args(),
+  'release:preflight': args(asPreflightRequest),
+  'release:start': args(v.uuid(), asReleaseConfirm),
+  'release:cancel': args(v.uuid()),
+  'release:rollback': args(v.uuid(), asReleaseConfirm),
+  'release:break-lock': args(v.uuid(), v.uuid(), asBreakLockConfirm),
+  'release:discard': args(v.uuid()),
+  'release:retry-version': args(v.uuid()),
+  'release:list': args(asReleaseListFilter),
+  'release:get': args(v.uuid()),
+  'release:events': args(v.uuid(), v.int({ min: 0, max: Number.MAX_SAFE_INTEGER }), v.optional(v.int({ min: 1, max: MAX_EVENTS_PAGE }))),
+  'release:active': args(),
   'snippets:list': args(),
   'snippets:create': args(asSnippetInput),
   'snippets:update': args(v.uuid(), asSnippetInput),

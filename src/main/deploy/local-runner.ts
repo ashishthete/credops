@@ -333,7 +333,12 @@ export class LocalRunner implements DeployRunner {
       })
       child.stdout.on('data', (c) => out.push(c))
       child.stderr.on('data', (c) => err.push(c))
-      child.on('error', (e) => reject(new Error(`ansible-playbook could not start: ${red(e.message)}`)))
+      // 'error' after a successful spawn (a failed kill, a stream fault) leaves the process running: wait for 'close'
+      // so cleanup never runs under a live ansible. Without a pid nothing was spawned and 'close' may never come.
+      child.on('error', (e) => {
+        if (child.pid !== undefined) return void send({ type: 'log', stepId: null, hostId: null, stream: 'ansible', line: cut(red(`ansible-playbook reported: ${e.message}`)) })
+        reject(new Error(`ansible-playbook could not start: ${red(e.message)}`))
+      })
       child.on('close', (code, signal) => {
         state.child = null
         out.end()
@@ -350,6 +355,40 @@ function swallow(fn: () => void): void {
     fn()
   } catch {
     // cleanup is best effort
+  }
+}
+
+export interface NodeSpawnDeps {
+  spawn: (file: string, args: string[], opts: { cwd: string; env: Record<string, string>; detached: boolean; stdio: ['ignore', 'pipe', 'pipe'] }) => RunChild
+  /** `process.kill`. A negative pid signals the whole process group. */
+  kill: (pid: number, signal: string) => void
+}
+
+/**
+ * Production spawn. The child leads its own process group (`detached`), and `kill` signals that group, so a
+ * cancel reaches ansible's fork workers and their ssh children instead of orphaning them.
+ */
+export function nodeSpawn(deps: NodeSpawnDeps): RunSpawn {
+  return (file, args, opts) => {
+    const child = deps.spawn(file, args, { ...opts, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    return {
+      get pid() {
+        return child.pid
+      },
+      stdout: child.stdout,
+      stderr: child.stderr,
+      on: ((ev: string, cb: never) => void (child.on as (e: string, c: never) => unknown)(ev, cb)) as RunChild['on'],
+      kill: (signal = 'SIGTERM') => {
+        const pid = child.pid
+        if (pid === undefined) return child.kill(signal)
+        try {
+          deps.kill(-pid, signal)
+          return true
+        } catch {
+          return child.kill(signal)
+        }
+      },
+    }
   }
 }
 

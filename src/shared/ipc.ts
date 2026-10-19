@@ -36,6 +36,13 @@ import type {
   DeploymentPatch,
   EnvDeploySettings,
   EnvDeploySettingsPatch,
+  BreakLockConfirm,
+  PreflightRequest,
+  ReleaseConfirm,
+  ReleaseDetail,
+  ReleaseListFilter,
+  ReleaseSummary,
+  RunEvent as DeployRunEvent,
 } from './deploy'
 import type { TunnelEvent, TunnelInput, TunnelMeta, TunnelPatch, TunnelRuntime, TunnelStats } from './tunnels'
 import type {
@@ -178,6 +185,18 @@ export interface IpcContract {
   'deploy:settings': { args: [environmentId: string]; result: EnvDeploySettings }
   'deploy:updateSettings': { args: [environmentId: string, patch: EnvDeploySettingsPatch]; result: EnvDeploySettings }
   'deploy:tooling': { args: []; result: Tooling }
+  // `release:start` resolves once the run has started; progress arrives as `deploy:event` batches.
+  'release:preflight': { args: [request: PreflightRequest]; result: { releaseId: string } }
+  'release:start': { args: [releaseId: string, confirm: ReleaseConfirm]; result: void }
+  'release:cancel': { args: [releaseId: string]; result: void }
+  'release:rollback': { args: [releaseId: string, confirm: ReleaseConfirm]; result: { releaseId: string } }
+  'release:break-lock': { args: [releaseId: string, hostId: string, confirm: BreakLockConfirm]; result: void }
+  'release:discard': { args: [releaseId: string]; result: void }
+  'release:retry-version': { args: [releaseId: string]; result: void }
+  'release:list': { args: [filter: ReleaseListFilter]; result: ReleaseSummary[] }
+  'release:get': { args: [releaseId: string]; result: ReleaseDetail }
+  'release:events': { args: [releaseId: string, afterSeq: number, limit?: number]; result: DeployRunEvent[] }
+  'release:active': { args: []; result: ReleaseSummary[] }
   'snippets:list': { args: []; result: SnippetMeta[] }
   'snippets:create': { args: [input: SnippetInput]; result: SnippetMeta }
   'snippets:update': { args: [id: string, input: SnippetInput]; result: SnippetMeta }
@@ -290,6 +309,17 @@ export const CHANNELS = [
   'deploy:settings',
   'deploy:updateSettings',
   'deploy:tooling',
+  'release:preflight',
+  'release:start',
+  'release:cancel',
+  'release:rollback',
+  'release:break-lock',
+  'release:discard',
+  'release:retry-version',
+  'release:list',
+  'release:get',
+  'release:events',
+  'release:active',
   'snippets:list',
   'snippets:create',
   'snippets:update',
@@ -331,6 +361,9 @@ export interface EventContract {
   'containers:logs': ContainerLogEvent
   // Pushed after a committed deploy-config change; the payload says which environment to refetch.
   'deploy:changed': { environmentId: string }
+  // Batched run events of a release (about every EVENT_BATCH_MS), already persisted with their seq.
+  'deploy:event': DeployRunEvent[]
+  'release:state': ReleaseSummary
 }
 export type EventName = keyof EventContract
 export const EVENTS = [
@@ -345,6 +378,8 @@ export const EVENTS = [
   'run:event',
   'containers:logs',
   'deploy:changed',
+  'deploy:event',
+  'release:state',
 ] as const satisfies readonly EventName[]
 type MissingEvents = Exclude<EventName, (typeof EVENTS)[number]>
 export const eventsAreComplete: [MissingEvents] extends [never] ? true : never = true

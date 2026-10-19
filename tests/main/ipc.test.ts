@@ -9,6 +9,7 @@ import { createAuditHandlers } from '../../src/main/ipc/handlers/audit'
 import { isTrustedSender, registerHandlers } from '../../src/main/ipc/register'
 import { VALIDATORS } from '../../src/main/ipc/validators'
 import { CHANNELS, EVENTS } from '../../src/shared/ipc'
+import type { ReleaseService } from '../../src/main/deploy/release-service'
 import { createDeployHandlers } from '../../src/main/ipc/handlers/deploy'
 import type { DeployStore } from '../../src/main/deploy/deploy-store'
 import { createOpsHandlers } from '../../src/main/ipc/handlers/ops'
@@ -128,16 +129,28 @@ describe('deploy contract', () => {
     'deploy:settings',
     'deploy:updateSettings',
     'deploy:tooling',
+    'release:preflight',
+    'release:start',
+    'release:cancel',
+    'release:rollback',
+    'release:break-lock',
+    'release:discard',
+    'release:retry-version',
+    'release:list',
+    'release:get',
+    'release:events',
+    'release:active',
   ]
 
   it('lists every deploy channel and the changed event, all validated', () => {
     expect(CHANNELS).toEqual(expect.arrayContaining(DEPLOY_CHANNELS))
     expect(EVENTS).toContain('deploy:changed')
+    expect(EVENTS).toEqual(expect.arrayContaining(['deploy:event', 'release:state']))
     for (const c of DEPLOY_CHANNELS) expect(VALIDATORS).toHaveProperty([c])
   })
 
   it('wires every deploy channel', () => {
-    const handlers = createDeployHandlers({ deploys: {} as DeployStore, tooling: async () => ({}) as never })
+    const handlers = createDeployHandlers({ deploys: {} as DeployStore, releases: {} as ReleaseService, tooling: async () => ({}) as never })
     expect(Object.keys(handlers).sort()).toEqual([...DEPLOY_CHANNELS].sort())
   })
 })

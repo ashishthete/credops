@@ -20,7 +20,7 @@ type Play = Record<string, unknown>
 const SAFE_IDENT = /^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$/
 const SECRET_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
 const SHA = /^[0-9a-f]{40}$/
-const RELEASE_ID = /^[A-Za-z0-9-]{8,64}$/
+const RELEASE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const URL_SAFE = /^https?:\/\/[A-Za-z0-9._~:/?#[\]@!$&()*+,;=%-]+$/
 
 const LOCK_FILE = '.opsdeck-deploy.lock'

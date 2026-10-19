@@ -31,6 +31,9 @@ export const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
 
 /** Errors cross IPC as messages only, so the renderer matches on this text. */
 export const BREAK_LOCK_CONFIRM_MESSAGE = 'Type the host label to confirm'
+export const REDEPLOY_CONFIRM_MESSAGE = 'Nothing new to deploy. Confirm to redeploy the current commits'
+export const MAX_EVENTS_PAGE = 5000
+export const MAX_RELEASE_NOTES = 20000
 
 // ---- Basic types ----
 export type UseSudo = 'auto' | 'yes' | 'no'
@@ -444,6 +447,27 @@ export interface ReleaseDetail extends ReleaseSummary {
   runs: DeploymentRunMeta[]
   preflight: PreflightReport | null
   lastSeq: number
+}
+
+export interface PreflightRequest {
+  environmentId: string
+  deploymentIds: string[]
+  bump: VersionBump
+  options: ReleaseOptions
+  releaseNotes?: string
+}
+/** `typedName` is the environment name (protected environments). `redeploy` confirms a release with zero new commits. */
+export interface ReleaseConfirm {
+  typedName?: string
+  redeploy?: boolean
+}
+export interface BreakLockConfirm {
+  typedLabel: string
+}
+export interface ReleaseListFilter {
+  environmentId?: string
+  limit?: number
+  before?: string
 }
 
 // ---- Tooling ----

@@ -46,6 +46,7 @@ export interface ReleaseStatusExtra {
   error?: string | null
   releaseNotes?: string | null
   playbook?: string | null
+  redeploy?: boolean
 }
 
 export interface RunPlan {
@@ -180,11 +181,12 @@ export class ReleaseStore {
       error: 'error',
       releaseNotes: 'release_notes',
       playbook: 'playbook',
+      redeploy: 'redeploy',
     }
     for (const k of Object.keys(cols) as (keyof ReleaseStatusExtra)[]) {
       if (extra[k] !== undefined) {
         sets.push(`${cols[k]} = ?`)
-        args.push(extra[k] as string | null)
+        args.push(typeof extra[k] === 'boolean' ? (extra[k] ? 1 : 0) : (extra[k] as string | null))
       }
     }
     this.db.prepare(`UPDATE releases SET ${sets.join(', ')} WHERE id = ?`).run(...args, id)

@@ -37,7 +37,7 @@ async function server(opts: Partial<Parameters<typeof startServer>[0]> = {}): Pr
 
 function planFor(hosts: { hostId: string; label: string }[], port: number): DeployPlan {
   return {
-    releaseId: 'rel-1',
+    releaseId: '0190a1b2-c3d4-7e5f-8a6b-1234567890ab',
     hosts: hosts.map((h, i) => ({
       ...h,
       alias: `od-${i + 1}`,
@@ -95,7 +95,7 @@ describe('prepareHosts', () => {
     cleanups.push(() => prepared.close())
     expect(prepared.checks).toEqual([])
     expect(raised).toHaveLength(1)
-    expect(raised[0]).toMatchObject({ kind: 'host-key', sessionId: 'rel-1', hopLabel: 'web' })
+    expect(raised[0]).toMatchObject({ kind: 'host-key', sessionId: '0190a1b2-c3d4-7e5f-8a6b-1234567890ab', hopLabel: 'web' })
     expect(prepared.knownHosts).toEqual([{ token: hostToken('127.0.0.1', s.port), keyType: s.hostKeyType, keyBase64: s.hostKeyBase64 }])
     expect(prepared.links.has(HOST_ID)).toBe(true)
     expect(prepared.userAgentNeeded).toBe(true)
@@ -198,10 +198,10 @@ describe('log tap', () => {
     const prepared = await prepareHosts(planFor([{ hostId: HOST_ID, label: 'web' }], PORT), deps)
     cleanups.push(() => prepared.close())
     const lines: string[] = []
-    const tap = startTap(prepared.links.get(HOST_ID)!, 'rel-1', (l) => lines.push(l), { host: 'web' })
+    const tap = startTap(prepared.links.get(HOST_ID)!, '0190a1b2-c3d4-7e5f-8a6b-1234567890ab', (l) => lines.push(l), { host: 'web' })
     await vi.waitFor(() => expect(lines).toEqual(['first line', 'second line']))
-    expect(s.execs()).toEqual([tapCommand('rel-1')])
-    expect(s.execs()[0]).toBe('mkdir -p ~/.opsdeck/runs/rel-1 && touch ~/.opsdeck/runs/rel-1/stream.log && exec tail -n +1 -F ~/.opsdeck/runs/rel-1/stream.log')
+    expect(s.execs()).toEqual([tapCommand('0190a1b2-c3d4-7e5f-8a6b-1234567890ab')])
+    expect(s.execs()[0]).toBe('mkdir -p ~/.opsdeck/runs/0190a1b2-c3d4-7e5f-8a6b-1234567890ab && touch ~/.opsdeck/runs/0190a1b2-c3d4-7e5f-8a6b-1234567890ab/stream.log && exec tail -n +1 -F ~/.opsdeck/runs/0190a1b2-c3d4-7e5f-8a6b-1234567890ab/stream.log')
     tap.stop()
   })
 
@@ -212,7 +212,7 @@ describe('log tap', () => {
     const prepared = await prepareHosts(planFor([{ hostId: HOST_ID, label: 'web' }], PORT), deps)
     cleanups.push(() => prepared.close())
     const lines: string[] = []
-    startTap(prepared.links.get(HOST_ID)!, 'rel-1', (l) => lines.push(l), { host: 'web' })
+    startTap(prepared.links.get(HOST_ID)!, '0190a1b2-c3d4-7e5f-8a6b-1234567890ab', (l) => lines.push(l), { host: 'web' })
     await vi.waitFor(() => expect(lines).toHaveLength(1))
     await new Promise((r) => setTimeout(r, 50))
     expect(lines).toEqual(['Live output unavailable on web; output will appear when each step ends'])
@@ -225,7 +225,7 @@ describe('log tap', () => {
     const prepared = await prepareHosts(planFor([{ hostId: HOST_ID, label: 'web' }], PORT), deps)
     cleanups.push(() => prepared.close())
     const lines: string[] = []
-    startTap(prepared.links.get(HOST_ID)!, 'rel-1', (l) => lines.push(l), { host: 'web' })
+    startTap(prepared.links.get(HOST_ID)!, '0190a1b2-c3d4-7e5f-8a6b-1234567890ab', (l) => lines.push(l), { host: 'web' })
     await vi.waitFor(() => expect(lines).toHaveLength(1))
     await new Promise((r) => setTimeout(r, 50))
     expect(lines).toHaveLength(1)
@@ -244,7 +244,7 @@ describe('log tap', () => {
     const prepared = await prepareHosts(planFor([{ hostId: HOST_ID, label: 'web' }], PORT), deps)
     cleanups.push(() => prepared.close())
     const lines: string[] = []
-    startTap(prepared.links.get(HOST_ID)!, 'rel-1', (l) => lines.push(l), { host: 'web' })
+    startTap(prepared.links.get(HOST_ID)!, '0190a1b2-c3d4-7e5f-8a6b-1234567890ab', (l) => lines.push(l), { host: 'web' })
     await vi.waitFor(() => expect(lines).toHaveLength(2))
     expect(lines[0]).toBe('a€')
     expect(lines[1].length).toBe(4096)
@@ -253,5 +253,7 @@ describe('log tap', () => {
 
   it('refuses an unsafe release id', () => {
     expect(() => tapCommand('a; rm -rf ~')).toThrow()
+    expect(() => tapCommand('..')).toThrow()
+    expect(() => tapCommand('rel-1')).toThrow()
   })
 })

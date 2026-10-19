@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { LocalRunner, nodeFs, type LocalRunnerDeps } from '../../src/main/deploy/local-runner'
+import { LocalRunner, nodeFs, nodeSpawn, type LocalRunnerDeps, type RunChild, type RunSpawn } from '../../src/main/deploy/local-runner'
 import type { RunSecrets } from '../../src/main/deploy/runner'
 import { ToolingError } from '../../src/main/deploy/tooling'
 import { CANCEL_GRACE_MS, KILL_GRACE_MS, type RunEventBody } from '../../src/shared/deploy'
@@ -284,5 +284,72 @@ describe('LocalRunner', () => {
     } finally {
       rmSync(base, { recursive: true, force: true })
     }
+  })
+
+  it('an error event after a successful spawn waits for close before cleanup', async () => {
+    const handlers: Record<string, ((...a: never[]) => void)[]> = {}
+    const emit = (ev: string, ...a: unknown[]): void => (handlers[ev] ?? []).forEach((h) => (h as (...x: unknown[]) => void)(...a))
+    const spawn: RunSpawn = () =>
+      ({
+        pid: 4242,
+        stdout: { on: () => undefined },
+        stderr: { on: () => undefined },
+        on: ((ev: string, cb: never) => void (handlers[ev] ??= []).push(cb)) as RunChild['on'],
+        kill: () => true,
+      }) as RunChild
+    const s = setup({ spawn })
+    let settled = false
+    const h = s.runner.start(planFixture(), SECRETS)
+    void h.done.then(() => (settled = true), () => (settled = true))
+    await vi.waitFor(() => expect(handlers.close?.length).toBe(1))
+    emit('error', new Error('kill EPERM'))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(settled).toBe(false)
+    expect(s.fs.removed).toEqual([])
+    emit('close', 0, null)
+    await h.done
+    expect(s.fs.removed.length).toBe(1)
+  })
+
+  it('an error with no pid still rejects (nothing was spawned)', async () => {
+    const spawn: RunSpawn = () => {
+      const handlers: Record<string, ((...a: never[]) => void)[]> = {}
+      queueMicrotask(() => (handlers.error ?? []).forEach((h) => (h as (e: Error) => void)(new Error('spawn ansible-playbook ENOENT'))))
+      return {
+        stdout: { on: () => undefined },
+        stderr: { on: () => undefined },
+        on: ((ev: string, cb: never) => void (handlers[ev] ??= []).push(cb)) as RunChild['on'],
+        kill: () => true,
+      } as RunChild
+    }
+    const s = setup({ spawn })
+    await expect(s.runner.start(planFixture(), SECRETS).done).rejects.toThrow('could not start')
+    expect(s.fs.removed.length).toBe(1)
+  })
+
+  it('nodeSpawn runs detached and signals the whole process group', () => {
+    const calls: { file: string; opts: Record<string, unknown> }[] = []
+    const kills: [number, string][] = []
+    const inner = { pid: 777, stdout: { on: () => undefined }, stderr: { on: () => undefined }, on: () => undefined, kill: vi.fn(() => true) } as unknown as RunChild
+    const spawn = nodeSpawn({
+      spawn: (file, _args, opts) => {
+        calls.push({ file, opts })
+        return inner
+      },
+      kill: (pid, sig) => void kills.push([pid, sig]),
+    })
+    const child = spawn('ansible-playbook', ['x'], { cwd: '/tmp/od-1', env: {} })
+    expect(calls[0].opts).toMatchObject({ detached: true, cwd: '/tmp/od-1' })
+    expect(child.pid).toBe(777)
+    child.kill('SIGINT')
+    expect(kills).toEqual([[-777, 'SIGINT']])
+    expect(inner.kill).not.toHaveBeenCalled()
+  })
+
+  it('nodeSpawn falls back to the child kill when the group kill throws', () => {
+    const inner = { pid: 9, stdout: { on: () => undefined }, stderr: { on: () => undefined }, on: () => undefined, kill: vi.fn(() => true) } as unknown as RunChild
+    const spawn = nodeSpawn({ spawn: () => inner, kill: () => { throw new Error('ESRCH') } })
+    spawn('a', [], { cwd: '/', env: {} }).kill('SIGTERM')
+    expect(inner.kill).toHaveBeenCalledWith('SIGTERM')
   })
 })

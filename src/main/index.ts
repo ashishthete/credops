@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir, hostname, userInfo } from 'node:os'
@@ -22,6 +22,13 @@ import { createAuditHandlers } from './ipc/handlers/audit'
 import { createIdentityHandlers } from './ipc/handlers/identities'
 import { createDeployHandlers } from './ipc/handlers/deploy'
 import { detectTools } from './deploy/tooling'
+import { startPrivateAgent, type ChildLike } from './deploy/agent'
+import { prepareHosts } from './deploy/hostkeys'
+import { LocalRunner, nodeFs, nodeSpawn } from './deploy/local-runner'
+import { startTap } from './deploy/log-tap'
+import { localAllowAll } from './deploy/access'
+import { noopFinalize } from './deploy/finalize'
+import { ReleaseService } from './deploy/release-service'
 import { DeployStore, dbSecretRefs } from './deploy/deploy-store'
 import { ReleaseStore } from './deploy/release-store'
 import { createTunnelHandlers } from './ipc/handlers/tunnels'
@@ -84,6 +91,10 @@ let tunnelManager: TunnelManager | null = null
 let execLinks: ExecLinks | null = null
 let runManager: RunManager | null = null
 let containerService: ContainerService | null = null
+let releaseService: ReleaseService | null = null
+let quitConfirmed = false
+let quitPrompting = false
+const RELEASE_QUIT_WAIT_MS = 20_000
 let quitAudited = false
 let stopAutoLock: (() => void) | null = null
 
@@ -170,9 +181,7 @@ if (!app.requestSingleInstanceLock()) {
       const snippets = new SnippetStore({ db, audit: log, vault: service })
       const deploys = new DeployStore({ db, audit: log, vault: service, secrets: dbSecretRefs(db) })
       deploys.onChanged = (environmentId) => pushEvent(mainWindow, 'deploy:changed', { environmentId })
-      // Startup recovery lives here (Task 7 must not add a second call): a release left preflight, running or
-      // rolling back by a quit can never finish, so mark it failed before anything reads it.
-      new ReleaseStore({ db }).failInterrupted()
+      const releaseStore = new ReleaseStore({ db })
       const importer = new SshImporter({
         db,
         vault: service,
@@ -197,6 +206,65 @@ if (!app.requestSingleInstanceLock()) {
       const isLocked = (): boolean => !service.isUnlocked()
       // One queue for session and tunnel prompts, so one answer channel serves both.
       const prompts = new PromptBroker({ emit: (event, payload) => pushEvent(mainWindow, event, payload), isLocked })
+      const toolDeps = {
+        env: process.env,
+        home: homedir(),
+        execFile: (file: string, args: string[]) =>
+          new Promise<{ stdout: string; stderr: string }>((resolve, reject) =>
+            execFile(file, args, { timeout: 10_000 }, (err, stdout, stderr) => (err ? reject(err) : resolve({ stdout: String(stdout), stderr: String(stderr) }))),
+          ),
+        exists: (path: string) => existsSync(path),
+      }
+      const localRunner = new LocalRunner({
+        tools: () => detectTools(toolDeps),
+        prepare: (plan, signal) =>
+          prepareHosts(plan, {
+            resolve: (hostId) => resolve(hostId, plan.environment.id),
+            connectChain,
+            prompts,
+            knownHosts,
+            identities: identities as IdentityStore,
+            auth: { env: process.env, home: homedir(), sshConfig },
+            signal,
+          }),
+        agent: ({ dir, tools, ttlSec }) =>
+          startPrivateAgent({
+            dir,
+            tools,
+            ttlSec,
+            spawn: (file, args, o) => spawn(file, args, { env: o.env, stdio: ['pipe', 'pipe', 'pipe'] }) as unknown as ChildLike,
+          }),
+        tap: startTap,
+        spawn: nodeSpawn({ spawn: (file, args, o) => spawn(file, args, o) as never, kill: (pid, signal) => void process.kill(pid, signal as NodeJS.Signals) }),
+        fs: nodeFs,
+        // The agent socket must fit in 103 bytes; macOS's os.tmpdir() does not.
+        tmpdir: '/tmp',
+        home: homedir(),
+        userAgentSock: process.env.SSH_AUTH_SOCK ?? null,
+        sshConfig,
+      })
+      const release = new ReleaseService({
+        db,
+        deploys,
+        releases: releaseStore,
+        runner: localRunner,
+        access: localAllowAll,
+        finalize: noopFinalize,
+        audit: log,
+        vault: service,
+        resolve,
+        identities,
+        secrets,
+        emit: (batch) => pushEvent(mainWindow, 'deploy:event', batch),
+        emitState: (summary) => pushEvent(mainWindow, 'release:state', summary),
+        actor,
+        now: () => new Date(),
+        clock: { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: (h) => clearTimeout(h as NodeJS.Timeout) },
+      })
+      releaseService = release
+      // Startup recovery lives here (Task 7 must not add a second call): a release left preflight, running or
+      // rolling back by a quit can never finish, so mark it failed (and audit it) before anything reads it.
+      release.recoverInterrupted()
       sessions = new SessionManager({
         resolve,
         hostInfo: (hostId) => {
@@ -334,19 +402,7 @@ if (!app.requestSingleInstanceLock()) {
           }),
           ...createSshImportHandlers(importer),
           ...createTunnelHandlers({ store: tunnels, manager: runner }),
-          ...createDeployHandlers({
-            deploys,
-            tooling: () =>
-              detectTools({
-                env: process.env,
-                home: homedir(),
-                execFile: (file, args) =>
-                  new Promise((resolve, reject) =>
-                    execFile(file, args, { timeout: 10_000 }, (err, stdout, stderr) => (err ? reject(err) : resolve({ stdout: String(stdout), stderr: String(stderr) }))),
-                  ),
-                exists: (path) => existsSync(path),
-              }),
-          }),
+          ...createDeployHandlers({ deploys, releases: release, tooling: () => detectTools(toolDeps) }),
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
           ...createOpsHandlers({ snippets, runs, containers }),
         },
@@ -363,6 +419,27 @@ if (!app.requestSingleInstanceLock()) {
     })
 
   app.on('before-quit', (event) => {
+    // A running release holds host locks: ask first, then cancel and wait for the unlock before quitting.
+    if (releaseService?.hasActive() && !quitConfirmed) {
+      event.preventDefault()
+      if (quitPrompting) return
+      quitPrompting = true
+      const svc = releaseService
+      const env = svc.activeEnvironments()[0]
+      void dialog
+        .showMessageBox({ type: 'warning', buttons: ['Quit and cancel', 'Keep open'], defaultId: 1, cancelId: 1, message: `A release is running on ${env}. Quit and cancel it?` })
+        .then(async ({ response }) => {
+          if (response !== 0) return
+          await Promise.race([svc.cancelAll(), new Promise((r) => setTimeout(r, RELEASE_QUIT_WAIT_MS))])
+          quitConfirmed = true
+          app.quit()
+        })
+        .catch((err: unknown) => console.error('Failed to cancel releases on quit:', err))
+        .finally(() => {
+          quitPrompting = false
+        })
+      return
+    }
     if (!audit || quitAudited) return
     quitAudited = true
     try {
@@ -414,6 +491,8 @@ if (!app.requestSingleInstanceLock()) {
   app.on('will-quit', () => {
     stopAutoLock?.()
     stopAutoLock = null
+    releaseService?.close()
+    releaseService = null
     vault = null
     secrets = null
     keys = null
