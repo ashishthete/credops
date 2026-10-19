@@ -4,3 +4,6 @@ out
 dist
 *.db
 *.tsbuildinfo
+hub/node_modules
+hub/dist
+hub/data

@@ -1,0 +1,14 @@
+{
+  "name": "OpsDeck Hub",
+  "listen": { "host": "127.0.0.1", "port": 8787 },
+  "tls": null,
+  "publicUrl": "http://127.0.0.1:8787",
+  "dataDir": "./data",
+  "entra": {
+    "tenantId": "00000000-0000-4000-8000-0000000000aa",
+    "clientId": "00000000-0000-4000-8000-0000000000bb",
+    "redirectUri": "http://127.0.0.1/callback"
+  },
+  "firstAdmin": { "upn": "admin@example.com" },
+  "sessionTtlHours": 12
+}
