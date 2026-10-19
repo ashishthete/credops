@@ -7,18 +7,41 @@ import {
   applyNodeChanges,
   useReactFlow,
   type NodeChange,
+  type Viewport,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { memo, useCallback, useMemo, useState, type KeyboardEvent, type MouseEvent } from 'react'
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+  type Ref,
+} from 'react'
 import { useMotionSafe } from '../ui/motion'
 import { EdgeActionsContext, edgeTypes, type EdgeActions, type MapFlowEdge } from './edges'
 import type { MapGraph } from './graph'
 import { VIRTUALIZE_AT, type MapLayout } from './layout'
 import { nodeTypes, type MapFlowNode } from './nodes'
+import { loadViewport, saveViewport } from './viewport'
+
+/** Imperative moves the page asks of the canvas. */
+export interface MapCanvasHandle {
+  /** Frames one node closely, gliding unless motion is reduced. */
+  zoomTo: (id: string) => void
+}
 
 export interface MapCanvasProps {
   graph: MapGraph
+  /** Laid out with this scope's pins already applied. */
   layout: MapLayout
+  /** Which viewport to restore and save, and which pins a drag writes to. */
+  scopeKey: string
   /** The selected node or edge; selection lives in the page, not in React Flow. */
   selectedId: string | null
   /** Nodes drawn faded (a search or filter elsewhere); null fades nothing. */
@@ -27,10 +50,16 @@ export interface MapCanvasProps {
   onSelect: (id: string | null) => void
   onActivate: (id: string) => void
   onEdgeSelect: (id: string) => void
+  /** A drag ended: `pos` is the node's new position, relative to its group for a host. */
+  onPin: (id: string, pos: { x: number; y: number }) => void
+  ref?: Ref<MapCanvasHandle>
 }
 
 const ZOOM_MS = 200
 const FIT_PADDING = 0.15
+const ZOOM_TO_MS = 450
+const SAVE_DEBOUNCE_MS = 300
+const FIT_OPTIONS = { padding: FIT_PADDING }
 
 /** The minimap tints everything by its environment; groups stay faint so their hosts read on top. */
 export function minimapColors(graph: MapGraph): Map<string, string> {
@@ -75,8 +104,12 @@ function flowEdges(graph: MapGraph): MapFlowEdge[] {
   })
 }
 
-/** Marks the two ends of a hovered edge; one shared object, so an unchanged node keeps its identity. */
-const RELATED = { 'data-related': '' } as MapFlowNode['domAttributes']
+// Marks the two ends of a hovered edge, and nodes a search fades; shared objects, so an unchanged node
+// keeps its identity.
+type DomAttributes = MapFlowNode['domAttributes']
+const RELATED = { 'data-related': '' } as DomAttributes
+const DIMMED = { 'data-dimmed': 'true' } as DomAttributes
+const DIMMED_RELATED = { 'data-dimmed': 'true', 'data-related': '' } as DomAttributes
 
 /** Flow nodes for a laid-out graph: position, size and data only; selection and styling come later. */
 function flowNodes(graph: MapGraph, layout: MapLayout): MapFlowNode[] {
@@ -111,9 +144,17 @@ export const MapCanvas = memo(function MapCanvas({
   onSelect,
   onActivate,
   onEdgeSelect,
+  scopeKey,
+  onPin,
+  ref,
 }: MapCanvasProps) {
   const motionSafe = useMotionSafe()
   const flow = useReactFlow()
+  // Effects and the handle read the latest viewport helpers here, so they don't re-run on every render.
+  const latest = useRef({ flow, motionSafe })
+  useLayoutEffect(() => {
+    latest.current = { flow, motionSafe }
+  })
 
   const base = useMemo(() => flowNodes(graph, layout), [graph, layout])
 
@@ -127,10 +168,16 @@ export const MapCanvas = memo(function MapCanvas({
   }, [])
 
   const baseEdges = useMemo(() => flowEdges(graph), [graph])
-  // The selected tunnel glows (tokens.css); every other edge keeps its identity.
+  // The selected tunnel glows (tokens.css) and an edge to a faded node fades too; every other edge keeps
+  // its identity.
   const edges = useMemo(
-    () => baseEdges.map((e) => (e.id === selectedId ? { ...e, selected: true } : e)),
-    [baseEdges, selectedId],
+    () =>
+      baseEdges.map((e) => {
+        const selected = e.id === selectedId
+        const className = dimmed && (dimmed.has(e.source) || dimmed.has(e.target)) ? 'od-dimmed' : undefined
+        return selected || className ? { ...e, selected, className } : e
+      }),
+    [baseEdges, selectedId, dimmed],
   )
 
   // Hovering an edge rings its two end nodes.
@@ -148,13 +195,17 @@ export const MapCanvas = memo(function MapCanvas({
     () =>
       local.nodes.map((n) => {
         const selected = n.id === selectedId
-        const className = [dimmed?.has(n.id) && 'od-dimmed', highlightId === n.id && 'od-highlight'].filter(Boolean).join(' ') || undefined
-        const domAttributes = related?.has(n.id) ? RELATED : undefined
+        const faded = !!dimmed?.has(n.id)
+        const lit = highlightId === n.id
+        // The ring plays once with motion, and simply shows under reduced motion.
+        const className = [faded && 'od-dimmed', lit && 'od-highlight', lit && motionSafe && 'od-ring'].filter(Boolean).join(' ') || undefined
+        const near = !!related?.has(n.id)
+        const domAttributes = faded ? (near ? DIMMED_RELATED : DIMMED) : near ? RELATED : undefined
         return !!n.selected === selected && n.className === className && n.domAttributes === domAttributes
           ? n
           : { ...n, selected, className, domAttributes }
       }),
-    [local.nodes, selectedId, dimmed, highlightId, related],
+    [local.nodes, selectedId, dimmed, highlightId, related, motionSafe],
   )
 
   const colors = useMemo(() => minimapColors(graph), [graph])
@@ -164,6 +215,59 @@ export const MapCanvas = memo(function MapCanvas({
   const onNodeDoubleClick = useCallback((_: unknown, n: MapFlowNode) => onActivate(n.id), [onActivate])
   const onEdgeClick = useCallback((_: unknown, e: MapFlowEdge) => onEdgeSelect(e.id), [onEdgeSelect])
   const onPaneClick = useCallback(() => onSelect(null), [onSelect])
+  // Every node in the drag (a group carries its hosts along, so only it is pinned).
+  const onNodeDragStop = useCallback(
+    (_: unknown, _node: MapFlowNode, dragged: MapFlowNode[]) => {
+      for (const n of dragged) onPin(n.id, n.position)
+    },
+    [onPin],
+  )
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      zoomTo(id) {
+        const { flow, motionSafe } = latest.current
+        void flow.fitView({ nodes: [{ id }], padding: 0.6, maxZoom: 1.25, duration: motionSafe ? ZOOM_TO_MS : 0 })
+      },
+    }),
+    [],
+  )
+
+  // The first scope's viewport goes in as React Flow's starting one (or it fits); later scopes restore
+  // theirs here, or fit when they have none stored.
+  const [initialViewport] = useState(() => loadViewport(scopeKey))
+  const shownScope = useRef(scopeKey)
+  useEffect(() => {
+    if (shownScope.current === scopeKey) return
+    shownScope.current = scopeKey
+    const { flow } = latest.current
+    const stored = loadViewport(scopeKey)
+    if (stored) void flow.setViewport(stored)
+    else void flow.fitView({ padding: FIT_PADDING })
+  }, [scopeKey])
+
+  // A move is saved for the scope it happened in once it has settled; leaving the page saves it at once.
+  const pendingSave = useRef<{ timer: ReturnType<typeof setTimeout>; save: () => void } | null>(null)
+  const onMoveEnd = useCallback(
+    (_: unknown, vp: Viewport) => {
+      if (pendingSave.current) clearTimeout(pendingSave.current.timer)
+      const save = () => {
+        pendingSave.current = null
+        saveViewport(scopeKey, vp)
+      }
+      pendingSave.current = { timer: setTimeout(save, SAVE_DEBOUNCE_MS), save }
+    },
+    [scopeKey],
+  )
+  useEffect(
+    () => () => {
+      if (!pendingSave.current) return
+      clearTimeout(pendingSave.current.timer)
+      pendingSave.current.save()
+    },
+    [],
+  )
 
   // Canvas keys live here, not in global shortcuts, so typing in a search box never zooms.
   const onKeyDown = useCallback(
@@ -193,6 +297,8 @@ export const MapCanvas = memo(function MapCanvas({
         onEdgeMouseEnter={onEdgeMouseEnter}
         onEdgeMouseLeave={onEdgeMouseLeave}
         onPaneClick={onPaneClick}
+        onNodeDragStop={onNodeDragStop}
+        onMoveEnd={onMoveEnd}
         nodesConnectable={false}
         elementsSelectable
         nodesFocusable={false}
@@ -205,8 +311,9 @@ export const MapCanvas = memo(function MapCanvas({
         zoomOnDoubleClick={false}
         minZoom={0.2}
         maxZoom={2}
-        fitView
-        fitViewOptions={{ padding: FIT_PADDING }}
+        defaultViewport={initialViewport ?? undefined}
+        fitView={!initialViewport}
+        fitViewOptions={FIT_OPTIONS}
         proOptions={{ hideAttribution: true }}
         onlyRenderVisibleElements={nodes.length > VIRTUALIZE_AT}
         colorMode="dark"

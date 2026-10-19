@@ -257,12 +257,14 @@ describe('map edges', () => {
         <MapCanvas
           graph={graph}
           layout={layoutGraph(graph)}
+          scopeKey="all"
           selectedId={null}
           dimmed={null}
           highlightId={null}
           onSelect={() => {}}
           onActivate={() => {}}
           onEdgeSelect={onEdgeSelect}
+          onPin={() => {}}
         />
       </ReactFlowProvider>,
     )

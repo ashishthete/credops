@@ -62,12 +62,14 @@ async function renderCanvas(over: Partial<MapCanvasProps> = {}) {
   const props: MapCanvasProps = {
     graph,
     layout: layoutGraph(graph),
+    scopeKey: 'all',
     selectedId: null,
     dimmed: null,
     highlightId: null,
     onSelect: () => {},
     onActivate: () => {},
     onEdgeSelect: () => {},
+    onPin: () => {},
     ...over,
   }
   const view = render(

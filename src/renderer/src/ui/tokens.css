@@ -160,13 +160,32 @@ samp {
 }
 
 /* Faded by a filter or search; the highlighted node gets the accent ring around React Flow's wrapper. */
-.react-flow__node.od-dimmed {
-  opacity: 0.3;
+/* A search fades what it didn't find, with the edges that touch it. */
+.react-flow__node.od-dimmed,
+.react-flow__edge.od-dimmed {
+  opacity: 0.25;
 }
 
 .react-flow__node.od-highlight {
   border-radius: 10px;
   box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 70%, transparent);
+}
+
+/* A found node's ring swells once and settles; MapCanvas leaves the class off under reduced motion. */
+.react-flow__node.od-ring {
+  animation: od-ring 1.2s ease-out;
+}
+
+@keyframes od-ring {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--accent) 80%, transparent);
+  }
+  40% {
+    box-shadow: 0 0 0 8px color-mix(in oklab, var(--accent) 35%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 70%, transparent);
+  }
 }
 
 /* Map edges: React Flow owns the edge paths, so their transitions and hover glow live here. */
