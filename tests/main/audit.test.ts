@@ -45,6 +45,20 @@ describe('AuditLog', () => {
     expect(canonicalJson({ b: 1, a: [{ d: 1, c: 2 }] })).toBe('{"a":[{"c":2,"d":1}],"b":1}')
   })
 
+  it('appendInTx commits or rolls back with the caller', () => {
+    expect(() => log.appendInTx({ action: 'app.start', outcome: 'info' })).toThrow(/open transaction/)
+    const a = log.append({ action: 'app.start', outcome: 'info' })
+    db.exec('BEGIN IMMEDIATE')
+    log.appendInTx({ action: 'app.quit', outcome: 'info' })
+    db.exec('ROLLBACK')
+    expect(log.list().map((e) => e.id)).toEqual([a.id])
+    db.exec('BEGIN IMMEDIATE')
+    const b = log.appendInTx({ action: 'app.quit', outcome: 'info' })
+    db.exec('COMMIT')
+    expect(b.prevHash).toBe(a.hash)
+    expect(log.verifyChain().ok).toBe(true)
+  })
+
   it('stringifies bigint details without throwing', () => {
     const e = log.append({ action: 'app.start', outcome: 'info', details: { n: 10n } })
     expect(e.details['n']).toBe('10')

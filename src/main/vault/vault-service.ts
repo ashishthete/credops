@@ -433,6 +433,8 @@ export class VaultService {
             "UPDATE vault_state SET quick_unlock = 'off', quick_unlock_blob = NULL, failed_attempts = 0, last_failed_at = NULL WHERE id = 1",
           )
           .run()
+        // In the same transaction: an erase is never left unaudited, nor an audit row unerased.
+        this.audit.appendInTx({ action: 'vault.reset', outcome: 'success', details: counts })
       })
       // Locked already, so nothing should be live; drop it anyway and abandon any password work in flight.
       this.epoch++
@@ -443,7 +445,6 @@ export class VaultService {
       this.keys.clear()
       this.corrupt = []
       this.known.clear()
-      this.audit.append({ action: 'vault.reset', outcome: 'success', details: counts })
       for (const fn of [...this.resetListeners]) this.runListener('reset', fn)
       return this.status()
     })

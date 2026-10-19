@@ -76,6 +76,16 @@ async function seeded(): Promise<Seeded> {
 const count = (f: InventoryFixture, table: string): number =>
   Number((f.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n)
 
+/** What a failed or refused reset must leave exactly as it was. */
+const vaultMaterial = (f: InventoryFixture) => ({
+  secrets: count(f, 'secrets'),
+  keys: count(f, 'ssh_keys'),
+  identities: count(f, 'identities'),
+  wrapped: f.db.prepare('SELECT id, wrapped_key, kdf_params FROM vaults ORDER BY id').all(),
+  state: f.db.prepare('SELECT quick_unlock, quick_unlock_blob FROM vault_state WHERE id = 1').get(),
+  hostIdentities: f.db.prepare('SELECT id, identity_id FROM hosts ORDER BY id').all(),
+})
+
 const resetRows = (f: InventoryFixture) =>
   f.audit
     .list({ limit: 1000 })
@@ -147,6 +157,44 @@ describe('VaultService.reset', () => {
     expect(f.vault.isUnlocked()).toBe(true)
     expect(count(f, 'secrets')).toBe(2)
     expect(f.vault.status().setUp).toBe(true)
+    expect(resetRows(f)).toEqual([])
+  })
+
+  it('rolls back everything when a statement inside the transaction fails', async () => {
+    const { f } = await seeded()
+    const before = vaultMaterial(f)
+    expect(before.wrapped.every((v) => (v as { wrapped_key: unknown }).wrapped_key !== null)).toBe(true)
+    // Fails the unkeying, after the deletes have run.
+    f.db.exec("CREATE TRIGGER fail_unkey BEFORE UPDATE OF wrapped_key ON vaults BEGIN SELECT RAISE(ABORT, 'disk on fire'); END")
+    await expect(f.vault.reset(VAULT_RESET_CONFIRM)).rejects.toThrow('disk on fire')
+    expect(vaultMaterial(f)).toEqual(before)
+    expect(f.vault.status()).toMatchObject({ setUp: true, quickUnlock: 'touchId' })
+    expect(resetRows(f)).toEqual([])
+    f.db.exec('DROP TRIGGER fail_unkey')
+    expect(await f.vault.unlock(PW)).toEqual({ ok: true })
+  })
+
+  it('a failed audit append rolls the erase back with it', async () => {
+    const { f } = await seeded()
+    const before = vaultMaterial(f)
+    f.db.exec(
+      "CREATE TRIGGER fail_audit BEFORE INSERT ON audit_events WHEN NEW.action = 'vault.reset' BEGIN SELECT RAISE(ABORT, 'audit full'); END",
+    )
+    await expect(f.vault.reset(VAULT_RESET_CONFIRM)).rejects.toThrow('audit full')
+    expect(vaultMaterial(f)).toEqual(before)
+    expect(f.vault.status().setUp).toBe(true)
+    expect(f.audit.verifyChain().ok).toBe(true)
+  })
+
+  it('queues behind an unlock in flight, then refuses as unlocked and erases nothing', async () => {
+    const { f } = await seeded()
+    const before = vaultMaterial(f)
+    const unlocking = f.vault.unlock(PW)
+    const resetting = f.vault.reset(VAULT_RESET_CONFIRM)
+    await expect(resetting).rejects.toThrow(/unlocked/)
+    expect(await unlocking).toEqual({ ok: true })
+    expect(f.vault.isUnlocked()).toBe(true)
+    expect(vaultMaterial(f)).toEqual(before)
     expect(resetRows(f)).toEqual([])
   })
 
