@@ -7,6 +7,45 @@ import { globMatch, matchSshConfig, parseSshConfig, readSshConfigMatch, readSshI
 
 const FIX = join(__dirname, '../fixtures/ssh')
 const opts = { home: '/home/t', sshDir: '/home/t/.ssh' }
+
+/** A plain 1 MiB config: aliases with a setting each. */
+const PLAIN = Array.from({ length: 40000 }, (_, i) => `Host h${i % 2000}\n User u${i}`).join('\n').slice(0, 1024 * 1024 - 100)
+const elapsed = (fn: () => void): number => {
+  const t0 = performance.now()
+  fn()
+  return performance.now() - t0
+}
+/**
+ * The yardstick: one linear pass over `PLAIN` that splits, trims and matches each line the way a
+ * parse does, but never calls the parser, so a parser regression can't slow the yardstick too.
+ */
+const yardstick = (): number =>
+  Math.min(
+    ...Array.from({ length: 3 }, () =>
+      elapsed(() => {
+        const keys = new Map<string, string>()
+        for (const line of PLAIN.split(/\r?\n/)) {
+          const m = /^([A-Za-z][A-Za-z0-9]*)(?:\s*=\s*|\s+)?(.*)$/.exec(line.trim())
+          if (m) keys.set(m[1].toLowerCase() + m[2], m[2])
+        }
+      }),
+    ),
+  )
+/** How many yardsticks a bounded parse may take: the slowest (the whole glob-step allowance) takes about 22. */
+const BOUND = 50
+/**
+ * A DoS bound that holds on a loaded machine: `fn` may take at most `factor` yardsticks, timed just
+ * before and just after it, so load slows the yardstick as much as the work. A quadratic,
+ * exponential or unbounded blowup still runs far past it.
+ */
+function expectBounded<T>(factor: number, fn: () => T): T {
+  const before = yardstick()
+  let out!: T
+  const took = elapsed(() => (out = fn()))
+  const unit = Math.max(before, yardstick())
+  expect(took, `took ${took.toFixed(0)} ms, ${(took / unit).toFixed(1)} yardsticks of ${unit.toFixed(1)} ms`).toBeLessThan(factor * unit)
+  return out
+}
 const fixture = (n: string) => readFileSync(join(FIX, n), 'utf8')
 const parse = (t: string) => parseSshConfig(t, opts)
 
@@ -73,10 +112,19 @@ describe('parseSshConfig', () => {
 
 describe('robustness', () => {
   it('matches pathological globs in linear-ish time', () => {
-    const t0 = Date.now()
-    expect(globMatch('*a*a*a*a*a*a*b', 'a'.repeat(5000))).toBe(false)
-    expect(parse(`Host *a*a*a*a*a*a*b\n User x\nHost ${'a'.repeat(300)}\n`).entries).toHaveLength(1)
-    expect(Date.now() - t0).toBeLessThan(100)
+    const { matched, entries } = expectBounded(5, () => ({
+      matched: globMatch('*a*a*a*a*a*a*b', 'a'.repeat(5000)),
+      entries: parse(`Host *a*a*a*a*a*a*b\n User x\nHost ${'a'.repeat(300)}\n`).entries,
+    }))
+    expect(matched).toBe(false)
+    expect(entries).toHaveLength(1)
+    // Counted, not timed: on a pattern that backtracks (no tail to reject on) the matcher finishes
+    // within pattern x text steps, so an exponential matcher runs out of them whatever the load.
+    const pattern = '*a*a*a*a*a*a*b*'
+    const text = 'a'.repeat(5000)
+    const budget = { steps: pattern.length * text.length }
+    expect(globMatch(pattern, text, budget)).toBe(false)
+    expect(budget.steps).toBeGreaterThan(0)
     expect(globMatch('a*b?d', 'aXXbcd')).toBe(true)
     expect(globMatch('*', '')).toBe(true)
     expect(globMatch('a?', 'a')).toBe(false)
@@ -84,9 +132,7 @@ describe('robustness', () => {
 
   it('caps aliases and stays fast on many Host lines', () => {
     const text = Array.from({ length: 150000 }, (_, i) => `Host a${i}`).join('\n').slice(0, 1024 * 1024 - 100)
-    const t0 = Date.now()
-    const { entries, warnings } = parse(text + '\nHost *\n User z\n')
-    expect(Date.now() - t0).toBeLessThan(1000)
+    const { entries, warnings } = expectBounded(BOUND, () => parse(text + '\nHost *\n User z\n'))
     expect(entries).toHaveLength(MAX_IMPORT_ALIASES)
     expect(entries[0].user).toBe('z')
     expect(warnings.some((w) => w.includes('More than'))).toBe(true)
@@ -97,9 +143,7 @@ describe('robustness', () => {
     const hosts = Array.from({ length: 2000 }, (_, i) => `Host ${String(i).padStart(4, '0')}${'a'.repeat(196)}`).join('\n')
     const text = `${hosts}\n${wild}`.slice(0, 1024 * 1024 - 10)
     expect(text.length).toBeGreaterThan(700 * 1024)
-    const t0 = Date.now()
-    const { entries, warnings } = parse(text)
-    expect(Date.now() - t0).toBeLessThan(1000)
+    const { entries, warnings } = expectBounded(BOUND, () => parse(text))
     expect(entries.length).toBeGreaterThan(1000)
     expect(warnings.some((w) => w.includes('wildcard Host blocks'))).toBe(true)
   })
@@ -110,9 +154,7 @@ describe('robustness', () => {
     const wild = Array.from({ length: 150 }, (_, i) => `Host ${Array(i < 50 ? 14 : 13).fill(pat).join(' ')}\n User w`).join('\n')
     const text = `${hosts}\n${wild}\n`
     expect(text.length).toBeLessThan(1024 * 1024)
-    const t0 = Date.now()
-    const { entries, warnings } = parse(text)
-    expect(Date.now() - t0).toBeLessThan(1000)
+    const { entries, warnings } = expectBounded(BOUND, () => parse(text))
     expect(entries).toHaveLength(2000)
     expect(warnings.filter((w) => w.includes('wildcard Host patterns'))).toHaveLength(1)
     expect(warnings.filter((w) => w.includes('Wildcard Host matching'))).toHaveLength(1)
@@ -123,9 +165,7 @@ describe('robustness', () => {
     const body = 'a\n'.repeat(Math.floor((1024 * 1024 - hosts.length - 32) / 2))
     const text = `${hosts}\nHost *\n User shared\n${body}`
     expect(Buffer.byteLength(text)).toBeLessThanOrEqual(1024 * 1024)
-    const t0 = Date.now()
-    const { entries } = parse(text)
-    expect(Date.now() - t0).toBeLessThan(1000)
+    const { entries } = expectBounded(BOUND, () => parse(text))
     expect(entries).toHaveLength(2000)
     expect(entries.every((e) => e.user === 'shared')).toBe(true)
   })
@@ -133,9 +173,7 @@ describe('robustness', () => {
   it('caps forwards per host', () => {
     const hosts = Array.from({ length: 2000 }, (_, i) => `Host h${i}`).join('\n')
     const fwd = Array.from({ length: 20000 }, (_, i) => ` LocalForward ${10000 + i} db:5432`).join('\n')
-    const t0 = Date.now()
-    const { entries, warnings } = parse(`${hosts}\nHost h0\n RemoteForward 9000 localhost:9000\nHost *\n${fwd}\n`)
-    expect(Date.now() - t0).toBeLessThan(1000)
+    const { entries, warnings } = expectBounded(BOUND, () => parse(`${hosts}\nHost h0\n RemoteForward 9000 localhost:9000\nHost *\n${fwd}\n`))
     expect(entries).toHaveLength(2000)
     expect(entries.every((e) => e.forwards.length === 64)).toBe(true)
     expect(entries[0].forwards[0]).toEqual({ type: 'R', spec: '9000 localhost:9000' })
@@ -254,13 +292,9 @@ describe('Include handling', () => {
   it('stops reading includes once the budget is spent', () => {
     const { sshDir } = setup()
     writeFileSync(join(sshDir, 'big'), '#'.repeat(1000 * 1000))
-    const t0 = Date.now()
-    const { warnings } = parseSshConfig('Include big\n'.repeat(20000), {
-      home: '/home/t',
-      sshDir,
-      include: readSshIncludes(sshDir),
-    })
-    expect(Date.now() - t0).toBeLessThan(1000)
+    const { warnings } = expectBounded(BOUND, () =>
+      parseSshConfig('Include big\n'.repeat(20000), { home: '/home/t', sshDir, include: readSshIncludes(sshDir) }),
+    )
     expect(warnings.filter((w) => w.startsWith('Include budget'))).toHaveLength(1)
     expect(warnings.filter((w) => w.includes('Include directives'))).toHaveLength(1)
   })
@@ -292,13 +326,9 @@ describe('Include handling', () => {
     const many = join(sshDir, 'many')
     mkdirSync(many)
     for (let i = 0; i < 3000; i++) mkdirSync(join(many, `d${i}`))
-    const t0 = Date.now()
-    const { warnings } = parseSshConfig('Include many/*\n'.repeat(1000), {
-      home: '/home/t',
-      sshDir,
-      include: readSshIncludes(sshDir),
-    })
-    expect(Date.now() - t0).toBeLessThan(1000)
+    const { warnings } = expectBounded(BOUND, () =>
+      parseSshConfig('Include many/*\n'.repeat(1000), { home: '/home/t', sshDir, include: readSshIncludes(sshDir) }),
+    )
     expect(warnings).toContain('Include looked at more than 10000 folder entries; the rest are skipped')
   })
 
