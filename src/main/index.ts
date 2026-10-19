@@ -22,6 +22,9 @@ import { createAuditHandlers } from './ipc/handlers/audit'
 import { createIdentityHandlers } from './ipc/handlers/identities'
 import { createDeployHandlers } from './ipc/handlers/deploy'
 import { createServiceHandlers } from './ipc/handlers/services'
+import { createSettingsHandlers } from './ipc/handlers/settings'
+import { IntegrationStore } from './settings/integration-store'
+import { SettingsStore } from './settings/settings-store'
 import { detectTools } from './deploy/tooling'
 import { startPrivateAgent, type ChildLike } from './deploy/agent'
 import { prepareHosts } from './deploy/hostkeys'
@@ -181,6 +184,8 @@ if (!app.requestSingleInstanceLock()) {
       environments = new EnvironmentStore(db, service, log)
       products = new ProductStore(db, service, log)
       const tunnels = new TunnelStore({ db, audit: log, vault: service })
+      const settingsStore = new SettingsStore({ db, audit: log, vault: service, secrets })
+      const integrations = new IntegrationStore({ db, audit: log, vault: service, secrets })
       const snippets = new SnippetStore({ db, audit: log, vault: service })
       const deploys = new DeployStore({ db, audit: log, vault: service, secrets: dbSecretRefs(db) })
       deploys.onChanged = (environmentId) => pushEvent(mainWindow, 'deploy:changed', { environmentId })
@@ -415,6 +420,7 @@ if (!app.requestSingleInstanceLock()) {
             services,
             copy: (req) => copyServices(copyDeps, req),
           }),
+          ...createSettingsHandlers({ settings: settingsStore, integrations }),
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
           ...createOpsHandlers({ snippets, runs, containers }),
         },

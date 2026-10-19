@@ -42,6 +42,13 @@ import type {
   RunEvent as DeployRunEvent,
 } from './deploy'
 import type { CopyServicesRequest, CopyServicesResult, ServiceInput, ServiceMeta, ServicePatch, ServiceUpdateResult } from './services'
+import type {
+  EnvironmentIntegrations,
+  EnvironmentIntegrationsPatch,
+  IntegrationSettings,
+  IntegrationSettingsPatch,
+  IntegrationStatus,
+} from './settings'
 import type { TunnelEvent, TunnelInput, TunnelMeta, TunnelPatch, TunnelRuntime, TunnelStats } from './tunnels'
 import type {
   KnownHostMeta,
@@ -200,6 +207,12 @@ export interface IpcContract {
   'service:reorder': { args: [environmentId: string, ids: string[]]; result: void }
   // One transaction and one `services.copy` audit; name conflicts come back in `skipped`.
   'service:copy': { args: [req: CopyServicesRequest]; result: CopyServicesResult }
+  // Integration settings hold secret ids, never values; updates need the vault unlocked.
+  'settings:get': { args: []; result: IntegrationSettings }
+  'settings:update': { args: [patch: IntegrationSettingsPatch]; result: IntegrationSettings }
+  'settings:status': { args: []; result: IntegrationStatus }
+  'integration:get': { args: [environmentId: string]; result: EnvironmentIntegrations }
+  'integration:update': { args: [environmentId: string, patch: EnvironmentIntegrationsPatch]; result: EnvironmentIntegrations }
   'snippets:list': { args: []; result: SnippetMeta[] }
   'snippets:create': { args: [input: SnippetInput]; result: SnippetMeta }
   'snippets:update': { args: [id: string, input: SnippetInput]; result: SnippetMeta }
@@ -326,6 +339,11 @@ export const CHANNELS = [
   'service:delete',
   'service:reorder',
   'service:copy',
+  'settings:get',
+  'settings:update',
+  'settings:status',
+  'integration:get',
+  'integration:update',
   'snippets:list',
   'snippets:create',
   'snippets:update',

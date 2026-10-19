@@ -257,3 +257,48 @@ describe('migration 7 (deployments)', () => {
     expect(d).toMatchObject({ type: 'TEXT', notnull: 0, dflt_value: null })
   })
 })
+
+describe('migration 8 (notifications)', () => {
+  const cols = (db: ReturnType<typeof openDatabase>, t: string): string[] =>
+    (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((r) => r.name)
+
+  it('notifications migration adds settings, integrations and log', () => {
+    const db = openDatabase(':memory:')
+    expect(currentVersion(db)).toBeGreaterThanOrEqual(8)
+    expect(migrations.some((m) => m.version === 8 && m.name === 'notifications')).toBe(true)
+    expect(cols(db, 'settings')).toEqual(['key', 'value', 'updated_at'])
+    expect(cols(db, 'environment_integrations')).toEqual([
+      'environment_id', 'notify_events', 'teams_webhook_secret_id', 'email_to', 'email_cc', 'qa_on_deploy',
+      'qa_repo', 'qa_workflow', 'qa_ref', 'qa_wait', 'updated_at',
+    ])
+    expect(cols(db, 'notification_log')).toEqual(['id', 'at', 'source_type', 'source_id', 'event', 'channel', 'status', 'detail'])
+
+    db.prepare('INSERT INTO environments(id, name, color, created_at, updated_at) VALUES (?,?,?,?,?)').run('e1', 'prod', '#aabbcc', NOW, NOW)
+    db.prepare('INSERT INTO environments(id, name, color, created_at, updated_at) VALUES (?,?,?,?,?)').run('e2', 'uat', '#aabbcc', NOW, NOW)
+    const vault = db.prepare('SELECT id FROM vaults LIMIT 1').get() as { id: string } | undefined
+    const vaultId = vault?.id ?? 'v1'
+    if (!vault) {
+      db.prepare("INSERT INTO vaults(id, name, color, created_at, updated_at) VALUES (?, 'v', '#aabbcc', ?, ?)").run(vaultId, NOW, NOW)
+    }
+    db.prepare(
+      "INSERT INTO secrets(id, vault_id, name, kind, value_enc, created_at, updated_at) VALUES ('s1', ?, 'hook', 'webhook', 'x', ?, ?)",
+    ).run(vaultId, NOW, NOW)
+    const integ = db.prepare(
+      'INSERT INTO environment_integrations(environment_id, teams_webhook_secret_id, qa_repo, qa_workflow, updated_at) VALUES (?,?,?,?,?)',
+    )
+    integ.run('e1', 's1', null, null, NOW)
+    expect(() => integ.run('e2', null, 'acme/app', null, NOW)).toThrow(/CHECK/)
+    integ.run('e2', null, 'acme/app', 'qa.yml', NOW)
+
+    db.prepare('DELETE FROM secrets WHERE id = ?').run('s1')
+    expect(db.prepare('SELECT teams_webhook_secret_id AS s FROM environment_integrations WHERE environment_id = ?').get('e1')).toEqual({ s: null })
+    db.prepare('DELETE FROM environments WHERE id = ?').run('e1')
+    expect(db.prepare('SELECT COUNT(*) AS n FROM environment_integrations').get()).toEqual({ n: 1 })
+
+    const log = db.prepare(
+      "INSERT INTO notification_log(id, at, source_type, source_id, event, channel, status) VALUES (?, ?, 'release', 'r1', 'release.failed', 'teams', 'pending')",
+    )
+    log.run('n1', NOW)
+    expect(() => log.run('n2', NOW)).toThrow(/UNIQUE/)
+  })
+})

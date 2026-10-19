@@ -78,6 +78,15 @@ export const AUDIT_ACTIONS = [
   'service.update',
   'service.delete',
   'services.copy',
+  'settings.update',
+  'integration.update',
+  'notify.send',
+  'notify.test',
+  'qa.dispatch',
+  'qa.finished',
+  'ai.release_notes',
+  'ai.explain',
+  'ai.command',
 ] as const // later phases extend
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]
 

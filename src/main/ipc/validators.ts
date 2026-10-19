@@ -87,6 +87,14 @@ import {
   type SecretPatch,
   type VaultInput,
 } from '../../shared/vault'
+import {
+  MAX_EMAIL,
+  MAX_GIT_REF,
+  MAX_RECIPIENTS,
+  NOTIFY_EVENTS,
+  type EnvironmentIntegrationsPatch,
+  type IntegrationSettingsPatch,
+} from '../../shared/settings'
 import { MAX_SERVICES, type CopyServicesRequest, type ServiceInput, type ServicePatch } from '../../shared/services'
 import { MAX_PRIVATE_KEY_BYTES } from '../vault/openssh'
 import { InvalidArgs, args, v, type ArgsValidator, type Check } from './validate'
@@ -341,6 +349,31 @@ export const asServicePatch: Check<ServicePatch> = v.object({
   description: serviceCommon.description,
   ...Object.fromEntries(Object.entries({ ...appServiceFields, ...dbServiceFields }).map(([k, c]) => [k, v.optional(c as Check<unknown>)])),
 }) as Check<ServicePatch>
+
+// Content rules (model pattern, secret kinds, email syntax, repo shape) are the stores': their messages name the rule.
+const nullableSecretId = v.nullable(v.uuid())
+export const asSettingsPatch: Check<IntegrationSettingsPatch> = v.object({
+  aiModel: v.optional(v.str({ min: 1, max: 80 })),
+  aiApiKeySecretId: v.optional(nullableSecretId),
+  sendgridApiKeySecretId: v.optional(nullableSecretId),
+  sendgridFrom: v.optional(v.nullable(v.str({ max: MAX_EMAIL }))),
+  githubTokenSecretId: v.optional(nullableSecretId),
+  macos: v.optional(v.bool()),
+  macosUnscoped: v.optional(v.bool()),
+}) as Check<IntegrationSettingsPatch>
+
+const recipients = v.array(v.str({ min: 1, max: MAX_EMAIL }), MAX_RECIPIENTS)
+export const asIntegrationPatch: Check<EnvironmentIntegrationsPatch> = v.object({
+  notifyEvents: v.optional(v.array(v.oneOf(NOTIFY_EVENTS), NOTIFY_EVENTS.length)),
+  teamsWebhookSecretId: v.optional(nullableSecretId),
+  emailTo: v.optional(recipients),
+  emailCc: v.optional(recipients),
+  qaOnDeploy: v.optional(v.bool()),
+  qa: v.optional(
+    v.nullable(v.object({ repo: v.str({ min: 1, max: 201 }), workflow: v.str({ min: 1, max: 210 }), ref: v.str({ max: MAX_GIT_REF + 10 }) })),
+  ),
+  qaWait: v.optional(v.bool()),
+}) as Check<EnvironmentIntegrationsPatch>
 
 export const asCopyServicesRequest: Check<CopyServicesRequest> = v.object({
   sourceEnvironmentId: v.uuid(),
@@ -626,6 +659,11 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'service:delete': args(v.uuid(), v.object({ deleteTunnel: v.bool() })),
   'service:reorder': args(v.uuid(), v.array(v.uuid(), MAX_SERVICES)),
   'service:copy': args(asCopyServicesRequest),
+  'settings:get': args(),
+  'settings:update': args(asSettingsPatch),
+  'settings:status': args(),
+  'integration:get': args(v.uuid()),
+  'integration:update': args(v.uuid(), asIntegrationPatch),
   'release:preflight': args(asPreflightRequest),
   'release:start': args(v.uuid(), asReleaseConfirm),
   'release:cancel': args(v.uuid()),
