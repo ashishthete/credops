@@ -118,11 +118,11 @@ describe('robustness', () => {
     }))
     expect(matched).toBe(false)
     expect(entries).toHaveLength(1)
-    // Counted, not timed: on a pattern that backtracks (no tail to reject on) the matcher finishes
-    // within pattern x text steps, so an exponential matcher runs out of them whatever the load.
+    // Counted, not timed: with no tail to reject on, the matcher takes about one step per character
+    // (5007 here), so 4 per character catches an exponential matcher or a 10x slower one.
     const pattern = '*a*a*a*a*a*a*b*'
     const text = 'a'.repeat(5000)
-    const budget = { steps: pattern.length * text.length }
+    const budget = { steps: 4 * text.length }
     expect(globMatch(pattern, text, budget)).toBe(false)
     expect(budget.steps).toBeGreaterThan(0)
     expect(globMatch('a*b?d', 'aXXbcd')).toBe(true)
@@ -326,10 +326,17 @@ describe('Include handling', () => {
     const many = join(sshDir, 'many')
     mkdirSync(many)
     for (let i = 0; i < 3000; i++) mkdirSync(join(many, `d${i}`))
-    const { warnings } = expectBounded(BOUND, () =>
-      parseSshConfig('Include many/*\n'.repeat(1000), { home: '/home/t', sshDir, include: readSshIncludes(sshDir) }),
-    )
+    // Counted, not timed, since this is disk work: each read sweeps 3000 entries, so the cap of
+    // 10000 is spent on the 4th and the other 996 Includes are never read.
+    const reader = readSshIncludes(sshDir)
+    let reads = 0
+    const include: typeof reader = (pattern, budget) => (reads++, reader(pattern, budget))
+    const t0 = performance.now()
+    const { warnings } = parseSshConfig('Include many/*\n'.repeat(1000), { home: '/home/t', sshDir, include })
+    expect(reads).toBe(4)
     expect(warnings).toContain('Include looked at more than 10000 folder entries; the rest are skipped')
+    // Only a backstop: the parse takes about 0.2 s.
+    expect(performance.now() - t0).toBeLessThan(5000)
   })
 
   it('warns about wildcards in folder names', () => {
