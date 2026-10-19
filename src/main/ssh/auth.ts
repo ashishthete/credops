@@ -1,7 +1,9 @@
 import { lstat, readFile, stat } from 'node:fs/promises'
-import { join } from 'node:path'
+import { isAbsolute, join, relative, sep } from 'node:path'
+import { OpenSSHAgent } from 'ssh2'
 import type { AuthenticationType, AuthHandlerMiddleware, KeyboardInteractiveAuthMethod } from 'ssh2'
 import type { IdentityRef } from '../../shared/inventory'
+import type { SshConfigMatch, SshConfigTarget } from '../inventory/ssh-config'
 import type { IdentityStore } from '../vault/identity-store'
 import { MAX_PRIVATE_KEY_BYTES, parsePrivateKey } from '../vault/openssh'
 
@@ -16,15 +18,40 @@ export interface AuthPlan {
   /** Why a method was left out. Never holds a secret. */
   notes: string[]
   kind: 'agent' | 'key' | 'password' | 'default'
+  /** What the plan offers or looked at, in order, for the failure message: names and paths only. */
+  tried?: string[]
+  /** Key files the chain looked for and didn't find. */
+  missing?: string[]
 }
 
 export interface AuthDeps {
   identities: Pick<IdentityStore, 'resolve'>
   env: Record<string, string | undefined>
   home: string
+  /** ~/.ssh/config lookup for the host being dialled; its IdentityFiles join the key chain. */
+  sshConfig?: (target: SshConfigTarget) => SshConfigMatch | null
+  /** How many keys the agent holds; null when it can't be asked. Defaults to asking it. */
+  agentKeys?: (sock: string) => Promise<number | null>
 }
 
 const DEFAULT_KEYS = ['id_ed25519', 'id_rsa'] as const
+const AGENT_ASK_MS = 1000
+
+/** Asks the agent for its key list, giving up after a second. */
+export function countAgentKeys(sock: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), AGENT_ASK_MS)
+    try {
+      new OpenSSHAgent(sock).getIdentities((err, keys) => {
+        clearTimeout(timer)
+        resolve(err || !keys ? null : keys.length)
+      })
+    } catch {
+      clearTimeout(timer)
+      resolve(null)
+    }
+  })
+}
 
 async function agentSocket(env: AuthDeps['env']): Promise<string | null> {
   const sock = env.SSH_AUTH_SOCK
@@ -37,14 +64,20 @@ async function agentSocket(env: AuthDeps['env']): Promise<string | null> {
   }
 }
 
-/** Reads one default key; returns a method, a note, or neither (missing / not a regular file). */
-async function defaultKey(home: string, name: string): Promise<{ method?: AuthMethod; note?: string }> {
-  const path = join(home, '.ssh', name)
+/** `~/…` for a path inside home, else the path itself. */
+function shown(home: string, path: string): string {
+  const rel = relative(home, path)
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel) ? `~${sep}${rel}` : path
+}
+
+/** Reads one key file; returns a method, a note, `missing`, or nothing (not a regular file). */
+async function keyFile(home: string, path: string): Promise<{ method?: AuthMethod; note?: string; missing?: boolean }> {
+  const name = shown(home, path)
   let info
   try {
     info = await lstat(path)
   } catch {
-    return {}
+    return { missing: true }
   }
   if (info.isSymbolicLink()) return { note: `${name} is a symlink, so it was skipped` }
   if (!info.isFile()) return {}
@@ -66,43 +99,67 @@ async function defaultKey(home: string, name: string): Promise<{ method?: AuthMe
   if (encrypted) {
     return { note: `${name} needs a passphrase: add it to ssh-agent (ssh-add) or link it in a vault` }
   }
-  return { method: { type: 'publickey', label: `~/.ssh/${name}`, key: text } }
+  return { method: { type: 'publickey', label: name, key: text } }
 }
 
-export async function authPlan(identity: IdentityRef, deps: AuthDeps): Promise<AuthPlan> {
-  const { username } = identity
+/**
+ * Your SSH keys, as OpenSSH tries them: the agent if it has keys, then the host's ~/.ssh/config
+ * IdentityFiles, then ~/.ssh/id_ed25519 and id_rsa. Each file goes through the same checks.
+ */
+async function keyChain(
+  deps: AuthDeps,
+  target: SshConfigTarget | undefined,
+): Promise<Pick<AuthPlan, 'methods' | 'notes'> & { tried: string[]; missing: string[] }> {
   const methods: AuthMethod[] = []
   const notes: string[] = []
+  const tried: string[] = []
+  const missing: string[] = []
 
-  if (identity.source === 'global') {
-    const sock = await agentSocket(deps.env)
-    if (sock) methods.push({ type: 'agent', agent: sock })
-    for (const name of DEFAULT_KEYS) {
-      const r = await defaultKey(deps.home, name)
-      if (r.method) methods.push(r.method)
-      if (r.note) notes.push(r.note)
-    }
-    return { username, methods, notes, kind: 'default' }
+  const sock = await agentSocket(deps.env)
+  if (!sock) notes.push(deps.env.SSH_AUTH_SOCK ? "ssh-agent socket doesn't exist" : "ssh-agent isn't running (SSH_AUTH_SOCK is not set)")
+  else if ((await (deps.agentKeys ?? countAgentKeys)(sock)) === 0) tried.push('ssh-agent (no keys loaded)')
+  else {
+    methods.push({ type: 'agent', agent: sock })
+    tried.push('ssh-agent')
   }
+
+  let configured: string[] = []
+  try {
+    configured = (target && deps.sshConfig?.(target)?.identityFiles) || []
+  } catch {
+    // An unreadable config only drops its IdentityFiles.
+  }
+  const paths = new Set([...configured.filter((p) => isAbsolute(p)), ...DEFAULT_KEYS.map((n) => join(deps.home, '.ssh', n))])
+  for (const path of paths) {
+    const r = await keyFile(deps.home, path)
+    if (r.method) {
+      methods.push(r.method)
+      tried.push(shown(deps.home, path))
+    }
+    if (r.note) notes.push(r.note)
+    if (r.missing) missing.push(shown(deps.home, path))
+  }
+  return { methods, notes, tried, missing }
+}
+
+/** `target` is the host being dialled; it picks the ~/.ssh/config block whose IdentityFiles join the chain. */
+export async function authPlan(identity: IdentityRef, deps: AuthDeps, target?: SshConfigTarget): Promise<AuthPlan> {
+  const { username } = identity
+  if (identity.source === 'global') return { username, ...(await keyChain(deps, target)), kind: 'default' }
 
   const resolved = await deps.identities.resolve(identity.identityId)
-  if (resolved.auth === 'agent') {
-    const sock = await agentSocket(deps.env)
-    if (sock) methods.push({ type: 'agent', agent: sock })
-    else notes.push(deps.env.SSH_AUTH_SOCK ? "ssh-agent socket doesn't exist" : "ssh-agent isn't running (SSH_AUTH_SOCK is not set)")
-    return { username, methods, notes, kind: 'agent' }
-  }
+  if (resolved.auth === 'agent') return { username, ...(await keyChain(deps, target)), kind: 'agent' }
   if (resolved.auth === 'key') {
-    methods.push({
+    const method: AuthMethod = {
       type: 'publickey',
       label: identity.label,
       key: resolved.privateKey,
       ...(resolved.passphrase === undefined ? {} : { passphrase: resolved.passphrase }),
-    })
-    return { username, methods, notes, kind: 'key' }
+    }
+    return { username, methods: [method], notes: [], kind: 'key', tried: [identity.label], missing: [] }
   }
-  methods.push({ type: 'password', password: resolved.password })
-  return { username, methods, notes, kind: 'password' }
+  const method: AuthMethod = { type: 'password', password: resolved.password }
+  return { username, methods: [method], notes: [], kind: 'password', tried: ['saved password'], missing: [] }
 }
 
 /** The server's method name for each of ours (ssh2 offers the agent as publickey). */

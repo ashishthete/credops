@@ -70,8 +70,9 @@ describe('authPlan', () => {
     const plan = await authPlan(globalId, { identities: noIdentities, env: {}, home })
     expect(plan.methods).toEqual([])
     expect(plan.notes).toEqual([
-      'id_ed25519 needs a passphrase: add it to ssh-agent (ssh-add) or link it in a vault',
-      'id_rsa is too large to be a key',
+      "ssh-agent isn't running (SSH_AUTH_SOCK is not set)",
+      '~/.ssh/id_ed25519 needs a passphrase: add it to ssh-agent (ssh-add) or link it in a vault',
+      '~/.ssh/id_rsa is too large to be a key',
     ])
     expect(JSON.stringify(plan.notes)).not.toContain('secret')
 
@@ -80,7 +81,99 @@ describe('authPlan', () => {
     symlinkSync(join(other, 'real'), join(other, '.ssh', 'id_ed25519'))
     const linked = await authPlan(globalId, { identities: noIdentities, env: {}, home: other })
     expect(linked.methods).toEqual([])
-    expect(linked.notes).toEqual(['id_ed25519 is a symlink, so it was skipped'])
+    expect(linked.notes).toEqual(["ssh-agent isn't running (SSH_AUTH_SOCK is not set)", '~/.ssh/id_ed25519 is a symlink, so it was skipped'])
+  })
+})
+
+describe('authPlan: your SSH keys chain', () => {
+  const agentId = hostId('agent')
+  const agentIdentity = { resolve: async () => ({ username: 'ops', auth: 'agent' as const }) }
+  const fakeSock = (home: string): string => {
+    const sock = join(home, 'agent.sock')
+    writeFileSync(sock, '')
+    return sock
+  }
+  const labels = (plan: AuthPlan) => plan.methods.map((m) => (m.type === 'publickey' ? m.label : m.type))
+
+  it('an agent identity with an empty agent falls back to ~/.ssh/id_ed25519 and id_rsa', async () => {
+    const home = tmpHome()
+    const sock = fakeSock(home)
+    writeFileSync(join(home, '.ssh', 'id_ed25519'), keyText('ed25519'))
+    writeFileSync(join(home, '.ssh', 'id_rsa'), keyText('rsa', { bits: 2048 }))
+    const agentKeys = vi.fn(async () => 0)
+    const plan = await authPlan(agentId, { identities: agentIdentity, env: { SSH_AUTH_SOCK: sock }, home, agentKeys })
+    expect(agentKeys).toHaveBeenCalledWith(sock)
+    expect(labels(plan)).toEqual(['~/.ssh/id_ed25519', '~/.ssh/id_rsa'])
+    expect(plan.tried).toEqual(['ssh-agent (no keys loaded)', '~/.ssh/id_ed25519', '~/.ssh/id_rsa'])
+    expect(plan).toMatchObject({ username: 'ops', kind: 'agent', missing: [] })
+  })
+
+  it('an agent identity with no agent at all still tries the key files, and lists the missing ones', async () => {
+    const home = tmpHome()
+    writeFileSync(join(home, '.ssh', 'id_rsa'), keyText('rsa', { bits: 2048 }))
+    const plan = await authPlan(agentId, { identities: agentIdentity, env: {}, home })
+    expect(labels(plan)).toEqual(['~/.ssh/id_rsa'])
+    expect(plan.tried).toEqual(['~/.ssh/id_rsa'])
+    expect(plan.missing).toEqual(['~/.ssh/id_ed25519'])
+    expect(plan.notes).toContain("ssh-agent isn't running (SSH_AUTH_SOCK is not set)")
+  })
+
+  it('an agent with keys goes first', async () => {
+    const home = tmpHome()
+    const sock = fakeSock(home)
+    writeFileSync(join(home, '.ssh', 'id_rsa'), keyText('rsa', { bits: 2048 }))
+    const plan = await authPlan(agentId, { identities: agentIdentity, env: { SSH_AUTH_SOCK: sock }, home, agentKeys: async () => 2 })
+    expect(labels(plan)).toEqual(['agent', '~/.ssh/id_rsa'])
+    expect(plan.tried).toEqual(['ssh-agent', '~/.ssh/id_rsa'])
+  })
+
+  it('an agent that cannot be asked is still offered', async () => {
+    const home = tmpHome()
+    const sock = fakeSock(home)
+    const plan = await authPlan(agentId, { identities: agentIdentity, env: { SSH_AUTH_SOCK: sock }, home, agentKeys: async () => null })
+    expect(plan.methods).toEqual([{ type: 'agent', agent: sock }])
+  })
+
+  it('~/.ssh/config IdentityFiles come before the default keys, once each, with the same checks', async () => {
+    const home = tmpHome()
+    const outside = tmpHome()
+    writeFileSync(join(home, '.ssh', 'alpha_key'), keyText('ed25519'))
+    writeFileSync(join(home, '.ssh', 'id_rsa'), keyText('rsa', { bits: 2048 }))
+    writeFileSync(join(outside, 'work_key'), keyText('ed25519'))
+    symlinkSync(join(outside, 'work_key'), join(outside, 'linked_key'))
+    writeFileSync(join(home, '.ssh', 'locked_key'), keyText('ed25519', { passphrase: 'secret', cipher: 'aes256-ctr' }))
+    const sshConfig = vi.fn(() => ({
+      user: 'ubuntu',
+      identityFiles: [
+        join(home, '.ssh', 'alpha_key'),
+        join(outside, 'work_key'),
+        join(outside, 'linked_key'),
+        join(home, '.ssh', 'locked_key'),
+        join(home, '.ssh', 'gone_key'),
+        join(home, '.ssh', 'id_rsa'),
+      ],
+    }))
+    const target = { label: 'alpha', address: '203.0.113.23' }
+    const plan = await authPlan(globalId, { identities: noIdentities, env: {}, home, sshConfig }, target)
+    expect(sshConfig).toHaveBeenCalledWith(target)
+    expect(labels(plan)).toEqual(['~/.ssh/alpha_key', join(outside, 'work_key'), '~/.ssh/id_rsa'])
+    expect(plan.missing).toEqual(['~/.ssh/gone_key', '~/.ssh/id_ed25519'])
+    expect(plan.notes).toEqual([
+      "ssh-agent isn't running (SSH_AUTH_SOCK is not set)",
+      `${join(outside, 'linked_key')} is a symlink, so it was skipped`,
+      '~/.ssh/locked_key needs a passphrase: add it to ssh-agent (ssh-add) or link it in a vault',
+    ])
+    expect(JSON.stringify([plan.notes, plan.tried, plan.missing])).not.toContain('secret')
+  })
+
+  it('a missing or failing ~/.ssh/config lookup just skips that step', async () => {
+    const home = tmpHome()
+    writeFileSync(join(home, '.ssh', 'id_ed25519'), keyText('ed25519'))
+    const throwing = () => {
+      throw new Error('boom')
+    }
+    const plan = await authPlan(agentId, { identities: agentIdentity, env: {}, home, sshConfig: throwing }, { label: 'a', address: 'a' })
+    expect(labels(plan)).toEqual(['~/.ssh/id_ed25519'])
   })
 })
 
