@@ -27,9 +27,6 @@ import type {
   SnippetMeta,
 } from './ops'
 import type {
-  AppInput,
-  AppMeta,
-  AppPatch,
   DeploymentInput,
   DeploymentMeta,
   Tooling,
@@ -173,10 +170,6 @@ export interface IpcContract {
   'tunnel:start': { args: [id: string]; result: TunnelRuntime }
   'tunnel:stop': { args: [id: string]; result: void }
   'tunnel:status': { args: []; result: TunnelRuntime[] }
-  'app:list': { args: [environmentId?: string]; result: AppMeta[] }
-  'app:create': { args: [input: AppInput]; result: AppMeta }
-  'app:update': { args: [id: string, patch: AppPatch]; result: AppMeta }
-  'app:delete': { args: [id: string]; result: void }
   'deploy:list': { args: [environmentId?: string]; result: DeploymentMeta[] }
   'deploy:create': { args: [input: DeploymentInput]; result: DeploymentMeta }
   // The environment and host are fixed at creation: a patch that names either is rejected.
@@ -299,10 +292,6 @@ export const CHANNELS = [
   'tunnel:start',
   'tunnel:stop',
   'tunnel:status',
-  'app:list',
-  'app:create',
-  'app:update',
-  'app:delete',
   'deploy:list',
   'deploy:create',
   'deploy:update',

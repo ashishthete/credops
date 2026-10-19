@@ -52,8 +52,6 @@ import {
   MAX_URL as MAX_HEALTH_URL,
   MAX_URLS,
   VERSION,
-  type AppInput,
-  type AppPatch,
   type DeploymentInput,
   type DeploymentPatch,
   type BreakLockConfirm,
@@ -233,7 +231,8 @@ const deployName = v.str({ min: 1, max: MAX_NAME, trim: true })
 const deployPath = v.str({ min: 1, max: 1024 })
 const healthUrl = v.object({ url: v.str({ min: 1, max: MAX_HEALTH_URL }), from: v.oneOf(['host', 'mac'] as const) })
 const deployFields = {
-  appId: v.optional(nullableId),
+  repoUrl: v.nullable(v.str({ max: MAX_URL })),
+  composeProject: v.nullable(v.str({ max: 63 })),
   repoPath: deployPath,
   defaultBranch: v.str({ min: 1, max: 255 }),
   deployTag: v.str({ min: 1, max: 255 }),
@@ -254,15 +253,12 @@ const deployFields = {
   envTemplate: v.nullable(v.str({ max: MAX_ENV_TEMPLATE })),
   vaultIds: v.array(v.uuid(), MAX_LINKS),
 }
-const { appId: _appId, ...deployRest } = deployFields
-void _appId
-const deployOptional = Object.fromEntries(Object.entries(deployRest).map(([k, c]) => [k, v.optional(c as Check<unknown>)]))
+const deployOptional = Object.fromEntries(Object.entries(deployFields).map(([k, c]) => [k, v.optional(c as Check<unknown>)]))
 
 export const asDeploymentInput: Check<DeploymentInput> = v.object({
   name: deployName,
   environmentId: v.uuid(),
   hostId: v.uuid(),
-  appId: v.optional(nullableId),
   ...deployOptional,
   repoPath: deployPath,
   defaultBranch: deployFields.defaultBranch,
@@ -271,7 +267,6 @@ export const asDeploymentInput: Check<DeploymentInput> = v.object({
 // The environment and host are fixed at creation: they are not keys here, so a move fails validation.
 export const asDeploymentPatch: Check<DeploymentPatch> = v.object({
   name: v.optional(deployName),
-  appId: v.optional(nullableId),
   ...deployOptional,
 }) as Check<DeploymentPatch>
 export const asEnvDeploySettingsPatch: Check<EnvDeploySettingsPatch> = v.object({
@@ -296,21 +291,6 @@ export const asReleaseListFilter: Check<ReleaseListFilter> = v.object({
   limit: v.optional(v.int({ min: 1, max: 200 })),
   before: v.optional(v.uuid()),
 }) as Check<ReleaseListFilter>
-const appName = v.str({ min: 1, max: MAX_NAME, trim: true })
-const composeProject = v.nullable(v.str({ min: 1, max: 63 }))
-const appDescription = v.str({ max: 1000 })
-export const asAppInput: Check<AppInput> = v.object({
-  environmentId: v.uuid(),
-  hostId: v.uuid(),
-  name: appName,
-  composeProject: v.optional(composeProject),
-  description: v.optional(appDescription),
-}) as Check<AppInput>
-export const asAppPatch: Check<AppPatch> = v.object({
-  name: v.optional(appName),
-  composeProject: v.optional(composeProject),
-  description: v.optional(appDescription),
-}) as Check<AppPatch>
 
 const tunnelBindAddress = v.str({ min: 1, max: MAX_BIND_ADDRESS, pattern: BIND_ADDRESS, trim: true })
 const tunnelBindPort = v.int({ min: 0, max: 65535 })
@@ -563,10 +543,6 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'tunnel:start': args(v.uuid()),
   'tunnel:stop': args(v.uuid()),
   'tunnel:status': args(),
-  'app:list': args(v.optional(v.uuid())),
-  'app:create': args(asAppInput),
-  'app:update': args(v.uuid(), asAppPatch),
-  'app:delete': args(v.uuid()),
   'deploy:list': args(v.optional(v.uuid())),
   'deploy:create': args(asDeploymentInput),
   'deploy:update': args(v.uuid(), asDeploymentPatch),

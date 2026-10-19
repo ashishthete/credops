@@ -1,6 +1,6 @@
 import { vi } from 'vitest'
 import type { AuditEvent } from '../../src/shared/audit'
-import type { AppMeta, DeploymentMeta, EnvDeploySettings, Tooling } from '../../src/shared/deploy'
+import type { DeploymentMeta, EnvDeploySettings, Tooling } from '../../src/shared/deploy'
 import type { EnvironmentMeta, HostMeta, ProductMeta } from '../../src/shared/inventory'
 import type { AppInfo } from '../../src/shared/ipc'
 import type { SessionMeta } from '../../src/shared/ssh'
@@ -117,7 +117,7 @@ export function mockBridge(results: Record<string, unknown> = {}) {
     if (channel === 'product:list' || channel === 'env:list' || channel === 'host:list') return []
     if (channel === 'tunnel:list' || channel === 'tunnel:status') return []
     if (channel === 'runs:list' || channel === 'snippets:list') return []
-    if (channel === 'deploy:list' || channel === 'app:list') return []
+    if (channel === 'deploy:list') return []
     return null
   })
   bridgeListeners.clear()
@@ -213,7 +213,8 @@ export function deploymentMeta(over: Partial<DeploymentMeta> & { id: string }): 
     name: over.id,
     environmentId: 'e1',
     hostId: 'h1',
-    appId: null,
+    repoUrl: null,
+    composeProject: null,
     repoPath: '/srv/app',
     defaultBranch: 'main',
     composeFile: 'docker-compose.yml',
@@ -233,19 +234,6 @@ export function deploymentMeta(over: Partial<DeploymentMeta> & { id: string }): 
     managedEnv: false,
     envTemplate: null,
     vaultIds: [],
-    createdAt: STAMP,
-    updatedAt: STAMP,
-    ...over,
-  }
-}
-
-export function appMeta(over: Partial<AppMeta> & { id: string }): AppMeta {
-  return {
-    environmentId: 'e1',
-    hostId: 'h1',
-    name: over.id,
-    composeProject: null,
-    description: '',
     createdAt: STAMP,
     updatedAt: STAMP,
     ...over,

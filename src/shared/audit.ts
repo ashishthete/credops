@@ -63,9 +63,6 @@ export const AUDIT_ACTIONS = [
   'container.stop',
   'container.restart',
   'container.exec',
-  'app.create',
-  'app.update',
-  'app.delete',
   'deploy.create',
   'deploy.update',
   'deploy.delete',
@@ -77,6 +74,10 @@ export const AUDIT_ACTIONS = [
   'release.cancel',
   'release.rollback',
   'release.discard',
+  'service.create',
+  'service.update',
+  'service.delete',
+  'services.copy',
 ] as const // later phases extend
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]
 

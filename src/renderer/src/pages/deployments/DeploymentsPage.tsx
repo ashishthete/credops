@@ -2,9 +2,9 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Copy, ExternalLink, GripVertical, Pencil, Plus, Rocket, TriangleAlert, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState, type DragEvent, type KeyboardEvent } from 'react'
 import { useSearchParams } from 'react-router'
-import type { AppMeta, DeploymentMeta } from '../../../../shared/deploy'
+import type { DeploymentMeta } from '../../../../shared/deploy'
 import type { EnvironmentMeta } from '../../../../shared/inventory'
-import { deleteApp, deleteDeployment, loadSettings, reorderDeployments, startDeploySync, useDeploy, useDeployments } from '../../deploy/store'
+import { deleteDeployment, loadSettings, reorderDeployments, startDeploySync, useDeploy, useDeployments } from '../../deploy/store'
 import { useInventory } from '../../inventory/store'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
@@ -13,7 +13,6 @@ import { EmptyState } from '../../ui/EmptyState'
 import { useMotionSafe } from '../../ui/motion'
 import { Skeleton } from '../../ui/Skeleton'
 import { toast } from '../../ui/Toaster'
-import { AppDialog, type AppRequest } from './AppDialog'
 import { DeploymentDialog, type DeploymentRequest } from './DeploymentDialog'
 import { EnvDeploySettings } from './EnvDeploySettings'
 
@@ -34,10 +33,9 @@ interface HostGroup {
 
 export function DeploymentsPage() {
   const inventory = useInventory()
-  const { apps, settings, tooling, loaded } = useDeploy()
+  const { settings, tooling, loaded } = useDeploy()
   const [params, setParams] = useSearchParams()
   const [dialog, setDialog] = useState<DeploymentRequest | null>(null)
-  const [appDialog, setAppDialog] = useState<AppRequest | null>(null)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
 
   useEffect(() => startDeploySync(), [])
@@ -78,8 +76,6 @@ export function DeploymentsPage() {
     }
     return [...byHost.values()]
   }, [deployments, inventory])
-
-  const appById = useMemo(() => new Map(apps.map((a) => [a.id, a])), [apps])
 
   const move = useCallback(
     (id: string, to: { before: string } | { step: -1 | 1 }) => {
@@ -122,16 +118,6 @@ export function DeploymentsPage() {
     [env],
   )
 
-  const askDeleteApp = useCallback((id: string) => {
-    setAppDialog(null)
-    setConfirm({
-      title: 'Delete this app?',
-      description: 'Its deployments stay, without an app.',
-      confirmLabel: 'Delete app',
-      run: () => deleteApp(id),
-    })
-  }, [])
-
   const newDeployment = () => envId && setDialog({ kind: 'new', environmentId: envId })
   const currentSettings = envId ? settings[envId] : undefined
 
@@ -146,9 +132,6 @@ export function DeploymentsPage() {
         </div>
         {env && (
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" icon={<Plus aria-hidden className="size-3.5" />} onClick={() => setAppDialog({ kind: 'new', environmentId: env.id })}>
-              New app
-            </Button>
             <Button size="sm" icon={<Plus aria-hidden className="size-3.5" />} onClick={newDeployment}>
               New deployment
             </Button>
@@ -195,13 +178,11 @@ export function DeploymentsPage() {
                           <DeploymentCard
                             key={d.id}
                             deployment={d}
-                            app={d.appId ? appById.get(d.appId) : undefined}
                             index={i}
                             first={i === 0}
                             last={i === g.items.length - 1}
                             onMove={move}
                             onEdit={() => setDialog({ kind: 'edit', id: d.id })}
-                            onEditApp={(id) => setAppDialog({ kind: 'edit', id })}
                             onDelete={() => askDelete(d)}
                           />
                         ))}
@@ -216,7 +197,6 @@ export function DeploymentsPage() {
       </div>
 
       <DeploymentDialog request={dialog} onClose={() => setDialog(null)} />
-      <AppDialog request={appDialog} onClose={() => setAppDialog(null)} onDelete={askDeleteApp} />
       <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
     </div>
   )
@@ -308,19 +288,17 @@ function EnvPill({ env, on, onSelect }: { env: EnvironmentMeta; on: boolean; onS
 
 interface CardProps {
   deployment: DeploymentMeta
-  app: AppMeta | undefined
   index: number
   first: boolean
   last: boolean
   onMove: (id: string, to: { before: string } | { step: -1 | 1 }) => void
   onEdit: () => void
-  onEditApp: (id: string) => void
   onDelete: () => void
 }
 
 const DRAG_TYPE = 'application/x-opsdeck-deployment'
 
-function DeploymentCard({ deployment: d, app, index, first, last, onMove, onEdit, onEditApp, onDelete }: CardProps) {
+function DeploymentCard({ deployment: d, index, first, last, onMove, onEdit, onDelete }: CardProps) {
   const motionSafe = useMotionSafe()
   const [over, setOver] = useState(false)
 
@@ -382,15 +360,10 @@ function DeploymentCard({ deployment: d, app, index, first, last, onMove, onEdit
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
           <h3 className="truncate text-[14px] font-semibold text-fg">{d.name}</h3>
-          {app && (
-            <button
-              type="button"
-              aria-label={`Edit app ${app.name}`}
-              onClick={() => onEditApp(app.id)}
-              className="rounded-md bg-white/[0.05] px-1.5 text-[11.5px] leading-5 text-muted transition-colors hover:text-fg"
-            >
-              {app.name}
-            </button>
+          {d.composeProject && (
+            <span title="Compose project" className="rounded-md bg-white/[0.05] px-1.5 font-mono text-[11.5px] leading-5 text-muted">
+              {d.composeProject}
+            </span>
           )}
         </div>
         <p className="mt-1 truncate font-mono text-[12px] text-muted">{d.repoPath}</p>

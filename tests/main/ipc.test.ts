@@ -117,10 +117,6 @@ describe('ops contract', () => {
 
 describe('deploy contract', () => {
   const DEPLOY_CHANNELS = [
-    'app:list',
-    'app:create',
-    'app:update',
-    'app:delete',
     'deploy:list',
     'deploy:create',
     'deploy:update',

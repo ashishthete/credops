@@ -2,7 +2,6 @@
 
 // ---- Limits ----
 export const MAX_DEPLOYMENTS = 512
-export const MAX_APPS = 512
 export const MAX_URLS = 8
 export const MAX_HOOK = 4000
 export const MAX_ENV_TEMPLATE = 32768
@@ -26,6 +25,8 @@ export const GIT_REF = /^(?!.*\.\.)(?!.*\/\/)(?!\/)(?!.*\/$)(?!.*\.lock$)(?!-)[A
 export const COMPOSE_FILE = /^(?!\/)(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,200}$/
 export const VERSION = /^v\d+\.\d+\.\d+$/
 export const COMPOSE_PROJECT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/
+/** A service name inside a compose file: the same rule, so it can never look like an option or carry shell syntax. */
+export const COMPOSE_SERVICE = COMPOSE_PROJECT
 export const MAX_URL = 2048
 export const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
 
@@ -44,31 +45,13 @@ export interface HealthUrl {
   from: HealthFrom
 }
 
-export interface AppMeta {
-  id: string
-  environmentId: string
-  hostId: string
-  name: string
-  composeProject: string | null
-  description: string
-  createdAt: string
-  updatedAt: string
-}
-export interface AppInput {
-  environmentId: string
-  hostId: string
-  name: string
-  composeProject?: string | null
-  description?: string
-}
-export type AppPatch = Partial<Omit<AppInput, 'environmentId' | 'hostId'>>
-
 export interface DeploymentMeta {
   id: string
   name: string
   environmentId: string
   hostId: string
-  appId: string | null
+  repoUrl: string | null
+  composeProject: string | null
   repoPath: string
   defaultBranch: string
   composeFile: string
@@ -100,7 +83,8 @@ export interface DeploymentInput {
   repoPath: string
   defaultBranch: string
   deployTag: string
-  appId?: string | null
+  repoUrl?: string | null
+  composeProject?: string | null
   composeFile?: string
   position?: number
   urls?: HealthUrl[]

@@ -140,20 +140,19 @@ describe('migration 7 (deployments)', () => {
   it('adds deployment tables, checks, cascades and the append-only trigger', () => {
     const db = openDatabase(':memory:')
     expect(migrations.some((m) => m.version === 7 && m.name === 'deployments')).toBe(true)
-    expect(cols(db, 'apps')).toEqual(['id', 'environment_id', 'host_id', 'name', 'compose_project', 'description', 'created_at', 'updated_at'])
     expect(cols(db, 'deployments')).toEqual([
-      'id', 'name', 'environment_id', 'host_id', 'app_id', 'repo_path', 'default_branch', 'compose_file', 'deploy_tag',
+      'id', 'name', 'environment_id', 'host_id', 'repo_url', 'compose_project', 'repo_path', 'default_branch', 'compose_file', 'deploy_tag',
       'position', 'urls', 'health_status', 'health_timeout_sec', 'db_backup', 'backup_dir', 'pre_hook', 'post_hook',
       'build_timeout_sec', 'compose_timeout_sec', 'use_sudo', 'become_secret_id', 'managed_env', 'env_template',
       'created_at', 'updated_at',
     ])
     expect(cols(db, 'releases')).toEqual([
       'id', 'environment_id', 'kind', 'status', 'version', 'previous_version', 'version_bump', 'redeploy', 'rollback_of',
-      'options', 'release_notes', 'error', 'playbook', 'triggered_by', 'created_at', 'started_at', 'finished_at',
+      'options', 'service_ids', 'release_notes', 'error', 'playbook', 'triggered_by', 'created_at', 'started_at', 'finished_at',
     ])
     expect(cols(db, 'deployment_runs')).toEqual([
       'id', 'release_id', 'deployment_id', 'deployment_name', 'host_id', 'host_label', 'position', 'branch',
-      'previous_commit', 'deployed_commit', 'commits', 'steps', 'status', 'rolled_back', 'backup_file', 'started_at',
+      'previous_commit', 'deployed_commit', 'commits', 'services', 'whole_checkout', 'steps', 'status', 'rolled_back', 'backup_file', 'started_at',
       'finished_at',
     ])
     expect(cols(db, 'run_events')).toEqual(['id', 'release_id', 'seq', 'at', 'type', 'payload'])
@@ -162,19 +161,74 @@ describe('migration 7 (deployments)', () => {
     seed(db)
     expect(() => dep(db, 'db_backup, ', [1])).toThrow(/CHECK/)
     expect(() => dep(db, 'managed_env, ', [1])).toThrow(/CHECK/)
-    db.prepare('INSERT INTO apps(id, environment_id, host_id, name, created_at, updated_at) VALUES (?,?,?,?,?,?)').run('a1', 'e1', 'h1', 'app', NOW, NOW)
-    dep(db, 'app_id, ', ['a1'])
+    dep(db, 'repo_url, compose_project, ', ['git@github.com:acme/api.git', 'api'])
     db.prepare("INSERT INTO releases(id, environment_id, kind, status, triggered_by, created_at) VALUES ('r1','e1','release','ready','me@box',?)").run(NOW)
     db.prepare("INSERT INTO run_events(id, release_id, seq, at, type, payload) VALUES ('ev1','r1',1,?,'log','{}')").run(NOW)
     expect(() => db.exec("UPDATE run_events SET type = 'x'")).toThrow(/run_events is append-only/)
 
-    db.prepare('DELETE FROM apps WHERE id = ?').run('a1')
-    expect(db.prepare('SELECT app_id FROM deployments WHERE id = ?').get('d1')).toEqual({ app_id: null })
+    expect(db.prepare("SELECT service_ids FROM releases WHERE id = 'r1'").get()).toEqual({ service_ids: '[]' })
 
     db.prepare('DELETE FROM environments WHERE id = ?').run('e1')
-    for (const t of ['apps', 'deployments', 'releases']) {
+    for (const t of ['deployments', 'releases']) {
       expect(db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get()).toEqual({ n: 0 })
     }
+  })
+
+  const svc = (db: ReturnType<typeof openDatabase>, id: string, cols: string, vals: (string | number | null)[]): void => {
+    db.prepare(
+      `INSERT INTO services(id, environment_id, name, ${cols}, created_at, updated_at) VALUES (?,?,?,${vals.map(() => '?').join(',')},?,?)`,
+    ).run(id, 'e1', id, ...vals, NOW, NOW)
+  }
+
+  it('migration 7 creates services and no apps table', () => {
+    const db = openDatabase(':memory:')
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = 'apps'").get()).toBeUndefined()
+    expect(cols(db, 'services')).toEqual([
+      'id', 'environment_id', 'name', 'kind', 'position', 'description', 'deployment_id', 'compose_service', 'url',
+      'url_check_from', 'last_deployed_commit', 'last_release_id', 'db_engine', 'db_address', 'db_port', 'via_host_id',
+      'local_port', 'tunnel_id', 'created_at', 'updated_at',
+    ])
+    const indexes = (db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name = 'services'").all() as { name: string }[]).map((r) => r.name)
+    expect(indexes).toEqual(expect.arrayContaining(['services_name', 'services_compose', 'services_env']))
+    expect(cols(db, 'deployment_runs')).toContain('whole_checkout')
+    seed(db)
+    dep(db)
+    svc(db, 'esg', 'kind, deployment_id, compose_service, url_check_from', ['service', 'd1', 'esg', 'mac'])
+    svc(db, 'pg', 'kind, db_engine, db_address, db_port', ['db', 'postgres', 'db.internal', 5432])
+    expect(() => svc(db, 'ESG', 'kind, deployment_id, compose_service, url_check_from', ['service', 'd1', 'other', 'mac'])).toThrow(/UNIQUE/)
+    expect(() => svc(db, 'bad-kind', 'kind', ['queue'])).toThrow(/CHECK/)
+    expect(() => svc(db, 'no-compose', 'kind, url_check_from', ['service', 'mac'])).toThrow(/CHECK/)
+    expect(() => svc(db, 'bad-port', 'kind, db_engine, db_address, db_port', ['db', 'redis', 'r', 70000])).toThrow(/CHECK/)
+    db.prepare('DELETE FROM environments WHERE id = ?').run('e1')
+    expect(db.prepare('SELECT COUNT(*) AS n FROM services').get()).toEqual({ n: 0 })
+  })
+
+  it('a db row with compose_service violates the kind CHECK', () => {
+    const db = openDatabase(':memory:')
+    seed(db)
+    expect(() => svc(db, 'pg', 'kind, db_engine, db_address, db_port, compose_service', ['db', 'postgres', 'db', 5432, 'pg'])).toThrow(/CHECK/)
+    expect(() => svc(db, 'esg', 'kind, compose_service, url_check_from, db_engine', ['service', 'esg', 'mac', 'redis'])).toThrow(/CHECK/)
+  })
+
+  it('compose_service is unique per checkout', () => {
+    const db = openDatabase(':memory:')
+    seed(db)
+    dep(db)
+    const app = 'kind, deployment_id, compose_service, url_check_from'
+    svc(db, 'esg', app, ['service', 'd1', 'esg', 'mac'])
+    expect(() => svc(db, 'esg2', app, ['service', 'd1', 'esg', 'host'])).toThrow(/UNIQUE/)
+    // Without a checkout the same compose service name is free.
+    svc(db, 'loose1', app, ['service', null, 'esg', 'mac'])
+    svc(db, 'loose2', app, ['service', null, 'esg', 'mac'])
+  })
+
+  it('deleting a checkout sets services.deployment_id null', () => {
+    const db = openDatabase(':memory:')
+    seed(db)
+    dep(db)
+    svc(db, 'esg', 'kind, deployment_id, compose_service, url_check_from', ['service', 'd1', 'esg', 'mac'])
+    db.prepare('DELETE FROM deployments WHERE id = ?').run('d1')
+    expect(db.prepare("SELECT deployment_id, compose_service FROM services WHERE id = 'esg'").get()).toEqual({ deployment_id: null, compose_service: 'esg' })
   })
 
   it('deleting a host cascades to its deployments', () => {

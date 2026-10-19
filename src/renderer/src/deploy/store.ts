@@ -1,8 +1,5 @@
 import { useMemo, useSyncExternalStore } from 'react'
 import type {
-  AppInput,
-  AppMeta,
-  AppPatch,
   DeploymentInput,
   DeploymentMeta,
   DeploymentPatch,
@@ -16,13 +13,12 @@ import { createStore } from '../ui/store'
 
 export interface DeployState {
   deployments: DeploymentMeta[]
-  apps: AppMeta[]
   settings: Record<string, EnvDeploySettings>
   tooling: Tooling | null
   loaded: boolean
 }
 
-const EMPTY: DeployState = { deployments: [], apps: [], settings: {}, tooling: null, loaded: false }
+const EMPTY: DeployState = { deployments: [], settings: {}, tooling: null, loaded: false }
 
 export const deployStore = createStore<DeployState>(EMPTY)
 
@@ -46,9 +42,8 @@ export async function loadDeploy(envIds: string[] = []): Promise<void> {
   const seen = written
   try {
     const wanted = [...new Set([...Object.keys(deployStore.get().settings), ...envIds])]
-    const [deployments, apps, tooling, settings] = await Promise.all([
+    const [deployments, tooling, settings] = await Promise.all([
       api.invoke('deploy:list'),
-      api.invoke('app:list'),
       api.invoke('deploy:tooling'),
       Promise.all(wanted.map((id) => api.invoke('deploy:settings', id))),
     ])
@@ -57,7 +52,6 @@ export async function loadDeploy(envIds: string[] = []): Promise<void> {
     const fresh = seen === written
     deployStore.set({
       deployments: fresh ? (deployments ?? s.deployments) : s.deployments,
-      apps: fresh ? (apps ?? s.apps) : s.apps,
       settings: { ...s.settings, ...Object.fromEntries((settings ?? []).filter(Boolean).map((x) => [x.environmentId, x])) },
       tooling: tooling ?? s.tooling,
       loaded: true,
@@ -169,38 +163,5 @@ export async function updateSettings(envId: string, patch: EnvDeploySettingsPatc
   if (!next) return false
   const s = deployStore.get()
   deployStore.set({ ...s, settings: { ...s.settings, [envId]: next } })
-  return true
-}
-
-export async function createApp(input: AppInput, onError?: OnError): Promise<AppMeta | undefined> {
-  const meta = await attempt("Couldn't create the app", () => api.invoke('app:create', input), onError)
-  if (meta) {
-    written++
-    const s = deployStore.get()
-    deployStore.set({ ...s, apps: [...s.apps.filter((a) => a.id !== meta.id), meta] })
-  }
-  return meta
-}
-
-export async function updateApp(id: string, patch: AppPatch, onError?: OnError): Promise<AppMeta | undefined> {
-  const meta = await attempt("Couldn't save the app", () => api.invoke('app:update', id, patch), onError)
-  if (meta) {
-    written++
-    const s = deployStore.get()
-    deployStore.set({ ...s, apps: s.apps.map((a) => (a.id === id ? meta : a)) })
-  }
-  return meta
-}
-
-export async function deleteApp(id: string): Promise<boolean> {
-  const done = await attempt("Couldn't delete the app", async () => {
-    await api.invoke('app:delete', id)
-    return true
-  })
-  if (!done) return false
-  written++
-  const s = deployStore.get()
-  // Deployments of a deleted app stay, unattached.
-  deployStore.set({ ...s, apps: s.apps.filter((a) => a.id !== id), deployments: s.deployments.map((d) => (d.appId === id ? { ...d, appId: null } : d)) })
   return true
 }

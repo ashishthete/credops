@@ -4,10 +4,6 @@ import type { DeployStore } from '../../deploy/deploy-store'
 import type { ReleaseService } from '../../deploy/release-service'
 
 type DeployChannel =
-  | 'app:list'
-  | 'app:create'
-  | 'app:update'
-  | 'app:delete'
   | 'deploy:list'
   | 'deploy:create'
   | 'deploy:update'
@@ -35,10 +31,6 @@ export function createDeployHandlers(deps: {
 }): Pick<Handlers, DeployChannel> {
   const { deploys, releases, tooling } = deps
   return {
-    'app:list': (environmentId) => deploys.listApps(environmentId),
-    'app:create': (input) => deploys.createApp(input),
-    'app:update': (id, patch) => deploys.updateApp(id, patch),
-    'app:delete': (id) => deploys.deleteApp(id),
     'deploy:list': (environmentId) => deploys.list(environmentId),
     'deploy:create': (input) => deploys.create(input),
     'deploy:update': (id, patch) => deploys.update(id, patch),
