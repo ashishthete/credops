@@ -7,7 +7,9 @@ const H = 24
 const num = (n: number) => Number(n.toFixed(2))
 
 /** Polyline points in a 100x24 box; the largest value (or `max`) touches the top, zero the bottom. */
-export function sparkPoints(values: number[], max = Math.max(0, ...values)): string {
+export function sparkPoints(samples: number[], max?: number): string {
+  const values = samples.filter(Number.isFinite)
+  if (max === undefined || !Number.isFinite(max)) max = Math.max(0, ...values)
   if (values.length === 0) return ''
   const y = (v: number) => (max > 0 ? num(H - (Math.min(Math.max(v, 0), max) / max) * H) : H)
   if (values.length === 1) return `0,${y(values[0])} ${W},${y(values[0])}`

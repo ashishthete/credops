@@ -304,6 +304,13 @@ describe('Switch', () => {
     expect(sw).toHaveAttribute('aria-checked', 'false')
   })
 
+  it('a disabled Switch ignores clicks', async () => {
+    const onChange = vi.fn()
+    render(<Switch checked={false} onChange={onChange} label="x" disabled />)
+    await userEvent.setup().click(screen.getByRole('switch'))
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
   it('a busy Switch ignores clicks', async () => {
     const user = userEvent.setup()
     render(<Harness busy />)
@@ -321,6 +328,14 @@ describe('Sparkline', () => {
     expect(container.querySelector('svg')).toHaveAttribute('aria-hidden', 'true')
     expect(container.querySelector('polyline')).toHaveAttribute('points', '0,24 50,12 100,0')
     expect(screen.getByText('Inbound')).toBeInTheDocument()
+  })
+
+  it('Sparkline handles empty, single-point and non-finite series', () => {
+    expect(sparkPoints([])).toBe('')
+    expect(sparkPoints([4], 4)).toBe('0,0 100,0')
+    expect(sparkPoints([0, NaN, 10, Infinity], 10)).toBe('0,24 100,0')
+    const { container } = render(<Sparkline values={[]} tone="info" label="None" />)
+    expect(container.querySelector('polyline')).toBeNull()
   })
 
   it('Sparkline all-zero is flat', () => {

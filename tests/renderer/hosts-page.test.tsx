@@ -486,6 +486,20 @@ describe('hosts page', () => {
     expect(commandStore.get().some((c) => c.title === 'Go to api-1')).toBe(true)
   })
 
+  it('deleting a host reloads tunnels', async () => {
+    const user = userEvent.setup()
+    const w = world()
+    w.hosts = [...w.hosts, host({ id: 'web1', label: 'web-1', address: '10.0.1.7' })]
+    const { invoke } = renderApp(w, '/hosts?host=web1')
+    const lists = () => invoke.mock.calls.filter(([c]) => c === 'tunnel:list').length
+    await user.click(await screen.findByRole('button', { name: 'web-1 options' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Delete' }))
+    await waitFor(() => expect(lists()).toBeGreaterThan(0))
+    const before = lists()
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete host' }))
+    await waitFor(() => expect(lists()).toBe(before + 1))
+  })
+
   it('palette environment command opens the products tree there', async () => {
     renderApp(world(), '/hosts')
     await waitFor(() => expect(commandStore.get().some((c) => c.title === 'Go to prod · Acme')).toBe(true))

@@ -14,6 +14,7 @@ import type {
 } from '../../../shared/inventory'
 import type { IdentityMeta, VaultMeta } from '../../../shared/vault'
 import { api } from '../lib/api'
+import { loadTunnels } from '../tunnels/store'
 import { attempt, fail } from '../ui/common'
 import { createStore } from '../ui/store'
 
@@ -145,6 +146,8 @@ export const inv = {
     if (ok) {
       patchStore((d) => ({ products: d.products.filter((p) => p.id !== id) }))
       await refresh('environments')
+      // The host's tunnels went with it (main stops them and the rows cascade).
+      void loadTunnels()
     }
     return ok
   },
@@ -247,6 +250,8 @@ export const inv = {
     if (ok) {
       patchStore((d) => ({ hosts: d.hosts.filter((h) => h.id !== id) }))
       await refresh('environments')
+      // The host's tunnels went with it (main stops them and the rows cascade).
+      void loadTunnels()
     }
     return ok
   },

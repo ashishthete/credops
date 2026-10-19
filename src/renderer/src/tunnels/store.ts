@@ -9,7 +9,7 @@ import {
   type TunnelStats,
 } from '../../../shared/tunnels'
 import { api } from '../lib/api'
-import { attempt, fail } from '../ui/common'
+import { attempt, errorText, fail } from '../ui/common'
 import { createStore } from '../ui/store'
 import { toast } from '../ui/Toaster'
 
@@ -32,11 +32,14 @@ export const tunnelStore = createStore<TunnelsState>(EMPTY)
 export const statsStore = createStore<Record<string, StatsEntry>>({})
 
 const eventListeners = new Set<(event: TunnelEvent) => void>()
+/** Bumped by resetTunnels; a load that started before it must not repopulate the stores. */
+let generation = 0
 let syncUsers = 0
 let stopSync: (() => void) | null = null
 
 /** Empties both stores (the shell unmounting, tests). */
 export function resetTunnels(): void {
+  generation++
   tunnelStore.set(EMPTY)
   statsStore.set({})
 }
@@ -68,8 +71,12 @@ function pushSample(ring: number[], value: number): number[] {
 
 function applyStats(batch: TunnelStats[]): void {
   if (!batch?.length) return
+  const { runtime } = tunnelStore.get()
   const next = { ...statsStore.get() }
   for (const st of batch) {
+    // A late tick for a stopped or unknown tunnel would only leave a ghost entry.
+    const state = runtime[st.id]?.state
+    if (!state || state === 'stopped') continue
     const prev = next[st.id]
     next[st.id] = {
       last: st,
@@ -81,22 +88,39 @@ function applyStats(batch: TunnelStats[]): void {
 }
 
 function announce(event: TunnelEvent): void {
+  // Subscribers first, each isolated: one consumer's bug must not silence the rest or the toast.
+  eventListeners.forEach((fn) => {
+    try {
+      fn(event)
+    } catch (err) {
+      console.error('A tunnel event subscriber threw', errorText(err))
+    }
+  })
   if (event.type === 'failed') {
     toast({ title: event.label, description: event.error.message, tone: 'error' })
   } else if (event.type === 'up' && event.recovered) {
     toast({ title: `${event.label} is back up`, tone: 'success' })
   }
-  eventListeners.forEach((fn) => fn(event))
 }
 
 /** Loads the saved tunnels and their runtime; runtime pushed by events meanwhile is newer and stays. */
 export async function loadTunnels(): Promise<void> {
+  const started = generation
   try {
     const [list, status] = await Promise.all([api.invoke('tunnel:list'), api.invoke('tunnel:status')])
+    if (started !== generation) return
     const s = tunnelStore.get()
-    const runtime = { ...s.runtime }
-    for (const rt of status ?? []) if (!runtime[rt.id]) runtime[rt.id] = rt
-    tunnelStore.set({ tunnels: list ?? s.tunnels, runtime, loaded: true })
+    const tunnels = list ?? s.tunnels
+    const known = new Set(tunnels.map((t) => t.id))
+    // Runtime and stats for tunnels no longer listed (deleted with their host) go too.
+    const runtime: Record<string, TunnelRuntime> = {}
+    for (const [id, rt] of Object.entries(s.runtime)) if (known.has(id)) runtime[id] = rt
+    for (const rt of status ?? []) if (known.has(rt.id) && !runtime[rt.id]) runtime[rt.id] = rt
+    const stats = statsStore.get()
+    if (Object.keys(stats).some((id) => !known.has(id))) {
+      statsStore.set(Object.fromEntries(Object.entries(stats).filter(([id]) => known.has(id))))
+    }
+    tunnelStore.set({ tunnels, runtime, loaded: true })
   } catch (err) {
     fail("Couldn't load your tunnels", err)
   }
