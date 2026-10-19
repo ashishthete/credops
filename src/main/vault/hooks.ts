@@ -18,6 +18,10 @@ export interface VaultHookTargets {
  * commands finish; exec links fail their dials as `locked` and close idle links; then every
  * prompt left is cancelled. Runs go before links so each dial a run aborts is already marked
  * `locked` for that host. Separate listeners, so one failing never skips the others.
+ *
+ * Every listener must be synchronous. The vault calls them in order and doesn't await them: a
+ * returned promise only has its rejection logged, so its work would still be running after `lock`
+ * or `reset` has returned, past the point (for a reset) where setup may begin again.
  */
 export function wireVaultHooks(vault: Pick<VaultService, 'onLock' | 'onUnlock' | 'onReset'>, t: VaultHookTargets): void {
   vault.onLock(() => t.sessions.vaultLocked())
