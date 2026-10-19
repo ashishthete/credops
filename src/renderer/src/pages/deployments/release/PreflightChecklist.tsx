@@ -7,6 +7,8 @@ import { fast, spring, staggerDelay, useMotionSafe } from '../../../ui/motion'
 export interface PreflightFixes {
   /** The checkout's path on its host, for the `git status` hint. */
   repoPath: (deploymentId: string | null) => string | null
+  /** A preflight run is in flight: the fixes that start another wait for it. */
+  busy?: boolean
   onBreakLock: (hostId: string) => void
   /** Null when there is no further bump to try. */
   onBumpFurther: (() => void) | null
@@ -18,8 +20,21 @@ const ICON = {
   block: { Icon: OctagonX, className: 'text-err', text: 'Blocks the release' },
 } as const
 
-/** Preflight rows as they stream in; a blocker carries its fix. `deps` rows are only ever warnings. */
-export function PreflightChecklist({ checks, report, fixes }: { checks: PreflightCheck[]; report: PreflightReport | null; fixes: PreflightFixes }) {
+/**
+ * Preflight rows as they stream in; a blocker carries its fix. `deps` rows are only ever warnings. `checking`
+ * is false once the run failed, so nothing says it is still going.
+ */
+export function PreflightChecklist({
+  checks,
+  report,
+  fixes,
+  checking = true,
+}: {
+  checks: PreflightCheck[]
+  report: PreflightReport | null
+  fixes: PreflightFixes
+  checking?: boolean
+}) {
   const motionSafe = useMotionSafe()
   return (
     <div className="flex flex-col gap-2">
@@ -44,7 +59,7 @@ export function PreflightChecklist({ checks, report, fixes }: { checks: Prefligh
           )
         })}
       </ul>
-      {!report && (
+      {!report && checking && (
         <p role="status" className="flex items-center gap-2 text-[12px] text-muted">
           <LoaderCircle aria-hidden className={`size-3.5 ${motionSafe ? 'animate-spin' : ''}`} />
           Checking
@@ -64,7 +79,7 @@ function Fix({ check, report, fixes }: { check: PreflightCheck; report: Prefligh
   if (check.id === 'lock' && report?.locks[check.hostId]?.stale) {
     return (
       <div className="pl-5.5">
-        <Button size="sm" variant="ghost" onClick={() => fixes.onBreakLock(check.hostId)}>
+        <Button size="sm" variant="ghost" disabled={fixes.busy} onClick={() => fixes.onBreakLock(check.hostId)}>
           Break lock
         </Button>
       </div>
@@ -73,7 +88,7 @@ function Fix({ check, report, fixes }: { check: PreflightCheck; report: Prefligh
   if (check.id === 'version-tag' && fixes.onBumpFurther) {
     return (
       <div className="pl-5.5">
-        <Button size="sm" variant="ghost" onClick={fixes.onBumpFurther}>
+        <Button size="sm" variant="ghost" disabled={fixes.busy} onClick={fixes.onBumpFurther}>
           Bump further
         </Button>
       </div>

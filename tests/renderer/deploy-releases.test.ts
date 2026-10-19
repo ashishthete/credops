@@ -131,4 +131,71 @@ describe('release store', () => {
     expect(releaseStore.get().pipelines[REL]).toBeUndefined()
     expect(calls(invoke, 'release:events')).toHaveLength(0)
   })
+
+  it('a reopen during catch-up lets later gaps catch up again', async () => {
+    const all = events(healthFailure(true))
+    let persisted = all.slice(0, 6)
+    const invoke = world([])
+    let hold: ((v: unknown) => void) | null = null
+    let holding = false
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'release:get') return releaseDetail()
+      if (channel !== 'release:events') return null
+      if (holding) {
+        holding = false
+        return new Promise((r) => (hold = r))
+      }
+      return persisted.filter((e) => e.seq > (args[1] as number)).slice(0, args[2] as number)
+    })
+    const stop = startReleaseSync()
+    await act(() => openRelease(REL))
+    // A gap starts a catch-up that main is slow to answer.
+    holding = true
+    act(() => emitBridgeEvent('deploy:event', all.slice(7, 8)))
+    await flush()
+    expect(hold).not.toBeNull()
+    // The view opens the release again meanwhile, and main has more by then.
+    persisted = all.slice(0, 9)
+    await act(() => openRelease(REL))
+    const before = calls(invoke, 'release:events').length
+    act(() => emitBridgeEvent('deploy:event', all.slice(10, 11)))
+    await flush()
+    expect(calls(invoke, 'release:events').length).toBe(before + 1)
+    expect(calls(invoke, 'release:events').at(-1)!.slice(1)).toEqual([REL, 9, 5000])
+    // The old catch-up answers late and changes nothing.
+    await act(async () => hold!(all))
+    expect(releaseStore.get().pipelines[REL].lastSeq).toBe(9)
+    stop()
+  })
+
+  it('a closed release stops tracking live seqs', async () => {
+    const all = events(OK_RUN)
+    const invoke = world(all.slice(0, 4))
+    const stop = startReleaseSync()
+    await act(() => openRelease(REL))
+    closeRelease(REL)
+    // Events for the closed release keep arriving.
+    act(() => emitBridgeEvent('deploy:event', all.slice(8, 10)))
+    const before = calls(invoke, 'release:events').length
+    await act(() => openRelease(REL))
+    await flush()
+    // One page from the start, and no catch-up for seqs seen while it was closed.
+    expect(calls(invoke, 'release:events').slice(before).map((c) => c.slice(1))).toEqual([[REL, 0, 5000]])
+    stop()
+  })
+
+  it('a batch repeating a seq applies it once', async () => {
+    const all = events([
+      { type: 'log', stepId: null, hostId: 'h1', stream: 'out', line: 'one' },
+      { type: 'log', stepId: null, hostId: 'h1', stream: 'out', line: 'two' },
+    ])
+    world([])
+    const stop = startReleaseSync()
+    await act(() => openRelease(REL))
+    const logs: string[] = []
+    onLogEvents(REL, (batch) => logs.push(...batch.map((e) => (e.type === 'log' ? e.line : ''))))
+    act(() => emitBridgeEvent('deploy:event', [all[0], all[0], all[1]]))
+    expect(logs).toEqual(['one', 'two'])
+    stop()
+  })
 })

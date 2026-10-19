@@ -93,8 +93,14 @@ function ingest(id: string, batch: DeployRunEvent[]): void {
   const prev = s.pipelines[id]
   if (!prev || !batch.length) return
   const next = reducePipeline(prev, batch)
+  // The events the reducer moved past, each seq once (a batch can repeat one).
   const taken = new Set<number>()
-  const applied = batch.filter((e) => e.seq > prev.lastSeq && e.seq <= next.lastSeq && !taken.has(e.seq) && taken.add(e.seq))
+  const applied: DeployRunEvent[] = []
+  for (const e of batch) {
+    if (e.seq <= prev.lastSeq || e.seq > next.lastSeq || taken.has(e.seq)) continue
+    taken.add(e.seq)
+    applied.push(e)
+  }
   let pre = s.preflight[id]
   for (const e of applied) {
     if (e.type === 'preflight.check') pre = { ...pre, checks: [...pre.checks.filter((c) => !sameCheck(c, e.check)), e.check] }
@@ -152,6 +158,8 @@ export async function openRelease(id: string): Promise<void> {
   opens.set(id, token)
   open.add(id)
   queued.set(id, [])
+  // A catch-up from an earlier open stops at its next read; this open may start its own.
+  fetching.delete(id)
   // Events replay from seq 1, so the log starts over too.
   buffers.set(id, new LogBuffer())
   const current = () => gen === generation && opens.get(id) === token
@@ -270,7 +278,7 @@ function onEvents(batch: DeployRunEvent[]): void {
     else byRun.set(e.runId, [e])
   }
   for (const [id, events] of byRun) {
-    if (!opens.has(id)) continue
+    if (!open.has(id)) continue
     seen.set(id, Math.max(seen.get(id) ?? 0, ...events.map((e) => e.seq)))
     const q = queued.get(id)
     if (q) q.push(...events)

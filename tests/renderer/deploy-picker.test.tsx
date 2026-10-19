@@ -7,6 +7,7 @@ import { resetReleases } from '../../src/renderer/src/deploy/releases'
 import { loadDeploy, resetDeploy } from '../../src/renderer/src/deploy/store'
 import { inventoryStore, loadInventory } from '../../src/renderer/src/inventory/store'
 import { DeployWizard } from '../../src/renderer/src/pages/deployments/release/DeployWizard'
+import { PreflightChecklist } from '../../src/renderer/src/pages/deployments/release/PreflightChecklist'
 import type { CommitInfo, PreflightCheck, PreflightReport, RunEvent } from '../../src/shared/deploy'
 import type { ServiceMeta } from '../../src/shared/services'
 import { events, REL, releaseDetail } from './fixtures/release-events'
@@ -186,8 +187,7 @@ describe('deploy wizard', () => {
     })
     const { user, dialog } = await mount({ preselect: ['s3'], persisted: events([{ type: 'preflight.done', report: done }]) })
     await preflight(user, dialog)
-    const row = await within(dialog).findByText('postgres (database, skipped)')
-    expect(within(row).queryByRole('checkbox')).not.toBeInTheDocument()
+    await within(dialog).findByText('postgres (database, skipped)')
     expect(within(dialog).queryByRole('checkbox', { name: /postgres/ })).not.toBeInTheDocument()
     const notice = within(dialog).getByRole('list', { name: 'What happens to site' })
     await waitFor(() => expect(within(notice).getByText("Compose services OpsDeck doesn't track (redis) are not restarted.")).toBeInTheDocument())
@@ -330,5 +330,123 @@ describe('deploy wizard', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     expect(calls(invoke, 'release:discard').map((c) => c[1])).toEqual([REL, REL])
     expect(closed()).toBe(1)
+  })
+})
+
+describe('stale preflight releases', () => {
+  /** Holds each `channel` call until the test settles it, in call order. */
+  function hold(invoke: ReturnType<typeof mockBridge>, channel: string) {
+    const pending: { resolve: (v: unknown) => void; reject: (e: unknown) => void }[] = []
+    const base = invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
+    invoke.mockImplementation((ch: string, ...args: unknown[]) => {
+      if (ch !== channel) return base(ch, ...args)
+      return new Promise((resolve, reject) => pending.push({ resolve, reject }))
+    })
+    return {
+      count: () => pending.length,
+      settle: async (i: number, value: unknown) => {
+        await act(async () => pending[i].resolve(value))
+      },
+      fail: async (i: number, err: Error) => {
+        await act(async () => pending[i].reject(err))
+      },
+    }
+  }
+  const run = (user: ReturnType<typeof userEvent.setup>, dialog: HTMLElement) => user.click(within(dialog).getByRole('button', { name: 'Run preflight' }))
+
+  for (const how of ['Cancel', 'Back', 'Escape'] as const) {
+    it(`a preflight that answers after ${how} is discarded and never opened`, async () => {
+      const { user, dialog, invoke, closed } = await mount({ preselect: ['s1'] })
+      const pre = hold(invoke, 'release:preflight')
+      await run(user, dialog)
+      expect(pre.count()).toBe(1)
+      if (how === 'Escape') await user.keyboard('{Escape}')
+      else await user.click(within(dialog).getByRole('button', { name: how }))
+      expect(calls(invoke, 'release:discard')).toEqual([])
+      await pre.settle(0, { releaseId: 'rel-late' })
+      expect(calls(invoke, 'release:discard').map((c) => c[1])).toEqual(['rel-late'])
+      expect(calls(invoke, 'release:get')).toEqual([])
+      expect(closed()).toBe(how === 'Back' ? 0 : 1)
+    })
+  }
+
+  it('a preflight that answers after the wizard unmounts is discarded', async () => {
+    const { user, dialog, invoke } = await mount({ preselect: ['s1'] })
+    const pre = hold(invoke, 'release:preflight')
+    await run(user, dialog)
+    cleanup()
+    await pre.settle(0, { releaseId: 'rel-late' })
+    expect(calls(invoke, 'release:discard').map((c) => c[1])).toEqual(['rel-late'])
+    expect(calls(invoke, 'release:get')).toEqual([])
+  })
+
+  it('double-clicking Bump further runs one preflight, and the release it replaces is discarded', async () => {
+    const taken = check({ id: 'version-tag', label: 'Version tag', level: 'block', message: 'v1.3.0 already exists' })
+    const { user, dialog, invoke } = await mount({
+      preselect: ['s1'],
+      persisted: events([{ type: 'preflight.check', check: taken }, { type: 'preflight.done', report: report({ checks: [taken], blocked: true }) }]),
+    })
+    await preflight(user, dialog)
+    const bump = await within(dialog).findByRole('button', { name: 'Bump further' })
+    const pre = hold(invoke, 'release:preflight')
+    await user.dblClick(bump)
+    expect(pre.count()).toBe(1)
+    expect(calls(invoke, 'release:discard').map((c) => c[1])).toEqual([REL])
+    expect(calls(invoke, 'release:preflight').at(-1)![1]).toMatchObject({ bump: 'major' })
+    await pre.settle(0, { releaseId: 'rel-2' })
+    expect(calls(invoke, 'release:discard').map((c) => c[1])).toEqual([REL])
+    expect(calls(invoke, 'release:get').at(-1)).toEqual(['release:get', 'rel-2'])
+  })
+
+  it('Bump further and Break lock wait while a preflight run is in flight', () => {
+    const taken = check({ id: 'version-tag', label: 'Version tag', level: 'block', message: 'v1.3.0 already exists' })
+    const locked = check({ id: 'lock', label: 'Lock on app1', level: 'block', message: 'Held by ana@mbp' })
+    const done = report({ checks: [taken, locked], blocked: true, locks: { h1: { stale: true } } as never })
+    const fixes = { repoPath: () => null, onBreakLock: () => {}, onBumpFurther: () => {} }
+    const { rerender } = render(<PreflightChecklist checks={[taken, locked]} report={done} fixes={{ ...fixes, busy: true }} />)
+    expect(screen.getByRole('button', { name: 'Bump further' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Break lock' })).toBeDisabled()
+    rerender(<PreflightChecklist checks={[taken, locked]} report={done} fixes={fixes} />)
+    expect(screen.getByRole('button', { name: 'Bump further' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Break lock' })).toBeEnabled()
+  })
+
+  it('a failed preflight stops saying Checking', async () => {
+    const { user, dialog, invoke } = await mount({ preselect: ['s1'] })
+    const pre = hold(invoke, 'release:preflight')
+    await run(user, dialog)
+    expect(within(dialog).getByText('Starting preflight')).toBeInTheDocument()
+    await pre.fail(0, new Error('main is busy'))
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('main is busy')
+    expect(within(dialog).queryByText('Checking')).not.toBeInTheDocument()
+    expect(within(dialog).queryByText('Starting preflight')).not.toBeInTheDocument()
+  })
+
+  it('a release that cannot be read says so', async () => {
+    const { user, dialog, invoke } = await mount({ preselect: ['s1'] })
+    const get = hold(invoke, 'release:get')
+    await run(user, dialog)
+    await waitFor(() => expect(get.count()).toBe(1))
+    await get.fail(0, new Error('release not found'))
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('release not found')
+  })
+
+  it('Cancel, Back and Escape wait while release:start is in flight', async () => {
+    const done = report()
+    const { user, dialog, invoke, closed } = await mount({ preselect: ['s1'], persisted: events([{ type: 'preflight.done', report: done }]) })
+    await preflight(user, dialog)
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Start' })).toBeEnabled())
+    await user.click(within(dialog).getByRole('button', { name: 'Start' }))
+    const startCall = hold(invoke, 'release:start')
+    await user.click(within(dialog).getByRole('button', { name: 'Start' }))
+    expect(startCall.count()).toBe(1)
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled()
+    expect(within(dialog).getByRole('button', { name: 'Back' })).toBeDisabled()
+    await user.keyboard('{Escape}')
+    expect(closed()).toBe(0)
+    expect(calls(invoke, 'release:discard')).toEqual([])
+    await startCall.settle(0, null)
+    expect(within(dialog).getByRole('button', { name: 'Close' })).toBeInTheDocument()
+    expect(calls(invoke, 'release:discard')).toEqual([])
   })
 })

@@ -1,7 +1,7 @@
 import type { CommitInfo, PreflightReport } from '../../../../../shared/deploy'
 import type { PickerGroup } from '../../../deploy/picker'
 import { plural } from '../../../ui/common'
-import { relativeTime } from '../../terminals/KnownHostsDialog'
+import { relativeTime } from '../../../ui/time'
 
 /** Each list shows at most this many; the rest is counted. */
 const SHOWN = 10

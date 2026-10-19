@@ -67,6 +67,8 @@ export function DeployWizard({ environmentId, preselect, onClose }: { environmen
   const [releaseId, setReleaseId] = useState<string | null>(null)
   const [redeploy, setRedeploy] = useState(false)
   const [busy, setBusy] = useState(false)
+  // release:start in flight: the wizard can't be closed or rewound until it answers.
+  const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   const pre = usePreflight(releaseId)
@@ -87,16 +89,28 @@ export function DeployWizard({ environmentId, preselect, onClose }: { environmen
 
   // The preflight release this wizard holds; discarded unless it was started.
   const held = useRef<string | null>(null)
+  // Bumped by every preflight run and every drop; a preflight that answers for an older attempt is discarded.
+  const attemptRef = useRef(0)
+  const mounted = useRef(false)
+  const discard = (id: string) => void api.invoke('release:discard', id).catch(() => {})
   const drop = () => {
+    attemptRef.current++
     const id = held.current
     held.current = null
     if (!id) return
     closeRelease(id)
-    void api.invoke('release:discard', id).catch(() => {})
+    discard(id)
   }
-  useEffect(() => () => drop(), [])
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+      drop()
+    }
+  }, [])
 
   const close = () => {
+    if (starting) return
     drop()
     onClose()
   }
@@ -133,6 +147,7 @@ export function DeployWizard({ environmentId, preselect, onClose }: { environmen
 
   const runPreflight = async (withBump = effectiveBump) => {
     drop()
+    const token = attemptRef.current
     setReleaseId(null)
     setRedeploy(false)
     setError(null)
@@ -149,17 +164,29 @@ export function DeployWizard({ environmentId, preselect, onClose }: { environmen
           options: { backup, notify: false, qa: false },
           ...(notes.trim() ? { releaseNotes: notes } : {}),
         }),
-      setError,
+      (message) => {
+        if (token === attemptRef.current) setError(message)
+      },
     )
+    // Closed, rewound or run again meanwhile: this release was never held, so it goes now.
+    if (token !== attemptRef.current || !mounted.current) {
+      if (out) discard(out.releaseId)
+      return
+    }
     setBusy(false)
     if (!out) return
-    held.current = out.releaseId
-    setReleaseId(out.releaseId)
-    void openRelease(out.releaseId)
+    const id = out.releaseId
+    held.current = id
+    setReleaseId(id)
+    void attempt("Couldn't load the release", () => openRelease(id), (message) => {
+      if (held.current === id) setError(message)
+    })
   }
 
   const back = () => {
+    if (starting) return
     drop()
+    setBusy(false)
     setReleaseId(null)
     setError(null)
     setStep('pick')
@@ -167,14 +194,18 @@ export function DeployWizard({ environmentId, preselect, onClose }: { environmen
 
   const start = async () => {
     if (!releaseId || !env) return
-    const begin = (typedName?: string) =>
-      attempt("Couldn't start the release", () => api.invoke('release:start', releaseId, { ...(typedName !== undefined ? { typedName } : {}), redeploy }), setError).then(
-        (ok) => {
-          if (ok === undefined) return
-          held.current = null
-          setStep('started')
-        },
+    const begin = async (typedName?: string) => {
+      setStarting(true)
+      const ok = await attempt(
+        "Couldn't start the release",
+        () => api.invoke('release:start', releaseId, { ...(typedName !== undefined ? { typedName } : {}), redeploy }),
+        setError,
       )
+      setStarting(false)
+      if (ok === undefined) return
+      held.current = null
+      setStep('started')
+    }
     if (env.protected) {
       setConfirm({
         title: `Deploy to ${env.name}?`,
@@ -185,9 +216,7 @@ export function DeployWizard({ environmentId, preselect, onClose }: { environmen
       })
       return
     }
-    setBusy(true)
     await begin()
-    setBusy(false)
   }
 
   const breakLock = (hostId: string) => {
@@ -238,13 +267,13 @@ export function DeployWizard({ environmentId, preselect, onClose }: { environmen
     ),
     confirm: (
       <>
-        <Button variant="ghost" onClick={close}>
+        <Button variant="ghost" disabled={starting} onClick={close}>
           Cancel
         </Button>
-        <Button variant="ghost" onClick={() => setStep('preflight')}>
+        <Button variant="ghost" disabled={starting} onClick={() => setStep('preflight')}>
           Back
         </Button>
-        <Button loading={busy} onClick={() => void start()}>
+        <Button loading={starting} onClick={() => void start()}>
           Start
         </Button>
       </>
@@ -296,8 +325,10 @@ export function DeployWizard({ environmentId, preselect, onClose }: { environmen
               <PreflightChecklist
                 checks={pre?.checks ?? []}
                 report={report}
+                checking={!error}
                 fixes={{
                   repoPath: (id) => checkouts.find((d) => d.id === id)?.repoPath ?? null,
+                  busy,
                   onBreakLock: breakLock,
                   onBumpFurther:
                     versioned && further
