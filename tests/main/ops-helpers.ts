@@ -36,6 +36,7 @@ export interface ShellHost {
 /**
  * A fake `docker`: only shell builtins, and it never runs another program by name, so it can't fall
  * through to a real docker. `ps`, `logs`, `start`, `stop` and `restart` answer from fixture files.
+ * With `--follow` and exit code 0 it then blocks on `read` until its stdin closes or a signal ends it, like `logs -f`.
  */
 const fakeDocker = (fixtures: string, log: string): string => `#!/bin/sh
 for a in "$@"; do printf '%s\\n' "$a" >> '${log}'; done
@@ -47,6 +48,9 @@ if [ -f "$f.out" ]; then while IFS= read -r l || [ -n "$l" ]; do printf '%s\\n' 
 if [ -f "$f.err" ]; then while IFS= read -r l || [ -n "$l" ]; do printf '%s\\n' "$l" >&2; done < "$f.err"; fi
 code=0
 if [ -f "$f.code" ]; then read -r code < "$f.code"; fi
+if [ "$code" = 0 ]; then for a in "$@"; do
+  if [ "$a" = --follow ]; then while read -r _; do :; done; fi
+done; fi
 exit "$code"
 `
 

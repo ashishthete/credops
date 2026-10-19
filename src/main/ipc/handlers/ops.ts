@@ -1,16 +1,16 @@
 import type { Handlers } from '../../../shared/ipc'
+import type { ContainerService } from '../../ops/containers'
 import type { RunManager } from '../../ops/run-manager'
 import type { SnippetStore } from '../../ops/snippet-store'
 
 type OpsChannel = Extract<keyof Handlers, `snippets:${string}` | `runs:${string}` | `containers:${string}`>
 
-const notYet = (): never => {
-  throw new Error('Not available yet')
-}
-
-// Task 6 replaces the container stubs with its service.
-export function createOpsHandlers(deps: { snippets: SnippetStore; runs: RunManager }): Pick<Handlers, OpsChannel> {
-  const { snippets, runs } = deps
+export function createOpsHandlers(deps: {
+  snippets: SnippetStore
+  runs: RunManager
+  containers: ContainerService
+}): Pick<Handlers, OpsChannel> {
+  const { snippets, runs, containers } = deps
   return {
     'snippets:list': () => snippets.list(),
     'snippets:create': (input) => snippets.create(input),
@@ -22,10 +22,11 @@ export function createOpsHandlers(deps: { snippets: SnippetStore; runs: RunManag
     'runs:list': () => runs.list(),
     'runs:get': (id) => runs.get(id),
     'runs:dismiss': (id) => runs.dismiss(id),
-    'containers:list': notYet,
-    'containers:action': notYet,
-    'containers:logs': notYet,
-    'containers:follow': notYet,
-    'containers:unfollow': notYet,
+    'containers:list': (hostId, environmentId) => containers.list(hostId, environmentId),
+    'containers:action': (hostId, environmentId, ref, action, confirm) =>
+      containers.action(hostId, environmentId, ref, action, confirm),
+    'containers:logs': (hostId, environmentId, ref, tail) => containers.logs(hostId, environmentId, ref, tail),
+    'containers:follow': (hostId, environmentId, ref, tail) => containers.follow(hostId, environmentId, ref, tail),
+    'containers:unfollow': (followId) => containers.unfollow(followId),
   }
 }

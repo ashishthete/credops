@@ -12,6 +12,7 @@ import {
 import { VAULT_LOCKED } from '../../src/shared/vault'
 import type { AuditEvent } from '../../src/shared/audit'
 import { createOpsHandlers } from '../../src/main/ipc/handlers/ops'
+import type { ContainerService } from '../../src/main/ops/containers'
 import { CONFIRM_MESSAGE, MULTIPLE_PROTECTED_MESSAGE } from '../../src/main/ops/protect'
 import { CANCELLED_RUNNING } from '../../src/main/ops/run-manager'
 import { auditRows } from './vault-helpers'
@@ -498,7 +499,7 @@ describe('RunManager', () => {
 
   it('the ops handlers route runs:* to the manager', async () => {
     const t = await makeRunSetup()
-    const h = createOpsHandlers({ snippets: t.snippets, runs: t.runs })
+    const h = createOpsHandlers({ snippets: t.snippets, runs: t.runs, containers: {} as ContainerService })
     const run = await h['runs:start']({ target: onHosts(t, ['app-1']), command: text('true') })
     await t.finished(run.id)
     expect((await h['runs:list']()).map((r) => r.id)).toEqual([run.id])

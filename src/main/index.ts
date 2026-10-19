@@ -37,6 +37,7 @@ import { ProductStore } from './inventory/product-store'
 import { resolveHost } from './inventory/resolve'
 import { hostMeta } from './inventory/rows'
 import { SshImporter } from './inventory/ssh-import'
+import { ContainerService } from './ops/containers'
 import { ExecLinks } from './ops/exec-links'
 import { RunManager } from './ops/run-manager'
 import { SnippetStore } from './ops/snippet-store'
@@ -75,6 +76,7 @@ let sessions: SessionManager | null = null
 let tunnelManager: TunnelManager | null = null
 let execLinks: ExecLinks | null = null
 let runManager: RunManager | null = null
+let containerService: ContainerService | null = null
 let quitAudited = false
 let stopAutoLock: (() => void) | null = null
 
@@ -237,6 +239,15 @@ if (!app.requestSingleInstanceLock()) {
         emit: (event, payload) => pushEvent(mainWindow, event, payload),
       })
       runManager = runs
+      const containers = new ContainerService({
+        links,
+        environments: () => envStore.list(),
+        hostLabel: (hostId) => hostMeta(inventoryDb, hostId).label,
+        isLocked,
+        audit: log,
+        emit: (event, payload) => pushEvent(mainWindow, event, payload),
+      })
+      containerService = containers
       tunnels.onRemoved = (id) => runner.removed(id)
       tunnels.onChanged = (before, after) => runner.changed(before, after)
       // On lock, in this order: sessions fail their dials and tunnels mark theirs to pause (both keep
@@ -244,8 +255,10 @@ if (!app.requestSingleInstanceLock()) {
       // commands finish; exec links fail their dials as `locked` and close idle links; then every
       // prompt left is cancelled. Runs go before links so each dial a run aborts is already marked
       // `locked` for that host. Separate listeners, so one failing never skips the others. Quit
-      // (before-quit) stops tunnels, closes sessions, cancels runs (writing their run.finish), closes
-      // exec links, and only then locks the vault.
+      // (before-quit) stops tunnels, closes sessions, cancels runs (writing their run.finish), stops
+      // container log follows, closes exec links, and only then locks the vault. Container follows
+      // have no lock listener: one already open keeps streaming through a lock (new calls are
+      // refused while locked), like a connected session.
       service.onLock(() => manager.vaultLocked())
       service.onLock(() => runner.vaultLocked())
       service.onLock(() => runs.vaultLocked())
@@ -304,7 +317,7 @@ if (!app.requestSingleInstanceLock()) {
           ...createSshImportHandlers(importer),
           ...createTunnelHandlers({ store: tunnels, manager: runner }),
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
-          ...createOpsHandlers({ snippets, runs }),
+          ...createOpsHandlers({ snippets, runs, containers }),
         },
         (url) => isTrustedSender(url, { devServerUrl, rendererFile }),
         { validators: VALIDATORS, knownSecrets },
@@ -336,6 +349,11 @@ if (!app.requestSingleInstanceLock()) {
       runManager?.closeAll()
     } catch (err) {
       console.error('Failed to cancel runs on quit:', err)
+    }
+    try {
+      containerService?.closeAll()
+    } catch (err) {
+      console.error('Failed to stop container log follows on quit:', err)
     }
     try {
       execLinks?.closeAll()

@@ -606,3 +606,94 @@ function stubShell() {
   }
   return stub
 }
+
+describe('SessionManager container exec tabs', () => {
+  const EXEC = "docker exec '-it' web-1 sh '-c' 'command -v bash >/dev/null 2>&1 && exec bash || exec sh'"
+  const appHost = { hostInfo: () => ({ label: 'app-1', keepaliveSec: null, envVars: { LANG: 'C.UTF-8' } }) }
+  const execs = (t: Awaited<ReturnType<typeof setup>>) => t.audit.list({ actions: ['container.exec'] }).reverse()
+
+  /** Each exec answers `IN <command>` and exits 0 on the first input it reads. */
+  async function execServer(seen: { command: string; env: Record<string, string>; term: string | null; cols: number | null }[]) {
+    return server({
+      onExec: (command, stream, info) => {
+        seen.push({ command, env: info.env, term: info.pty?.term ?? null, cols: info.pty?.cols ?? null })
+        stream.write('IN-CONTAINER\r\n')
+        stream.once('data', () => {
+          stream.exit(0)
+          stream.end()
+        })
+      },
+    })
+  }
+
+  it('opens a container exec tab with a pty and the quoted docker exec command', async () => {
+    const t = await setup(appHost)
+    const seen: Parameters<typeof execServer>[0] = []
+    const srv = await execServer(seen)
+    t.trust(srv)
+    const hostId = t.host(srv.port)
+    const opened = t.manager.openSsh({ hostId, ...size, container: 'web-1' })
+    expect(opened).toMatchObject({ label: 'web-1@app-1', container: 'web-1', state: 'connecting' })
+    await t.waitState(opened.id, 'ready')
+    await t.waitData(opened.id, 'IN-CONTAINER')
+    // shQuote quotes a word that starts with `-`; the brief's unquoted `-it` and `-c` parse the same.
+    expect(seen).toEqual([{ command: EXEC, env: { LANG: 'C.UTF-8' }, term: 'xterm-256color', cols: 80 }])
+    expect(srv.execs()).toEqual([EXEC])
+
+    expect(t.audits('ssh.open')).toEqual([
+      expect.objectContaining({ outcome: 'success', targetType: 'host', targetLabel: 'app-1', details: expect.objectContaining({ container: 'web-1' }) }),
+    ])
+    expect(execs(t)).toEqual([
+      expect.objectContaining({
+        outcome: 'success',
+        targetType: 'container',
+        targetLabel: 'web-1@app-1',
+        details: { hostId, environmentId: null },
+      }),
+    ])
+    t.manager.write(opened.id, 'exit\r')
+    await t.waitState(opened.id, 'closed')
+    expect(t.audits('ssh.close')).toEqual([expect.objectContaining({ targetLabel: 'app-1', details: expect.objectContaining({ container: 'web-1', reason: 'remote' }) })])
+    expect(JSON.stringify(t.audit.list({ actions: ['ssh.open', 'ssh.close', 'container.exec'] }))).not.toContain('127.0.0.1')
+  })
+
+  it('reconnecting a container tab runs the exec again', async () => {
+    const t = await setup(appHost)
+    const seen: Parameters<typeof execServer>[0] = []
+    const srv = await execServer(seen)
+    t.trust(srv)
+    const { id } = t.manager.openSsh({ hostId: t.host(srv.port), ...size, container: 'web-1' })
+    await t.waitState(id, 'ready')
+    t.manager.write(id, 'exit\r')
+    await t.waitState(id, 'closed')
+
+    const again = t.manager.reconnect(id)
+    expect(again).toMatchObject({ id, label: 'web-1@app-1', container: 'web-1', attempt: 2 })
+    await t.waitState(id, 'ready')
+    await vi.waitFor(() => expect(t.manager.attach(id).buffer).toContain(`${MARKER}IN-CONTAINER`), { timeout: 5000 })
+    expect(srv.execs()).toEqual([EXEC, EXEC])
+    expect(execs(t).map((e) => e.outcome)).toEqual(['success', 'success'])
+    expect(t.audits('ssh.open')).toHaveLength(2)
+  })
+
+  it('a refused exec fails the tab and audits container.exec as a failure', async () => {
+    const t = await setup(appHost)
+    const srv = await server()
+    t.trust(srv)
+    const { id } = t.manager.openSsh({ hostId: t.host(srv.port), ...size, container: 'web-1' })
+    const failed = await t.waitState(id, 'failed')
+    expect(failed.error).not.toBeNull()
+    expect(execs(t)).toEqual([expect.objectContaining({ outcome: 'failure', targetLabel: 'web-1@app-1' })])
+    expect(t.audits('ssh.open')).toEqual([expect.objectContaining({ outcome: 'failure' })])
+  })
+
+  it('refuses a container ref that is not a container name', async () => {
+    const t = await setup(appHost)
+    const srv = await server()
+    for (const container of ['', '-h', 'web 1', 'web;x']) {
+      expect(() => t.manager.openSsh({ hostId: t.host(srv.port), ...size, container })).toThrow(/^container must be a container name or id$/)
+    }
+    expect(t.manager.list()).toEqual([])
+    expect(srv.connections()).toBe(0)
+  })
+})

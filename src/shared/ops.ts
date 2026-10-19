@@ -26,7 +26,8 @@ export const OUTPUT_FLUSH_MS = 50
 export const OUTPUT_FLUSH_CHARS = 32_768
 export const LOG_TAIL_DEFAULT = 200
 export const LOG_TAIL_MAX = 5000
-export const MAX_LOG_FOLLOWS = 8
+/** Per host: an exec link has 8 channels, so 2 stay free for container list and actions. */
+export const MAX_LOG_FOLLOWS = 6
 export const LINK_IDLE_MS = 30_000
 export const MAX_EXEC_LINKS = 24
 /** Exec channels open at once on one link; below OpenSSH's default `MaxSessions 10`. */

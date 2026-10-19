@@ -17,6 +17,8 @@ import {
   type SessionMeta,
 } from '../../shared/ssh'
 import { VAULT_LOCKED } from '../../shared/vault'
+import { checkContainerRef, containerExecArgv } from '../ops/containers'
+import { shJoin } from '../ops/quote'
 import { redact } from '../security/redact'
 import type { AuthPlan } from './auth'
 import { describeError, hopsOf } from './connect'
@@ -119,6 +121,8 @@ interface Session {
   /** Set while connecting or ready. */
   attempt: Attempt | null
   readyAtMs: number
+  /** The host's own label: `meta.label` reads `<ref>@<host>` on a container tab, the ssh.* audit keeps the host. */
+  hostLabel: string
 }
 
 interface DialTarget {
@@ -146,6 +150,10 @@ const once = (fn: () => void): (() => void) => {
     fn()
   }
 }
+
+/** A container tab reads `<ref>@<host>`, a full id as its 12-char short id. */
+const tabLabel = (container: string | null, hostLabel: string): string =>
+  container === null ? hostLabel : `${/^[0-9a-f]{64}$/.test(container) ? container.slice(0, 12) : container}@${hostLabel}`
 
 /** A drop after ready: never the dial-time "didn't answer within 20 s" text. */
 function lostError(label: string, err: unknown): SessionError {
@@ -196,8 +204,10 @@ export class SessionManager {
   openSsh(req: OpenSshRequest): SessionMeta {
     this.assertUnlocked()
     this.assertRoom()
+    const container = req.container === undefined ? null : checkContainerRef(req.container)
     const target = this.target(req.hostId, req.environmentId)
-    const s = this.create('ssh', req, target.label, req.hostId, target)
+    const s = this.create('ssh', req, tabLabel(container, target.label), req.hostId, target)
+    s.meta.container = container
     this.dial(s, target)
     return snapshot(s.meta)
   }
@@ -222,8 +232,9 @@ export class SessionManager {
     this.assertUnlocked()
     this.assertRoom()
     const target = this.target(s.meta.hostId, s.meta.environmentId ?? undefined)
+    s.hostLabel = target.label
     Object.assign(s.meta, {
-      label: target.label,
+      label: tabLabel(s.meta.container, target.label),
       color: target.color,
       state: 'connecting',
       error: null,
@@ -348,6 +359,7 @@ export class SessionManager {
       pty: null,
       attempt: null,
       readyAtMs: 0,
+      hostLabel: target?.label ?? label,
     }
     this.sessions.set(s.meta.id, s)
     return s
@@ -437,11 +449,15 @@ export class SessionManager {
       else this.dialFailed(s, attempt, target, lastError ?? new Error('The server closed the connection'))
     })
     const onShell = (err: Error | undefined, stream: ClientChannel): void => {
-      if (err) return this.dialFailed(s, attempt, target, err)
+      if (err) {
+        if (this.isLive(s, attempt)) this.auditExec(s, 'failure')
+        return this.dialFailed(s, attempt, target, err)
+      }
       if (!this.isLive(s, attempt)) {
         stream.close()
         return attempt.close?.()
       }
+      this.auditExec(s, 'success')
       let exited = false
       stream.once('exit', () => {
         exited = true
@@ -456,7 +472,10 @@ export class SessionManager {
     const sent = { cols: s.cols, rows: s.rows }
     try {
       // A server may refuse the env vars; ssh2 doesn't wait for a reply, so that is ignored.
-      client.shell({ term: 'xterm-256color', ...sent }, { env: target.envVars }, onShell)
+      const { container } = s.meta
+      if (container === null) client.shell({ term: 'xterm-256color', ...sent }, { env: target.envVars }, onShell)
+      // A container tab: `docker exec -it` on a pty in place of the login shell, again on each reconnect.
+      else client.exec(shJoin(containerExecArgv(container)), { pty: { term: 'xterm-256color', ...sent }, env: target.envVars }, onShell)
     } catch (err) {
       this.dialFailed(s, attempt, target, err)
     }
@@ -514,6 +533,7 @@ export class SessionManager {
       ...this.auditTarget(s),
       details: {
         ...(s.meta.environmentId ? { environmentId: s.meta.environmentId } : {}),
+        ...(s.meta.container ? { container: s.meta.container } : {}),
         durationSec: Math.round((now.getTime() - s.readyAtMs) / 1000),
         reason,
       },
@@ -527,6 +547,7 @@ export class SessionManager {
       ...this.auditTarget(s),
       details: {
         ...(s.meta.environmentId ? { environmentId: s.meta.environmentId } : {}),
+        ...(s.meta.container ? { container: s.meta.container } : {}),
         ...(s.meta.kind === 'ssh' ? details : {}),
       },
     })
@@ -541,9 +562,26 @@ export class SessionManager {
     }
   }
 
+  /** Once per container tab attempt: when the exec channel is accepted, or refused. */
+  private auditExec(s: Session, outcome: 'success' | 'failure'): void {
+    const ref = s.meta.container
+    if (ref === null) return
+    this.audit({
+      action: 'container.exec',
+      outcome,
+      targetType: 'container',
+      targetLabel: s.meta.label,
+      details: {
+        hostId: s.meta.hostId,
+        environmentId: s.meta.environmentId,
+        ...(/^[0-9a-f]{64}$/.test(ref) ? { containerId: ref.slice(0, 12) } : {}),
+      },
+    })
+  }
+
   private auditTarget(s: Session): Pick<AuditInput, 'targetType' | 'targetId' | 'targetLabel'> {
     return s.meta.kind === 'ssh'
-      ? { targetType: 'host', targetId: s.meta.hostId ?? undefined, targetLabel: s.meta.label }
+      ? { targetType: 'host', targetId: s.meta.hostId ?? undefined, targetLabel: s.hostLabel }
       : { targetType: 'shell', targetLabel: LOCAL_LABEL }
   }
 
