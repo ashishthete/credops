@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { closeSync, fchmodSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeSync } from 'node:fs'
+import { closeSync, fchmodSync, fstatSync, openSync, readFileSync, realpathSync, unlinkSync, writeSync } from 'node:fs'
 import type { Stats } from 'node:fs'
-import { sep } from 'node:path'
+import { isAbsolute, sep } from 'node:path'
 import { openSealed, seal } from '../../../src/main/vault/crypto'
 import type { HubDb } from '../db'
 
@@ -20,7 +20,7 @@ function decode(text: string): Buffer {
 
 /** True when `file` resolves (symlinks followed) to a path inside `dir`. A link that escapes it is outside. */
 function insideDir(file: string, dir: string | undefined): boolean {
-  if (!dir) return false
+  if (!dir || !isAbsolute(dir) || dir === sep) return false
   try {
     const root = realpathSync(dir)
     return realpathSync(file).startsWith(root.endsWith(sep) ? root : root + sep)
@@ -38,14 +38,17 @@ function insideDir(file: string, dir: string | undefined): boolean {
  * root or this user, nobody can write, and the file has no "other" bits. Unverified on a live systemd.
  */
 export function loadMasterKey(
-  opts: { file?: string; env?: Record<string, string | undefined>; stat?: (path: string) => Pick<Stats, 'mode' | 'uid'> } = {},
+  opts: { file?: string; env?: Record<string, string | undefined>; fstat?: (fd: number) => Pick<Stats, 'mode' | 'uid'> } = {},
 ): Buffer {
   const env = opts.env ?? process.env
-  const stat = opts.stat ?? statSync
+  const fstat = opts.fstat ?? fstatSync
   if (opts.file) {
     let text: string
+    let fd: number | undefined
     try {
-      const st = stat(opts.file)
+      // One open file for both the checks and the read, so the file cannot be swapped in between.
+      fd = openSync(opts.file, 'r')
+      const st = fstat(fd)
       const mode = st.mode & 0o777
       const uid = typeof process.getuid === 'function' ? process.getuid() : undefined
       if (insideDir(opts.file, env.CREDENTIALS_DIRECTORY)) {
@@ -56,10 +59,12 @@ export function loadMasterKey(
         if (mode !== 0o600 && mode !== 0o400) throw new Error('masterKeyFile must be chmod 600')
         if (uid !== undefined && st.uid !== uid) throw new Error('masterKeyFile must be owned by the Hub user')
       }
-      text = readFileSync(opts.file, 'utf8')
+      text = readFileSync(fd, 'utf8')
     } catch (err) {
       if (err instanceof Error && err.message.startsWith('masterKeyFile must')) throw err
       throw new Error('masterKeyFile could not be read')
+    } finally {
+      if (fd !== undefined) closeSync(fd)
     }
     return decode(text)
   }

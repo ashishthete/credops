@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, symlinkSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, fstatSync, mkdirSync, mkdtempSync, symlinkSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import Fastify from 'fastify'
 import { afterEach, describe, expect, it } from 'vitest'
 import { MAX_SECRET_BYTES } from '../../src/shared/hub'
@@ -330,7 +330,7 @@ describe('master key', () => {
   })
 
   describe('master key under systemd LoadCredential', () => {
-    const rootOwned = (mode: number) => (path: string) => ({ ...statSync(path), mode: 0o100000 | mode, uid: 0 })
+    const rootOwned = (mode: number) => (fd: number) => ({ ...fstatSync(fd), mode: 0o100000 | mode, uid: 0 })
 
     function credential(mode = 0o440) {
       const dir = tmp()
@@ -344,27 +344,34 @@ describe('master key', () => {
 
     it('accepts a root-owned 0440 file inside the credentials directory', () => {
       const c = credential()
-      expect(loadMasterKey({ file: c.file, env: c.env, stat: c.stat }).equals(c.key)).toBe(true)
+      expect(loadMasterKey({ file: c.file, env: c.env, fstat: c.stat }).equals(c.key)).toBe(true)
     })
 
     it('refuses the same file outside the directory (strict check applies)', () => {
       const c = credential()
-      expect(() => loadMasterKey({ file: c.file, env: { CREDENTIALS_DIRECTORY: join(c.dir, 'elsewhere') }, stat: c.stat })).toThrow('chmod 600')
-      expect(() => loadMasterKey({ file: c.file, env: {}, stat: c.stat })).toThrow('chmod 600')
+      expect(() => loadMasterKey({ file: c.file, env: { CREDENTIALS_DIRECTORY: join(c.dir, 'elsewhere') }, fstat: c.stat })).toThrow('chmod 600')
+      expect(() => loadMasterKey({ file: c.file, env: {}, fstat: c.stat })).toThrow('chmod 600')
     })
 
     it('refuses other bits and write bits inside the directory', () => {
       const c = credential()
-      expect(() => loadMasterKey({ file: c.file, env: c.env, stat: rootOwned(0o444) })).toThrow('other users')
-      expect(() => loadMasterKey({ file: c.file, env: c.env, stat: rootOwned(0o640) })).toThrow('not be writable')
-      expect(() => loadMasterKey({ file: c.file, env: c.env, stat: rootOwned(0o460) })).toThrow('not be writable')
+      expect(() => loadMasterKey({ file: c.file, env: c.env, fstat: rootOwned(0o444) })).toThrow('other users')
+      expect(() => loadMasterKey({ file: c.file, env: c.env, fstat: rootOwned(0o640) })).toThrow('not be writable')
+      expect(() => loadMasterKey({ file: c.file, env: c.env, fstat: rootOwned(0o460) })).toThrow('not be writable')
+    })
+
+    it('uses the strict check when CREDENTIALS_DIRECTORY is "/" or relative', () => {
+      const c = credential()
+      expect(() => loadMasterKey({ file: c.file, env: { CREDENTIALS_DIRECTORY: '/' }, fstat: c.stat })).toThrow('chmod 600')
+      const rel = relative(process.cwd(), c.creds)
+      expect(() => loadMasterKey({ file: c.file, env: { CREDENTIALS_DIRECTORY: rel }, fstat: c.stat })).toThrow('chmod 600')
     })
 
     it('refuses a foreign owner inside the directory', () => {
       const c = credential()
       const uid = process.getuid!()
-      const other = (path: string) => ({ ...statSync(path), mode: 0o100440, uid: uid + 1 })
-      expect(() => loadMasterKey({ file: c.file, env: c.env, stat: other })).toThrow('owned by root or the Hub user')
+      const other = (fd: number) => ({ ...fstatSync(fd), mode: 0o100440, uid: uid + 1 })
+      expect(() => loadMasterKey({ file: c.file, env: c.env, fstat: other })).toThrow('owned by root or the Hub user')
     })
 
     it('refuses a symlink that escapes the directory', () => {
@@ -373,7 +380,7 @@ describe('master key', () => {
       writeFileSync(outside, `${c.key.toString('base64')}\n`)
       const link = join(c.creds, 'link')
       symlinkSync(outside, link)
-      expect(() => loadMasterKey({ file: link, env: c.env, stat: c.stat })).toThrow('chmod 600')
+      expect(() => loadMasterKey({ file: link, env: c.env, fstat: c.stat })).toThrow('chmod 600')
     })
   })
 
