@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   BACKUP_DIR,
+  COMPOSE_FILE,
   GIT_REF,
   REPO_PATH,
   STEP_LABEL,
@@ -92,11 +93,16 @@ describe('regexes', () => {
     expect(REPO_PATH.test(s)).toBe(true)
     expect(BACKUP_DIR.test(s)).toBe(true)
   })
-  it.each(['srv/app', '/srv/../etc', '/srv/app;rm', '/srv/{a}', '/srv/a b', '/srv/$HOME', '/srv/app/'])('REPO_PATH rejects %s', (s) => {
+  it.each(['srv/app', '/srv/../etc', '/srv/app;rm', '/srv/{a}', '/srv/a b', '/srv/$HOME', '/srv/app/', '/.', '//srv', '/srv/./app', '/srv//app'])('REPO_PATH rejects %s', (s) => {
     expect(REPO_PATH.test(s)).toBe(false)
   })
   it.each(['main', 'release/2026.10', 'backend_prod'])('GIT_REF accepts %s', (s) => expect(GIT_REF.test(s)).toBe(true))
   it.each(['a..b', '-x', 'a b', 'a;b', 'x.lock'])('GIT_REF rejects %s', (s) => expect(GIT_REF.test(s)).toBe(false))
+})
+
+describe('COMPOSE_FILE', () => {
+  it.each(['docker-compose.yml', 'deploy/compose.prod.yml'])('accepts %s', (s) => expect(COMPOSE_FILE.test(s)).toBe(true))
+  it.each(['-f', '/abs.yml', '../x.yml', 'a b.yml'])('rejects %s', (s) => expect(COMPOSE_FILE.test(s)).toBe(false))
 })
 
 describe('misc', () => {
@@ -107,6 +113,14 @@ describe('misc', () => {
         Date.parse('2026-10-19T10:05:00.000Z'),
       ),
     ).toBe('ana@mbp is deploying v1.5.0 since 2026-10-19T10:00:00.000Z')
+  })
+  it('lockHolderText says "release" without a version', () => {
+    const h = { releaseId: 'r', user: 'ana', machine: 'mbp', environment: 'prod', version: null, startedAt: 'T' }
+    expect(lockHolderText(h, 0)).toBe('ana@mbp is deploying release since T')
+  })
+  it('bumpVersion throws on a malformed current version', () => {
+    expect(() => bumpVersion('garbage', 'minor')).toThrow(/invalid version "garbage"/)
+    expect(() => bumpVersion('1.2.3', 'none')).toThrow(/invalid version/)
   })
   it('labels every step kind', () => {
     expect(STEP_LABEL.rb_checkout).toBe('Rollback checkout')

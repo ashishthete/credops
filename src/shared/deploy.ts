@@ -18,10 +18,10 @@ export const KILL_GRACE_MS = 5000
 export const PREPARE_DIAL_TIMEOUT_MS = 20000
 
 // ---- Validation rules (they make generated YAML and shell injection impossible) ----
-export const REPO_PATH = /^(?!.*\.\.)\/[A-Za-z0-9._@+/-]{1,255}(?<!\/)$/
+export const REPO_PATH = /^(?!.*\.\.)(?!.*\/\/)(?!.*\/\.(?:\/|$))\/[A-Za-z0-9._@+/-]{1,255}(?<!\/)$/
 export const BACKUP_DIR = REPO_PATH
 export const GIT_REF = /^(?!.*\.\.)(?!.*\/\/)(?!\/)(?!.*\/$)(?!.*\.lock$)(?!-)[A-Za-z0-9._/-]{1,200}$/
-export const COMPOSE_FILE = /^(?!\/)(?!.*\.\.)[A-Za-z0-9._/-]{1,200}$/
+export const COMPOSE_FILE = /^(?!\/)(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,200}$/
 export const VERSION = /^v\d+\.\d+\.\d+$/
 export const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
 
@@ -126,6 +126,7 @@ export type EnvDeploySettingsPatch = Partial<Pick<EnvDeploySettings, 'versioned'
 export type VersionBump = 'major' | 'minor' | 'patch' | 'none'
 
 export function bumpVersion(current: string | null, bump: VersionBump): string | null {
+  if (current !== null && !VERSION.test(current)) throw new Error(`invalid version "${current}"`)
   if (bump === 'none') return current
   const m = current === null ? null : /^v(\d+)\.(\d+)\.(\d+)$/.exec(current)
   let [maj, min, pat] = m ? [Number(m[1]), Number(m[2]), Number(m[3])] : [0, 0, 0]
@@ -320,7 +321,7 @@ export interface LockHolder {
 }
 
 export function lockHolderText(h: LockHolder, _now: number): string {
-  return `${h.user}@${h.machine} is deploying ${h.version ?? h.environment} since ${h.startedAt}`
+  return `${h.user}@${h.machine} is deploying ${h.version ?? 'release'} since ${h.startedAt}`
 }
 
 // ---- Preflight ----
@@ -433,6 +434,8 @@ export interface DeploymentRunMeta {
 export interface ReleaseDetail extends ReleaseSummary {
   options: ReleaseOptions
   releaseNotes: string | null
+  /** The generated, secret-free release playbook JSON (redacted again on read). */
+  playbook: string | null
   runs: DeploymentRunMeta[]
   preflight: PreflightReport | null
   lastSeq: number
