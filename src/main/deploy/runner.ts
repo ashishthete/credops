@@ -1,4 +1,4 @@
-import type { Actor, DockerMode, HealthUrl, UseSudo } from '../../shared/deploy'
+import type { Actor, DockerMode, HealthUrl, PreflightReport, RunEventBody, UseSudo } from '../../shared/deploy'
 
 /** One SSH hop. `hostId` is null for a hop that isn't an inventory host. */
 export interface PlanHop {
@@ -67,4 +67,38 @@ export interface DeployPlan {
   /** For `break-lock`: the raw lock content preflight saw, per host. */
   lock: { expectRaw?: Record<string, string> }
   startedAt: string
+}
+
+// ---- The runner boundary (Phase 10's HubRunner implements the same interface) ----
+
+export interface RunSecrets {
+  /** key -> plaintext. Reaches ansible only as base64 inside OPSDECK_SECRETS. Ignored by the Hub. */
+  values: Record<string, string>
+  /** Every individual secret value, for redact(). */
+  known: string[]
+}
+
+export interface RunOutcome {
+  exitCode: number | null
+  signal: string | null
+  cancelled: boolean
+  /** Set for preflight plans. */
+  preflight?: Omit<PreflightReport, 'releaseId'>
+  failedDeploymentRunIds: string[]
+  /** Deployment runs whose checkout step started, so a rollback has something to undo. */
+  reachedCheckout: string[]
+  commits: Record<string, { previous?: string; deployed?: string }>
+}
+
+export interface RunHandle {
+  /** UUIDv7, one per playbook execution (a release involves several). The release id is the stream id. */
+  runId: string
+  /** Resolves when the process has exited and cleanup is done. Rejects before anything is created if a tool is missing. */
+  done: Promise<RunOutcome>
+}
+
+export interface DeployRunner {
+  start(plan: DeployPlan, secrets: RunSecrets): RunHandle
+  cancel(runId: string): void
+  onEvent(fn: (releaseId: string, body: RunEventBody) => void): () => void
 }

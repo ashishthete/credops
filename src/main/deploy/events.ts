@@ -134,8 +134,20 @@ export class EventTranslator {
   }
 
   /** Called when ansible exits: closes steps that never finished. */
-  finish(exitCode: number | null, signal: string | null): RunEventBody[] {
+  finish(exitCode: number | null, signal: string | null, cancelled = false): RunEventBody[] {
     const out: RunEventBody[] = []
+    if (cancelled) {
+      // a cancel is not a failure: running steps and their deployments close as cancelled
+      const runs = new Set<string>()
+      for (const [stepId, a] of this.active) {
+        if (a.done) continue
+        a.done = true
+        out.push({ type: 'step.done', stepId, state: 'cancelled', durationMs: this.o.now() - a.startedAt })
+        if (a.deploymentRunId && !this.failedRuns.has(a.deploymentRunId)) runs.add(a.deploymentRunId)
+      }
+      for (const run of runs) out.push({ type: 'deployment.updated', deploymentRunId: run, status: 'cancelled' })
+      return out
+    }
     const why = signal ? `Ansible was stopped (${signal}) before this step finished` : `Ansible exited with code ${exitCode} before this step finished`
     for (const [stepId, a] of this.active) {
       if (a.done) continue

@@ -367,7 +367,7 @@ export type RunEventBody =
   | { type: 'preflight.check'; check: PreflightCheck }
   | { type: 'preflight.done'; report: PreflightReport }
   | { type: 'step.started'; stepId: string; kind: StepKind; name: string; hostId: string | null; deploymentRunId: string | null }
-  | { type: 'step.done'; stepId: string; state: 'ok' | 'warn' | 'skipped'; durationMs: number; message?: string }
+  | { type: 'step.done'; stepId: string; state: 'ok' | 'warn' | 'skipped' | 'cancelled'; durationMs: number; message?: string }
   | { type: 'step.failed'; stepId: string; error: string; durationMs: number }
   | { type: 'log'; stepId: string | null; hostId: string | null; stream: 'out' | 'err' | 'ansible'; line: string }
   | { type: 'log.truncated'; dropped: number }
