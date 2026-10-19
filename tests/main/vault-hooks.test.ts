@@ -11,6 +11,7 @@ function recording() {
     tunnels: { vaultLocked: rec('tunnels.vaultLocked'), vaultUnlocked: rec('tunnels.vaultUnlocked'), vaultReset: rec('tunnels.vaultReset') },
     runs: { vaultLocked: rec('runs.vaultLocked'), vaultReset: rec('runs.vaultReset') },
     links: { vaultLocked: rec('links.vaultLocked'), closeForReset: rec('links.closeForReset') },
+    containers: { vaultReset: rec('containers.vaultReset') },
     prompts: { cancelAll: rec('prompts.cancelAll') },
   }
   return { calls, targets }
@@ -33,7 +34,7 @@ describe('wireVaultHooks', () => {
       'prompts.cancelAll',
     ])
     await vault.reset('RESET')
-    expect(calls.splice(0)).toEqual(['sessions.closeAll(reset)', 'tunnels.vaultReset', 'runs.vaultReset', 'links.closeForReset'])
+    expect(calls.splice(0)).toEqual(['sessions.closeAll(reset)', 'tunnels.vaultReset', 'runs.vaultReset', 'containers.vaultReset', 'links.closeForReset'])
   })
 
   it('a throwing hook never skips the ones after it', async () => {

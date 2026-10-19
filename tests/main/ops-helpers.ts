@@ -21,6 +21,7 @@ import { TUNNEL_USER } from './tunnel-helpers'
 /** Hook targets for what a run setup doesn't build. */
 export const idleSessions = { vaultLocked() {}, closeAll() {} }
 export const idleTunnels = { vaultLocked() {}, vaultUnlocked() {}, vaultReset() {} }
+export const idleContainers = { vaultReset() {} }
 
 export interface ShellHost {
   /** The tmp dir every command runs in; also its `HOME`. */
@@ -191,7 +192,7 @@ export async function makeRunSetup(deps: Partial<RunManagerDeps> = {}) {
     ...deps,
   })
   // The app's own wiring: runs, then links, then the broker on lock; runs, then links on reset.
-  wireVaultHooks(f.vault, { sessions: idleSessions, tunnels: idleTunnels, runs, links, prompts: broker })
+  wireVaultHooks(f.vault, { sessions: idleSessions, tunnels: idleTunnels, runs, links, containers: idleContainers, prompts: broker })
   onTestFinished(() => {
     runs.closeAll()
     links.closeAll()

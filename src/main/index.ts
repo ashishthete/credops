@@ -266,8 +266,8 @@ if (!app.requestSingleInstanceLock()) {
       // tunnels, closes sessions, cancels runs (writing their run.finish), stops container log
       // follows, closes exec links, and only then locks the vault. Container follows have no lock
       // listener: one already open keeps streaming through a lock (new calls are refused while
-      // locked), like a connected session.
-      wireVaultHooks(service, { sessions: manager, tunnels: runner, runs, links, prompts })
+      // locked), like a connected session. A reset does stop them.
+      wireVaultHooks(service, { sessions: manager, tunnels: runner, runs, links, containers, prompts })
       stopAutoLock = new AutoLock({
         idleSeconds: () => powerMonitor.getSystemIdleTime(),
         minutes: () => service.autoLockMinutes(),

@@ -6,6 +6,7 @@ export interface VaultHookTargets {
   tunnels: { vaultLocked(): void; vaultUnlocked(): void; vaultReset(): void }
   runs: { vaultLocked(): void; vaultReset(): void }
   links: { vaultLocked(): void; closeForReset(): void }
+  containers: { vaultReset(): void }
   prompts: { cancelAll(): void }
 }
 
@@ -27,11 +28,13 @@ export function wireVaultHooks(vault: Pick<VaultService, 'onLock' | 'onUnlock' |
   // Resumes paused tunnels; the first unlock also auto-starts.
   vault.onUnlock(() => t.tunnels.vaultUnlocked())
   // A reset needs no password, so nothing the old one guarded may survive it: every session
-  // (local shells too, for their scrollback), every tunnel, every ops run (with its output) and
-  // every exec link, leased ones too, goes before the gate opens. Runs go before links, so each
-  // run is ended as cancelled rather than failing on a dropped link.
+  // (local shells too, for their scrollback), every tunnel, every ops run (with its output), every
+  // container log follow (with the cached container names) and every exec link, leased ones too,
+  // goes before the gate opens. Runs and follows go before links, so each ends as cancelled rather
+  // than failing on a dropped link.
   vault.onReset(() => t.sessions.closeAll('reset'))
   vault.onReset(() => t.tunnels.vaultReset())
   vault.onReset(() => t.runs.vaultReset())
+  vault.onReset(() => t.containers.vaultReset())
   vault.onReset(() => t.links.closeForReset())
 }

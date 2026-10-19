@@ -19,6 +19,7 @@ import {
 import { PROMPT_TIMEOUT_MS, type SessionError } from '../../shared/ssh'
 import { VAULT_LOCKED } from '../../shared/vault'
 import { redact } from '../security/redact'
+import { quietly } from '../util/teardown'
 import { realTimers, type Timers } from '../tunnels/forward'
 import { ExecFailure, type ExecLinks, type Lease } from './exec-links'
 import { execOnce, type ExecResult } from './exec'
@@ -451,6 +452,26 @@ export class ContainerService {
     this.closed = true
     for (const abort of this.inFlight) abort.abort()
     this.unfollowAll()
+  }
+
+  /**
+   * Vault reset: stops every follow and one-shot command and forgets the names from the last list,
+   * so nothing read before the reset is kept. Unlike `closeAll`, calls work again after setup. One
+   * follow failing to stop never keeps the rest.
+   */
+  vaultReset(): void {
+    for (const abort of [...this.inFlight]) quietly(() => abort.abort())
+    for (const f of [...this.follows.values()]) {
+      try {
+        f.abort.abort()
+        this.endFollow(f, null)
+      } catch (err) {
+        console.warn('Container log follow stop failed:', redact(err instanceof Error ? err.message : String(err)))
+        quietly(() => f.abort.abort())
+      }
+    }
+    this.follows.clear()
+    this.names.clear()
   }
 
   private assertOpen(): void {
