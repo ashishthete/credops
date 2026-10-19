@@ -129,11 +129,13 @@ const becomes = (d: PlanDeployment): boolean => d.docker !== 'plain'
  * The user's home even under sudo: root's $HOME would put the log in the wrong place.
  * Without SUDO_USER we are the user, so $HOME is right; no getent, so BusyBox hosts work.
  */
+/** Where a release keeps its remote files, under the login user's home. The live log tap reads the same path. */
+export const RUNS_SUBDIR = '.opsdeck/runs'
 const LOG_SETUP = [
   'U="${SUDO_USER:-}"',
   'if [ -n "$U" ]; then H=$(awk -F: -v u="$U" \'$1==u {print $6; exit}\' /etc/passwd 2>/dev/null); fi',
   'H="${H:-$HOME}"',
-  'L="$H/.opsdeck/runs/{{ od.rel }}/stream.log"',
+  `L="$H/${RUNS_SUBDIR}/{{ od.rel }}/stream.log"`,
   'umask 022',
 ].join('\n')
 
@@ -333,7 +335,7 @@ const taskRbTag = (d: PlanDeployment): Task =>
 
 // ---- host-level steps (lock, unlock)
 const hostRun = (h: PlanHost): string => `host:${h.hostId}`
-const odRunDir = '"$HOME/.opsdeck/runs/{{ od.rel }}"'
+const odRunDir = `"$HOME/${RUNS_SUBDIR}/{{ od.rel }}"`
 
 const REPOS = "{{ od.lock_repos | map('quote') | join(' ') }}"
 const HOST_CWD = '/'
