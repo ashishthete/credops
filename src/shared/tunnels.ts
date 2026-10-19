@@ -25,6 +25,9 @@ const IPV4 = '(?:(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1?\\
 export const BIND_ADDRESS = new RegExp(`^(?:localhost|${IPV4}|(?=(?:[^:]*:){2})[0-9A-Fa-f:.]+(?:%[A-Za-z0-9_.-]+)?)$`, 'i')
 
 export type TunnelType = 'L' | 'R' | 'D'
+
+/** Changing any of these on a running tunnel restarts it. */
+export const TUNNEL_ROUTE_FIELDS = ['hostId', 'environmentId', 'type', 'bindAddress', 'bindPort', 'targetHost', 'targetPort'] as const
 export type TunnelState = 'stopped' | 'connecting' | 'up' | 'retrying' | 'failed'
 
 export interface TunnelMeta {

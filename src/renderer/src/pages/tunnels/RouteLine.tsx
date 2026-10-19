@@ -34,9 +34,10 @@ export interface RouteLineProps {
   type: TunnelType
   hostLabel: string
   bindAddress: string
-  bindPort: number
+  /** A string draws a placeholder, e.g. `…` in a dialog preview before the port is typed. */
+  bindPort: number | string
   targetHost: string | null
-  targetPort: number | null
+  targetPort: number | string | null
   state: TunnelState
   errorCode?: TunnelErrorCode
 }

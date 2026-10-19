@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { Check, Layers, Pencil, SquareTerminal, StickyNote, Trash2, Vault, X } from 'lucide-react'
+import { Cable, Check, Layers, Pencil, SquareTerminal, StickyNote, Trash2, Vault, X } from 'lucide-react'
 import { useRef, useState, type ReactNode } from 'react'
 import type { EnvironmentMeta, HostMeta } from '../../../../shared/inventory'
 import { inv, inventoryStore, useInventory, type InventoryData } from '../../inventory/store'
@@ -13,6 +13,7 @@ import { useVaultStatus } from '../../vault/status'
 import { PaneHeader } from '../products/ProductView'
 import { ConnectionCard } from './ConnectionCard'
 import { HostDialog, OS_META } from './HostDialog'
+import { HostTunnels } from './HostTunnels'
 import { MembershipEditor } from './MembershipEditor'
 
 interface HostViewProps {
@@ -124,6 +125,10 @@ export function HostView({ hostId, environmentId, onDeleted }: HostViewProps) {
           </Section>
         </div>
 
+        <Section icon={Cable} title="Tunnels" className="mt-6">
+          <HostTunnels hostId={host.id} hostLabel={host.label} environmentId={context ?? undefined} />
+        </Section>
+
         {host.notes && (
           <Section icon={StickyNote} title="Notes" className="mt-6">
             <p className="max-w-[72ch] text-[13px] leading-5 whitespace-pre-wrap text-fg/85">{host.notes}</p>
@@ -153,7 +158,7 @@ function jumpDependents(data: InventoryData, hostId: string): string | null {
 
 function Section({ icon: Icon, title, className = '', children }: { icon: typeof Layers; title: string; className?: string; children: ReactNode }) {
   return (
-    <section className={className}>
+    <section aria-label={title} className={className}>
       <h3 className="mb-2 flex items-center gap-1.5 text-[12.5px] font-semibold text-fg/90">
         <Icon aria-hidden className="size-3.5 text-muted" />
         {title}

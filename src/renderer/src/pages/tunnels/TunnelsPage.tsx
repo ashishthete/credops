@@ -1,16 +1,19 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { FileDown, Plus, X } from 'lucide-react'
-import { useCallback, useMemo, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import { useSearchParams } from 'react-router'
 import type { EnvironmentMeta } from '../../../../shared/inventory'
 import type { TunnelMeta, TunnelState } from '../../../../shared/tunnels'
 import { useInventory } from '../../inventory/store'
 import { tunnelStore } from '../../tunnels/store'
 import { Button } from '../../ui/Button'
+import { ConfirmDialog } from '../../ui/common'
 import { EmptyState } from '../../ui/EmptyState'
 import { fast, spring, useMotionSafe } from '../../ui/motion'
 import { Skeleton } from '../../ui/Skeleton'
 import { ImportDialog } from '../hosts/ImportDialog'
 import { isRunning, TunnelCard } from './TunnelCard'
+import { TunnelDialog, tunnelDeleteRequest, type TunnelRequest } from './TunnelDialog'
 
 type Filter = 'all' | 'running' | 'failed'
 
@@ -79,8 +82,41 @@ export function TunnelsPage() {
   const newTunnel = () => setAction({ kind: 'new' })
   const importConfig = () => setAction({ kind: 'import' })
 
+  // The palette's New tunnel arrives as ?action=new; open the dialog and drop the param.
+  const [params, setParams] = useSearchParams()
+  const wanted = params.get('action')
+  useEffect(() => {
+    if (wanted !== 'new') return
+    setAction({ kind: 'new' })
+    setParams(
+      (p) => {
+        const out = new URLSearchParams(p)
+        out.delete('action')
+        return out
+      },
+      { replace: true },
+    )
+  }, [wanted, setParams])
+
+  const close = () => setAction(null)
+  const tunnelRequest: TunnelRequest | null =
+    action?.kind === 'new' ? { kind: 'new' } : action?.kind === 'edit' || action?.kind === 'duplicate' ? { kind: action.kind, id: action.id } : null
+  const doomed = action?.kind === 'delete' ? tunnels.find((t) => t.id === action.id) : undefined
+  const confirm = useMemo(
+    () => (doomed ? tunnelDeleteRequest(doomed, doomed.environmentId ? envById.get(doomed.environmentId) : undefined, isRunning(stateOf(doomed.id))) : null),
+    // Built once per opened delete, so a state change mid-confirmation doesn't reset what was typed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [doomed?.id],
+  )
+
   const empty = loaded && tunnels.length === 0
-  const dialogs = <ImportDialog open={action?.kind === 'import'} onClose={() => setAction(null)} onImported={() => {}} />
+  const dialogs = (
+    <>
+      <ImportDialog open={action?.kind === 'import'} onClose={close} onImported={() => {}} />
+      <TunnelDialog request={tunnelRequest} onClose={close} />
+      <ConfirmDialog request={confirm} onClose={close} />
+    </>
+  )
 
   return (
     <div className="flex h-full flex-col">

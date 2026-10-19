@@ -12,6 +12,7 @@ import {
   STATS_MS,
   TUNNEL_KEEPALIVE_SEC,
   TUNNEL_LIMIT,
+  TUNNEL_ROUTE_FIELDS,
   isLoopback,
   type TunnelError,
   type TunnelEvent,
@@ -89,7 +90,6 @@ export class TunnelLimitError extends Error {
 const LOCKED: TunnelError = { code: 'locked', message: 'Waiting for unlock' }
 
 /** Changing any of these on a running tunnel restarts it; a label or flag change doesn't. */
-const RESTART_FIELDS = ['hostId', 'environmentId', 'type', 'bindAddress', 'bindPort', 'targetHost', 'targetPort'] as const
 
 /** How a failure is handled: `stage` says what has to be redone, `locked` pauses instead of counting. */
 interface Failure {
@@ -311,7 +311,7 @@ export class TunnelManager {
     try {
       const run = this.runs.get(after.id)
       if (!run) return
-      if (!RESTART_FIELDS.some((k) => run.meta[k] !== after[k])) {
+      if (!TUNNEL_ROUTE_FIELDS.some((k) => run.meta[k] !== after[k])) {
         run.meta = after
         return
       }

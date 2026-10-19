@@ -14,6 +14,7 @@ import { TunnelsPage } from '../pages/tunnels/TunnelsPage'
 import { VaultsPage } from '../pages/vaults/VaultsPage'
 import { disposeAll } from '../terminal/registry'
 import { resetSessions, startSessionSync } from '../terminal/sessions'
+import { useTunnelCommands } from '../tunnels/commands'
 import { resetTunnels, startTunnelSync } from '../tunnels/store'
 import { registerCommand } from '../ui/commands'
 import { fast, useMotionSafe } from '../ui/motion'
@@ -32,6 +33,7 @@ export function AppShell() {
   const motionSafe = useMotionSafe()
   useSectionNavigation()
   useInventoryCommands()
+  useTunnelCommands()
   // The shell mounts only while unlocked, so every unlock reloads (F22).
   useEffect(() => {
     void loadInventory()

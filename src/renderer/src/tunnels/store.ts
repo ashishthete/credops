@@ -153,8 +153,9 @@ export function startTunnelSync(): () => void {
   }
 }
 
-export async function createTunnel(input: TunnelInput): Promise<TunnelMeta | undefined> {
-  const meta = await attempt("Couldn't create the tunnel", () => api.invoke('tunnel:create', input))
+/** `onError` shows a store error inline (a dialog) instead of as a toast. */
+export async function createTunnel(input: TunnelInput, onError?: (message: string) => void): Promise<TunnelMeta | undefined> {
+  const meta = await attempt("Couldn't create the tunnel", () => api.invoke('tunnel:create', input), onError)
   if (meta) {
     const s = tunnelStore.get()
     tunnelStore.set({ ...s, tunnels: [...s.tunnels.filter((t) => t.id !== meta.id), meta] })
@@ -162,8 +163,8 @@ export async function createTunnel(input: TunnelInput): Promise<TunnelMeta | und
   return meta
 }
 
-export async function updateTunnel(id: string, patch: TunnelPatch): Promise<TunnelMeta | undefined> {
-  const meta = await attempt("Couldn't save the tunnel", () => api.invoke('tunnel:update', id, patch))
+export async function updateTunnel(id: string, patch: TunnelPatch, onError?: (message: string) => void): Promise<TunnelMeta | undefined> {
+  const meta = await attempt("Couldn't save the tunnel", () => api.invoke('tunnel:update', id, patch), onError)
   if (meta) {
     const s = tunnelStore.get()
     tunnelStore.set({ ...s, tunnels: s.tunnels.map((t) => (t.id === id ? meta : t)) })

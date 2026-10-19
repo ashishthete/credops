@@ -13,7 +13,7 @@ import { Switch } from '../../ui/Switch'
 import { toast } from '../../ui/Toaster'
 import { hostPort, RouteLine } from './RouteLine'
 
-const TYPE: Record<TunnelType, { chip: string; title: string; icon: LucideIcon; color: string }> = {
+export const TUNNEL_TYPE: Record<TunnelType, { chip: string; title: string; icon: LucideIcon; color: string }> = {
   L: { chip: 'L', title: 'Local forward', icon: ArrowRightToLine, color: 'var(--accent)' },
   R: { chip: 'R', title: 'Remote forward', icon: ArrowLeftToLine, color: '#9b7bff' },
   D: { chip: 'SOCKS', title: 'SOCKS proxy', icon: Globe, color: '#2bb8b0' },
@@ -83,7 +83,7 @@ export const TunnelCard = memo(function TunnelCard({ id, hostLabel, hostAddress,
   if (!meta) return null
 
   const glow = GLOW[state]
-  const kind = TYPE[meta.type]
+  const kind = TUNNEL_TYPE[meta.type]
   const exposed = !isLoopback(meta.bindAddress)
   const copyAddress = () => {
     const address = tunnelAddress(meta, runtime, hostAddress)
@@ -232,7 +232,8 @@ function useNow(everyMs: number | null, key: string): number {
   return now
 }
 
-const DOT: Record<TunnelState, string> = {
+/** The status dot's colour per state. */
+export const STATE_DOT: Record<TunnelState, string> = {
   stopped: 'bg-muted/50 text-muted',
   connecting: 'bg-warn text-warn',
   up: 'bg-ok text-ok',
@@ -251,7 +252,7 @@ function StatusLine({ runtime }: { runtime: TunnelRuntime | undefined }) {
   const dot = (
     <span
       aria-hidden
-      className={`size-2 shrink-0 rounded-full transition-colors duration-500 ${DOT[state]} ${state === 'connecting' && motionSafe ? 'od-pulse' : ''}`}
+      className={`size-2 shrink-0 rounded-full transition-colors duration-500 ${STATE_DOT[state]} ${state === 'connecting' && motionSafe ? 'od-pulse' : ''}`}
     />
   )
   const line = (children: ReactNode, className = 'text-muted') => (

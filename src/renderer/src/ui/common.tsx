@@ -17,13 +17,15 @@ export function fail(title: string, err: unknown): void {
 
 /**
  * Runs a vault action through withUnlock (a lock mid-session brings up the gate and retries once).
- * Errors become a toast titled `failTitle`; resolves undefined on failure or when no unlock happened.
+ * Errors become a toast titled `failTitle`, or go to `onError` instead when a form shows them inline;
+ * resolves undefined on failure or when no unlock happened.
  */
-export async function attempt<T>(failTitle: string, fn: () => Promise<T>): Promise<T | undefined> {
+export async function attempt<T>(failTitle: string, fn: () => Promise<T>, onError?: (message: string) => void): Promise<T | undefined> {
   try {
     return await withUnlock(fn)
   } catch (err) {
-    fail(failTitle, err)
+    if (onError) onError(errorText(err))
+    else fail(failTitle, err)
     return undefined
   }
 }

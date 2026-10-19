@@ -6,11 +6,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { inventoryStore, type InventoryData } from '../../src/renderer/src/inventory/store'
 import { HostDialog } from '../../src/renderer/src/pages/hosts/HostDialog'
 import { HostView } from '../../src/renderer/src/pages/hosts/HostView'
+import { resetTunnels, tunnelStore } from '../../src/renderer/src/tunnels/store'
 import { Toaster } from '../../src/renderer/src/ui/Toaster'
 import { vaultStatusStore } from '../../src/renderer/src/vault/status'
 import type { HostMeta, ResolvedHost } from '../../src/shared/inventory'
 import { DEFAULT_VAULT_ID, type IdentityMeta, type VaultMeta } from '../../src/shared/vault'
-import { defaultVault, environment, host, mockBridge, vaultStatus } from './helpers'
+import { defaultVault, environment, host, mockBridge, tunnelMeta, tunnelRuntime, vaultStatus } from './helpers'
 
 // framer-motion caches matchMedia, so reduced motion is driven through useMotionSafe (F18).
 const motion = vi.hoisted(() => ({ safe: true }))
@@ -169,6 +170,7 @@ const row = (term: string) => within(card()).getByRole('group', { name: term })
 beforeEach(() => {
   motion.safe = true
   inventoryStore.set(null)
+  resetTunnels()
   where = ''
   sessions.openSsh.mockReset().mockResolvedValue('s1')
 })
@@ -684,6 +686,66 @@ describe('HostDialog', () => {
       fireEvent.change(within(dialog).getByLabelText('Variable value 2'), { target: { value: 'a\u200Bb' } })
       expect(await within(dialog).findByRole('alert')).toHaveTextContent('an env var value has control or format characters')
       expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled()
+    })
+  })
+
+  describe('host tunnels', () => {
+    const tunnels = () => screen.getByRole('region', { name: 'Tunnels' })
+
+    it('HostView lists host tunnels with toggles', async () => {
+      const user = userEvent.setup()
+      const invoke = setup()
+      tunnelStore.set({
+        tunnels: [
+          tunnelMeta({ id: 't-pg', label: 'pg', hostId: 'web1' }),
+          tunnelMeta({ id: 't-proxy', label: 'proxy', hostId: 'web1', type: 'D', bindPort: 1080, targetHost: null, targetPort: null }),
+          tunnelMeta({ id: 't-other', label: 'elsewhere', hostId: 'bastion' }),
+        ],
+        runtime: { 't-pg': tunnelRuntime({ id: 't-pg', state: 'up' }) },
+        loaded: true,
+      })
+      render(<HostView hostId="web1" />)
+      const rows = within(tunnels()).getAllByRole('listitem')
+      expect(rows.map((r) => r.getAttribute('aria-label'))).toEqual(['pg', 'proxy'])
+      expect(within(rows[0]).getByText('127.0.0.1:5433 → localhost:5432')).toBeInTheDocument()
+      expect(within(rows[1]).getByText('SOCKS on 127.0.0.1:1080')).toBeInTheDocument()
+      expect(within(rows[0]).getByRole('switch', { name: 'Run pg' })).toHaveAttribute('aria-checked', 'true')
+      expect(within(rows[0]).getByText('Up')).toBeInTheDocument()
+      const proxy = within(rows[1]).getByRole('switch', { name: 'Run proxy' })
+      expect(proxy).toHaveAttribute('aria-checked', 'false')
+      await user.click(proxy)
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith('tunnel:start', 't-proxy'))
+      await user.click(within(rows[0]).getByRole('switch', { name: 'Run pg' }))
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith('tunnel:stop', 't-pg'))
+    })
+
+    it('a host without tunnels says so in one line', () => {
+      setup()
+      render(<HostView hostId="bastion" />)
+      expect(within(tunnels()).queryAllByRole('listitem')).toHaveLength(0)
+      expect(within(tunnels()).getByText('No tunnels on this host yet.')).toBeInTheDocument()
+    })
+
+    it('New tunnel for this host prefills host and environment', async () => {
+      const user = userEvent.setup()
+      setup()
+      render(<HostView hostId="web1" environmentId="prod" />)
+      await within(card()).findByText('2222')
+      await user.click(within(tunnels()).getByRole('button', { name: 'New tunnel for this host' }))
+      const dialog = await screen.findByRole('dialog', { name: 'New tunnel' })
+      expect(within(dialog).getByLabelText('Host')).toHaveValue('web1')
+      expect(within(dialog).getByLabelText('Environment')).toHaveValue('prod')
+      expect(within(dialog).getByText('ssh -L 127.0.0.1:…:localhost:… web-1')).toBeInTheDocument()
+    })
+
+    it('New tunnel outside any environment leaves the environment empty', async () => {
+      const user = userEvent.setup()
+      setup()
+      render(<HostView hostId="web1" />)
+      await user.click(within(tunnels()).getByRole('button', { name: 'New tunnel for this host' }))
+      const dialog = await screen.findByRole('dialog', { name: 'New tunnel' })
+      expect(within(dialog).getByLabelText('Host')).toHaveValue('web1')
+      expect(within(dialog).getByLabelText('Environment')).toHaveValue('')
     })
   })
 })
