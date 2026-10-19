@@ -158,7 +158,7 @@ export interface IpcContract {
   'snippets:create': { args: [input: SnippetInput]; result: SnippetMeta }
   'snippets:update': { args: [id: string, input: SnippetInput]; result: SnippetMeta }
   'snippets:delete': { args: [id: string]; result: void }
-  // The rendered text for a terminal insert; vault-free since nothing is stored or sent.
+  // The rendered text for a terminal insert. Needs an unlocked vault: the script is opened from script_sealed.
   'snippets:render': { args: [id: string, values: Record<string, string>]; result: string }
   // Returns at once with every host queued; progress arrives as run:event events.
   'runs:start': { args: [req: RunRequest]; result: RunSummary }

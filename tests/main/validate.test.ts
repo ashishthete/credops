@@ -134,7 +134,7 @@ describe('validate', () => {
     expect(failure(() => run({ timeoutSec: 3601 }))).toBe('invalid arguments: [0].timeoutSec must be at most 3600')
     expect(failure(() => run({ target: { kind: 'all' } }))).toBe('invalid arguments: [0].target.kind is not an allowed value')
     expect(failure(() => run({ target: { kind: 'hosts', hostIds: [] } }))).toBe(
-      'invalid arguments: [0].target.hostIds must have at least 1 items',
+      'invalid arguments: [0].target.hostIds must have at least 1 item',
     )
     expect(failure(() => run({ command: { kind: 'snippet', snippetId: ID, values: { prototype: 'x' } } }))).toBe(
       'invalid arguments: [0].command.values has an invalid key',
@@ -155,6 +155,14 @@ describe('validate', () => {
       `invalid arguments: [0].command.values must have at most ${MAX_VARIABLES} keys`,
     )
 
+    expect(failure(() => run({ command: { kind: 'text', text: 'ls\0x' } }))).toBe('invalid arguments: [0].command.text has an invalid format')
+    expect(failure(() => run({ command: { kind: 'snippet', snippetId: ID, values: { v: 'a\0' } } }))).toBe(
+      'invalid arguments: [0].command.values.v has an invalid format',
+    )
+    expect(failure(() => run({ confirm: 'Prod\0' }))).toBe('invalid arguments: [0].confirm has an invalid format')
+    expect(failure(() => V['containers:action']([ID, null, 'web', 'stop', 'Prod\0']))).toBe('invalid arguments: [4] has an invalid format')
+    expect(failure(() => V['snippets:render']([ID, { v: '\0' }]))).toBe('invalid arguments: [1].v has an invalid format')
+
     const action = (ref: string) => V['containers:action']([ID, null, ref, 'stop'])
     for (const ref of ['a b', '-rm', 'a'.repeat(129), '$(x)']) {
       const message = failure(() => action(ref))
@@ -172,6 +180,20 @@ describe('validate', () => {
     expect(failure(() => V['snippets:create']([{ label: 'x', script: 'uptime', defaults: { X: 'y' } }]))).toBe(
       'invalid arguments: [0].defaults has an invalid key',
     )
+  })
+
+  it('ops validators keep surrounding whitespace in text, values and confirm', () => {
+    const V = VALIDATORS
+    const req = {
+      target: { kind: 'hosts', hostIds: [ID] },
+      command: { kind: 'snippet', snippetId: ID, values: { v: '  a b \n' } },
+      confirm: ' Prod ',
+    }
+    expect(V['runs:start']([req])).toEqual([req])
+    const text = { target: { kind: 'hosts', hostIds: [ID] }, command: { kind: 'text', text: '  uptime\n' } }
+    expect(V['runs:start']([text])).toEqual([text])
+    expect(V['snippets:render']([ID, { v: ' x ' }])).toEqual([ID, { v: ' x ' }])
+    expect(V['containers:action']([ID, null, 'web', 'stop', ' Prod '])).toEqual([ID, null, 'web', 'stop', ' Prod '])
   })
 
   it('ops validators accept a minimal valid request for every new channel', () => {

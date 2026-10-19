@@ -64,7 +64,7 @@ const array =
   <T>(check: Check<T>, max: number, opts: { min?: number } = {}): Check<T[]> =>
   (value, path) => {
     if (!Array.isArray(value)) throw new InvalidArgs(path, 'must be an array')
-    if (opts.min !== undefined && value.length < opts.min) throw new InvalidArgs(path, `must have at least ${opts.min} items`)
+    if (opts.min !== undefined && value.length < opts.min) throw new InvalidArgs(path, `must have at least ${opts.min} item${opts.min === 1 ? '' : 's'}`)
     if (value.length > max) throw new InvalidArgs(path, `must have at most ${max} items`)
     return value.map((item, i) => check(item, `${path}[${i}]`))
   }

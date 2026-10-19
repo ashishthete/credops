@@ -326,8 +326,10 @@ export const asPromptAnswer: Check<PromptAnswer> = (value, path) => {
   return check(value, path)
 }
 
+// No NUL in anything that reaches a remote shell or a comparison.
+const NO_NUL = /^[^\0]*$/
 // Values are not trimmed: whitespace can be part of a value. The store re-checks control characters.
-const variableValue = v.str({ max: MAX_VARIABLE_VALUE })
+const variableValue = v.str({ max: MAX_VARIABLE_VALUE, pattern: NO_NUL })
 const variableValues = v.record(VARIABLE_NAME, variableValue, { maxKeys: MAX_VARIABLES })
 
 // Scripts are not trimmed: they are sent as written. The store derives variables and re-checks tags.
@@ -354,11 +356,11 @@ const runTarget = v.tagged('kind', {
 })
 const runCommand = v.tagged('kind', {
   // Typed shell input, sent as-is: not trimmed.
-  text: v.object({ kind: v.oneOf(['text'] as const), text: v.str({ min: 1, max: MAX_COMMAND }) }),
+  text: v.object({ kind: v.oneOf(['text'] as const), text: v.str({ min: 1, max: MAX_COMMAND, pattern: NO_NUL }) }),
   snippet: v.object({ kind: v.oneOf(['snippet'] as const), snippetId: v.uuid(), values: variableValues }),
 })
 // The typed environment name; compared exactly, so not trimmed.
-const confirmName = v.optional(v.str({ max: MAX_NAME }))
+const confirmName = v.optional(v.str({ max: MAX_NAME, pattern: NO_NUL }))
 
 export const asRunRequest: Check<RunRequest> = v.object({
   target: runTarget,
