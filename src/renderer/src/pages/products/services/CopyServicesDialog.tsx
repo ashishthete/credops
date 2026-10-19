@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { useId, useMemo, useState } from 'react'
+import { useId, useMemo, useRef, useState } from 'react'
 import { GIT_REF, REPO_PATH } from '../../../../../shared/deploy'
 import type { EnvironmentMeta, HostMeta } from '../../../../../shared/inventory'
 import { deriveTag, envAppHost, type CopyServicesRequest, type CopyServicesResult, type DbServiceMeta } from '../../../../../shared/services'
@@ -20,9 +20,13 @@ type DbRow = { dbAddress: string; dbPort: string; viaHostId: string }
 
 /** Copies an environment's services and checkouts to another; the per-environment fields are asked for here. */
 export function CopyServicesDialog({ source, onClose }: { source: EnvironmentMeta | null; onClose: () => void }) {
+  // The last source, so the title and body stay while the dialog animates out.
+  const last = useRef(source)
+  if (source) last.current = source
+  const shown = source ?? last.current
   return (
-    <Dialog open={source !== null} onClose={onClose} width={640} title={`Copy services from ${source?.name ?? ''}`} description="Checkouts and services go to another environment.">
-      {source && <CopyBody source={source} onClose={onClose} />}
+    <Dialog open={source !== null} onClose={onClose} width={640} title={`Copy services from ${shown?.name ?? ''}`} description="Checkouts and services go to another environment.">
+      {shown && <CopyBody key={shown.id} source={shown} onClose={onClose} />}
     </Dialog>
   )
 }
@@ -73,8 +77,10 @@ function CopyBody({ source, onClose }: { source: EnvironmentMeta; onClose: () =>
     tag: (r: CheckoutRow) => (r.tag && !GIT_REF.test(r.tag) ? 'Use a valid tag name' : undefined),
     port: (r: DbRow) => (r.dbPort && !(/^\d+$/.test(r.dbPort) && +r.dbPort >= 1 && +r.dbPort <= 65535) ? 'A port is 1 to 65535' : undefined),
   }
+  const empty = checkouts.length === 0 && dbs.length === 0
   const ready =
     !!target &&
+    !empty &&
     checkouts.every((d) => {
       const r = rows[d.id]
       return r && GIT_REF.test(r.branch) && REPO_PATH.test(r.repoPath) && r.hostId && (derived(d.deployTag) !== null || GIT_REF.test(r.tag))
@@ -223,7 +229,11 @@ function CopyBody({ source, onClose }: { source: EnvironmentMeta; onClose: () =>
               </motion.fieldset>
             )
           })}
-          <p className="text-[12px] text-muted">{NOT_COPIED}</p>
+          {empty ? (
+            <p className="text-[12.5px] text-muted">{`${source.name} has no checkouts or databases to copy`}</p>
+          ) : (
+            <p className="text-[12px] text-muted">{NOT_COPIED}</p>
+          )}
         </>
       )}
 

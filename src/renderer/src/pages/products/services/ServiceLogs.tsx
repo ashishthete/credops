@@ -15,8 +15,8 @@ export function ServiceLogs({ service, onClose }: { service: AppServiceMeta | nu
   const data = useInventory()
   const [settings, setSettings] = useState<DeploymentRequest | null>(null)
   const [needsSudo, setNeedsSudo] = useState(false)
-  // The follows this view started; only their ends can raise the hint.
-  const mine = useRef(new Set<string>())
+  // The follow running now; only its end can raise or clear the hint.
+  const current = useRef<string | null>(null)
   // Follows that ended on the sudo hint, kept for one that ends before its reply names it.
   const refused = useRef(new Set<string>())
   const last = useRef(service)
@@ -28,7 +28,7 @@ export function ServiceLogs({ service, onClose }: { service: AppServiceMeta | nu
       onContainerLog((event) => {
         if (!('ended' in event)) return
         const sudo = !!event.error && NEEDS_SUDO.test(event.error.message)
-        if (mine.current.has(event.followId)) setNeedsSudo(sudo)
+        if (event.followId === current.current) setNeedsSudo(sudo)
         else if (sudo) refused.current.add(event.followId)
       }),
     [],
@@ -41,12 +41,14 @@ export function ServiceLogs({ service, onClose }: { service: AppServiceMeta | nu
     () =>
       service && id
         ? {
+            id,
             title: `${service.name} logs on ${hostLabel}`,
             follow: async (tail) => {
               setNeedsSudo(false)
+              current.current = null
               const got = await api.invoke('service:logs', id, tail)
               if (got) {
-                mine.current.add(got)
+                current.current = got
                 if (refused.current.has(got)) setNeedsSudo(true)
               }
               return got

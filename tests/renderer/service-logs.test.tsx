@@ -120,6 +120,40 @@ describe('service logs', () => {
     expect(screen.queryByText(LOCKED)).not.toBeInTheDocument()
   })
 
+  it('a late inventory load renames the drawer without restarting the follow', async () => {
+    const invoke = world()
+    inventoryStore.set(null)
+    render(<Harness />)
+    await flush()
+    expect(screen.getByRole('dialog', { name: 'api logs on its host' })).toBeInTheDocument()
+    act(() => applyContainerLog({ followId: 'f1', chunk: 'kept\n' }))
+    act(() => inventoryStore.set({ products: [], environments: [staging], hosts: [host({ id: 'h1', label: 'app1' })], identities: [], vaults: [] }))
+    await flush()
+    expect(screen.getByRole('dialog', { name: 'api logs on app1' })).toBeInTheDocument()
+    expect(calls(invoke, 'service:logs')).toHaveLength(1)
+    expect(calls(invoke, 'containers:unfollow')).toHaveLength(0)
+    expect(screen.getByRole('log')).toHaveTextContent('kept')
+  })
+
+  it('a late sudo end from an earlier follow does not raise the hint', async () => {
+    world()
+    render(<Harness />)
+    await flush()
+    fireEvent.change(screen.getByLabelText('Tail'), { target: { value: '1000' } })
+    await flush()
+    // The current follow ends on another error, then the stopped one's sudo end arrives late.
+    act(() => applyContainerLog({ followId: 'f2', ended: true, error: { code: 'unknown', message: 'no such service: api' } }))
+    act(() => applyContainerLog({ followId: 'f1', ended: true, error: { code: 'unknown', message: SUDO } }))
+    await flush()
+    expect(screen.getByText('no such service: api')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open checkout settings' })).not.toBeInTheDocument()
+    // The current follow's sudo end still does.
+    fireEvent.click(screen.getByRole('button', { name: 'Follow again' }))
+    await flush()
+    act(() => applyContainerLog({ followId: 'f3', ended: true, error: { code: 'unknown', message: SUDO } }))
+    expect(await screen.findByRole('button', { name: 'Open checkout settings' })).toBeInTheDocument()
+  })
+
   it('without snapshot there is no Follow switch; with it the snapshot mode works as before', async () => {
     mockBridge({ 'containers:unfollow': undefined })
     const follow = vi.fn(async () => 'f7')

@@ -22,6 +22,8 @@ export const TAILS = [100, 200, 1000, 5000] as const
  * without it the drawer is always live. `hint` is an action shown under the end of a follow.
  */
 export interface LogsTarget {
+  /** What the drawer is following; a new id starts over. Defaults to the title. */
+  id?: string
   title: string
   follow: (tail: number) => Promise<string | undefined>
   snapshot?: (tail: number) => Promise<string | undefined>
@@ -73,7 +75,7 @@ export function LogsDrawer({ target, onClose }: { target: LogsTarget | null; onC
             transition={motionSafe ? spring : fast}
             className="fixed top-0 right-0 bottom-0 z-40 flex w-[min(640px,90vw)] flex-col border-l border-line bg-surface shadow-pop"
           >
-            <LogsBody key={target.title} target={target} onClose={onClose} />
+            <LogsBody key={target.id ?? target.title} target={target} onClose={onClose} />
           </motion.aside>
         </>
       )}

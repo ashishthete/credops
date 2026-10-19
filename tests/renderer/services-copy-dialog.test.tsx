@@ -24,16 +24,16 @@ const HOSTS = [host({ id: 'h1', label: 'stg1' }), host({ id: 'h3', label: 'prod1
 
 const calls = (invoke: ReturnType<typeof mockBridge>, channel: string) => (invoke.mock.calls as unknown[][]).filter((x) => x[0] === channel)
 
-async function mount(result: CopyServicesResult = { created: { services: 3, checkouts: 2 }, skipped: [], addedHosts: 0 }) {
+async function mount(result: CopyServicesResult = { created: { services: 3, checkouts: 2 }, skipped: [], addedHosts: 0 }, source = staging) {
   const invoke = mockBridge({ 'env:list': [staging, prod, dev], 'host:list': HOSTS, 'deploy:list': CHECKOUTS, 'service:list': SERVICES, 'service:copy': result })
   await act(async () => {
     await loadInventory()
     await loadDeploy()
   })
   const user = userEvent.setup()
-  render(<CopyServicesDialog source={staging} onClose={() => {}} />)
-  const dialog = await screen.findByRole('dialog', { name: 'Copy services from staging' })
-  return { invoke, user, dialog }
+  const view = render(<CopyServicesDialog source={source} onClose={() => {}} />)
+  const dialog = await screen.findByRole('dialog', { name: `Copy services from ${source.name}` })
+  return { invoke, user, dialog, view }
 }
 
 const pickProd = async (user: ReturnType<typeof userEvent.setup>, dialog: HTMLElement) =>
@@ -123,5 +123,22 @@ describe('copy services dialog', () => {
     expect(await within(dialog).findByText('Copied 3 services and 2 checkouts to prod')).toBeInTheDocument()
     expect(within(dialog).queryByText(/as app hosts/)).not.toBeInTheDocument()
     expect(within(dialog).queryByRole('list', { name: 'Skipped' })).not.toBeInTheDocument()
+  })
+
+  it('a source with no checkouts and no databases cannot be copied', async () => {
+    const { invoke, user, dialog } = await mount(undefined, dev)
+    await pickProd(user, dialog)
+    expect(within(dialog).getByText('dev has no checkouts or databases to copy')).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Copy services' })).toBeDisabled()
+    await user.click(within(dialog).getByRole('button', { name: 'Copy services' }))
+    expect(calls(invoke, 'service:copy')).toHaveLength(0)
+  })
+
+  it('keeps its title and body while it animates out', async () => {
+    const { user, dialog, view } = await mount()
+    await pickProd(user, dialog)
+    view.rerender(<CopyServicesDialog source={null} onClose={() => {}} />)
+    const leaving = screen.getByRole('dialog', { name: 'Copy services from staging' })
+    expect(within(leaving).getByRole('group', { name: 'core' })).toBeInTheDocument()
   })
 })
