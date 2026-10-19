@@ -28,6 +28,7 @@ const LOOK: Record<RunHostState, string> = {
 const ICON: Partial<Record<RunHostState, LucideIcon>> = { ok: Check, failed: X, cancelled: Ban, timeout: TimerOff }
 
 export const isLive = (state: RunHostState) => state === 'connecting' || state === 'running'
+export const isBad = (state: RunHostState) => state === 'failed' || state === 'timeout'
 
 /** Bumps once each time the host turns `failed` after mounting, so a reopened run doesn't shake. */
 function useFailures(state: RunHostState): number {
@@ -40,9 +41,17 @@ function useFailures(state: RunHostState): number {
   return n
 }
 
+/** Whether the state has changed since mounting; set during render, so the new icon's first frame knows. */
+function useChangedSinceMount(state: RunHostState): boolean {
+  const [mounted] = useState(state)
+  const [changed, setChanged] = useState(false)
+  if (!changed && state !== mounted) setChanged(true)
+  return changed || state !== mounted
+}
+
 /**
- * One host of a run: label, a state dot or icon, and the exit code. Live states pulse; `ok` pops a check
- * and `failed` shakes once. Clicking it opens that host's output.
+ * One host of a run: label, a state dot or icon, and the exit code. Live states pulse; reaching `ok` pops a
+ * check and `failed` shakes once. Clicking it opens that host's output.
  */
 export const HostChip = memo(function HostChip({
   host,
@@ -55,6 +64,8 @@ export const HostChip = memo(function HostChip({
 }) {
   const motionSafe = useMotionSafe()
   const shake = useShake<HTMLButtonElement>(useFailures(host.state))
+  // A reopened run shows its icons as they are; only a state reached in view pops.
+  const changed = useChangedSinceMount(host.state)
   const Icon = ICON[host.state]
   const code = host.exitCode !== null ? `exit ${host.exitCode}` : host.signal ? host.signal : null
 
@@ -81,7 +92,7 @@ export const HostChip = memo(function HostChip({
           {Icon ? (
             <motion.span
               key={host.state}
-              initial={motionSafe ? { scale: 0.3, opacity: 0 } : { opacity: 0 }}
+              initial={!changed ? false : motionSafe ? { scale: 0.3, opacity: 0 } : { opacity: 0 }}
               animate={motionSafe ? { scale: 1, opacity: 1 } : { opacity: 1 }}
               transition={motionSafe ? { ...spring, damping: 14 } : fast}
               className="grid place-items-center"

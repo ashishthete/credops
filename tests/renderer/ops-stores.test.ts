@@ -1,10 +1,20 @@
 import { act } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { loadRun, resetOps, runOutputStore, runStore, selectRun, startOpsSync } from '../../src/renderer/src/ops/runs'
+import {
+  addRunIfAbsent,
+  loadRun,
+  rememberRequest,
+  requestFor,
+  resetOps,
+  runOutputStore,
+  runStore,
+  selectRun,
+  startOpsSync,
+} from '../../src/renderer/src/ops/runs'
 import { containerKey, containerStore, followStore, loadContainers } from '../../src/renderer/src/ops/containers'
 import { loadSnippets, saveSnippet, snippetStore } from '../../src/renderer/src/ops/snippets'
 import { placeholders } from '../../src/renderer/src/ops/template'
-import { RUN_OUTPUT_CHARS, type RunEvent, type RunHostMeta, type RunSummary } from '../../src/shared/ops'
+import { MAX_RUNS_KEPT, RUN_OUTPUT_CHARS, type RunEvent, type RunHostMeta, type RunRequest, type RunSummary } from '../../src/shared/ops'
 import { emitBridgeEvent, mockBridge } from './helpers'
 
 vi.mock('../../src/renderer/src/ui/Toaster', () => ({ toast: vi.fn(() => 'toast-1') }))
@@ -208,6 +218,61 @@ describe('ops stores', () => {
     await send({ runId: 'r1', kind: 'run', run: summary({ title: 'fresh' }) })
     await flush()
     expect(runStore.get().runs.map((r) => r.title)).toEqual(['fresh'])
+  })
+
+  it('keeps running runs and the newest finished ones, as main does, and forgets the requests of the rest', async () => {
+    const minute = (i: number) => new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString()
+    const finished = (i: number) => summary({ id: `f${i}`, state: 'done', startedAt: minute(i), endedAt: minute(i) })
+    // Main lists newest first; an older run is still going.
+    const old = summary({ id: 'old', startedAt: '2025-12-31T00:00:00.000Z' })
+    const list = [...Array.from({ length: MAX_RUNS_KEPT + 2 }, (_, i) => finished(MAX_RUNS_KEPT + 1 - i)), old]
+    const req: RunRequest = { target: { kind: 'hosts', hostIds: ['h1'] }, command: { kind: 'text', text: 'uptime' }, concurrency: 1, timeoutSec: 60 }
+    for (const r of list) rememberRequest(r.id, req)
+    await sync({ 'runs:list': list, 'runs:get': { run: old, output: [] } })
+    const ids = () => runStore.get().runs.map((r) => r.id)
+    expect(ids()).toHaveLength(MAX_RUNS_KEPT + 1)
+    expect(ids()).toContain('old')
+    expect(ids()).not.toContain('f0')
+    expect(ids()).not.toContain('f1')
+    expect(requestFor('f0')).toBeUndefined()
+    expect(requestFor('f1')).toBeUndefined()
+    expect(requestFor('f2')).toBe(req)
+    expect(requestFor('old')).toBe(req)
+
+    // A new run finishing pushes the oldest finished one out, with its request and output.
+    const next = summary({ id: 'f99', startedAt: minute(99) })
+    rememberRequest('f99', req)
+    await send({ runId: 'f99', kind: 'run', run: next })
+    expect(ids()).toContain('f2')
+    await act(async () => selectRun('f2'))
+    await flush()
+    await act(async () => selectRun(null))
+    await send({ runId: 'f99', kind: 'run', run: { ...next, state: 'done', endedAt: minute(99) } })
+    expect(ids()).not.toContain('f2')
+    expect(ids()).toHaveLength(MAX_RUNS_KEPT + 1)
+    expect(requestFor('f2')).toBeUndefined()
+    expect(requestFor('f99')).toBe(req)
+  })
+
+  it('the run being looked at stays even when main would have dropped it', async () => {
+    const minute = (i: number) => new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString()
+    const finished = (i: number) => summary({ id: `f${i}`, state: 'done', startedAt: minute(i), endedAt: minute(i) })
+    await sync({ 'runs:list': Array.from({ length: MAX_RUNS_KEPT }, (_, i) => finished(MAX_RUNS_KEPT - i)), 'runs:get': { run: finished(1), output: [] } })
+    await act(async () => selectRun('f1'))
+    await flush()
+    await send({ runId: 'f50', kind: 'run', run: finished(50) })
+    await send({ runId: 'f51', kind: 'run', run: finished(51) })
+    expect(runStore.get().runs.map((r) => r.id)).toContain('f1')
+    expect(runStore.get().runs.map((r) => r.id)).not.toContain('f2')
+  })
+
+  it('a start reply adds the run only if events have not already brought it', async () => {
+    await sync()
+    await send({ runId: 'r1', kind: 'run', run: summary({ hosts: [hostMeta({ state: 'connecting' })] }) })
+    act(() => addRunIfAbsent(summary({ hosts: [hostMeta({ state: 'queued' })] })))
+    expect(runStore.get().runs[0].hosts[0].state).toBe('connecting')
+    act(() => addRunIfAbsent(summary({ id: 'r2' })))
+    expect(runStore.get().runs.map((r) => r.id)).toEqual(['r2', 'r1'])
   })
 
   it('keeps output only for the selected and active runs', async () => {

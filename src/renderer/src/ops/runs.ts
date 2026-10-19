@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react'
 import {
   MAX_ERR_RANGES,
+  MAX_RUNS_KEPT,
   RUN_OUTPUT_CHARS,
   type RunEvent,
   type RunHostMeta,
@@ -48,7 +49,7 @@ let stopSync: (() => void) | null = null
  * values; it goes with the stores (a lock unmounts the shell and resets them).
  */
 const requests = new Map<string, RunRequest>()
-/** Run views on screen; while there is one, a finished run needs no toast. */
+/** Ops pages on screen; while there is one, a finished run needs no toast. */
 let viewers = 0
 
 /** Empties every Ops store (the shell unmounting, the vault locking, tests). */
@@ -97,8 +98,8 @@ export function rememberRequest(id: string, req: RunRequest): void {
 
 export const requestFor = (id: string): RunRequest | undefined => requests.get(id)
 
-/** Marks a run view as showing; returns the unmark. Finished runs are toasted only while none shows. */
-export function showRunView(): () => void {
+/** Marks the Ops page as showing; returns the unmark. Finished runs are toasted only while it is not. */
+export function showOpsPage(): () => void {
   viewers++
   let left = false
   return () => {
@@ -121,16 +122,36 @@ export function finishTitle(run: RunSummary): string {
   return `${run.state === 'cancelled' ? 'Run cancelled' : 'Run finished'}: ${parts.join(', ') || 'no hosts'}`
 }
 
+/**
+ * Drops runs main has dropped: past `MAX_RUNS_KEPT` finished runs, the oldest go (the one selected stays while it
+ * is looked at), with their requests and output. Requests for runs no longer listed go too.
+ */
+function prune(): void {
+  const s = runStore.get()
+  const finished = s.runs.filter((r) => r.state !== 'running' && r.id !== s.selectedId).sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+  const gone = new Set(finished.slice(MAX_RUNS_KEPT).map((r) => r.id))
+  if (gone.size) runStore.set({ ...s, runs: s.runs.filter((r) => !gone.has(r.id)) })
+  const kept = new Set(runStore.get().runs.map((r) => r.id))
+  for (const id of requests.keys()) if (!kept.has(id)) requests.delete(id)
+  for (const id of gone) dropOutput(id)
+}
+
 /** Adds or replaces a run (an event, a load, or a start this window asked for). */
 export function upsertRun(run: RunSummary): void {
   const s = runStore.get()
   const prev = s.runs.find((r) => r.id === run.id)
   runStore.set({ ...s, runs: prev ? s.runs.map((r) => (r.id === run.id ? run : r)) : [run, ...s.runs] })
   if (run.state !== 'running' && s.selectedId !== run.id) dropOutput(run.id)
+  prune()
   if (prev?.state === 'running' && run.state !== 'running' && viewers === 0) {
     const bad = run.hosts.some((h) => h.state === 'failed' || h.state === 'timeout')
     toast({ title: finishTitle(run), tone: bad ? 'warn' : run.state === 'cancelled' ? 'info' : 'success' })
   }
+}
+
+/** Adds the run `runs:start` replied with, unless its events (sent before the reply) already did: they are newer. */
+export function addRunIfAbsent(run: RunSummary): void {
+  if (!runStore.get().runs.some((r) => r.id === run.id)) upsertRun(run)
 }
 
 function applyHost(runId: string, host: RunHostMeta): void {
@@ -210,6 +231,8 @@ export function selectRun(id: string | null): void {
   runStore.set({ ...s, selectedId: id })
   const prev = s.runs.find((r) => r.id === s.selectedId)
   if (s.selectedId && prev?.state !== 'running') dropOutput(s.selectedId)
+  // The run left behind may be one main has dropped.
+  prune()
   if (id) void loadRun(id)
 }
 
@@ -219,6 +242,7 @@ export function removeRun(id: string): void {
   runStore.set({ runs: s.runs.filter((r) => r.id !== id), selectedId: s.selectedId === id ? null : s.selectedId })
   requests.delete(id)
   dropOutput(id)
+  prune()
 }
 
 async function loadRuns(): Promise<void> {
@@ -231,6 +255,7 @@ async function loadRuns(): Promise<void> {
     const mine = new Map(s.runs.map((r) => [r.id, r]))
     const listed = new Set(list.map((r) => r.id))
     runStore.set({ ...s, runs: [...s.runs.filter((r) => !listed.has(r.id)), ...list.map((r) => mine.get(r.id) ?? r)] })
+    prune()
     // A run already going when the shell mounted has output we never saw.
     for (const r of runStore.get().runs) if (r.state === 'running' && !runOutputStore.get()[r.id] && !loads.has(r.id)) void loadRun(r.id)
   } catch (err) {

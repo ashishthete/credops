@@ -1,5 +1,5 @@
-import type { EnvironmentMeta } from '../../../shared/inventory'
-import { MULTIPLE_PROTECTED_MESSAGE } from '../../../shared/ops'
+import type { EnvironmentMeta, HostMeta } from '../../../shared/inventory'
+import { DESTRUCTIVE_PATTERN, MULTIPLE_PROTECTED_MESSAGE, type RunRequest, type SnippetMeta } from '../../../shared/ops'
 
 /** Main's refusal, shown before asking it. */
 export const MULTIPLE_PROTECTED = MULTIPLE_PROTECTED_MESSAGE
@@ -34,4 +34,27 @@ export function runProtection(
   }
   const needed = env?.protected && (targetCount > 1 || destructive) ? env.name : null
   return { env, needed, refused: null }
+}
+
+/**
+ * The protection a request needs as things are now (Run again): its targets and context as the inventory has
+ * them, and whether its command looks destructive. A snippet counts if it is flagged or its script looks it, or
+ * if it is gone (main then refuses the run anyway). `labels` are the target hosts, in the order main runs them.
+ */
+export function requestProtection(
+  req: RunRequest,
+  environments: readonly EnvironmentMeta[],
+  hosts: readonly HostMeta[],
+  snippets: readonly SnippetMeta[],
+): RunProtection & { labels: string[] } {
+  const { target, command } = req
+  const context = environments.find((e) => e.id === target.environmentId) ?? null
+  const ids = new Set(
+    target.kind === 'hosts' ? target.hostIds : (context?.hosts.filter((m) => !target.role || m.role === target.role).map((m) => m.hostId) ?? []),
+  )
+  const targets = hosts.filter((h) => ids.has(h.id))
+  const snippet = command.kind === 'snippet' ? snippets.find((s) => s.id === command.snippetId) : undefined
+  const destructive = command.kind === 'text' ? DESTRUCTIVE_PATTERN.test(command.text) : !snippet || snippet.destructive || DESTRUCTIVE_PATTERN.test(snippet.script)
+  const protection = runProtection(context, environments, targets.map((h) => h.id), targets.length, destructive)
+  return { ...protection, labels: targets.map((h) => h.label) }
 }

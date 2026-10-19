@@ -71,25 +71,66 @@ describe('OutputPane', () => {
     expect(toast).not.toHaveBeenCalled()
   })
 
-  it(`keeps at most ${MAX_SPANS} chunk spans and the store's char cap, merging the oldest`, () => {
+  it(`past ${MAX_SPANS} spans drops whole oldest blocks and never touches the chunks it keeps`, () => {
     let out: HostOutput | undefined
-    const { rerender, container } = render(<OutputPane output={out} label="web-1" />)
-    for (let i = 0; i < MAX_SPANS + 300; i++) {
+    const { rerender } = render(<OutputPane output={out} label="web-1" />)
+    let i = 0
+    const push = () => {
       out = appendOutput(out, `line ${i}\n`, i % 2 === 1)
+      i++
+      rerender(<OutputPane output={out} label="web-1" />)
+    }
+    while (i < MAX_SPANS + 300) push()
+    const log = screen.getByRole('log', { name: 'Output of web-1' })
+    const shown = () => log.querySelector('pre')!.textContent!
+    const before = [...chunks(log)]
+    expect(before.length).toBeLessThanOrEqual(MAX_SPANS)
+    // The newest output, from a whole line on; the rest is hidden here, not lost.
+    expect(out!.text.endsWith(shown())).toBe(true)
+    expect(shown().startsWith('line ')).toBe(true)
+    expect(screen.getByText(/Older output is hidden here/)).toBeInTheDocument()
+
+    // One more append: every kept chunk is the same node and nothing inside one changes.
+    const changes: MutationRecord[] = []
+    const watch = new MutationObserver((r) => changes.push(...r))
+    watch.observe(log, { subtree: true, childList: true, characterData: true })
+    push()
+    changes.push(...watch.takeRecords())
+    const after = [...chunks(log)]
+    expect(after.slice(0, before.length).every((n, k) => n === before[k])).toBe(true)
+    expect(after).toHaveLength(before.length + 1)
+    expect(changes.filter((r) => before.some((n) => n.contains(r.target)))).toEqual([])
+
+    // Appending until the next drop removes one whole block; the chunks left are still the same nodes.
+    while (before[0].isConnected) push()
+    watch.disconnect()
+    const kept = before.filter((n) => n.isConnected)
+    expect(kept.length).toBeGreaterThanOrEqual(before.length - 64)
+    expect([...chunks(log)].slice(0, kept.length).every((n, k) => n === kept[k])).toBe(true)
+  })
+
+  it(`keeps stderr spans within ${MAX_SPANS} however noisy the host`, () => {
+    let out: HostOutput | undefined
+    const { rerender } = render(<OutputPane output={out} label="web-1" />)
+    // Each round is one delta of 1500 stderr pieces between stdout ones.
+    for (let round = 0; round < 4; round++) {
+      for (let k = 0; k < 1500; k++) out = appendOutput(appendOutput(out, `e${k}`, true), '.', false)
       rerender(<OutputPane output={out} label="web-1" />)
     }
     const log = screen.getByRole('log', { name: 'Output of web-1' })
-    expect(chunks(log).length).toBeLessThanOrEqual(MAX_SPANS)
-    expect(log.textContent).toBe(out!.text)
-    // Merged spans keep their stderr tint.
-    expect(log.querySelector('[data-stream="err"]')).toHaveTextContent('line 1')
-    expect(container.querySelectorAll('[data-stream="err"]').length).toBe(MAX_SPANS / 2 + 150)
+    const errs = log.querySelectorAll('[data-stream="err"]').length
+    expect(errs).toBeGreaterThan(0)
+    expect(errs).toBeLessThanOrEqual(MAX_SPANS)
+  })
 
-    // A chunk bigger than the cap leaves only the newest RUN_OUTPUT_CHARS.
+  it("trims a chunk bigger than the store's cap to its newest chars", () => {
+    let out: HostOutput | undefined = appendOutput(undefined, 'head\n', false)
+    const { rerender } = render(<OutputPane output={out} label="web-1" />)
     out = appendOutput(out, 'x'.repeat(RUN_OUTPUT_CHARS) + 'tail', false)
     rerender(<OutputPane output={out} label="web-1" />)
-    expect(log.textContent!.length).toBe(RUN_OUTPUT_CHARS)
-    expect(log.textContent!.endsWith('xtail')).toBe(true)
+    const text = screen.getByRole('log', { name: 'Output of web-1' }).querySelector('pre')!.textContent!
+    expect(text.length).toBe(RUN_OUTPUT_CHARS)
+    expect(text.endsWith('xtail')).toBe(true)
   })
 
   it('rebuilds from the snapshot when the output is replaced or cleared', () => {

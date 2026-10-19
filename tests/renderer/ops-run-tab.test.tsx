@@ -1,12 +1,14 @@
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { forwardRef, createElement, type ComponentType } from 'react'
+import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { inventoryStore } from '../../src/renderer/src/inventory/store'
 import { resetOps, startOpsSync } from '../../src/renderer/src/ops/runs'
-import { MULTIPLE_PROTECTED, runProtection } from '../../src/renderer/src/ops/protect'
+import { MULTIPLE_PROTECTED, requestProtection, runProtection } from '../../src/renderer/src/ops/protect'
+import { OpsPage } from '../../src/renderer/src/pages/ops/OpsPage'
 import { RunTab } from '../../src/renderer/src/pages/ops/RunTab'
 import { clearToasts, toast } from '../../src/renderer/src/ui/Toaster'
-import { MULTIPLE_PROTECTED_MESSAGE, type RunEvent, type RunHostMeta, type RunSummary, type SnippetMeta } from '../../src/shared/ops'
+import { MAX_RUNS_KEPT, MULTIPLE_PROTECTED_MESSAGE, type RunEvent, type RunHostMeta, type RunSummary, type SnippetMeta } from '../../src/shared/ops'
 import { emitBridgeEvent, environment, host, mockBridge } from './helpers'
 
 // framer-motion caches matchMedia, so reduced motion is driven through useMotionSafe (F18).
@@ -28,7 +30,12 @@ vi.mock('framer-motion', async (importOriginal) => {
         cache.set(
           key,
           forwardRef<unknown, Record<string, unknown>>((props, ref) =>
-            createElement(inner, { ...props, ref, 'data-layout': props.layout ? String(props.layout) : undefined }),
+            createElement(inner, {
+              ...props,
+              ref,
+              'data-layout': props.layout ? String(props.layout) : undefined,
+              'data-initial': props.initial === false ? 'false' : undefined,
+            }),
           ),
         )
       }
@@ -311,6 +318,22 @@ describe('run tab', () => {
     expect(runProtection(null, envs, ['h-db-1', 'h-ops-1'], 2, false).refused).toBe(MULTIPLE_PROTECTED_MESSAGE)
   })
 
+  it('a saved request is checked against the inventory as it is now', () => {
+    const envs = [prod, staging, audit]
+    const all = [...prodHosts, stg, ops]
+    const base = { concurrency: 4, timeoutSec: 60 }
+    const dbOnly = { ...base, target: { kind: 'environment' as const, environmentId: 'e-prod', role: 'db' as const }, command: { kind: 'text' as const, text: 'uptime' } }
+    expect(requestProtection(dbOnly, envs, all, [])).toEqual({ env: prod, needed: 'prod', refused: null, labels: ['db-1', 'db-2'] })
+    // prod is no longer protected.
+    expect(requestProtection(dbOnly, [{ ...prod, protected: false }, staging, audit], all, []).needed).toBeNull()
+    // A destructive snippet, or one that is gone, needs the name even for one host.
+    const one = { ...base, target: { kind: 'hosts' as const, hostIds: ['h-db-1'] } }
+    const restart = { ...snippet, destructive: true }
+    expect(requestProtection({ ...one, command: { kind: 'snippet', snippetId: 's1', values: {} } }, envs, all, [restart]).needed).toBe('prod')
+    expect(requestProtection({ ...one, command: { kind: 'snippet', snippetId: 'gone', values: {} } }, envs, all, [snippet]).needed).toBe('prod')
+    expect(requestProtection({ ...one, command: { kind: 'text', text: 'uptime' } }, envs, all, [snippet]).needed).toBeNull()
+  })
+
   it("main's refusal still shows as a toast", async () => {
     const { invoke } = await renderTab()
     invoke.mockImplementation(async (channel: string) => {
@@ -465,7 +488,7 @@ describe('run tab', () => {
     expect(chip('stg-1').closest('li')).not.toHaveAttribute('data-layout')
   })
 
-  it('toasts a finished run only while the Run tab is not showing', async () => {
+  it('toasts a finished run only while the Ops page is not showing, whichever tab is open', async () => {
     const run = summary(['h-db-1', 'h-db-2', 'h-web-1', 'h-web-2', 'h-web-3'])
     const done = (r: RunSummary): RunSummary => ({
       ...r,
@@ -473,7 +496,17 @@ describe('run tab', () => {
       endedAt: STAMP,
       hosts: r.hosts.map((h) => ({ ...h, state: h.hostId === 'h-db-2' ? 'failed' : 'ok', exitCode: h.hostId === 'h-db-2' ? 1 : 0 })),
     })
-    const { unmount } = await renderTab()
+    mockBridge({ 'snippets:list': [snippet] })
+    inventoryStore.set({ products: [], environments: [prod, staging, audit], hosts: [...prodHosts, stg, ops], identities: [], vaults: [] })
+    stopSync = startOpsSync()
+    const { unmount } = render(
+      <MemoryRouter initialEntries={['/ops/snippets']}>
+        <Routes>
+          <Route path="/ops/:tab" element={<OpsPage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    await flush()
     await send({ runId: 'r1', kind: 'run', run })
     await send({ runId: 'r1', kind: 'run', run: done(run) })
     expect(toast).not.toHaveBeenCalled()
@@ -487,5 +520,135 @@ describe('run tab', () => {
     // A finished run seen for the first time (the list on mount) is not news.
     await send({ runId: 'r3', kind: 'run', run: done({ ...run, id: 'r3' }) })
     expect(toast).toHaveBeenCalledTimes(1)
+  })
+
+  it("the start reply doesn't undo events that came before it", async () => {
+    const run = summary(['h-stg-1'])
+    const { invoke } = await renderTab(startsRun(run))
+    const base = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      // Main sends the first events before it replies, with the queued snapshot.
+      if (channel === 'runs:start') {
+        emitBridgeEvent('run:event', { runId: 'r1', kind: 'run', run: { ...run, hosts: [hostMeta('h-stg-1', { state: 'connecting', startedAt: STAMP })] } })
+        return run
+      }
+      // The snapshot load is still out, so only the events and the reply have been seen.
+      if (channel === 'runs:get') return new Promise(() => {})
+      return (base as (...a: unknown[]) => unknown)(channel, ...args)
+    })
+    fireEvent.click(screen.getByRole('radio', { name: 'Hosts' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'stg-1' }))
+    typeCommand('uptime')
+    await act(async () => {
+      fireEvent.click(runButton())
+    })
+    expect(chip('stg-1')).toHaveAttribute('data-state', 'connecting')
+  })
+
+  it('says a command may still be running only for hosts that had started it', async () => {
+    const run = summary(['h-db-1', 'h-db-2', 'h-web-1'], {
+      state: 'cancelled',
+      endedAt: STAMP,
+      hosts: [
+        hostMeta('h-db-1', { state: 'timeout', startedAt: STAMP, endedAt: STAMP }),
+        hostMeta('h-db-2', { state: 'cancelled', startedAt: STAMP, endedAt: STAMP }),
+        hostMeta('h-web-1', { state: 'cancelled', endedAt: STAMP }),
+      ],
+    })
+    await renderTab({ 'runs:list': [run], 'runs:get': { run, output: [] } })
+    fireEvent.click(within(screen.getByRole('list', { name: 'Recent runs' })).getByRole('button', { name: /^uptime/ }))
+    await flush()
+    for (const l of ['db-2', 'web-1']) fireEvent.click(screen.getByRole('button', { name: `${l} output` }))
+    const pane = (l: string) => screen.getByRole('button', { name: `${l} output` }).closest('li')!
+    expect(within(pane('db-1')).getByText('Timed out (the command may still be running on the host)')).toBeInTheDocument()
+    expect(within(pane('db-2')).getByText('Cancelled (the command may still be running on the host)')).toBeInTheDocument()
+    expect(within(pane('web-1')).queryByText(/may still be running/)).not.toBeInTheDocument()
+
+    // A run cancelled before any host started says nothing of the kind.
+    cleanup()
+    stopSync?.()
+    resetOps()
+    const early = { ...run, id: 'r2', hosts: [hostMeta('h-web-1', { state: 'cancelled', endedAt: STAMP })] }
+    await renderTab({ 'runs:list': [early], 'runs:get': { run: early, output: [] } })
+    fireEvent.click(within(screen.getByRole('list', { name: 'Recent runs' })).getByRole('button', { name: /^uptime/ }))
+    await flush()
+    expect(screen.queryByText(/may still be running/)).not.toBeInTheDocument()
+  })
+
+  it('recent runs never hide a running run behind finished ones', async () => {
+    const minute = (i: number) => new Date(Date.UTC(2026, 9, 19, 9, i)).toISOString()
+    const finished = Array.from({ length: MAX_RUNS_KEPT }, (_, i) =>
+      summary(['h-stg-1'], { id: `f${i}`, title: `job ${i}`, state: 'done', startedAt: minute(30 - i), endedAt: minute(30 - i) }),
+    )
+    const long = summary(['h-stg-1'], { id: 'long', title: 'backup', startedAt: minute(0) })
+    await renderTab({ 'runs:list': [...finished, long], 'runs:get': { run: long, output: [] } })
+    const rows = within(screen.getByRole('list', { name: 'Recent runs' })).getAllByRole('listitem')
+    expect(rows).toHaveLength(MAX_RUNS_KEPT + 1)
+    expect(rows[0]).toHaveTextContent('backup')
+  })
+
+  it('Run again checks protection as it is now', async () => {
+    const run = summary(['h-stg-1'], { title: 'reboot' })
+    const { invoke } = await renderTab(startsRun(run))
+    fireEvent.click(screen.getByRole('radio', { name: 'Hosts' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'stg-1' }))
+    typeCommand('reboot')
+    await act(async () => {
+      fireEvent.click(runButton())
+    })
+    expect(calls(invoke, 'runs:start')).toHaveLength(1)
+    await send({ runId: 'r1', kind: 'run', run: { ...run, state: 'done', endedAt: STAMP, hosts: [hostMeta('h-stg-1', { state: 'ok', exitCode: 0 })] } })
+
+    // staging became protected since: a destructive command there needs its name.
+    act(() => inventoryStore.set({ ...inventoryStore.get()!, environments: [prod, { ...staging, protected: true }, audit] }))
+    fireEvent.click(screen.getByRole('button', { name: 'Run again' }))
+    await flush()
+    const dialog = screen.getByRole('dialog', { name: 'Run on 1 host in staging?' })
+    expect(calls(invoke, 'runs:start')).toHaveLength(1)
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Type staging to confirm' }), { target: { value: 'staging' } })
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Run' }))
+    })
+    expect(calls(invoke, 'runs:start')[1]).toEqual(['runs:start', { ...(calls(invoke, 'runs:start')[0][1] as object), confirm: 'staging' }])
+  })
+
+  it("a finished host's check doesn't pop when the run is reopened, only when it finishes in view", async () => {
+    const run = summary(['h-stg-1'])
+    const done = { ...run, state: 'done' as const, endedAt: STAMP, hosts: [hostMeta('h-stg-1', { state: 'ok', exitCode: 0, startedAt: STAMP, endedAt: STAMP })] }
+    await renderTab({ 'runs:list': [done, { ...run, id: 'r2', title: 'live' }], 'runs:get': { run: done, output: [] } })
+    fireEvent.click(within(screen.getByRole('list', { name: 'Recent runs' })).getByRole('button', { name: /^uptime/ }))
+    await flush()
+    expect(chip('stg-1').querySelector('[data-initial="false"]')).not.toBeNull()
+
+    cleanup()
+    stopSync?.()
+    resetOps()
+    await renderTab(startsRun(run))
+    fireEvent.click(screen.getByRole('radio', { name: 'Hosts' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'stg-1' }))
+    typeCommand('uptime')
+    await act(async () => {
+      fireEvent.click(runButton())
+    })
+    await send({ runId: 'r1', kind: 'host', host: hostMeta('h-stg-1', { state: 'ok', exitCode: 0, startedAt: STAMP, endedAt: STAMP }) })
+    expect(chip('stg-1')).toHaveAttribute('data-state', 'ok')
+    expect(chip('stg-1').querySelector('[data-initial="false"]')).toBeNull()
+  })
+
+  it('clicking a chip scrolls its pane into view, without smooth scrolling under reduced motion', async () => {
+    const scroll = vi.fn()
+    Element.prototype.scrollIntoView = scroll
+    try {
+      motion.safe = false
+      const run = summary(['h-stg-1', 'h-ops-1'])
+      await renderTab({ 'runs:list': [run], 'runs:get': { run, output: [] } })
+      fireEvent.click(within(screen.getByRole('list', { name: 'Recent runs' })).getByRole('button', { name: /^uptime/ }))
+      await flush()
+      fireEvent.click(chip('ops-1'))
+      await tick(50)
+      expect(scroll).toHaveBeenCalledWith({ block: 'nearest', behavior: 'auto' })
+    } finally {
+      delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView
+    }
   })
 })

@@ -1,4 +1,6 @@
+import { useEffect } from 'react'
 import { Navigate, NavLink, useParams } from 'react-router'
+import { showOpsPage } from '../../ops/runs'
 import { EmptyState } from '../../ui/EmptyState'
 import { Play, Boxes, FileCode2, type LucideIcon } from 'lucide-react'
 import { RunTab } from './RunTab'
@@ -12,6 +14,8 @@ const TABS = [
 /** The Ops section: tabs over `/ops/:tab`. Each tab's content arrives with its own task. */
 export function OpsPage() {
   const { tab } = useParams()
+  // While the page shows, a finished run is in its recent runs; it is toasted only when the page is away.
+  useEffect(() => showOpsPage(), [])
   const current = TABS.find((t) => t.id === tab)
   if (!current) return <Navigate to="/ops/run" replace />
   return (
