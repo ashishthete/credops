@@ -131,6 +131,8 @@ export interface NotificationRecord {
 export interface NotifyLogFilter {
   sourceType?: NotifySourceType
   sourceId?: string
+  /** Rows whose release or tunnel belongs to this environment. */
+  environmentId?: string
   limit?: number
 }
 

@@ -1,6 +1,7 @@
 import { HashRouter } from 'react-router'
 import { ExplainPanel } from './ai/ExplainPanel'
 import './ai/register'
+import { AppEvents } from './settings/events'
 import { AppShell } from './shell/AppShell'
 import { CommandPalette } from './ui/CommandPalette'
 import { Toaster } from './ui/Toaster'
@@ -13,6 +14,7 @@ export function App() {
       {/* Nothing inside the gate is mounted until the vaults are unlocked. */}
       <AuthGate>
         <AppShell />
+        <AppEvents />
         <CommandPalette />
         <ExplainPanel />
         <VaultSettingsDialog />

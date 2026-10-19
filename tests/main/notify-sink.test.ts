@@ -177,6 +177,27 @@ describe('notify:log', () => {
     ])
     expect((await handlers['notify:log']({ sourceId: 'r1', limit: 1 })).map((r) => r.id)).toEqual(['b'])
   })
+
+  it('filters to one environment through its releases and tunnels', async () => {
+    const { f, handlers, env } = await setup()
+    const other = f.envs.create({ name: 'staging', color: '#22c55e' })
+    const host = f.hosts.create({ label: 'app1', address: '10.0.0.7' })
+    const now = '2026-10-19T09:00:00.000Z'
+    const rel = f.db.prepare("INSERT INTO releases(id, environment_id, kind, status, triggered_by, created_at) VALUES (?,?,'release','failed','t',?)")
+    rel.run('r-prod', env.id, now)
+    rel.run('r-stg', other.id, now)
+    const tun = f.db.prepare("INSERT INTO tunnels(id, label, host_id, environment_id, type, bind_port, created_at, updated_at) VALUES (?,?,?,?,'D',1080,?,?)")
+    const T_PROD = '0190a1b2-c3d4-7e5f-8a6b-000000000001'
+    const T_STG = '0190a1b2-c3d4-7e5f-8a6b-000000000002'
+    tun.run(T_PROD, 'db', host.id, env.id, now, now)
+    tun.run(T_STG, 'db2', host.id, other.id, now, now)
+    const ins = f.db.prepare('INSERT INTO notification_log(id, at, source_type, source_id, event, channel, status, detail) VALUES (?,?,?,?,?,?,?,?)')
+    ins.run('a', '2026-10-19T09:00:00.000Z', 'release', 'r-prod', 'release.failed', 'teams', 'sent', null)
+    ins.run('b', '2026-10-19T09:01:00.000Z', 'release', 'r-stg', 'release.failed', 'teams', 'sent', null)
+    ins.run('c', '2026-10-19T09:02:00.000Z', 'tunnel', `${T_PROD}@2026-10-19T09:02:00.000Z`, 'tunnel.failed', 'teams', 'failed', null)
+    ins.run('d', '2026-10-19T09:03:00.000Z', 'tunnel', `${T_STG}@2026-10-19T09:03:00.000Z`, 'tunnel.failed', 'teams', 'sent', null)
+    expect((await handlers['notify:log']({ environmentId: env.id })).map((r) => r.id)).toEqual(['c', 'a'])
+  })
 })
 
 describe('notify validators', async () => {
@@ -191,5 +212,7 @@ describe('notify validators', async () => {
     expect(() => check('notify:log', [{ sourceType: 'release', limit: 10 }])).not.toThrow()
     expect(() => check('notify:log', [{ sourceType: 'nope' }])).toThrow(/sourceType/)
     expect(() => check('notify:log', [{ limit: 201 }])).toThrow(/limit/)
+    expect(() => check('notify:log', [{ environmentId: ID }])).not.toThrow()
+    expect(() => check('notify:log', [{ environmentId: 'x' }])).toThrow(/environmentId/)
   })
 })

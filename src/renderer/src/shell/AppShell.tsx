@@ -15,6 +15,8 @@ import { PromptHost } from '../pages/terminals/PromptHost'
 import { TerminalDeck } from '../pages/terminals/TerminalDeck'
 import { TunnelsPage } from '../pages/tunnels/TunnelsPage'
 import { VaultsPage } from '../pages/vaults/VaultsPage'
+import { IntegrationsPage } from '../pages/settings/IntegrationsPage'
+import { SETTINGS_PATH, useSettingsCommands } from '../settings/commands'
 import { resetOps, startOpsSync } from '../ops/runs'
 import { disposeAll } from '../terminal/registry'
 import { resetSessions, startSessionSync } from '../terminal/sessions'
@@ -37,6 +39,7 @@ export function AppShell() {
   useTunnelCommands()
   useMapCommands()
   useOpsCommands()
+  useSettingsCommands()
   // The shell mounts only while unlocked, so every unlock reloads (F22).
   useEffect(() => {
     void loadInventory()
@@ -99,6 +102,8 @@ export function AppShell() {
             <Route path="/ops" element={<Navigate to="/ops/run" replace />} />
             <Route path="/ops/:tab" element={<OpsPage />} />
             <Route path="/audit" element={<AuditPage />} />
+            {/* Reached from the sidebar footer gear and the palette; not a numbered section. */}
+            <Route path={SETTINGS_PATH} element={<IntegrationsPage />} />
             <Route path="*" element={<Navigate to={SECTIONS[0].path} replace />} />
           </Routes>
         </motion.div>

@@ -390,6 +390,7 @@ export const asNotifyTestTarget: Check<NotifyTestTarget> = v.tagged('channel', {
 export const asNotifyLogFilter: Check<NotifyLogFilter> = v.object({
   sourceType: v.optional(v.oneOf(NOTIFY_SOURCES)),
   sourceId: v.optional(v.str({ min: 1, max: 64 })),
+  environmentId: v.optional(v.uuid()),
   limit: v.optional(v.int({ min: 1, max: MAX_NOTIFY_LOG })),
 }) as Check<NotifyLogFilter>
 

@@ -35,6 +35,13 @@ export function listNotifications(db: Db, filter: NotifyLogFilter = {}): Notific
     where.push('source_id = ?')
     params.push(filter.sourceId)
   }
+  if (filter.environmentId) {
+    // A tunnel row's source id is `<tunnelId>@<time>`.
+    where.push(
+      "((source_type = 'release' AND source_id IN (SELECT id FROM releases WHERE environment_id = ?)) OR (source_type = 'tunnel' AND substr(source_id, 1, instr(source_id || '@', '@') - 1) IN (SELECT id FROM tunnels WHERE environment_id = ?)))",
+    )
+    params.push(filter.environmentId, filter.environmentId)
+  }
   const limit = Math.min(Math.max(filter.limit ?? 50, 1), MAX_NOTIFY_LOG)
   const sql = `SELECT * FROM notification_log ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY at DESC, id DESC LIMIT ?`
   return (db.prepare(sql).all(...params, limit) as unknown as LogRow[]).map(toRecord)

@@ -8,6 +8,7 @@ import {
   ScrollText,
   Search,
   Server,
+  Settings,
   SquareTerminal,
   Wrench,
   type LucideIcon,
@@ -24,6 +25,7 @@ import { plural } from '../ui/common'
 import { spring, useMotionSafe } from '../ui/motion'
 import { formatShortcut } from '../ui/shortcuts'
 import { Skeleton } from '../ui/Skeleton'
+import { SETTINGS_PATH } from '../settings/commands'
 import { SECTIONS, sectionShortcut, type SectionId } from './sections'
 import { VaultLockButton } from './VaultLockButton'
 
@@ -155,6 +157,16 @@ export function Sidebar() {
               </div>
             </>
           )}
+          <NavLink
+            to={SETTINGS_PATH}
+            aria-label="AI & integrations"
+            title="AI & integrations"
+            className={({ isActive }) =>
+              `ml-auto grid size-7 shrink-0 place-items-center rounded-lg transition-colors hover:bg-white/[0.05] hover:text-fg ${isActive ? 'text-fg' : 'text-muted'}`
+            }
+          >
+            <Settings aria-hidden className="size-4" />
+          </NavLink>
         </div>
       </div>
     </aside>
