@@ -99,6 +99,9 @@ export class ProbeTokens {
   }
 }
 
+/** The one client call the `L` and `D` engines make, so the manager can route them over whichever link is current. */
+export type ForwardOut = Pick<Client, 'forwardOut'>
+
 export interface ForwardHandle {
   readonly accepting: boolean
   /**
@@ -289,7 +292,7 @@ export function probeListener(timers: Timers, tokens: ProbeTokens, address: { ad
  * The `L` engine: connections to `server` are forwarded over `client` to `targetHost:targetPort`.
  * The probe connects to the listener, sends a token and passes when our listener consumed it.
  */
-export function startLocal(client: Client, opts: LocalOpts): ForwardHandle {
+export function startLocal(client: ForwardOut, opts: LocalOpts): ForwardHandle {
   const { server, counter, tokens, timers } = opts
   const bound = server.address() as AddressInfo
   const address = { address: bound.address, port: bound.port }

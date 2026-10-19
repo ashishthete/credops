@@ -1,5 +1,5 @@
 import type { AddressInfo, Server, Socket } from 'node:net'
-import type { Client, ClientChannel } from 'ssh2'
+import type { ClientChannel } from 'ssh2'
 import { SOCKS_HANDSHAKE_MS, SOCKS_MAX_REQUEST } from '../../shared/tunnels'
 import {
   ConnectionGate,
@@ -7,6 +7,7 @@ import {
   probeListener,
   type Counter,
   type ForwardHandle,
+  type ForwardOut,
   type ProbeTokens,
   type Timers,
 } from './forward'
@@ -125,7 +126,7 @@ const MAX_GREETING = 257
  * first, so the probe check needs no hold: the first chunk is compared with the live tokens before it
  * is parsed, and a token is consumed and never reaches the SSH link.
  */
-export function startDynamic(client: Client, opts: DynamicOpts): ForwardHandle {
+export function startDynamic(client: ForwardOut, opts: DynamicOpts): ForwardHandle {
   const { server, counter, tokens, timers } = opts
   const bound = server.address() as AddressInfo
   const address = { address: bound.address, port: bound.port }
