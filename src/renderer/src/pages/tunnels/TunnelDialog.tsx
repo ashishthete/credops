@@ -22,7 +22,7 @@ import { createTunnel, tunnelStore, updateTunnel } from '../../tunnels/store'
 import { Button } from '../../ui/Button'
 import { Dialog } from '../../ui/Dialog'
 import { SelectField, TextField } from '../../ui/Field'
-import { fast, spring, useMotionSafe } from '../../ui/motion'
+import { exitFast, fast, spring, useMotionSafe } from '../../ui/motion'
 import { Switch } from '../../ui/Switch'
 import { toast } from '../../ui/Toaster'
 import { hostPort, RouteLine } from './RouteLine'
@@ -184,7 +184,7 @@ export function TunnelDialog({ request, onClose }: TunnelDialogProps) {
               <motion.p
                 initial={motionSafe ? { opacity: 0, x: -6 } : { opacity: 0 }}
                 animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, transition: fast }}
+                exit={{ opacity: 0, transition: exitFast }}
                 transition={motionSafe ? spring : fast}
                 className="mr-auto flex items-center gap-1.5 text-[12px] text-warn"
               >
@@ -255,7 +255,7 @@ export function TunnelDialog({ request, onClose }: TunnelDialogProps) {
               key={form.type}
               initial={motionSafe ? { opacity: 0, y: 4 } : { opacity: 0 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, transition: fast }}
+              exit={{ opacity: 0, transition: exitFast }}
               transition={motionSafe ? spring : fast}
             >
               <RouteLine
@@ -327,7 +327,7 @@ export function TunnelDialog({ request, onClose }: TunnelDialogProps) {
               key="target"
               initial={motionSafe ? { opacity: 0, height: 0 } : { opacity: 0 }}
               animate={motionSafe ? { opacity: 1, height: 'auto' } : { opacity: 1 }}
-              exit={{ opacity: 0, ...(motionSafe ? { height: 0 } : {}), transition: fast }}
+              exit={{ opacity: 0, ...(motionSafe ? { height: 0 } : {}), transition: exitFast }}
               transition={motionSafe ? spring : fast}
               // Clipped only while it moves, so focus rings at the edges are never cut off.
               className="-mx-1 overflow-hidden px-1"
@@ -366,7 +366,7 @@ export function TunnelDialog({ request, onClose }: TunnelDialogProps) {
               key="warnings"
               initial={motionSafe ? { opacity: 0, height: 0 } : { opacity: 0 }}
               animate={motionSafe ? { opacity: 1, height: 'auto' } : { opacity: 1 }}
-              exit={{ opacity: 0, ...(motionSafe ? { height: 0 } : {}), transition: fast }}
+              exit={{ opacity: 0, ...(motionSafe ? { height: 0 } : {}), transition: exitFast }}
               transition={motionSafe ? spring : fast}
               className="overflow-hidden"
             >
@@ -504,7 +504,7 @@ function CopyCommand({ command }: { command: string }) {
             key={copied ? 'done' : 'copy'}
             initial={motionSafe ? { scale: 0.6, opacity: 0 } : { opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
-            exit={{ opacity: 0, transition: fast }}
+            exit={{ opacity: 0, transition: exitFast }}
             transition={spring}
             className="grid"
           >

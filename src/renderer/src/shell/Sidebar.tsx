@@ -19,7 +19,7 @@ import { sessionStore } from '../terminal/sessions'
 import { tunnelStore } from '../tunnels/store'
 import { openCommandPalette } from '../ui/commands'
 import { plural } from '../ui/common'
-import { spring, useMotionSafe } from '../ui/motion'
+import { exitFast, spring, useMotionSafe } from '../ui/motion'
 import { formatShortcut } from '../ui/shortcuts'
 import { Skeleton } from '../ui/Skeleton'
 import { SECTIONS, sectionShortcut, type SectionId } from './sections'
@@ -175,7 +175,7 @@ function OpenSessions() {
           key="open-sessions"
           initial={motionSafe ? { height: 0, opacity: 0 } : false}
           animate={motionSafe ? { height: 'auto', opacity: 1 } : undefined}
-          exit={motionSafe ? { height: 0, opacity: 0 } : { opacity: 0, transition: { duration: 0 } }}
+          exit={motionSafe ? { height: 0, opacity: 0, transition: exitFast } : { opacity: 0, transition: { duration: 0 } }}
           transition={spring}
           className="overflow-hidden px-3"
         >

@@ -5,7 +5,7 @@ import { cleanIpcErrorMessage } from '../lib/api'
 import { Button } from './Button'
 import { Dialog } from './Dialog'
 import { TextField } from './Field'
-import { fast, spring, useMotionSafe } from './motion'
+import { exitFast, fast, spring, staggerDelay, useMotionSafe } from './motion'
 import { toast } from './Toaster'
 import { withUnlock } from '../vault/unlock'
 
@@ -190,7 +190,7 @@ export function RowMenu({
             onClick={(e) => e.stopPropagation()}
             initial={motionSafe ? { opacity: 0, scale: 0.94, y: -4 } : { opacity: 0 }}
             animate={motionSafe ? { opacity: 1, scale: 1, y: 0 } : { opacity: 1 }}
-            exit={motionSafe ? { opacity: 0, scale: 0.96, transition: fast } : { opacity: 0, transition: fast }}
+            exit={motionSafe ? { opacity: 0, scale: 0.96, transition: exitFast } : { opacity: 0, transition: exitFast }}
             transition={motionSafe ? spring : fast}
             style={{ transformOrigin: 'top right' }}
             className="absolute top-full right-0 z-40 mt-1 w-[184px] rounded-ui border border-line bg-surface-2/95 p-1 shadow-pop backdrop-blur-xl"
@@ -317,14 +317,14 @@ export function ListRow({
 }) {
   const motionSafe = useMotionSafe()
   // Rows cascade in on a fresh load; rows added later just slide in.
-  const delay = stagger && motionSafe ? Math.min(index, 16) * 0.03 : 0
+  const delay = stagger && motionSafe ? staggerDelay(index) : 0
   return (
     <motion.li
       layout={motionSafe ? 'position' : false}
       aria-label={label}
       initial={motionSafe ? { opacity: 0, y: 8 } : { opacity: 0 }}
       animate={{ opacity: 1, y: 0 }}
-      exit={motionSafe ? { opacity: 0, x: -12, transition: fast } : { opacity: 0, transition: fast }}
+      exit={motionSafe ? { opacity: 0, x: -12, transition: exitFast } : { opacity: 0, transition: exitFast }}
       transition={motionSafe ? { ...spring, delay } : fast}
       className="group relative flex min-h-14 items-center gap-3 border-b border-line/60 px-4 py-2.5 transition-colors last:border-0 hover:bg-white/[0.022]"
     >

@@ -11,7 +11,7 @@ import {
 } from '../../../../shared/inventory'
 import { DEFAULT_KEEPALIVE_SEC } from '../../../../shared/ssh'
 import { SelectField, TextField } from '../../ui/Field'
-import { fast, spring, useMotionSafe } from '../../ui/motion'
+import { exitFast, fast, spring, useMotionSafe } from '../../ui/motion'
 
 export type KeepaliveMode = 'inherit' | 'off' | 'custom'
 export interface EnvRow {
@@ -125,7 +125,7 @@ export function HostAdvanced({ value, check, onChange }: HostAdvancedProps) {
             id={`${id}-panel`}
             initial={motionSafe ? { opacity: 0, height: 0 } : { opacity: 0 }}
             animate={motionSafe ? { opacity: 1, height: 'auto' } : { opacity: 1 }}
-            exit={{ opacity: 0, ...(motionSafe ? { height: 0 } : {}), transition: fast }}
+            exit={{ opacity: 0, ...(motionSafe ? { height: 0 } : {}), transition: exitFast }}
             transition={motionSafe ? spring : fast}
             // Clipped only while it moves, so focus rings at the edges are never cut off.
             className="-mx-1 overflow-hidden px-1"
@@ -162,7 +162,7 @@ export function HostAdvanced({ value, check, onChange }: HostAdvancedProps) {
                       layout={motionSafe ? 'position' : false}
                       initial={motionSafe ? { opacity: 0, y: -4 } : { opacity: 0 }}
                       animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, transition: fast }}
+                      exit={{ opacity: 0, transition: exitFast }}
                       transition={motionSafe ? spring : fast}
                       className="flex flex-col gap-1"
                     >

@@ -8,7 +8,7 @@ import { showHostOnMapPath } from '../../map/commands'
 import { useConnect } from '../../terminal/connect'
 import { Button } from '../../ui/Button'
 import { ConfirmDialog, RowMenu, useMenuPopover, type ConfirmRequest } from '../../ui/common'
-import { fast, spring, useMotionSafe } from '../../ui/motion'
+import { exitFast, fast, spring, useMotionSafe } from '../../ui/motion'
 import { Skeleton } from '../../ui/Skeleton'
 import { toast } from '../../ui/Toaster'
 import { useVaultStatus } from '../../vault/status'
@@ -198,7 +198,7 @@ function VaultLinks({ host }: { host: HostMeta }) {
             layout={motionSafe ? 'position' : false}
             initial={motionSafe ? { opacity: 0, scale: 0.85 } : { opacity: 0 }}
             animate={{ opacity: 1, scale: 1 }}
-            exit={motionSafe ? { opacity: 0, scale: 0.85, transition: fast } : { opacity: 0, transition: fast }}
+            exit={motionSafe ? { opacity: 0, scale: 0.85, transition: exitFast } : { opacity: 0, transition: exitFast }}
             transition={motionSafe ? spring : fast}
             className="inline-flex h-7 items-center gap-1.5 rounded-full pr-1 pl-2.5 text-[12.5px] font-medium text-fg"
             style={{ background: `color-mix(in oklab, ${v.color} 14%, transparent)`, boxShadow: `inset 0 0 0 1px color-mix(in oklab, ${v.color} 40%, transparent)` }}
@@ -255,7 +255,7 @@ function LinkVaultMenu({
             aria-label="Link vault"
             initial={motionSafe ? { opacity: 0, scale: 0.95, y: -4 } : { opacity: 0 }}
             animate={motionSafe ? { opacity: 1, scale: 1, y: 0 } : { opacity: 1 }}
-            exit={{ opacity: 0, transition: fast }}
+            exit={{ opacity: 0, transition: exitFast }}
             transition={motionSafe ? spring : fast}
             style={{ transformOrigin: 'top left' }}
             className="absolute top-full left-0 z-40 mt-1 max-h-64 w-[220px] overflow-y-auto rounded-ui border border-line bg-surface-2/95 p-1 shadow-pop backdrop-blur-xl"

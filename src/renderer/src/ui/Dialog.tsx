@@ -1,6 +1,6 @@
 import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
 import { useEffect, useId, useLayoutEffect, useRef, type KeyboardEvent, type ReactNode } from 'react'
-import { fast, spring, useMotionSafe, useShake } from './motion'
+import { exitFast, fast, spring, useMotionSafe, useShake } from './motion'
 
 export interface DialogProps {
   open: boolean
@@ -111,11 +111,12 @@ function DialogPanel({
 
   return (
     <motion.div
-      className={`fixed inset-0 ${layer === 'prompt' ? 'z-[60]' : 'z-50'} flex items-center justify-center bg-black/50 px-4 backdrop-blur-md`}
+      // While it fades out, clicks go through to the page underneath.
+      className={`fixed inset-0 ${layer === 'prompt' ? 'z-[60]' : 'z-50'} flex items-center justify-center bg-black/50 px-4 backdrop-blur-md ${present ? '' : 'pointer-events-none'}`}
       data-layer={layer}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
+      exit={{ opacity: 0, transition: exitFast }}
       transition={fast}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose()
@@ -133,7 +134,7 @@ function DialogPanel({
           className="overflow-hidden rounded-[14px] border border-line bg-surface shadow-pop focus:outline-none"
           initial={motionSafe ? { opacity: 0, scale: 0.96, y: 6 } : { opacity: 0 }}
           animate={motionSafe ? { opacity: 1, scale: 1, y: 0 } : { opacity: 1 }}
-          exit={motionSafe ? { opacity: 0, scale: 0.97, transition: fast } : { opacity: 0, transition: fast }}
+          exit={motionSafe ? { opacity: 0, scale: 0.97, transition: exitFast } : { opacity: 0, transition: exitFast }}
           transition={motionSafe ? spring : fast}
         >
           <div className="px-5 pt-5">

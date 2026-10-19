@@ -8,7 +8,7 @@ import { api } from '../../lib/api'
 import { Button } from '../../ui/Button'
 import { Dialog } from '../../ui/Dialog'
 import { SecretField, SelectField, TextField } from '../../ui/Field'
-import { fast, spring, useMotionSafe } from '../../ui/motion'
+import { fast, spring, staggerDelay, useMotionSafe } from '../../ui/motion'
 import { toast } from '../../ui/Toaster'
 import { attempt } from '../../ui/common'
 import { ImportKeyDialog, LinkKeyDialog } from '../vaults/KeyDialogs'
@@ -198,7 +198,7 @@ export function LoginDialog({ open, host, current, inheritedFrom, onClose }: Log
                   onKeyDown={(e) => onRadioKey(e, i)}
                   initial={motionSafe ? { opacity: 0, y: 6 } : false}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ ...spring, delay: motionSafe ? i * 0.04 : 0 }}
+                  transition={{ ...spring, delay: motionSafe ? staggerDelay(i, 0.03) : 0 }}
                   className={`flex items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors ${
                     checked ? 'border-accent/60 bg-accent/8' : 'border-line bg-canvas/40 hover:border-muted/30'
                   }`}

@@ -20,7 +20,7 @@ import { inv, useInventory } from '../../inventory/store'
 import { Button } from '../../ui/Button'
 import { Dialog } from '../../ui/Dialog'
 import { SelectField, TextAreaField, TextField } from '../../ui/Field'
-import { fast, spring, useMotionSafe } from '../../ui/motion'
+import { exitFast, fast, spring, useMotionSafe } from '../../ui/motion'
 import { toast } from '../../ui/Toaster'
 import { useVaultStatus } from '../../vault/status'
 import { HostAdvanced, advancedFrom, checkAdvanced, type AdvancedState } from './HostAdvanced'
@@ -325,7 +325,7 @@ function TagInput({ tags, onChange }: { tags: string[]; onChange: (tags: string[
               layout={motionSafe ? 'position' : false}
               initial={motionSafe ? { opacity: 0, scale: 0.8 } : { opacity: 0 }}
               animate={{ opacity: 1, scale: 1 }}
-              exit={motionSafe ? { opacity: 0, scale: 0.8, transition: fast } : { opacity: 0, transition: fast }}
+              exit={motionSafe ? { opacity: 0, scale: 0.8, transition: exitFast } : { opacity: 0, transition: exitFast }}
               transition={motionSafe ? spring : fast}
               className="inline-flex h-6 items-center gap-1 rounded-md bg-white/[0.06] pr-0.5 pl-2 font-mono text-[12px] text-fg/90"
             >

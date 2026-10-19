@@ -6,7 +6,7 @@ import { startTunnel, stopTunnel, useTunnel, useTunnelStats } from '../../tunnel
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
 import { plural, RowMenu } from '../../ui/common'
-import { fast, spring, useMotionSafe, useShake } from '../../ui/motion'
+import { exitFast, fast, spring, useMotionSafe, useShake } from '../../ui/motion'
 import { Padlock } from '../../ui/Padlock'
 import { Sparkline } from '../../ui/Sparkline'
 import { Switch } from '../../ui/Switch'
@@ -98,7 +98,7 @@ export const TunnelCard = memo(function TunnelCard({ id, hostLabel, hostAddress,
       layout={motionSafe ? 'position' : false}
       initial={motionSafe ? { opacity: 0, scale: 0.94, y: 10 } : { opacity: 0 }}
       animate={motionSafe ? { opacity: 1, scale: 1, y: 0 } : { opacity: 1 }}
-      exit={motionSafe ? { opacity: 0, scale: 0.92, transition: fast } : { opacity: 0, transition: fast }}
+      exit={motionSafe ? { opacity: 0, scale: 0.92, transition: exitFast } : { opacity: 0, transition: exitFast }}
       transition={motionSafe ? spring : fast}
       style={{
         borderColor: glow ? `color-mix(in oklab, ${glow} 38%, var(--border))` : undefined,

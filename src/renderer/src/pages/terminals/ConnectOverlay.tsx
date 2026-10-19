@@ -3,7 +3,7 @@ import { Check, Copy, Laptop, RotateCw, ShieldAlert, TriangleAlert, X } from 'lu
 import { useState } from 'react'
 import type { HopState, SessionError, SessionHop, SessionMeta } from '../../../../shared/ssh'
 import { Button } from '../../ui/Button'
-import { fast, spring, useMotionSafe, useShake } from '../../ui/motion'
+import { exitFast, fast, spring, useMotionSafe, useShake } from '../../ui/motion'
 
 const LOCAL: SessionHop = { label: 'This Mac', state: 'up' }
 
@@ -38,7 +38,7 @@ export function ConnectOverlay({ meta, onReconnect, reconnecting, onClose, onOpe
       className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-8 bg-canvas/80 px-6 backdrop-blur-[3px]"
       initial={motionSafe ? { opacity: 0, scale: 0.985 } : { opacity: 0 }}
       animate={motionSafe ? { opacity: 1, scale: 1 } : { opacity: 1 }}
-      exit={{ opacity: 0, transition: fast }}
+      exit={{ opacity: 0, transition: exitFast }}
       transition={fast}
     >
       {chain.length > 1 && (

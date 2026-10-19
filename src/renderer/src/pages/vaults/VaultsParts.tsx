@@ -3,7 +3,7 @@ import { FileUp, FolderOpen, KeyRound, LockKeyhole, Plus, ShieldX, UserRound, Wa
 import type { ReactNode } from 'react'
 import { Button } from '../../ui/Button'
 import { EmptyState } from '../../ui/EmptyState'
-import { fast, useMotionSafe } from '../../ui/motion'
+import { exitFast, fast, useMotionSafe } from '../../ui/motion'
 import { Skeleton } from '../../ui/Skeleton'
 
 // The page's static pieces: tabs, per-tab toolbars, empty and loading states.
@@ -39,14 +39,15 @@ export function Toolbar({ tab, onNew }: { tab: Tab; onNew: (which: NewDialog) =>
   }
   const set = sets[tab]
   return (
-    <AnimatePresence initial={false} mode="wait">
+    // The old tab's buttons pop out of the flow at once, so the new ones never wait for them.
+    <AnimatePresence initial={false} mode="popLayout">
       <motion.div
         key={tab}
         role="toolbar"
         aria-label={set.label}
         initial={motionSafe ? { opacity: 0, y: 3 } : { opacity: 0 }}
         animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, transition: { duration: 0.08 } }}
+        exit={{ opacity: 0, transition: exitFast }}
         transition={fast}
         className="flex items-center gap-1.5 pb-1.5"
       >

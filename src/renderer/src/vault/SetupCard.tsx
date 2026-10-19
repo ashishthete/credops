@@ -4,7 +4,7 @@ import { MAX_MASTER_PASSWORD, MIN_MASTER_PASSWORD, type VaultStatus } from '../.
 import { api } from '../lib/api'
 import { Button } from '../ui/Button'
 import { SecretField } from '../ui/Field'
-import { spring, useMotionSafe } from '../ui/motion'
+import { spring, staggerDelay, useMotionSafe } from '../ui/motion'
 import { toneColor } from '../ui/tone'
 import { vaultStatusStore } from './status'
 import { passwordStrength, type Strength } from './strength'
@@ -32,7 +32,7 @@ export function StrengthMeter({ strength, active }: { strength: Strength; active
               className="block h-full origin-left rounded-full bg-(--tone)"
               initial={false}
               animate={{ scaleX: i < strength ? 1 : 0 }}
-              transition={motionSafe ? { ...spring, delay: i * 0.03 } : { duration: 0 }}
+              transition={motionSafe ? { ...spring, delay: staggerDelay(i) } : { duration: 0 }}
             />
           </span>
         ))}

@@ -3,7 +3,7 @@ import { Plus } from 'lucide-react'
 import { useMemo, useState, useSyncExternalStore } from 'react'
 import type { TunnelMeta } from '../../../../shared/tunnels'
 import { tunnelStore, useTunnel } from '../../tunnels/store'
-import { fast, spring, useMotionSafe } from '../../ui/motion'
+import { exitFast, fast, spring, useMotionSafe } from '../../ui/motion'
 import { hostPort } from '../tunnels/RouteLine'
 import { STATE_DOT, TUNNEL_TYPE, TunnelStateWord, TunnelSwitch } from '../tunnels/TunnelCard'
 import { TunnelDialog, type TunnelRequest } from '../tunnels/TunnelDialog'
@@ -44,7 +44,7 @@ export function HostTunnels({ hostId, hostLabel, environmentId }: HostTunnelsPro
                 layout={motionSafe ? 'position' : false}
                 initial={motionSafe ? { opacity: 0, y: -4 } : { opacity: 0 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, transition: fast }}
+                exit={{ opacity: 0, transition: exitFast }}
                 transition={motionSafe ? spring : fast}
               >
                 <TunnelRow id={t.id} hostLabel={hostLabel} />
