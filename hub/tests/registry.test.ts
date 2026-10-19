@@ -29,6 +29,18 @@ async function bobInGroup(admin: string) {
 }
 
 describe('environment registry', () => {
+  it('a Hub-wide row with a required secret id does not hide a missing secret', async () => {
+    const { admin } = await setup()
+    const m = manifest()
+    const id = m.requiredSecrets[0].secretId
+    await put(admin, m)
+    hub.db
+      .prepare("INSERT INTO hub_secrets(id, environment_id, name, kind, value_enc, key_id, updated_by, updated_at) VALUES (?, NULL, 'wide', 'env', 'x', 'k', 'u', 'now')")
+      .run(id)
+    const r = await put(admin, m)
+    expect(r.json().missingSecrets).toContain(id)
+  })
+
   it('publish stores the manifest and returns missing secrets', async () => {
     const { admin } = await setup()
     const m = manifest()

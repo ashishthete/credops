@@ -318,7 +318,7 @@ export class Registry {
   }
 
   private secretIdsPresent(environmentId: string): Set<string> {
-    const rows = this.db.prepare('SELECT id FROM hub_secrets WHERE environment_id = ? OR environment_id IS NULL').all(environmentId) as { id: string }[]
+    const rows = this.db.prepare('SELECT id FROM hub_secrets WHERE environment_id = ?').all(environmentId) as { id: string }[]
     return new Set(rows.map((r) => r.id))
   }
 
