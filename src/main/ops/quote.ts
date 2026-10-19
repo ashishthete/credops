@@ -2,7 +2,7 @@
  * Shell quoting and snippet templates: the security core of Ops. Pure, no ssh imports.
  *
  * An SSH exec request carries one string that the host's login shell parses. Quoting is POSIX
- * (sh, bash, zsh, ksh, dash); fish and csh/tcsh read quotes differently and are not supported.
+ * (sh — bash/POSIX, bash, zsh, dash); fish and csh/tcsh read quotes differently and are not supported.
  * OpsDeck builds a command in exactly two ways:
  * - argv: `shJoin(argv)`, each element one word on the remote side whatever it contains;
  * - template: the snippet's script is trusted text written by the user, and only variable values are
@@ -14,8 +14,9 @@
  *   `--force`). Write `-- {{file}}` where it matters.
  * - A value handed to something that evaluates its argument as code, a variable name or a subscript
  *   runs as such: `eval`, `sh -c`, `bash -c`, `let`, `declare -i`, `typeset`, `local`, `export`,
- *   `readonly`, `unset`, `read`, `printf -v`, zsh glob qualifiers. That is the same as any trusted
- *   script text. So is `n={{n}}; echo $((n+1))`, which evaluates the value at runtime.
+ *   `readonly`, `unset`, `read`, `read -t`, `printf -v`, `printf %d`, `shift`, `ulimit -n`,
+ *   zsh glob qualifiers. That is the same as any trusted script text. So is `n={{n}}; echo $((n+1))`,
+ *   which evaluates the value at runtime.
  */
 import { MAX_SCRIPT, MAX_VARIABLE_VALUE, MAX_VARIABLES, VARIABLE_NAME } from '../../shared/ops'
 
@@ -85,12 +86,20 @@ const AMBIGUOUS = {
   quoteInParam: `a script with variables can't put ' inside "\${ }"`,
   ansiQuote: "a script with variables can't use \\' inside $'…'",
   arithParen: "a script with variables can't open $(( or (( as a subshell; put a space between the parentheses",
+  doubleParen: "a script with variables can't use (( arithmetic; pass the value through a variable and validate it",
+  doubleBracket: "a script with variables can't use [[ ]]; use case or pass the value through a variable and validate it",
+  quotedComment: "a script with variables can't have a comment that contains ' \" ` or \\",
+  lineContinuation: "a script with variables can't use a backslash-newline line continuation; join the line or end it",
   unterminated: 'a script with variables has an unterminated quote, bracket or substitution',
 } as const
 
 const BLANK = new Set([' ', '\t'])
 /** Ends a word in unquoted shell text. */
 const BOUNDARY = new Set([' ', '\t', '\n', ';', '&', '|', '(', ')', '<', '>'])
+/** Closes an open array subscript `[`: a shell keeps one open across blanks, operators and parens. */
+const BRACKET_END = new Set(['\n', ';', '&', '|'])
+/** A character before `[` that makes it an array subscript the shell evaluates, not a test or glob bracket. */
+const NAME_BEFORE_BRACKET = /[A-Za-z0-9_\]}]/
 const DOUBLE_ESCAPES = new Set(['$', '`', '"', '\\', '\n'])
 const PLACEHOLDER = /\{\{[ \t]*([^{}\s]*)[ \t]*\}\}/y
 
@@ -285,15 +294,20 @@ export function parseTemplate(script: string): ParsedTemplate {
         continue
       case 'backtick':
         // The shell ends backticks at the first unescaped one, whatever quotes sit in between.
-        if (c === '\\') backslash(true)
-        else if (c === '<' && s[i + 1] === '<' && s[i + 2] !== '<') hereDocument(f)
+        if (c === '\\') {
+          if (s[i + 1] === '\n') ambiguity ??= 'lineContinuation'
+          backslash(true)
+        } else if (c === '<' && s[i + 1] === '<' && s[i + 2] !== '<') hereDocument(f)
         else {
           if (c === '`') pop()
           i++
         }
         continue
       case 'double':
-        if (c === '\\') backslash(DOUBLE_ESCAPES.has(s[i + 1]))
+        if (c === '\\') {
+          if (s[i + 1] === '\n') ambiguity ??= 'lineContinuation'
+          backslash(DOUBLE_ESCAPES.has(s[i + 1]))
+        }
         else if (c === '"') {
           pop()
           i++
@@ -308,6 +322,7 @@ export function parseTemplate(script: string): ParsedTemplate {
     const command = f.kind === 'top' || f.kind === 'subshell'
     if (c === '\\') {
       const before: boolean = wordStart
+      if (s[i + 1] === '\n') ambiguity ??= 'lineContinuation'
       backslash(true)
       if (s[i - 1] === '\n') wordStart = before // a line continuation joins the word around it
       else wordStart = false
@@ -379,21 +394,29 @@ export function parseTemplate(script: string): ParsedTemplate {
     }
     if (wordStart && c === '#' && f.kind !== 'cond') {
       const nl = s.indexOf('\n', i)
+      const comment = s.slice(i, nl === -1 ? s.length : nl)
+      // Shells with interactive_comments off (zsh -i) read # literally, so a quote or escape in a
+      // "comment" keeps parsing; refuse those rather than guess which shell reads it.
+      if (/['"`\\]/.test(comment)) ambiguity ??= 'quotedComment'
       i = nl === -1 ? s.length : nl
       continue
     }
-    if (command && wordStart) {
-      if (s.startsWith('[[', i) && (i + 2 === s.length || BLANK.has(s[i + 2]) || s[i + 2] === '\n')) {
+    if (command) {
+      // `[[` and `((` open code the moment they appear, after a reserved word or `(` just as at a word
+      // start (`for((`, `if((`, `then((`, `[[(`); refuse the token anywhere, not only where it is clean.
+      if (s.startsWith('[[', i)) {
+        ambiguity ??= 'doubleBracket'
         push(frame('cond'))
         i += 2
         continue
       }
       if (s.startsWith('((', i)) {
+        ambiguity ??= 'doubleParen'
         push(frame('arith'))
         i += 2
         continue
       }
-      if (f.kind === 'subshell' && /^case[ \t\n]/.test(s.slice(i, i + 5))) ambiguity ??= 'case'
+      if (wordStart && f.kind === 'subshell' && /^case[ \t\n]/.test(s.slice(i, i + 5))) ambiguity ??= 'case'
     }
     if (c === '(' && f.kind === 'subshell') f.depth++
     if (c === ')' && f.kind === 'subshell') {
@@ -405,9 +428,12 @@ export function parseTemplate(script: string): ParsedTemplate {
       }
     }
     if (command) {
-      if (c === '[') f.bracket++
+      // A subscript is a `[` stuck to a name (`a[`, `$x[`, `a[0][`); a shell keeps it open across
+      // blanks and operators, so `a[ {{n}} ]` and `a[1 + {{n}}]` evaluate the value. Keep it open until
+      // a `]`, newline, `;`, `&` or `|`. A bare `[` (the test command) or a `[...]` glob is not a subscript.
+      if (c === '[' && NAME_BEFORE_BRACKET.test(s[i - 1] ?? '')) f.bracket++
       else if (c === ']' && f.bracket > 0) f.bracket--
-      else if (BOUNDARY.has(c)) f.bracket = 0
+      else if (f.bracket > 0 && BRACKET_END.has(c)) f.bracket = 0
     }
     wordStart = BOUNDARY.has(c)
     i++

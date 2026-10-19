@@ -9,7 +9,7 @@ import { checkValue, parseTemplate, renderTemplate, shJoin, shQuote, TemplateErr
 
 // Local shells only. Every run gets cwd = a tmp dir, HOME = that dir and an env of only MARKER and PATH,
 // so no rc file, key or real tool is reached. Hostile values only ever `touch` a marker inside the tmp dir.
-const SHELLS = ['/bin/sh', '/bin/bash', '/bin/zsh'].filter((sh) => existsSync(sh))
+const SHELLS = ['/bin/sh', '/bin/bash', '/bin/zsh', '/bin/dash'].filter((sh) => existsSync(sh))
 let tmp = ''
 let markers = 0
 
@@ -150,7 +150,7 @@ describe('parseTemplate', () => {
   it('treats # as a comment only at the start of a word', () => {
     expect(parseTemplate('echo a#{{v}}').variables).toEqual(['v'])
     expect(parseTemplate('echo ${#x} $# {{v}}').variables).toEqual(['v'])
-    expect(parseTemplate("echo a # it's {{c}}\necho {{v}}").variables).toEqual(['v'])
+    expect(parseTemplate('echo a # note {{c}}\necho {{v}}').variables).toEqual(['v'])
     expect(parseTemplate('echo $(echo a # {{c}} )\n) {{v}}').variables).toEqual(['v'])
   })
 
@@ -280,7 +280,7 @@ describe('parseTemplate', () => {
       "printf %s $'a\\\\' {{v}}",
       'printf %s "\\`" {{v}}',
       'printf %s \\"{{v}}',
-      "printf %s a # it's {{c}}\nprintf %s {{v}}",
+      'printf %s a # note {{c}}\nprintf %s {{v}}',
       'printf %s ${HOME} "${x:-a}" ${#x} {{v}}',
       'case {{v}} in x) echo x;; *) printf %s other;; esac',
       '[ {{v}} = x ] || printf %s no',
@@ -299,6 +299,59 @@ describe('parseTemplate', () => {
         for (const shell of SHELLS) {
           expect({ shell, script, value, touched: run(shell, command).touched }).toEqual({ shell, script, value, touched: false })
         }
+      }
+    }
+  })
+
+  // Fix round 1: forms the security review found slipping a placeholder into evaluated context.
+  const BYPASS = [
+    // (( opens arithmetic even glued to a reserved word or a `(`, not only at a clean word start
+    'for((i={{n}};i<1;i++)); do :; done',
+    'if(( {{n}} > 1 )); then :; fi',
+    'while(( {{n}} )); do break; done',
+    'until(( {{n}} )); do break; done',
+    'echo hi;(( {{n}} ))',
+    // [[ in every form, including [[( with no blank
+    '[[( {{n}} -eq 1 )]]',
+    '[[ {{n}} == x ]]',
+    'echo hi;[[ {{n}} ]]',
+    // an array subscript stays open across blanks and operators until ] ; & | or a newline
+    'a[ {{n}} ]=1',
+    'a[1 + {{n}}]=1',
+    'declare -a a; a[0 + {{n}}]=x',
+    // comments carrying a quote, backtick or backslash parse as code where # is literal (zsh -i)
+    "echo hi # don't forget\necho {{n}} done",
+    'echo {{n}} # say "hi"',
+    'echo {{n}} # `x`',
+    'echo {{n}} # back\\slash',
+    // backslash-newline line continuation, in each spot the review hit
+    '$\\\n{{n}}',
+    'echo x \\\n{{n}}',
+    '(\\\n( {{n}} ))',
+    'cat <\\\n<EOF\n{{n}}\nEOF',
+  ]
+
+  it('fix round 1: refuses every reported bypass form', () => {
+    for (const script of BYPASS) {
+      expect(message(() => parseTemplate(script))).toMatch(
+        /can't|arithmetic|\[\[|line continuation|comment|here-document/,
+      )
+    }
+  })
+
+  it('fix round 1: a refused form never builds a command, so no shell runs it', () => {
+    // The guard throws at parse, so the render pipeline never produces a string for any shell.
+    for (const script of BYPASS) {
+      expect(() => renderTemplate(parseTemplate(script), { n: '$(touch "$MARKER")' }, {})).toThrow(TemplateError)
+    }
+  })
+
+  it('fix round 1: the raw subscript and (( vectors really do run, which is why they are refused', () => {
+    // Controls: the same payload substituted raw, as a guardless templater would, touches the marker.
+    // Run under bash, where both forms evaluate; it proves the vectors are real and worth refusing.
+    if (SHELLS.includes('/bin/bash')) {
+      for (const red of ['a[$(touch "$MARKER")]=1', 'for((i=$(touch "$MARKER");i<0;i++)); do :; done']) {
+        expect({ red, touched: run('/bin/bash', red).touched }).toEqual({ red, touched: true })
       }
     }
   })
