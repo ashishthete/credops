@@ -939,6 +939,18 @@ describe('service selection', () => {
     )
   })
 
+  it('the schema refuses a db service on a checkout, so a whole checkout never holds one', async () => {
+    const { r, shop, web, worker } = await shopRig()
+    const pg = r.f.services.create({ kind: 'db', environmentId: r.f.staging.id, name: 'pg', dbEngine: 'postgres', dbAddress: '10.0.0.5' })
+    expect(() => r.f.db.prepare('UPDATE services SET deployment_id = ? WHERE id = ?').run(shop.id, pg.id)).toThrow(/CHECK/)
+    await ready(r, [], { serviceIds: [web.id, worker.id] })
+    const pf = r.runner.call('preflight').deployments
+    expect(pf.map((d) => [d.name, d.services])).toEqual([['shop', null]])
+    await expect(r.svc.preflight({ environmentId: r.f.staging.id, serviceIds: [web.id, pg.id], bump: 'none', options: DEFAULT_RELEASE_OPTIONS })).rejects.toThrow(
+      'pg is a database; databases are never deployed',
+    )
+  })
+
   it('access receives deploy.view with the affected checkout ids', async () => {
     const seen: { action: string; deploymentIds: string[] }[] = []
     const access: DeployAccess = {

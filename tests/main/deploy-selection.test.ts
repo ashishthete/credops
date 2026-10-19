@@ -175,6 +175,20 @@ describe('plan fields of a selection', () => {
     expect(f).toEqual({ services: ['frontend', 'worker'], urls: [{ url: 'https://shop.example', from: 'mac' }], commitBases: { shas: [A], tag: true } })
   })
 
+  it('db services never reach a run: not tracked, not in the entries, and whole stays the plain up', () => {
+    // A db row can't carry a checkout (the schema refuses it); even a malformed one is not tracked.
+    const stray = { ...db('pg2', 0), deploymentId: 'shop' } as unknown as ServiceMeta
+    const list = [...services, stray]
+    const [g] = resolveSelection(ENV, { serviceIds: ['web', 'worker', 'api'], checkoutIds: [] }, { services: list, deployments })
+    expect(g.tracked.map((s) => s.id)).toEqual(['web', 'worker', 'api'])
+    const entries = runServicesOf(g)
+    expect(entries.map((e) => e.id)).toEqual(['web', 'worker', 'api'])
+    expect(planFields(g.deployment, { services: entries, whole: g.whole }, metas(list)).services).toBeNull()
+    const partial = resolveSelection(ENV, { serviceIds: ['web'], checkoutIds: [] }, { services: list, deployments })[0]
+    expect(planFields(partial.deployment, { services: runServicesOf(partial), whole: partial.whole }, metas(list)).services).toEqual(['web'])
+    expect(refusal(['pg'])).toBe('pg is a database; databases are never deployed')
+  })
+
   it('a checkout with no services is the tag range alone', () => {
     const [g] = sel([], ['bare'])
     expect(runServicesOf(g)).toEqual([])
