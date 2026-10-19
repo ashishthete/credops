@@ -35,7 +35,9 @@ function classify(err: unknown): AuthErrorReason {
     if (err.claim === 'exp') return 'expired'
     return 'claims'
   }
-  if (err instanceof errors.JWKSTimeout) return 'jwks'
+  // A JWKS outage: timeout, non-200 or non-JSON response (a plain JOSEError), or a malformed key set.
+  if (err instanceof errors.JWKSTimeout || err instanceof errors.JWKSInvalid) return 'jwks'
+  if (err instanceof errors.JOSEError && err.constructor === errors.JOSEError) return 'jwks'
   if (err instanceof errors.JOSEError) {
     // Bad signature, unknown key, disallowed alg (none, HS256), malformed token.
     return 'signature'
@@ -59,17 +61,18 @@ export class EntraVerifier {
     let payload: JWTPayload
     try {
       ;({ payload } = await jwtVerify(token, this.jwks, {
-        issuer: this.cfg.authority,
+        issuer: this.cfg.authority.replace(/\/+$/, ''),
         audience: [this.cfg.clientId, `api://${this.cfg.clientId}`],
         algorithms: ['RS256'],
         clockTolerance: 120,
+        requiredClaims: ['exp', 'iat', 'tid', 'oid'],
         currentDate: this.now(),
       }))
     } catch (err) {
       throw new AuthError(classify(err))
     }
     const str = (v: unknown): string | undefined => (typeof v === 'string' && v !== '' ? v : undefined)
-    if (payload.tid !== this.cfg.tenantId) throw new AuthError('tenant')
+    if (str(payload.tid)?.toLowerCase() !== this.cfg.tenantId.toLowerCase()) throw new AuthError('tenant')
     const scopes = (str(payload.scp) ?? '').split(' ')
     if (!scopes.includes('access_as_user')) throw new AuthError('scope')
     const oid = str(payload.oid)

@@ -164,6 +164,7 @@ export async function startFakeEntra(opts: { tenantId?: string; clientId?: strin
       if (req.method === 'POST' && path === `${prefix}/oauth2/v2.0/token`) {
         const f = await readForm(req)
         requests.push({ path, params: f })
+        if (f.client_id !== clientId) return invalidGrant(res)
         if (f.grant_type === 'authorization_code') {
           const entry = f.code ? codes.get(f.code) : undefined
           if (f.code) codes.delete(f.code) // single use, even when the attempt fails
@@ -185,7 +186,10 @@ export async function startFakeEntra(opts: { tenantId?: string; clientId?: strin
         return invalidGrant(res)
       }
       json(res, 404, { error: 'not_found' })
-    })().catch(() => json(res, 500, { error: 'server_error' }))
+    })().catch(() => {
+      if (!res.headersSent) json(res, 500, { error: 'server_error' })
+      else res.end()
+    })
   })
 
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
