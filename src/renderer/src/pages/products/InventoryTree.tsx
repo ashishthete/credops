@@ -1,9 +1,9 @@
 import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
 import { Check, ChevronRight, Inbox, Link2, Lock, MoreHorizontal, Server, Unlink } from 'lucide-react'
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent } from 'react'
+import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type RefObject } from 'react'
 import { HOST_ROLES, type HostRole, type ProductIcon } from '../../../../shared/inventory'
 import { isFocusable, moveFocus, type NodeKey, type TreeRow } from '../../inventory/tree'
-import { fast, spring, useMotionSafe } from '../../ui/motion'
+import { exitFast, fast, spring, useMotionSafe } from '../../ui/motion'
 import { PRODUCT_ICON } from './ProductDialog'
 import { ROLE_LABEL } from './ProductView'
 
@@ -31,6 +31,22 @@ export interface InventoryTreeProps {
 }
 
 type MoveKey = Parameters<typeof moveFocus>[2]
+
+/**
+ * What a row does when used. Rows read it through a ref that always holds the latest handlers, so
+ * they can be memoized: a hover or a selection re-renders the rows it changes, not the whole tree.
+ */
+interface TreeActions {
+  select: (row: TreeRow) => void
+  toggle: (row: TreeRow) => void
+  hover: (row: TreeRow, on: boolean) => void
+  menu: (row: TreeRow, x: number, y: number, up?: number) => void
+  dragStart: (row: TreeRow, e: DragEvent) => void
+  dragOver: (row: TreeRow, e: DragEvent) => void
+  dragLeave: (row: TreeRow, e: DragEvent) => void
+  drop: (row: TreeRow, e: DragEvent) => void
+  dragEnd: () => void
+}
 const MOVE_KEYS = new Set<string>(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'])
 
 /** The visible row that carries tabIndex 0: the selection, or its nearest visible ancestor. */
@@ -71,6 +87,7 @@ export function InventoryTree({
     up?: number
   } | null>(null)
   const tabKey = useMemo(() => tabbableKey(rows, selected), [rows, selected])
+  const byKey = useMemo(() => new Map(rows.map((r) => [r.key, r])), [rows])
 
   // Keyboard moves land focus after the row they target has rendered.
   useEffect(() => {
@@ -97,7 +114,7 @@ export function InventoryTree({
 
   /** The role menu belongs to a host listed under an environment. */
   const openMenu = (host: TreeRow, x: number, y: number, up?: number) => {
-    const env = rows.find((r) => r.key === host.parentKey)
+    const env = host.parentKey ? byKey.get(host.parentKey) : undefined
     // The options button toggles: a second click on it closes its own menu.
     if (host.kind === 'host' && env?.kind === 'environment') setMenu((m) => (up !== undefined && m?.host.key === host.key ? null : { host, env, x, y, up }))
   }
@@ -132,24 +149,28 @@ export function InventoryTree({
     setOver(null)
   }
 
-  const dropHandlers = (row: TreeRow) => ({
-    onDragStart: (e: DragEvent) => {
+  const latest: TreeActions = {
+    select: (row) => onSelect(row.key),
+    toggle,
+    hover: (row, on) => setHovered((h) => (on ? (row.sharedCount > 0 ? row : null) : h?.key === row.key ? null : h)),
+    menu: (row, x, y, up) => openMenu(row, x, y, up),
+    dragStart: (row, e) => {
       if (row.kind !== 'host' && row.kind !== 'environment') return
       drag.current = row
       setDragging(row)
       e.dataTransfer.effectAllowed = 'copy'
       e.dataTransfer.setData('text/plain', row.label)
     },
-    onDragOver: (e: DragEvent) => {
+    dragOver: (row, e) => {
       if (!drag.current || !canDrop(drag.current, row)) return
       e.preventDefault()
       e.dataTransfer.dropEffect = 'copy'
       if (over !== row.key) setOver(row.key)
     },
-    onDragLeave: (e: DragEvent) => {
+    dragLeave: (row, e) => {
       if (over === row.key && !e.currentTarget.contains(e.relatedTarget as Node | null)) setOver(null)
     },
-    onDrop: (e: DragEvent) => {
+    drop: (row, e) => {
       e.preventDefault()
       const from = drag.current
       endDrag()
@@ -158,7 +179,11 @@ export function InventoryTree({
       if (from.kind === 'host') onDropHost(from, row)
       else if (from.kind === 'environment') onDropEnvironment(from, row)
     },
-    onDragEnd: endDrag,
+    dragEnd: endDrag,
+  }
+  const actions = useRef(latest)
+  useLayoutEffect(() => {
+    actions.current = latest
   })
 
   const closeMenu = () => {
@@ -170,14 +195,16 @@ export function InventoryTree({
   return (
     <>
       <ul ref={tree} role="tree" aria-label="Products" onKeyDown={onKeyDown} className="flex flex-col pb-2">
-        <AnimatePresence initial={false}>
+        {/* Rows animate their own height, so a row coming or going needn't re-render its siblings. */}
+        <AnimatePresence initial={false} presenceAffectsLayout={false}>
           {rows.map((row) =>
             row.kind === 'hint' ? (
               <TreeHint
                 key={row.key}
                 row={row}
+                target={(row.parentKey && byKey.get(row.parentKey)) || row}
                 over={over === row.parentKey}
-                {...pick(dropHandlers(rows.find((r) => r.key === row.parentKey) ?? row))}
+                actions={actions}
               />
             ) : (
               <TreeItem
@@ -190,16 +217,9 @@ export function InventoryTree({
                 over={over === row.key}
                 sharedHighlight={!!hovered && hovered.key !== row.key && hovered.kind === row.kind && hovered.id === row.id}
                 icon={row.kind === 'product' ? productIcons[row.id] : undefined}
-                onSelect={() => onSelect(row.key)}
-                onToggle={() => toggle(row)}
-                onHover={(on) => setHovered((h) => (on ? (row.sharedCount > 0 ? row : null) : h?.key === row.key ? null : h))}
                 menuOpen={menu?.host.key === row.key}
-                onMenu={
-                  row.kind === 'host' && rows.some((r) => r.key === row.parentKey && r.kind === 'environment')
-                    ? (x, y, up) => openMenu(row, x, y, up)
-                    : undefined
-                }
-                {...dropHandlers(row)}
+                hasMenu={row.kind === 'host' && !!row.parentKey && byKey.get(row.parentKey)?.kind === 'environment'}
+                actions={actions}
               />
             ),
           )}
@@ -210,21 +230,6 @@ export function InventoryTree({
   )
 }
 
-/** A hint row only takes drops; it can't be dragged. */
-const pick = ({
-  onDragOver,
-  onDragLeave,
-  onDrop,
-}: {
-  onDragOver: (e: DragEvent) => void
-  onDragLeave: (e: DragEvent) => void
-  onDrop: (e: DragEvent) => void
-}) => ({
-  onDragOver,
-  onDragLeave,
-  onDrop,
-})
-
 interface TreeItemProps {
   row: TreeRow
   selected: boolean
@@ -234,21 +239,14 @@ interface TreeItemProps {
   over: boolean
   sharedHighlight: boolean
   icon?: ProductIcon
-  onSelect: () => void
-  onToggle: () => void
-  onHover: (on: boolean) => void
-  /** Host rows under an environment: opens the role menu at a point. */
-  onMenu?: (x: number, y: number, up?: number) => void
+  /** Host rows under an environment open the role menu. */
+  hasMenu: boolean
   /** The role menu is open on this row. */
   menuOpen?: boolean
-  onDragStart: (e: DragEvent) => void
-  onDragOver: (e: DragEvent) => void
-  onDragLeave: (e: DragEvent) => void
-  onDrop: (e: DragEvent) => void
-  onDragEnd: () => void
+  actions: RefObject<TreeActions>
 }
 
-function TreeItem({
+const TreeItem = memo(function TreeItem({
   row,
   selected,
   tabbable,
@@ -257,14 +255,21 @@ function TreeItem({
   over,
   sharedHighlight,
   icon,
-  onSelect,
-  onToggle,
-  onHover,
-  onMenu,
+  hasMenu,
   menuOpen,
-  ...drag
+  actions,
 }: TreeItemProps) {
   const motionSafe = useMotionSafe()
+  const onToggle = () => actions.current.toggle(row)
+  const onHover = (on: boolean) => actions.current.hover(row, on)
+  const onMenu = hasMenu ? (x: number, y: number, up?: number) => actions.current.menu(row, x, y, up) : undefined
+  const drag = {
+    onDragStart: (e: DragEvent) => actions.current.dragStart(row, e),
+    onDragOver: (e: DragEvent) => actions.current.dragOver(row, e),
+    onDragLeave: (e: DragEvent) => actions.current.dragLeave(row, e),
+    onDrop: (e: DragEvent) => actions.current.drop(row, e),
+    onDragEnd: () => actions.current.dragEnd(),
+  }
   // Rows on their way out stay mounted for the exit animation, but nothing can reach them (F19).
   const present = useIsPresent()
   const draggable = present && (row.kind === 'host' || row.kind === 'environment')
@@ -305,7 +310,7 @@ function TreeItem({
       data-pulse={pulse || undefined}
       data-drop-target={dropTarget || undefined}
       draggable={draggable}
-      onClick={onSelect}
+      onClick={() => actions.current.select(row)}
       onContextMenu={(e) => {
         if (!onMenu) return
         e.preventDefault()
@@ -327,7 +332,7 @@ function TreeItem({
             }
           : { opacity: 1 }
       }
-      exit={motionSafe ? { height: 0, opacity: 0, overflow: 'hidden', transition: fast } : { opacity: 0, transition: fast }}
+      exit={motionSafe ? { height: 0, opacity: 0, overflow: 'hidden', transition: exitFast } : { opacity: 0, transition: exitFast }}
       transition={motionSafe ? spring : fast}
       className={`group/row rounded-lg py-px outline-none select-none focus-visible:outline-none ${present ? '' : 'pointer-events-none'}`}
     >
@@ -458,7 +463,7 @@ function TreeItem({
       </div>
     </motion.li>
   )
-}
+})
 
 function RowIcon({ row, icon }: { row: TreeRow; icon?: ProductIcon }) {
   if (row.kind === 'product') {
@@ -496,19 +501,25 @@ function RowIcon({ row, icon }: { row: TreeRow; icon?: ProductIcon }) {
 }
 
 /** "No hosts — drag one here", under an empty environment; a drop here lands on the environment. */
-function TreeHint({
+const TreeHint = memo(function TreeHint({
   row,
+  target,
   over,
-  ...drop
+  actions,
 }: {
   row: TreeRow
+  /** The environment a drop here lands on. */
+  target: TreeRow
   over: boolean
-  onDragOver: (e: DragEvent) => void
-  onDragLeave: (e: DragEvent) => void
-  onDrop: (e: DragEvent) => void
+  actions: RefObject<TreeActions>
 }) {
   const motionSafe = useMotionSafe()
   const present = useIsPresent()
+  const drop = {
+    onDragOver: (e: DragEvent) => actions.current.dragOver(target, e),
+    onDragLeave: (e: DragEvent) => actions.current.dragLeave(target, e),
+    onDrop: (e: DragEvent) => actions.current.drop(target, e),
+  }
   return (
     <motion.li
       role="none"
@@ -524,7 +535,7 @@ function TreeHint({
             }
           : { opacity: 1 }
       }
-      exit={motionSafe ? { height: 0, opacity: 0, overflow: 'hidden', transition: fast } : { opacity: 0, transition: fast }}
+      exit={motionSafe ? { height: 0, opacity: 0, overflow: 'hidden', transition: exitFast } : { opacity: 0, transition: exitFast }}
       transition={motionSafe ? spring : fast}
       className="select-none"
     >
@@ -536,7 +547,7 @@ function TreeHint({
       </div>
     </motion.li>
   )
-}
+})
 
 /** Role radios and remove for a host row, at a point; arrows move, Escape closes. */
 function RoleMenu({

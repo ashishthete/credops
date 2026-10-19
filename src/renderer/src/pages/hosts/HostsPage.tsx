@@ -1,6 +1,6 @@
 import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
 import { CircleDashed, Database, FileDown, Fingerprint, Plus, Search, Server, ShieldHalf, SquareTerminal, X, type LucideIcon } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react'
 import { useSearchParams } from 'react-router'
 import type { EnvironmentMeta, HostMeta, HostRole } from '../../../../shared/inventory'
 import type { HostsAction } from '../../inventory/commands'
@@ -9,9 +9,10 @@ import { useConnect } from '../../terminal/connect'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
 import { EmptyState } from '../../ui/EmptyState'
-import { fast, spring, useMotionSafe } from '../../ui/motion'
+import { exitFast, fast, spring, staggerDelay, useMotionSafe } from '../../ui/motion'
 import { useShortcut } from '../../ui/shortcuts'
 import { Skeleton } from '../../ui/Skeleton'
+import { createStore } from '../../ui/store'
 import { ROLE_LABEL, ROLE_ORDER } from '../products/ProductView'
 import { HostDialog } from './HostDialog'
 import { openKnownHosts } from '../terminals/KnownHostsDialog'
@@ -44,7 +45,7 @@ export function HostsPage() {
   const hosts = useMemo(() => [...(data?.hosts ?? [])].sort((a, b) => a.label.localeCompare(b.label)), [data])
   const allTags = useMemo(() => [...new Set(hosts.flatMap((h) => h.tags))].sort((a, b) => a.localeCompare(b)), [hosts])
   const q = query.trim().toLowerCase()
-  const visible = hosts.filter((h) => matchesQuery(h, q) && tags.every((t) => h.tags.includes(t)))
+  const visible = useMemo(() => hosts.filter((h) => matchesQuery(h, q) && tags.every((t) => h.tags.includes(t))), [hosts, q, tags])
 
   const wanted = params.get('host')
   const selected = wanted && hosts.some((h) => h.id === wanted) ? wanted : (visible[0]?.id ?? null)
@@ -242,11 +243,34 @@ interface HostListProps {
   onClearFilters: () => void
 }
 
-/** A listbox: arrows, Home and End move the selection, which follows focus. */
+type ListSelection = { selected: string | null; tabbable: string | null }
+type SelectionStore = ReturnType<typeof createStore<ListSelection>>
+
+/** True while `id` is the store's `which`; a row re-renders only when its own answer changes. */
+const useIs = (store: SelectionStore, which: keyof ListSelection, id: string) =>
+  useSyncExternalStore(store.subscribe, () => store.get()[which] === id)
+
+/**
+ * A listbox: arrows, Home and End move the selection, which follows focus. The rows are built once per
+ * list and read the selection from a store, so moving it re-renders two rows, not every row.
+ */
 function HostList({ hosts, environments, selected, stagger, onSelect, onClearFilters }: HostListProps) {
   const list = useRef<HTMLUListElement>(null)
   const envById = useMemo(() => new Map(environments.map((e) => [e.id, e])), [environments])
   const focusId = useRef<string | null>(null)
+  const { connect } = useConnect()
+  // With nothing selected in view, the first row takes Tab.
+  const tabbable = hosts.some((h) => h.id === selected) ? selected : (hosts[0]?.id ?? null)
+  const [selection] = useState(() => createStore<ListSelection>({ selected, tabbable }))
+  useLayoutEffect(() => {
+    const cur = selection.get()
+    if (cur.selected !== selected || cur.tabbable !== tabbable) selection.set({ selected, tabbable })
+  }, [selection, selected, tabbable])
+  const onSelectRef = useRef(onSelect)
+  useLayoutEffect(() => {
+    onSelectRef.current = onSelect
+  })
+  const pick = useCallback((id: string) => onSelectRef.current(id), [])
 
   // Focus lands on the newly selected row once it has rendered as selected.
   useEffect(() => {
@@ -265,24 +289,30 @@ function HostList({ hosts, environments, selected, stagger, onSelect, onClearFil
     onSelect(hosts[to].id)
   }
 
+  const rows = useMemo(
+    () => (
+      <AnimatePresence initial={false}>
+        {hosts.map((h, i) => (
+          <HostRow
+            key={h.id}
+            host={h}
+            envs={h.environments.flatMap((m) => envById.get(m.environmentId) ?? [])}
+            index={i}
+            stagger={stagger}
+            selection={selection}
+            onSelect={pick}
+            onConnect={connect}
+          />
+        ))}
+      </AnimatePresence>
+    ),
+    [hosts, envById, stagger, selection, pick, connect],
+  )
+
   return (
     <>
       <ul ref={list} role="listbox" aria-label="Hosts" onKeyDown={onKeyDown} className="flex flex-col gap-0.5">
-        <AnimatePresence initial={false}>
-          {hosts.map((h, i) => (
-            <HostRow
-              key={h.id}
-              host={h}
-              envs={h.environments.flatMap((m) => envById.get(m.environmentId) ?? [])}
-              index={i}
-              stagger={stagger}
-              selected={h.id === selected}
-              // With nothing selected in view, the first row takes Tab.
-              tabbable={h.id === selected || (i === 0 && !hosts.some((x) => x.id === selected))}
-              onSelect={() => onSelect(h.id)}
-            />
-          ))}
-        </AnimatePresence>
+        {rows}
       </ul>
       {hosts.length === 0 && (
         <div className="flex flex-col items-center gap-2 pt-10 text-center text-[12.5px] text-muted">
@@ -301,19 +331,20 @@ interface HostRowProps {
   envs: EnvironmentMeta[]
   index: number
   stagger: boolean
-  selected: boolean
-  tabbable: boolean
-  onSelect: () => void
+  selection: SelectionStore
+  onSelect: (id: string) => void
+  onConnect: (id: string) => Promise<void>
 }
 
-function HostRow({ host, envs, index, stagger, selected, tabbable, onSelect }: HostRowProps) {
+function HostRow({ host, envs, index, stagger, selection, onSelect, onConnect: connect }: HostRowProps) {
   const motionSafe = useMotionSafe()
   // Rows filtered away fade out; while they do, they're out of reach (F19).
   const present = useIsPresent()
+  const selected = useIs(selection, 'selected', host.id)
+  const tabbable = useIs(selection, 'tabbable', host.id)
   const role = primaryRole(host)
   const RoleIcon = role ? ROLE_ICON[role] : Server
-  const { connect } = useConnect()
-  const delay = stagger && motionSafe ? Math.min(index, 16) * 0.03 : 0
+  const delay = stagger && motionSafe ? staggerDelay(index) : 0
 
   return (
     <motion.li
@@ -324,7 +355,7 @@ function HostRow({ host, envs, index, stagger, selected, tabbable, onSelect }: H
       inert={!present}
       data-host-id={host.id}
       tabIndex={present && tabbable ? 0 : -1}
-      onClick={onSelect}
+      onClick={() => onSelect(host.id)}
       onDoubleClick={() => void connect(host.id)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' && e.target === e.currentTarget) void connect(host.id)
@@ -332,7 +363,7 @@ function HostRow({ host, envs, index, stagger, selected, tabbable, onSelect }: H
       layout={motionSafe ? 'position' : false}
       initial={motionSafe ? { opacity: 0, y: 8 } : { opacity: 0 }}
       animate={motionSafe ? { opacity: 1, y: 0 } : { opacity: 1 }}
-      exit={motionSafe ? { opacity: 0, x: -12, transition: fast } : { opacity: 0, transition: fast }}
+      exit={motionSafe ? { opacity: 0, x: -12, transition: exitFast } : { opacity: 0, transition: exitFast }}
       transition={motionSafe ? { ...spring, delay } : fast}
       className={`group relative flex cursor-default items-start gap-3 rounded-lg px-3 py-2.5 transition-colors select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 ${
         present ? '' : 'pointer-events-none'
