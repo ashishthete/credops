@@ -94,7 +94,41 @@ const object =
     return out as Infer<S>
   }
 
-export const v = { str, int, bool, oneOf, optional, nullable, array, object, uuid }
+/**
+ * A string-keyed map, copied into a fresh null-prototype object. Keys must match `keyPattern` and never name an
+ * Object.prototype member (`__proto__`, `constructor`); a bad key is reported without echoing it.
+ */
+const record =
+  <T>(keyPattern: RegExp, check: Check<T>, opts: { maxKeys: number }): Check<Record<string, T>> =>
+  (value, path) => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      throw new InvalidArgs(path, 'must be an object')
+    }
+    const keys = Object.keys(value)
+    if (keys.length > opts.maxKeys) throw new InvalidArgs(path, `must have at most ${opts.maxKeys} keys`)
+    const out = Object.create(null) as Record<string, T>
+    for (const key of keys) {
+      if (!keyPattern.test(key) || key in Object.prototype) throw new InvalidArgs(path, 'has an invalid key')
+      out[key] = check((value as Record<string, unknown>)[key], `${path}.${key}`)
+    }
+    return out
+  }
+
+type CheckResult<C> = C extends Check<infer T> ? T : never
+
+/** A discriminated union: `value[tag]` picks the shape, which then checks the whole value. */
+const tagged =
+  <M extends Record<string, Check<unknown>>>(tag: string, shapes: M): Check<CheckResult<M[keyof M]>> =>
+  (value, path) => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      throw new InvalidArgs(path, 'must be an object')
+    }
+    const kind = (value as Record<string, unknown>)[tag]
+    if (typeof kind !== 'string' || !Object.hasOwn(shapes, kind)) throw new InvalidArgs(`${path}.${tag}`, 'is not an allowed value')
+    return shapes[kind]!(value, path) as CheckResult<M[keyof M]>
+  }
+
+export const v = { str, int, bool, oneOf, optional, nullable, array, object, uuid, record, tagged }
 
 export type ArgsValidator<A extends unknown[]> = (args: readonly unknown[]) => A
 

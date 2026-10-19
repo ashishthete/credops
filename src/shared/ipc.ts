@@ -15,6 +15,17 @@ import type {
   SshImportRequest,
   SshImportResult,
 } from './inventory'
+import type {
+  ContainerAction,
+  ContainerList,
+  ContainerLogEvent,
+  RunEvent,
+  RunOutput,
+  RunRequest,
+  RunSummary,
+  SnippetInput,
+  SnippetMeta,
+} from './ops'
 import type { TunnelEvent, TunnelInput, TunnelMeta, TunnelPatch, TunnelRuntime, TunnelStats } from './tunnels'
 import type {
   KnownHostMeta,
@@ -143,6 +154,27 @@ export interface IpcContract {
   'tunnel:start': { args: [id: string]; result: TunnelRuntime }
   'tunnel:stop': { args: [id: string]; result: void }
   'tunnel:status': { args: []; result: TunnelRuntime[] }
+  'snippets:list': { args: []; result: SnippetMeta[] }
+  'snippets:create': { args: [input: SnippetInput]; result: SnippetMeta }
+  'snippets:update': { args: [id: string, input: SnippetInput]; result: SnippetMeta }
+  'snippets:delete': { args: [id: string]; result: void }
+  // The rendered text for a terminal insert; vault-free since nothing is stored or sent.
+  'snippets:render': { args: [id: string, values: Record<string, string>]; result: string }
+  // Returns at once with every host queued; progress arrives as run:event events.
+  'runs:start': { args: [req: RunRequest]; result: RunSummary }
+  'runs:cancel': { args: [runId: string]; result: RunSummary }
+  'runs:list': { args: []; result: RunSummary[] }
+  'runs:get': { args: [runId: string]; result: { run: RunSummary; output: RunOutput[] } }
+  'runs:dismiss': { args: [runId: string]; result: void }
+  'containers:list': { args: [hostId: string, environmentId: string | null]; result: ContainerList }
+  'containers:action': {
+    args: [hostId: string, environmentId: string | null, ref: string, action: ContainerAction, confirm?: string]
+    result: void
+  }
+  'containers:logs': { args: [hostId: string, environmentId: string | null, ref: string, tail: number]; result: string }
+  // Returns the followId; lines arrive as containers:logs events.
+  'containers:follow': { args: [hostId: string, environmentId: string | null, ref: string, tail: number]; result: string }
+  'containers:unfollow': { args: [followId: string]; result: void }
 }
 
 export type Channel = keyof IpcContract
@@ -222,6 +254,21 @@ export const CHANNELS = [
   'tunnel:start',
   'tunnel:stop',
   'tunnel:status',
+  'snippets:list',
+  'snippets:create',
+  'snippets:update',
+  'snippets:delete',
+  'snippets:render',
+  'runs:start',
+  'runs:cancel',
+  'runs:list',
+  'runs:get',
+  'runs:dismiss',
+  'containers:list',
+  'containers:action',
+  'containers:logs',
+  'containers:follow',
+  'containers:unfollow',
 ] as const satisfies readonly Channel[]
 
 // Fails typecheck if IpcContract gains a channel that CHANNELS does not list.
@@ -243,6 +290,9 @@ export interface EventContract {
   'tunnel:state': TunnelRuntime
   'tunnel:stats': TunnelStats[]
   'tunnel:event': TunnelEvent
+  // Output chunks are run output: never logged, audited or toasted.
+  'run:event': RunEvent
+  'containers:logs': ContainerLogEvent
 }
 export type EventName = keyof EventContract
 export const EVENTS = [
@@ -254,6 +304,8 @@ export const EVENTS = [
   'tunnel:state',
   'tunnel:stats',
   'tunnel:event',
+  'run:event',
+  'containers:logs',
 ] as const satisfies readonly EventName[]
 type MissingEvents = Exclude<EventName, (typeof EVENTS)[number]>
 export const eventsAreComplete: [MissingEvents] extends [never] ? true : never = true

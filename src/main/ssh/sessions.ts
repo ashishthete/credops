@@ -337,6 +337,7 @@ export class SessionManager {
         readyAt: null,
         closedAt: null,
         attempt: 1,
+        container: null,
       },
       cols: size.cols,
       rows: size.rows,

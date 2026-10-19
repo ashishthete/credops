@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { openDatabase } from '../../src/main/db/connection'
-import { currentVersion } from '../../src/main/db/migrations'
+import { currentVersion, migrations } from '../../src/main/db/migrations'
 import { IdentityStore } from '../../src/main/vault/identity-store'
 import { KeyStore } from '../../src/main/vault/key-store'
 import { makeVault } from './vault-helpers'
@@ -8,9 +8,9 @@ import { makeVault } from './vault-helpers'
 const NOW = '2026-01-01T00:00:00.000Z'
 
 describe('inventory schema', () => {
-  it('migrates to 5', () => {
+  it('migrates to the latest version', () => {
     const db = openDatabase(':memory:')
-    expect(currentVersion(db)).toBe(5)
+    expect(currentVersion(db)).toBe(migrations.at(-1)!.version)
     for (const t of ['products', 'hosts', 'environments', 'product_environments', 'environment_hosts', 'host_vaults']) {
       expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(t)).toBeDefined()
     }

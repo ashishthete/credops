@@ -80,3 +80,38 @@ describe('vault schema', () => {
     expect(db.prepare('SELECT COUNT(*) AS n FROM identities').get()).toEqual({ n: 1 })
   })
 })
+
+describe('migration versions', () => {
+  it('are contiguous from 1 and strictly increasing', () => {
+    expect(migrations.map((m) => m.version)).toEqual(migrations.map((_, i) => i + 1))
+  })
+})
+
+describe('snippets schema', () => {
+  const insert = (db: ReturnType<typeof openDatabase>, id: string, label: string, destructive = 0) =>
+    db
+      .prepare('INSERT INTO snippets(id,label,script,destructive,created_at,updated_at) VALUES (?,?,?,?,?,?)')
+      .run(id, label, 'uptime', destructive, 't', 't')
+
+  it('migration 6 creates snippets with a case-insensitive unique label', () => {
+    const db = openDatabase(':memory:')
+    expect(currentVersion(db)).toBeGreaterThanOrEqual(6)
+    expect(migrations.find((m) => m.version === 6)?.name).toBe('snippets')
+    insert(db, 's1', 'Deploy')
+    expect(() => insert(db, 's2', 'deploy')).toThrow(/UNIQUE constraint failed/)
+    const row = db.prepare('SELECT description, tags, variables, destructive FROM snippets').get()
+    expect({ ...row }).toEqual({ description: '', tags: '[]', variables: '[]', destructive: 0 })
+    // Migration 5's table is untouched.
+    const cols = db.prepare("SELECT name FROM pragma_table_info('tunnels')").all().map((r) => (r as { name: string }).name)
+    expect(cols).toEqual([
+      'id', 'label', 'host_id', 'environment_id', 'type', 'bind_address', 'bind_port',
+      'target_host', 'target_port', 'auto_start', 'auto_reconnect', 'created_at', 'updated_at',
+    ])
+  })
+
+  it('destructive is 0 or 1', () => {
+    const db = openDatabase(':memory:')
+    expect(() => insert(db, 's1', 'a', 2)).toThrow(/CHECK constraint failed/)
+    insert(db, 's1', 'a', 1)
+  })
+})

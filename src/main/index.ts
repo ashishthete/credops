@@ -19,6 +19,7 @@ import { createAppHandlers } from './ipc/handlers/app'
 import { createAuditHandlers } from './ipc/handlers/audit'
 import { createIdentityHandlers } from './ipc/handlers/identities'
 import { createTunnelHandlers } from './ipc/handlers/tunnels'
+import { createOpsHandlers } from './ipc/handlers/ops'
 import { listen, realExecFile, whoHolds } from './tunnels/bind'
 import { TunnelManager } from './tunnels/manager'
 import { TunnelStore } from './tunnels/tunnel-store'
@@ -266,6 +267,7 @@ if (!app.requestSingleInstanceLock()) {
           ...createSshImportHandlers(importer),
           ...createTunnelHandlers({ store: tunnels, manager: runner }),
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
+          ...createOpsHandlers(),
         },
         (url) => isTrustedSender(url, { devServerUrl, rendererFile }),
         { validators: VALIDATORS, knownSecrets },

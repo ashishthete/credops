@@ -114,6 +114,25 @@ CREATE TABLE tunnels(id TEXT PRIMARY KEY, label TEXT NOT NULL,
 CREATE INDEX tunnels_host ON tunnels(host_id);
 `,
   },
+  {
+    version: 6,
+    name: 'snippets',
+    // NOCASE folds ASCII only; labels are mostly ASCII, so that is accepted for v1.
+    up: `
+CREATE TABLE snippets (
+  id TEXT PRIMARY KEY,
+  label TEXT NOT NULL,
+  script TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  tags TEXT NOT NULL DEFAULT '[]',        -- JSON array of TAG strings, sorted, unique
+  variables TEXT NOT NULL DEFAULT '[]',   -- JSON array of { name, default } in first-use order
+  destructive INTEGER NOT NULL DEFAULT 0 CHECK (destructive IN (0,1)), -- 1 = always needs the protected-env confirmation
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX snippets_label ON snippets (label COLLATE NOCASE);
+`,
+  },
 ]
 
 const ENSURE_TABLE = `CREATE TABLE IF NOT EXISTS schema_migrations(

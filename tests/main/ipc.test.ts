@@ -8,7 +8,8 @@ import { openDatabase, type Db } from '../../src/main/db/connection'
 import { createAuditHandlers } from '../../src/main/ipc/handlers/audit'
 import { isTrustedSender, registerHandlers } from '../../src/main/ipc/register'
 import { VALIDATORS } from '../../src/main/ipc/validators'
-import { CHANNELS } from '../../src/shared/ipc'
+import { CHANNELS, EVENTS } from '../../src/shared/ipc'
+import { createOpsHandlers } from '../../src/main/ipc/handlers/ops'
 import { stubHandlers } from './ipc-helpers'
 
 const actor = { osUser: 'tester', machine: 'box' }
@@ -75,6 +76,37 @@ describe('registerHandlers', () => {
     ).get('audit:verify')!
     await expect(fn(frame('file:///ok'))).rejects.toThrow(new Error('boom ‹redacted›'))
     await expect(fn(frame('file:///ok'))).rejects.toThrow(/^boom ‹redacted›$/)
+  })
+})
+
+describe('ops contract', () => {
+  const OPS_CHANNELS = [
+    'snippets:list',
+    'snippets:create',
+    'snippets:update',
+    'snippets:delete',
+    'snippets:render',
+    'runs:start',
+    'runs:cancel',
+    'runs:list',
+    'runs:get',
+    'runs:dismiss',
+    'containers:list',
+    'containers:action',
+    'containers:logs',
+    'containers:follow',
+    'containers:unfollow',
+  ]
+
+  it('lists every ops channel and event', () => {
+    expect(CHANNELS).toEqual(expect.arrayContaining(OPS_CHANNELS))
+    expect(EVENTS).toEqual(expect.arrayContaining(['run:event', 'containers:logs']))
+  })
+
+  it('stubs each ops channel until its task lands', async () => {
+    const handlers = createOpsHandlers() as unknown as Record<string, () => unknown>
+    expect(Object.keys(handlers).sort()).toEqual([...OPS_CHANNELS].sort())
+    for (const channel of OPS_CHANNELS) expect(() => handlers[channel]!()).toThrow(/^Not available yet$/)
   })
 })
 
