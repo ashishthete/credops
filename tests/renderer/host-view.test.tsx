@@ -321,7 +321,11 @@ describe('HostView', () => {
         <Toaster />
       </>,
     )
-    await user.click(await screen.findByRole('button', { name: 'Remove web-1 from prod' }))
+    const unlink = await screen.findByRole('button', { name: 'Remove web-1 from prod' })
+    // Reads "Unlink" in plain text, visible without hovering.
+    expect(unlink).toHaveTextContent('Unlink')
+    expect(unlink.className).not.toMatch(/(^|\s)opacity-0(\s|$)/)
+    await user.click(unlink)
     const dialog = await screen.findByRole('dialog', { name: 'Remove web-1 from prod?' })
     const confirm = within(dialog).getByRole('button', { name: 'Remove host' })
     expect(confirm).toBeDisabled()

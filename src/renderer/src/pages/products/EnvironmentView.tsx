@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { KeyRound, Link2, Lock, Network, Pencil, Plus, Route, Server, SquareTerminal, Trash2, Unlink, X } from 'lucide-react'
+import { KeyRound, Link2, Lock, Network, Pencil, Plus, Route, Server, SquareTerminal, Trash2, Unlink } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useNavigate } from 'react-router'
 import { DEFAULT_SSH_PORT, type EnvironmentMeta } from '../../../../shared/inventory'
@@ -137,7 +137,7 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
                     <button
                       type="button"
                       onClick={() => onSelect(`${envKey}/h:${h.id}`)}
-                      className="flex h-10 w-full items-center gap-3 rounded-lg border border-transparent px-3 pr-[4.5rem] text-left transition-colors hover:border-line hover:bg-white/[0.03]"
+                      className="flex h-10 w-full items-center gap-3 rounded-lg border border-transparent px-3 pr-28 text-left transition-colors hover:border-line hover:bg-white/[0.03]"
                     >
                       <Server aria-hidden className="size-3.5 shrink-0 text-muted" />
                       <span className="truncate text-[13px] font-medium text-fg">{h.label}</span>
@@ -149,24 +149,30 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
                         <Link2 aria-label="Shared" className="ml-auto size-3 shrink-0 text-muted" strokeWidth={2.2} />
                       )}
                     </button>
-                    <button
-                      type="button"
-                      aria-label={`Connect to ${h.label}`}
-                      title={`Connect to ${h.label} in ${env.name}`}
-                      onClick={() => void connect(h.id, env.id)}
-                      className="absolute top-1/2 right-9 grid size-6 -translate-y-1/2 place-items-center rounded-md text-muted opacity-0 transition-[opacity,color,background-color] group-hover:opacity-100 hover:bg-white/[0.06] hover:text-fg focus-visible:opacity-100"
-                    >
-                      <SquareTerminal aria-hidden className="size-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`Remove ${h.label} from ${env.name}`}
-                      title={`Remove from ${env.name}`}
-                      onClick={() => onRemoveHost(h.id)}
-                      className="absolute top-1/2 right-2 grid size-6 -translate-y-1/2 place-items-center rounded-md text-muted opacity-0 transition-[opacity,color,background-color] group-hover:opacity-100 hover:bg-white/[0.06] hover:text-fg focus-visible:opacity-100"
-                    >
-                      <X aria-hidden className="size-3.5" />
-                    </button>
+                    <div className="absolute top-1/2 right-2 flex -translate-y-1/2 items-center gap-1">
+                      <button
+                        type="button"
+                        aria-label={`Connect to ${h.label}`}
+                        title={`Connect to ${h.label} in ${env.name}`}
+                        onClick={() => void connect(h.id, env.id)}
+                        className="grid size-6 place-items-center rounded-md text-muted opacity-0 transition-[opacity,color,background-color] group-hover:opacity-100 hover:bg-white/[0.06] hover:text-fg focus-visible:opacity-100"
+                      >
+                        <SquareTerminal aria-hidden className="size-3.5" />
+                      </button>
+                      {/* Always shown, so removing a host is findable; the word appears with the row's hover. */}
+                      <button
+                        type="button"
+                        aria-label={`Remove ${h.label} from ${env.name}`}
+                        title={`Remove from ${env.name}`}
+                        onClick={() => onRemoveHost(h.id)}
+                        className="inline-flex h-6 items-center rounded-md px-1.5 text-[12px] text-muted opacity-60 transition-[opacity,color,background-color] group-focus-within:opacity-100 group-hover:opacity-100 hover:bg-white/[0.06] hover:text-fg focus-visible:opacity-100"
+                      >
+                        <Unlink aria-hidden className="size-3.5 shrink-0" />
+                        <span className="max-w-0 overflow-hidden whitespace-nowrap transition-[max-width,margin] duration-200 group-focus-within:ml-1 group-focus-within:max-w-16 group-hover:ml-1 group-hover:max-w-16">
+                          Remove
+                        </span>
+                      </button>
+                    </div>
                   </motion.li>
                 ))}
               </ul>

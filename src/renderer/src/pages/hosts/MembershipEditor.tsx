@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { ChevronDown, Lock, Plus, X } from 'lucide-react'
+import { ChevronDown, Lock, Plus, Unlink } from 'lucide-react'
 import { useRef } from 'react'
 import { HOST_ROLES, type EnvironmentMeta, type HostMeta, type HostRole } from '../../../../shared/inventory'
 import { inv, type InventoryData } from '../../inventory/store'
@@ -69,9 +69,10 @@ export function MembershipEditor({ host, data, onRemove }: MembershipEditorProps
                 aria-label={`Remove ${host.label} from ${env.name}`}
                 title={`Remove from ${env.name}`}
                 onClick={() => onRemove(env)}
-                className="grid size-7 place-items-center rounded-md text-muted opacity-60 transition-[opacity,color,background-color] group-hover:opacity-100 hover:bg-white/[0.06] hover:text-fg focus-visible:opacity-100"
+                className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-muted opacity-60 transition-[opacity,color,background-color] group-hover:opacity-100 hover:bg-white/[0.06] hover:text-fg focus-visible:opacity-100"
               >
-                <X aria-hidden className="size-3.5" />
+                <Unlink aria-hidden className="size-3.5" />
+                Unlink
               </button>
             </motion.li>
           ))}

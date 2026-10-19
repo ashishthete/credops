@@ -391,7 +391,11 @@ describe('products page', () => {
     const user = userEvent.setup()
     const { invoke } = renderPage(sharedWorld())
     await user.click(await screen.findByRole('treeitem', { name: 'staging' }))
-    await user.click(screen.getByRole('button', { name: 'Remove web-1 from staging' }))
+    // Visible without hovering: never opacity-0, and it says what it does.
+    const remove = screen.getByRole('button', { name: 'Remove web-1 from staging' })
+    expect(remove.className).not.toMatch(/(^|\s)opacity-0(\s|$)/)
+    expect(remove).toHaveTextContent('Remove')
+    await user.click(remove)
     const dialog = await screen.findByRole('dialog', { name: 'Remove web-1 from staging?' })
     expect(within(dialog).queryByLabelText(/to confirm/)).not.toBeInTheDocument()
     await user.click(within(dialog).getByRole('button', { name: 'Remove host' }))
