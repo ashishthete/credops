@@ -411,6 +411,7 @@ export interface ReleaseSummary {
   hostCount: number
   /** The services this release was confirmed for; a rollback release names the services it rolls back. */
   serviceIds: string[]
+  /** The run entries: every service the release deploys, including a whole checkout's. */
   serviceCount: number
   error: string | null
 }
@@ -449,12 +450,16 @@ export interface ReleaseDetail extends ReleaseSummary {
   lastSeq: number
 }
 
-/** One service of a run; at preflight `previousCommit` is its last deployed commit and `deployedCommit` is null. */
+/**
+ * One service of a run. At preflight `previousCommit` and `previousReleaseId` are its last deployed commit and
+ * release (Start refuses when either has moved since) and `deployedCommit` is null.
+ */
 export interface RunService {
   id: string
   name: string
   composeService: string
   previousCommit: string | null
+  previousReleaseId: string | null
   deployedCommit: string | null
 }
 

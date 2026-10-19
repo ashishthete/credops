@@ -153,9 +153,9 @@ describe('plan fields of a selection', () => {
     const [g] = resolveSelection(ENV, { serviceIds: ['web', 'worker', 'api'], checkoutIds: [] }, { services: list, deployments })
     const entries = runServicesOf(g)
     expect(entries).toEqual([
-      { id: 'web', name: 'web', composeService: 'web', previousCommit: A, deployedCommit: null },
-      { id: 'worker', name: 'worker', composeService: 'worker', previousCommit: A, deployedCommit: null },
-      { id: 'api', name: 'api', composeService: 'api', previousCommit: B, deployedCommit: null },
+      { id: 'web', name: 'web', composeService: 'web', previousCommit: A, previousReleaseId: null, deployedCommit: null },
+      { id: 'worker', name: 'worker', composeService: 'worker', previousCommit: A, previousReleaseId: null, deployedCommit: null },
+      { id: 'api', name: 'api', composeService: 'api', previousCommit: B, previousReleaseId: null, deployedCommit: null },
     ])
     expect(planFields(g.deployment, { services: entries, whole: true }, metas(list))).toEqual({
       services: null,

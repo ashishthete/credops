@@ -101,6 +101,7 @@ interface ReleaseRow {
   finished_at: string | null
   deployment_count: number
   host_count: number
+  service_count: number
 }
 
 interface RunRow {
@@ -135,7 +136,9 @@ interface EventRow {
 
 const SELECT = `SELECT r.*, e.name AS environment_name,
   (SELECT COUNT(*) FROM deployment_runs d WHERE d.release_id = r.id) AS deployment_count,
-  (SELECT COUNT(DISTINCT d.host_id) FROM deployment_runs d WHERE d.release_id = r.id) AS host_count
+  (SELECT COUNT(DISTINCT d.host_id) FROM deployment_runs d WHERE d.release_id = r.id) AS host_count,
+  (SELECT COUNT(*) FROM deployment_runs d, json_each(CASE WHEN json_valid(d.services) AND json_type(d.services) = 'array' THEN d.services ELSE '[]' END) j
+    WHERE d.release_id = r.id AND j.type = 'object') AS service_count
   FROM releases r JOIN environments e ON e.id = r.environment_id`
 
 /**
@@ -417,7 +420,6 @@ export class ReleaseStore {
 }
 
 function summary(r: ReleaseRow): ReleaseSummary {
-  const serviceIds = JSON.parse(r.service_ids) as string[]
   return {
     id: r.id,
     environmentId: r.environment_id,
@@ -434,8 +436,8 @@ function summary(r: ReleaseRow): ReleaseSummary {
     finishedAt: r.finished_at,
     deploymentCount: r.deployment_count,
     hostCount: r.host_count,
-    serviceIds,
-    serviceCount: serviceIds.length,
+    serviceIds: serviceIds(r.service_ids),
+    serviceCount: r.service_count,
     error: r.error,
   }
 }
@@ -464,6 +466,17 @@ function runMeta(r: RunRow): DeploymentRunMeta {
   }
 }
 
+/** A release's stored service ids, keeping only strings; anything else (bad JSON, not an array) reads as none. */
+function serviceIds(json: string): string[] {
+  let raw: unknown
+  try {
+    raw = JSON.parse(json)
+  } catch {
+    return []
+  }
+  return Array.isArray(raw) ? raw.filter((v): v is string => typeof v === 'string') : []
+}
+
 /** A run's stored services, keeping only well-formed entries; anything else (old rows, bad JSON) reads as none. */
 function runServices(json: string): RunService[] {
   let raw: unknown
@@ -478,7 +491,9 @@ function runServices(json: string): RunService[] {
   return raw.flatMap((e: unknown) => {
     if (typeof e !== 'object' || e === null) return []
     const o = e as Record<string, unknown>
-    if (!str(o.id) || !str(o.name) || !str(o.composeService) || !opt(o.previousCommit) || !opt(o.deployedCommit)) return []
-    return [{ id: o.id, name: o.name, composeService: o.composeService, previousCommit: o.previousCommit, deployedCommit: o.deployedCommit }]
+    // An entry stored before previousReleaseId existed reads it as null.
+    const previousReleaseId = o.previousReleaseId === undefined ? null : o.previousReleaseId
+    if (!str(o.id) || !str(o.name) || !str(o.composeService) || !opt(o.previousCommit) || !opt(previousReleaseId) || !opt(o.deployedCommit)) return []
+    return [{ id: o.id, name: o.name, composeService: o.composeService, previousCommit: o.previousCommit, previousReleaseId, deployedCommit: o.deployedCommit }]
   })
 }

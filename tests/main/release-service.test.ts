@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { DeployError, localAllowAll, type DeployAccess } from '../../src/main/deploy/access'
 import { noopFinalize, type FinalizeSteps } from '../../src/main/deploy/finalize'
 import { ReleaseService } from '../../src/main/deploy/release-service'
@@ -919,13 +919,14 @@ describe('service selection', () => {
 
   it('preflight stores service_ids and per-run services with previous commits', async () => {
     const { r, shop, web, worker, pay } = await shopRig()
-    r.f.services.recordDeployed([{ serviceId: web.id, commit: A, releaseId: null }])
+    const r0 = await ready(r, [], { serviceIds: [web.id] })
+    r.f.services.recordDeployed([{ serviceId: web.id, commit: A, releaseId: r0 }])
     const id = await ready(r, [], { serviceIds: [pay.id, web.id] })
     const row = r.f.db.prepare('SELECT service_ids FROM releases WHERE id = ?').get(id) as { service_ids: string }
     expect(JSON.parse(row.service_ids)).toEqual([web.id, pay.id])
     expect(runRows(r, id).map((x) => ({ ...x, services: JSON.parse(x.services) }))).toEqual([
-      { name: 'shop', whole: 0, services: [{ id: web.id, name: 'web', composeService: 'web', previousCommit: A, deployedCommit: null }] },
-      { name: 'billing', whole: 1, services: [{ id: pay.id, name: 'pay', composeService: 'pay', previousCommit: null, deployedCommit: null }] },
+      { name: 'shop', whole: 0, services: [{ id: web.id, name: 'web', composeService: 'web', previousCommit: A, previousReleaseId: r0, deployedCommit: null }] },
+      { name: 'billing', whole: 1, services: [{ id: pay.id, name: 'pay', composeService: 'pay', previousCommit: null, previousReleaseId: null, deployedCommit: null }] },
     ])
     // a whole checkout stores every tracked service
     const whole = await ready(r, [], { serviceIds: [worker.id, web.id] })
@@ -1146,7 +1147,7 @@ describe('per-service record', () => {
     expect(r.runner.kinds).not.toContain('rollback')
   })
 
-  it('rollback restores last_deployed_commit from runs.services', async () => {
+  it('rollback restores last_deployed_commit to the commit it checked out', async () => {
     const { r, esg, pay } = await platformRig()
     const r0 = await release(r, [esg.id], C, A)
     const r1 = await release(r, [esg.id, pay.id], A, B)
@@ -1155,7 +1156,132 @@ describe('per-service record', () => {
     await r.svc.whenIdle()
     expect(r.svc.detail(releaseId).status).toBe('succeeded')
     expect(last(r, esg.id)).toEqual([A, r0])
-    expect(last(r, pay.id)).toEqual([null, null])
+    // pay's first deploy had no commit of its own, but the rollback rebuilt it at the checkout's A.
+    expect(last(r, pay.id)).toEqual([A, null])
+  })
+
+  it("a manual rollback records the checkout's previous commit, not the service's own", async () => {
+    const { r, esg, ui } = await platformRig()
+    const r0 = await release(r, [esg.id], C, A)
+    await release(r, [ui.id], A, B)
+    // esg's entry remembers A, while the checkout it moves from is at B.
+    const r2 = await release(r, [esg.id], B, C)
+    expect(r.svc.detail(r2).runs[0].services.map((e) => [e.previousCommit, e.deployedCommit])).toEqual([[A, C]])
+    const { releaseId } = await r.svc.rollback(r2, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(releaseId).status).toBe('succeeded')
+    expect(r.runner.call('rollback').deployments.map((d) => [d.services, d.previousCommit])).toEqual([[['esg'], B]])
+    expect(r.svc.detail(releaseId).runs[0].services.map((e) => [e.name, e.previousCommit, e.deployedCommit])).toEqual([['esg', C, B]])
+    expect(last(r, esg.id)).toEqual([B, r0])
+  })
+
+  it("an auto-rollback restores the checkout's previous commit, not the service's own", async () => {
+    const { r, esg, ui, pay } = await platformRig()
+    const r0 = await release(r, [esg.id], C, A)
+    await release(r, [ui.id], A, B)
+    const id = await ready(r, [], { serviceIds: [esg.id, pay.id] })
+    r.runner.on.release = (plan) => {
+      const [r1, r2] = runIds(plan)
+      return { exitCode: 2, failedDeploymentRunIds: [r2], reachedCheckout: [r1, r2], commits: { [r1]: { previous: B, deployed: C }, [r2]: { previous: B, deployed: C } } }
+    }
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).status).toBe('rolled_back')
+    expect(last(r, esg.id)).toEqual([B, r0])
+    expect(last(r, pay.id)).toEqual([B, null])
+  })
+
+  it('start refuses a release whose services were deployed since its preflight', async () => {
+    const { r, esg, pay } = await platformRig()
+    const p1 = await ready(r, [], { serviceIds: [esg.id] })
+    const p2 = await ready(r, [], { serviceIds: [esg.id] })
+    r.runner.on.release = deploys(A, B)
+    await r.svc.start(p2, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(p2).status).toBe('succeeded')
+    const err = await r.svc.start(p1, {}).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(DeployError)
+    expect((err as DeployError).code).toBe('INVALID_STATE')
+    expect((err as DeployError).message).toBe('esg was deployed since preflight; run preflight again')
+    // The same commit deployed again by a newer release still counts.
+    const p3 = await ready(r, [], { serviceIds: [esg.id, pay.id] })
+    const p4 = await ready(r, [], { serviceIds: [esg.id] })
+    await r.svc.start(p4, {})
+    await r.svc.whenIdle()
+    expect(last(r, esg.id)).toEqual([B, p4])
+    await expect(r.svc.start(p3, {})).rejects.toThrow('esg was deployed since preflight; run preflight again')
+    expect(r.runner.kinds.filter((k) => k === 'release')).toHaveLength(2)
+  })
+
+  it('a rollback ignores the first-deploy services of its source when checking for newer deploys', async () => {
+    const { r, esg, pay } = await platformRig()
+    const r1 = await ready(r, [], { serviceIds: [esg.id, pay.id] })
+    // platform is a first deploy (no previous commit); billing moves from A.
+    r.runner.on.release = (plan) => {
+      const [x, y] = runIds(plan)
+      return { commits: { [x]: { deployed: B }, [y]: { previous: A, deployed: B } } }
+    }
+    await r.svc.start(r1, {})
+    await r.svc.whenIdle()
+    await release(r, [esg.id], B, C)
+    const { releaseId } = await r.svc.rollback(r1, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(releaseId).status).toBe('succeeded')
+    expect(r.runner.call('rollback').deployments.map((d) => d.name)).toEqual(['billing'])
+    expect(last(r, esg.id)).toEqual([C, expect.any(String)])
+  })
+
+  it('rolling back an auto-rolled-back release says it was already rolled back', async () => {
+    const { r, esg } = await platformRig()
+    const id = await ready(r, [], { serviceIds: [esg.id] })
+    r.runner.on.release = (plan) => {
+      const [x] = runIds(plan)
+      return { exitCode: 2, failedDeploymentRunIds: [x], reachedCheckout: [x], commits: { [x]: { previous: A } } }
+    }
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).status).toBe('rolled_back')
+    const err = await r.svc.rollback(id, {}).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(DeployError)
+    expect((err as DeployError).message).toBe('Nothing to roll back: this release was already rolled back')
+    expect(r.runner.kinds.filter((k) => k === 'rollback')).toHaveLength(1)
+  })
+
+  it('a run with no deployed commit never erases a known one', async () => {
+    const { r, esg } = await platformRig()
+    const r1 = await release(r, [esg.id], A, B)
+    const id = await ready(r, [], { serviceIds: [esg.id] })
+    r.runner.on.release = () => ({ commits: {} })
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).status).toBe('succeeded')
+    expect(last(r, esg.id)).toEqual([B, r1])
+    // A deployed value that is not a full sha counts as none.
+    r.runner.on.release = (plan) => ({ commits: Object.fromEntries(runIds(plan).map((x) => [x, { previous: B, deployed: 'HEAD' }])) })
+    const id2 = await ready(r, [], { serviceIds: [esg.id] })
+    await r.svc.start(id2, {})
+    await r.svc.whenIdle()
+    expect(last(r, esg.id)).toEqual([B, r1])
+  })
+
+  it('a store error while restoring does not fail a rollback that succeeded', async () => {
+    const { r, esg } = await platformRig()
+    const r1 = await release(r, [esg.id], A, B)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const spy = vi.spyOn(r.f.services, 'recordDeployed').mockImplementation(() => {
+      throw new Error('disk full')
+    })
+    try {
+      const { releaseId } = await r.svc.rollback(r1, {})
+      await r.svc.whenIdle()
+      expect(r.svc.detail(releaseId).status).toBe('succeeded')
+      expect(r.svc.detail(r1).status).toBe('rolled_back')
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(String(warn.mock.calls[0].join(' '))).toContain('disk full')
+    } finally {
+      spy.mockRestore()
+      warn.mockRestore()
+    }
   })
 
   it('a rollback release records the same services as its source', async () => {
@@ -1175,15 +1301,17 @@ describe('per-service record', () => {
     expect(Object.fromEntries(r.f.releases.latestTouching([esg.id, pay.id]))).toEqual({ [esg.id]: releaseId, [pay.id]: releaseId })
   })
 
-  it('a previous commit that is not a full sha is recorded and restored as null', async () => {
+  it('a previous commit that is not a full sha is kept as recorded but never used as a commit', async () => {
     const { r, esg } = await platformRig()
     r.f.services.recordDeployed([{ serviceId: esg.id, commit: 'v1.2', releaseId: null }])
     const r1 = await release(r, [esg.id], A, B)
     expect(r.svc.detail(r1).runs[0].services[0]).toMatchObject({ previousCommit: 'v1.2', deployedCommit: B })
+    // The count falls back to the tag (none here) rather than looking for 'v1.2'.
+    expect(r.svc.detail(r1).preflight?.serviceCommits[esg.id]).toEqual({ since: null, count: 0, known: false })
     const { releaseId } = await r.svc.rollback(r1, {})
     await r.svc.whenIdle()
-    expect(r.svc.detail(releaseId).runs[0].services.map((e) => [e.previousCommit, e.deployedCommit])).toEqual([[B, null]])
-    expect(last(r, esg.id)).toEqual([null, null])
+    expect(r.svc.detail(releaseId).runs[0].services.map((e) => [e.previousCommit, e.deployedCommit])).toEqual([[B, A]])
+    expect(last(r, esg.id)).toEqual([A, null])
   })
 
   it('after rolling back R1, rolling back R1 again is refused naming its services', async () => {
@@ -1212,6 +1340,21 @@ describe('per-service record', () => {
     const { releaseId } = await r.svc.rollback(id, { typedName: 'prod' })
     await r.svc.whenIdle()
     expect(r.svc.detail(releaseId).status).toBe('succeeded')
+  })
+
+  it('a checkout-only release counts its run entries the same at start, finish and in its summary', async () => {
+    const r = await rig()
+    const bare = dep(r, 'bare')
+    const id = await ready(r, [], { serviceIds: [], checkoutIds: [bare.id] })
+    r.runner.on.release = deploys(A, B)
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).status).toBe('succeeded')
+    const count = r.svc.detail(id).runs.reduce((n, x) => n + x.services.length, 0)
+    for (const action of ['release.preflight', 'release.start', 'release.finish']) {
+      expect(audits(r, action).find((e) => e.targetId === id)?.details).toMatchObject({ serviceCount: count, deploymentCount: 1 })
+    }
+    expect(r.svc.detail(id).serviceCount).toBe(count)
   })
 
   it('release audits carry serviceCount, deploymentCount and hostCount and no host ids or labels', async () => {

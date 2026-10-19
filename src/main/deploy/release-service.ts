@@ -431,7 +431,7 @@ export class ReleaseService {
       for (const t of targets) {
         if (live.runStatus.get(t.info.run.id) !== 'rolled_back') this.applyRun(live, { type: 'deployment.updated', deploymentRunId: t.info.run.id, status: 'rolled_back' })
       }
-      this.restoreServices(targets.map((t) => t.info.sel.services), id)
+      this.restoreServices(live, targets.map((t) => ({ services: t.info.sel.services, commit: t.commit })), id)
     }
     this.push(id, { type: 'rollback.done', ok })
     return { ok, reason: this.reason(live, res.out, res.err, 'Rollback') }
@@ -472,16 +472,21 @@ export class ReleaseService {
     await this.guard('release.rollback', 'release.rollback', env, this.depIds(src), releaseId)
     if (src.kind !== 'release') throw new DeployError('INVALID_STATE', 'Only a release can be rolled back')
     if (src.status !== 'succeeded' && src.status !== 'failed' && src.status !== 'rolled_back') throw new DeployError('INVALID_STATE', `This release is ${src.status}`)
-    this.assertLatestTouching(src)
-    this.confirmProtected('release.rollback', src, env, src.runs.map((r) => r.hostId).filter((h): h is string => h !== null), confirm.typedName)
+    // The runs the rollback rebuilds, last first: each checks out its run's previous commit.
     const eligible = src.runs
       .filter((r) => (r.status === 'succeeded' || r.status === 'failed') && r.previousCommit !== null && SHA.test(r.previousCommit) && r.deploymentId !== null)
       .reverse()
-    if (eligible.length === 0) throw new DeployError('INVALID_STATE', 'Nothing to roll back: every deployment was a first deploy')
+    this.assertLatestTouching(src, eligible)
+    this.confirmProtected('release.rollback', src, env, src.runs.map((r) => r.hostId).filter((h): h is string => h !== null), confirm.typedName)
+    if (eligible.length === 0) {
+      throw new DeployError('INVALID_STATE', src.status === 'rolled_back' ? 'Nothing to roll back: this release was already rolled back' : 'Nothing to roll back: every deployment was a first deploy')
+    }
 
     this.assertCapacity(env)
-    // The rollback's own record: each entry rolls its deployed commit back to the commit it had before.
-    const entries = eligible.map((r) => r.services.map((e) => ({ ...e, previousCommit: shaOrNull(e.deployedCommit ?? r.deployedCommit), deployedCommit: shaOrNull(e.previousCommit) })))
+    // The rollback's own record: each entry moves from its deployed commit to the commit the rollback checks out.
+    const entries: RunService[][] = eligible.map((r) =>
+      r.services.map((e) => ({ ...e, previousCommit: shaOrNull(e.deployedCommit ?? r.deployedCommit), previousReleaseId: src.id, deployedCommit: r.previousCommit })),
+    )
     const rb = this.d.releases.transaction(() => {
       const rel = this.d.releases.createRelease({
         environmentId: env.id,
@@ -553,8 +558,9 @@ export class ReleaseService {
         }
         status = 'succeeded'
         this.setStatus(src.id, 'rolled_back')
-        // The rolled-back entries carry the restored commit as deployedCommit; history before the source decides last_release_id.
-        this.restoreServices(infos.map((i) => i.sel.services.map((e) => ({ ...e, previousCommit: e.deployedCommit }))), src.id)
+        // Each run's services now run the commit its plan checked out; history before the source decides last_release_id.
+        const checkedOut = new Map(plan.deployments.map((d) => [d.runId, d.previousCommit]))
+        this.restoreServices(live, infos.map((i) => ({ services: i.sel.services, commit: checkedOut.get(i.run.id) ?? null })), src.id)
       } else {
         status = live.cancelRequested || res.out?.cancelled ? 'cancelled' : 'failed'
         error = status === 'cancelled' ? 'Cancelled' : this.reason(live, res.out, res.err, 'Rollback')
@@ -1140,6 +1146,10 @@ export class ReleaseService {
         if (!cur || cur.deploymentId !== run.deploymentId || cur.composeService !== e.composeService) {
           throw new DeployError('INVALID_STATE', `${e.name} changed since preflight; run preflight again`)
         }
+        // Another release deployed it after this preflight: the entry's previous commit is stale.
+        if (cur.lastDeployedCommit !== e.previousCommit || cur.lastReleaseId !== e.previousReleaseId) {
+          throw new DeployError('INVALID_STATE', `${e.name} was deployed since preflight; run preflight again`)
+        }
       }
       if (run.deploymentId === null || run.services.length === 0) continue
       const inCheckout = [...now.values()].filter((s) => s.deploymentId === run.deploymentId).map((s) => s.id)
@@ -1150,9 +1160,10 @@ export class ReleaseService {
     }
   }
 
-  /** Manual rollback only while no later release (of either kind) has touched any service this one deployed. */
-  private assertLatestTouching(src: ReleaseDetail): void {
-    const entries = src.runs.filter((r) => r.status === 'succeeded' || r.status === 'failed').flatMap((r) => r.services)
+  /** Manual rollback only while no later release (of either kind) has touched any service the rollback rebuilds. */
+  private assertLatestTouching(src: ReleaseDetail, eligible: DeploymentRunMeta[]): void {
+    // Names in run order, though the rollback walks the runs last first.
+    const entries = [...eligible].reverse().flatMap((r) => r.services)
     const latest = this.d.releases.latestTouching(entries.map((e) => e.id))
     const names = [...new Set(entries.filter((e) => (latest.get(e.id) ?? src.id) !== src.id).map((e) => e.name))]
     if (names.length > 0) throw new DeployError('INVALID_STATE', `Can't roll back: ${listNames(names)} ${names.length === 1 ? 'was' : 'were'} deployed again since this release`)
@@ -1164,7 +1175,9 @@ export class ReleaseService {
       const recorded: { serviceId: string; commit: string | null; releaseId: string | null }[] = []
       for (const run of this.d.releases.detail(live.id).runs) {
         if (run.status !== 'succeeded' || run.rolledBack || run.services.length === 0) continue
-        const commit = out?.commits[run.id]?.deployed ?? run.deployedCommit
+        // No full sha means no known commit; a service's last known one stays.
+        const commit = shaOrNull(out?.commits[run.id]?.deployed ?? run.deployedCommit)
+        if (commit === null) continue
         if (commit !== run.deployedCommit) this.d.releases.updateRun(run.id, { deployedCommit: commit })
         this.d.releases.setRunServices(run.id, run.services.map((e) => ({ ...e, deployedCommit: commit })))
         for (const e of run.services) recorded.push({ serviceId: e.id, commit, releaseId: live.id })
@@ -1175,11 +1188,18 @@ export class ReleaseService {
     }
   }
 
-  /** After a rollback: each entry's service goes back to its previousCommit and to the release that deployed it before `before`. */
-  private restoreServices(entries: RunService[][], before: string): void {
-    this.d.services.recordDeployed(
-      entries.flat().map((e) => ({ serviceId: e.id, commit: shaOrNull(e.previousCommit), releaseId: this.d.releases.previousTouching(e.id, before)?.releaseId ?? null })),
-    )
+  /**
+   * After a rollback: each run's services now run the commit the rollback checked out, and go back to the release
+   * that deployed them before `before`. A store error here is logged, not raised: the hosts were rolled back.
+   */
+  private restoreServices(live: Live, runs: { services: RunService[]; commit: string | null }[], before: string): void {
+    try {
+      this.d.services.recordDeployed(
+        runs.flatMap((r) => r.services.map((e) => ({ serviceId: e.id, commit: shaOrNull(r.commit), releaseId: this.d.releases.previousTouching(e.id, before)?.releaseId ?? null }))),
+      )
+    } catch (e) {
+      console.warn(this.red(live, `Restoring the deployed commits failed: ${e instanceof Error ? e.message : String(e)}`))
+    }
   }
 
   /** The typed-name rule of Phase 7: every protected environment the target hosts serve counts, not only this one. */
@@ -1372,7 +1392,7 @@ function serviceCommits(infos: Info[], commits: PreflightReport['commits']): Pre
     const entry = commits[dep.id]
     const list = entry?.commits ?? []
     for (const s of sel.services) {
-      const since = s.previousCommit ?? entry?.tagCommit ?? null
+      const since = shaOrNull(s.previousCommit) ?? entry?.tagCommit ?? null
       const idx = since === null ? -1 : list.findIndex((c) => c.sha === since)
       out[s.id] = idx >= 0 ? { since, count: idx, known: true } : { since, count: list.length, known: false }
     }
