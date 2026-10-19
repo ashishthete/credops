@@ -107,4 +107,18 @@ describe('decide', () => {
     expect(no).toMatchObject({ allowed: false, code: 'no_grant' })
     expect(!no.allowed && no.reason).toContain(D3)
   })
+
+  it('a non-admin with no target gets no_grant, whatever grants they hold', () => {
+    const u = user({ groupIds: ['g-d1'] })
+    for (const a of ['release.start', 'release.rollback', 'release.cancel', 'env.lock', 'deploy.view'] as const) {
+      expect(decide(u, ALL, a)).toMatchObject({ allowed: false, code: 'no_grant' })
+    }
+    expect(decide(user({ role: 'admin', groupIds: ['def'] }), ALL, 'release.start').allowed).toBe(true)
+  })
+
+  it('duplicate deployment ids count once', () => {
+    const d = decide(user({ groupIds: ['g-d1'] }), ALL, 'release.start', { environmentId: E1, deploymentIds: [D1, D1] })
+    expect(d).toMatchObject({ allowed: true, via: { groupName: 'D1 only' } })
+    expect(d.allowed && d.vias).toBeUndefined()
+  })
 })

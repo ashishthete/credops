@@ -5,7 +5,7 @@ import type { Directory } from '../access/directory'
 import type { HubAudit } from '../audit'
 import type { makeAuth } from '../auth/plugin'
 
-const UUID = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+const UUID = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 const uuid = { type: 'string', pattern: UUID } as const
 const idParams = { type: 'object', required: ['id'], properties: { id: uuid } } as const
 
@@ -100,7 +100,7 @@ export function registerAdmin(
           type: 'object',
           required: ['oids'],
           additionalProperties: false,
-          properties: { oids: { type: 'array', maxItems: MAX_BULK_MEMBERS, items: uuid } },
+          properties: { oids: { type: 'array', minItems: 1, maxItems: MAX_BULK_MEMBERS, items: uuid } },
         },
       },
     },

@@ -185,15 +185,21 @@ export class Directory {
     }
   }
 
-  private audit(actor: HubActor, action: Parameters<HubAudit['append']>[0]['action'], g: { id: string; name: string } | null, details: Record<string, unknown>): void {
+  private audit(
+    actor: HubActor,
+    action: Parameters<HubAudit['append']>[0]['action'],
+    g: { id: string; name: string } | null,
+    details: Record<string, unknown>,
+    user?: { id: string; name: string },
+  ): void {
     this.opts.audit.append({
       action,
       outcome: 'success',
       actor,
       viaGroup: null,
       targetType: g ? 'group' : 'user',
-      targetId: g?.id ?? null,
-      targetLabel: g?.name ?? null,
+      targetId: g?.id ?? user?.id ?? null,
+      targetLabel: g?.name ?? user?.name ?? null,
       details,
     })
   }
@@ -332,6 +338,7 @@ export class Directory {
       if (!u) throw new HubHttpError(404, 'not_found', 'User not found')
       const role = patch.role ?? u.role
       const disabled = patch.disabled === undefined ? u.disabled === 1 : patch.disabled
+      if (role === u.role && disabled === (u.disabled === 1)) return this.get(oid) as HubUser
       const losesAdmin = u.role === 'admin' && u.disabled === 0 && (role !== 'admin' || disabled)
       if (losesAdmin) {
         const n = (this.db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND disabled = 0").get() as { n: number }).n
@@ -339,7 +346,13 @@ export class Directory {
       }
       this.db.prepare('UPDATE users SET role = ?, disabled = ? WHERE oid = ?').run(role, disabled ? 1 : 0, oid)
       if (disabled) this.opts.sessions.revokeAll(oid)
-      this.audit(actor, 'user.update', null, { oid, upn: u.upn, role, disabled })
+      this.audit(
+        actor,
+        'user.update',
+        null,
+        { oid, upn: u.upn, role, disabled, fromRole: u.role, fromDisabled: u.disabled === 1 },
+        { id: oid, name: u.upn },
+      )
       return this.get(oid) as HubUser
     })
   }

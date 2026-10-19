@@ -126,6 +126,31 @@ describe('admin api', () => {
     expect((await call(bob, 'GET', '/api/v1/access?action=bogus&environmentId=x')).statusCode).toBe(400)
   })
 
+  it('access without an environment is 400 unless the action is admin', async () => {
+    const { bob } = await setup()
+    const r = await call(bob, 'GET', '/api/v1/access?action=release.start')
+    expect(r.statusCode).toBe(400)
+    expect(r.json()).toMatchObject({ error: 'bad_request' })
+    expect((await call(bob, 'GET', '/api/v1/access?action=admin')).statusCode).toBe(200)
+  })
+
+  it('rejects empty member lists and upper-case ids', async () => {
+    const { admin } = await setup()
+    const g = await createGroup(admin, 'Pay')
+    expect((await call(admin, 'POST', `/api/v1/admin/groups/${g}/members`, { oids: [] })).statusCode).toBe(400)
+    expect((await call(admin, 'POST', `/api/v1/admin/groups/${g}/members`, { oids: [BOB.oid.toUpperCase()] })).statusCode).toBe(400)
+  })
+
+  it('a no-op user patch writes no audit row and a role change records the user and the old role', async () => {
+    const { admin } = await setup()
+    const before = hub.audit.list({ actions: ['user.update'] }).length
+    await call(admin, 'PATCH', `/api/v1/admin/users/${BOB.oid}`, {})
+    expect(hub.audit.list({ actions: ['user.update'] })).toHaveLength(before)
+    await call(admin, 'PATCH', `/api/v1/admin/users/${BOB.oid}`, { disabled: true })
+    const ev = hub.audit.list({ actions: ['user.update'] })[0]
+    expect(ev).toMatchObject({ targetType: 'user', targetId: BOB.oid, details: { fromRole: 'maintainer', fromDisabled: false } })
+  })
+
   it('every mutation is audited with the admin actor, and the chain verifies', async () => {
     const { admin } = await setup()
     const g = await createGroup(admin, 'Pay')
@@ -133,18 +158,20 @@ describe('admin api', () => {
     await call(admin, 'POST', `/api/v1/admin/groups/${g}/members`, { oids: [BOB.oid] })
     const gr = (await call(admin, 'POST', `/api/v1/admin/groups/${g}/grants`, { scope: { kind: 'all' } })).json()
     await call(admin, 'DELETE', `/api/v1/admin/grants/${gr.id}`)
-    await call(admin, 'DELETE', `/api/v1/admin/groups/${g}/members/${BOB.oid}`).catch(() => null)
+    const g2 = await createGroup(admin, 'Pay2')
+    await call(admin, 'POST', `/api/v1/admin/groups/${g2}/members`, { oids: [BOB.oid] })
+    expect((await call(admin, 'DELETE', `/api/v1/admin/groups/${g}/members/${BOB.oid}`)).statusCode).toBeLessThan(300)
     await call(admin, 'PATCH', `/api/v1/admin/users/${CAROL.oid}`, { role: 'admin' })
-    await call(admin, 'DELETE', `/api/v1/admin/groups/${g}`).catch(() => null)
+    expect((await call(admin, 'DELETE', `/api/v1/admin/groups/${g}`)).statusCode).toBeLessThan(300)
     expect((await call(admin, 'POST', '/api/v1/admin/audit/verify')).json()).toMatchObject({ ok: true })
-    const evs = hub.audit.list({ actions: ['group.create', 'group.update', 'member.add', 'grant.add', 'grant.remove', 'user.update', 'audit.verify'] })
-    expect(new Set(evs.map((e) => e.action))).toEqual(new Set(['group.create', 'group.update', 'member.add', 'grant.add', 'grant.remove', 'user.update', 'audit.verify']))
+    const evs = hub.audit.list({ actions: ['group.create', 'group.update', 'member.add', 'grant.add', 'grant.remove', 'member.remove', 'group.delete', 'user.update', 'audit.verify'] })
+    expect(new Set(evs.map((e) => e.action))).toEqual(new Set(['group.create', 'group.update', 'member.add', 'grant.add', 'grant.remove', 'member.remove', 'group.delete', 'user.update', 'audit.verify']))
     for (const e of evs) {
       expect(e.actor?.oid).toBe(ADMIN.oid)
       expect(e.viaGroup).toBeNull()
     }
     const list = (await call(admin, 'GET', '/api/v1/admin/audit?actions=group.create&limit=5')).json()
-    expect(list).toHaveLength(1)
+    expect(list).toHaveLength(2)
     expect(hub.audit.verify().ok).toBe(true)
   })
 

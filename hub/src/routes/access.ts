@@ -3,6 +3,7 @@ import type { HubAction } from '../../../src/shared/hub'
 import type { Directory } from '../access/directory'
 import { decide } from '../access/policy'
 import type { makeAuth } from '../auth/plugin'
+import { HubHttpError } from '../errors'
 
 const ACTIONS: HubAction[] = ['deploy.view', 'deploy.edit', 'release.start', 'release.rollback', 'release.cancel', 'lock.break', 'env.lock', 'admin']
 
@@ -26,6 +27,9 @@ export function registerAccess(app: FastifyInstance, deps: { directory: Director
     },
     async (req) => {
       const { action, environmentId } = req.query
+      if (!environmentId && action !== 'admin') {
+        throw new HubHttpError(400, 'bad_request', 'environmentId is required for this action')
+      }
       const ids = (req.query.deploymentIds ?? []).flatMap((s) => s.split(',')).filter(Boolean)
       const target = environmentId ? { environmentId, ...(ids.length ? { deploymentIds: ids } : {}) } : undefined
       return decide(req.user, deps.directory.listGroups(), action, target)

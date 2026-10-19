@@ -40,10 +40,8 @@ export function decide(user: HubUser, groups: HubGroup[], action: HubAction, tar
     via: { role: user.role, groupId: c.group.id, groupName: c.group.name },
   })
 
-  if (!target) {
-    const c = narrowest(cands)
-    return c ? via(c) : deny('no_grant', "You don't have access. Ask a Hub admin for a grant.")
-  }
+  // Fail closed: a non-admin decision always needs a target to be judged against.
+  if (!target) return deny('no_grant', "You don't have access. Ask a Hub admin for a grant.")
 
   const env = target.environmentId
   const wide = cands.filter(
@@ -54,7 +52,7 @@ export function decide(user: HubUser, groups: HubGroup[], action: HubAction, tar
     cands.filter(
       (c) => c.grant.scope.kind === 'deployment' && c.grant.scope.environmentId === env && c.grant.scope.deploymentId === id,
     )
-  const ids = target.deploymentIds ?? []
+  const ids = [...new Set(target.deploymentIds ?? [])]
 
   if (ids.length === 0) {
     const pool =
