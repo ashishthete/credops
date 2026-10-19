@@ -29,8 +29,9 @@ export function registerLive(app: FastifyInstance, deps: { live: LiveBus; auth: 
       hashToken(req.sessionToken),
       req.sessionExpiresAt,
     )
-    // An idle stream still ends at the session's deadline.
-    const wait = Math.max(0, req.sessionExpiresAt - now().getTime())
+    // An idle stream still ends at the session's deadline. The 1 s margin keeps the timer from firing early
+    // (libuv's cached loop time can lag the wall clock), which would leave the stream until the next ping.
+    const wait = Math.max(0, req.sessionExpiresAt - now().getTime()) + 1000
     const timer = setTimeout(() => live.closeExpired(), Math.min(wait, 2 ** 31 - 1))
     timer.unref()
     raw.on('close', () => {

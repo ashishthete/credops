@@ -82,7 +82,7 @@ CREATE TABLE env_locks(environment_id TEXT PRIMARY KEY REFERENCES environments(i
   frozen_reason TEXT, frozen_created_at TEXT, frozen_expires_at TEXT,
   CHECK ((kind = 'release') = (release_id IS NOT NULL)), CHECK ((kind = 'manual') = (expires_at IS NOT NULL)),
   CHECK ((frozen_reason IS NULL) = (frozen_created_at IS NULL) AND (frozen_created_at IS NULL) = (frozen_expires_at IS NULL)),
-  CHECK (kind = 'release' OR frozen_reason IS NULL));
+  CHECK (kind = 'release' OR frozen_reason IS NULL), CHECK (kind <> 'manual' OR reason IS NOT NULL));
 `
 
 export const HUB_MIGRATIONS: Migration[] = [

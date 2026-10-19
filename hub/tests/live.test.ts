@@ -288,6 +288,28 @@ describe('live bus over SSE', () => {
     sock.destroy()
   })
 
+  it('dropping a stalled reader frees its socket', async () => {
+    const { bob } = await setup()
+    const port = (hub.app.server.address() as { port: number }).port
+    const sock = connect(port, '127.0.0.1')
+    sock.pause()
+    await new Promise<void>((r) => sock.once('connect', () => r()))
+    sock.write(`GET /api/v1/live HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer ${bob}\r\n\r\n`)
+    await new Promise((r) => setTimeout(r, 100))
+    expect(hub.app.live.size()).toBe(1)
+    const big = 'x'.repeat(100_000)
+    // The pause lets the kernel buffers fill so the 1 MB backlog guard really trips.
+    for (let i = 0; i < 1000 && hub.app.live.size() > 0; i++) {
+      hub.app.live.publish(deployEvents(ENV_ID, big))
+      await new Promise((r) => setTimeout(r, 2))
+    }
+    expect(hub.app.live.size()).toBe(0)
+    await new Promise((r) => setTimeout(r, 200))
+    const open = await new Promise<number>((resolve) => hub.app.server.getConnections((_, n) => resolve(n)))
+    sock.destroy()
+    expect(open).toBe(0)
+  })
+
   it('SSE frames mask values the Hub knows are secret', async () => {
     const { bob } = await setup({ liveKnownSecrets: () => ['s3cr3t-value-123'] })
     const b = await open(bob)
