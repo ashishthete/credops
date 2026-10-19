@@ -8,6 +8,8 @@ import { MAX_SECRET_BYTES } from '../../src/shared/hub'
 import { installErrorHandler } from '../src/errors'
 import { createMasterKeyFile, KeyRing, loadMasterKey } from '../src/secrets/keyring'
 import { registerSecrets } from '../src/routes/secrets'
+import { EnvLocks } from '../src/locks'
+import { DeployKeys } from '../src/secrets/deploykeys'
 import { SecretStore } from '../src/secrets/store'
 import { openHubDb } from '../src/db'
 import { testHub, type TestHub } from './helpers'
@@ -34,6 +36,18 @@ async function setup() {
   const bob = (await hub.signIn(BOB)).token
   expect((await call(admin, 'PUT', `/api/v1/admin/environments/${ENV_ID}`, manifest())).statusCode).toBe(200)
   return { admin, bob }
+}
+const ENV2 = 'e2222222-2222-4222-8222-222222222222'
+const ENV3 = 'e3333333-3333-4333-8333-333333333333'
+async function publishSecond(admin: string): Promise<void> {
+  for (const [id, name] of [[ENV2, 'staging'], [ENV3, 'qa']]) {
+    const m = manifest()
+    m.environment = { ...m.environment, id, name }
+    m.hosts = []
+    m.deployments = []
+    const r = await call(admin, 'PUT', `/api/v1/admin/environments/${id}`, m)
+    expect(r.statusCode, r.body).toBe(200)
+  }
 }
 const putSecret = (token: string, id: string, body: object) => call(token, 'PUT', `/api/v1/admin/secrets/${id}`, body)
 const tmp = (): string => {
@@ -111,9 +125,11 @@ describe('shared secrets', () => {
       { id: SECRET_DB, environmentId: ENV_ID, name: 'DB_PASSWORD', kind: 'env', updatedBy: 'admin@example.com', updatedAt: expect.any(String) },
     ])
     expect((await call(admin, 'GET', '/api/v1/admin/secrets?environmentId=nope')).statusCode).toBe(400)
-    expect((await call(admin, 'DELETE', `/api/v1/admin/secrets/${SECRET_DB}`)).statusCode).toBe(204)
-    expect((await missing()).length).toBe(2)
+    // A delete names the environment's copy; without it the Hub-wide scope is meant and there is no such row.
     expect((await call(admin, 'DELETE', `/api/v1/admin/secrets/${SECRET_DB}`)).statusCode).toBe(404)
+    expect((await call(admin, 'DELETE', `/api/v1/admin/secrets/${SECRET_DB}?environmentId=${ENV_ID}`)).statusCode).toBe(204)
+    expect((await missing()).length).toBe(2)
+    expect((await call(admin, 'DELETE', `/api/v1/admin/secrets/${SECRET_DB}?environmentId=${ENV_ID}`)).statusCode).toBe(404)
     expect(hub.audit.list({ limit: 100 }).some((e) => e.action === 'secret.delete' && JSON.stringify(e.details) === JSON.stringify({ name: 'DB_PASSWORD', kind: 'env', environmentId: ENV_ID }))).toBe(true)
   })
 
@@ -123,8 +139,8 @@ describe('shared secrets', () => {
     await putSecret(admin, SECRET_DB, { environmentId: ENV_ID, name: 'DB_PASSWORD', kind: 'env', value: 'two' })
     expect(hub.db.prepare('SELECT COUNT(*) AS n FROM hub_secrets').get()).toEqual({ n: 1 })
     const store = new SecretStore(hub.db, new KeyRing(hub.db, hub.masterKey), { audit: hub.audit, now: () => new Date(), ids: () => randomBytes(16).toString('hex') })
-    expect(store.resolveForRun([SECRET_DB, SECRET_SUDO]).get(SECRET_DB)).toBe('two')
-    expect(store.resolveForRun([SECRET_DB, SECRET_SUDO]).has(SECRET_SUDO)).toBe(false)
+    expect(store.resolveForRun(ENV_ID, [SECRET_DB, SECRET_SUDO]).get(SECRET_DB)).toBe('two')
+    expect(store.resolveForRun(ENV_ID, [SECRET_DB, SECRET_SUDO]).has(SECRET_SUDO)).toBe(false)
 
     const t1 = '54444444-4444-4444-8444-444444444444'
     const t2 = '55555555-5555-4555-8555-555555555555'
@@ -166,9 +182,9 @@ describe('shared secrets', () => {
     const store = new SecretStore(hub.db, new KeyRing(hub.db, hub.masterKey), { audit: hub.audit, now: () => new Date(), ids: randomUUIDish })
     const enc = (id: string) => (hub.db.prepare('SELECT value_enc FROM hub_secrets WHERE id = ?').get(id) as { value_enc: string }).value_enc
     hub.db.prepare('UPDATE hub_secrets SET value_enc = ? WHERE id = ?').run(enc(SECRET_DB), SECRET_SUDO)
-    expect(() => store.resolveForRun([SECRET_SUDO])).toThrow(/could not be decrypted/)
+    expect(() => store.resolveForRun(ENV_ID, [SECRET_SUDO])).toThrow(/could not be decrypted/)
     try {
-      store.resolveForRun([SECRET_SUDO])
+      store.resolveForRun(ENV_ID, [SECRET_SUDO])
     } catch (e) {
       expect((e as Error).message).not.toContain('alpha-value')
     }
@@ -205,10 +221,74 @@ describe('shared secrets', () => {
       { name: 'prod', environmentId: ENV_ID, rotated: true },
     ])
     expect(JSON.stringify(ev)).not.toContain('PRIVATE KEY')
-    // A bad environment is a 404, and a moved private blob fails to open.
     expect((await call(admin, 'POST', '/api/v1/admin/environments/f1111111-1111-4111-8111-111111111111/deploy-key')).statusCode).toBe(404)
-    hub.db.prepare("UPDATE env_deploy_keys SET environment_id = environment_id").run()
-    expect(() => keys.privateForRun('f1111111-1111-4111-8111-111111111111')).toThrow()
+  })
+
+  it('a deploy key blob moved to another environment fails to open (AAD)', async () => {
+    const { admin } = await setup()
+    await publishSecond(admin)
+    await call(admin, 'POST', `/api/v1/admin/environments/${ENV_ID}/deploy-key`)
+    await call(admin, 'POST', `/api/v1/admin/environments/${ENV2}/deploy-key`)
+    const keys = new DeployKeys(hub.db, new KeyRing(hub.db, hub.masterKey), { now: () => new Date() })
+    expect(keys.privateForRun(ENV2)).toContain('BEGIN OPENSSH PRIVATE KEY')
+    const enc = (hub.db.prepare('SELECT private_enc FROM env_deploy_keys WHERE environment_id = ?').get(ENV_ID) as { private_enc: string }).private_enc
+    hub.db.prepare('UPDATE env_deploy_keys SET private_enc = ? WHERE environment_id = ?').run(enc, ENV2)
+    expect(() => keys.privateForRun(ENV2)).toThrow('deploy key could not be decrypted')
+    expect(keys.privateForRun(ENV_ID)).toContain('BEGIN OPENSSH PRIVATE KEY')
+  })
+
+  it('a shared vault secret uploads to each environment with its own sealed copy', async () => {
+    const { admin } = await setup()
+    await publishSecond(admin)
+    const body = (environmentId: string, value: string) => ({ environmentId, name: 'DB_PASSWORD', kind: 'env', value })
+    expect((await putSecret(admin, SECRET_DB, body(ENV_ID, 'prod-value'))).statusCode).toBe(204)
+    expect((await putSecret(admin, SECRET_DB, body(ENV2, 'staging-value'))).statusCode).toBe(204)
+    expect(hub.db.prepare('SELECT COUNT(*) AS n FROM hub_secrets WHERE id = ?').get(SECRET_DB)).toEqual({ n: 2 })
+    const present = async (env: string) =>
+      ((await call(admin, 'GET', `/api/v1/admin/secrets?environmentId=${env}`)).json().missing[env] as { secretId: string }[]).map((m) => m.secretId)
+    expect(await present(ENV_ID)).not.toContain(SECRET_DB)
+    expect(await present(ENV2)).not.toContain(SECRET_DB)
+
+    const store = new SecretStore(hub.db, new KeyRing(hub.db, hub.masterKey), { audit: hub.audit, now: () => new Date(), ids: randomUUIDish })
+    expect(store.resolveForRun(ENV_ID, [SECRET_DB]).get(SECRET_DB)).toBe('prod-value')
+    expect(store.resolveForRun(ENV2, [SECRET_DB]).get(SECRET_DB)).toBe('staging-value')
+    // Env A never resolves env B's row.
+    hub.db.prepare('DELETE FROM hub_secrets WHERE id = ? AND environment_id = ?').run(SECRET_DB, ENV_ID)
+    expect(store.resolveForRun(ENV_ID, [SECRET_DB]).size).toBe(0)
+    expect(store.resolveForRun(ENV2, [SECRET_DB]).get(SECRET_DB)).toBe('staging-value')
+    await putSecret(admin, SECRET_DB, body(ENV_ID, 'prod-value'))
+
+    // Deleting one environment's copy leaves the other.
+    expect((await call(admin, 'DELETE', `/api/v1/admin/secrets/${SECRET_DB}?environmentId=${ENV_ID}`)).statusCode).toBe(204)
+    expect(await present(ENV_ID)).toContain(SECRET_DB)
+    expect(await present(ENV2)).not.toContain(SECRET_DB)
+    expect(store.resolveForRun(ENV2, [SECRET_DB]).get(SECRET_DB)).toBe('staging-value')
+
+    // A row moved to another environment fails to open: the AAD binds the environment.
+    await putSecret(admin, SECRET_DB, body(ENV_ID, 'prod-value'))
+    hub.db.prepare('UPDATE hub_secrets SET environment_id = ? WHERE id = ? AND environment_id = ?').run(ENV3, SECRET_DB, ENV_ID)
+    expect(() => store.resolveForRun(ENV3, [SECRET_DB])).toThrow(/could not be decrypted/)
+  })
+
+  it('secret and deploy-key changes are refused while a release runs on the environment', async () => {
+    const { admin } = await setup()
+    await putSecret(admin, SECRET_DB, { environmentId: ENV_ID, name: 'DB_PASSWORD', kind: 'env', value: 'v' })
+    await call(admin, 'POST', `/api/v1/admin/environments/${ENV_ID}/deploy-key`)
+    const locks = new EnvLocks(hub.db, { now: () => new Date() })
+    locks.acquireRelease(ENV_ID, 'r-1', { oid: ADMIN.oid, name: 'Admin' })
+    const attempts = [
+      await putSecret(admin, SECRET_DB, { environmentId: ENV_ID, name: 'DB_PASSWORD', kind: 'env', value: 'w' }),
+      await call(admin, 'DELETE', `/api/v1/admin/secrets/${SECRET_DB}?environmentId=${ENV_ID}`),
+      await call(admin, 'POST', `/api/v1/admin/environments/${ENV_ID}/deploy-key`),
+    ]
+    for (const r of attempts) {
+      expect(r.statusCode).toBe(409)
+      expect(r.json()).toEqual({ error: 'env_locked', message: 'A release is running on prod' })
+    }
+    const store = new SecretStore(hub.db, new KeyRing(hub.db, hub.masterKey), { audit: hub.audit, now: () => new Date(), ids: randomUUIDish })
+    expect(store.resolveForRun(ENV_ID, [SECRET_DB]).get(SECRET_DB)).toBe('v')
+    locks.releaseFor('r-1')
+    expect((await putSecret(admin, SECRET_DB, { environmentId: ENV_ID, name: 'DB_PASSWORD', kind: 'env', value: 'w' })).statusCode).toBe(204)
   })
 
   it('the serialization guard refuses a response with a value key', async () => {
@@ -223,6 +303,7 @@ describe('shared secrets', () => {
     registerSecrets(app, {
       secrets: store as never,
       deployKeys: {} as never,
+      locks: { get: () => null } as never,
       registry: { required: () => [], exists: () => true } as never,
       directory: { listGroups: () => [] } as never,
       audit: {} as never,

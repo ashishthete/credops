@@ -62,9 +62,12 @@ CREATE TABLE deployments(id TEXT PRIMARY KEY, environment_id TEXT NOT NULL REFER
 `
 
 const SECRETS = `
-CREATE TABLE hub_secrets(id TEXT PRIMARY KEY, environment_id TEXT REFERENCES environments(id) ON DELETE CASCADE,
+CREATE TABLE hub_secrets(id TEXT NOT NULL, environment_id TEXT REFERENCES environments(id) ON DELETE CASCADE,
   name TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('env','become','teams_webhook','sendgrid_api_key','github_token','anthropic_api_key')),
-  value_enc TEXT NOT NULL, key_id TEXT NOT NULL, updated_by TEXT NOT NULL, updated_at TEXT NOT NULL);
+  value_enc TEXT NOT NULL, key_id TEXT NOT NULL, updated_by TEXT NOT NULL, updated_at TEXT NOT NULL,
+  PRIMARY KEY (id, environment_id));
+-- A NULL environment (Hub-wide secret) never collides in the primary key, so scope is also unique by this index.
+CREATE UNIQUE INDEX hub_secrets_id_scope ON hub_secrets(id, IFNULL(environment_id,'*'));
 CREATE UNIQUE INDEX hub_secrets_name ON hub_secrets(IFNULL(environment_id,'*'), name);
 CREATE TABLE env_deploy_keys(environment_id TEXT PRIMARY KEY REFERENCES environments(id) ON DELETE CASCADE,
   public_key TEXT NOT NULL, fingerprint TEXT NOT NULL, private_enc TEXT NOT NULL, key_id TEXT NOT NULL,

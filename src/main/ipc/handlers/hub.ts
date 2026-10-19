@@ -127,7 +127,8 @@ export function createHubHandlers(deps: {
       (await conn.client().get<HubSecretList>(`${ADMIN}/secrets`, environmentId ? { environmentId } : undefined)).secrets,
     'hub:uploadSecrets': (environmentId, secretIds) => publisher.uploadSecrets(environmentId, secretIds),
     'hub:setIntegrationSecret': (environmentId, kind, secretId) => publisher.setIntegrationSecret(environmentId, kind, secretId),
-    'hub:deleteSecret': (id) => mutate(() => [['secret.delete', id]], () => conn.client().del(`${ADMIN}/secrets/${id}`)),
+    'hub:deleteSecret': (id, environmentId) =>
+      mutate(() => [['secret.delete', id]], () => conn.client().del(`${ADMIN}/secrets/${id}${environmentId ? `?environmentId=${environmentId}` : ''}`)),
     'hub:deployKey': async (environmentId, rotate) => {
       vault.assertUnlocked()
       const path = `${ADMIN}/environments/${environmentId}/deploy-key`

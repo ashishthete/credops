@@ -658,7 +658,7 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'hub:secrets': args(v.nullable(v.uuid())),
   'hub:uploadSecrets': args(v.uuid(), v.optional(v.array(v.uuid(), 200, { min: 1 }))),
   'hub:setIntegrationSecret': args(v.nullable(v.uuid()), v.oneOf(HUB_INTEGRATION_KINDS), v.uuid()),
-  'hub:deleteSecret': args(v.uuid()),
+  'hub:deleteSecret': args(v.uuid(), v.nullable(v.uuid())),
   'hub:deployKey': args(v.uuid(), v.bool()),
   'hub:locks': args(),
   'hub:freeze': args(v.uuid(), v.str({ max: MAX_FREEZE_REASON }), v.nullable(v.int({ min: 1, max: FREEZE_MAX_HOURS }))),

@@ -77,6 +77,6 @@ export function buildApp(deps: HubDeps): FastifyInstance {
   const registry = new Registry(deps.db, { audit: deps.audit, directory, locks, now: deps.now })
   registerRegistry(app, { registry, directory, auth })
   registerLocks(app, { locks, directory, audit: deps.audit, auth })
-  registerSecrets(app, { secrets, deployKeys, registry, directory, audit: deps.audit, auth })
+  registerSecrets(app, { secrets, deployKeys, registry, locks, directory, audit: deps.audit, auth })
   return app
 }

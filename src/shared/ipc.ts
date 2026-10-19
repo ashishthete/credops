@@ -245,7 +245,8 @@ export interface IpcContract {
   'hub:secrets': { args: [environmentId: string | null]; result: HubSecretMeta[] }
   'hub:uploadSecrets': { args: [environmentId: string, secretIds?: string[]]; result: { uploaded: number } }
   'hub:setIntegrationSecret': { args: [environmentId: string | null, kind: HubSecretKind, secretId: string]; result: void }
-  'hub:deleteSecret': { args: [id: string]; result: void }
+  // environmentId: the environment whose copy to remove; null for a Hub-wide integration secret.
+  'hub:deleteSecret': { args: [id: string, environmentId: string | null]; result: void }
   'hub:deployKey': { args: [environmentId: string, rotate: boolean]; result: HubDeployKey }
   'hub:locks': { args: []; result: HubEnvLock[] }
   'hub:freeze': { args: [environmentId: string, reason: string, hours: number | null]; result: HubEnvLock }

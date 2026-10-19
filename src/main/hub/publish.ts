@@ -18,6 +18,7 @@ import type { EnvironmentStore } from '../inventory/environment-store'
 import type { KnownHostStore } from '../ssh/known-hosts'
 import { uuidv7 } from '../deploy/uuidv7'
 import { HubError } from './client'
+import { redact } from '../security/redact'
 
 const ADMIN_ENVIRONMENTS = '/api/v1/admin/environments'
 const ADMIN_SECRETS = '/api/v1/admin/secrets'
@@ -186,6 +187,20 @@ export class HubPublisher {
    * Sends the environment's vault secrets to the Hub: the ones it is missing, or `ids`. Values are read here in main,
    * one at a time; they are never returned, audited or logged.
    */
+  /**
+   * PUTs one vault value. The value is read here and is redacted from any error for the duration of the call,
+   * whether or not the connection's own known-secrets list still holds it (the vault may lock mid-call).
+   */
+  private async send(path: string, body: { environmentId: string | null; name: string; kind: HubSecretKind }, secretId: string): Promise<void> {
+    const value = (this.d.values as { value(id: string): string }).value(secretId)
+    try {
+      await this.d.client().put(path, { ...body, value })
+    } catch (err) {
+      if (err instanceof HubError) throw new HubError(err.code, redact(err.message, [value]), err.status)
+      throw new Error(redact(err instanceof Error ? err.message : String(err), [value]))
+    }
+  }
+
   async uploadSecrets(environmentId: string, ids?: string[]): Promise<{ uploaded: number }> {
     const d = this.d
     d.vault.assertUnlocked()
@@ -203,7 +218,7 @@ export class HubPublisher {
     let uploaded = 0
     for (const id of wanted) {
       const use = byId.get(id) as SecretUse
-      await d.client().put(`${ADMIN_SECRETS}/${id}`, { environmentId, name: use.name, kind: use.kind, value: d.values.value(id) })
+      await this.send(`${ADMIN_SECRETS}/${id}`, { environmentId, name: use.name, kind: use.kind }, id)
       uploaded += 1
       d.audit.append({
         action: 'hub.secret.set',
@@ -224,7 +239,7 @@ export class HubPublisher {
     if (!d.values) throw new Error('Secret upload is not available')
     const name = d.secrets.list().find((s) => s.id === secretId)?.name
     if (!name) throw new Error('That secret no longer exists')
-    await d.client().put(`${ADMIN_SECRETS}/${uuidv7()}`, { environmentId, name: kind, kind, value: d.values.value(secretId) })
+    await this.send(`${ADMIN_SECRETS}/${uuidv7()}`, { environmentId, name: kind, kind }, secretId)
     d.audit.append({
       action: 'hub.secret.set',
       outcome: 'success',

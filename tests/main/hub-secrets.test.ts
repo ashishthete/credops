@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
+import { HubError } from '../../src/main/hub/client'
 import { HubPublisher } from '../../src/main/hub/publish'
 import { resolveHost } from '../../src/main/inventory/resolve'
 import { KnownHostStore } from '../../src/main/ssh/known-hosts'
@@ -83,6 +84,18 @@ describe('uploadSecrets', () => {
     await expect(pub.uploadSecrets(f.prod.id)).rejects.toThrow('boom')
     expect(auditRows(f.db)).not.toContain('hub.secret.set')
   })
+
+  it('redacts the value from a failed call even when no known-secrets list holds it', async () => {
+    const { f, pub, put, sudo } = await setup()
+    put.mockRejectedValueOnce(new HubError('conflict', `Hub rejected ${SUDO_PW} as a password`, 500))
+    const err = await pub.uploadSecrets(f.prod.id).catch((e: unknown) => e as HubError)
+    expect(err).toBeInstanceOf(HubError)
+    expect((err as HubError).message).not.toContain(SUDO_PW)
+    expect((err as HubError).message).toContain('\u2039redacted\u203a')
+    expect((err as HubError).code).toBe('conflict')
+    put.mockRejectedValueOnce(new Error(`plain ${SUDO_PW}`))
+    await expect(pub.setIntegrationSecret(f.prod.id, 'teams_webhook', sudo.id)).rejects.toThrow(/^plain \u2039redacted\u203a$/)
+  })
 })
 
 describe('setIntegrationSecret', () => {
@@ -104,7 +117,9 @@ describe('secret IPC validators', () => {
     expect(VALIDATORS['hub:secrets']([UUID])).toEqual([UUID])
     expect(VALIDATORS['hub:uploadSecrets']([UUID, [UUID]])).toEqual([UUID, [UUID]])
     expect(VALIDATORS['hub:setIntegrationSecret']([null, 'github_token', UUID])).toEqual([null, 'github_token', UUID])
-    expect(VALIDATORS['hub:deleteSecret']([UUID])).toEqual([UUID])
+    expect(VALIDATORS['hub:deleteSecret']([UUID, UUID])).toEqual([UUID, UUID])
+    expect(VALIDATORS['hub:deleteSecret']([UUID, null])).toEqual([UUID, null])
+    expect(() => VALIDATORS['hub:deleteSecret']([UUID])).toThrow()
     expect(VALIDATORS['hub:deployKey']([UUID, true])).toEqual([UUID, true])
     expect(() => VALIDATORS['hub:setIntegrationSecret']([null, 'env', UUID])).toThrow()
     expect(() => VALIDATORS['hub:setIntegrationSecret']([null, 'github_token', 'not-an-id'])).toThrow()

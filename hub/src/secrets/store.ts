@@ -61,8 +61,8 @@ export class SecretStore {
         const byName = this.db.prepare("SELECT * FROM hub_secrets WHERE IFNULL(environment_id,'*') = ? AND name = ?").get(scope, name) as Row | undefined
         // Integration secrets keep their row (and id) when replaced; env/become ids are the vault's.
         const id = integration ? (byName?.id ?? input.id ?? this.opts.ids()) : (input.id ?? this.opts.ids())
-        const byId = this.db.prepare('SELECT * FROM hub_secrets WHERE id = ?').get(id) as Row | undefined
-        if (byId && (byId.environment_id !== environmentId || HUB_INTEGRATION_KINDS.includes(byId.kind) !== integration)) {
+        const byId = this.db.prepare("SELECT * FROM hub_secrets WHERE id = ? AND IFNULL(environment_id,'*') = ?").get(id, scope) as Row | undefined
+        if (byId && HUB_INTEGRATION_KINDS.includes(byId.kind) !== integration) {
           throw new HubHttpError(409, 'conflict', 'That secret id is already used by another secret')
         }
         if (byName && byName.id !== id) throw new HubHttpError(409, 'conflict', 'A secret with that name already exists')
@@ -71,7 +71,7 @@ export class SecretStore {
         this.db
           .prepare(
             `INSERT INTO hub_secrets(id, environment_id, name, kind, value_enc, key_id, updated_by, updated_at) VALUES (?,?,?,?,?,?,?,?)
-             ON CONFLICT(id) DO UPDATE SET environment_id = excluded.environment_id, name = excluded.name, kind = excluded.kind,
+             ON CONFLICT(id, IFNULL(environment_id,'*')) DO UPDATE SET name = excluded.name, kind = excluded.kind,
                value_enc = excluded.value_enc, key_id = excluded.key_id, updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
           )
           .run(id, environmentId, name, kind, enc, this.ring.keyId, actor.upn, ts)
@@ -101,11 +101,13 @@ export class SecretStore {
     return rows.map((r) => ({ id: r.id, environmentId: r.environment_id, name: r.name, kind: r.kind, updatedBy: r.updated_by, updatedAt: r.updated_at }))
   }
 
-  delete(id: string, actor: HubActor): void {
+  /** Removes one environment's copy (or the Hub-wide one when `environmentId` is null). */
+  delete(id: string, environmentId: string | null, actor: HubActor): void {
+    const scope = environmentId ?? '*'
     const r = inTransaction(this.db, () => {
-      const row = this.db.prepare('SELECT * FROM hub_secrets WHERE id = ?').get(id) as Row | undefined
+      const row = this.db.prepare("SELECT * FROM hub_secrets WHERE id = ? AND IFNULL(environment_id,'*') = ?").get(id, scope) as Row | undefined
       if (!row) throw new HubHttpError(404, 'not_found', 'Not found')
-      this.db.prepare('DELETE FROM hub_secrets WHERE id = ?').run(id)
+      this.db.prepare("DELETE FROM hub_secrets WHERE id = ? AND IFNULL(environment_id,'*') = ?").run(id, scope)
       return row
     })
     this.opts.audit.append({
@@ -128,11 +130,11 @@ export class SecretStore {
   }
 
   /** For the release adapter only. Unknown ids are omitted; a row that fails to open throws. */
-  resolveForRun(ids: string[]): Map<string, string> {
+  resolveForRun(environmentId: string, ids: string[]): Map<string, string> {
     const out = new Map<string, string>()
-    const get = this.db.prepare('SELECT * FROM hub_secrets WHERE id = ?')
+    const get = this.db.prepare('SELECT * FROM hub_secrets WHERE id = ? AND environment_id = ?')
     for (const id of ids) {
-      const r = get.get(id) as Row | undefined
+      const r = get.get(id, environmentId) as Row | undefined
       if (r) out.set(id, this.open(r))
     }
     return out

@@ -5,6 +5,7 @@ import { decide } from '../access/policy'
 import type { makeAuth } from '../auth/plugin'
 import type { HubAudit } from '../audit'
 import { HubHttpError } from '../errors'
+import type { EnvLocks } from '../locks'
 import type { Registry } from '../registry'
 import type { DeployKeys } from '../secrets/deploykeys'
 import type { SecretStore } from '../secrets/store'
@@ -37,13 +38,21 @@ export function registerSecrets(
   deps: {
     secrets: SecretStore
     deployKeys: DeployKeys
-    registry: Pick<Registry, 'required' | 'exists'> & Partial<Pick<Registry, 'nameOf'>>
+    registry: Pick<Registry, 'required' | 'exists' | 'nameOf'>
+    locks: Pick<EnvLocks, 'get'>
     directory: Pick<Directory, 'listGroups'>
     audit: Pick<HubAudit, 'append'>
     auth: ReturnType<typeof makeAuth>
   },
 ): void {
-  const { secrets, deployKeys, registry, directory, audit, auth } = deps
+  const { secrets, deployKeys, registry, locks, directory, audit, auth } = deps
+
+  /** Changing an environment's secrets or deploy key while a release runs on it would change what that release uses. */
+  const assertNotReleasing = (environmentId: string | null): void => {
+    if (environmentId !== null && locks.get(environmentId)?.kind === 'release') {
+      throw new HubHttpError(409, 'env_locked', `A release is running on ${registry.nameOf(environmentId) ?? 'this environment'}`)
+    }
+  }
 
   const mayAdmin = async (req: FastifyRequest): Promise<void> => {
     await auth.requireUser(req)
@@ -91,19 +100,27 @@ export function registerSecrets(
       },
       async (req, reply) => {
         const b = req.body
+        assertNotReleasing(b.environmentId)
         secrets.set({ id: req.params.id, environmentId: b.environmentId, name: b.name, kind: b.kind, value: b.value as string }, actorOf(req))
         return reply.code(204).send()
       },
     )
 
-    scope.delete<{ Params: { id: string } }>('/api/v1/admin/secrets/:id', { schema: { params: idParams } }, async (req, reply) => {
-      secrets.delete(req.params.id, actorOf(req))
+    scope.delete<{ Params: { id: string }; Querystring: { environmentId?: string } }>(
+      '/api/v1/admin/secrets/:id',
+      { schema: { params: idParams, querystring: { type: 'object', properties: { environmentId: { type: 'string', pattern: UUID } }, additionalProperties: false } } },
+      async (req, reply) => {
+      const environmentId = req.query.environmentId ?? null
+      assertNotReleasing(environmentId)
+      secrets.delete(req.params.id, environmentId, actorOf(req))
       return reply.code(204).send()
-    })
+      },
+    )
 
     scope.post<{ Params: { id: string } }>('/api/v1/admin/environments/:id/deploy-key', { schema: { params: idParams } }, async (req) => {
-      const name = registry.nameOf?.(req.params.id) ?? null
+      const name = registry.nameOf(req.params.id)
       if (name === null) throw new HubHttpError(404, 'not_found', 'That environment is not published to this Hub')
+      assertNotReleasing(req.params.id)
       const rotated = deployKeys.has(req.params.id)
       const key = deployKeys.create(req.params.id, name)
       audit.append({
