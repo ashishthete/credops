@@ -1,7 +1,8 @@
 import { lstat, readFile, stat } from 'node:fs/promises'
+import { Socket } from 'node:net'
 import { isAbsolute, join, relative, sep } from 'node:path'
 import { OpenSSHAgent } from 'ssh2'
-import type { AuthenticationType, AuthHandlerMiddleware, KeyboardInteractiveAuthMethod } from 'ssh2'
+import type { AuthenticationType, AuthHandlerMiddleware, GetStreamCallback, KeyboardInteractiveAuthMethod } from 'ssh2'
 import type { IdentityRef } from '../../shared/inventory'
 import type { SshConfigMatch, SshConfigTarget } from '../inventory/ssh-config'
 import type { IdentityStore } from '../vault/identity-store'
@@ -30,25 +31,59 @@ export interface AuthDeps {
   home: string
   /** ~/.ssh/config lookup for the host being dialled; its IdentityFiles join the key chain. */
   sshConfig?: (target: SshConfigTarget) => SshConfigMatch | null
-  /** How many keys the agent holds; null when it can't be asked. Defaults to asking it. */
-  agentKeys?: (sock: string) => Promise<number | null>
+  /** How many keys the agent holds; null when it didn't answer in time; 'unreachable' when asking failed. Defaults to asking it. */
+  agentKeys?: (sock: string) => Promise<AgentKeyCount>
 }
 
 const DEFAULT_KEYS = ['id_ed25519', 'id_rsa'] as const
 const AGENT_ASK_MS = 1000
 
-/** Asks the agent for its key list, giving up after a second. */
-export function countAgentKeys(sock: string): Promise<number | null> {
+export type AgentKeyCount = number | null | 'unreachable'
+
+/** OpenSSHAgent's stream, kept so a probe that times out can close it. */
+class ProbeAgent extends OpenSSHAgent {
+  readonly sock = new Socket()
+  constructor(private readonly path: string) {
+    super(path)
+  }
+  override getStream(cb: GetStreamCallback): void {
+    const { sock } = this
+    let called = false
+    const once: GetStreamCallback = (err, stream) => {
+      if (called) return
+      called = true
+      cb(err, stream)
+    }
+    const onFail = (): void => {
+      sock.destroy()
+      once(new Error('Failed to connect to agent'))
+    }
+    sock.once('connect', () => once(null, sock))
+    sock.on('close', onFail).on('end', onFail).on('error', onFail)
+    sock.connect(this.path)
+  }
+}
+
+/**
+ * Asks the agent for its key list. A failed ask (a stale socket nothing listens on) is
+ * 'unreachable'; one with no answer after `timeoutMs` is null and its socket is closed.
+ */
+export function countAgentKeys(sock: string, timeoutMs = AGENT_ASK_MS): Promise<AgentKeyCount> {
   return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve(null), AGENT_ASK_MS)
+    let agent: ProbeAgent | undefined
+    const timer = setTimeout(() => {
+      agent?.sock.destroy()
+      resolve(null)
+    }, timeoutMs)
     try {
-      new OpenSSHAgent(sock).getIdentities((err, keys) => {
+      agent = new ProbeAgent(sock)
+      agent.getIdentities((err, keys) => {
         clearTimeout(timer)
-        resolve(err || !keys ? null : keys.length)
+        resolve(err || !keys ? 'unreachable' : keys.length)
       })
     } catch {
       clearTimeout(timer)
-      resolve(null)
+      resolve('unreachable')
     }
   })
 }
@@ -80,7 +115,7 @@ async function keyFile(home: string, path: string): Promise<{ method?: AuthMetho
     return { missing: true }
   }
   if (info.isSymbolicLink()) return { note: `${name} is a symlink, so it was skipped` }
-  if (!info.isFile()) return {}
+  if (!info.isFile()) return { note: `${name} isn't a file` }
   if (info.size > MAX_PRIVATE_KEY_BYTES) return { note: `${name} is too large to be a key` }
   let text: string
   try {
@@ -117,10 +152,15 @@ async function keyChain(
 
   const sock = await agentSocket(deps.env)
   if (!sock) notes.push(deps.env.SSH_AUTH_SOCK ? "ssh-agent socket doesn't exist" : "ssh-agent isn't running (SSH_AUTH_SOCK is not set)")
-  else if ((await (deps.agentKeys ?? countAgentKeys)(sock)) === 0) tried.push('ssh-agent (no keys loaded)')
   else {
-    methods.push({ type: 'agent', agent: sock })
-    tried.push('ssh-agent')
+    const count = await (deps.agentKeys ?? countAgentKeys)(sock)
+    if (count === 0) tried.push('ssh-agent (no keys loaded)')
+    else if (count === 'unreachable') notes.push("ssh-agent didn't answer")
+    else {
+      // A count, or no answer in time: offer it, as a slow agent may still sign.
+      methods.push({ type: 'agent', agent: sock })
+      tried.push('ssh-agent')
+    }
   }
 
   let configured: string[] = []
@@ -129,8 +169,13 @@ async function keyChain(
   } catch {
     // An unreadable config only drops its IdentityFiles.
   }
-  const paths = new Set([...configured.filter((p) => isAbsolute(p)), ...DEFAULT_KEYS.map((n) => join(deps.home, '.ssh', n))])
+  const paths = new Set([...configured, ...DEFAULT_KEYS.map((n) => join(deps.home, '.ssh', n))])
   for (const path of paths) {
+    // Only ~ and %d are expanded; a path still holding a token would name the wrong file.
+    if (path.includes('%')) {
+      notes.push(`${shown(deps.home, path)} uses a token OpsDeck doesn't expand, so it was skipped`)
+      continue
+    }
     const r = await keyFile(deps.home, path)
     if (r.method) {
       methods.push(r.method)

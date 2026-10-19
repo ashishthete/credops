@@ -205,7 +205,11 @@ async function dialHop(
     const onAbort = (): void => fail(new ClosedError())
 
     signal.addEventListener('abort', onAbort, { once: true })
-    client.on('error', (err) => fail(hostKeyError ?? (err.message === AUTH_FAILED ? authFailed() : err)))
+    client.on('error', (err: Error & { level?: string }) => {
+      // ssh2 reports an agent that fails mid-dial, then goes on to the next method itself.
+      if (err.level === 'agent') return
+      fail(hostKeyError ?? (err.message === AUTH_FAILED ? authFailed() : err))
+    })
     client.on('close', () => fail(hostKeyError ?? new Error('The server closed the connection')))
     client.once('ready', () => {
       if (settled) return
@@ -226,13 +230,15 @@ async function dialHop(
         username: plan.username,
         authHandler: authHandler(
           plan,
-          () => {
-            typed.add('a typed password')
-            return waitOnUser(() => deps.askPassword(hop, plan.username))
+          async () => {
+            const answer = await waitOnUser(() => deps.askPassword(hop, plan.username))
+            if (answer !== null) typed.add('a typed password')
+            return answer
           },
-          (name, instructions, prompts) => {
-            typed.add('keyboard-interactive answers')
-            return waitOnUser(() => deps.askKeyboard(hop, name, instructions, prompts))
+          async (name, instructions, prompts) => {
+            const answers = await waitOnUser(() => deps.askKeyboard(hop, name, instructions, prompts))
+            if (answers !== null) typed.add('keyboard-interactive answers')
+            return answers
           },
         ),
         hostVerifier: (key: Buffer, verify: (ok: boolean) => void) => {

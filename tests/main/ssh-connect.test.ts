@@ -295,6 +295,25 @@ describe('connectChain', () => {
     expect(described.message).not.toContain('wrong-secret')
   })
 
+  it('a cancelled password prompt is not listed as tried', async () => {
+    const s = await server({ users: [{ username: 'ops', password: 'right', publicKey: userKey.publicKey }] })
+    const askPassword = vi.fn(async () => null)
+    const { described } = await failure([hop('target', s.port)], deps({ plan: async () => ({ ...keyPlan(otherKey.privateKey), tried: ['test key'] }), askPassword }))
+    expect(askPassword).toHaveBeenCalled()
+    expect(described.message).toBe('target refused user ops. Tried: test key.')
+  })
+
+  it('an agent that fails mid-dial is passed over for the next key', async () => {
+    const s = await server()
+    const dir = mkdtempSync(join(tmpdir(), 'opsdeck-agent-'))
+    onTestFinished(() => rmSync(dir, { recursive: true, force: true }))
+    const stale = join(dir, 'agent.sock')
+    writeFileSync(stale, '')
+    const plan: AuthPlan = { ...keyPlan(), kind: 'agent', methods: [{ type: 'agent', agent: stale }, ...keyPlan().methods] }
+    const { client } = await connect([hop('target', s.port)], deps({ plan: async () => plan }))
+    expect(await shellOutput(client, 'READY')).toContain('READY')
+  })
+
   it('falls back to one password prompt', async () => {
     const s = await server({ users: [{ username: 'ops', password: 'pw', publicKey: userKey.publicKey }] })
     const askPassword = vi.fn(async () => 'pw')

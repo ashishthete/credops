@@ -426,20 +426,23 @@ export function matchSshConfig(text: string, opts: ParseOptions, target: SshConf
     return { blocks: out, specific: out.some((b) => b.patterns?.some((p) => !p.startsWith('!') && p !== '*')) }
   }
   const first = (bs: Block[], key: string): string | undefined => bs.find((b) => b.values.has(key))?.values.get(key)?.value
+  // ssh lowercases the host it was given before matching.
+  const label = target.label.toLowerCase()
+  const address = target.address.toLowerCase()
 
-  const byLabel = applying(target.label)
+  const byLabel = applying(label)
   let chosen = byLabel.specific ? byLabel.blocks : null
   for (const alias of chosen ? [] : aliases) {
-    if (alias === target.label) continue
+    if (alias === label) continue
     const a = applying(alias)
     const hostName = first(a.blocks, 'hostname')?.replace(/%([h%])/g, (_, c: string) => (c === 'h' ? alias : '%')) ?? alias
-    if (hostName === target.address) {
+    if (hostName.toLowerCase() === address) {
       chosen = a.blocks
       break
     }
   }
-  if (!chosen && target.address !== target.label) {
-    const byAddress = applying(target.address)
+  if (!chosen && address !== label) {
+    const byAddress = applying(address)
     if (byAddress.specific) chosen = byAddress.blocks
   }
   const used = chosen ?? byLabel.blocks

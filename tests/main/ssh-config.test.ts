@@ -339,6 +339,12 @@ describe('matchSshConfig', () => {
     expect(match(text, 'a', 'a')).toEqual({ user: null, identityFiles: ['/home/t/.ssh/one', '/opt/keys/two'] })
   })
 
+  it('matches labels and addresses case-insensitively, as ssh does', () => {
+    const text = 'Host alpha\n  User ubuntu\nHost box\n  HostName db.example.com\n  User deploy\n'
+    expect(match(text, 'Alpha', '1.2.3.4')).toMatchObject({ user: 'ubuntu' })
+    expect(match(text, 'Other', 'DB.Example.com')).toMatchObject({ user: 'deploy' })
+  })
+
   it('no match and unsafe users give nothing', () => {
     expect(match('Host other\n  User x\n', 'alpha', '1.2.3.4')).toBeNull()
     expect(match('Host alpha\n  User -oProxyCommand=x\n', 'alpha', '1.2.3.4')).toEqual({ user: null, identityFiles: [] })

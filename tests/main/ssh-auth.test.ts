@@ -1,10 +1,11 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createServer, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { onTestFinished, describe, expect, it, vi } from 'vitest'
 import type { AuthenticationType } from 'ssh2'
 import type { IdentityRef } from '../../src/shared/inventory'
-import { answerKeyboard, authHandler, authPlan } from '../../src/main/ssh/auth'
+import { answerKeyboard, authHandler, authPlan, countAgentKeys } from '../../src/main/ssh/auth'
 import { generateKey } from './ssh-server'
 import type { AuthPlan } from '../../src/main/ssh/auth'
 
@@ -27,7 +28,7 @@ describe('authPlan', () => {
     const sock = join(home, 'agent.sock')
     writeFileSync(sock, '')
     const identities = { resolve: async () => ({ username: 'ops', auth: 'agent' as const }) }
-    const plan = await authPlan(hostId('agent'), { identities, env: { SSH_AUTH_SOCK: sock }, home })
+    const plan = await authPlan(hostId('agent'), { identities, env: { SSH_AUTH_SOCK: sock }, home, agentKeys: async () => 1 })
     expect(plan.methods).toEqual([{ type: 'agent', agent: sock }])
     const none = await authPlan(hostId('agent'), { identities, env: {}, home })
     expect(none.methods).toEqual([])
@@ -53,7 +54,7 @@ describe('authPlan', () => {
     writeFileSync(sock, '')
     writeFileSync(join(home, '.ssh', 'id_ed25519'), keyText('ed25519'))
     writeFileSync(join(home, '.ssh', 'id_rsa'), keyText('rsa', { bits: 2048 }))
-    const plan = await authPlan(globalId, { identities: noIdentities, env: { SSH_AUTH_SOCK: sock }, home })
+    const plan = await authPlan(globalId, { identities: noIdentities, env: { SSH_AUTH_SOCK: sock }, home, agentKeys: async () => 1 })
     expect(plan.methods.map((m) => m.type)).toEqual(['agent', 'publickey', 'publickey'])
     expect(plan.methods.flatMap((m) => (m.type === 'publickey' ? [m.label] : []))).toEqual([
       '~/.ssh/id_ed25519',
@@ -125,6 +126,26 @@ describe('authPlan: your SSH keys chain', () => {
     const plan = await authPlan(agentId, { identities: agentIdentity, env: { SSH_AUTH_SOCK: sock }, home, agentKeys: async () => 2 })
     expect(labels(plan)).toEqual(['agent', '~/.ssh/id_rsa'])
     expect(plan.tried).toEqual(['ssh-agent', '~/.ssh/id_rsa'])
+  })
+
+  it("an agent that doesn't answer is skipped with a note, so the key files carry the login", async () => {
+    const home = tmpHome()
+    const sock = fakeSock(home)
+    writeFileSync(join(home, '.ssh', 'id_rsa'), keyText('rsa', { bits: 2048 }))
+    const plan = await authPlan(agentId, { identities: agentIdentity, env: { SSH_AUTH_SOCK: sock }, home, agentKeys: async () => 'unreachable' as const })
+    expect(labels(plan)).toEqual(['~/.ssh/id_rsa'])
+    expect(plan.notes).toContain("ssh-agent didn't answer")
+    expect(plan.tried).toEqual(['~/.ssh/id_rsa'])
+  })
+
+  it('an IdentityFile with an unexpanded % token, or one that is not a file, is named in a note', async () => {
+    const home = tmpHome()
+    mkdirSync(join(home, '.ssh', 'keydir'))
+    const sshConfig = () => ({ user: null, identityFiles: [join(home, '.ssh', 'id_%h'), join(home, '.ssh', 'keydir')] })
+    const plan = await authPlan(agentId, { identities: agentIdentity, env: {}, home, sshConfig }, { label: 'alpha', address: 'a' })
+    expect(plan.notes).toContain("~/.ssh/id_%h uses a token OpsDeck doesn't expand, so it was skipped")
+    expect(plan.notes).toContain("~/.ssh/keydir isn't a file")
+    expect(plan.missing).toEqual(['~/.ssh/id_ed25519', '~/.ssh/id_rsa'])
   })
 
   it('an agent that cannot be asked is still offered', async () => {
@@ -327,5 +348,35 @@ describe('answerKeyboard', () => {
     expect(answerKeyboard([{ prompt: 'Password:', echo: false }], 'pw')).toEqual(['pw'])
     expect(answerKeyboard([{ prompt: 'a', echo: false }, { prompt: 'b', echo: false }], 'pw')).toBeNull()
     expect(answerKeyboard([{ prompt: 'User:', echo: true }], 'pw')).toBeNull()
+  })
+})
+
+describe('countAgentKeys', () => {
+  it('a socket path nothing listens on is unreachable', async () => {
+    const home = tmpHome()
+    const path = join(home, 'stale.sock')
+    writeFileSync(path, '')
+    expect(await countAgentKeys(path)).toBe('unreachable')
+    expect(await countAgentKeys(join(home, 'gone.sock'))).toBe('unreachable')
+  })
+
+  it('an agent that never answers times out as null, and its socket is closed', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'oda-'))
+    onTestFinished(() => rmSync(home, { recursive: true, force: true }))
+    const path = join(home, 'a.sock')
+    let open: Socket | null = null
+    const closed = new Promise<void>((resolve) => {
+      const srv = createServer((sock) => {
+        open = sock
+        sock.resume()
+        sock.on('error', () => {})
+        sock.on('close', () => resolve())
+      })
+      srv.listen(path)
+      onTestFinished(() => new Promise<void>((r) => srv.close(() => r())))
+    })
+    expect(await countAgentKeys(path, 50)).toBeNull()
+    await closed
+    expect(open).not.toBeNull()
   })
 })
