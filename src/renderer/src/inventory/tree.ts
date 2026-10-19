@@ -28,7 +28,8 @@ export function environmentKey(env: EnvironmentMeta, preferProduct?: string): No
   return `p:${productId}/e:${env.id}`
 }
 
-const ROLE_ORDER: HostRole[] = ['bastion', 'app', 'db', 'other']
+/** Bastions first: they're how you reach the rest. */
+export const ROLE_ORDER = ['bastion', 'app', 'db', 'other'] as const satisfies readonly HostRole[]
 const UNASSIGNED_COLOR = '#8a91a3'
 const byName = (a: string, b: string) => a.localeCompare(b)
 

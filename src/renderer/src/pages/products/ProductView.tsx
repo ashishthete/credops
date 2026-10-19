@@ -1,8 +1,9 @@
 import { motion } from 'framer-motion'
 import { Layers, Link2, Lock, Pencil, Plus, Trash2, Unlink } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { HOST_ROLES, type EnvironmentMeta, type ProductMeta } from '../../../../shared/inventory'
+import type { EnvironmentMeta, ProductMeta } from '../../../../shared/inventory'
 import type { InventoryData } from '../../inventory/store'
+import { ROLE_ORDER } from '../../inventory/tree'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
 import { plural, RowMenu } from '../../ui/common'
@@ -11,8 +12,7 @@ import { fast, spring, useMotionSafe } from '../../ui/motion'
 import { ProductTile } from './ProductDialog'
 
 export const ROLE_LABEL = { app: 'App', db: 'Database', bastion: 'Bastion', other: 'Other' } as const
-/** Bastions first: they're how you reach the rest. */
-export const ROLE_ORDER = ['bastion', 'app', 'db', 'other'] as const satisfies readonly (typeof HOST_ROLES)[number][]
+export { ROLE_ORDER }
 
 /** The details pane's title row, in the Vaults page's shape. */
 export function PaneHeader({ lead, title, badges, actions }: { lead: ReactNode; title: string; badges?: ReactNode; actions?: ReactNode }) {
