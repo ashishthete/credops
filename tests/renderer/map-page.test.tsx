@@ -7,7 +7,8 @@ import { resetSessions } from '../../src/renderer/src/terminal/sessions'
 import { resetTunnels } from '../../src/renderer/src/tunnels/store'
 import { clearToasts } from '../../src/renderer/src/ui/Toaster'
 import type { TunnelMeta, TunnelRuntime } from '../../src/shared/tunnels'
-import { emitBridgeEvent, environment, host, mockBridge, product, renderShell, session, tunnelMeta, tunnelRuntime } from './helpers'
+import { emitBridgeEvent, environment, host, mockBridge, product, session, tunnelMeta, tunnelRuntime } from './helpers'
+import { renderShell } from './shell-helpers'
 
 const web = product({ id: 'p1', name: 'Web', color: '#5b8cff' })
 const billing = product({ id: 'p2', name: 'Billing', color: '#f2a93b' })

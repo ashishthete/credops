@@ -3,7 +3,8 @@ import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { inventoryStore } from '../../src/renderer/src/inventory/store'
 import { resetTunnels } from '../../src/renderer/src/tunnels/store'
-import { environment, host, mockBridge, renderShell } from './helpers'
+import { environment, host, mockBridge } from './helpers'
+import { renderShell } from './shell-helpers'
 
 // Records the props of every <ReactFlow> render; the real component still renders.
 const flowProps = vi.hoisted(() => [] as Record<string, unknown>[])

@@ -93,6 +93,15 @@ describe('shell', () => {
     expect(within(nav).getByRole('link', { name: /Map/ })).toHaveAttribute('aria-current', 'page')
   })
 
+  // The spec fixes Map at mod+6; the computed test above is what survives sections moving.
+  it('mod+6 opens Map', async () => {
+    renderShell()
+    act(() => {
+      fireEvent.keyDown(window, { key: '6', metaKey: true })
+    })
+    expect(await screen.findByRole('heading', { name: 'Map', level: 1 })).toBeInTheDocument()
+  })
+
   it('placeholder pages name their phase', async () => {
     renderShell('/deployments')
     expect(await screen.findByText('Coming in phase 8')).toBeInTheDocument()

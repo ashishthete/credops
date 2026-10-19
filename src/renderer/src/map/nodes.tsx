@@ -122,8 +122,9 @@ const HostNode = memo(function HostNode({ data, selected }: NodeProps<Node<FlowD
       <div className="flex min-w-0 items-center gap-1">
         <span className="min-w-0 truncate font-mono text-[10.5px] text-muted">{data.address}</span>
         <span className="ml-auto flex shrink-0 items-center gap-1">
-          {data.vaultNames.slice(0, 2).map((name) => (
-            <Chip key={name} className="max-w-14">
+          {/* Names can repeat across vaults and the data carries no ids, so position is the key. */}
+          {data.vaultNames.slice(0, 2).map((name, i) => (
+            <Chip key={i} className="max-w-14">
               <span className="truncate">{name}</span>
             </Chip>
           ))}

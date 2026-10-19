@@ -1,7 +1,4 @@
-import { render, type RenderResult } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
 import { vi } from 'vitest'
-import { AppShell } from '../../src/renderer/src/shell/AppShell'
 import type { AuditEvent } from '../../src/shared/audit'
 import type { EnvironmentMeta, HostMeta, ProductMeta } from '../../src/shared/inventory'
 import type { AppInfo } from '../../src/shared/ipc'
@@ -204,13 +201,4 @@ export function identity(over: Partial<IdentityMeta> & { id: string; label: stri
     updatedAt: STAMP,
     ...over,
   }
-}
-
-/** The whole shell at `path`; install the bridge (mockBridge) first. */
-export function renderShell(path = '/'): RenderResult {
-  return render(
-    <MemoryRouter initialEntries={[path]}>
-      <AppShell />
-    </MemoryRouter>,
-  )
 }

@@ -1,6 +1,6 @@
 import { ReactFlowProvider } from '@xyflow/react'
 import { FileDown, Network, Plus } from 'lucide-react'
-import { useMemo, useState, useSyncExternalStore } from 'react'
+import { useCallback, useMemo, useState, useSyncExternalStore } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 import { useInventory } from '../../inventory/store'
 import { parseScope, type MapGraph } from '../../map/graph'
@@ -14,17 +14,26 @@ import { Skeleton } from '../../ui/Skeleton'
 
 const noop = () => {}
 
-/** `2 environments · 3 hosts · 1 tunnel up`, counting what the scope shows. */
+/**
+ * `2 environments · 3 hosts · 1 tunnel up`, counting what the scope shows. The store snapshot is the
+ * up-count alone, so runtime churn that leaves it unchanged doesn't re-render the page or the canvas.
+ */
 function useSummary(graph: MapGraph | undefined): string | null {
-  const { tunnels, runtime } = useSyncExternalStore(tunnelStore.subscribe, tunnelStore.get)
+  const { environments, hosts } = useMemo(() => {
+    let environments = 0
+    const hosts = new Set<string>()
+    for (const n of graph?.nodes ?? []) {
+      if (n.data.kind === 'environment' && n.data.environmentId !== null) environments++
+      else if (n.data.kind === 'host') hosts.add(n.data.hostId)
+    }
+    return { environments, hosts }
+  }, [graph])
+  const upCount = useCallback(() => {
+    const { tunnels, runtime } = tunnelStore.get()
+    return tunnels.filter((t) => hosts.has(t.hostId) && runtime[t.id]?.state === 'up').length
+  }, [hosts])
+  const up = useSyncExternalStore(tunnelStore.subscribe, upCount)
   if (!graph) return null
-  let environments = 0
-  const hosts = new Set<string>()
-  for (const n of graph.nodes) {
-    if (n.data.kind === 'environment' && n.data.environmentId !== null) environments++
-    else if (n.data.kind === 'host') hosts.add(n.data.hostId)
-  }
-  const up = tunnels.filter((t) => hosts.has(t.hostId) && runtime[t.id]?.state === 'up').length
   return `${plural(environments, 'environment')} · ${plural(hosts.size, 'host')} · ${plural(up, 'tunnel')} up`
 }
 

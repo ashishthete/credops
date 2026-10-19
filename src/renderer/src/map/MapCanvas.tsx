@@ -10,7 +10,7 @@ import {
   type NodeChange,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { useCallback, useMemo, useState, type KeyboardEvent } from 'react'
+import { memo, useCallback, useMemo, useState, type KeyboardEvent } from 'react'
 import { useMotionSafe } from '../ui/motion'
 import type { MapGraph } from './graph'
 import { VIRTUALIZE_AT, type MapLayout } from './layout'
@@ -32,17 +32,17 @@ const ZOOM_MS = 200
 const FIT_PADDING = 0.15
 
 /** The minimap tints everything by its environment; groups stay faint so their hosts read on top. */
-function minimapColors(graph: MapGraph): Map<string, string> {
+export function minimapColors(graph: MapGraph): Map<string, string> {
+  const byId = new Map(graph.nodes.map((n) => [n.id, n]))
   const colors = new Map<string, string>()
   for (const n of graph.nodes) {
     const d = n.data
     if (d.kind === 'product') colors.set(n.id, d.color)
     else if (d.kind === 'environment') colors.set(n.id, `color-mix(in oklab, ${d.color} 22%, transparent)`)
-  }
-  for (const n of graph.nodes) {
-    if (n.data.kind !== 'host') continue
-    const group = graph.nodes.find((g) => g.id === n.parentId)
-    if (group?.data.kind === 'environment') colors.set(n.id, group.data.color)
+    else if (d.kind === 'host') {
+      const group = n.parentId ? byId.get(n.parentId)?.data : undefined
+      if (group?.kind === 'environment') colors.set(n.id, group.color)
+    }
   }
   return colors
 }
@@ -60,72 +60,102 @@ function alsoIn(graph: MapGraph): Map<string, string[]> {
   return out
 }
 
+/** Flow nodes for a laid-out graph: position, size and data only; selection and styling come later. */
+function flowNodes(graph: MapGraph, layout: MapLayout): MapFlowNode[] {
+  const shared = alsoIn(graph)
+  return graph.nodes.flatMap((n) => {
+    const at = layout.positions[n.id]
+    if (!at) return []
+    return [
+      {
+        id: n.id,
+        type: n.data.kind,
+        position: { x: at.x, y: at.y },
+        width: at.width,
+        height: at.height,
+        ...(n.parentId ? { parentId: n.parentId, extent: 'parent' as const } : {}),
+        data: n.data.kind === 'environment' ? { ...n.data, alsoIn: shared.get(n.id) ?? [] } : { ...n.data },
+      } as MapFlowNode,
+    ]
+  })
+}
+
 /**
  * The React Flow canvas for a graph and its layout. Needs a `ReactFlowProvider` above it, so the page
  * and its toolbar can reach the viewport through `useReactFlow` too.
  */
-export function MapCanvas({ graph, layout, selectedId, dimmed, highlightId, onSelect, onActivate, onEdgeSelect }: MapCanvasProps) {
+export const MapCanvas = memo(function MapCanvas({
+  graph,
+  layout,
+  selectedId,
+  dimmed,
+  highlightId,
+  onSelect,
+  onActivate,
+  onEdgeSelect,
+}: MapCanvasProps) {
   const motionSafe = useMotionSafe()
   const flow = useReactFlow()
 
-  const nodes = useMemo((): MapFlowNode[] => {
-    const shared = alsoIn(graph)
-    return graph.nodes.flatMap((n) => {
-      const at = layout.positions[n.id]
-      if (!at) return []
-      const classes = [dimmed?.has(n.id) && 'od-dimmed', highlightId === n.id && 'od-highlight'].filter(Boolean).join(' ')
-      return [
-        {
-          id: n.id,
-          type: n.data.kind,
-          position: { x: at.x, y: at.y },
-          width: at.width,
-          height: at.height,
-          ...(n.parentId ? { parentId: n.parentId, extent: 'parent' as const } : {}),
-          data: n.data.kind === 'environment' ? { ...n.data, alsoIn: shared.get(n.id) ?? [] } : { ...n.data },
-          selected: n.id === selectedId,
-          className: classes || undefined,
-        } as MapFlowNode,
-      ]
-    })
-  }, [graph, layout, selectedId, dimmed, highlightId])
+  const base = useMemo(() => flowNodes(graph, layout), [graph, layout])
+
+  // Drags and measurements apply to a local copy, which only a new graph or layout resets.
+  const [local, setLocal] = useState({ from: base, nodes: base })
+  if (local.from !== base) setLocal({ from: base, nodes: base })
+  // Selection belongs to the page, so React Flow's own select changes are dropped.
+  const onNodesChange = useCallback((changes: NodeChange<MapFlowNode>[]) => {
+    const kept = changes.filter((c) => c.type !== 'select')
+    if (kept.length) setLocal((s) => ({ ...s, nodes: applyNodeChanges(kept, s.nodes) }))
+  }, [])
+
+  // Selection and styling go on at render time, so changing them never moves a dragged node back.
+  const nodes = useMemo(
+    () =>
+      local.nodes.map((n) => {
+        const selected = n.id === selectedId
+        const className = [dimmed?.has(n.id) && 'od-dimmed', highlightId === n.id && 'od-highlight'].filter(Boolean).join(' ') || undefined
+        return !!n.selected === selected && n.className === className ? n : { ...n, selected, className }
+      }),
+    [local.nodes, selectedId, dimmed, highlightId],
+  )
 
   const edges = useMemo(
     (): Edge[] => graph.edges.map((e) => ({ id: e.id, source: e.source, target: e.target, data: { ...e.data } })),
     [graph],
   )
 
-  // Drags and measurements apply locally; selection belongs to the page. A new graph or layout resets both.
-  const [local, setLocal] = useState({ from: nodes, nodes })
-  if (local.from !== nodes) setLocal({ from: nodes, nodes })
-  const onNodesChange = useCallback((changes: NodeChange<MapFlowNode>[]) => {
-    const kept = changes.filter((c) => c.type !== 'select')
-    if (kept.length) setLocal((s) => ({ ...s, nodes: applyNodeChanges(kept, s.nodes) }))
-  }, [])
-
   const colors = useMemo(() => minimapColors(graph), [graph])
+  const nodeColor = useCallback((n: MapFlowNode) => colors.get(n.id) ?? 'var(--muted)', [colors])
+
+  const onNodeClick = useCallback((_: unknown, n: MapFlowNode) => onSelect(n.id), [onSelect])
+  const onNodeDoubleClick = useCallback((_: unknown, n: MapFlowNode) => onActivate(n.id), [onActivate])
+  const onEdgeClick = useCallback((_: unknown, e: Edge) => onEdgeSelect(e.id), [onEdgeSelect])
+  const onPaneClick = useCallback(() => onSelect(null), [onSelect])
 
   // Canvas keys live here, not in global shortcuts, so typing in a search box never zooms.
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (e.target !== e.currentTarget || e.metaKey || e.ctrlKey || e.altKey) return
-    const duration = motionSafe ? ZOOM_MS : 0
-    if (e.key === '+' || e.key === '=') void flow.zoomIn({ duration })
-    else if (e.key === '-') void flow.zoomOut({ duration })
-    else if (e.key === '0') void flow.fitView({ duration, padding: FIT_PADDING })
-    else return
-    e.preventDefault()
-  }
+  const onKeyDown = useCallback(
+    (e: KeyboardEvent) => {
+      if (e.target !== e.currentTarget || e.metaKey || e.ctrlKey || e.altKey) return
+      const duration = motionSafe ? ZOOM_MS : 0
+      if (e.key === '+' || e.key === '=') void flow.zoomIn({ duration })
+      else if (e.key === '-') void flow.zoomOut({ duration })
+      else if (e.key === '0') void flow.fitView({ duration, padding: FIT_PADDING })
+      else return
+      e.preventDefault()
+    },
+    [flow, motionSafe],
+  )
 
   return (
     <ReactFlow<MapFlowNode>
-      nodes={local.nodes}
+      nodes={nodes}
       edges={edges}
       nodeTypes={nodeTypes}
       onNodesChange={onNodesChange}
-      onNodeClick={(_, n) => onSelect(n.id)}
-      onNodeDoubleClick={(_, n) => onActivate(n.id)}
-      onEdgeClick={(_, e) => onEdgeSelect(e.id)}
-      onPaneClick={() => onSelect(null)}
+      onNodeClick={onNodeClick}
+      onNodeDoubleClick={onNodeDoubleClick}
+      onEdgeClick={onEdgeClick}
+      onPaneClick={onPaneClick}
       nodesConnectable={false}
       elementsSelectable
       nodesFocusable={false}
@@ -150,8 +180,8 @@ export function MapCanvas({ graph, layout, selectedId, dimmed, highlightId, onSe
       onKeyDown={onKeyDown}
     >
       <Background variant={BackgroundVariant.Dots} />
-      <MiniMap pannable zoomable nodeColor={(n) => colors.get(n.id) ?? 'var(--muted)'} />
+      <MiniMap<MapFlowNode> pannable zoomable nodeColor={nodeColor} />
       <Controls showInteractive={false} />
     </ReactFlow>
   )
-}
+})
