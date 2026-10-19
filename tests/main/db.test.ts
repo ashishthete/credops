@@ -105,9 +105,9 @@ describe('snippets schema', () => {
   const insert = (db: ReturnType<typeof openDatabase>, id: string, label: string, destructive = 0) =>
     db
       .prepare(
-        'INSERT INTO snippets(id,label,script_enc,defaults_enc,destructive,created_at,updated_at) VALUES (?,?,?,?,?,?,?)',
+        'INSERT INTO snippets(id,label,script_sealed,destructive,created_at,updated_at) VALUES (?,?,?,?,?,?)',
       )
-      .run(id, label, 'sealed', 'sealed', destructive, 't', 't')
+      .run(id, label, 'sealed', destructive, 't', 't')
 
   it('migration 6 creates snippets with a case-insensitive unique label', () => {
     const db = openDatabase(':memory:')
@@ -117,11 +117,11 @@ describe('snippets schema', () => {
     expect(() => insert(db, 's2', 'deploy')).toThrow(/UNIQUE constraint failed/)
     const cols = db.prepare("SELECT name FROM pragma_table_info('snippets')").all().map((r) => (r as { name: string }).name)
     // The script and defaults exist only sealed.
-    expect(cols).toContain('script_enc')
-    expect(cols).toContain('defaults_enc')
+    expect(cols).toContain('script_sealed')
+    expect(cols).toContain('defaults_sealed')
     expect(cols).not.toContain('script')
-    const row = db.prepare('SELECT description, tags, variables, destructive FROM snippets').get()
-    expect({ ...row }).toEqual({ description: '', tags: '[]', variables: '[]', destructive: 0 })
+    const row = db.prepare('SELECT description, tags, variables, defaults_sealed, destructive FROM snippets').get()
+    expect({ ...row }).toEqual({ description: '', tags: '[]', variables: '[]', defaults_sealed: null, destructive: 0 })
     // Migration 5's table is untouched.
     const tunnelCols = db.prepare("SELECT name FROM pragma_table_info('tunnels')").all().map((r) => (r as { name: string }).name)
     expect(tunnelCols).toEqual([

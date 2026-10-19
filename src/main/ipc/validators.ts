@@ -32,7 +32,7 @@ import {
   LOG_TAIL_MAX,
   MAX_COMMAND,
   MAX_CONCURRENCY,
-  MAX_DESCRIPTION as MAX_SNIPPET_DESCRIPTION,
+  MAX_SNIPPET_DESCRIPTION,
   MAX_RUN_TARGETS,
   MAX_RUN_TIMEOUT_SEC,
   MAX_SCRIPT,
@@ -343,7 +343,7 @@ export const asSnippetInput: Check<SnippetInput> = v.object({
 const runTarget = v.tagged('kind', {
   hosts: v.object({
     kind: v.oneOf(['hosts'] as const),
-    hostIds: v.array(v.uuid(), MAX_RUN_TARGETS),
+    hostIds: v.array(v.uuid(), MAX_RUN_TARGETS, { min: 1 }),
     environmentId: v.optional(v.uuid()),
   }),
   environment: v.object({

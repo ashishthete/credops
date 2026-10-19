@@ -119,16 +119,16 @@ CREATE INDEX tunnels_host ON tunnels(host_id);
     name: 'snippets',
     // NOCASE folds ASCII only; labels are mostly ASCII, so that is accepted for v1.
     // The script and the variable defaults are sealed with the Default vault (AAD snippet:<id>:script and
-    // snippet:<id>:defaults); label, description, tags, variable names and destructive are list metadata.
+    // snippet:<id>:defaults); label, description, tags, variable names and destructive stay plaintext metadata.
     up: `
 CREATE TABLE snippets (
   id TEXT PRIMARY KEY,
   label TEXT NOT NULL,
-  script_enc TEXT NOT NULL,               -- sealed script
+  script_sealed TEXT NOT NULL,            -- sealed script
   description TEXT NOT NULL DEFAULT '',
   tags TEXT NOT NULL DEFAULT '[]',        -- JSON array of TAG strings, sorted, unique
   variables TEXT NOT NULL DEFAULT '[]',   -- JSON array of variable names in first-use order
-  defaults_enc TEXT NOT NULL,             -- sealed JSON object { name: default | null }
+  defaults_sealed TEXT,                   -- sealed JSON object { name: default }, or NULL when there are none
   destructive INTEGER NOT NULL DEFAULT 0 CHECK (destructive IN (0,1)), -- 1 = always needs the protected-env confirmation
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL

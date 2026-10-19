@@ -133,6 +133,12 @@ describe('validate', () => {
     expect(failure(() => run({ concurrency: 17 }))).toBe('invalid arguments: [0].concurrency must be at most 16')
     expect(failure(() => run({ timeoutSec: 3601 }))).toBe('invalid arguments: [0].timeoutSec must be at most 3600')
     expect(failure(() => run({ target: { kind: 'all' } }))).toBe('invalid arguments: [0].target.kind is not an allowed value')
+    expect(failure(() => run({ target: { kind: 'hosts', hostIds: [] } }))).toBe(
+      'invalid arguments: [0].target.hostIds must have at least 1 items',
+    )
+    expect(failure(() => run({ command: { kind: 'snippet', snippetId: ID, values: { prototype: 'x' } } }))).toBe(
+      'invalid arguments: [0].command.values has an invalid key',
+    )
     expect(failure(() => run({ command: { kind: 'text', text: '' } }))).toBe('invalid arguments: [0].command.text must be at least 1 chars')
     expect(failure(() => run({ command: { kind: 'text', text: 'x'.repeat(16_385) } }))).toBe(
       'invalid arguments: [0].command.text must be at most 16384 chars',

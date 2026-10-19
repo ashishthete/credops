@@ -59,8 +59,8 @@ describe('DESTRUCTIVE_PATTERN', () => {
 
 describe('ops patterns', () => {
   it('VARIABLE_NAME and CONTAINER_REF', () => {
-    expect(VARIABLE_NAME.test('unit_2')).toBe(true)
-    for (const bad of ['Unit', '2a', '_a', '', 'a'.repeat(33), '__proto__', 'constructor x']) {
+    for (const ok of ['unit_2', 'a', 'constructors', 'prototype_id', 'a'.repeat(32)]) expect(VARIABLE_NAME.test(ok), ok).toBe(true)
+    for (const bad of ['Unit', '2a', '_a', '', 'a'.repeat(33), '__proto__', 'constructor', 'prototype', 'constructor x']) {
       expect(VARIABLE_NAME.test(bad), bad).toBe(false)
     }
     expect(CONTAINER_REF.test('compose-web-1')).toBe(true)

@@ -4,9 +4,10 @@ import type { SessionError } from './ssh'
 
 export const MAX_SNIPPETS = 500
 export const MAX_SCRIPT = 16_384 // chars
-export const MAX_DESCRIPTION = 500
+export const MAX_SNIPPET_DESCRIPTION = 500
 export const MAX_VARIABLES = 16
-export const VARIABLE_NAME = /^[a-z][a-z0-9_]{0,31}$/
+/** Lower-case snake case; never an Object.prototype name (`__proto__` already fails the first-letter rule). */
+export const VARIABLE_NAME = /^(?!(?:constructor|prototype)$)[a-z][a-z0-9_]{0,31}$/
 export const MAX_VARIABLE_VALUE = 4096
 export const MAX_COMMAND = 16_384
 export const MAX_RUN_TARGETS = 100
@@ -23,7 +24,7 @@ export const LOG_TAIL_DEFAULT = 200
 export const LOG_TAIL_MAX = 5000
 export const MAX_LOG_FOLLOWS = 8
 export const LINK_IDLE_MS = 30_000
-export const MAX_LINKS = 24
+export const MAX_EXEC_LINKS = 24
 /** A container id or name: one word that can never read as an option. */
 export const CONTAINER_REF = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/
 export const MAX_CONTAINERS = 500
@@ -47,9 +48,11 @@ export const DESTRUCTIVE_PATTERN = new RegExp(
 
 export interface SnippetVariable {
   name: string
+  /** Opened from the sealed defaults; only names are stored in plaintext. */
   default: string | null
 }
 
+/** A snippet as main returns it while the vault is unlocked: `script` and the defaults are opened from their sealed columns. */
 export interface SnippetMeta {
   id: string
   label: string
@@ -62,6 +65,7 @@ export interface SnippetMeta {
   updatedAt: string
 }
 
+/** Main seals `script` and `defaults` with the Default vault before storing them. */
 export interface SnippetInput {
   label: string
   script: string
