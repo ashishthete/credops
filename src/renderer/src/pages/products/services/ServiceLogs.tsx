@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { AppServiceMeta } from '../../../../../shared/services'
 import { deployStore } from '../../../deploy/store'
 import { useInventory } from '../../../inventory/store'
 import { api } from '../../../lib/api'
 import { onContainerLog } from '../../../ops/containers'
+import { createStore } from '../../../ui/store'
 import { DeploymentDialog, type DeploymentRequest } from '../../deployments/DeploymentDialog'
 import { LogsDrawer, type LogsTarget } from '../../ops/containers/LogsDrawer'
 
@@ -75,4 +76,19 @@ export function ServiceLogs({ service, onClose }: { service: AppServiceMeta | nu
       <DeploymentDialog request={settings} onClose={() => setSettings(null)} />
     </>
   )
+}
+
+/** The service the palette's `Logs:` command opened; one at a time, drawn by ServiceLogsHost. */
+const paletteLogs = createStore<string | null>(null)
+
+export const openServiceLogs = (serviceId: string) => paletteLogs.set(serviceId)
+
+/** Mounted once by the shell: the logs drawer the palette opens, wherever you are. */
+export function ServiceLogsHost() {
+  const id = useSyncExternalStore(paletteLogs.subscribe, paletteLogs.get)
+  const service = useSyncExternalStore(deployStore.subscribe, () =>
+    id ? deployStore.get().services.find((s): s is AppServiceMeta => s.id === id && s.kind === 'service') : undefined,
+  )
+  useEffect(() => () => paletteLogs.set(null), [])
+  return <ServiceLogs service={service ?? null} onClose={() => paletteLogs.set(null)} />
 }

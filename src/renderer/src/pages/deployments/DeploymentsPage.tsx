@@ -11,11 +11,13 @@ import { Button } from '../../ui/Button'
 import { ConfirmDialog, RowMenu, plural, type ConfirmRequest } from '../../ui/common'
 import { EmptyState } from '../../ui/EmptyState'
 import { useMotionSafe } from '../../ui/motion'
+import { Segmented } from '../../ui/Segmented'
 import { Skeleton } from '../../ui/Skeleton'
 import { toast } from '../../ui/Toaster'
 import { DeploymentDialog, type DeploymentRequest } from './DeploymentDialog'
 import { EnvDeploySettings } from './EnvDeploySettings'
 import { DeployWizard } from './release/DeployWizard'
+import { ReleaseHistory } from './release/ReleaseHistory'
 
 const ANSIBLE_DOCS = 'https://docs.ansible.com/ansible/latest/installation_guide/'
 const INSTALL_COMMAND = 'brew install ansible'
@@ -24,6 +26,12 @@ const INSTALL_COMMAND = 'brew install ansible'
 const ENTER = 0.15
 const EXIT = 0.1
 const STAGGER_CAP = 0.15
+
+type Tab = 'checkouts' | 'history'
+const TABS = [
+  { id: 'checkouts', label: 'Checkouts' },
+  { id: 'history', label: 'History' },
+] as const
 
 interface HostGroup {
   hostId: string
@@ -52,20 +60,30 @@ export function DeploymentsPage() {
   useEffect(() => {
     if (envId) void loadSettings(envId)
   }, [envId])
-
-  const deployments = useDeployments(envId)
-  const select = useCallback(
-    (id: string) =>
+  const tab: Tab = params.get('tab') === 'history' ? 'history' : 'checkouts'
+  const setParam = useCallback(
+    (key: string, value: string | null) =>
       setParams(
         (p) => {
           const out = new URLSearchParams(p)
-          out.set('env', id)
+          if (value === null) out.delete(key)
+          else out.set(key, value)
           return out
         },
         { replace: true },
       ),
     [setParams],
   )
+  // `?action=deploy` (from the palette) opens the wizard once, then leaves the URL.
+  const action = params.get('action')
+  useEffect(() => {
+    if (action !== 'deploy' || !envId) return
+    setDeploying(true)
+    setParam('action', null)
+  }, [action, envId, setParam])
+
+  const deployments = useDeployments(envId)
+  const select = useCallback((id: string) => setParam('env', id), [setParam])
 
   const groups = useMemo<HostGroup[]>(() => {
     const hosts = new Map(inventory?.hosts.map((h) => [h.id, h]))
@@ -153,8 +171,15 @@ export function DeploymentsPage() {
           <>
             {inventory && env && <EnvPicker data={inventory} selected={env.id} onSelect={select} />}
             {env && <EnvDeploySettings settings={currentSettings} />}
+            {env && (
+              <div>
+                <Segmented size="sm" label="View" options={TABS} value={tab} onChange={(t) => setParam('tab', t === 'checkouts' ? null : t)} />
+              </div>
+            )}
 
-            {!loaded || !inventory ? (
+            {env && tab === 'history' ? (
+              <ReleaseHistory key={env.id} environmentId={env.id} />
+            ) : !loaded || !inventory ? (
               <div data-testid="deployments-loading" className="flex flex-col gap-3 pt-2">
                 {Array.from({ length: 3 }, (_, i) => (
                   <Skeleton key={i} className="h-[92px] rounded-[14px]" />

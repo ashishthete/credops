@@ -13,6 +13,7 @@ import { createStore } from '../../../ui/store'
 import { CommitList } from './CommitList'
 import { PreflightChecklist } from './PreflightChecklist'
 import { CheckoutNotice, DatabaseRows, ServicePicker } from './ServicePicker'
+import { ReleaseView } from './ReleaseView'
 
 export interface ReleaseNotesEditorProps {
   environmentId: string
@@ -343,7 +344,7 @@ export function DeployWizard({ environmentId, preselect, onClose }: { environmen
             </div>
           )}
 
-          {step === 'started' && <p className="text-[13px] text-fg">{`The release to ${env?.name ?? ''} has started`}</p>}
+          {step === 'started' && releaseId && <ReleaseView releaseId={releaseId} />}
 
           {busy && step === 'preflight' && !releaseId && <p className="text-[12px] text-muted">Starting preflight</p>}
           {error && (

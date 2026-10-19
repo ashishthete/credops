@@ -119,6 +119,7 @@ export function mockBridge(results: Record<string, unknown> = {}) {
     if (channel === 'tunnel:list' || channel === 'tunnel:status') return []
     if (channel === 'runs:list' || channel === 'snippets:list') return []
     if (channel === 'deploy:list' || channel === 'service:list') return []
+    if (channel === 'release:list' || channel === 'release:active') return []
     return null
   })
   bridgeListeners.clear()

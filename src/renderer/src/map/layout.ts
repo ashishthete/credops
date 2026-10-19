@@ -2,8 +2,8 @@ import type { MapGraph, MapNode } from './graph'
 
 export const HOST_W = 208
 export const HOST_H = 64
-/** Phase 8 makes this non-zero: room under each host for attached apps. */
-export const ATTACH_H = 0
+/** Room under a host for its services' chips; every grid row keeps it, a host without services doesn't use it. */
+export const ATTACH_H = 20
 export const GAP = 16
 export const GROUP_PAD = 16
 export const GROUP_HEADER = 40
@@ -123,7 +123,7 @@ export function layoutGraph(graph: MapGraph, pins: Pins = {}): MapLayout {
         pin ? clamp(pin.x, GROUP_PAD, width - GROUP_PAD - HOST_W) : x,
         pin ? clamp(pin.y, GROUP_HEADER, height - GROUP_PAD - HOST_H - ATTACH_H) : y,
         HOST_W,
-        HOST_H,
+        h.data.kind === 'host' && h.data.attachments.length ? HOST_H + ATTACH_H : HOST_H,
       )
     })
   }

@@ -1,5 +1,6 @@
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it } from 'vitest'
 import { checkoutNotice, pickerGroups, selectionRequest } from '../../src/renderer/src/deploy/picker'
 import { resetReleases } from '../../src/renderer/src/deploy/releases'
@@ -76,7 +77,11 @@ async function mount({ preselect = [] as string[], env = staging, persisted = []
   })
   const user = userEvent.setup()
   let closed = 0
-  render(<DeployWizard environmentId="e1" preselect={preselect} onClose={() => closed++} />)
+  render(
+    <MemoryRouter>
+      <DeployWizard environmentId="e1" preselect={preselect} onClose={() => closed++} />
+    </MemoryRouter>,
+  )
   const dialog = await screen.findByRole('dialog', { name: 'Deploy to staging' })
   return { invoke, user, dialog, closed: () => closed }
 }
