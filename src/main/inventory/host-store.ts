@@ -162,18 +162,18 @@ export class HostStore {
     return hostMeta(this.db, id)
   }
 
+  /** Throws what `delete` would refuse with, so a caller can tear down what depends on the host first. */
+  assertDeletable(id: string): void {
+    this.vault.assertUnlocked()
+    hostMeta(this.db, id)
+    this.assertNotJumpHost(id)
+  }
+
   delete(id: string): void {
     this.vault.assertUnlocked()
     const before = hostMeta(this.db, id)
     inTransaction(this.db, () => {
-      const user =
-        (this.db.prepare('SELECT label FROM hosts WHERE jump_host_id = ? ORDER BY label COLLATE NOCASE LIMIT 1').get(id) as
-          | { label: string }
-          | undefined)?.label ??
-        (this.db
-          .prepare('SELECT name FROM environments WHERE default_jump_host_id = ? ORDER BY name COLLATE NOCASE LIMIT 1')
-          .get(id) as { name: string } | undefined)?.name
-      if (user !== undefined) throw new Error(`host is the jump host for ${user}`)
+      this.assertNotJumpHost(id)
       this.db.prepare('DELETE FROM hosts WHERE id = ?').run(id)
     })
     this.audit.append({
@@ -184,6 +184,17 @@ export class HostStore {
       targetLabel: before.label,
       details: { environments: before.environments.length },
     })
+  }
+
+  private assertNotJumpHost(id: string): void {
+    const user =
+      (this.db.prepare('SELECT label FROM hosts WHERE jump_host_id = ? ORDER BY label COLLATE NOCASE LIMIT 1').get(id) as
+        | { label: string }
+        | undefined)?.label ??
+      (this.db
+        .prepare('SELECT name FROM environments WHERE default_jump_host_id = ? ORDER BY name COLLATE NOCASE LIMIT 1')
+        .get(id) as { name: string } | undefined)?.name
+    if (user !== undefined) throw new Error(`host is the jump host for ${user}`)
   }
 
   /** Replaces the host's vault set. */

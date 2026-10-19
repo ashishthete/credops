@@ -114,4 +114,18 @@ describe('tunnel IPC', () => {
     await call('host:delete', hostId)
     expect(order).toEqual(['stop host deleted', 'delete'])
   })
+
+  it('a refused host:delete stops no tunnels', async () => {
+    const f = await makeInventory()
+    const jump = f.hosts.create({ label: 'jump', address: '127.0.0.1', port: 22 }).id
+    f.hosts.create({ label: 'behind', address: '10.0.0.9', port: 22, jumpHostId: jump })
+    const tunnels = { stopForHost: vi.fn() }
+    const call = register(
+      createInventoryHandlers({ hosts: f.hosts, environments: f.envs, products: f.products, resolve: vi.fn(), tunnels }),
+    )
+    await expect(call('host:delete', jump)).rejects.toThrow('host is the jump host for behind')
+    f.vault.lock('manual')
+    await expect(call('host:delete', jump)).rejects.toThrow(VAULT_LOCKED)
+    expect(tunnels.stopForHost).not.toHaveBeenCalled()
+  })
 })

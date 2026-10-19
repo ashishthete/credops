@@ -38,6 +38,8 @@ export function createInventoryHandlers(deps: {
     'host:create': (input) => hosts.create(input),
     'host:update': (id, patch) => hosts.update(id, patch),
     'host:delete': (id) => {
+      // Refusals first, so a delete that won't happen never stops (and audits) the host's tunnels.
+      hosts.assertDeletable(id)
       tunnels?.stopForHost(id, 'deleted')
       hosts.delete(id)
     },
