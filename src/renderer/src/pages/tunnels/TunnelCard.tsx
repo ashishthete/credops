@@ -286,7 +286,8 @@ function StatusLine({ runtime }: { runtime: TunnelRuntime | undefined }) {
     )
   }
   if (state === 'retrying') {
-    const attempt = `(attempt ${runtime.failures} of ${runtime.maxFailures})`
+    // The pending attempt: after failure n comes attempt n + 1, and the last one is attempt maxFailures.
+    const attempt = `(attempt ${runtime.failures + 1} of ${runtime.maxFailures})`
     const secs = runtime.retryAt ? Math.max(0, Math.ceil((Date.parse(runtime.retryAt) - now) / 1000)) : null
     return line(
       <>

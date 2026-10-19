@@ -5,6 +5,7 @@ import { MAX_TUNNEL_CHANNELS, PROBE_GRACE_MS, PROBE_TIMEOUT_MS } from '../../src
 import {
   Counter,
   ProbeTokens,
+  TARGET_CONNECT_MS,
   realTimers,
   startLocal,
   startRemote,
@@ -295,6 +296,29 @@ describe('R forwards', () => {
     const r = await rig()
     expect(await codeOf(remote(r))).toBe('remote-refused')
     expect(r.srv.remoteListeners()).toEqual([])
+  })
+
+  it('R clears the target connect timer once the target accepts', async () => {
+    const r = await rig({ allowRemoteForward: true })
+    const mt = manualTimers()
+    const handle = await remote(r, mt.timers)
+    const sock = await pingThrough(handle.address.port)
+    expect(mt.pending()).toEqual([])
+    sock.end()
+  })
+
+  it('R drops a connection whose target does not accept within TARGET_CONNECT_MS', async () => {
+    const r = await rig({ allowRemoteForward: true })
+    // The connect timeout fires before the target's accept can be seen, as with a black-holed target.
+    const timers: Timers = {
+      ...realTimers,
+      setTimeout: (fn, ms) => (ms === TARGET_CONNECT_MS ? void queueMicrotask(fn) : realTimers.setTimeout(fn, ms)),
+    }
+    const handle = await remote(r, timers)
+    const sock = await dial(handle.address.port)
+    sock.write('ping')
+    await closed(sock)
+    expect(r.counter.sample()).toMatchObject({ bytesIn: 0, bytesOut: 0, connections: 0 })
   })
 
   it('R close cancels the remote listen', async () => {

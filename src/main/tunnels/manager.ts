@@ -331,6 +331,7 @@ export class TunnelManager {
     try {
       if (!run.link) {
         if (this.deps.isLocked()) return this.pause(run)
+        this.reread(run)
         run.link = this.subscribe(run)
       }
       await run.link.ready
@@ -347,6 +348,20 @@ export class TunnelManager {
     } catch (err) {
       if (!live()) return
       this.fail(run, this.classify(run, err))
+    }
+  }
+
+  /**
+   * A fresh dial uses the saved row as it is now: SQL cascades (an environment deleted, or the host
+   * taken out of it) clear `environmentId` without going through the store's hooks. Safe only while
+   * the run has no link, as it is then in no link's subscriber set.
+   */
+  private reread(run: Run): void {
+    try {
+      run.meta = this.deps.store.get(run.meta.id)
+      run.key = `${run.meta.hostId}|${run.meta.environmentId ?? ''}`
+    } catch {
+      // Deleted: `removed()` releases the run.
     }
   }
 

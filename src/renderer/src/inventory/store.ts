@@ -146,8 +146,6 @@ export const inv = {
     if (ok) {
       patchStore((d) => ({ products: d.products.filter((p) => p.id !== id) }))
       await refresh('environments')
-      // The host's tunnels went with it (main stops them and the rows cascade).
-      void loadTunnels()
     }
     return ok
   },
@@ -184,6 +182,8 @@ export const inv = {
     if (ok) {
       patchStore((d) => ({ environments: d.environments.filter((e) => e.id !== id) }))
       await refresh('products', 'hosts')
+      // Its tunnels fall back to host-only (the rows' environment is set to null).
+      void loadTunnels()
     }
     return ok
   },
@@ -211,6 +211,8 @@ export const inv = {
     if (row) {
       patchStore((d) => ({ environments: upsert(d.environments, row) }))
       await refresh('hosts')
+      // The host's tunnels in this environment fall back to host-only.
+      void loadTunnels()
     }
     return row
   },

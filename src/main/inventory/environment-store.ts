@@ -178,12 +178,15 @@ export class EnvironmentStore {
     return environmentMeta(this.db, id)
   }
 
+  /** Takes the host out; its tunnels in this environment fall back to host-only. */
   removeHost(id: string, hostId: string): EnvironmentMeta {
     this.vault.assertUnlocked()
     const before = environmentMeta(this.db, id)
     if (!before.hosts.some((h) => h.hostId === hostId)) throw new Error('host is not in this environment')
     inTransaction(this.db, () => {
       this.db.prepare('DELETE FROM environment_hosts WHERE environment_id = ? AND host_id = ?').run(id, hostId)
+      // The host's tunnels leave the environment with it, as the FK's SET NULL does when it is deleted.
+      this.db.prepare('UPDATE tunnels SET environment_id = NULL WHERE host_id = ? AND environment_id = ?').run(hostId, id)
       this.db.prepare('UPDATE environments SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), id)
     })
     this.audit.append({

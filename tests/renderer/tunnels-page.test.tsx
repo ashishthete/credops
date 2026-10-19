@@ -194,9 +194,9 @@ describe('tunnels page', () => {
         error: { code: 'refused', message: 'Connection refused' },
       }),
     )
-    expect(within(card('pg')).getByText('Retrying in 4 s (attempt 2 of 5)')).toBeInTheDocument()
+    expect(within(card('pg')).getByText('Retrying in 4 s (attempt 3 of 5)')).toBeInTheDocument()
     await tick(1000)
-    expect(within(card('pg')).getByText('Retrying in 3 s (attempt 2 of 5)')).toBeInTheDocument()
+    expect(within(card('pg')).getByText('Retrying in 3 s (attempt 3 of 5)')).toBeInTheDocument()
   })
 
   it('the first retrying frame counts down from now, not from mount', async () => {
@@ -223,7 +223,7 @@ describe('tunnels page', () => {
     observer.disconnect()
     seen.push(card('pg').textContent ?? '')
 
-    expect(within(card('pg')).getByText('Retrying in 4 s (attempt 1 of 5)')).toBeInTheDocument()
+    expect(within(card('pg')).getByText('Retrying in 4 s (attempt 2 of 5)')).toBeInTheDocument()
     const counts = seen.flatMap((t) => [...t.matchAll(/Retrying in (\d+) s/g)].map((m) => Number(m[1])))
     expect(counts.length).toBeGreaterThan(0)
     expect(Math.max(...counts)).toBeLessThanOrEqual(4)

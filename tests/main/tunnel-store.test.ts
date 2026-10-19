@@ -71,6 +71,21 @@ describe('TunnelStore', () => {
     expect(store.create(input({ environmentId: env.id })).environmentId).toBe(env.id)
   })
 
+  it('taking the host out of the environment moves its tunnels to host-only', async () => {
+    const { f, host, store, input } = await setup()
+    const env = f.envs.create({ name: 'prod', color: '#aabbcc' })
+    const other = f.envs.create({ name: 'staging', color: '#aabbcc' })
+    f.envs.putHost(env.id, host.id, 'db')
+    f.envs.putHost(other.id, host.id, 'db')
+    const inEnv = store.create(input({ label: 'in prod', environmentId: env.id }))
+    const inOther = store.create(input({ label: 'in staging', bindPort: 5434, environmentId: other.id }))
+    f.envs.removeHost(env.id, host.id)
+    expect(store.get(inEnv.id).environmentId).toBeNull()
+    expect(store.get(inOther.id).environmentId).toBe(other.id)
+    // A rename no longer trips over the membership that went away.
+    expect(store.update(inEnv.id, { label: 'renamed' }).label).toBe('renamed')
+  })
+
   it('exposed bind is accepted and audited', async () => {
     const { store, input, events } = await setup()
     store.create(input({ bindAddress: '0.0.0.0' }))

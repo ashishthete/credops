@@ -3,8 +3,11 @@ import { Client } from 'ssh2'
 import type { Timers } from '../../src/main/tunnels/forward'
 import type { TestServer, TestUser } from './ssh-server'
 
-/** The user `linkTo` signs in as; give it to `startServer({ users: [TUNNEL_USER] })`. */
-export const TUNNEL_USER: TestUser = { username: 'tunnel', password: 'tunnel-pw' }
+/**
+ * The user `linkTo` signs in as; give it to `startServer({ users: [TUNNEL_USER] })`. The name is one
+ * no event, message or audit row would hold by chance, so a test can assert it never leaks.
+ */
+export const TUNNEL_USER: TestUser = { username: 'tun-user-q7x', password: 'tunnel-pw' }
 
 export interface EchoServer {
   port: number

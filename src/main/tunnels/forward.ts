@@ -29,6 +29,8 @@ export const realTimers: Timers = {
 const PROBE_TOKEN_BYTES = 16
 /** RFC 4254 open failure reason: the server forbids the channel type. */
 const SSH_OPEN_ADMINISTRATIVELY_PROHIBITED = 1
+/** How long an `R` target may take to accept before its forwarded connection is dropped (and leaves the cap). */
+export const TARGET_CONNECT_MS = 30000
 
 export class ForwardError extends Error {
   constructor(
@@ -375,10 +377,22 @@ function remoteHandle(client: Client, opts: RemoteOpts, port: number): ForwardHa
     holdForProbe(channel, tokens, timers, () => {
       if (!gate.admit(channel)) return discard(channel)
       const sock = connect(opts.targetPort, opts.targetHost)
-      const drop = (): void => void sock.destroy()
-      sock.on('error', () => discard(channel))
+      // A black-holed target would otherwise hold an admitted channel until the OS gives up.
+      const timer = timers.setTimeout(() => {
+        sock.destroy()
+        discard(channel)
+      }, TARGET_CONNECT_MS)
+      const drop = (): void => {
+        timers.clearTimeout(timer)
+        sock.destroy()
+      }
+      sock.on('error', () => {
+        timers.clearTimeout(timer)
+        discard(channel)
+      })
       channel.once('close', drop)
       sock.once('connect', () => {
+        timers.clearTimeout(timer)
         channel.off('close', drop)
         pipeCounted(sock, channel, counter)
       })

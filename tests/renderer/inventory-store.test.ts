@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { act, renderHook } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { createElement, type ReactNode } from 'react'
 import { useInventoryCommands } from '../../src/renderer/src/inventory/commands'
@@ -7,8 +7,9 @@ import { commandStore } from '../../src/renderer/src/ui/commands'
 import { inv, inventoryStore, loadInventory } from '../../src/renderer/src/inventory/store'
 import { VAULT_LOCKED } from '../../src/shared/vault'
 import { vaultStatusStore } from '../../src/renderer/src/vault/status'
+import { loadTunnels, tunnelStore } from '../../src/renderer/src/tunnels/store'
 import type { EnvironmentMeta, HostMeta } from '../../src/shared/inventory'
-import { environment, host, mockBridge, vaultStatus } from './helpers'
+import { environment, host, mockBridge, tunnelMeta, vaultStatus } from './helpers'
 
 beforeEach(() => {
   inventoryStore.set(null)
@@ -41,6 +42,35 @@ describe('inventory store', () => {
     const data = inventoryStore.get()!
     expect(data.environments.find((e) => e.id === 'staging')!.hosts).toEqual([])
     expect(data.hosts.find((x) => x.id === 'H')!.environments).toEqual([{ environmentId: 'prod', role: 'app' }])
+  })
+
+  it('tunnels reload after an environment delete or a host leaving one, not after a product delete', async () => {
+    let tunnels = [tunnelMeta({ id: 't1', hostId: 'H', environmentId: 'staging' })]
+    const invoke = mockBridge({ 'vault:status': vaultStatus({ unlocked: true }) })
+    const base = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'tunnel:list') return tunnels
+      if (channel === 'env:list') return [environment({ id: 'staging', name: 'staging', hosts: [{ hostId: 'H', role: 'app' }] })]
+      if (channel === 'env:removeHost') return environment({ id: 'staging', name: 'staging' })
+      if (channel === 'product:delete' || channel === 'env:delete') return null
+      return base(channel, ...(args as []))
+    })
+    await loadInventory()
+    await loadTunnels()
+    const loads = (): number => invoke.mock.calls.filter(([c]) => c === 'tunnel:list').length
+    expect(loads()).toBe(1)
+
+    await expect(inv.deleteProduct('P')).resolves.toBe(true)
+    expect(loads()).toBe(1)
+
+    // Main sets the tunnel's environment to null with the delete; the renderer must not keep the dead id.
+    tunnels = [{ ...tunnels[0], environmentId: null }]
+    await expect(inv.deleteEnvironment('staging')).resolves.toBe(true)
+    await waitFor(() => expect(tunnelStore.get().tunnels[0].environmentId).toBeNull())
+    expect(loads()).toBe(2)
+
+    await inv.removeHost('staging', 'H')
+    await waitFor(() => expect(loads()).toBe(3))
   })
 
   it('locked mutation unlocks then retries', async () => {
