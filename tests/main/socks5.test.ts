@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { Client } from 'ssh2'
 import { SOCKS_HANDSHAKE_MS } from '../../src/shared/tunnels'
 import { Counter, ProbeTokens, realTimers, type ForwardHandle, type Timers } from '../../src/main/tunnels/forward'
-import { REP, parseGreeting, parseRequest, reply, startDynamic } from '../../src/main/tunnels/socks5'
+import { REP, failureCode, parseGreeting, parseRequest, reply, startDynamic } from '../../src/main/tunnels/socks5'
 import { startServer, type TestServer } from './ssh-server'
 import { TUNNEL_USER, echoServer, linkTo, manualTimers, type EchoServer } from './tunnel-helpers'
 
@@ -174,9 +174,59 @@ describe('startDynamic', () => {
     expect(await closed(atyp)).toBe(true)
 
     const big = await handshake(port)
-    big.write(Buffer.concat([Buffer.from([5, 1, 0, 3, 255]), Buffer.alloc(300, 0x61)]))
+    big.write(Buffer.concat([Buffer.from([5, 1, 0, 5]), Buffer.alloc(300, 0x61)]))
+    expect((await readBytes(big, 10))[1]).toBe(REP.atypUnsupported)
     expect(await closed(big)).toBe(true)
     expect(r.srv.tcpipRequests()).toBe(0)
+  })
+
+  it('forwards early payload sent in the same write as the handshake', async () => {
+    const r = await rig()
+    const handle = await dynamic(r)
+    const sock = await dial(handle.address.port)
+    sock.write(Buffer.concat([Buffer.from([5, 1, 0]), connectRequest(r.echo.port), Buffer.from('ping')]))
+    const got = await readBytes(sock, 16)
+    expect([...got.subarray(0, 12)]).toEqual([5, 0, 5, 0, 0, 1, 0, 0, 0, 0, 0, 0])
+    expect(got.subarray(12).toString()).toBe('ping')
+    expect(r.counter.bytesOut).toBe(4)
+  })
+
+  it('handles the handshake arriving one byte at a time', async () => {
+    const r = await rig()
+    const handle = await dynamic(r)
+    const sock = await dial(handle.address.port)
+    for (const b of Buffer.concat([Buffer.from([5, 1, 0]), connectRequest(r.echo.port)])) {
+      sock.write(Buffer.from([b]))
+      await new Promise((resolve) => setTimeout(resolve, 2))
+    }
+    const got = await readBytes(sock, 12)
+    expect([...got.subarray(0, 2)]).toEqual([5, 0])
+    expect(got[3]).toBe(REP.ok)
+  })
+
+  it('consumes a live probe token split across two writes', async () => {
+    const r = await rig()
+    const handle = await dynamic(r)
+    const token = r.tokens.issue()
+    const sock = await dial(handle.address.port)
+    sock.write(token.subarray(0, 5))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(sock.destroyed).toBe(false)
+    sock.write(token.subarray(5))
+    expect(await closed(sock, 500)).toBe(true)
+    expect(r.tokens.consume(token)).toBe(false)
+    expect(r.srv.tcpipRequests()).toBe(0)
+  })
+
+  it('maps open failures to SOCKS codes', () => {
+    const fail = (reason: number, text: string): number => failureCode(Object.assign(new Error(`(SSH) Channel open failure: ${text}`), { reason }))
+    expect(fail(1, '')).toBe(REP.notAllowed)
+    expect(fail(2, 'Network is unreachable')).toBe(REP.netUnreachable)
+    expect(fail(2, 'Name or service not known')).toBe(REP.hostUnreachable)
+    expect(fail(2, 'Connection refused')).toBe(REP.refused)
+    expect(fail(2, '')).toBe(REP.refused)
+    expect(fail(2, 'something odd')).toBe(REP.fail)
+    expect(fail(4, '')).toBe(REP.fail)
   })
 
   it('refused target maps to REP.refused', async () => {

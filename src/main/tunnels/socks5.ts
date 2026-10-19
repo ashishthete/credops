@@ -29,6 +29,10 @@ const METHOD_NO_AUTH = 0x00
 const METHOD_NONE_ACCEPTABLE = 0xff
 /** RFC 4254 open failure reason: the server could not connect to the target. */
 const SSH_OPEN_CONNECT_FAILED = 2
+/** RFC 4254 open failure reason: the server forbids the channel type. */
+const SSH_OPEN_ADMINISTRATIVELY_PROHIBITED = 1
+/** How long the server may take to open the target before the client is told the TTL expired. */
+const SOCKS_CONNECT_MS = 30000
 
 export function parseGreeting(buf: Buffer): { methods: number[] } | 'short' | 'bad' {
   if (buf.length >= 1 && buf[0] !== VERSION) return 'bad'
@@ -94,9 +98,11 @@ export function reply(code: number): Buffer {
 }
 
 /** Maps a channel open failure the way `ssh/connect.ts` reads a jump host's: an empty description is a refusal. */
-function failureCode(err: Error & { reason?: unknown }): number {
+export function failureCode(err: Error & { reason?: unknown }): number {
+  if (err.reason === SSH_OPEN_ADMINISTRATIVELY_PROHIBITED) return REP.notAllowed
   if (err.reason !== SSH_OPEN_CONNECT_FAILED) return REP.fail
   const description = err.message.replace(/^\(SSH\) Channel open failure:\s*/, '')
+  if (/network is unreachable|no route/i.test(description)) return REP.netUnreachable
   if (/not known|nodename|resolve/i.test(description)) return REP.hostUnreachable
   if (description === '' || /refused/i.test(description)) return REP.refused
   return REP.fail
@@ -142,10 +148,20 @@ export function startDynamic(client: Client, opts: DynamicOpts): ForwardHandle {
       state = 'opening'
       sock.removeListener('data', onData)
       sock.pause()
+      // The handshake is done; opening gets its own bound.
+      timers.clearTimeout(timer)
+      let timedOut = false
+      const connectTimer = timers.setTimeout(() => {
+        timedOut = true
+        refuse(REP.ttl)
+      }, SOCKS_CONNECT_MS)
+      const onOpenClose = (): void => timers.clearTimeout(connectTimer)
+      sock.once('close', onOpenClose)
       const opened = (err: (Error & { reason?: unknown }) | undefined, channel: ClientChannel): void => {
-        if (err) return refuse(failureCode(err))
-        if (sock.destroyed) return void (channel.resume(), channel.destroy())
-        timers.clearTimeout(timer)
+        timers.clearTimeout(connectTimer)
+        sock.off('close', onOpenClose)
+        if (err) return timedOut ? undefined : refuse(failureCode(err))
+        if (timedOut || sock.destroyed) return void (channel.resume(), channel.destroy())
         sock.off('close', onClose)
         sock.write(reply(REP.ok))
         if (early.length > 0) sock.unshift(early)
@@ -171,7 +187,8 @@ export function startDynamic(client: Client, opts: DynamicOpts): ForwardHandle {
         const request = parseRequest(buf)
         if (request === 'bad') return void sock.destroy()
         if (request === 'bad-atyp') return refuse(REP.atypUnsupported)
-        if (request === 'short' || buf.length > SOCKS_MAX_REQUEST) return buf.length > SOCKS_MAX_REQUEST ? void sock.destroy() : undefined
+        // No valid request is short beyond SOCKS_MAX_REQUEST, so this only bounds the buffer defensively.
+        if (request === 'short') return buf.length > SOCKS_MAX_REQUEST ? void sock.destroy() : undefined
         if (request.cmd !== CMD_CONNECT) return refuse(REP.cmdUnsupported)
         open(request.host, request.port, buf.subarray(request.length))
       }
