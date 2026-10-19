@@ -119,6 +119,30 @@ describe('services section', () => {
     expect(within(core).getAllByRole('listitem').map((li) => li.getAttribute('aria-label'))).toEqual(['worker', 'api'])
   })
 
+  it('the environment view wires Logs to the logs pane and Copy to… to the copy dialog', async () => {
+    const user = userEvent.setup()
+    const invoke = world({ 'service:logs': 'f1', 'containers:unfollow': undefined })
+    await loadInventory()
+    const data = inventoryStore.get()!
+    render(
+      <MemoryRouter>
+        <EnvironmentView env={data.environments[0]} envKey="e:e1" data={data} onSelect={() => {}} onRemoveHost={() => {}} onNewHost={() => {}} onEdit={() => {}} onDelete={() => {}} />
+      </MemoryRouter>,
+    )
+    const services = await screen.findByRole('region', { name: 'Services' })
+    await user.click(await within(services).findByRole('button', { name: 'Logs for api' }))
+    expect(await screen.findByRole('dialog', { name: 'api logs on app1' })).toBeInTheDocument()
+    await waitFor(() => expect(calls(invoke, 'service:logs').map((c) => c.slice(1))).toEqual([['s1', 200]]))
+    await user.click(screen.getByRole('button', { name: 'Close logs' }))
+    await waitFor(() => expect(calls(invoke, 'containers:unfollow').map((c) => c[1])).toEqual(['f1']))
+    // Deploy stays for the picker (Task 10).
+    expect(within(services).queryByRole('button', { name: 'Deploy…' })).not.toBeInTheDocument()
+
+    await user.click(within(services).getByRole('button', { name: 'Services options' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Copy to…' }))
+    expect(await screen.findByRole('dialog', { name: 'Copy services from staging' })).toBeInTheDocument()
+  })
+
   it('checkout header shows repo, branch, path, host and last commit', async () => {
     world()
     await mount()

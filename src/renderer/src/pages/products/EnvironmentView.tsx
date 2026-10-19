@@ -1,9 +1,10 @@
 import { motion } from 'framer-motion'
 import { ExternalLink, Globe, KeyRound, Link2, Lock, Network, Pencil, Plus, Route, Server, SquareTerminal, Trash2, Unlink } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import { DEFAULT_SSH_PORT, type EnvironmentMeta } from '../../../../shared/inventory'
+import type { AppServiceMeta } from '../../../../shared/services'
 import { startDeploySync } from '../../deploy/store'
 import { sourceLabel } from '../../inventory/choices'
 import { openEnvironmentDomain, type InventoryData } from '../../inventory/store'
@@ -15,6 +16,8 @@ import { Button } from '../../ui/Button'
 import { RowMenu } from '../../ui/common'
 import { fast, spring, staggerDelay, useMotionSafe } from '../../ui/motion'
 import { GlowDot, PaneHeader, ROLE_LABEL, ROLE_ORDER } from './ProductView'
+import { CopyServicesDialog } from './services/CopyServicesDialog'
+import { ServiceLogs } from './services/ServiceLogs'
 import { ServicesSection } from './services/ServicesSection'
 
 interface EnvironmentViewProps {
@@ -36,6 +39,8 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
   const navigate = useNavigate()
   // The services and checkouts the Services section shows.
   useEffect(() => startDeploySync(), [])
+  const [logsOf, setLogsOf] = useState<AppServiceMeta | null>(null)
+  const [copyFrom, setCopyFrom] = useState<EnvironmentMeta | null>(null)
   const hostById = new Map(data.hosts.map((h) => [h.id, h]))
   const identity = env.defaultIdentityId ? data.identities.find((i) => i.id === env.defaultIdentityId) : undefined
   const jump = env.defaultJumpHostId ? hostById.get(env.defaultJumpHostId) : undefined
@@ -135,7 +140,7 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
           />
         </dl>
 
-        <ServicesSection env={env} data={data} />
+        <ServicesSection env={env} data={data} onLogs={setLogsOf} onCopy={() => setCopyFrom(env)} />
 
         {groups.length === 0 ? (
           <div className="mt-6 flex flex-col items-center gap-2 rounded-xl border border-dashed border-line px-6 py-10 text-center">
@@ -205,6 +210,8 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
           ))
         )}
       </div>
+      <ServiceLogs service={logsOf} onClose={() => setLogsOf(null)} />
+      <CopyServicesDialog source={copyFrom} onClose={() => setCopyFrom(null)} />
     </>
   )
 }

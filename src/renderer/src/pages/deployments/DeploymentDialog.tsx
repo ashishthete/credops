@@ -14,7 +14,8 @@ import { Switch } from '../../ui/Switch'
 import { toast } from '../../ui/Toaster'
 import { EnvTemplateEditor } from './EnvTemplateEditor'
 
-export type DeploymentRequest = { kind: 'new'; environmentId: string } | { kind: 'edit'; id: string }
+/** `focus: 'useSudo'` opens the edit on the sudo setting (from a logs follow docker refused). */
+export type DeploymentRequest = { kind: 'new'; environmentId: string } | { kind: 'edit'; id: string; focus?: 'useSudo' }
 
 interface DeploymentDialogProps {
   request: DeploymentRequest | null
@@ -44,6 +45,7 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
   const r = request ?? last.current
   const original = r?.kind === 'edit' ? deployStore.get().deployments.find((d) => d.id === r.id) : undefined
   const environmentId = r?.kind === 'new' ? r.environmentId : (original?.environmentId ?? '')
+  const focusSudo = r?.kind === 'edit' && r.focus === 'useSudo'
 
   const [form, setForm] = useState<DeploymentForm>(blankForm)
   const [touched, setTouched] = useState<Set<FormField>>(new Set())
@@ -153,7 +155,7 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
     >
       <form id={formId} onSubmit={submit} noValidate className="flex max-h-[62vh] flex-col gap-5 overflow-y-auto px-0.5 pb-1">
         <Section title="Source">
-          <TextField label="Name" autoFocus value={form.name} onChange={(e) => set({ name: e.target.value })} error={err('name')} />
+          <TextField label="Name" autoFocus={!focusSudo} value={form.name} onChange={(e) => set({ name: e.target.value })} error={err('name')} />
           <div className="grid grid-cols-2 gap-3">
             <SelectField label="Host" value={form.hostId} onChange={(e) => set({ hostId: e.target.value })} error={err('hostId')}>
               <option value="">Choose a host…</option>
@@ -269,7 +271,7 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
 
         <Section title="Privilege">
           <div className="grid grid-cols-2 gap-3">
-            <SelectField label="Use sudo" value={form.useSudo} onChange={(e) => set({ useSudo: e.target.value as DeploymentForm['useSudo'] })}>
+            <SelectField label="Use sudo" autoFocus={focusSudo} value={form.useSudo} onChange={(e) => set({ useSudo: e.target.value as DeploymentForm['useSudo'] })}>
               <option value="auto">Automatic</option>
               <option value="yes">Always</option>
               <option value="no">Never</option>
