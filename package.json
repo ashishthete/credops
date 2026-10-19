@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
     "lint": "pnpm typecheck",
+    "hub:build": "vite build --config hub/vite.config.mts",
     "build:mac": "electron-vite build && electron-builder --mac"
   },
   "devDependencies": {

@@ -42,7 +42,7 @@ sudo install -d -o opsdeck-hub -g opsdeck-hub -m 700 /var/backups/opsdeck-hub
 On a build machine with the repository checked out:
 
 ```sh
-pnpm --dir hub build        # writes hub/dist/opsdeck-hub.mjs
+pnpm hub:build             # from the repo root; writes hub/dist/opsdeck-hub.mjs
 ```
 
 Copy `hub/dist/opsdeck-hub.mjs` to `/opt/opsdeck-hub/dist/`, copy `hub/package.json` to `/opt/opsdeck-hub/`,

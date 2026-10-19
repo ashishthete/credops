@@ -9,7 +9,16 @@ import { CLIENT, TENANT } from './helpers'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const hubDir = resolve(here, '..')
-const vite = resolve(hubDir, '../node_modules/.bin/vite')
+const repoRoot = resolve(hubDir, '..')
+const vite = resolve(repoRoot, 'node_modules/.bin/vite')
+
+/** The documented build command (`pnpm hub:build`): the root package.json script, run with the root vite. */
+function hubBuildArgs(): string[] {
+  const cmd = (JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8')) as { scripts: Record<string, string> }).scripts['hub:build']
+  const [bin, ...args] = cmd!.split(' ')
+  expect(bin).toBe('vite')
+  return args
+}
 
 let tmp: string
 let bundle: string
@@ -57,7 +66,7 @@ beforeAll(async () => {
   // The bundle keeps hub/package.json dependencies external, so it resolves them from a node_modules beside it.
   symlinkSync(join(hubDir, 'node_modules'), join(tmp, 'node_modules'))
   const out = join(tmp, 'dist')
-  const r = spawnSync(vite, ['build', '--outDir', out, '--emptyOutDir'], { cwd: hubDir, encoding: 'utf8', timeout: 120_000 })
+  const r = spawnSync(vite, [...hubBuildArgs(), '--outDir', out, '--emptyOutDir'], { cwd: repoRoot, encoding: 'utf8', timeout: 120_000 })
   expect(r.status, r.stdout + r.stderr).toBe(0)
   bundle = join(out, 'opsdeck-hub.mjs')
 }, 150_000)
