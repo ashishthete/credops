@@ -362,6 +362,24 @@ describe('ExecLinks and execOnce', () => {
     expect(mt.pending()).toEqual([])
   })
 
+  it('a cancel while the server never answers the channel open settles after the grace', async () => {
+    let answer: ((err: Error | undefined, ch: never) => void) | null = null
+    const client = { exec: (_c: string, _o: unknown, cb: typeof answer) => void (answer = cb) } as unknown as Client
+    const mt = manualTimers()
+    const ctl = new AbortController()
+    const running = execOnce(client, 'sleep 30', { signal: ctl.signal, timers: mt.timers, onData: () => {} })
+    ctl.abort()
+    expect(mt.pending()).toEqual([{ ms: STOP_GRACE_MS, kind: 'timeout' }])
+    mt.fire(STOP_GRACE_MS)
+    expect(await running).toMatchObject({ cancelled: true, exitCode: null })
+    // the channel that arrives later is closed, not used
+    const close = vi.fn()
+    const ch = { on: vi.fn(), stderr: { on: vi.fn() }, signal: vi.fn(), close }
+    answer!(undefined, ch as never)
+    expect(close).toHaveBeenCalled()
+    expect(ch.signal).not.toHaveBeenCalled()
+  })
+
   it('a client that throws on exec fails as closed', async () => {
     const client = {
       exec: () => {

@@ -10,7 +10,7 @@ export const STOP_GRACE_MS = 2000
 export interface ExecOnceOptions {
   env?: Record<string, string>
   pty?: PseudoTtyOptions
-  /** Abort is a cancel: `INT`, then a close after `STOP_GRACE_MS`. */
+  /** Abort is a cancel: `INT`, then a close after `STOP_GRACE_MS` (or, if the channel never opens, settled then). */
   signal: AbortSignal
   /** The same stop as a cancel, reported as `timedOut`. */
   timeoutMs?: number
@@ -44,12 +44,21 @@ export function execOnce(client: Client, command: string, o: ExecOnceOptions): P
     let timeout: unknown = null
     let grace: unknown = null
     let stopped = false
+    let settled = false
 
     const stop = (why: 'cancelled' | 'timedOut'): void => {
       if (stopped) return
       stopped = true
       result[why] = true
-      if (!channel) return
+      if (!channel) {
+        // A server that never answers the channel open must not hold the cancel until keepalive gives up.
+        grace = timers.setTimeout(() => {
+          settled = true
+          cleanup()
+          resolve(result)
+        }, STOP_GRACE_MS)
+        return
+      }
       channel.signal('INT')
       const ch = channel
       grace = timers.setTimeout(() => ch.close(), STOP_GRACE_MS)
@@ -64,6 +73,11 @@ export function execOnce(client: Client, command: string, o: ExecOnceOptions): P
 
     const options = { ...(o.env ? { env: o.env } : {}), ...(o.pty ? { pty: o.pty } : {}) }
     const opened = (err: Error | undefined, ch: ClientChannel): void => {
+      if (settled) {
+        // Already reported as cancelled: a channel that arrives now is closed unused.
+        if (!err) ch.close()
+        return
+      }
       if (err) {
         cleanup()
         const message = isOpenFailure(err) ? 'The host refused another session (MaxSessions)' : redact(err.message)
@@ -89,6 +103,7 @@ export function execOnce(client: Client, command: string, o: ExecOnceOptions): P
       })
       // A cancel that came while the channel was opening; the timeout only starts once it is open.
       if (stopped) {
+        if (grace !== null) timers.clearTimeout(grace)
         stopped = false
         stop('cancelled')
       } else if (o.timeoutMs !== undefined) timeout = timers.setTimeout(() => stop('timedOut'), o.timeoutMs)
