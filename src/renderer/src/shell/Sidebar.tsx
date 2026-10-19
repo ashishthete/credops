@@ -3,6 +3,7 @@ import {
   Boxes,
   Cable,
   KeyRound,
+  Network,
   Rocket,
   ScrollText,
   Search,
@@ -30,6 +31,7 @@ export const SECTION_ICONS: Record<SectionId, LucideIcon> = {
   hosts: Server,
   vaults: KeyRound,
   tunnels: Cable,
+  map: Network,
   deployments: Rocket,
   audit: ScrollText,
 }

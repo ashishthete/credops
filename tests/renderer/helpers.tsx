@@ -1,9 +1,13 @@
+import { render, type RenderResult } from '@testing-library/react'
+import { MemoryRouter } from 'react-router'
 import { vi } from 'vitest'
+import { AppShell } from '../../src/renderer/src/shell/AppShell'
 import type { AuditEvent } from '../../src/shared/audit'
 import type { EnvironmentMeta, HostMeta, ProductMeta } from '../../src/shared/inventory'
 import type { AppInfo } from '../../src/shared/ipc'
+import type { SessionMeta } from '../../src/shared/ssh'
 import type { TunnelMeta, TunnelRuntime } from '../../src/shared/tunnels'
-import { DEFAULT_VAULT_ID, type VaultMeta, type VaultStatus } from '../../src/shared/vault'
+import { DEFAULT_VAULT_ID, type IdentityMeta, type VaultMeta, type VaultStatus } from '../../src/shared/vault'
 
 export const appInfo: AppInfo = {
   version: '0.1.0',
@@ -168,4 +172,45 @@ export function tunnelRuntime(over: Partial<TunnelRuntime> & { id: string }): Tu
     lastProbeAt: null,
     ...over,
   }
+}
+
+/** An SSH session, ready by default. */
+export function session(over: Partial<SessionMeta> & { id: string }): SessionMeta {
+  return {
+    kind: 'ssh',
+    hostId: 'h1',
+    environmentId: null,
+    label: over.id,
+    color: null,
+    state: 'ready',
+    hops: [],
+    error: null,
+    openedAt: STAMP,
+    readyAt: null,
+    closedAt: null,
+    attempt: 1,
+    ...over,
+  }
+}
+
+export function identity(over: Partial<IdentityMeta> & { id: string; label: string }): IdentityMeta {
+  return {
+    vaultId: DEFAULT_VAULT_ID,
+    username: 'deploy',
+    auth: 'agent',
+    sshKeyId: null,
+    hasPassword: false,
+    createdAt: STAMP,
+    updatedAt: STAMP,
+    ...over,
+  }
+}
+
+/** The whole shell at `path`; install the bridge (mockBridge) first. */
+export function renderShell(path = '/'): RenderResult {
+  return render(
+    <MemoryRouter initialEntries={[path]}>
+      <AppShell />
+    </MemoryRouter>,
+  )
 }

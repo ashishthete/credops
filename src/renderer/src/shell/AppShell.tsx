@@ -5,6 +5,7 @@ import { useInventoryCommands } from '../inventory/commands'
 import { loadInventory } from '../inventory/store'
 import { AuditPage } from '../pages/AuditPage'
 import { HostsPage } from '../pages/hosts/HostsPage'
+import { MapPage } from '../pages/map/MapPage'
 import { PlaceholderPage } from '../pages/PlaceholderPage'
 import { ProductsPage } from '../pages/products/ProductsPage'
 import { KnownHostsDialog, closeKnownHosts, openKnownHosts } from '../pages/terminals/KnownHostsDialog'
@@ -100,6 +101,7 @@ export function AppShell() {
             <Route path="/environments" element={<Navigate to="/products" replace />} />
             <Route path="/vaults" element={<VaultsPage />} />
             <Route path="/tunnels" element={<TunnelsPage />} />
+            <Route path="/map" element={<MapPage />} />
             <Route path="/audit" element={<AuditPage />} />
             <Route path="*" element={<Navigate to={SECTIONS[0].path} replace />} />
           </Routes>
@@ -112,7 +114,7 @@ export function AppShell() {
   )
 }
 
-// mod+1…mod+7 and a "Go to …" palette command per section.
+// mod+1…mod+8 and a "Go to …" palette command per section.
 function useSectionNavigation() {
   const navigate = useNavigate()
   const navigateRef = useRef(navigate)

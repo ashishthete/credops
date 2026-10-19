@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { SECTIONS } from '../../src/renderer/src/shell/sections'
 import { useShortcut } from '../../src/renderer/src/ui/shortcuts'
 import { disposeAll, getTerminal } from '../../src/renderer/src/terminal/registry'
 import { TerminalView } from '../../src/renderer/src/terminal/TerminalView'
@@ -114,7 +115,8 @@ describe('TerminalView', () => {
     const key = (init: KeyboardEventInit) => keyHandler(new KeyboardEvent('keydown', init))
     expect(key({ key: 'w', metaKey: true })).toBe(false)
     expect(key({ key: 't', metaKey: true })).toBe(false)
-    expect(key({ key: '3', metaKey: true })).toBe(false)
+    // Every section shortcut, mod+1 to the last, reaches the window.
+    for (let i = 0; i < SECTIONS.length; i++) expect(key({ key: String(i + 1), metaKey: true }), `mod+${i + 1}`).toBe(false)
     expect(key({ key: '}', code: 'BracketRight', metaKey: true, shiftKey: true })).toBe(false)
     expect(key({ key: 'c', ctrlKey: true })).toBe(true)
     expect(key({ key: 'w', ctrlKey: true })).toBe(true)

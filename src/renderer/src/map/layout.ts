@@ -31,7 +31,8 @@ export interface MapLayout {
   bounds: { width: number; height: number }
 }
 
-type Pins = Record<string, { x: number; y: number }>
+/** Dragged positions by node id, in the same coordinates as `positions`. */
+export type Pins = Record<string, { x: number; y: number }>
 
 const MOVE_EPSILON = 0.5
 

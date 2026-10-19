@@ -3,9 +3,13 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { AppShell } from '../../src/renderer/src/shell/AppShell'
-import { SECTIONS } from '../../src/renderer/src/shell/sections'
+import { SECTIONS, type SectionId } from '../../src/renderer/src/shell/sections'
 import { commandStore } from '../../src/renderer/src/ui/commands'
 import { mockBridge, tunnelMeta, tunnelRuntime } from './helpers'
+
+// Shortcuts follow SECTIONS order, so a section inserted later shifts these without a rewrite.
+const digitOf = (id: SectionId) => String(SECTIONS.findIndex((s) => s.id === id) + 1)
+const shortcutOf = (id: SectionId) => `mod+${digitOf(id)}`
 
 function renderShell(path = '/') {
   return render(
@@ -69,12 +73,24 @@ describe('shell', () => {
     expect(await screen.findByRole('heading', { name: 'Products', level: 1 })).toBeInTheDocument()
   })
 
-  it('mod+7 jumps to Audit', async () => {
+  it(`${shortcutOf('audit')} jumps to Audit`, async () => {
     renderShell()
     act(() => {
-      fireEvent.keyDown(window, { key: '7', metaKey: true })
+      fireEvent.keyDown(window, { key: digitOf('audit'), metaKey: true })
     })
     expect(await screen.findByRole('heading', { name: 'Audit trail' })).toBeInTheDocument()
+  })
+
+  // With an empty inventory the page shows its empty state, never the React Flow canvas, so this
+  // suite needs none of the map tests' DOM stubs.
+  it(`${shortcutOf('map')} opens Map`, async () => {
+    renderShell()
+    act(() => {
+      fireEvent.keyDown(window, { key: digitOf('map'), metaKey: true })
+    })
+    expect(await screen.findByRole('heading', { name: 'Map', level: 1 })).toBeInTheDocument()
+    const nav = screen.getByRole('navigation', { name: 'Sections' })
+    expect(within(nav).getByRole('link', { name: /Map/ })).toHaveAttribute('aria-current', 'page')
   })
 
   it('placeholder pages name their phase', async () => {
@@ -101,7 +117,8 @@ describe('shell', () => {
     const { unmount } = renderShell()
     await screen.findByText(/tester@mac/)
     const nav = commandStore.get().filter((c) => c.section === 'Navigate')
-    expect(nav.map((c) => c.shortcut)).toEqual(['mod+1', 'mod+2', 'mod+3', 'mod+4', 'mod+5', 'mod+6', 'mod+7'])
+    expect(nav.map((c) => c.shortcut)).toEqual(SECTIONS.map((_, i) => `mod+${i + 1}`))
+    expect(nav.find((c) => c.id === 'nav.map')).toMatchObject({ title: 'Go to Map', shortcut: shortcutOf('map') })
     unmount()
     expect(commandStore.get().filter((c) => c.section === 'Navigate')).toHaveLength(0)
   })
