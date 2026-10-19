@@ -136,6 +136,75 @@ CREATE TABLE snippets (
 CREATE UNIQUE INDEX snippets_label ON snippets (label COLLATE NOCASE);
 `,
   },
+  {
+    version: 7,
+    name: 'deployments',
+    up: `
+ALTER TABLE environments ADD COLUMN versioned INTEGER NOT NULL DEFAULT 0 CHECK (versioned IN (0,1));
+ALTER TABLE environments ADD COLUMN auto_rollback INTEGER NOT NULL DEFAULT 1 CHECK (auto_rollback IN (0,1));
+ALTER TABLE environments ADD COLUMN current_version TEXT;
+ALTER TABLE environments ADD COLUMN domain TEXT;
+CREATE TABLE apps(id TEXT PRIMARY KEY,
+  environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+  host_id TEXT NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, compose_project TEXT, description TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE UNIQUE INDEX apps_name ON apps(environment_id, host_id, name COLLATE NOCASE);
+CREATE TABLE deployments(id TEXT PRIMARY KEY, name TEXT NOT NULL,
+  environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+  host_id TEXT NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
+  app_id TEXT REFERENCES apps(id) ON DELETE SET NULL,
+  repo_path TEXT NOT NULL, default_branch TEXT NOT NULL,
+  compose_file TEXT NOT NULL DEFAULT 'docker-compose.yml',
+  deploy_tag TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0,
+  urls TEXT NOT NULL DEFAULT '[]',
+  health_status INTEGER NOT NULL DEFAULT 200 CHECK (health_status BETWEEN 100 AND 599),
+  health_timeout_sec INTEGER NOT NULL DEFAULT 60 CHECK (health_timeout_sec BETWEEN 5 AND 600),
+  db_backup INTEGER NOT NULL DEFAULT 0 CHECK (db_backup IN (0,1)), backup_dir TEXT,
+  pre_hook TEXT, post_hook TEXT,
+  build_timeout_sec INTEGER NOT NULL DEFAULT 300 CHECK (build_timeout_sec BETWEEN 10 AND 3600),
+  compose_timeout_sec INTEGER NOT NULL DEFAULT 120 CHECK (compose_timeout_sec BETWEEN 10 AND 3600),
+  use_sudo TEXT NOT NULL DEFAULT 'auto' CHECK (use_sudo IN ('auto','yes','no')),
+  become_secret_id TEXT REFERENCES secrets(id) ON DELETE SET NULL,
+  managed_env INTEGER NOT NULL DEFAULT 0 CHECK (managed_env IN (0,1)), env_template TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  CHECK (db_backup = 0 OR backup_dir IS NOT NULL),
+  CHECK (managed_env = 0 OR env_template IS NOT NULL));
+CREATE UNIQUE INDEX deployments_name ON deployments(environment_id, name COLLATE NOCASE);
+CREATE INDEX deployments_host ON deployments(host_id);
+CREATE TABLE deployment_vaults(deployment_id TEXT NOT NULL REFERENCES deployments(id) ON DELETE CASCADE,
+  vault_id TEXT NOT NULL REFERENCES vaults(id) ON DELETE CASCADE, PRIMARY KEY(deployment_id, vault_id));
+CREATE TABLE releases(id TEXT PRIMARY KEY,
+  environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('release','rollback')),
+  status TEXT NOT NULL CHECK (status IN ('preflight','ready','blocked','running','rolling_back',
+    'succeeded','failed','rolled_back','cancelled','discarded')),
+  version TEXT, previous_version TEXT,
+  version_bump TEXT NOT NULL DEFAULT 'none' CHECK (version_bump IN ('major','minor','patch','none')),
+  redeploy INTEGER NOT NULL DEFAULT 0 CHECK (redeploy IN (0,1)),
+  rollback_of TEXT REFERENCES releases(id) ON DELETE SET NULL,
+  options TEXT NOT NULL DEFAULT '{}', release_notes TEXT, error TEXT, playbook TEXT,
+  triggered_by TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT);
+CREATE INDEX releases_env ON releases(environment_id, created_at);
+CREATE TABLE deployment_runs(id TEXT PRIMARY KEY,
+  release_id TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+  deployment_id TEXT REFERENCES deployments(id) ON DELETE SET NULL,
+  deployment_name TEXT NOT NULL, host_id TEXT, host_label TEXT NOT NULL, position INTEGER NOT NULL,
+  branch TEXT NOT NULL, previous_commit TEXT, deployed_commit TEXT,
+  commits TEXT NOT NULL DEFAULT '[]', steps TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL CHECK (status IN ('pending','running','succeeded','failed','skipped',
+    'cancelled','rolled_back','rollback_failed')),
+  rolled_back INTEGER NOT NULL DEFAULT 0 CHECK (rolled_back IN (0,1)),
+  backup_file TEXT, started_at TEXT, finished_at TEXT);
+CREATE INDEX deployment_runs_release ON deployment_runs(release_id, position);
+CREATE TABLE run_events(id TEXT PRIMARY KEY,
+  release_id TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL, at TEXT NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL,
+  UNIQUE(release_id, seq));
+CREATE TRIGGER run_events_append_only BEFORE UPDATE ON run_events
+  BEGIN SELECT RAISE(ABORT, 'run_events is append-only'); END;
+`,
+  },
 ]
 
 const ENSURE_TABLE = `CREATE TABLE IF NOT EXISTS schema_migrations(

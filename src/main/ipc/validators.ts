@@ -14,6 +14,7 @@ import {
   MAX_TAG,
   MAX_TAGS,
   MAX_URL,
+  parseEnvDomain,
   OS_ICONS,
   PRODUCT_ICONS,
   REPO_URL,
@@ -42,6 +43,26 @@ import {
   type RunRequest,
   type SnippetInput,
 } from '../../shared/ops'
+import {
+  MAX_DEPLOYMENTS,
+  MAX_ENV_TEMPLATE,
+  MAX_EVENTS_PAGE,
+  MAX_HOOK,
+  MAX_RELEASE_NOTES,
+  MAX_URL as MAX_HEALTH_URL,
+  MAX_URLS,
+  VERSION,
+  type AppInput,
+  type AppPatch,
+  type DeploymentInput,
+  type DeploymentPatch,
+  type BreakLockConfirm,
+  type EnvDeploySettingsPatch,
+  type HealthUrl,
+  type PreflightRequest,
+  type ReleaseConfirm,
+  type ReleaseListFilter,
+} from '../../shared/deploy'
 import { BIND_ADDRESS, MAX_BIND_ADDRESS, type TunnelInput, type TunnelPatch } from '../../shared/tunnels'
 import { MAX_COLS, MAX_ROWS, MAX_WRITE_CHARS, type OpenLocalRequest, type OpenSshRequest, type PromptAnswer } from '../../shared/ssh'
 import {
@@ -207,6 +228,90 @@ export const asHostPatch: Check<HostPatch> = v.object({
   envVars: v.optional(envVars),
 }) as Check<HostPatch>
 
+// Deploy config. Shapes and ranges only: the store owns the content rules (paths, refs, memberships).
+const deployName = v.str({ min: 1, max: MAX_NAME, trim: true })
+const deployPath = v.str({ min: 1, max: 1024 })
+const healthUrl = v.object({ url: v.str({ min: 1, max: MAX_HEALTH_URL }), from: v.oneOf(['host', 'mac'] as const) })
+const deployFields = {
+  appId: v.optional(nullableId),
+  repoPath: deployPath,
+  defaultBranch: v.str({ min: 1, max: 255 }),
+  deployTag: v.str({ min: 1, max: 255 }),
+  composeFile: v.str({ min: 1, max: 255 }),
+  position: v.int({ min: 0, max: 1_000_000 }),
+  urls: v.array(healthUrl, MAX_URLS),
+  healthStatus: v.int({ min: 100, max: 599 }),
+  healthTimeoutSec: v.int({ min: 5, max: 600 }),
+  dbBackup: v.bool(),
+  backupDir: v.nullable(deployPath),
+  preHook: v.nullable(v.str({ max: MAX_HOOK })),
+  postHook: v.nullable(v.str({ max: MAX_HOOK })),
+  buildTimeoutSec: v.int({ min: 10, max: 3600 }),
+  composeTimeoutSec: v.int({ min: 10, max: 3600 }),
+  useSudo: v.oneOf(['auto', 'yes', 'no'] as const),
+  becomeSecretId: nullableId,
+  managedEnv: v.bool(),
+  envTemplate: v.nullable(v.str({ max: MAX_ENV_TEMPLATE })),
+  vaultIds: v.array(v.uuid(), MAX_LINKS),
+}
+const { appId: _appId, ...deployRest } = deployFields
+void _appId
+const deployOptional = Object.fromEntries(Object.entries(deployRest).map(([k, c]) => [k, v.optional(c as Check<unknown>)]))
+
+export const asDeploymentInput: Check<DeploymentInput> = v.object({
+  name: deployName,
+  environmentId: v.uuid(),
+  hostId: v.uuid(),
+  appId: v.optional(nullableId),
+  ...deployOptional,
+  repoPath: deployPath,
+  defaultBranch: deployFields.defaultBranch,
+  deployTag: deployFields.deployTag,
+}) as Check<DeploymentInput>
+// The environment and host are fixed at creation: they are not keys here, so a move fails validation.
+export const asDeploymentPatch: Check<DeploymentPatch> = v.object({
+  name: v.optional(deployName),
+  appId: v.optional(nullableId),
+  ...deployOptional,
+}) as Check<DeploymentPatch>
+export const asEnvDeploySettingsPatch: Check<EnvDeploySettingsPatch> = v.object({
+  versioned: v.optional(v.bool()),
+  autoRollback: v.optional(v.bool()),
+  currentVersion: v.optional(v.nullable(v.str({ max: 64, pattern: VERSION }))),
+}) as Check<EnvDeploySettingsPatch>
+export const asPreflightRequest: Check<PreflightRequest> = v.object({
+  environmentId: v.uuid(),
+  deploymentIds: v.array(v.uuid(), MAX_DEPLOYMENTS, { min: 1 }),
+  bump: v.oneOf(['major', 'minor', 'patch', 'none'] as const),
+  options: v.object({ backup: v.bool(), notify: v.bool(), qa: v.bool() }),
+  releaseNotes: v.optional(v.str({ max: MAX_RELEASE_NOTES })),
+}) as Check<PreflightRequest>
+export const asReleaseConfirm: Check<ReleaseConfirm> = v.object({
+  typedName: v.optional(v.str({ max: MAX_NAME })),
+  redeploy: v.optional(v.bool()),
+}) as Check<ReleaseConfirm>
+export const asBreakLockConfirm: Check<BreakLockConfirm> = v.object({ typedLabel: v.str({ max: MAX_NAME }) }) as Check<BreakLockConfirm>
+export const asReleaseListFilter: Check<ReleaseListFilter> = v.object({
+  environmentId: v.optional(v.uuid()),
+  limit: v.optional(v.int({ min: 1, max: 200 })),
+  before: v.optional(v.uuid()),
+}) as Check<ReleaseListFilter>
+const appName = v.str({ min: 1, max: MAX_NAME, trim: true })
+const composeProject = v.nullable(v.str({ min: 1, max: 63 }))
+const appDescription = v.str({ max: 1000 })
+export const asAppInput: Check<AppInput> = v.object({
+  environmentId: v.uuid(),
+  hostId: v.uuid(),
+  name: appName,
+  composeProject: v.optional(composeProject),
+  description: v.optional(appDescription),
+}) as Check<AppInput>
+export const asAppPatch: Check<AppPatch> = v.object({
+  name: v.optional(appName),
+  composeProject: v.optional(composeProject),
+  description: v.optional(appDescription),
+}) as Check<AppPatch>
+
 const tunnelBindAddress = v.str({ min: 1, max: MAX_BIND_ADDRESS, pattern: BIND_ADDRESS, trim: true })
 const tunnelBindPort = v.int({ min: 0, max: 65535 })
 const tunnelTargetPort = v.int({ min: 1, max: 65535 })
@@ -241,6 +346,14 @@ const envName = v.str({ min: 1, max: MAX_NAME, trim: true })
 const envColor = v.str({ pattern: VAULT_COLOR })
 const envPort = v.nullable(v.int({ min: 1, max: 65535 }))
 const idList = v.array(v.uuid(), MAX_LINKS)
+/** Names the path and the rule, never the value. A blank string clears the field, as in the store. */
+const envDomain: Check<string | null> = v.nullable((value, path) => {
+  if (typeof value !== 'string') throw new InvalidArgs(path, 'must be a string')
+  if (value.length > MAX_URL || (value.trim() !== '' && !parseEnvDomain(value).ok)) {
+    throw new InvalidArgs(path, 'must be a domain or http(s) URL')
+  }
+  return value
+})
 
 export const asEnvironmentInput: Check<EnvironmentInput> = v.object({
   name: envName,
@@ -249,6 +362,7 @@ export const asEnvironmentInput: Check<EnvironmentInput> = v.object({
   defaultIdentityId: v.optional(nullableId),
   defaultPort: v.optional(envPort),
   defaultJumpHostId: v.optional(nullableId),
+  domain: v.optional(envDomain),
   productIds: v.optional(idList),
 }) as Check<EnvironmentInput>
 
@@ -259,6 +373,7 @@ export const asEnvironmentPatch: Check<EnvironmentPatch> = v.object({
   defaultIdentityId: v.optional(nullableId),
   defaultPort: v.optional(envPort),
   defaultJumpHostId: v.optional(nullableId),
+  domain: v.optional(envDomain),
 }) as Check<EnvironmentPatch>
 
 const productIcon = v.oneOf(PRODUCT_ICONS)
@@ -419,6 +534,7 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'env:create': args(asEnvironmentInput),
   'env:update': args(v.uuid(), asEnvironmentPatch),
   'env:delete': args(v.uuid()),
+  'env:openDomain': args(v.uuid()),
   'env:setProducts': args(v.uuid(), idList),
   'env:putHost': args(v.uuid(), v.uuid(), v.oneOf(HOST_ROLES)),
   'env:removeHost': args(v.uuid(), v.uuid()),
@@ -447,6 +563,29 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'tunnel:start': args(v.uuid()),
   'tunnel:stop': args(v.uuid()),
   'tunnel:status': args(),
+  'app:list': args(v.optional(v.uuid())),
+  'app:create': args(asAppInput),
+  'app:update': args(v.uuid(), asAppPatch),
+  'app:delete': args(v.uuid()),
+  'deploy:list': args(v.optional(v.uuid())),
+  'deploy:create': args(asDeploymentInput),
+  'deploy:update': args(v.uuid(), asDeploymentPatch),
+  'deploy:delete': args(v.uuid()),
+  'deploy:reorder': args(v.uuid(), v.array(v.uuid(), MAX_DEPLOYMENTS)),
+  'deploy:settings': args(v.uuid()),
+  'deploy:updateSettings': args(v.uuid(), asEnvDeploySettingsPatch),
+  'deploy:tooling': args(),
+  'release:preflight': args(asPreflightRequest),
+  'release:start': args(v.uuid(), asReleaseConfirm),
+  'release:cancel': args(v.uuid()),
+  'release:rollback': args(v.uuid(), asReleaseConfirm),
+  'release:break-lock': args(v.uuid(), v.uuid(), asBreakLockConfirm),
+  'release:discard': args(v.uuid()),
+  'release:retry-version': args(v.uuid()),
+  'release:list': args(asReleaseListFilter),
+  'release:get': args(v.uuid()),
+  'release:events': args(v.uuid(), v.int({ min: 0, max: Number.MAX_SAFE_INTEGER }), v.optional(v.int({ min: 1, max: MAX_EVENTS_PAGE }))),
+  'release:active': args(),
   'snippets:list': args(),
   'snippets:create': args(asSnippetInput),
   'snippets:update': args(v.uuid(), asSnippetInput),

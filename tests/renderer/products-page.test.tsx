@@ -310,9 +310,113 @@ describe('products page', () => {
         defaultPort: 2222,
         defaultIdentityId: 'id-deploy',
         defaultJumpHostId: null,
+        domain: null,
         productIds: ['acme'],
       }),
     )
+  })
+
+  /** Wraps the page's bridge with env:update (applied to the world) and a scripted env:openDomain. */
+  function renderDomainPage(domain: string | null, open: (id: string) => Promise<null> = async () => null) {
+    const w = world()
+    w.environments = w.environments.map((e) => (e.id === 'prod' ? { ...e, domain } : e))
+    const out = renderPage(w)
+    const prev = out.invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
+    out.invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'env:update') {
+        const [id, patch] = args as [string, Partial<EnvironmentMeta>]
+        w.environments = w.environments.map((e) => (e.id === id ? { ...e, ...patch } : e))
+        return w.environments.find((e) => e.id === id)
+      }
+      if (channel === 'env:openDomain') return open(args[0] as string)
+      return prev(channel, ...args)
+    })
+    return out
+  }
+
+  it('environment dialog edits the domain or URL', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderDomainPage(null)
+    await user.click(await screen.findByRole('treeitem', { name: 'prod' }))
+    const details = screen.getByRole('region', { name: 'Details' })
+    await user.click(within(details).getByRole('button', { name: 'Edit' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Edit environment' })
+    const field = within(dialog).getByLabelText('Domain or URL')
+    expect(field).toHaveAccessibleDescription('e.g. staging.example.com')
+
+    await user.type(field, 'https://u:p@x.example.com')
+    await waitFor(() => expect(field).toHaveAttribute('aria-invalid', 'true'))
+    // The hint fades out (and the error in) over the field's short exit animation.
+    await waitFor(() => expect(field).toHaveAccessibleDescription('Leave the login out of the URL'))
+    await waitFor(() => expect(within(dialog).queryByText('e.g. staging.example.com')).not.toBeInTheDocument())
+    expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled()
+    expect(within(dialog).getByLabelText('Name')).not.toHaveAttribute('aria-invalid', 'true')
+    expect(within(dialog).getByLabelText('Default port')).not.toHaveAttribute('aria-invalid', 'true')
+
+    await user.clear(field)
+    await user.type(field, 'ftp://x.example.com')
+    await waitFor(() => expect(field).toHaveAccessibleDescription('Use an http:// or https:// URL'))
+
+    await user.clear(field)
+    await user.type(field, 'staging.example.com')
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:update', 'prod', expect.objectContaining({ domain: 'staging.example.com' })))
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Edit environment' })).not.toBeInTheDocument())
+    await user.click(within(details).getByRole('button', { name: 'Edit' }))
+    const again = await screen.findByRole('dialog', { name: 'Edit environment' })
+    const f2 = within(again).getByLabelText('Domain or URL')
+    expect(f2).toHaveValue('staging.example.com')
+    await user.clear(f2)
+    await user.click(within(again).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:update', 'prod', { domain: null }))
+  })
+
+  it('a new environment sends the domain as typed, or null', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderPage()
+    await screen.findByRole('treeitem', { name: 'Acme' })
+    await user.click(within(screen.getByRole('region', { name: 'Details' })).getByRole('button', { name: 'New environment' }))
+    const dialog = await screen.findByRole('dialog', { name: 'New environment' })
+    await user.type(within(dialog).getByLabelText('Name'), 'qa')
+    await user.type(within(dialog).getByLabelText('Domain or URL'), 'https://qa.example.com/app')
+    await user.click(within(dialog).getByRole('button', { name: 'Create environment' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:create', expect.objectContaining({ name: 'qa', domain: 'https://qa.example.com/app' })))
+  })
+
+  it('environment view shows the domain with Open', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderDomainPage('staging.example.com')
+    await user.click(await screen.findByRole('treeitem', { name: 'prod' }))
+    const main = screen.getByRole('region', { name: 'Details' })
+    const value = within(main).getByText('staging.example.com')
+    expect(value.closest('div')).toHaveTextContent('Domain or URL')
+    expect(value).toHaveClass('font-mono')
+    await user.click(within(main).getByRole('button', { name: 'Open staging.example.com in your browser' }))
+    expect(invoke).toHaveBeenCalledWith('env:openDomain', 'prod')
+    expect(invoke.mock.calls.filter((c) => c[0] === 'env:openDomain')[0]).toHaveLength(2)
+  })
+
+  it('environment view shows a URL exactly as stored, and None without Open', async () => {
+    const user = userEvent.setup()
+    renderDomainPage('HTTPS://Staging.Example.com/app?x=1')
+    await user.click(await screen.findByRole('treeitem', { name: 'prod' }))
+    const main = screen.getByRole('region', { name: 'Details' })
+    expect(within(main).getByText('HTTPS://Staging.Example.com/app?x=1')).toBeInTheDocument()
+    await user.click(item('staging'))
+    await within(main).findByText('No hosts in this environment yet')
+    expect(within(main).getByText('None')).toBeInTheDocument()
+    expect(within(main).queryByRole('button', { name: /^Open / })).not.toBeInTheDocument()
+  })
+
+  it("a rejected open surfaces as a toast", async () => {
+    const user = userEvent.setup()
+    renderDomainPage('staging.example.com', async () => {
+      throw new Error("This environment's domain or URL can't be opened")
+    })
+    await user.click(await screen.findByRole('treeitem', { name: 'prod' }))
+    await user.click(await screen.findByRole('button', { name: 'Open staging.example.com in your browser' }))
+    expect(await screen.findByText(/This environment's domain or URL can't be opened/)).toBeInTheDocument()
   })
 
   it('shared host updates everywhere', async () => {

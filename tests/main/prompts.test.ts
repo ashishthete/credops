@@ -124,6 +124,7 @@ describe('PromptBroker', () => {
       resolve: (hostId) => ({
         hostId,
         environmentId: null,
+        addressSource: 'host',
         address: '127.0.0.1',
         port: { value: srv.port, source: 'host' },
         identity: { source: 'global', username: 'ops', auth: 'default' },

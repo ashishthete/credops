@@ -109,7 +109,7 @@ describe('tunnel IPC', () => {
       return deleteHost(id)
     })
     const call = register(
-      createInventoryHandlers({ hosts: f.hosts, environments: f.envs, products: f.products, resolve: vi.fn(), tunnels }),
+      createInventoryHandlers({ hosts: f.hosts, environments: f.envs, products: f.products, resolve: vi.fn(), tunnels, openExternal: vi.fn() }),
     )
     await call('host:delete', hostId)
     expect(order).toEqual(['stop host deleted', 'delete'])
@@ -121,7 +121,7 @@ describe('tunnel IPC', () => {
     f.hosts.create({ label: 'behind', address: '10.0.0.9', port: 22, jumpHostId: jump })
     const tunnels = { stopForHost: vi.fn() }
     const call = register(
-      createInventoryHandlers({ hosts: f.hosts, environments: f.envs, products: f.products, resolve: vi.fn(), tunnels }),
+      createInventoryHandlers({ hosts: f.hosts, environments: f.envs, products: f.products, resolve: vi.fn(), tunnels, openExternal: vi.fn() }),
     )
     await expect(call('host:delete', jump)).rejects.toThrow('host is the jump host for behind')
     f.vault.lock('manual')

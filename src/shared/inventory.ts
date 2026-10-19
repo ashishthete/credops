@@ -36,6 +36,68 @@ export function isSafeSshToken(value: string): boolean {
   return value.length > 0 && !value.startsWith('-') && !UNSAFE_SSH_CHAR.test(value)
 }
 
+export const MAX_DOMAIN = 253
+const DOMAIN_GENERIC = 'Enter a domain like staging.example.com or an http(s) URL'
+const HOST_LABEL = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/
+const IPV4 = /^(?:\d{1,3}\.){3}\d{1,3}$/
+const IPV6_BRACKETED = /^\[[0-9A-Fa-f:.]+\]$/
+
+export interface EnvDomain {
+  kind: 'host' | 'url'
+  /** The hostname as written; brackets kept for IPv6. */
+  host: string
+}
+
+/** A dot-separated hostname: labels of 1-63 letters, digits and hyphens, one trailing dot allowed. */
+function isHostname(value: string): boolean {
+  const name = value.endsWith('.') ? value.slice(0, -1) : value
+  return name.length > 0 && name.split('.').every((l) => HOST_LABEL.test(l))
+}
+
+/** The only validator for an environment's Domain or URL. Messages name the rule and never carry the input. */
+export function parseEnvDomain(raw: string): { ok: true; value: EnvDomain } | { ok: false; error: string } {
+  const fail = (error: string) => ({ ok: false as const, error })
+  const value = raw.trim()
+  // Before new URL, which silently strips tabs and newlines.
+  if (/\s/u.test(value) || UNSAFE_SSH_CHAR.test(value)) return fail(DOMAIN_GENERIC)
+  if (value.includes('://')) {
+    const scheme = value.slice(0, value.indexOf('://')).toLowerCase()
+    if (scheme !== 'http' && scheme !== 'https') return fail('Use an http:// or https:// URL')
+    let url: URL
+    try {
+      url = new URL(value)
+    } catch {
+      return fail(DOMAIN_GENERIC)
+    }
+    if (url.username !== '' || url.password !== '') return fail('Leave the login out of the URL')
+    if (value.length > MAX_URL) return fail('A URL is at most 2048 characters')
+    const host = url.hostname
+    if (host.length > MAX_DOMAIN) return fail('A domain is at most 253 characters')
+    if (!(IPV4.test(host) || IPV6_BRACKETED.test(host) || isHostname(host))) return fail(DOMAIN_GENERIC)
+    return { ok: true, value: { kind: 'url', host } }
+  }
+  if (value.length > MAX_DOMAIN) return fail('A domain is at most 253 characters')
+  if (!isHostname(value)) return fail(DOMAIN_GENERIC)
+  return { ok: true, value: { kind: 'host', host: value } }
+}
+
+/** The suffix bare names take: lowercase, no trailing dot; `null` for an IP literal. */
+export function domainHost(d: EnvDomain): string | null {
+  const host = d.host.toLowerCase().replace(/\.$/, '')
+  return IPV4.test(host) || host.startsWith('[') ? null : host
+}
+
+export function domainOpenUrl(d: EnvDomain, raw: string): string {
+  return d.kind === 'host' ? `https://${d.host}` : new URL(raw.trim()).href
+}
+
+/** Syntactic only: no dot, colon or percent, at least one letter, and not localhost. */
+export function isBareName(address: string): boolean {
+  return !/[.:%]/.test(address) && /\p{L}/u.test(address) && address.toLowerCase() !== 'localhost'
+}
+
+export type AddressSource = 'host' | 'domain'
+
 export interface ProductInput {
   name: string
   color: string
@@ -67,6 +129,8 @@ export interface EnvironmentInput {
   defaultIdentityId?: string | null
   defaultPort?: number | null
   defaultJumpHostId?: string | null
+  /** A hostname or an http(s) URL, stored as entered. */
+  domain?: string | null
   productIds?: string[]
 }
 export type EnvironmentPatch = Partial<Omit<EnvironmentInput, 'productIds'>>
@@ -78,6 +142,7 @@ export interface EnvironmentMeta {
   defaultIdentityId: string | null
   defaultPort: number | null
   defaultJumpHostId: string | null
+  domain: string | null
   productIds: string[]
   hosts: { hostId: string; role: HostRole }[]
   createdAt: string
@@ -127,7 +192,9 @@ export type IdentityRef =
 export interface ResolvedHop {
   hostId: string
   label: string
+  /** Dialled address, after any domain expansion. */
   address: string
+  addressSource: AddressSource
   port: number
   identity: IdentityRef
 }
@@ -139,7 +206,9 @@ export interface InheritConflict {
 export interface ResolvedHost {
   hostId: string
   environmentId: string | null
+  /** Dialled address, after any domain expansion. */
   address: string
+  addressSource: AddressSource
   port: { value: number; source: ValueSource }
   identity: IdentityRef
   jump: { hostId: string | null; source: ValueSource | null }

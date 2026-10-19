@@ -1,5 +1,6 @@
 import { vi } from 'vitest'
 import type { AuditEvent } from '../../src/shared/audit'
+import type { AppMeta, DeploymentMeta, EnvDeploySettings, Tooling } from '../../src/shared/deploy'
 import type { EnvironmentMeta, HostMeta, ProductMeta } from '../../src/shared/inventory'
 import type { AppInfo } from '../../src/shared/ipc'
 import type { SessionMeta } from '../../src/shared/ssh'
@@ -76,6 +77,7 @@ export function environment(over: Partial<EnvironmentMeta> & { id: string; name:
     defaultIdentityId: null,
     defaultPort: null,
     defaultJumpHostId: null,
+    domain: null,
     productIds: [],
     hosts: [],
     createdAt: STAMP,
@@ -115,6 +117,7 @@ export function mockBridge(results: Record<string, unknown> = {}) {
     if (channel === 'product:list' || channel === 'env:list' || channel === 'host:list') return []
     if (channel === 'tunnel:list' || channel === 'tunnel:status') return []
     if (channel === 'runs:list' || channel === 'snippets:list') return []
+    if (channel === 'deploy:list' || channel === 'app:list') return []
     return null
   })
   bridgeListeners.clear()
@@ -201,6 +204,66 @@ export function identity(over: Partial<IdentityMeta> & { id: string; label: stri
     hasPassword: false,
     createdAt: STAMP,
     updatedAt: STAMP,
+    ...over,
+  }
+}
+
+export function deploymentMeta(over: Partial<DeploymentMeta> & { id: string }): DeploymentMeta {
+  return {
+    name: over.id,
+    environmentId: 'e1',
+    hostId: 'h1',
+    appId: null,
+    repoPath: '/srv/app',
+    defaultBranch: 'main',
+    composeFile: 'docker-compose.yml',
+    deployTag: 'deployed-staging',
+    position: 0,
+    urls: [],
+    healthStatus: 200,
+    healthTimeoutSec: 60,
+    dbBackup: false,
+    backupDir: null,
+    preHook: null,
+    postHook: null,
+    buildTimeoutSec: 300,
+    composeTimeoutSec: 120,
+    useSudo: 'auto',
+    becomeSecretId: null,
+    managedEnv: false,
+    envTemplate: null,
+    vaultIds: [],
+    createdAt: STAMP,
+    updatedAt: STAMP,
+    ...over,
+  }
+}
+
+export function appMeta(over: Partial<AppMeta> & { id: string }): AppMeta {
+  return {
+    environmentId: 'e1',
+    hostId: 'h1',
+    name: over.id,
+    composeProject: null,
+    description: '',
+    createdAt: STAMP,
+    updatedAt: STAMP,
+    ...over,
+  }
+}
+
+export function envSettings(over: Partial<EnvDeploySettings> = {}): EnvDeploySettings {
+  return { environmentId: 'e1', versioned: true, autoRollback: false, currentVersion: 'v1.2.0', ...over }
+}
+
+export function toolingOk(over: Partial<Tooling> = {}): Tooling {
+  return {
+    ansiblePlaybook: { path: '/opt/homebrew/bin/ansible-playbook', version: '2.17.0' },
+    ansibleStatus: 'ok',
+    sshAgent: '/usr/bin/ssh-agent',
+    sshAdd: '/usr/bin/ssh-add',
+    ssh: '/usr/bin/ssh',
+    problems: [],
     ...over,
   }
 }

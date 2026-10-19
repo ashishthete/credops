@@ -1,10 +1,11 @@
 import { motion } from 'framer-motion'
-import { KeyRound, Link2, Lock, Network, Pencil, Plus, Route, Server, SquareTerminal, Trash2, Unlink } from 'lucide-react'
+import { ExternalLink, Globe, KeyRound, Link2, Lock, Network, Pencil, Plus, Route, Server, SquareTerminal, Trash2, Unlink } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
+import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import { DEFAULT_SSH_PORT, type EnvironmentMeta } from '../../../../shared/inventory'
 import { sourceLabel } from '../../inventory/choices'
-import type { InventoryData } from '../../inventory/store'
+import { openEnvironmentDomain, type InventoryData } from '../../inventory/store'
 import type { NodeKey } from '../../inventory/tree'
 import { showEnvironmentOnMapPath } from '../../map/commands'
 import { useConnect } from '../../terminal/connect'
@@ -88,7 +89,7 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
         }
       />
       <div className="min-h-0 flex-1 overflow-y-auto px-8 pt-2 pb-8">
-        <dl className="grid grid-cols-3 gap-px overflow-hidden rounded-xl border border-line bg-line">
+        <dl className="grid grid-cols-4 gap-px overflow-hidden rounded-xl border border-line bg-line">
           <Default
             icon={KeyRound}
             term="Identity"
@@ -107,6 +108,26 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
             term="Jump host"
             value={jump?.label ?? 'Direct'}
             source={env.defaultJumpHostId ? inherited : appDefault}
+          />
+          <Default
+            icon={Globe}
+            term="Domain or URL"
+            value={env.domain ?? 'None'}
+            mono={env.domain !== null}
+            source={env.domain !== null ? 'Used for bare host names' : 'Not set'}
+            action={
+              env.domain !== null && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon={<ExternalLink aria-hidden className="size-3.5" />}
+                  aria-label={`Open ${env.domain} in your browser`}
+                  onClick={() => void openEnvironmentDomain(env.id)}
+                >
+                  Open
+                </Button>
+              )
+            }
           />
         </dl>
 
@@ -182,7 +203,21 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
   )
 }
 
-function Default({ icon: Icon, term, value, source, mono }: { icon: LucideIcon; term: string; value: string; source: string; mono?: boolean }) {
+function Default({
+  icon: Icon,
+  term,
+  value,
+  source,
+  mono,
+  action,
+}: {
+  icon: LucideIcon
+  term: string
+  value: string
+  source: string
+  mono?: boolean
+  action?: ReactNode
+}) {
   return (
     <div className="flex min-w-0 flex-col gap-1 bg-surface/70 px-4 py-3">
       <dt className="flex items-center gap-1.5 text-[11.5px] text-muted">
@@ -190,7 +225,10 @@ function Default({ icon: Icon, term, value, source, mono }: { icon: LucideIcon; 
         {term}
       </dt>
       <dd className={`truncate text-[13px] font-medium text-fg ${mono ? 'font-mono tabular-nums' : ''}`}>{value}</dd>
-      <dd className="truncate text-[11.5px] text-muted">{source}</dd>
+      <dd className="flex items-center justify-between gap-2 text-[11.5px] text-muted">
+        <span className="truncate">{source}</span>
+        {action}
+      </dd>
     </div>
   )
 }

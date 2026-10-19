@@ -9,6 +9,7 @@ import {
   MAX_TAGS,
   TAG,
   UNSAFE_SSH_CHAR,
+  parseEnvDomain,
   type EnvironmentMeta,
   type HostMeta,
   type HostRole,
@@ -58,6 +59,15 @@ export function checkLabel(raw: string): string {
 export function checkAddress(raw: string): string {
   const s = typeof raw === 'string' ? raw.trim() : ''
   if (!isValidAddress(s)) throw new Error('host address is invalid')
+  return s
+}
+
+/** `null` for empty; otherwise the trimmed value as entered. The message never carries the value. */
+export function checkDomain(raw: string | null | undefined): string | null {
+  const s = typeof raw === 'string' ? raw.trim() : ''
+  if (s === '') return null
+  const r = parseEnvDomain(s)
+  if (!r.ok) throw new Error(r.error)
   return s
 }
 
@@ -147,6 +157,7 @@ export function environmentMeta(db: Db, id: string): EnvironmentMeta {
         default_identity_id: string | null
         default_port: number | null
         default_jump_host_id: string | null
+        domain: string | null
         created_at: string
         updated_at: string
       }
@@ -166,6 +177,7 @@ export function environmentMeta(db: Db, id: string): EnvironmentMeta {
     defaultIdentityId: r.default_identity_id,
     defaultPort: r.default_port,
     defaultJumpHostId: r.default_jump_host_id,
+    domain: r.domain,
     productIds: products.map((p) => p.product_id),
     hosts: hosts.map((h) => ({ hostId: h.host_id, role: h.role })),
     createdAt: r.created_at,
