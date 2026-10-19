@@ -3,6 +3,7 @@ import type { Handlers } from '../../../shared/ipc'
 import type { EnvironmentStore } from '../../inventory/environment-store'
 import type { HostStore } from '../../inventory/host-store'
 import type { ProductStore } from '../../inventory/product-store'
+import type { TunnelManager } from '../../tunnels/manager'
 
 type InventoryChannel =
   | 'host:list'
@@ -28,13 +29,18 @@ export function createInventoryHandlers(deps: {
   environments: EnvironmentStore
   products: ProductStore
   resolve: (hostId: string, environmentId?: string) => ResolvedHost
+  /** A deleted host's tunnels are stopped first, so their stop is audited before the host goes. */
+  tunnels?: Pick<TunnelManager, 'stopForHost'>
 }): Pick<Handlers, InventoryChannel> {
-  const { hosts, environments, products, resolve } = deps
+  const { hosts, environments, products, resolve, tunnels } = deps
   return {
     'host:list': () => hosts.list(),
     'host:create': (input) => hosts.create(input),
     'host:update': (id, patch) => hosts.update(id, patch),
-    'host:delete': (id) => hosts.delete(id),
+    'host:delete': (id) => {
+      tunnels?.stopForHost(id, 'deleted')
+      hosts.delete(id)
+    },
     'host:setVaults': (id, vaultIds) => hosts.setVaults(id, vaultIds),
     'host:resolve': (hostId, environmentId) => resolve(hostId, environmentId),
     'env:list': () => environments.list(),

@@ -19,6 +19,8 @@ import { createAppHandlers } from './ipc/handlers/app'
 import { createAuditHandlers } from './ipc/handlers/audit'
 import { createIdentityHandlers } from './ipc/handlers/identities'
 import { createTunnelHandlers } from './ipc/handlers/tunnels'
+import { listen, realExecFile, whoHolds } from './tunnels/bind'
+import { TunnelManager } from './tunnels/manager'
 import { TunnelStore } from './tunnels/tunnel-store'
 import { createInventoryHandlers } from './ipc/handlers/inventory'
 import { createKeyHandlers } from './ipc/handlers/keys'
@@ -66,6 +68,7 @@ let hosts: HostStore | null = null
 let environments: EnvironmentStore | null = null
 let products: ProductStore | null = null
 let sessions: SessionManager | null = null
+let tunnelManager: TunnelManager | null = null
 let quitAudited = false
 let stopAutoLock: (() => void) | null = null
 
@@ -183,10 +186,34 @@ if (!app.requestSingleInstanceLock()) {
         emit: (event, payload) => pushEvent(mainWindow, event, payload),
       })
       const manager = sessions
-      // Sessions keep running across a lock; connects still dialling fail, then every prompt left is
-      // cancelled. Separate listeners, run in this order, so one failing never skips the other.
+      const runner = new TunnelManager({
+        store: tunnels,
+        resolve,
+        hostInfo: (hostId) => {
+          const h = hostMeta(inventoryDb, hostId)
+          return { label: h.label, keepaliveSec: h.keepaliveSec }
+        },
+        connect: connectChain,
+        plan: (identity) => authPlan(identity, authDeps),
+        knownHosts,
+        prompts,
+        isLocked,
+        listen: (address, port, deps) =>
+          listen(address, port, { whoHolds: (p) => whoHolds(p, { execFile: realExecFile }), inUseBy: deps.inUseBy }),
+        audit: log,
+        emit: (event, payload) => pushEvent(mainWindow, event, payload),
+      })
+      tunnelManager = runner
+      tunnels.onRemoved = (id) => runner.removed(id)
+      tunnels.onChanged = (before, after) => runner.changed(before, after)
+      // Sessions and tunnels keep running across a lock. Connects still dialling fail (sessions) or
+      // are marked to pause (tunnels), then every prompt left is cancelled. Separate listeners, run in
+      // this order, so one failing never skips the others.
       service.onLock(() => manager.vaultLocked())
+      service.onLock(() => runner.vaultLocked())
       service.onLock(() => prompts.cancelAll())
+      // Resumes paused tunnels; the first unlock also auto-starts.
+      service.onUnlock(() => runner.vaultUnlocked())
       stopAutoLock = new AutoLock({
         idleSeconds: () => powerMonitor.getSystemIdleTime(),
         minutes: () => service.autoLockMinutes(),
@@ -233,9 +260,10 @@ if (!app.requestSingleInstanceLock()) {
             environments,
             products,
             resolve,
+            tunnels: runner,
           }),
           ...createSshImportHandlers(importer),
-          ...createTunnelHandlers({ store: tunnels }),
+          ...createTunnelHandlers({ store: tunnels, manager: runner }),
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
         },
         (url) => isTrustedSender(url, { devServerUrl, rendererFile }),
@@ -253,6 +281,11 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', (event) => {
     if (!audit || quitAudited) return
     quitAudited = true
+    try {
+      tunnelManager?.stopAll('quit')
+    } catch (err) {
+      console.error('Failed to stop tunnels on quit:', err)
+    }
     try {
       sessions?.closeAll('quit')
     } catch (err) {
@@ -289,6 +322,7 @@ if (!app.requestSingleInstanceLock()) {
     environments = null
     products = null
     sessions = null
+    tunnelManager = null
     audit = null
     db?.close()
     db = null
