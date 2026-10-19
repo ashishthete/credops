@@ -150,6 +150,15 @@ samp {
   overflow: hidden;
 }
 
+/* The minimap steps left, clear of the 340 px detail panel, while it is open. */
+.react-flow__minimap {
+  transition: translate 200ms ease-out;
+}
+
+[data-panel='open'] .react-flow__minimap {
+  translate: -340px 0;
+}
+
 /* Faded by a filter or search; the highlighted node gets the accent ring around React Flow's wrapper. */
 .react-flow__node.od-dimmed {
   opacity: 0.3;
@@ -166,6 +175,7 @@ samp {
 }
 
 .react-flow__edge:hover .od-edge,
+.react-flow__edge.selected .od-edge,
 .od-edge.od-edge-lit {
   filter: drop-shadow(0 0 4px var(--od-tone, var(--muted)));
 }
@@ -256,6 +266,7 @@ samp {
     display: none;
   }
 
+  .react-flow__minimap,
   .od-edge {
     transition: none;
   }

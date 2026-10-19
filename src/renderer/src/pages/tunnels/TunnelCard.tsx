@@ -78,8 +78,6 @@ export const TunnelCard = memo(function TunnelCard({ id, hostLabel, hostAddress,
   const state = runtime?.state ?? 'stopped'
   const transitions = useTransitions(state)
   const shake = useShake<HTMLDivElement>(transitions.failed)
-  // A start or stop request awaiting its reply; only this blocks the switch, so connecting can be cancelled.
-  const [inFlight, setInFlight] = useState(false)
   if (!meta) return null
 
   const glow = GLOW[state]
@@ -145,16 +143,7 @@ export const TunnelCard = memo(function TunnelCard({ id, hostLabel, hostAddress,
             </span>
           )}
           <span className="ml-auto flex shrink-0 items-center gap-1.5">
-            <Switch
-              label={`Run ${meta.label}`}
-              checked={isRunning(state)}
-              busy={inFlight}
-              pending={state === 'connecting'}
-              onChange={(on) => {
-                setInFlight(true)
-                void (on ? startTunnel(id) : stopTunnel(id)).finally(() => setInFlight(false))
-              }}
-            />
+            <TunnelSwitch id={id} label={meta.label} state={state} />
             <RowMenu
               label={`Actions for ${meta.label}`}
               items={[
@@ -190,6 +179,23 @@ export const TunnelCard = memo(function TunnelCard({ id, hostLabel, hostAddress,
     </motion.article>
   )
 })
+
+/** Starts or stops a tunnel. Only a request awaiting its reply blocks it, so a connecting tunnel can be cancelled. */
+export function TunnelSwitch({ id, label, state }: { id: string; label: string; state: TunnelState }) {
+  const [inFlight, setInFlight] = useState(false)
+  return (
+    <Switch
+      label={`Run ${label}`}
+      checked={isRunning(state)}
+      busy={inFlight}
+      pending={state === 'connecting'}
+      onChange={(on) => {
+        setInFlight(true)
+        void (on ? startTunnel(id) : stopTunnel(id)).finally(() => setInFlight(false))
+      }}
+    />
+  )
+}
 
 /**
  * Counts entries into `up` and `failed` after mount, so the ripple and the shake play on a change of
@@ -241,7 +247,8 @@ export const STATE_DOT: Record<TunnelState, string> = {
   failed: 'bg-err text-err',
 }
 
-function StatusLine({ runtime }: { runtime: TunnelRuntime | undefined }) {
+/** The status wording every tunnel view shares: `Up 12 min`, the retry countdown, or the failure. */
+export function StatusLine({ runtime }: { runtime: TunnelRuntime | undefined }) {
   const motionSafe = useMotionSafe()
   const state = runtime?.state ?? 'stopped'
   const locked = state === 'retrying' && runtime?.error?.code === 'locked'

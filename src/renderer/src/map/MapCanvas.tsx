@@ -19,6 +19,7 @@ import { nodeTypes, type MapFlowNode } from './nodes'
 export interface MapCanvasProps {
   graph: MapGraph
   layout: MapLayout
+  /** The selected node or edge; selection lives in the page, not in React Flow. */
   selectedId: string | null
   /** Nodes drawn faded (a search or filter elsewhere); null fades nothing. */
   dimmed: Set<string> | null
@@ -125,7 +126,12 @@ export const MapCanvas = memo(function MapCanvas({
     if (kept.length) setLocal((s) => ({ ...s, nodes: applyNodeChanges(kept, s.nodes) }))
   }, [])
 
-  const edges = useMemo(() => flowEdges(graph), [graph])
+  const baseEdges = useMemo(() => flowEdges(graph), [graph])
+  // The selected tunnel glows (tokens.css); every other edge keeps its identity.
+  const edges = useMemo(
+    () => baseEdges.map((e) => (e.id === selectedId ? { ...e, selected: true } : e)),
+    [baseEdges, selectedId],
+  )
 
   // Hovering an edge rings its two end nodes.
   const [hoveredEdge, setHoveredEdge] = useState<string | null>(null)
