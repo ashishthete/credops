@@ -58,6 +58,22 @@ describe('interleave', () => {
     expect(m.out?.text).toBe('a │ done\n')
   })
 
+  it('a queued host holds its partial line; only a finished one is flushed', () => {
+    const a = appendOutput(undefined, 'partial', false)
+    const m = interleave(NO_MERGE, 'r1', { a }, [host('a', 'queued')])
+    expect(m.out).toBeUndefined()
+    expect(m.cursors.a.line).toEqual([['partial', false]])
+  })
+
+  it('output after a flush starts a new labelled line', () => {
+    let a = appendOutput(undefined, 'done', false)
+    let m = interleave(NO_MERGE, 'r1', { a }, [host('a', 'ok')])
+    expect(m.out?.text).toBe('a │ done\n')
+    a = appendOutput(a, ' late\n', false)
+    m = interleave(m, 'r1', { a }, [host('a', 'ok')])
+    expect(m.out?.text).toBe('a │ done\na │  late\n')
+  })
+
   it('a host whose output went back (a reload) is read again from its text', () => {
     const hosts = [host('a')]
     let m = interleave(NO_MERGE, 'r1', { a: appendOutput(undefined, 'one\ntwo\n', false) }, hosts)

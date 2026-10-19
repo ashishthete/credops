@@ -1,6 +1,6 @@
 import type { RunHostMeta } from '../../../shared/ops'
-import { isLive } from './HostChip'
 import { appendOutput, type HostOutput } from './runs'
+import { isLive } from './status'
 
 /** Where the interleaved stream has got to for one host. */
 interface Cursor {

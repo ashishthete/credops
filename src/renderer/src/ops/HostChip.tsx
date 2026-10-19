@@ -3,6 +3,7 @@ import { Ban, Check, TimerOff, X, type LucideIcon } from 'lucide-react'
 import { memo, useEffect, useRef, useState } from 'react'
 import type { RunHostMeta, RunHostState } from '../../../shared/ops'
 import { fast, spring, useMotionSafe, useShake } from '../ui/motion'
+import { isLive } from './status'
 
 export const STATE_WORD: Record<RunHostState, string> = {
   queued: 'Queued',
@@ -27,8 +28,6 @@ const LOOK: Record<RunHostState, string> = {
 
 const ICON: Partial<Record<RunHostState, LucideIcon>> = { ok: Check, failed: X, cancelled: Ban, timeout: TimerOff }
 
-export const isLive = (state: RunHostState) => state === 'connecting' || state === 'running'
-export const isBad = (state: RunHostState) => state === 'failed' || state === 'timeout'
 
 /** Bumps once each time the host turns `failed` after mounting, so a reopened run doesn't shake. */
 function useFailures(state: RunHostState): number {
