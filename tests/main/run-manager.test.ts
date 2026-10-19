@@ -585,8 +585,9 @@ describe('RunManager on a vault reset', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     onTestFinished(() => warn.mockRestore())
 
-    // The first host's state event throws, before the second host is aborted. Called directly: on
-    // a real reset the links close next, and that would end the commands without any INT.
+    // The first host's state event throws, before the second host is aborted. Called directly: a
+    // real reset closes the links straight after, and under load that close can reach the server
+    // before either INT does, so the INT count below would race it.
     boom = true
     t.vault.lock('manual')
     t.runs.vaultReset()
