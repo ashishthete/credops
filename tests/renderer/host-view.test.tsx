@@ -590,6 +590,14 @@ describe('HostDialog', () => {
     expect(search).toBe('?host=web1&env=prod')
     await user.click(screen.getByRole('button', { name: 'Run…' }))
     expect(where).toBe('/ops/run')
+    expect(search).toBe('?hosts=web1&env=prod')
+  })
+
+  it('Run… from a host outside any environment carries no env', async () => {
+    const user = userEvent.setup()
+    setup()
+    render(<HostView hostId="web1" />)
+    await user.click(await screen.findByRole('button', { name: 'Run…' }))
     expect(search).toBe('?hosts=web1')
   })
 

@@ -61,7 +61,7 @@ export function Composer({ onConfirm }: { onConfirm: (req: ConfirmRequest) => vo
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set())
   const [contextId, setContextId] = useState('')
 
-  // `?hosts=a,b` (the Host view's Run… button) preselects those hosts once the inventory has them.
+  // `?hosts=a,b&env=x` (the Host view's Run… button) preselects those hosts and the context once the inventory has them.
   const [params] = useSearchParams()
   const seeded = useRef<string | null>(null)
   useEffect(() => {
@@ -73,7 +73,10 @@ export function Composer({ onConfirm }: { onConfirm: (req: ConfirmRequest) => vo
     if (!ids.length) return
     setTargetMode('hosts')
     setPicked(new Set(ids))
-  }, [params, hosts])
+    // `&env=` is the environment the host was reached through, as in its terminal.
+    const ctx = params.get('env')
+    if (ctx && environments.some((e) => e.id === ctx)) setContextId(ctx)
+  }, [params, hosts, environments])
 
   const env = environments.find((e) => e.id === envId)
   const roleCounts = useMemo(() => {

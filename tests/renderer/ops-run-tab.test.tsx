@@ -170,6 +170,16 @@ describe('run tab', () => {
     expect(screen.getByRole('radio', { name: 'Hosts' })).toHaveAttribute('aria-checked', 'true')
   })
 
+  it('/ops/run?hosts=web1&env=e-prod also sets the environment context', async () => {
+    await renderTab({}, '/ops/run?hosts=h-web-1&env=e-prod')
+    expect(screen.getByRole('combobox', { name: 'Environment context' })).toHaveValue('e-prod')
+  })
+
+  it('an unknown ?env= is ignored', async () => {
+    await renderTab({}, '/ops/run?hosts=h-web-1&env=nope')
+    expect(screen.getByRole('combobox', { name: 'Environment context' })).toHaveValue('')
+  })
+
   it('picking an environment and role previews matching hosts', async () => {
     await renderTab()
     fireEvent.change(screen.getByRole('combobox', { name: 'Environment' }), { target: { value: 'e-prod' } })

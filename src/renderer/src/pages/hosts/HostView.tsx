@@ -101,7 +101,7 @@ export function HostView({ hostId, environmentId, onDeleted }: HostViewProps) {
             >
               Containers
             </Button>
-            <Button size="sm" variant="ghost" icon={<Play aria-hidden className="size-3.5" />} onClick={() => navigate(`/ops/run?hosts=${encodeURIComponent(host.id)}`)}>
+            <Button size="sm" variant="ghost" icon={<Play aria-hidden className="size-3.5" />} onClick={() => navigate(`/ops/run?hosts=${encodeURIComponent(host.id)}${context ? `&env=${encodeURIComponent(context)}` : ''}`)}>
               Run…
             </Button>
             <Button size="sm" variant="ghost" icon={<Pencil aria-hidden className="size-3.5" />} onClick={() => setEditing(true)}>
