@@ -3,6 +3,7 @@ import type { Db } from '../../db/connection'
 import { listNotifications } from '../../notify/log'
 import type { MacNotifier } from '../../notify/macos'
 import type { NotificationSink } from '../../notify/sink'
+import type { QaDispatcher } from '../../notify/qa'
 import type { NotificationFacts } from '../../notify/teams'
 import type { IntegrationStore } from '../../settings/integration-store'
 import type { SettingsStore } from '../../settings/settings-store'
@@ -77,5 +78,19 @@ export function createNotifyHandlers(d: NotifyHandlerDeps): Pick<Handlers, 'noti
       })
     },
     'notify:log': (filter: NotifyLogFilter) => listNotifications(d.db, filter),
+  }
+}
+
+export function createQaHandlers(d: {
+  qa: Pick<QaDispatcher, 'dispatch' | 'watch' | 'list'>
+  integrations: Pick<IntegrationStore, 'forEnvironment'>
+}): Pick<Handlers, 'qa:dispatch' | 'qa:list'> {
+  return {
+    'qa:dispatch': async (environmentId: string) => {
+      const item = await d.qa.dispatch(environmentId, { trigger: 'manual' })
+      if (d.integrations.forEnvironment(environmentId).qaWait) d.qa.watch(item)
+      return item
+    },
+    'qa:list': () => d.qa.list(),
   }
 }

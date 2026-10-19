@@ -50,6 +50,7 @@ import type {
   NotificationRecord,
   NotifyLogFilter,
   NotifyTestTarget,
+  QaDispatch,
   IntegrationStatus,
 } from './settings'
 import type { TunnelEvent, TunnelInput, TunnelMeta, TunnelPatch, TunnelRuntime, TunnelStats } from './tunnels'
@@ -219,6 +220,8 @@ export interface IpcContract {
   // Sends a "Test from OpsDeck" card, email or alert; audited as notify.test. Errors never hold a URL or key.
   'notify:test': { args: [target: NotifyTestTarget]; result: void }
   'notify:log': { args: [filter: NotifyLogFilter]; result: NotificationRecord[] }
+  'qa:dispatch': { args: [environmentId: string]; result: QaDispatch }
+  'qa:list': { args: []; result: QaDispatch[] }
   'snippets:list': { args: []; result: SnippetMeta[] }
   'snippets:create': { args: [input: SnippetInput]; result: SnippetMeta }
   'snippets:update': { args: [id: string, input: SnippetInput]; result: SnippetMeta }
@@ -352,6 +355,8 @@ export const CHANNELS = [
   'integration:update',
   'notify:test',
   'notify:log',
+  'qa:dispatch',
+  'qa:list',
   'snippets:list',
   'snippets:create',
   'snippets:update',
@@ -400,6 +405,8 @@ export interface EventContract {
   'app:navigate': { route: string }
   // One notification reached a terminal state (sent, failed or skipped); detail never holds a URL or value.
   'notify:sent': NotificationRecord
+  // A QA dispatch changed state (dispatched, running, passed, failed or unknown).
+  'qa:state': QaDispatch
 }
 export type EventName = keyof EventContract
 export const EVENTS = [
@@ -418,6 +425,7 @@ export const EVENTS = [
   'release:state',
   'app:navigate',
   'notify:sent',
+  'qa:state',
 ] as const satisfies readonly EventName[]
 type MissingEvents = Exclude<EventName, (typeof EVENTS)[number]>
 export const eventsAreComplete: [MissingEvents] extends [never] ? true : never = true

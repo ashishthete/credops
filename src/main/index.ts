@@ -24,11 +24,12 @@ import { createIdentityHandlers } from './ipc/handlers/identities'
 import { createDeployHandlers } from './ipc/handlers/deploy'
 import { createServiceHandlers } from './ipc/handlers/services'
 import { createSettingsHandlers } from './ipc/handlers/settings'
-import { createNotifyHandlers } from './ipc/handlers/notify'
+import { createNotifyHandlers, createQaHandlers } from './ipc/handlers/notify'
 import { MacNotifier } from './notify/macos'
 import { LocalSink } from './notify/sink'
 import { NotificationDispatcher } from './notify/dispatcher'
 import { createFinalizeSteps } from './notify/finalize'
+import { QaDispatcher, qaFinalizeStep } from './notify/qa'
 import { IntegrationStore } from './settings/integration-store'
 import { SettingsStore } from './settings/settings-store'
 import { detectTools } from './deploy/tooling'
@@ -99,6 +100,7 @@ let environments: EnvironmentStore | null = null
 let products: ProductStore | null = null
 let sessions: SessionManager | null = null
 let tunnelManager: TunnelManager | null = null
+let qaService: QaDispatcher | null = null
 let execLinks: ExecLinks | null = null
 let runManager: RunManager | null = null
 let containerService: ContainerService | null = null
@@ -225,6 +227,19 @@ if (!app.requestSingleInstanceLock()) {
       })
       notifyDispatcher.onSent((record) => pushEvent(mainWindow, 'notify:sent', record))
       service.onUnlock(() => void notifyDispatcher.flushPending())
+      const qa = new QaDispatcher({
+        secrets,
+        settings: settingsStore,
+        integrations,
+        fetch: globalThis.fetch,
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        audit: log,
+        dispatcher: notifyDispatcher,
+        runs: { runMeta: (id) => release.runMeta(id) },
+        knownSecrets,
+      })
+      qaService = qa
+      qa.onState((item) => pushEvent(mainWindow, 'qa:state', item))
       const snippets = new SnippetStore({ db, audit: log, vault: service })
       const deploys = new DeployStore({ db, audit: log, vault: service, secrets: dbSecretRefs(db) })
       deploys.onChanged = (environmentId) => pushEvent(mainWindow, 'deploy:changed', { environmentId })
@@ -300,7 +315,7 @@ if (!app.requestSingleInstanceLock()) {
         releases: releaseStore,
         runner: localRunner,
         access: localAllowAll,
-        finalize: createFinalizeSteps({ dispatcher: notifyDispatcher }),
+        finalize: createFinalizeSteps({ dispatcher: notifyDispatcher, qa: qaFinalizeStep({ qa, integrations }) }),
         audit: log,
         vault: service,
         resolve,
@@ -464,6 +479,7 @@ if (!app.requestSingleInstanceLock()) {
             copy: (req) => copyServices(copyDeps, req),
           }),
           ...createSettingsHandlers({ settings: settingsStore, integrations }),
+          ...createQaHandlers({ qa, integrations }),
           ...createNotifyHandlers({ db, sink: notifySink, settings: settingsStore, integrations, mac: macNotifier, audit: log, actor }),
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
           ...createOpsHandlers({ snippets, runs, containers }),
@@ -504,6 +520,7 @@ if (!app.requestSingleInstanceLock()) {
     }
     if (!audit || quitAudited) return
     quitAudited = true
+    qaService?.stop()
     try {
       tunnelManager?.stopAll('quit')
     } catch (err) {

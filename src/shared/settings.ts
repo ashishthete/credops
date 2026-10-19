@@ -67,6 +67,24 @@ export interface QaWorkflow {
   ref: string
 }
 
+export const QA_STATES = ['dispatched', 'running', 'passed', 'failed', 'unknown'] as const
+export type QaState = (typeof QA_STATES)[number]
+
+/** One QA workflow dispatch, kept in memory and pushed as `qa:state`. */
+export interface QaDispatch {
+  id: string
+  environmentId: string
+  releaseId: string | null
+  repo: string
+  workflow: string
+  ref: string
+  /** ISO time the dispatch was accepted. */
+  dispatchedAt: string
+  state: QaState
+  /** The workflow run's page, once found. */
+  htmlUrl: string | null
+}
+
 export interface EnvironmentIntegrations {
   environmentId: string
   notifyEvents: NotifyEventKey[]
