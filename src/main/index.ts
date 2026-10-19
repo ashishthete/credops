@@ -272,6 +272,7 @@ if (!app.requestSingleInstanceLock()) {
         resolve: (hostId, environmentId) => resolve(hostId, environmentId),
         audit: log,
         vault: service,
+        values: secrets!,
         client: () => hub.client(),
         hubId: () => {
           const s = hub.status()

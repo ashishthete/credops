@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -18,6 +18,7 @@ export interface TestHub {
   db: HubDb
   audit: HubAudit
   config: HubConfig
+  masterKey: Buffer
   logs: string[]
   entra: FakeEntra
   /** Mutable clock used by the app. */
@@ -50,9 +51,10 @@ export async function testHub(overrides: Partial<HubConfig> = {}): Promise<TestH
   const db = openHubDb(join(dataDir, 'hub.db'))
   const logs: string[] = []
   const audit = new HubAudit(db)
+  const masterKey = randomBytes(32)
   const clock = { now: new Date() }
   const verifier = new EntraVerifier(config.entra, { now: () => clock.now, jwksCooldownMs: 0 })
-  const app = buildApp({ config, db, audit, verifier, now: () => clock.now, ids: randomUUID, log: { write: (m) => void logs.push(m) } })
+  const app = buildApp({ config, db, audit, masterKey, verifier, now: () => clock.now, ids: randomUUID, log: { write: (m) => void logs.push(m) } })
   await app.ready()
   const signIn: TestHub['signIn'] = async (user) => {
     if (user) entra.setUser(user)
@@ -72,6 +74,7 @@ export async function testHub(overrides: Partial<HubConfig> = {}): Promise<TestH
     db,
     audit,
     config,
+    masterKey,
     logs,
     close: async () => {
       await app.close()

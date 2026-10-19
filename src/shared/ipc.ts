@@ -6,6 +6,9 @@ import type {
   HubAuditEvent,
   HubAuditFilter,
   HubCatalogEnv,
+  HubDeployKey,
+  HubSecretKind,
+  HubSecretMeta,
   HubDecision,
   HubGroup,
   HubPublishResult,
@@ -237,6 +240,12 @@ export interface IpcContract {
   'hub:publish': { args: [environmentId: string]; result: HubPublishResult }
   'hub:unpublish': { args: [environmentId: string]; result: void }
   'hub:adminEnvironments': { args: []; result: HubCatalogEnv[] }
+  // Shared secrets. No channel takes or returns a value: uploads read the local vault in main.
+  'hub:secrets': { args: [environmentId: string | null]; result: HubSecretMeta[] }
+  'hub:uploadSecrets': { args: [environmentId: string, secretIds?: string[]]; result: { uploaded: number } }
+  'hub:setIntegrationSecret': { args: [environmentId: string | null, kind: HubSecretKind, secretId: string]; result: void }
+  'hub:deleteSecret': { args: [id: string]; result: void }
+  'hub:deployKey': { args: [environmentId: string, rotate: boolean]; result: HubDeployKey }
   'snippets:list': { args: []; result: SnippetMeta[] }
   'snippets:create': { args: [input: SnippetInput]; result: SnippetMeta }
   'snippets:update': { args: [id: string, input: SnippetInput]; result: SnippetMeta }
@@ -385,6 +394,11 @@ export const CHANNELS = [
   'hub:publish',
   'hub:unpublish',
   'hub:adminEnvironments',
+  'hub:secrets',
+  'hub:uploadSecrets',
+  'hub:setIntegrationSecret',
+  'hub:deleteSecret',
+  'hub:deployKey',
   'snippets:list',
   'snippets:create',
   'snippets:update',

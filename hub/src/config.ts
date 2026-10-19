@@ -11,6 +11,8 @@ export interface HubConfig {
   entra: { tenantId: string; clientId: string; redirectUri: string; authority: string; jwksUri: string }
   firstAdmin: { oid?: string; upn?: string }
   sessionTtlHours: number
+  /** File holding the 32-byte base64 master key (mode 0600). The key itself is never in this JSON. */
+  masterKeyFile?: string
 }
 
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -97,6 +99,9 @@ export function loadConfig(file: string): HubConfig {
   const ttl = root.sessionTtlHours === undefined ? SESSION_TTL_HOURS : root.sessionTtlHours
   if (typeof ttl !== 'number' || !Number.isInteger(ttl) || ttl < 1 || ttl > 72) bad('sessionTtlHours', 'must be 1-72')
 
+  const masterKeyFile = root.masterKeyFile === undefined ? undefined : str(root.masterKeyFile, 'masterKeyFile')
+  if (root.masterKey !== undefined) bad('masterKey', 'is not allowed here; use masterKeyFile or OPSDECK_HUB_MASTER_KEY')
+
   return {
     name,
     listen: { host, port: port as number },
@@ -106,6 +111,7 @@ export function loadConfig(file: string): HubConfig {
     entra: { tenantId, clientId, redirectUri, authority, jwksUri },
     firstAdmin,
     sessionTtlHours: ttl as number,
+    ...(masterKeyFile ? { masterKeyFile } : {}),
   }
 }
 

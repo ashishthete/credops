@@ -274,6 +274,31 @@ export interface HubCatalogEnv {
   publishedBy: string
 }
 
+export const HUB_SECRET_KINDS = ['env', 'become', 'teams_webhook', 'sendgrid_api_key', 'github_token', 'anthropic_api_key'] as const
+export type HubSecretKind = (typeof HUB_SECRET_KINDS)[number]
+/** Kinds with a fixed name and no vault id; the rest are the publisher's vault secrets. */
+export const HUB_INTEGRATION_KINDS: readonly HubSecretKind[] = ['teams_webhook', 'sendgrid_api_key', 'github_token', 'anthropic_api_key']
+export const MAX_SECRET_NAME = 200
+
+/** What the Hub says about a stored secret: never a value, not even its length. */
+export interface HubSecretMeta {
+  id: string
+  environmentId: string | null
+  name: string
+  kind: HubSecretKind
+  updatedBy: string
+  updatedAt: string
+}
+export interface HubSecretList {
+  secrets: HubSecretMeta[]
+  /** Required by the published environment but not yet set, by environment id. */
+  missing: Record<string, { secretId: string; name: string }[]>
+}
+export interface HubDeployKey {
+  publicKey: string
+  fingerprint: string
+}
+
 export interface HubPublishResult {
   manifestHash: string
   missingSecrets: string[]

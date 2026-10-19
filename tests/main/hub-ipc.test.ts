@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { IpcMainInvokeEvent } from 'electron'
+import { HubError } from '../../src/main/hub/client'
 import { createHubHandlers } from '../../src/main/ipc/handlers/hub'
 import { registerHandlers } from '../../src/main/ipc/register'
 import { VALIDATORS } from '../../src/main/ipc/validators'
@@ -11,7 +12,7 @@ const UUID = '11111111-1111-4111-8111-111111111111'
 
 describe('hub ipc validators', () => {
   it('every new channel has a validator', () => {
-    expect(HUB_CHANNELS).toHaveLength(24)
+    expect(HUB_CHANNELS).toHaveLength(29)
     for (const c of HUB_CHANNELS) expect(typeof VALIDATORS[c]).toBe('function')
   })
 
@@ -66,7 +67,7 @@ describe('hub handlers', () => {
       unlink: vi.fn(),
       me: vi.fn(),
     }
-    const handlers = createHubHandlers({ conn: conn as never, vault, audit, catalog: { refresh: vi.fn(async () => []) }, publisher: { publish: vi.fn(async () => ({ manifestHash: 'h', missingSecrets: [] })), unpublish: vi.fn(async () => undefined) } })
+    const handlers = createHubHandlers({ conn: conn as never, vault, audit, catalog: { refresh: vi.fn(async () => []) }, publisher: { publish: vi.fn(async () => ({ manifestHash: 'h', missingSecrets: [] })), unpublish: vi.fn(async () => undefined), uploadSecrets: vi.fn(async () => ({ uploaded: 0 })), setIntegrationSecret: vi.fn(async () => undefined) } })
     const registered = new Map<string, (...a: unknown[]) => unknown>()
     registerHandlers({ handle: (c: string, fn: never) => void registered.set(c, fn) }, stubHandlers(handlers), (u) => u === 'file:///ok', {
       validators: VALIDATORS,
@@ -115,5 +116,26 @@ describe('hub handlers', () => {
     const err = await t.call('hub:createGroup', { name: 'Ops' }).catch((e: unknown) => e)
     expect((err as Error).message).not.toContain('tok-secret-123')
     expect(t.audit.append).not.toHaveBeenCalled()
+  })
+
+  it('secret channels return metadata only and deploy keys fall back from get to create', async () => {
+    const meta = { id: UUID, environmentId: null, name: 'x', kind: 'github_token', updatedBy: 'a@b', updatedAt: 't' }
+    const client = {
+      get: vi.fn(async (path: string) => {
+        if (path.endsWith('/deploy-key')) throw new HubError('not_found', 'Not found', 404)
+        return { secrets: [meta], missing: {} }
+      }),
+      post: vi.fn(async () => ({ publicKey: 'ssh-ed25519 AAA c', fingerprint: 'SHA256:x' })),
+      del: vi.fn(async () => undefined),
+    }
+    const t = setup(client)
+    await expect(t.call('hub:secrets', null)).resolves.toEqual([meta])
+    expect(client.get).toHaveBeenCalledWith('/api/v1/admin/secrets', undefined)
+    await expect(t.call('hub:deployKey', UUID, false)).resolves.toEqual({ publicKey: 'ssh-ed25519 AAA c', fingerprint: 'SHA256:x' })
+    expect(client.post).toHaveBeenCalledWith(`/api/v1/admin/environments/${UUID}/deploy-key`)
+    await t.call('hub:deleteSecret', UUID)
+    expect(client.del).toHaveBeenCalledWith(`/api/v1/admin/secrets/${UUID}`)
+    const ops = t.audit.append.mock.calls.map((c) => (c[0] as { details: { op: string } }).details.op)
+    expect(ops).toEqual(['deploykey.create', 'secret.delete'])
   })
 })

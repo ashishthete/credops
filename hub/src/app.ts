@@ -13,6 +13,10 @@ import { registerAccess } from './routes/access'
 import { registerAdmin } from './routes/admin'
 import { Registry } from './registry'
 import { registerRegistry } from './routes/registry'
+import { registerSecrets } from './routes/secrets'
+import { DeployKeys } from './secrets/deploykeys'
+import { KeyRing } from './secrets/keyring'
+import { SecretStore } from './secrets/store'
 import { registerMeta } from './routes/meta'
 import { registerSession } from './routes/session'
 
@@ -20,6 +24,8 @@ export interface HubDeps {
   config: HubConfig
   db: HubDb
   audit: HubAudit
+  /** The 32-byte master key; boot fails when it is not the one this database was sealed with. */
+  masterKey: Buffer
   verifier: Pick<EntraVerifier, 'verify'>
   now: () => Date
   ids: () => string
@@ -28,6 +34,9 @@ export interface HubDeps {
 }
 
 export function buildApp(deps: HubDeps): FastifyInstance {
+  const ring = new KeyRing(deps.db, deps.masterKey)
+  const secrets = new SecretStore(deps.db, ring, { audit: deps.audit, now: deps.now, ids: deps.ids })
+  const deployKeys = new DeployKeys(deps.db, ring, { now: deps.now })
   const app = Fastify({
     bodyLimit: HUB_BODY_LIMIT,
     ...(deps.config.tls
@@ -46,7 +55,7 @@ export function buildApp(deps: HubDeps): FastifyInstance {
       ...(deps.log ? { stream: deps.log } : {}),
     },
   })
-  installErrorHandler(app, () => [])
+  installErrorHandler(app, () => [...secrets.inflight])
   app.addHook('onClose', async () => {
     deps.audit.append({ action: 'hub.stop', outcome: 'info', actor: null })
   })
@@ -59,5 +68,6 @@ export function buildApp(deps: HubDeps): FastifyInstance {
   registerAccess(app, { directory, auth })
   const registry = new Registry(deps.db, { audit: deps.audit, directory, now: deps.now })
   registerRegistry(app, { registry, directory, auth })
+  registerSecrets(app, { secrets, deployKeys, registry, directory, audit: deps.audit, auth })
   return app
 }

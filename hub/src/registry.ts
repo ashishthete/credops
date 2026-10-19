@@ -322,15 +322,31 @@ export class Registry {
   }
 
   private secretIdsPresent(environmentId: string): Set<string> {
-    if (!this.hasTable('hub_secrets')) return new Set()
     const rows = this.db.prepare('SELECT id FROM hub_secrets WHERE environment_id = ? OR environment_id IS NULL').all(environmentId) as { id: string }[]
     return new Set(rows.map((r) => r.id))
   }
 
   private deployKey(environmentId: string): { fingerprint: string } | null {
-    if (!this.hasTable('env_deploy_keys')) return null
     const r = this.db.prepare('SELECT fingerprint FROM env_deploy_keys WHERE environment_id = ?').get(environmentId) as { fingerprint: string } | undefined
     return r ? { fingerprint: r.fingerprint } : null
+  }
+
+  /** What each published environment still needs: its `requiredSecrets` that have no Hub secret yet. */
+  required(environmentId?: string): { environmentId: string; secretId: string; name: string }[] {
+    const rows = (
+      environmentId === undefined
+        ? this.db.prepare('SELECT id, integrations FROM environments ORDER BY name, id').all()
+        : this.db.prepare('SELECT id, integrations FROM environments WHERE id = ?').all(environmentId)
+    ) as { id: string; integrations: string }[]
+    return rows.flatMap((r) => {
+      const present = this.secretIdsPresent(r.id)
+      const stored = JSON.parse(r.integrations) as { requiredSecrets: HubEnvManifest['requiredSecrets'] }
+      return stored.requiredSecrets.filter((s) => !present.has(s.secretId)).map((s) => ({ environmentId: r.id, secretId: s.secretId, name: s.name }))
+    })
+  }
+
+  nameOf(environmentId: string): string | null {
+    return (this.db.prepare('SELECT name FROM environments WHERE id = ?').get(environmentId) as { name: string } | undefined)?.name ?? null
   }
 
   exists(environmentId: string): boolean {

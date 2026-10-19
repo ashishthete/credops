@@ -63,7 +63,7 @@ import {
   type ReleaseConfirm,
   type ReleaseListFilter,
 } from '../../shared/deploy'
-import { GROUP_NAME, HUB_AUDIT_ACTIONS, MAX_BULK_MEMBERS, MAX_GROUP_DESCRIPTION } from '../../shared/hub'
+import { GROUP_NAME, HUB_AUDIT_ACTIONS, HUB_INTEGRATION_KINDS, MAX_BULK_MEMBERS, MAX_GROUP_DESCRIPTION } from '../../shared/hub'
 import { BIND_ADDRESS, MAX_BIND_ADDRESS, type TunnelInput, type TunnelPatch } from '../../shared/tunnels'
 import { MAX_COLS, MAX_ROWS, MAX_WRITE_CHARS, type OpenLocalRequest, type OpenSshRequest, type PromptAnswer } from '../../shared/ssh'
 import {
@@ -655,6 +655,11 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'hub:publish': args(v.uuid()),
   'hub:unpublish': args(v.uuid()),
   'hub:adminEnvironments': args(),
+  'hub:secrets': args(v.nullable(v.uuid())),
+  'hub:uploadSecrets': args(v.uuid(), v.optional(v.array(v.uuid(), 200, { min: 1 }))),
+  'hub:setIntegrationSecret': args(v.nullable(v.uuid()), v.oneOf(HUB_INTEGRATION_KINDS), v.uuid()),
+  'hub:deleteSecret': args(v.uuid()),
+  'hub:deployKey': args(v.uuid(), v.bool()),
   'snippets:list': args(),
   'snippets:create': args(asSnippetInput),
   'snippets:update': args(v.uuid(), asSnippetInput),

@@ -6,7 +6,9 @@ import type {
   HubAuditEvent,
   HubCatalogEnv,
   HubDecision,
+  HubDeployKey,
   HubGroup,
+  HubSecretList,
   HubUser,
 } from '../../../shared/hub'
 import type { Handlers } from '../../../shared/ipc'
@@ -25,7 +27,7 @@ export function createHubHandlers(deps: {
   vault: { assertUnlocked(): void }
   audit: { append(input: AuditInput): unknown }
   catalog: Pick<HubCatalog, 'refresh'>
-  publisher: Pick<HubPublisher, 'publish' | 'unpublish'>
+  publisher: Pick<HubPublisher, 'publish' | 'unpublish' | 'uploadSecrets' | 'setIntegrationSecret'>
 }): Pick<Handlers, HubChannel> {
   const { conn, vault, audit, catalog, publisher } = deps
   const record = (op: string, target: string): void => {
@@ -112,6 +114,24 @@ export function createHubHandlers(deps: {
     // The publisher audits `hub.publish` / `hub.unpublish` itself, with counts and no addresses.
     'hub:publish': (environmentId) => publisher.publish(environmentId),
     'hub:unpublish': (environmentId) => publisher.unpublish(environmentId),
+    // Secrets: the publisher reads values from the vault in main and audits `hub.secret.set`.
+    'hub:secrets': async (environmentId) =>
+      (await conn.client().get<HubSecretList>(`${ADMIN}/secrets`, environmentId ? { environmentId } : undefined)).secrets,
+    'hub:uploadSecrets': (environmentId, secretIds) => publisher.uploadSecrets(environmentId, secretIds),
+    'hub:setIntegrationSecret': (environmentId, kind, secretId) => publisher.setIntegrationSecret(environmentId, kind, secretId),
+    'hub:deleteSecret': (id) => mutate(() => [['secret.delete', id]], () => conn.client().del(`${ADMIN}/secrets/${id}`)),
+    'hub:deployKey': async (environmentId, rotate) => {
+      vault.assertUnlocked()
+      const path = `${ADMIN}/environments/${environmentId}/deploy-key`
+      if (!rotate) {
+        try {
+          return await conn.client().get<HubDeployKey>(path)
+        } catch (err) {
+          if (!(err instanceof HubError) || err.code !== 'not_found') throw err
+        }
+      }
+      return mutate(() => [[rotate ? 'deploykey.rotate' : 'deploykey.create', environmentId]], () => conn.client().post<HubDeployKey>(path))
+    },
     'hub:adminEnvironments': () => conn.client().get<HubCatalogEnv[]>(`${ADMIN}/environments`),
   }
 }

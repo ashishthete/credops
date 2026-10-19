@@ -61,9 +61,20 @@ CREATE TABLE deployments(id TEXT PRIMARY KEY, environment_id TEXT NOT NULL REFER
   position INTEGER NOT NULL, meta TEXT NOT NULL);
 `
 
+const SECRETS = `
+CREATE TABLE hub_secrets(id TEXT PRIMARY KEY, environment_id TEXT REFERENCES environments(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('env','become','teams_webhook','sendgrid_api_key','github_token','anthropic_api_key')),
+  value_enc TEXT NOT NULL, key_id TEXT NOT NULL, updated_by TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE UNIQUE INDEX hub_secrets_name ON hub_secrets(IFNULL(environment_id,'*'), name);
+CREATE TABLE env_deploy_keys(environment_id TEXT PRIMARY KEY REFERENCES environments(id) ON DELETE CASCADE,
+  public_key TEXT NOT NULL, fingerprint TEXT NOT NULL, private_enc TEXT NOT NULL, key_id TEXT NOT NULL,
+  created_at TEXT NOT NULL);
+`
+
 export const HUB_MIGRATIONS: Migration[] = [
   { version: 1, name: 'core', up: CORE },
   { version: 2, name: 'registry', up: REGISTRY },
+  { version: 3, name: 'secrets', up: SECRETS },
 ]
 
 export function openHubDb(file: string): HubDb {
