@@ -7,6 +7,7 @@ import {
   MIN_MASTER_PASSWORD,
   VAULT_COLOR,
   VAULT_LOCKED,
+  VAULT_RESET_CONFIRM,
   type LockReason,
   type QuickUnlockMode,
   type UnlockResult,
@@ -387,6 +388,53 @@ export class VaultService {
         this.audit.append({ action: 'vault.quickunlock', outcome: 'info', details: { mode: 'off', reason: 'rekey' } })
       }
       return { ok: true }
+    })
+  }
+
+  /**
+   * The forgotten-password way out: erases every secret, key and identity in every vault, unkeys
+   * the vaults (so the next step is setup) and turns quick unlock off. Vault names and the
+   * inventory stay; its references to identities are cleared. Only while locked: an unlocked user
+   * changes the password instead. The audit log is kept.
+   */
+  reset(confirm: string): Promise<VaultStatus> {
+    return this.serial(async () => {
+      if (confirm !== VAULT_RESET_CONFIRM) throw new Error(`type ${VAULT_RESET_CONFIRM} to confirm`)
+      if (this.kek) throw new Error('vaults are unlocked: change the master password in settings instead')
+      let counts = { vaults: 0, items: 0 }
+      this.tx(() => {
+        const n = (sql: string): number => Number((this.db.prepare(sql).get() as { n: number }).n)
+        counts = {
+          vaults: n('SELECT COUNT(*) AS n FROM vaults'),
+          items: n('SELECT (SELECT COUNT(*) FROM secrets) + (SELECT COUNT(*) FROM ssh_keys) + (SELECT COUNT(*) FROM identities) AS n'),
+        }
+        const ts = this.now().toISOString()
+        // Inventory that points at identities: cleared, not deleted (the FKs say SET NULL; done
+        // explicitly so it holds with foreign_keys off too, and so updated_at moves).
+        this.db.prepare('UPDATE hosts SET identity_id = NULL, updated_at = ? WHERE identity_id IS NOT NULL').run(ts)
+        this.db
+          .prepare('UPDATE environments SET default_identity_id = NULL, updated_at = ? WHERE default_identity_id IS NOT NULL')
+          .run(ts)
+        // Identities reference keys, so they go first.
+        for (const table of ['identities', 'ssh_keys', 'secrets']) this.db.prepare(`DELETE FROM ${table}`).run()
+        this.db.prepare('UPDATE vaults SET wrapped_key = NULL, kdf_params = NULL, updated_at = ?').run(ts)
+        this.db
+          .prepare(
+            "UPDATE vault_state SET quick_unlock = 'off', quick_unlock_blob = NULL, failed_attempts = 0, last_failed_at = NULL WHERE id = 1",
+          )
+          .run()
+      })
+      // Locked already, so nothing should be live; drop it anyway and abandon any password work in flight.
+      this.epoch++
+      this.unlockedPending = false
+      if (this.kek) zero(this.kek)
+      zero(this.keys.values())
+      this.kek = null
+      this.keys.clear()
+      this.corrupt = []
+      this.known.clear()
+      this.audit.append({ action: 'vault.reset', outcome: 'success', details: counts })
+      return this.status()
     })
   }
 

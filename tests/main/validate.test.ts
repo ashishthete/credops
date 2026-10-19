@@ -77,5 +77,9 @@ describe('validate', () => {
     expect(V['vault:setAutoLock']([60])).toEqual([60])
     expect(() => V['vault:setAutoLock']([7])).toThrow(/not an allowed value/)
     expect(() => V['vault:setAutoLock'](['5'])).toThrow(/not an allowed value/)
+    // The service decides whether the word is right; the boundary only bounds it.
+    expect(V['vault:reset'](['RESET', 'extra'])).toEqual(['RESET'])
+    expect(() => V['vault:reset']([])).toThrow(/must be a string/)
+    expect(() => V['vault:reset'](['x'.repeat(65)])).toThrow(InvalidArgs)
   })
 })

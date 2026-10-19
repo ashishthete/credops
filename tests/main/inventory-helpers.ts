@@ -12,6 +12,8 @@ import { TunnelStore } from '../../src/main/tunnels/tunnel-store'
 import { KeyStore } from '../../src/main/vault/key-store'
 import type { IdentityMeta } from '../../src/shared/vault'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
+import type { Db } from '../../src/main/db/connection'
+import type { QuickUnlockDeps } from '../../src/main/vault/vault-service'
 import { makeVault, type VaultFixture } from './vault-helpers'
 
 export type InventoryFixture = VaultFixture & {
@@ -29,8 +31,8 @@ export type InventoryFixture = VaultFixture & {
 
 let n = 0
 
-export async function makeInventory(): Promise<InventoryFixture> {
-  const f = makeVault()
+export async function makeInventory(opts: { db?: Db; quick?: QuickUnlockDeps } = {}): Promise<InventoryFixture> {
+  const f = makeVault(opts)
   await f.vault.setup('correct horse')
   const home = mkdtempSync(join(tmpdir(), 'opsdeck-inv-'))
   const sshDir = join(home, '.ssh')

@@ -82,6 +82,7 @@ export interface IpcContract {
   'vault:delete': { args: [id: string]; result: void }
   'vault:setQuickUnlock': { args: [mode: QuickUnlockMode]; result: VaultStatus }
   'vault:setAutoLock': { args: [minutes: number | null]; result: VaultStatus }
+  'vault:reset': { args: [confirm: string]; result: VaultStatus }
   'secret:list': { args: [vaultId?: string]; result: SecretMeta[] }
   'secret:create': { args: [input: SecretInput]; result: SecretMeta }
   'secret:update': { args: [id: string, patch: SecretPatch]; result: SecretMeta }
@@ -165,6 +166,7 @@ export const CHANNELS = [
   'vault:delete',
   'vault:setQuickUnlock',
   'vault:setAutoLock',
+  'vault:reset',
   'secret:list',
   'secret:create',
   'secret:update',

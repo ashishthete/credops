@@ -16,6 +16,7 @@ export const AUDIT_ACTIONS = [
   'vault.create',
   'vault.update',
   'vault.delete',
+  'vault.reset',
   'secret.create',
   'secret.update',
   'secret.delete',
