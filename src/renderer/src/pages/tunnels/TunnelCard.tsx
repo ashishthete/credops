@@ -247,6 +247,20 @@ export const STATE_WORD: Record<TunnelState, string> = {
   failed: 'Failed',
 }
 
+/** The state word's colour: green only when up, red only when failed. */
+const STATE_TONE: Record<TunnelState, string> = {
+  stopped: 'text-muted',
+  connecting: 'text-muted',
+  up: 'text-ok',
+  retrying: 'text-muted',
+  failed: 'text-err',
+}
+
+/** The state's word in its colour, for the compact tunnel rows (host page, map panel, map list). */
+export function TunnelStateWord({ state }: { state: TunnelState }) {
+  return <span className={`shrink-0 text-[11.5px] ${STATE_TONE[state]}`}>{STATE_WORD[state]}</span>
+}
+
 /** The status dot's colour per state. */
 export const STATE_DOT: Record<TunnelState, string> = {
   stopped: 'bg-muted/50 text-muted',

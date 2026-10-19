@@ -8,7 +8,7 @@ import { OS_META } from '../pages/hosts/HostDialog'
 import { PRODUCT_ICON } from '../pages/products/ProductDialog'
 import { GlowDot, ROLE_LABEL } from '../pages/products/ProductView'
 import { RouteLine } from '../pages/tunnels/RouteLine'
-import { STATE_WORD, StatusLine, TUNNEL_TYPE, TunnelSwitch } from '../pages/tunnels/TunnelCard'
+import { StatusLine, TUNNEL_TYPE, TunnelStateWord, TunnelSwitch } from '../pages/tunnels/TunnelCard'
 import { useConnect } from '../terminal/connect'
 import { tunnelStore, useTunnel } from '../tunnels/store'
 import { Badge } from '../ui/Badge'
@@ -285,9 +285,7 @@ function TunnelRow({ id }: { id: string }) {
       <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium" title={meta.label}>
         {meta.label}
       </span>
-      <span className={`shrink-0 text-[11.5px] ${state === 'failed' ? 'text-err' : state === 'up' ? 'text-ok' : 'text-muted'}`}>
-        {STATE_WORD[state]}
-      </span>
+      <TunnelStateWord state={state} />
       <TunnelSwitch id={id} label={meta.label} state={state} />
     </li>
   )

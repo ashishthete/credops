@@ -1,7 +1,7 @@
 import { Network, SquareTerminal } from 'lucide-react'
 import { memo, useMemo } from 'react'
 import { ROLE_LABEL } from '../pages/products/ProductView'
-import { STATE_WORD, TUNNEL_TYPE, TunnelSwitch } from '../pages/tunnels/TunnelCard'
+import { TUNNEL_TYPE, TunnelStateWord, TunnelSwitch } from '../pages/tunnels/TunnelCard'
 import { useTunnel } from '../tunnels/store'
 import { Button } from '../ui/Button'
 import type { EnvironmentNodeData, HostNodeData, MapGraph } from './graph'
@@ -155,7 +155,7 @@ function TunnelItem({ id }: { id: string }) {
       <span className="min-w-0 flex-1 truncate" title={meta.label}>
         {meta.label}
       </span>
-      <span className={`shrink-0 text-[11.5px] ${state === 'failed' ? 'text-err' : state === 'up' ? 'text-ok' : 'text-muted'}`}>{STATE_WORD[state]}</span>
+      <TunnelStateWord state={state} />
       <TunnelSwitch id={id} label={meta.label} state={state} />
     </li>
   )

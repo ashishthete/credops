@@ -2,11 +2,10 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Plus } from 'lucide-react'
 import { useMemo, useState, useSyncExternalStore } from 'react'
 import type { TunnelMeta } from '../../../../shared/tunnels'
-import { startTunnel, stopTunnel, tunnelStore, useTunnel } from '../../tunnels/store'
+import { tunnelStore, useTunnel } from '../../tunnels/store'
 import { fast, spring, useMotionSafe } from '../../ui/motion'
-import { Switch } from '../../ui/Switch'
 import { hostPort } from '../tunnels/RouteLine'
-import { isRunning, STATE_DOT, STATE_WORD, TUNNEL_TYPE } from '../tunnels/TunnelCard'
+import { STATE_DOT, TUNNEL_TYPE, TunnelStateWord, TunnelSwitch } from '../tunnels/TunnelCard'
 import { TunnelDialog, type TunnelRequest } from '../tunnels/TunnelDialog'
 
 /** `127.0.0.1:5433 → localhost:5432`, `web-1:8080 → localhost:3000`, `SOCKS on 127.0.0.1:1080`. */
@@ -70,8 +69,6 @@ export function HostTunnels({ hostId, hostLabel, environmentId }: HostTunnelsPro
 function TunnelRow({ id, hostLabel }: { id: string; hostLabel: string }) {
   const motionSafe = useMotionSafe()
   const { meta, runtime } = useTunnel(id)
-  // A start or stop awaiting its reply; connecting stays clickable so it can be cancelled.
-  const [inFlight, setInFlight] = useState(false)
   if (!meta) return null
   const state = runtime?.state ?? 'stopped'
   const kind = TUNNEL_TYPE[meta.type]
@@ -88,19 +85,8 @@ function TunnelRow({ id, hostLabel }: { id: string; hostLabel: string }) {
         {kind.chip}
       </span>
       <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-muted">{routeSummary(meta, hostLabel)}</span>
-      <span className={`shrink-0 text-[11.5px] ${state === 'failed' ? 'text-err' : state === 'up' ? 'text-ok' : 'text-muted'}`}>
-        {STATE_WORD[state]}
-      </span>
-      <Switch
-        label={`Run ${meta.label}`}
-        checked={isRunning(state)}
-        busy={inFlight}
-        pending={state === 'connecting'}
-        onChange={(on) => {
-          setInFlight(true)
-          void (on ? startTunnel(id) : stopTunnel(id)).finally(() => setInFlight(false))
-        }}
-      />
+      <TunnelStateWord state={state} />
+      <TunnelSwitch id={id} label={meta.label} state={state} />
     </div>
   )
 }
