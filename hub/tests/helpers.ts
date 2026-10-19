@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { FastifyInstance } from 'fastify'
+import { startFakeEntra, type FakeEntra } from '../../tests/main/fake-entra'
+import { EntraVerifier } from '../src/auth/entra'
 import { HubAudit } from '../src/audit'
 import { buildApp } from '../src/app'
 import type { HubConfig } from '../src/config'
@@ -17,10 +19,16 @@ export interface TestHub {
   audit: HubAudit
   config: HubConfig
   logs: string[]
+  entra: FakeEntra
+  /** Mutable clock used by the app. */
+  clock: { now: Date }
+  /** Signs the fake user in through POST /api/v1/session. */
+  signIn: (user?: { oid: string; upn: string; name: string }) => Promise<{ status: number; token: string; body: any }>
   close: () => Promise<void>
 }
 
 export async function testHub(overrides: Partial<HubConfig> = {}): Promise<TestHub> {
+  const entra = await startFakeEntra({ tenantId: TENANT, clientId: CLIENT })
   const dataDir = mkdtempSync(join(tmpdir(), 'opsdeck-hub-'))
   const config: HubConfig = {
     name: 'Test Hub',
@@ -32,8 +40,8 @@ export async function testHub(overrides: Partial<HubConfig> = {}): Promise<TestH
       tenantId: TENANT,
       clientId: CLIENT,
       redirectUri: 'http://127.0.0.1/callback',
-      authority: `https://login.microsoftonline.com/${TENANT}/v2.0`,
-      jwksUri: `https://login.microsoftonline.com/${TENANT}/discovery/v2.0/keys`,
+      authority: entra.issuer,
+      jwksUri: `${entra.issuer.replace('/v2.0', '')}/discovery/v2.0/keys`,
     },
     firstAdmin: { upn: 'admin@example.com' },
     sessionTtlHours: 12,
@@ -42,9 +50,24 @@ export async function testHub(overrides: Partial<HubConfig> = {}): Promise<TestH
   const db = openHubDb(join(dataDir, 'hub.db'))
   const logs: string[] = []
   const audit = new HubAudit(db)
-  const app = buildApp({ config, db, audit, now: () => new Date(), ids: randomUUID, log: { write: (m) => void logs.push(m) } })
+  const clock = { now: new Date() }
+  const verifier = new EntraVerifier(config.entra, { now: () => clock.now, jwksCooldownMs: 0 })
+  const app = buildApp({ config, db, audit, verifier, now: () => clock.now, ids: randomUUID, log: { write: (m) => void logs.push(m) } })
   await app.ready()
+  const signIn: TestHub['signIn'] = async (user) => {
+    if (user) entra.setUser(user)
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/session',
+      headers: { authorization: `Bearer ${entra.mintAccessToken()}` },
+    })
+    const body = res.json()
+    return { status: res.statusCode, token: body.token ?? '', body }
+  }
   return {
+    entra,
+    clock,
+    signIn,
     app,
     db,
     audit,
@@ -53,6 +76,7 @@ export async function testHub(overrides: Partial<HubConfig> = {}): Promise<TestH
     close: async () => {
       await app.close()
       db.close()
+      await entra.close()
       rmSync(dataDir, { recursive: true, force: true })
     },
   }

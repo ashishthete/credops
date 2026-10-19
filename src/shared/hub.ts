@@ -98,3 +98,18 @@ export interface HubIdentity {
   upn: string
   name: string
 }
+
+export interface HubUser extends HubIdentity {
+  role: HubRole
+  status: HubUserStatus
+  groupIds: string[]
+  createdAt: string
+  lastSeenAt: string | null
+}
+
+/** The only payload that carries a Hub session token. */
+export interface HubSession {
+  token: string
+  expiresAt: string
+  user: HubUser
+}

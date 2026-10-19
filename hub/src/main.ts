@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { HubAudit } from './audit'
+import { EntraVerifier } from './auth/entra'
 import { buildApp } from './app'
 import { checkDataDir, loadConfig } from './config'
 import { openHubDb } from './db'
@@ -10,7 +11,7 @@ async function serve(configFile: string): Promise<void> {
   checkDataDir(config.dataDir)
   const db = openHubDb(join(config.dataDir, 'hub.db'))
   const audit = new HubAudit(db)
-  const app = buildApp({ config, db, audit, now: () => new Date(), ids: randomUUID })
+  const app = buildApp({ config, db, audit, verifier: new EntraVerifier(config.entra), now: () => new Date(), ids: randomUUID })
   const shutdown = (): void => {
     void app.close().finally(() => {
       db.close()

@@ -1,16 +1,21 @@
 import { readFileSync } from 'node:fs'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { HUB_BODY_LIMIT } from '../../src/shared/hub'
+import { Directory } from './access/directory'
+import type { EntraVerifier } from './auth/entra'
+import { SessionStore } from './auth/sessions'
 import type { HubAudit } from './audit'
 import type { HubConfig } from './config'
 import type { HubDb } from './db'
 import { installErrorHandler } from './errors'
 import { registerMeta } from './routes/meta'
+import { registerSession } from './routes/session'
 
 export interface HubDeps {
   config: HubConfig
   db: HubDb
   audit: HubAudit
+  verifier: Pick<EntraVerifier, 'verify'>
   now: () => Date
   ids: () => string
   /** pino destination; defaults to stdout */
@@ -41,5 +46,8 @@ export function buildApp(deps: HubDeps): FastifyInstance {
     deps.audit.append({ action: 'hub.stop', outcome: 'info', actor: null })
   })
   registerMeta(app, deps)
+  const sessions = new SessionStore(deps.db, { now: deps.now, ttlHours: deps.config.sessionTtlHours })
+  const directory = new Directory(deps.db, { firstAdmin: deps.config.firstAdmin, now: deps.now })
+  registerSession(app, { audit: deps.audit, verifier: deps.verifier, sessions, directory, now: deps.now })
   return app
 }
