@@ -173,6 +173,35 @@ describe('deploy wizard', () => {
     expect(within(dialog).getByText('db (database, skipped)')).toBeInTheDocument()
   })
 
+  it('a compose database shows as a skipped row with no checkbox and stays out of the notice', async () => {
+    const done = report({
+      composeServices: { d3: ['site', 'site-worker', 'redis', 'postgres'] },
+      composeDatabases: { d3: ['postgres'] },
+      checks: [check({ id: 'repo', deploymentId: 'd3', hostId: 'h2' })],
+    })
+    const { user, dialog } = await mount({ preselect: ['s3'], persisted: events([{ type: 'preflight.done', report: done }]) })
+    await preflight(user, dialog)
+    const row = await within(dialog).findByText('postgres (database, skipped)')
+    expect(within(row).queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('checkbox', { name: /postgres/ })).not.toBeInTheDocument()
+    const notice = within(dialog).getByRole('list', { name: 'What happens to site' })
+    await waitFor(() => expect(within(notice).getByText("Compose services OpsDeck doesn't track (redis) are not restarted.")).toBeInTheDocument())
+    expect(notice.textContent).not.toContain('postgres')
+  })
+
+  it('without composeDatabases no database rows appear', async () => {
+    const done = report({
+      composeServices: { d3: ['site', 'site-worker', 'postgres'] },
+      checks: [check({ id: 'repo', deploymentId: 'd3', hostId: 'h2' })],
+    })
+    const { user, dialog } = await mount({ preselect: ['s3'], persisted: events([{ type: 'preflight.done', report: done }]) })
+    await preflight(user, dialog)
+    const notice = await within(dialog).findByRole('list', { name: 'What happens to site' })
+    await waitFor(() => expect(within(notice).getByText("Compose services OpsDeck doesn't track (postgres) are not restarted.")).toBeInTheDocument())
+    expect(within(dialog).queryByRole('list', { name: 'Databases' })).not.toBeInTheDocument()
+    expect(within(dialog).queryByText(/\(database, skipped\)/)).not.toBeInTheDocument()
+  })
+
   it('notice mentions the managed .env rewrite', async () => {
     const { dialog } = await mount({ preselect: ['s3'] })
     const notice = within(group(dialog, 'site')).getByRole('list', { name: 'What happens to site' })
