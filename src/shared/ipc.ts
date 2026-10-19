@@ -200,6 +200,14 @@ export interface IpcContract {
   'service:reorder': { args: [environmentId: string, ids: string[]]; result: void }
   // One transaction and one `services.copy` audit; name conflicts come back in `skipped`.
   'service:copy': { args: [req: CopyServicesRequest]; result: CopyServicesResult }
+  // A kind `service` with a checkout: `docker compose logs -f` streamed as `containers:logs`; stop it with `containers:unfollow`.
+  'service:logs': { args: [id: string, tail: number]; result: string }
+  // Opens the stored URL in the browser; refused when the service has none.
+  'service:open': { args: [id: string]; result: void }
+  // A db service's Phase 5 tunnel: open creates it on first use and starts it; sync applies a changed route.
+  'service:tunnelOpen': { args: [id: string]; result: TunnelRuntime }
+  'service:tunnelClose': { args: [id: string]; result: void }
+  'service:tunnelSync': { args: [id: string]; result: TunnelRuntime | null }
   'snippets:list': { args: []; result: SnippetMeta[] }
   'snippets:create': { args: [input: SnippetInput]; result: SnippetMeta }
   'snippets:update': { args: [id: string, input: SnippetInput]; result: SnippetMeta }
@@ -326,6 +334,11 @@ export const CHANNELS = [
   'service:delete',
   'service:reorder',
   'service:copy',
+  'service:logs',
+  'service:open',
+  'service:tunnelOpen',
+  'service:tunnelClose',
+  'service:tunnelSync',
   'snippets:list',
   'snippets:create',
   'snippets:update',

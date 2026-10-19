@@ -295,7 +295,7 @@ export class ServiceStore {
   setTunnel(id: string, tunnelId: string | null, localPort: number | null): DbServiceMeta {
     this.vault.assertUnlocked()
     const before = this.get(id)
-    if (before.kind !== 'db') throw new Error('that field does not apply to a service service')
+    if (before.kind !== 'db') throw new Error('only a db service has a tunnel')
     inTransaction(this.db, () => {
       if (tunnelId !== null && !this.db.prepare('SELECT 1 FROM tunnels WHERE id = ?').get(tunnelId)) throw new Error('tunnel not found')
       const port = localPort === null ? null : checkPort(localPort)

@@ -266,7 +266,7 @@ describe('ServiceStore', () => {
     const tunnel = f.tunnels.create({ label: 'db', hostId: f.host.id, type: 'L', bindAddress: '127.0.0.1', bindPort: 15432, targetHost: '10.0.0.9', targetPort: 5432 })
     const before = auditRows(f.db)
     expect(f.services.setTunnel(d.id, tunnel.id, 15432)).toMatchObject({ tunnelId: tunnel.id, localPort: 15432 })
-    expect(message(() => f.services.setTunnel(s.id, null, null))).toBe('that field does not apply to a service service')
+    expect(message(() => f.services.setTunnel(s.id, null, null))).toBe('only a db service has a tunnel')
     f.services.recordDeployed([{ serviceId: s.id, commit: 'abc1234', releaseId: null }])
     expect(f.services.get(s.id)).toMatchObject({ lastDeployedCommit: 'abc1234', lastReleaseId: null })
     expect(auditRows(f.db)).toBe(before)

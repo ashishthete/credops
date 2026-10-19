@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { homedir, hostname, userInfo } from 'node:os'
 import {
@@ -32,6 +33,7 @@ import { noopFinalize } from './deploy/finalize'
 import { ReleaseService } from './deploy/release-service'
 import { DeployStore, dbSecretRefs } from './deploy/deploy-store'
 import { ServiceStore } from './deploy/service-store'
+import { ServiceTunnels } from './deploy/service-tunnel'
 import { copyServices } from './deploy/service-copy'
 import { ReleaseStore } from './deploy/release-store'
 import { createTunnelHandlers } from './ipc/handlers/tunnels'
@@ -77,6 +79,18 @@ import { appMenuTemplate, devRendererUrl, dropOnRendererReset, forwardVaultLocks
 if (!app.isPackaged) app.setPath('userData', `${app.getPath('userData')}-dev`)
 
 const devServerUrl = devRendererUrl(app.isPackaged, process.env)
+
+/** A port free on 127.0.0.1 right now: bind port 0, read what the OS gave, close. */
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer()
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address()
+      server.close(() => (addr !== null && typeof addr === 'object' ? resolve(addr.port) : reject(new Error('no free port on 127.0.0.1'))))
+    })
+  })
+}
 const CLIPBOARD_QUIT_WAIT_MS = 500
 
 let mainWindow: BrowserWindow | null = null
@@ -341,6 +355,15 @@ if (!app.requestSingleInstanceLock()) {
         emit: (event, payload) => pushEvent(mainWindow, event, payload),
       })
       containerService = containers
+      const serviceTunnels = new ServiceTunnels({
+        services,
+        tunnels,
+        manager: runner,
+        environments: () => envStore.list(),
+        deploys,
+        hostLabel: (hostId) => hostMeta(inventoryDb, hostId).label,
+        freePort,
+      })
       tunnels.onRemoved = (id) => runner.removed(id)
       tunnels.onChanged = (before, after) => runner.changed(before, after)
       // On lock, in this order: sessions fail their dials and tunnels mark theirs to pause (both keep
@@ -414,6 +437,10 @@ if (!app.requestSingleInstanceLock()) {
           ...createServiceHandlers({
             services,
             copy: (req) => copyServices(copyDeps, req),
+            deploys,
+            containers,
+            tunnels: serviceTunnels,
+            openExternal: (url) => shell.openExternal(url),
           }),
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
           ...createOpsHandlers({ snippets, runs, containers }),

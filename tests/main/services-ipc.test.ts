@@ -6,13 +6,26 @@ import { registerHandlers } from '../../src/main/ipc/register'
 import { VALIDATORS } from '../../src/main/ipc/validators'
 import { CHANNELS, type Handlers } from '../../src/shared/ipc'
 import type { ServiceStore } from '../../src/main/deploy/service-store'
-import { makeDeployFixture } from './deploy-helpers'
+import type { ServiceTunnels } from '../../src/main/deploy/service-tunnel'
+import { makeDeployFixture, type DeployFixture } from './deploy-helpers'
 import { stubHandlers } from './ipc-helpers'
 
 type Fn = (e: IpcMainInvokeEvent, ...a: unknown[]) => unknown
 
 const ID = '0190a1b2-c3d4-7e5f-8a6b-1234567890ab'
-const SERVICE_CHANNELS = ['service:list', 'service:create', 'service:update', 'service:delete', 'service:reorder', 'service:copy']
+const SERVICE_CHANNELS = [
+  'service:list',
+  'service:create',
+  'service:update',
+  'service:delete',
+  'service:reorder',
+  'service:copy',
+  'service:logs',
+  'service:open',
+  'service:tunnelOpen',
+  'service:tunnelClose',
+  'service:tunnelSync',
+]
 const check = (channel: string, a: unknown[]): unknown => (VALIDATORS as Record<string, (a: unknown[]) => unknown>)[channel](a)
 
 function register(handlers: Partial<Handlers>) {
@@ -36,11 +49,29 @@ const COPY = {
 }
 const DB = { kind: 'db', environmentId: ID, name: 'main-db', dbEngine: 'postgres', dbAddress: '10.0.0.9' }
 
+/** Every dep but the store, with no-op tunnels and a follow that records its call. */
+function rest(f: DeployFixture, over: { opened?: string[]; follows?: unknown[][] } = {}) {
+  const tunnels = { afterUpdate: () => false, remove: () => {}, open: async () => ({}) as never, close: () => {}, sync: () => null } as unknown as ServiceTunnels
+  return {
+    copy: () => ({}) as never,
+    deploys: f.deploys,
+    containers: {
+      followCompose: async (...a: unknown[]) => {
+        over.follows?.push(a)
+        return 'follow-1'
+      },
+    },
+    tunnels,
+    openExternal: async (url: string) => void over.opened?.push(url),
+  }
+}
+
 describe('service:* IPC', () => {
   it('lists every service channel, validated and wired', () => {
     expect(CHANNELS).toEqual(expect.arrayContaining(SERVICE_CHANNELS))
     for (const c of SERVICE_CHANNELS) expect(VALIDATORS).toHaveProperty([c])
-    expect(Object.keys(createServiceHandlers({ services: {} as ServiceStore, copy: () => ({}) as never })).sort()).toEqual([...SERVICE_CHANNELS].sort())
+    const handlers = createServiceHandlers({ services: {} as ServiceStore, ...rest({} as DeployFixture) })
+    expect(Object.keys(handlers).sort()).toEqual([...SERVICE_CHANNELS].sort())
   })
 
   it('validators reject extra and malformed args for every service:* channel', () => {
@@ -53,6 +84,8 @@ describe('service:* IPC', () => {
     expect(() => check('service:delete', [ID, { deleteTunnel: false }])).not.toThrow()
     expect(() => check('service:reorder', [ID, [ID]])).not.toThrow()
     expect(() => check('service:copy', [COPY])).not.toThrow()
+    expect(() => check('service:logs', [ID, 200])).not.toThrow()
+    for (const c of ['service:open', 'service:tunnelOpen', 'service:tunnelClose', 'service:tunnelSync']) expect(() => check(c, [ID])).not.toThrow()
 
     const bad: [string, unknown[], RegExp][] = [
       ['service:list', ['x'], /\[0\]/],
@@ -86,6 +119,14 @@ describe('service:* IPC', () => {
       ['service:copy', [{ ...COPY, checkouts: [{ ...COPY.checkouts[0], vaultIds: [] }] }], /vaultIds/],
       ['service:copy', [{ ...COPY, dbs: [{ ...COPY.dbs[0], dbPort: 0 }] }], /dbs\[0\]\.dbPort/],
       ['service:copy', [{ ...COPY, dbs: [{ ...COPY.dbs[0], viaHostId: undefined }] }], /viaHostId/],
+      ['service:logs', [ID], /\[1\]/],
+      ['service:logs', [ID, -1], /\[1\]/],
+      ['service:logs', [ID, 1.5], /\[1\]/],
+      ['service:logs', ['x', 10], /\[0\]/],
+      ['service:open', ['x'], /\[0\]/],
+      ['service:tunnelOpen', ['x'], /\[0\]/],
+      ['service:tunnelClose', [], /\[0\]/],
+      ['service:tunnelSync', [5], /\[0\]/],
     ]
     for (const [channel, a, path] of bad) expect(() => check(channel, a), `${channel} ${JSON.stringify(a)}`).toThrow(path)
     // The message names the path and the rule, never the value.
@@ -104,7 +145,7 @@ describe('service:* IPC', () => {
     const checkout = f.deploys.create(f.input({ name: 'webapp' }))
     const pushed: { environmentId: string }[] = []
     f.services.onChanged = (environmentId) => pushed.push({ environmentId })
-    const call = register(createServiceHandlers({ services: f.services, copy: () => ({}) as never }))
+    const call = register(createServiceHandlers({ services: f.services, ...rest(f) }))
 
     const created = (await call('service:create', { kind: 'service', environmentId: f.staging.id, name: '  esg  ', deploymentId: checkout.id })) as {
       id: string
@@ -129,7 +170,7 @@ describe('service:* IPC', () => {
     const checkout = f.deploys.create(f.input({ name: 'webapp' }))
     f.services.create({ kind: 'service', environmentId: f.staging.id, name: 'esg', deploymentId: checkout.id })
     const call = register(
-      createServiceHandlers({ services: f.services, copy: (req) => copyServices({ db: f.db, deploys: f.deploys, services: f.services, audit: f.audit, vault: f.vault }, req) }),
+      createServiceHandlers({ ...rest(f), services: f.services, copy: (req) => copyServices({ db: f.db, deploys: f.deploys, services: f.services, audit: f.audit, vault: f.vault }, req) }),
     )
     const req = {
       sourceEnvironmentId: f.staging.id,
@@ -139,5 +180,42 @@ describe('service:* IPC', () => {
     }
     await expect(call('service:copy', req)).resolves.toEqual({ created: { services: 1, checkouts: 1 }, skipped: [], addedHosts: 0 })
     await expect(call('service:copy', { ...req, sourceEnvironmentId: 'x' })).rejects.toThrow(/sourceEnvironmentId/)
+  })
+
+  it('service:open refuses a service without a url and opens through openExternal', async () => {
+    const f = await makeDeployFixture()
+    const checkout = f.deploys.create(f.input({ name: 'webapp' }))
+    const opened: string[] = []
+    const call = register(createServiceHandlers({ services: f.services, ...rest(f, { opened }) }))
+    const bare = f.services.create({ kind: 'service', environmentId: f.staging.id, name: 'worker', deploymentId: checkout.id })
+    const site = f.services.create({ kind: 'service', environmentId: f.staging.id, name: 'esg', deploymentId: checkout.id, url: 'https://esg.example.com/app' })
+    const db = f.services.create({ kind: 'db', environmentId: f.staging.id, name: 'main-db', dbEngine: 'postgres', dbAddress: '10.0.0.9' })
+    await expect(call('service:open', bare.id)).rejects.toThrow(/^worker has no URL$/)
+    await expect(call('service:open', db.id)).rejects.toThrow(/^main-db has no URL$/)
+    expect(opened).toEqual([])
+    await call('service:open', site.id)
+    expect(opened).toEqual(['https://esg.example.com/app'])
+  })
+
+  it('service:logs refuses a db service', async () => {
+    const f = await makeDeployFixture()
+    const checkout = f.deploys.create(f.input({ name: 'webapp', composeProject: 'shop', useSudo: 'yes' }))
+    const follows: unknown[][] = []
+    const call = register(createServiceHandlers({ services: f.services, ...rest(f, { follows }) }))
+    const db = f.services.create({ kind: 'db', environmentId: f.staging.id, name: 'main-db', dbEngine: 'postgres', dbAddress: '10.0.0.9' })
+    const loose = f.services.create({ kind: 'service', environmentId: f.staging.id, name: 'cron', deploymentId: null })
+    const app = f.services.create({ kind: 'service', environmentId: f.staging.id, name: 'esg', deploymentId: checkout.id, composeService: 'esg-web' })
+    await expect(call('service:logs', db.id, 100)).rejects.toThrow(/^main-db is a database; it has no compose logs$/)
+    await expect(call('service:logs', loose.id, 100)).rejects.toThrow(/^cron has no checkout$/)
+    expect(follows).toEqual([])
+    await expect(call('service:logs', app.id, 100)).resolves.toBe('follow-1')
+    expect(follows).toEqual([
+      [
+        f.host.id,
+        f.staging.id,
+        { repoPath: '/srv/app', composeFile: checkout.composeFile, composeProject: 'shop', composeService: 'esg-web', useSudo: 'yes' },
+        100,
+      ],
+    ])
   })
 })
