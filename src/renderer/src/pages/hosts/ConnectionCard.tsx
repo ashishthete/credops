@@ -155,6 +155,7 @@ export function ConnectionCard({ hostId, environmentId, onContextChange }: Conne
               self && (
                 <button
                   type="button"
+                  aria-haspopup="dialog"
                   onClick={() => setChanging(true)}
                   className="rounded-md px-1.5 text-[12px] font-medium text-accent transition-colors hover:bg-accent/10"
                 >
@@ -236,7 +237,15 @@ export function ConnectionCard({ hostId, environmentId, onContextChange }: Conne
           </motion.p>
         ))}
       </AnimatePresence>
-      {self && resolved && <LoginDialog open={changing} host={self} current={resolved.identity} onClose={() => setChanging(false)} />}
+      {self && resolved && (
+        <LoginDialog
+          open={changing}
+          host={self}
+          current={resolved.identity}
+          inheritedFrom={resolved.identity.source === 'environment' ? sourceEnv?.name : undefined}
+          onClose={() => setChanging(false)}
+        />
+      )}
     </section>
   )
 }

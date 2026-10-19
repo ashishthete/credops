@@ -507,7 +507,7 @@ describe('Change login', () => {
   }
 
   const openChange = async (user: ReturnType<typeof userEvent.setup>) => {
-    await within(row('User')).findByText(/tester|ubuntu/)
+    await within(row('User')).findByRole('button', { name: 'Change' })
     await user.click(within(row('User')).getByRole('button', { name: 'Change' }))
     return screen.findByRole('dialog', { name: 'Change login' })
   }
@@ -615,6 +615,91 @@ describe('Change login', () => {
     dialog = await openChange(user)
     await user.click(within(dialog).getByRole('radio', { name: 'Password' }))
     expect(within(dialog).getByLabelText('Password', { selector: 'input' })).toHaveValue('')
+  })
+
+  const pwIdentity = identity({ id: 'id-pw', label: 'tester@web-1', vaultId: DEFAULT_VAULT_ID, username: 'tester', auth: 'password', hasPassword: true })
+  const ownPw: ResolvedHost = {
+    ...outside,
+    identity: { source: 'host', identityId: 'id-pw', label: 'tester@web-1', username: 'tester', auth: 'password', vaultId: DEFAULT_VAULT_ID },
+  }
+  const typePassword = async (user: ReturnType<typeof userEvent.setup>, dialog: HTMLElement) => {
+    await user.type(within(dialog).getByLabelText('Password', { selector: 'input' }), 'n3w')
+    await user.click(within(dialog).getByRole('button', { name: 'Save login' }))
+  }
+
+  it("re-seals the host's own, unshared password identity", async () => {
+    const user = userEvent.setup()
+    const data = world()
+    data.identities = [...data.identities, pwIdentity]
+    data.hosts = data.hosts.map((h) => (h.id === 'web1' ? { ...h, identityId: 'id-pw' } : h))
+    const invoke = setupLogin(data, [], ownPw)
+    invoke.mockImplementation(
+      ((impl) => async (channel: string, ...args: unknown[]) => (channel === 'identity:update' ? pwIdentity : impl(channel, ...args)))(
+        invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>,
+      ),
+    )
+    render(<HostView hostId="web1" />)
+    const dialog = await openChange(user)
+    expect(within(dialog).getByRole('radio', { name: 'Password' })).toBeChecked()
+    await typePassword(user, dialog)
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('identity:update', 'id-pw', { password: 'n3w' }))
+    expect(invoke).not.toHaveBeenCalledWith('identity:create', expect.anything())
+  })
+
+  it('never re-seals a password identity another host or an environment also uses', async () => {
+    for (const share of ['host', 'environment', 'unused'] as const) {
+      const user = userEvent.setup()
+      const data = world()
+      data.identities = [...data.identities, pwIdentity]
+      // 'unused': same label, but web-1 doesn't use it.
+      if (share !== 'unused') data.hosts = data.hosts.map((h) => (h.id === 'web1' ? { ...h, identityId: 'id-pw' } : h))
+      if (share === 'host') data.hosts = data.hosts.map((h) => (h.id === 'bastion' ? { ...h, identityId: 'id-pw' } : h))
+      if (share === 'environment') data.environments = data.environments.map((e) => (e.id === 'staging' ? { ...e, defaultIdentityId: 'id-pw' } : e))
+      const invoke = setupLogin(data, [], share === 'unused' ? outside : ownPw)
+      const view = render(<HostView hostId="web1" />)
+      const dialog = await openChange(user)
+      await user.click(within(dialog).getByRole('radio', { name: 'Password' }))
+      await typePassword(user, dialog)
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith('host:update', 'web1', { identityId: 'id-new' }))
+      expect(invoke).toHaveBeenCalledWith('identity:create', expect.objectContaining({ auth: 'password', password: 'n3w' }))
+      expect(invoke).not.toHaveBeenCalledWith('identity:update', expect.anything(), expect.anything())
+      view.unmount()
+    }
+  })
+
+  it('the method radios are one tab stop, move with arrow keys and describe themselves', async () => {
+    const user = userEvent.setup()
+    setupLogin()
+    render(<HostView hostId="web1" />)
+    const dialog = await openChange(user)
+    const radios = within(dialog).getAllByRole('radio')
+    expect(radios.map((r) => r.tabIndex)).toEqual([0, -1, -1])
+    expect(radios[0]).toHaveAccessibleDescription('ssh-agent, then the keys in ~/.ssh, like ssh does.')
+    radios[0].focus()
+    await user.keyboard('{ArrowDown}')
+    expect(radios[1]).toHaveFocus()
+    expect(radios[1]).toBeChecked()
+    expect(radios.map((r) => r.tabIndex)).toEqual([-1, 0, -1])
+    await user.keyboard('{ArrowUp}{ArrowUp}')
+    expect(radios[2]).toHaveFocus()
+    expect(radios[2]).toBeChecked()
+  })
+
+  it('Change says it opens a dialog', async () => {
+    setupLogin()
+    render(<HostView hostId="web1" />)
+    await within(row('User')).findByText('tester')
+    expect(within(row('User')).getByRole('button', { name: 'Change' })).toHaveAttribute('aria-haspopup', 'dialog')
+  })
+
+  it('warns that saving replaces an inherited login', async () => {
+    const user = userEvent.setup()
+    setupLogin(world(), [], inProd)
+    render(<HostView hostId="web1" environmentId="prod" />)
+    await within(card()).findByText('2222')
+    await user.click(within(row('User')).getByRole('button', { name: 'Change' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Change login' })
+    expect(within(dialog).getByText("web-1 will stop using prod's default login.")).toBeInTheDocument()
   })
 
   it('prefills the method from an identity the host already uses', async () => {

@@ -395,6 +395,8 @@ describe('products page', () => {
     const remove = screen.getByRole('button', { name: 'Remove web-1 from staging' })
     expect(remove.className).not.toMatch(/(^|\s)opacity-0(\s|$)/)
     expect(remove).toHaveTextContent('Remove')
+    // The word itself is always rendered, not collapsed until hover.
+    expect(within(remove).getByText('Remove').className).not.toMatch(/(^|\s)(max-w-0|opacity-0|sr-only|hidden)(\s|$)/)
     await user.click(remove)
     const dialog = await screen.findByRole('dialog', { name: 'Remove web-1 from staging?' })
     expect(within(dialog).queryByLabelText(/to confirm/)).not.toBeInTheDocument()

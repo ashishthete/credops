@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { FileInput, Fingerprint, KeyRound, Link2, RectangleEllipsis, type LucideIcon } from 'lucide-react'
-import { useEffect, useId, useState, type FormEvent } from 'react'
+import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import type { HostMeta, IdentityRef } from '../../../../shared/inventory'
 import { DEFAULT_VAULT_ID, MAX_LABEL, MAX_SECRET_VALUE, MAX_USERNAME, type IdentityInput, type SshKeyMeta } from '../../../../shared/vault'
 import { inv, reloadInventory, useInventory } from '../../inventory/store'
@@ -28,6 +28,8 @@ interface LoginDialogProps {
   host: HostMeta
   /** How the host logs in now; prefills the form. */
   current: IdentityRef
+  /** The environment whose default login the host inherits now, if any. */
+  inheritedFrom?: string
   onClose: () => void
 }
 
@@ -35,7 +37,7 @@ interface LoginDialogProps {
  * Sets how one host logs in: finds or creates a matching identity in the host's first vault (or
  * the Default vault) and points the host at it.
  */
-export function LoginDialog({ open, host, current, onClose }: LoginDialogProps) {
+export function LoginDialog({ open, host, current, inheritedFrom, onClose }: LoginDialogProps) {
   const motionSafe = useMotionSafe()
   const formId = useId()
   const data = useInventory()
@@ -47,6 +49,7 @@ export function LoginDialog({ open, host, current, onClose }: LoginDialogProps) 
   const [keys, setKeys] = useState<SshKeyMeta[]>([])
   const [sub, setSub] = useState<'import' | 'link' | null>(null)
   const [busy, setBusy] = useState(false)
+  const radios = useRef<(HTMLButtonElement | null)[]>([])
 
   // The password never outlives the dialog, whether it saved or not.
   useEffect(() => {
@@ -87,15 +90,12 @@ export function LoginDialog({ open, host, current, onClose }: LoginDialogProps) 
     input.label = input.label.slice(0, MAX_LABEL)
     setPassword('')
     setBusy(true)
-    // A password is never compared, so only this host's own password identity is reused (and re-sealed).
-    const match = data?.identities.find(
-      (i) =>
-        i.vaultId === vaultId &&
-        i.username === user &&
-        i.auth === input.auth &&
-        (input.auth !== 'key' || i.sshKeyId === sshKeyId) &&
-        (input.auth !== 'password' || i.label === input.label),
-    )
+    const match =
+      input.auth === 'password'
+        ? ownPasswordIdentity(user)
+        : data?.identities.find(
+            (i) => i.vaultId === vaultId && i.username === user && i.auth === input.auth && (input.auth !== 'key' || i.sshKeyId === sshKeyId),
+          )
     const identity = await attempt("Couldn't save the login", () =>
       !match
         ? api.invoke('identity:create', input)
@@ -110,6 +110,28 @@ export function LoginDialog({ open, host, current, onClose }: LoginDialogProps) 
       toast({ title: `${host.label} logs in as ${user}`, tone: 'success' })
       onClose()
     }
+  }
+
+  /**
+   * A password can't be compared, so re-sealing is only safe for the identity this host itself
+   * uses, and only when no other host or environment uses it too.
+   */
+  const ownPasswordIdentity = (user: string) => {
+    if (!data || current.source !== 'host') return undefined
+    const id = current.identityId
+    const shared = data.hosts.some((h) => h.id !== host.id && h.identityId === id) || data.environments.some((e) => e.defaultIdentityId === id)
+    const own = data.identities.find((i) => i.id === id)
+    return !shared && own?.auth === 'password' && own.vaultId === vaultId && own.username === user ? own : undefined
+  }
+
+  // Radio group keys: arrows move and select, wrapping; only the checked radio is a tab stop.
+  const onRadioKey = (e: KeyboardEvent, i: number) => {
+    const step = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1 : e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? -1 : 0
+    if (!step) return
+    e.preventDefault()
+    const next = (i + step + METHODS.length) % METHODS.length
+    setMethod(METHODS[next].id)
+    radios.current[next]?.focus()
   }
 
   const keyAdded = (k: SshKeyMeta) => {
@@ -163,11 +185,17 @@ export function LoginDialog({ open, host, current, onClose }: LoginDialogProps) 
               return (
                 <motion.button
                   key={m.id}
+                  ref={(el) => {
+                    radios.current[i] = el
+                  }}
                   type="button"
                   role="radio"
                   aria-checked={checked}
-                  aria-label={m.label}
+                  aria-labelledby={`${formId}-${m.id}`}
+                  aria-describedby={`${formId}-${m.id}-hint`}
+                  tabIndex={checked ? 0 : -1}
                   onClick={() => setMethod(m.id)}
+                  onKeyDown={(e) => onRadioKey(e, i)}
                   initial={motionSafe ? { opacity: 0, y: 6 } : false}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ ...spring, delay: motionSafe ? i * 0.04 : 0 }}
@@ -177,8 +205,12 @@ export function LoginDialog({ open, host, current, onClose }: LoginDialogProps) 
                 >
                   <m.icon aria-hidden className={`size-4 shrink-0 ${checked ? 'text-accent' : 'text-muted'}`} />
                   <span className="flex min-w-0 flex-col gap-0.5">
-                    <span className="text-[13px] text-fg">{m.label}</span>
-                    <span className="text-[11.5px] text-muted">{m.hint}</span>
+                    <span id={`${formId}-${m.id}`} className="text-[13px] text-fg">
+                      {m.label}
+                    </span>
+                    <span id={`${formId}-${m.id}-hint`} className="text-[11.5px] text-muted">
+                      {m.hint}
+                    </span>
                   </span>
                 </motion.button>
               )
@@ -220,6 +252,9 @@ export function LoginDialog({ open, host, current, onClose }: LoginDialogProps) 
               </motion.div>
             )}
           </AnimatePresence>
+          {inheritedFrom && (
+            <p className="text-[12px] text-muted">{`${host.label} will stop using ${inheritedFrom}'s default login.`}</p>
+          )}
         </form>
       </Dialog>
       <ImportKeyDialog open={open && sub === 'import'} vaultId={vaultId} onClose={() => setSub(null)} onSaved={keyAdded} />

@@ -159,18 +159,16 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
                       >
                         <SquareTerminal aria-hidden className="size-3.5" />
                       </button>
-                      {/* Always shown, so removing a host is findable; the word appears with the row's hover. */}
+                      {/* Always shown and labelled, so removing a host is findable without hovering. */}
                       <button
                         type="button"
                         aria-label={`Remove ${h.label} from ${env.name}`}
                         title={`Remove from ${env.name}`}
                         onClick={() => onRemoveHost(h.id)}
-                        className="inline-flex h-6 items-center rounded-md px-1.5 text-[12px] text-muted opacity-60 transition-[opacity,color,background-color] group-focus-within:opacity-100 group-hover:opacity-100 hover:bg-white/[0.06] hover:text-fg focus-visible:opacity-100"
+                        className="inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[12px] text-muted opacity-60 transition-[opacity,color,background-color] group-focus-within:opacity-100 group-hover:opacity-100 hover:bg-white/[0.06] hover:text-fg focus-visible:opacity-100"
                       >
                         <Unlink aria-hidden className="size-3.5 shrink-0" />
-                        <span className="max-w-0 overflow-hidden whitespace-nowrap transition-[max-width,margin] duration-200 group-focus-within:ml-1 group-focus-within:max-w-16 group-hover:ml-1 group-hover:max-w-16">
-                          Remove
-                        </span>
+                        <span className="whitespace-nowrap">Remove</span>
                       </button>
                     </div>
                   </motion.li>
