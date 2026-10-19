@@ -293,9 +293,11 @@ Roadmap and contracts: `docs/superpowers/plans/2026-10-16-roadmap.md`. Conventio
      `OPSDECK_SECRETS`.
   5. **Private keys** never go to Ansible. They go to the run's **private
      ssh-agent**, on `ssh-add -` stdin (Task 5).
-  6. **The DB password** never reaches OpsDeck. The backup sources `.env`
-     **on the host**, `set -a; . ./.env; set +a`, as the reference script
-     does.
+  6. **The DB password** never reaches OpsDeck. The backup reads the
+     `DB_*` keys from `.env` **on the host** as plain `KEY=VALUE` lines
+     (quotes stripped, nothing executed, `.env` is never sourced) and passes the
+     password to `pg_dump` as `PGPASSWORD=` in its environment, never argv.
+     (Ruling, Task 3 fix round 1; docker compose reads `.env` the same way.)
   7. **Redaction.** Every `log` line, step error, run error, audit detail and
      toast text passes through `redact(text, knownSecrets ∪ runSecrets)`.
      `runSecrets` holds every individual secret value the run resolved, not
@@ -351,7 +353,7 @@ Roadmap and contracts: `docs/superpowers/plans/2026-10-16-roadmap.md`. Conventio
   - `HostName`, `Port`, `User`;
   - `ProxyJump od-<m>` for the previous hop;
   - `IdentityAgent <sock>`;
-  - `IdentitiesOnly yes` plus `IdentityFile none`, for key identities only;
+  - `IdentityFile none` plus the private `IdentityAgent`, for key identities only (no `IdentitiesOnly`: it would stop ssh offering the agent's key);
   - `PreferredAuthentications publickey`;
   - `PasswordAuthentication no`, `KbdInteractiveAuthentication no`,
     `BatchMode yes`;
@@ -1140,7 +1142,7 @@ hooks, a managed env, `sudo-password`, and a `mac` health URL. The tests:
   route bastion (agent) → app1 (key):
   - `Host od-0` has `IdentityAgent <user sock>`;
   - `Host od-1` has `ProxyJump od-0`, `IdentityAgent <private sock>`,
-    `IdentitiesOnly yes` and `IdentityFile none`;
+    `IdentityFile none`, and no `IdentitiesOnly`;
   - both have `StrictHostKeyChecking yes` and
     `UserKnownHostsFile <rundir>/known_hosts`.
 - `known_hosts uses [addr]:port tokens for non-22`.

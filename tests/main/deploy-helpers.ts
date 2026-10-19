@@ -1,3 +1,4 @@
+import type { DeployPlan, PlanDeployment, PlanHop } from '../../src/main/deploy/runner'
 import { DeployStore, dbSecretRefs } from '../../src/main/deploy/deploy-store'
 import { ReleaseStore } from '../../src/main/deploy/release-store'
 import type { DeploymentInput } from '../../src/shared/deploy'
@@ -54,7 +55,6 @@ export async function makeDeployFixture(opts: { maxEvents?: number } = {}): Prom
 }
 
 // ---- Pure plan fixture (Task 3): no database, no secrets, only references ----
-import type { DeployPlan, PlanDeployment, PlanHop } from '../../src/main/deploy/runner'
 
 export const FIX = {
   repo: '/srv/apps/alpha',

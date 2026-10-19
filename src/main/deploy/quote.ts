@@ -10,11 +10,18 @@ export const sanitizeIdent = (s: string): string => s.replace(/[^A-Za-z0-9._@-]/
 export function lockJson(plan: DeployPlan): string {
   const holder: LockHolder = {
     releaseId: plan.releaseId,
-    user: plan.actor.osUser,
-    machine: plan.actor.machine,
+    user: sanitizeIdent(plan.actor.osUser),
+    machine: sanitizeIdent(plan.actor.machine),
     environment: plan.environment.name,
     version: plan.version,
     startedAt: plan.startedAt,
   }
   return JSON.stringify(holder)
+}
+
+export const ALIAS = /^od-\d{1,4}$/
+export const B64 = /^[A-Za-z0-9+/]*={0,2}$/
+
+export function need(ok: boolean, what: string): void {
+  if (!ok) throw new Error(`deploy plan: invalid ${what}`)
 }

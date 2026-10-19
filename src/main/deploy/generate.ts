@@ -1,7 +1,9 @@
 import { BACKUP_DIR, COMPOSE_FILE, GIT_REF, MAX_URL, REPO_PATH, VERSION } from '../../shared/deploy'
-import type { SshConfigMatch, SshConfigTarget } from '../inventory/ssh-config'
-import { b64, lockJson, sanitizeIdent } from './quote'
-import type { DeployPlan, PlanDeployment, PlanHop, PlanHost } from './runner'
+import { ALIAS, B64, b64, lockJson, need, sanitizeIdent } from './quote'
+import type { DeployPlan, PlanDeployment, PlanHost } from './runner'
+
+export { generateAnsibleCfg, generateInventory, generateKnownHosts, generateSshConfig, knownHostsToken, socketPathFits } from './ssh-files'
+export type { SshConfigOptions } from './ssh-files'
 
 /*
  * Pure text generation. Nothing here touches the disk, the network or a secret value: the plan holds
@@ -18,20 +20,8 @@ type Play = Record<string, unknown>
 const SAFE_IDENT = /^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$/
 const SECRET_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
 const SHA = /^[0-9a-f]{40}$/
-const B64 = /^[A-Za-z0-9+/]*={0,2}$/
-const ALIAS = /^od-\d{1,4}$/
 const RELEASE_ID = /^[A-Za-z0-9-]{8,64}$/
-const SSH_ADDRESS = /^[A-Za-z0-9][A-Za-z0-9.:_-]{0,252}$/
-const SSH_USER = /^[A-Za-z0-9_][A-Za-z0-9._@-]{0,63}$/
 const URL_SAFE = /^https?:\/\/[A-Za-z0-9._~:/?#[\]@!$&()*+,;=%-]+$/
-const PATH_SAFE = /^\/[A-Za-z0-9._@+/-]*$/
-const RUNDIR_SAFE = /^\/[A-Za-z0-9._@+/ -]+$/
-const KEY_TYPE = /^[a-z0-9@.-]{1,64}$/
-const KH_TOKEN = /^(?:\[[A-Za-z0-9.:_-]+\]:\d{1,5}|[A-Za-z0-9][A-Za-z0-9.:_-]*)$/
-
-function need(ok: boolean, what: string): void {
-  if (!ok) throw new Error(`deploy plan: invalid ${what}`)
-}
 
 const LOCK_FILE = '.opsdeck-deploy.lock'
 const WHEN = 'not (od_failed | default(false))'
@@ -57,6 +47,8 @@ function dVars(d: PlanDeployment, kind: DeployPlan['kind']): Record<string, unkn
   need(COMPOSE_FILE.test(d.composeFile), 'compose file')
   need(GIT_REF.test(d.deployTag), 'deploy tag')
   need(SAFE_IDENT.test(d.runId), 'run id')
+  need(d.docker === 'plain' || d.docker === 'sudo' || d.docker === 'sudo-password', 'docker mode')
+  need(d.useSudo === 'auto' || d.useSudo === 'yes' || d.useSudo === 'no', 'sudo setting')
   need(Number.isInteger(d.healthStatus) && d.healthStatus >= 100 && d.healthStatus <= 599, 'health status')
   need(d.preHookB64 === null || (B64.test(d.preHookB64) && d.preHookB64.length > 0), 'pre-hook')
   need(d.postHookB64 === null || (B64.test(d.postHookB64) && d.postHookB64.length > 0), 'post-hook')
@@ -133,33 +125,34 @@ function sh(name: string, kind: string, run: string, cmd: string, o: ShOpts): Ta
 
 const IN_REPO = '{{ d.repo }}'
 const becomes = (d: PlanDeployment): boolean => d.docker !== 'plain'
-/** Tasks that run under become and carry the sudo password variable must not log. */
-const quiet = (d: PlanDeployment): boolean => d.docker === 'sudo-password'
-
 /**
  * The user's home even under sudo: root's $HOME would put the log in the wrong place.
- * (`getent` is present on the Linux hosts OpsDeck deploys to; falls back to $HOME.)
+ * Without SUDO_USER we are the user, so $HOME is right; no getent, so BusyBox hosts work.
  */
 const LOG_SETUP = [
-  'U="${SUDO_USER:-$(id -un)}"',
-  'H=$(getent passwd "$U" 2>/dev/null | cut -d: -f6); H="${H:-$HOME}"',
+  'U="${SUDO_USER:-}"',
+  'if [ -n "$U" ]; then H=$(awk -F: -v u="$U" \'$1==u {print $6; exit}\' /etc/passwd 2>/dev/null); fi',
+  'H="${H:-$HOME}"',
   'L="$H/.opsdeck/runs/{{ od.rel }}/stream.log"',
   'umask 022',
 ].join('\n')
 
 /**
- * Runs `body` with its output appended to stream.log, each line prefixed `<run>:<kind>\t`. The exit code
- * is the body's. On failure the step's own last 40 lines are printed so the failure carries context.
+ * Runs `body` with its output appended to stream.log, each line prefixed `<run>:<kind>\t` (a plain bash
+ * read loop: no GNU sed -u). The exit code is the body's. On failure the step's own last 40 lines are
+ * printed so the failure carries context; `post` runs only on success, outside the log.
  */
-function streamed(kind: string, body: string): string {
-  const prefix = `{{ d.run }}:${kind}`
+function streamed(kind: string, body: string, o: { pre?: string; post?: string } = {}): string {
   return [
+    ...(o.pre ? [o.pre] : []),
     LOG_SETUP,
-    `(`,
+    `P="{{ d.run }}:${kind}"`,
+    '(',
     body,
-    `) 2>&1 | sed -u "s/^/${prefix}\\t/" >> "$L"; rc=\${PIPESTATUS[0]}`,
-    `if [ "$rc" -ne 0 ]; then grep -F "${prefix}"$'\\t' "$L" | tail -n 40; fi`,
-    `exit "$rc"`,
+    `) 2>&1 | while IFS= read -r l || [ -n "$l" ]; do printf '%s\\t%s\\n' "$P" "$l"; done >> "$L"; rc=\${PIPESTATUS[0]}`,
+    `if [ "$rc" -ne 0 ]; then grep -F "$P"$'\\t' "$L" | tail -n 40; fi`,
+    ...(o.post ? [`if [ "$rc" -eq 0 ]; then ${o.post}; fi`] : []),
+    'exit "$rc"',
   ].join('\n')
 }
 
@@ -171,24 +164,42 @@ function runOf(d: PlanDeployment): string {
 const nm = (kind: string, d: PlanDeployment): string => `${kind} ${sanitizeIdent(d.name)}`
 
 // ---- release steps
+const REMOTE_TAG = 'c=$(git ls-remote origin "refs/tags/$T" "refs/tags/$T^{}" 2>/dev/null | awk \'END {print $1}\')'
+const GIT_ID = 'GIT_COMMITTER_NAME=OpsDeck GIT_COMMITTER_EMAIL=opsdeck@localhost'
+
+/** The deployed commit is read from origin (peeled), so a stale local tag or a fetch cannot change it. */
 const taskRecord = (d: PlanDeployment): Task =>
   sh(nm('record', d), 'record', runOf(d), [
     'T={{ d.tag | quote }}',
-    'if p=$(git rev-parse -q --verify "refs/tags/$T^{commit}"); then echo "OD-PREV $p"; else echo "OD-PREV none"; fi',
+    REMOTE_TAG,
+    'if [ -n "$c" ]; then echo "OD-PREV $c"; else echo "OD-PREV none"; fi',
   ].join('\n'), { timeout: T_SHORT, chdir: IN_REPO, guarded: true })
 
 const taskBackup = (d: PlanDeployment): Task => {
+  // DB_* are read as KEY=VALUE lines (quotes stripped, nothing executed): the .env is never sourced.
   const body = [
-    'set -a; . ./.env; set +a',
-    'set -o pipefail',
+    'CR=$(printf \'\\r\')',
+    'while IFS= read -r l || [ -n "$l" ]; do',
+    '  l="${l%"$CR"}"',
+    '  case "$l" in \'\'|\'#\'*) continue;; esac',
+    '  l="${l#export }"',
+    '  k="${l%%=*}"; v="${l#*=}"',
+    '  case "$v" in \\"*\\") v="${v#\\"}"; v="${v%\\"}";; \\\'*\\\') v="${v#\\\'}"; v="${v%\\\'}";; esac',
+    '  case "$k" in DB_USER|DB_HOST|DB_PORT|DB_NAME|DB_PASS) printf -v "$k" \'%s\' "$v";; esac',
+    'done < .env',
+    ': "${DB_USER:?DB_USER is not set in .env}" "${DB_HOST:?DB_HOST is not set in .env}" "${DB_NAME:?DB_NAME is not set in .env}" "${DB_PASS:?DB_PASS is not set in .env}"',
     'umask 077',
     'mkdir -p {{ d.backup_dir | quote }}',
-    'f={{ d.backup_dir | quote }}/{{ d.backup_label | quote }}-$(date +%Y%m%d-%H%M%S).sql.gz',
-    '[ -n "${DATABASE_URL:-}" ] || { echo "DATABASE_URL is not set in .env"; exit 2; }',
-    'pg_dump "$DATABASE_URL" | gzip > "$f" || { rm -f "$f"; exit 1; }',
-    'echo "backup written: $f"',
+    'PGPASSWORD="$DB_PASS" pg_dump -Fc -h "$DB_HOST" -p "${DB_PORT:-5432}" -U "$DB_USER" -d "$DB_NAME" -f "$F" || { rm -f "$F"; exit 1; }',
+    'echo "backup written: $F"',
   ].join('\n')
-  return sh(nm('backup', d), 'backup', runOf(d), streamed('backup', body), { timeout: T_BACKUP, chdir: IN_REPO, guarded: true })
+  return sh(
+    nm('backup', d),
+    'backup',
+    runOf(d),
+    streamed('backup', body, { pre: 'F={{ d.backup_dir | quote }}/{{ d.backup_label | quote }}.dump', post: 'echo "OD-BACKUP $F"' }),
+    { timeout: T_BACKUP, chdir: IN_REPO, guarded: true },
+  )
 }
 
 const FETCH = 'git fetch --force --tags origin "refs/heads/$B:refs/remotes/origin/$B"'
@@ -202,15 +213,26 @@ const taskCheckout = (d: PlanDeployment): Task =>
     'echo "OD-HEAD $(git rev-parse HEAD)"',
   ].join('\n'), { timeout: T_SHORT, chdir: IN_REPO, guarded: true })
 
-/** Writes .env from the base64 secret on stdin; mode 0600 from creation. */
+/**
+ * Writes .env from the base64 secret on stdin; mode 0600 from creation. The previous file is kept as
+ * .env.opsdeck-prev (0600), or a marker records that there was none, so rb_env can undo exactly this.
+ */
+const ENV_CMD = [
+  'umask 077',
+  'rm -f .env.opsdeck-none',
+  'if [ -f .env ]; then cp -p .env .env.opsdeck-prev && chmod 600 .env.opsdeck-prev || exit 1; else rm -f .env.opsdeck-prev; : > .env.opsdeck-none; fi',
+  'base64 -d > .env.opsdeck-new && chmod 600 .env.opsdeck-new && mv -f .env.opsdeck-new .env',
+].join('\n')
+const RB_ENV_CMD = [
+  'umask 077',
+  'if [ -f .env.opsdeck-prev ]; then mv -f .env.opsdeck-prev .env',
+  'elif [ -f .env.opsdeck-none ]; then rm -f .env .env.opsdeck-none',
+  'fi',
+].join('\n')
+
 function envTask(kind: 'env' | 'rb_env', d: PlanDeployment): Task {
-  return sh(nm(kind, d), kind, runOf(d), 'umask 077; base64 -d > .env.opsdeck-new && chmod 600 .env.opsdeck-new && mv -f .env.opsdeck-new .env', {
-    timeout: T_SHORT,
-    chdir: IN_REPO,
-    noLog: true,
-    stdin: `{{ s.${d.envSecretKey} }}`,
-    guarded: true,
-  })
+  if (kind === 'rb_env') return sh(nm(kind, d), kind, runOf(d), RB_ENV_CMD, { timeout: T_SHORT, chdir: IN_REPO })
+  return sh(nm(kind, d), kind, runOf(d), ENV_CMD, { timeout: T_SHORT, chdir: IN_REPO, noLog: true, stdin: `{{ s.${d.envSecretKey} }}`, guarded: true })
 }
 const taskEnv = (d: PlanDeployment): Task => envTask('env', d)
 
@@ -220,7 +242,6 @@ function hookTask(kind: 'pre_hook' | 'post_hook', d: PlanDeployment): Task {
     timeout: T_HOOK,
     chdir: IN_REPO,
     become: becomes(d),
-    noLog: quiet(d),
     guarded: true,
   })
 }
@@ -232,7 +253,6 @@ function composeTask(kind: 'build' | 'up' | 'rb_build' | 'rb_up', d: PlanDeploym
     timeout: kind.endsWith('build') ? clampSec(d.buildTimeoutSec, 'build timeout') : clampSec(d.composeTimeoutSec, 'compose timeout'),
     chdir: IN_REPO,
     become: becomes(d),
-    noLog: quiet(d),
     guarded: kind.startsWith('rb_') ? false : true,
   })
 }
@@ -272,8 +292,13 @@ function taskHealth(d: PlanDeployment, i: number): Task {
   return sh(`${nm('health', d)} ${i}`, 'health', runOf(d), cmd, { timeout: timeout + 30, chdir: IN_REPO, guarded: true })
 }
 
+const PUSH_TAG = 'git push -f origin "refs/tags/$T"'
 const taskTag = (d: PlanDeployment): Task =>
-  sh(nm('tag', d), 'tag', runOf(d), ['T={{ d.tag | quote }}', 'git tag -f "$T" HEAD'].join('\n'), { timeout: T_SHORT, chdir: IN_REPO, guarded: true })
+  sh(nm('tag', d), 'tag', runOf(d), ['T={{ d.tag | quote }}', `${GIT_ID} git tag -fa "$T" -m "OpsDeck deploy" HEAD && ${PUSH_TAG}`].join('\n'), {
+    timeout: T_SHORT,
+    chdir: IN_REPO,
+    guarded: true,
+  })
 
 // ---- rollback steps
 const taskRbCheckout = (d: PlanDeployment): Task =>
@@ -284,7 +309,7 @@ const taskRbCheckout = (d: PlanDeployment): Task =>
   })
 const taskRbEnv = (d: PlanDeployment): Task => envTask('rb_env', d)
 const taskRbTag = (d: PlanDeployment): Task =>
-  sh(nm('rb_tag', d), 'rb_tag', runOf(d), ['T={{ d.tag | quote }}', 'P={{ d.prev | quote }}', 'git tag -f "$T" "$P"'].join('\n'), {
+  sh(nm('rb_tag', d), 'rb_tag', runOf(d), ['T={{ d.tag | quote }}', 'P={{ d.prev | quote }}', `${GIT_ID} git tag -fa "$T" -m "OpsDeck rollback" "$P" && ${PUSH_TAG}`].join('\n'), {
     timeout: T_SHORT,
     chdir: IN_REPO,
     guarded: true,
@@ -294,44 +319,62 @@ const taskRbTag = (d: PlanDeployment): Task =>
 const hostRun = (h: PlanHost): string => `host:${h.hostId}`
 const odRunDir = '"$HOME/.opsdeck/runs/{{ od.rel }}"'
 
+const REPOS = "{{ od.lock_repos | map('quote') | join(' ') }}"
+const HOST_CWD = '/'
+
 function taskPrep(h: PlanHost): Task {
   const cmd = ['umask 077', `mkdir -p ${odRunDir}`, `touch ${odRunDir}/stream.log`].join('\n')
-  return sh(`lock prep ${sanitizeIdent(h.alias)}`, 'lock', hostRun(h), cmd, { timeout: T_SHORT, chdir: '{{ od.lock_repo }}' })
+  return sh(`lock prep ${sanitizeIdent(h.alias)}`, 'lock', hostRun(h), cmd, { timeout: T_SHORT, chdir: HOST_CWD })
 }
 
-/** Exclusive by `set -C` (O_EXCL); reentrant when the holder is this release; exit 42 when busy. */
+/**
+ * Takes the lock in every repo of the host (sorted by the caller). Exclusive by `set -C` (O_EXCL);
+ * reentrant per repo when the holder is this release. On a busy repo it releases what this task took and
+ * exits 42, so a refusal never leaves a partial lock set behind.
+ */
 function taskLock(h: PlanHost): Task {
   const cmd = [
-    `f=${LOCK_FILE}`,
     'J=$(echo {{ od.lock_b64 | quote }} | base64 -d)',
     'umask 077',
-    'if ( set -C; printf \'%s\' "$J" > "$f" ) 2>/dev/null; then echo "OD-LOCK $J"; exit 0; fi',
-    'cur=$(cat "$f" 2>/dev/null)',
-    'echo "OD-LOCK $cur"',
-    'case "$cur" in *\'"releaseId":"{{ od.rel }}"\'*) exit 0;; esac',
-    'exit 42',
+    'acq=""',
+    `for r in ${REPOS}; do`,
+    `  f="$r/${LOCK_FILE}"`,
+    '  if ( set -C; printf \'%s\' "$J" > "$f" ) 2>/dev/null; then acq="$acq $r"; echo "OD-LOCK $J"; continue; fi',
+    '  cur=$(cat "$f" 2>/dev/null)',
+    '  echo "OD-LOCK $cur"',
+    '  case "$cur" in *\'"releaseId":"{{ od.rel }}"\'*) continue;; esac',
+    `  for a in $acq; do rm -f "$a/${LOCK_FILE}"; done`,
+    '  [ -n "$cur" ] && exit 42',
+    '  echo "OD-LOCK-ERROR cannot create the lock in $r"; exit 2',
+    'done',
+    'exit 0',
   ].join('\n')
-  return sh(`lock ${sanitizeIdent(h.alias)}`, 'lock', hostRun(h), cmd, { timeout: T_SHORT, chdir: '{{ od.lock_repo }}' })
+  return sh(`lock ${sanitizeIdent(h.alias)}`, 'lock', hostRun(h), cmd, { timeout: T_SHORT, chdir: HOST_CWD })
 }
 
+/** Unlock releases only locks this release holds; break-lock only locks whose content equals the expected raw. */
 function taskUnlock(h: PlanHost, breakLock: boolean): Task {
   const guard = breakLock
     ? '[ "$cur" = "$(echo {{ od.expect_b64 | quote }} | base64 -d)" ]'
     : 'case "$cur" in *\'"releaseId":"{{ od.rel }}"\'*) true;; *) false;; esac'
   const cmd = [
-    `f=${LOCK_FILE}`,
-    'cur=$(cat "$f" 2>/dev/null)',
-    'echo "OD-LOCK $cur"',
-    `if ${guard}; then rm -f ${LOCK_FILE}; echo "OD-UNLOCK released"; else echo "OD-UNLOCK kept"; ${breakLock ? 'rc=43' : 'rc=0'}; fi`,
+    'rc=0',
+    `for r in ${REPOS}; do`,
+    `  f="$r/${LOCK_FILE}"`,
+    '  cur=$(cat "$f" 2>/dev/null)',
+    '  [ -n "$cur" ] || continue',
+    '  echo "OD-LOCK $cur"',
+    `  if ${guard}; then rm -f "$f"; echo "OD-UNLOCK released $r"; else echo "OD-UNLOCK kept $r"; ${breakLock ? 'rc=43' : ':'}; fi`,
+    'done',
     `rm -rf ${odRunDir}`,
-    'exit "${rc:-0}"',
+    'exit "$rc"',
   ].join('\n')
-  return sh(`unlock ${sanitizeIdent(h.alias)}`, 'unlock', hostRun(h), cmd, { timeout: T_SHORT, chdir: '{{ od.lock_repo }}' })
+  return sh(`unlock ${sanitizeIdent(h.alias)}`, 'unlock', hostRun(h), cmd, { timeout: T_SHORT, chdir: HOST_CWD })
 }
 
 // ---- version
 const taskVersion = (d: PlanDeployment): Task =>
-  sh(nm('version', d), 'version', runOf(d), ['V={{ od.version | quote }}', 'git tag -a "$V" -m "OpsDeck release $V" && git push origin "$V"'].join('\n'), {
+  sh(nm('version', d), 'version', runOf(d), ['V={{ od.version | quote }}', 'E={{ od.env | quote }}', `${GIT_ID} git tag -a "$V" -m "$E release $V" && git push origin "$V"`].join('\n'), {
     timeout: T_SHORT,
     chdir: IN_REPO,
   })
@@ -351,15 +394,15 @@ function preflightTasks(plan: DeployPlan, d: PlanDeployment): Task[] {
   const tools = ['git', 'docker', 'curl', ...(d.backup ? ['pg_dump'] : [])]
   const out: Task[] = []
   out.push(
-    pf(d, 'tools', [`miss=""`, `for t in ${tools.join(' ')}; do command -v "$t" >/dev/null 2>&1 || miss="$miss $t"; done`, 'echo "OD-PF tools missing=${miss# }"'].join('\n'), { chdir: false }),
+    pf(d, 'tools', [`miss=""`, `for t in ${tools.join(' ')}; do command -v "$t" >/dev/null 2>&1 || miss="$miss,$t"; done`, 'echo "OD-PF tools missing=${miss#,}"'].join('\n'), { chdir: false }),
     pf(d, 'docker', [
       'docker info >/dev/null 2>&1 && p=ok || p=fail',
       'sudo -n docker info >/dev/null 2>&1 && s=ok || s=fail',
       `echo "OD-PF docker plain=$p sudo=$s mode=${d.docker} use=${d.useSudo}"`,
     ].join('\n'), { chdir: false }),
   )
-  if (d.docker === 'sudo-password')
-    out.push(pf(d, 'docker-become', 'if docker info >/dev/null 2>&1; then echo "OD-PF docker become=ok"; else echo "OD-PF docker become=fail"; fi', { chdir: false, become: true, noLog: true }))
+  if (d.becomeSecretKey !== null && d.useSudo !== 'no')
+    out.push(pf(d, 'docker-become', 'if docker info >/dev/null 2>&1; then echo "OD-PF docker become=ok"; else echo "OD-PF docker become=fail"; fi', { chdir: false, become: true }))
   out.push(
     pf(d, 'repo', ['R={{ d.repo | quote }}', 'if [ -d "$R/.git" ]; then echo "OD-PF repo exists=1 git=1"; elif [ -d "$R" ]; then echo "OD-PF repo exists=1 git=0"; else echo "OD-PF repo exists=0 git=0"; fi'].join('\n'), { chdir: false }),
     pf(d, 'clean', ['git update-index -q --refresh', 'if git diff-index --quiet HEAD --; then echo "OD-PF clean ok=1"; else echo "OD-PF clean ok=0"; fi'].join('\n')),
@@ -373,7 +416,8 @@ function preflightTasks(plan: DeployPlan, d: PlanDeployment): Task[] {
     pf(d, 'disk', ['a=$(df -Pk . | awk \'NR==2 {print $4}\')', 'echo "OD-PF disk avail_kb=${a:-0}"'].join('\n')),
     pf(d, 'tag', [
       'T={{ d.tag | quote }}',
-      'if c=$(git rev-parse -q --verify "refs/tags/$T^{commit}"); then echo "OD-PF tag exists=1 commit=$c"; else echo "OD-PF tag exists=0 commit="; fi',
+      REMOTE_TAG,
+      'if [ -n "$c" ]; then echo "OD-PF tag exists=1 commit=$c"; else echo "OD-PF tag exists=0 commit="; fi',
     ].join('\n')),
   )
   if (plan.version !== null)
@@ -382,7 +426,8 @@ function preflightTasks(plan: DeployPlan, d: PlanDeployment): Task[] {
     pf(d, 'commits', [
       'T={{ d.tag | quote }}',
       'B={{ d.branch | quote }}',
-      'if git rev-parse -q --verify "refs/tags/$T^{commit}" >/dev/null; then R="$T..origin/$B"; else R="origin/$B"; fi',
+      REMOTE_TAG,
+      'if [ -n "$c" ] && git cat-file -e "$c^{commit}" 2>/dev/null; then R="$c..origin/$B"; else R="origin/$B"; fi',
       'out=$(git log --no-merges --max-count=501 --pretty=tformat:%H%x1f%s%x1f%an%x1f%aI%x1e "$R" 2>/dev/null | base64 | tr -d \'\\n\')',
       'echo "OD-PF commits log_b64=$out"',
     ].join('\n')),
@@ -392,9 +437,11 @@ function preflightTasks(plan: DeployPlan, d: PlanDeployment): Task[] {
 
 function taskPreflightLock(h: PlanHost): Task {
   return sh(`preflight lock ${sanitizeIdent(h.alias)}`, 'preflight', hostRun(h), [
-    `f=${LOCK_FILE}`,
-    'if [ -f "$f" ]; then echo "OD-PF lock held=1 raw_b64=$(base64 < "$f" | tr -d \'\\n\')"; else echo "OD-PF lock held=0 raw_b64="; fi',
-  ].join('\n'), { timeout: T_PREFLIGHT, chdir: '{{ od.lock_repo }}', failedWhen: false })
+    `for r in ${REPOS}; do`,
+    `  f="$r/${LOCK_FILE}"`,
+    '  if [ -f "$f" ]; then echo "OD-PF lock repo=$r held=1 raw_b64=$(base64 < "$f" | tr -d \'\\n\')"; else echo "OD-PF lock repo=$r held=0 raw_b64="; fi',
+    'done',
+  ].join('\n'), { timeout: T_PREFLIGHT, chdir: HOST_CWD, failedWhen: false })
 }
 
 // ---------------------------------------------------------------- plays
@@ -442,10 +489,12 @@ function rollbackTasks(d: PlanDeployment): Task[] {
 function playFor(plan: DeployPlan, h: PlanHost, deps: PlanDeployment[]): Play {
   const od: Record<string, unknown> = {
     rel: plan.releaseId,
-    lock_repo: deps[0].repoPath,
+    env: sanitizeIdent(plan.environment.name) || 'env',
+    // Every repo the plan touches on this host, sorted: lock, unlock and the lock check all walk this list.
+    lock_repos: [...new Set(deps.map((d) => d.repoPath))].sort(),
     lock_b64: b64(lockJson(plan)),
   }
-  need(REPO_PATH.test(deps[0].repoPath), 'repo path')
+  for (const r of od.lock_repos as string[]) need(REPO_PATH.test(r), 'repo path')
   if (plan.version !== null) {
     need(VERSION.test(plan.version), 'version')
     od.version = plan.version
@@ -456,8 +505,10 @@ function playFor(plan: DeployPlan, h: PlanHost, deps: PlanDeployment[]): Play {
     od.expect_b64 = b64(raw as string)
   }
   const vars: Record<string, unknown> = { od, s: SECRETS_VAR }
-  const sudo = deps.find((d) => d.docker === 'sudo-password' && d.becomeSecretKey)
-  if (sudo) vars.ansible_become_password = `{{ (s.${sudo.becomeSecretKey} | b64decode) if s.${sudo.becomeSecretKey} is defined else omit }}`
+  // One become password per host: differing keys on one host cannot both apply.
+  const keys = new Set(deps.map((d) => d.becomeSecretKey).filter((k): k is string => k !== null))
+  need(keys.size <= 1, 'become secrets (one per host)')
+  for (const k of keys) vars.ansible_become_password = `{{ (s.${k} | b64decode) if s.${k} is defined else omit }}`
 
   const tasks: Task[] = []
   switch (plan.kind) {
@@ -505,139 +556,3 @@ export function generatePlaybook(plan: DeployPlan): string {
   return JSON.stringify(plays, null, 2)
 }
 
-// ---------------------------------------------------------------- inventory
-
-export function generateInventory(plan: DeployPlan): string {
-  const lines = plan.hosts.map((h) => {
-    need(ALIAS.test(h.alias), 'host alias')
-    return `${h.alias} ansible_python_interpreter=auto_silent`
-  })
-  return `[deploy]\n${lines.join('\n')}\n`
-}
-
-// ---------------------------------------------------------------- ssh_config
-
-const MAX_SOCKET = 103
-const CP_AND_SUFFIX = 4 + 40 + 17
-
-/** The longest control socket is `<rundir>/cp/<40 hex>` plus ssh's 17-byte temp suffix; macOS allows 103 bytes. */
-export function socketPathFits(rundir: string): boolean {
-  return Buffer.byteLength(rundir) + CP_AND_SUFFIX <= MAX_SOCKET
-}
-
-function checkRundir(rundir: string): void {
-  need(RUNDIR_SAFE.test(rundir) && !rundir.includes('..') && !rundir.endsWith('/'), 'run directory')
-  if (!socketPathFits(rundir)) throw new Error(`run directory is too long for a control socket (${rundir.length} bytes); use a shorter one such as /tmp/od-XXXXXX`)
-}
-
-/** A path as an ssh_config / ssh argument value: bare when plain, double-quoted when it holds a space. */
-function pathValue(p: string): string {
-  return p.includes(' ') ? `"${p}"` : p
-}
-
-export interface SshConfigOptions {
-  /** The user's own ~/.ssh/config, injected; the default reads nothing. */
-  sshConfig?: (target: SshConfigTarget) => SshConfigMatch | null
-}
-
-const DEFAULT_KEYS = ['~/.ssh/id_ed25519', '~/.ssh/id_rsa']
-
-function hopBlock(hop: PlanHop, prev: PlanHop | null, socks: { privateAgent: string | null; userAgent: string | null }, rundir: string, opts: SshConfigOptions): string {
-  need(ALIAS.test(hop.alias), 'hop alias')
-  need(SSH_ADDRESS.test(hop.address), 'hop address')
-  need(SSH_USER.test(hop.user), 'hop user')
-  need(Number.isInteger(hop.port) && hop.port >= 1 && hop.port <= 65535, 'hop port')
-  const lines = [`Host ${hop.alias}`, `  HostName ${hop.address}`, `  Port ${hop.port}`, `  User ${hop.user}`]
-  if (prev) lines.push(`  ProxyJump ${prev.alias}`)
-  if (hop.auth === 'key') {
-    need(socks.privateAgent !== null && PATH_SAFE.test(socks.privateAgent.replace(/ /g, '')), 'private agent socket')
-    lines.push(`  IdentityAgent ${pathValue(socks.privateAgent!)}`, '  IdentitiesOnly yes', '  IdentityFile none')
-  } else {
-    if (socks.userAgent === null) lines.push('  IdentityAgent none')
-    else {
-      need(PATH_SAFE.test(socks.userAgent.replace(/ /g, '')), 'agent socket')
-      lines.push(`  IdentityAgent ${pathValue(socks.userAgent)}`)
-    }
-    const fromConfig = opts.sshConfig?.({ label: hop.label, address: hop.address })?.identityFiles ?? []
-    const seen = new Set<string>()
-    for (const f of [...fromConfig, ...DEFAULT_KEYS]) {
-      if (seen.has(f) || !(f.startsWith('~/') ? PATH_SAFE.test(f.slice(1)) : PATH_SAFE.test(f)) || f.includes('%')) continue
-      seen.add(f)
-      lines.push(`  IdentityFile ${f}`)
-    }
-  }
-  lines.push(
-    '  PreferredAuthentications publickey',
-    '  PasswordAuthentication no',
-    '  KbdInteractiveAuthentication no',
-    '  BatchMode yes',
-    '  StrictHostKeyChecking yes',
-    `  UserKnownHostsFile ${pathValue(`${rundir}/known_hosts`)}`,
-    '  GlobalKnownHostsFile /dev/null',
-    '  ServerAliveInterval 15',
-    '  ControlMaster auto',
-    `  ControlPath ${pathValue(`${rundir}/cp/%C`)}`,
-    '  ControlPersist 60',
-  )
-  return lines.join('\n')
-}
-
-export function generateSshConfig(
-  plan: DeployPlan,
-  socks: { privateAgent: string | null; userAgent: string | null },
-  rundir: string,
-  opts: SshConfigOptions = {},
-): string {
-  checkRundir(rundir)
-  const blocks = new Map<string, { hop: PlanHop; prev: PlanHop | null }>()
-  for (const h of plan.hosts)
-    h.hops.forEach((hop, i) => {
-      const prev = i > 0 ? h.hops[i - 1] : null
-      const have = blocks.get(hop.alias)
-      if (have && (have.prev?.alias !== prev?.alias || have.hop.address !== hop.address || have.hop.port !== hop.port || have.hop.user !== hop.user || have.hop.auth !== hop.auth))
-        throw new Error(`deploy plan: alias ${hop.alias} is used for two different hops`)
-      if (!have) blocks.set(hop.alias, { hop, prev })
-    })
-  return [...blocks.values()].map(({ hop, prev }) => hopBlock(hop, prev, socks, rundir, opts)).join('\n\n') + '\n'
-}
-
-// ---------------------------------------------------------------- known_hosts, cfg
-
-/** known_hosts matches a non-22 port as `[addr]:port`. */
-export function knownHostsToken(address: string, port: number): string {
-  need(SSH_ADDRESS.test(address) && Number.isInteger(port) && port >= 1 && port <= 65535, 'known_hosts host')
-  return port === 22 ? address : `[${address}]:${port}`
-}
-
-export function generateKnownHosts(entries: { token: string; keyType: string; keyBase64: string }[]): string {
-  return entries
-    .map((e) => {
-      need(KH_TOKEN.test(e.token), 'known_hosts token')
-      need(KEY_TYPE.test(e.keyType), 'key type')
-      need(e.keyBase64.length > 0 && B64.test(e.keyBase64), 'host key')
-      return `${e.token} ${e.keyType} ${e.keyBase64}`
-    })
-    .join('\n')
-    .concat(entries.length ? '\n' : '')
-}
-
-export function generateAnsibleCfg(plan: DeployPlan, rundir: string): string {
-  checkRundir(rundir)
-  const forks = Math.max(1, Math.min(plan.hosts.length, 10))
-  return [
-    '[defaults]',
-    'stdout_callback = opsdeck_jsonl',
-    `callback_plugins = ${rundir}/callback_plugins`,
-    'callbacks_enabled =',
-    'host_key_checking = True',
-    'retry_files_enabled = False',
-    'interpreter_python = auto_silent',
-    `forks = ${forks}`,
-    'timeout = 30',
-    '[ssh_connection]',
-    'pipelining = True',
-    `ssh_args = -F ${pathValue(`${rundir}/ssh_config`)}`,
-    `control_path_dir = ${rundir}/cp`,
-    '',
-  ].join('\n')
-}

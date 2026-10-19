@@ -100,7 +100,10 @@ describe('release playbook', () => {
     const build = cmdOf(flat(ps[0].tasks).find((t) => step(t) === 'build')!)
     expect(build).toContain('docker compose -f {{ d.compose | quote }} build')
     expect(build).toContain('set -a; [ -f .env ] && . ./.env; set +a')
-    expect(build).toContain('sed -u "s/^/{{ d.run }}:build\\t/"')
+    expect(build).not.toContain('sed ')
+    expect(build).toContain('while IFS= read -r l')
+    expect(build).toContain("printf '%s\\t%s\\n' \"$P\" \"$l\"")
+    expect(build).toContain('P="{{ d.run }}:build"')
     expect(build).toContain('${PIPESTATUS[0]}')
     expect(build).toContain('tail -n 40')
     const up = cmdOf(flat(ps[0].tasks).find((t) => step(t) === 'up')!)
@@ -108,7 +111,13 @@ describe('release playbook', () => {
     const pre = cmdOf(flat(ps[0].tasks).find((t) => step(t) === 'pre_hook')!)
     expect(pre).toContain('| base64 -d | bash -e')
     const backup = cmdOf(flat(ps[0].tasks).find((t) => step(t) === 'backup')!)
-    expect(backup).toContain('set -a; . ./.env; set +a')
+    expect(backup).not.toContain('. ./.env')
+    expect(backup).not.toContain('set -a')
+    expect(backup).toContain('DB_USER|DB_HOST|DB_PORT|DB_NAME|DB_PASS')
+    expect(backup).toContain('PGPASSWORD="$DB_PASS" pg_dump -Fc -h "$DB_HOST" -p "${DB_PORT:-5432}" -U "$DB_USER" -d "$DB_NAME" -f "$F"')
+    expect(backup).toContain('F={{ d.backup_dir | quote }}/{{ d.backup_label | quote }}.dump')
+    expect(backup).not.toMatch(/pg_dump[^\n]*(DATABASE_URL|\$DB_PASS)/)
+    expect(backup).toContain('OD-BACKUP')
   })
 
   it('health from host is a curl loop; from mac is uri delegated to localhost', () => {
@@ -134,6 +143,9 @@ describe('release playbook', () => {
     expect(m.cmd).toContain('base64 -d > .env.opsdeck-new')
     expect(m.cmd).toContain('chmod 600')
     expect(env.no_log).toBe(true)
+    expect(m.cmd).toContain('cp -p .env .env.opsdeck-prev')
+    expect(m.cmd).toContain('chmod 600 .env.opsdeck-prev')
+    expect(m.cmd).toContain('.env.opsdeck-none')
   })
 })
 
@@ -254,11 +266,13 @@ describe('user values', () => {
 
   it('carries free text in the lock only as base64', () => {
     const plan = planFixture({ actor: { osUser: 'a"{{ 1 }}', machine: "m\n#'" } })
+    expect(JSON.parse(lockJson(plan))).toMatchObject({ user: 'a____1___', machine: 'm___' })
     const raw = generatePlaybook(plan)
     expect(raw).not.toContain('{{ 1 }}')
     const play = plays(plan)[0]
     expect(Buffer.from(play.vars.od ? String((play.vars.od as Record<string, string>).lock_b64) : '', 'base64').toString()).toBe(lockJson(plan))
   })
+
 })
 
 describe('other kinds', () => {
@@ -304,7 +318,7 @@ describe('other kinds', () => {
     const all = ps.flatMap((p) => every(p.tasks).map(({ t }) => cmdOf(t))).join('\n')
     for (const needle of ['command -v', 'docker info', '.git', 'git update-index -q --refresh', 'git diff-index --quiet HEAD --', 'git fetch --force --tags origin', 'show-ref --verify', 'df -Pk', '.opsdeck-deploy.lock', '--max-count=501', '%H%x1f%s%x1f%an%x1f%aI%x1e', 'OD-PF']) expect(all).toContain(needle)
     expect(all).toContain('pg_dump')
-    expect(all).toContain('R="$T..origin/$B"')
+    expect(all).toContain('R="$c..origin/$B"')
   })
 
   it('preflight lists origin/<branch> alone when the deploy tag does not exist (decided on the host)', () => {
@@ -329,7 +343,7 @@ describe('other kinds', () => {
     const un = plays(planFixture({ kind: 'unlock' }))[0]
     const c = cmdOf(flat(un.tasks).find((t) => step(t) === 'unlock')!)
     expect(c).toContain('releaseId')
-    expect(c).toContain('rm -f .opsdeck-deploy.lock')
+    expect(c).toContain('rm -f "$f"')
     expect(c).toContain('.opsdeck/runs/')
     const bl = plays(planFixture({ kind: 'break-lock', lock: { expectRaw: { 'host-od-1': 'RAW1', 'host-od-2': 'RAW2' } } }))[0]
     const t = flat(bl.tasks).find((x) => step(x) === 'unlock')!
@@ -357,7 +371,7 @@ describe('inventory, ssh_config, known_hosts, cfg', () => {
     expect(b0).not.toContain('IdentitiesOnly')
     expect(b1).toContain('ProxyJump od-0')
     expect(b1).toContain(`IdentityAgent ${socks.privateAgent}`)
-    expect(b1).toContain('IdentitiesOnly yes')
+    expect(b1).not.toContain('IdentitiesOnly')
     expect(b1).toContain('IdentityFile none')
     for (const b of [b0, b1]) {
       expect(b).toContain('StrictHostKeyChecking yes')
@@ -479,5 +493,128 @@ describe('inventory, ssh_config, known_hosts, cfg', () => {
   it('helpers sanitize', () => {
     expect(sanitizeIdent('a b/c;d')).toBe('a_b_c_d')
     expect(sanitizeIdent('x'.repeat(100))).toHaveLength(64)
+  })
+})
+
+describe('fix round 1', () => {
+  const PREV = (plan: DeployPlan) => plays(plan).map((p) => (p.vars.od as { lock_repos: string[] }).lock_repos)
+
+  it('locks every repo on a host, sorted, in one task that releases what it took when one is busy', () => {
+    const plan = planFixture()
+    plan.deployments[1].repoPath = '/srv/apps/aaa'
+    const p = plays(plan)[0]
+    expect((p.vars.od as { lock_repos: string[] }).lock_repos).toEqual(['/srv/apps/aaa', `${FIX.repo}1`])
+    const lock = flat(p.tasks).filter((t) => step(t) === 'lock')[1]
+    const c = cmdOf(lock)
+    expect(c).toContain("for r in {{ od.lock_repos | map('quote') | join(' ') }}; do")
+    expect(c).toContain('set -C')
+    expect(c).toContain('for a in $acq; do rm -f "$a/.opsdeck-deploy.lock"; done')
+    expect(c).toContain('exit 42')
+  })
+
+  it('release, rollback (reverse order), unlock and break-lock touch the same lock set per host', () => {
+    const base = planFixture()
+    const rev = planFixture({ kind: 'rollback' })
+    rev.deployments = [...rev.deployments].reverse()
+    const raw = { 'host-od-1': 'a', 'host-od-2': 'b' }
+    const sets = [
+      PREV(base),
+      PREV(rev),
+      PREV(planFixture({ kind: 'unlock' })),
+      PREV(planFixture({ kind: 'break-lock', lock: { expectRaw: raw } })),
+      PREV(planFixture({ kind: 'preflight' })),
+    ]
+    for (const s of sets) expect(s).toEqual(sets[0])
+    expect(sets[0][0]).toEqual([`${FIX.repo}1`, `${FIX.repo}2`])
+  })
+
+  it('unlock, break-lock and preflight iterate every repo', () => {
+    for (const kind of ['unlock', 'break-lock', 'preflight'] as PlanKind[]) {
+      const plan = planFixture({ kind, lock: { expectRaw: { 'host-od-1': 'a', 'host-od-2': 'b' } } })
+      const t = every(plays(plan)[0].tasks).map(({ t }) => cmdOf(t)).find((c) => c.includes('opsdeck-deploy.lock'))!
+      expect(t).toContain("for r in {{ od.lock_repos | map('quote') | join(' ') }}; do")
+    }
+  })
+
+  it('backup reads DB_* without sourcing and keeps the password out of argv', () => {
+    const c = cmdOf(flat(plays(planFixture())[0].tasks).find((t) => step(t) === 'backup')!)
+    expect(c).toContain('while IFS= read -r')
+    expect(c).toContain('printf -v "$k"')
+    expect(c).not.toMatch(/(^|\n)\s*\.\s/)
+  })
+
+  it('env keeps the previous .env and rb_env restores it (or removes the new one)', () => {
+    const plan = planFixture({ kind: 'rollback' })
+    const rb = flat(plays(plan)[0].tasks).find((t) => step(t) === 'rb_env')!
+    const m = rb['ansible.builtin.shell'] as Record<string, string>
+    expect(m.stdin).toBeUndefined()
+    expect(JSON.stringify(rb)).not.toMatch(/\bs\./)
+    expect(rb.no_log).toBeUndefined()
+    expect(m.cmd).toContain('mv -f .env.opsdeck-prev .env')
+    expect(m.cmd).toContain('.env.opsdeck-none')
+    expect(m.cmd).toContain('rm -f .env')
+  })
+
+  it('tag and rb_tag are annotated, forced and pushed; OD-PREV and the range read origin', () => {
+    const rel = flat(plays(planFixture())[0].tasks).find((t) => step(t) === 'tag')!
+    expect(cmdOf(rel)).toContain('git tag -fa "$T" -m "OpsDeck deploy" HEAD && git push -f origin "refs/tags/$T"')
+    const rb = flat(plays(planFixture({ kind: 'rollback' }))[0].tasks).find((t) => step(t) === 'rb_tag')!
+    expect(cmdOf(rb)).toContain('git tag -fa "$T" -m "OpsDeck rollback" "$P" && git push -f origin "refs/tags/$T"')
+    const rec = cmdOf(flat(plays(planFixture())[0].tasks).find((t) => step(t) === 'record')!)
+    expect(rec).toContain('git ls-remote origin "refs/tags/$T" "refs/tags/$T^{}"')
+    const pf = every(plays(planFixture({ kind: 'preflight' }))[0].tasks).map(({ t }) => cmdOf(t)).join('\n')
+    expect(pf).toContain('git ls-remote origin "refs/tags/$T" "refs/tags/$T^{}"')
+  })
+
+  it('no_log only where a secret value flows; become tasks stay visible', () => {
+    const plan = planFixture()
+    const p = plays(plan)[0]
+    for (const k of ['build', 'up', 'pre_hook', 'post_hook']) for (const t of flat(p.tasks).filter((x) => step(x) === k)) expect(t.no_log, k).toBeUndefined()
+    expect(flat(p.tasks).find((t) => step(t) === 'env')!.no_log).toBe(true)
+    expect(p.vars.ansible_become_password).toContain('s.become_1')
+    const pfs = every(plays({ ...plan, kind: 'preflight' })[0].tasks).map(({ t }) => t)
+    const become = pfs.find((t) => String(t.name).startsWith('preflight docker-become'))!
+    expect(become.become).toBe(true)
+    expect(become.no_log).toBeUndefined()
+    // no becomeSecretKey: no become probe and no password var
+    const none = planFixture({ kind: 'preflight' })
+    none.deployments[0].becomeSecretKey = null
+    const q = plays(none)[0]
+    expect(every(q.tasks).some(({ t }) => String(t.name).startsWith('preflight docker-become'))).toBe(false)
+    expect(q.vars.ansible_become_password).toBeUndefined()
+    // useSudo no: no become probe
+    const no = planFixture({ kind: 'preflight' })
+    no.deployments[0].useSudo = 'no'
+    expect(every(plays(no)[0].tasks).some(({ t }) => String(t.name).startsWith('preflight docker-become'))).toBe(false)
+  })
+
+  it('rejects differing become secrets on one host and bad enums', () => {
+    const a = planFixture()
+    a.secretRefs.become_2 = { secretId: 'sec-2' }
+    a.deployments[1].becomeSecretKey = 'become_2'
+    expect(() => generatePlaybook(a)).toThrow()
+    const b = planFixture()
+    ;(b.deployments[0] as { docker: string }).docker = 'x"; id #'
+    expect(() => generatePlaybook(b)).toThrow()
+    const c = planFixture()
+    ;(c.deployments[0] as { useSudo: string }).useSudo = 'maybe'
+    expect(() => generatePlaybook(c)).toThrow()
+  })
+
+  it('OD-PF tools missing= is space-free', () => {
+    const c = every(plays(planFixture({ kind: 'preflight' }))[0].tasks).map(({ t }) => cmdOf(t)).find((x) => x.includes('tools missing'))!
+    expect(c).toContain('missing=${miss#,}')
+    expect(c).toContain('miss="$miss,$t"')
+  })
+
+  it('version tag message names the environment (sanitised), not free text', () => {
+    const plan = planFixture({ kind: 'version' })
+    const p = plays(plan)[0]
+    expect((p.vars.od as { env: string }).env).toBe('prod_east')
+    expect(cmdOf(flat(p.tasks).find((t) => step(t) === 'version')!)).toContain('-m "$E release $V"')
+  })
+
+  it('the rundir length error reports bytes', () => {
+    expect(() => generateAnsibleCfg(planFixture(), '/var/folders/zz/abcdefghijklmnopqrstuvwxyz012345/T/od-abc123')).toThrow(/\d+ bytes/)
   })
 })
