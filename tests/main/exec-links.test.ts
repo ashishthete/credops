@@ -7,6 +7,7 @@ import { LINK_IDLE_MS } from '../../src/shared/ops'
 import type { SessionPrompt } from '../../src/shared/ssh'
 import type { AuthPlan } from '../../src/main/ssh/auth'
 import { connectChain } from '../../src/main/ssh/connect'
+import type { Client } from 'ssh2'
 import { KnownHostStore } from '../../src/main/ssh/known-hosts'
 import { PromptBroker } from '../../src/main/ssh/prompts'
 import { resolveHost } from '../../src/main/inventory/resolve'
@@ -212,6 +213,37 @@ describe('ExecLinks and execOnce', () => {
     await expect(t.lease(trusted)).rejects.toMatchObject({ code: 'locked' })
   })
 
+  it('a lease after unlock dials afresh instead of joining the dial the lock doomed', async () => {
+    // The locked dial's rejection is held until the gate opens, so the new lease lands in that window.
+    let open!: () => void
+    const gate = new Promise<void>((r) => (open = r))
+    const t = await setup({
+      connect: (hops, deps, signal) =>
+        connectChain(hops, deps, signal).catch(async (err: unknown) => {
+          await gate
+          throw err
+        }),
+    })
+    const srv = await server()
+    const hostId = t.host(srv, { trust: false })
+    const doomed = t.lease(hostId)
+    const first = await t.waitPrompt()
+    t.vault.lock('manual')
+    await t.vault.unlock('correct horse')
+    const fresh = t.lease(hostId, null, undefined, 'runs:2')
+    const second = await t.waitFor(() => {
+      const p = t.prompts()[1]
+      if (!p) throw new Error('no second prompt yet')
+      return p
+    })
+    expect(second.promptId).not.toBe(first.promptId)
+    expect(second.sessionId).toBe('runs:2')
+    t.broker.answer(second.promptId, { kind: 'host-key', trust: true })
+    expect((await run(await fresh, 'printf ok')).out).toBe('ok')
+    open()
+    await expect(doomed).rejects.toMatchObject({ code: 'locked' })
+  })
+
   it('abort while dialing rejects and never leaks the client', async () => {
     const t = await setup()
     const srv = await server()
@@ -302,6 +334,70 @@ describe('ExecLinks and execOnce', () => {
     await w.seen('started')
     ctl.abort()
     expect(await running).toMatchObject({ cancelled: true, exitCode: 130 })
+  })
+
+  it('execOnce with an already-aborted signal is cancelled without an exec', async () => {
+    const t = await setup()
+    const srv = await server()
+    const l = await t.lease(t.host(srv))
+    const ctl = new AbortController()
+    ctl.abort()
+    expect(await run(l, 'printf no', { signal: ctl.signal })).toMatchObject({ cancelled: true, exitCode: null, out: '' })
+    expect(srv.execs()).toEqual([])
+  })
+
+  it('an abort before the channel opens stops the exec once it opens', async () => {
+    const t = await setup()
+    const srv = await server()
+    const l = await t.lease(t.host(srv))
+    const mt = manualTimers()
+    const ctl = new AbortController()
+    // The INT can land before any trap is set, so the command lets it end the exec.
+    const running = run(l, 'sleep 30', { signal: ctl.signal, timers: mt.timers, timeoutMs: 5000 })
+    ctl.abort()
+    expect(await running).toMatchObject({ cancelled: true, timedOut: false })
+    expect(srv.execs()).toEqual(['sleep 30'])
+    expect(srv.signals()).toEqual(['INT'])
+    // The timeout was never armed, and the grace timer went with the channel.
+    expect(mt.pending()).toEqual([])
+  })
+
+  it('a client that throws on exec fails as closed', async () => {
+    const client = {
+      exec: () => {
+        throw new Error('Not connected')
+      },
+    } as unknown as Client
+    await expect(
+      execOnce(client, 'printf no', { signal: new AbortController().signal, onData: () => {} }),
+    ).rejects.toMatchObject({ code: 'closed', message: 'The connection was closed' })
+  })
+
+  it('closeAll fails leases waiting for a link slot, and later leases', async () => {
+    const t = await setup({ maxLinks: 1 })
+    const srv = await server()
+    const [h1, h2] = [t.host(srv), t.host(srv)]
+    await t.lease(h1)
+    const waiting = t.lease(h2)
+    expect(await pending(waiting)).toBe(true)
+    t.links.closeAll()
+    await expect(waiting).rejects.toMatchObject({ code: 'closed' })
+    await t.waitFor(() => expect(srv.connections()).toBe(0))
+    await expect(t.lease(h1)).rejects.toMatchObject({ code: 'closed' })
+    expect(srv.connections()).toBe(0)
+  })
+
+  it('a dropped link fails the leases queued on its channels with closed', async () => {
+    const t = await setup({ maxChannels: 1 })
+    const srv = await server()
+    const hostId = t.host(srv)
+    await t.lease(hostId)
+    const queued = t.lease(hostId)
+    expect(await pending(queued)).toBe(true)
+    srv.dropAll()
+    await expect(queued).rejects.toMatchObject({ code: 'closed', message: 'The connection to host-1 dropped' })
+    // The next lease dials a fresh link.
+    expect((await run(await t.lease(hostId), 'printf back')).out).toBe('back')
   })
 
   it('env vars from the host reach the exec', async () => {

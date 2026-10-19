@@ -87,10 +87,10 @@ export function execOnce(client: Client, command: string, o: ExecOnceOptions): P
         cleanup()
         resolve(result)
       })
-      // A cancel that came while the channel was opening.
+      // A cancel that came while the channel was opening; the timeout only starts once it is open.
       if (stopped) {
         stopped = false
-        stop(result.timedOut ? 'timedOut' : 'cancelled')
+        stop('cancelled')
       } else if (o.timeoutMs !== undefined) timeout = timers.setTimeout(() => stop('timedOut'), o.timeoutMs)
     }
     try {

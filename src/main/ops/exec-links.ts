@@ -94,6 +94,8 @@ export class ExecLinks {
   private readonly timers: Timers
   private readonly maxLinks: number
   private readonly maxChannels: number
+  /** Set by `closeAll`: no lease is served after quit. */
+  private closed = false
 
   constructor(private readonly deps: ExecLinksDeps) {
     this.timers = deps.timers ?? realTimers
@@ -101,11 +103,11 @@ export class ExecLinks {
     this.maxChannels = deps.maxChannels ?? MAX_CHANNELS_PER_LINK
   }
 
-  /** Rejects with an `ExecFailure`: the dial's error, `locked`, or `closed` when `signal` aborts first. */
+  /** Rejects with an `ExecFailure`: the dial's error, `locked`, or `closed` when `signal` aborts first or after `closeAll`. */
   async lease(hostId: string, environmentId: string | null, owner: { id: string }, signal: AbortSignal): Promise<Lease> {
     const key = `${hostId}|${environmentId ?? ''}`
     for (;;) {
-      if (signal.aborted) throw new ExecFailure(CANCELLED)
+      if (signal.aborted || this.closed) throw new ExecFailure(CANCELLED)
       if (this.deps.isLocked()) throw new ExecFailure(LOCKED)
       let link = this.links.get(key)
       if (!link && this.links.size >= this.maxLinks && !this.evictIdle()) {
@@ -127,6 +129,7 @@ export class ExecLinks {
 
   /** Quit: ends every dial and connection, and fails everything waiting. */
   closeAll(): void {
+    this.closed = true
     for (const turn of this.slotQueue.splice(0)) turn(new ExecFailure(CANCELLED))
     for (const link of [...this.links.values()]) this.closeLink(link)
   }
@@ -187,14 +190,11 @@ export class ExecLinks {
   private closeLink(link: Link): void {
     this.clearIdle(link)
     link.state = 'down'
-    const pooled = this.links.get(link.key) === link
-    if (pooled) this.links.delete(link.key)
+    this.unpool(link)
     this.deps.prompts.cancel(link.prompts)
     link.abort.abort()
     link.close?.()
     for (const turn of link.channelQueue.splice(0)) turn()
-    // Every lease waiting for a link slot looks again; those that don't get it queue again.
-    if (pooled) for (const turn of this.slotQueue.splice(0)) turn()
   }
 
   private dial(key: string, hostId: string, environmentId: string | null, owner: string): Link {
@@ -313,10 +313,20 @@ export class ExecLinks {
     return null
   }
 
+  /** The doomed dial leaves the pool at once, so a lease after unlock dials afresh instead of joining it. */
   private lockedDial(link: Link): void {
     link.lockedDuringDial = true
+    this.unpool(link)
     this.deps.prompts.cancel(link.prompts)
     link.abort.abort()
+  }
+
+  /** Takes the link out of the pool; every lease waiting for a link slot looks again. */
+  private unpool(link: Link): void {
+    if (this.links.get(link.key) !== link) return
+    this.links.delete(link.key)
+    // Those that don't get the slot queue again.
+    for (const turn of this.slotQueue.splice(0)) turn()
   }
 }
 
