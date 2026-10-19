@@ -265,6 +265,27 @@ function probeOnce(
 const reachable = (address: string): string => (address === '0.0.0.0' ? '127.0.0.1' : address === '::' ? '::1' : address)
 
 /**
+ * Probes a local listener: connects, sends a token and passes when the listener consumed it (it
+ * consumes a token only in its own hold). Any other outcome means something else answered, or nothing.
+ */
+export function probeListener(timers: Timers, tokens: ProbeTokens, address: { address: string; port: number }): Promise<'probe' | 'keepalive'> {
+  return probeOnce(timers, `The listener on ${address.address}:${address.port} didn't answer the probe`, (settle) => {
+    const token = tokens.issue()
+    const sock = connect(address.port, reachable(address.address))
+    const failed = (): void => settle(new ForwardError('probe-failed', `Nothing is listening on ${address.address}:${address.port}`))
+    sock.once('connect', () => sock.write(token))
+    sock.on('error', failed)
+    // Only our own listener consumes the token; any other close means something else answered.
+    const stranger = (): void => settle(new ForwardError('probe-failed', `Something else answered on ${address.address}:${address.port}`))
+    sock.once('close', (hadError) => (hadError ? failed() : tokens.consume(token) ? stranger() : settle('probe')))
+    return () => {
+      tokens.consume(token)
+      sock.destroy()
+    }
+  })
+}
+
+/**
  * The `L` engine: connections to `server` are forwarded over `client` to `targetHost:targetPort`.
  * The probe connects to the listener, sends a token and passes when our listener consumed it.
  */
@@ -300,21 +321,7 @@ export function startLocal(client: Client, opts: LocalOpts): ForwardHandle {
     },
     setAccepting: (on) => void (gate.accepting = on),
     address,
-    probe: () =>
-      probeOnce(timers, `The listener on ${address.address}:${address.port} didn't answer the probe`, (settle) => {
-        const token = tokens.issue()
-        const sock = connect(address.port, reachable(address.address))
-        const failed = (): void => settle(new ForwardError('probe-failed', `Nothing is listening on ${address.address}:${address.port}`))
-        sock.once('connect', () => sock.write(token))
-        sock.on('error', failed)
-        // Only our own listener consumes the token; any other close means something else answered.
-        const stranger = (): void => settle(new ForwardError('probe-failed', `Something else answered on ${address.address}:${address.port}`))
-        sock.once('close', (hadError) => (hadError ? failed() : tokens.consume(token) ? stranger() : settle('probe')))
-        return () => {
-          tokens.consume(token)
-          sock.destroy()
-        }
-      }),
+    probe: () => probeListener(timers, tokens, address),
     close: () =>
       (closing ??= new Promise((resolve) => {
         gate.accepting = false
