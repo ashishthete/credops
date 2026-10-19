@@ -20,6 +20,8 @@ import { AuditLog } from './audit/audit-log'
 import { openDatabase, type Db } from './db/connection'
 import { createAppHandlers } from './ipc/handlers/app'
 import { createAuditHandlers } from './ipc/handlers/audit'
+import { createConfigHandlers } from './ipc/handlers/config'
+import { CONFIG_FILE_NAME } from '../shared/config-file'
 import { createIdentityHandlers } from './ipc/handlers/identities'
 import { createDeployHandlers } from './ipc/handlers/deploy'
 import { createServiceHandlers } from './ipc/handlers/services'
@@ -444,6 +446,19 @@ if (!app.requestSingleInstanceLock()) {
           }),
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
           ...createOpsHandlers({ snippets, runs, containers }),
+          ...createConfigHandlers({
+            db,
+            vault: service,
+            audit: log,
+            now: () => new Date(),
+            saveDialog: async () => {
+              const opts: Electron.SaveDialogOptions = { defaultPath: CONFIG_FILE_NAME, filters: [{ name: 'JSON', extensions: ['json'] }] }
+              const res = mainWindow
+                ? await dialog.showSaveDialog(mainWindow, opts)
+                : await dialog.showSaveDialog(opts)
+              return res.canceled ? undefined : res.filePath
+            },
+          }),
         },
         (url) => isTrustedSender(url, { devServerUrl, rendererFile }),
         { validators: VALIDATORS, knownSecrets },

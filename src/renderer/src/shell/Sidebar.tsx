@@ -8,22 +8,23 @@ import {
   ScrollText,
   Search,
   Server,
+  Settings,
   SquareTerminal,
   Wrench,
   type LucideIcon,
 } from 'lucide-react'
 import { useEffect, useState, useSyncExternalStore } from 'react'
-import { NavLink } from 'react-router'
+import { NavLink, useNavigate } from 'react-router'
 import type { AppInfo } from '../../../shared/ipc'
 import { releaseStore } from '../deploy/releases'
 import { api } from '../lib/api'
 import { sessionStore } from '../terminal/sessions'
 import { runningCount, runStore } from '../ops/runs'
 import { tunnelStore } from '../tunnels/store'
-import { openCommandPalette } from '../ui/commands'
+import { openCommandPalette, registerCommand } from '../ui/commands'
 import { plural } from '../ui/common'
 import { spring, useMotionSafe } from '../ui/motion'
-import { formatShortcut } from '../ui/shortcuts'
+import { formatShortcut, useShortcut } from '../ui/shortcuts'
 import { Skeleton } from '../ui/Skeleton'
 import { SECTIONS, sectionShortcut, type SectionId } from './sections'
 import { VaultLockButton } from './VaultLockButton'
@@ -128,6 +129,7 @@ export function Sidebar() {
       </nav>
 
       <div className="mt-auto">
+        <SettingsButton />
         <VaultLockButton />
       </div>
 
@@ -160,6 +162,49 @@ export function Sidebar() {
         </div>
       </div>
     </aside>
+  )
+}
+
+const SETTINGS_SHORTCUT = 'mod+,'
+
+/** The Settings link above the lock button, plus its palette command and ⌘,. */
+function SettingsButton() {
+  const navigate = useNavigate()
+  useEffect(
+    () =>
+      registerCommand({
+        id: 'settings.open',
+        title: 'Settings',
+        section: 'Settings',
+        keywords: ['preferences', 'config', 'export'],
+        shortcut: SETTINGS_SHORTCUT,
+        run: () => void navigate('/settings'),
+      }),
+    [navigate],
+  )
+  useShortcut(SETTINGS_SHORTCUT, () => void navigate('/settings'))
+
+  return (
+    <div className="px-3 pb-0.5">
+      <NavLink
+        to="/settings"
+        className={({ isActive }) =>
+          `group flex h-8 items-center gap-2.5 rounded-lg px-2.5 text-[13px] font-medium transition-colors select-none ${
+            isActive ? 'bg-accent/12 text-fg' : 'text-muted hover:bg-white/[0.035] hover:text-fg'
+          }`
+        }
+      >
+        {({ isActive }) => (
+          <>
+            <span className="grid size-5 place-items-center">
+              <Settings aria-hidden className={`size-4 ${isActive ? 'text-accent' : ''}`} strokeWidth={2} />
+            </span>
+            <span className="flex-1">Settings</span>
+            <Keys combo={SETTINGS_SHORTCUT} className="opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+          </>
+        )}
+      </NavLink>
+    </div>
   )
 }
 

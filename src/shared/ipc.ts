@@ -1,4 +1,5 @@
 import type { AuditEvent, AuditFilter, ChainVerification } from './audit'
+import type { ConfigCounts } from './config-file'
 import type {
   EnvironmentInput,
   EnvironmentMeta,
@@ -229,6 +230,8 @@ export interface IpcContract {
   // Returns the followId; lines arrive as containers:logs events.
   'containers:follow': { args: [hostId: string, environmentId: string | null, ref: string, tail: number]; result: string }
   'containers:unfollow': { args: [followId: string]; result: void }
+  /** Asks where to save with a dialog in main: the renderer never sends a path. */
+  'config:export': { args: []; result: { path: string; counts: ConfigCounts } | null }
 }
 
 export type Channel = keyof IpcContract
@@ -354,6 +357,7 @@ export const CHANNELS = [
   'containers:logs',
   'containers:follow',
   'containers:unfollow',
+  'config:export',
 ] as const satisfies readonly Channel[]
 
 // Fails typecheck if IpcContract gains a channel that CHANNELS does not list.

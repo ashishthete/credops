@@ -657,4 +657,5 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'containers:logs': args(v.uuid(), nullableId, containerRef, logTail),
   'containers:follow': args(v.uuid(), nullableId, containerRef, logTail),
   'containers:unfollow': args(v.uuid()),
+  'config:export': args(),
 }

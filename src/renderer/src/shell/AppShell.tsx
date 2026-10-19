@@ -11,6 +11,7 @@ import { OpsPage } from '../pages/ops/OpsPage'
 import { DeploymentsPage } from '../pages/deployments/DeploymentsPage'
 import { ReleasePage } from '../pages/deployments/ReleasePage'
 import { ProductsPage } from '../pages/products/ProductsPage'
+import { SettingsPage } from '../pages/settings/SettingsPage'
 import { KnownHostsDialog, closeKnownHosts, openKnownHosts } from '../pages/terminals/KnownHostsDialog'
 import { PromptHost } from '../pages/terminals/PromptHost'
 import { TerminalDeck } from '../pages/terminals/TerminalDeck'
@@ -113,6 +114,7 @@ export function AppShell() {
             <Route path="/ops" element={<Navigate to="/ops/run" replace />} />
             <Route path="/ops/:tab" element={<OpsPage />} />
             <Route path="/audit" element={<AuditPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<Navigate to={SECTIONS[0].path} replace />} />
           </Routes>
         </motion.div>
