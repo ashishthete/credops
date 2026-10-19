@@ -104,8 +104,8 @@ export function SetupCard({ onDone }: { onDone?: (status: VaultStatus) => void }
           autoFocus
           maxLength={MAX_MASTER_PASSWORD}
           onInput={measure}
-          error={short ? 'At least 10 characters' : (error ?? undefined)}
-          hint="At least 10 characters"
+          error={short ? `At least ${MIN_MASTER_PASSWORD} characters` : (error ?? undefined)}
+          hint={`At least ${MIN_MASTER_PASSWORD} characters`}
         />
         <StrengthMeter strength={m.strength} active={m.len > 0} />
       </div>

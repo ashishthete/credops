@@ -3,7 +3,7 @@ export const DEFAULT_VAULT_ID = '00000000-0000-4000-8000-000000000001'
 export const VAULT_LOCKED = 'vault locked'
 /** Typed by the user to confirm a forgotten-password reset, which erases every vault secret. */
 export const VAULT_RESET_CONFIRM = 'RESET'
-export const MIN_MASTER_PASSWORD = 10
+export const MIN_MASTER_PASSWORD = 8
 export const MAX_MASTER_PASSWORD = 1024
 export const MAX_SECRET_VALUE = 65536
 export const MAX_SECRET_NAME = 120

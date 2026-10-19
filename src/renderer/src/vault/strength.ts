@@ -6,7 +6,7 @@ const LENGTH_STEPS = [MIN_MASTER_PASSWORD, 14, 20]
 const CLASSES = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^a-zA-Z0-9]/]
 
 /**
- * A rough 0–4 score: one point per length step (10, 14, 20 characters) plus one each for using
+ * A rough 0–4 score: one point per length step (8, 14, 20 characters) plus one each for using
  * three and all four character classes. Anything shorter than the minimum scores 0.
  */
 export function passwordStrength(pw: string): Strength {

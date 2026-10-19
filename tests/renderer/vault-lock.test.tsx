@@ -108,7 +108,7 @@ describe('setup', () => {
     const confirm = screen.getByLabelText('Confirm password')
 
     await user.type(pw, 'short')
-    expect(screen.getByText('At least 10 characters')).toBeInTheDocument()
+    expect(screen.getByText('At least 8 characters')).toBeInTheDocument()
     expect(pw).toHaveAttribute('aria-invalid', 'true')
     expect(create).toBeDisabled()
 
