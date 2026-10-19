@@ -1,0 +1,21 @@
+{"event": "task_start", "name": "lock prep od-1", "tags": ["od_step=lock", "od_run=host:host-od-1"]}
+{"event": "ok", "host": "od-1", "task": "lock prep od-1", "tags": ["od_step=lock", "od_run=host:host-od-1"], "no_log": false, "rc": 0, "truncated": []}
+{"event": "task_start", "name": "lock od-1", "tags": ["od_step=lock", "od_run=host:host-od-1"]}
+{"event": "ok", "host": "od-1", "task": "lock od-1", "tags": ["od_step=lock", "od_run=host:host-od-1"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-LOCK {\"releaseId\":\"0190a1b2-c3d4-7e5f-8a6b-1234567890ab\",\"user\":\"ana\",\"machine\":\"mbp\",\"environment\":\"prod east\",\"version\":\"v1.2.3\",\"startedAt\":\"2026-10-19T10:00:00.000Z\"}"}
+{"event": "task_start", "name": "record dep2", "tags": ["od_step=record", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"]}
+{"event": "ok", "host": "od-1", "task": "record dep2", "tags": ["od_step=record", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PREV bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+{"event": "task_start", "name": "fetch dep2", "tags": ["od_step=fetch", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"]}
+{"event": "ok", "host": "od-1", "task": "fetch dep2", "tags": ["od_step=fetch", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"], "no_log": false, "rc": 0, "truncated": []}
+{"event": "task_start", "name": "checkout dep2", "tags": ["od_step=checkout", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"]}
+{"event": "ok", "host": "od-1", "task": "checkout dep2", "tags": ["od_step=checkout", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-HEAD dddddddddddddddddddddddddddddddddddddddd"}
+{"event": "task_start", "name": "build dep2", "tags": ["od_step=build", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"]}
+{"event": "ok", "host": "od-1", "task": "build dep2", "tags": ["od_step=build", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"], "no_log": false, "rc": 0, "truncated": []}
+{"event": "task_start", "name": "up dep2", "tags": ["od_step=up", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"]}
+{"event": "ok", "host": "od-1", "task": "up dep2", "tags": ["od_step=up", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"], "no_log": false, "rc": 0, "truncated": []}
+{"event": "task_start", "name": "health dep2 0", "tags": ["od_step=health", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"]}
+{"event": "ok", "host": "od-1", "task": "health dep2 0", "tags": ["od_step=health", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-HEALTH ok 200"}
+{"event": "task_start", "name": "tag dep2", "tags": ["od_step=tag", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"]}
+{"event": "ok", "host": "od-1", "task": "tag dep2", "tags": ["od_step=tag", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"], "no_log": false, "rc": 0, "truncated": []}
+{"event": "task_start", "name": "unlock od-1", "tags": ["od_step=unlock", "od_run=host:host-od-1"]}
+{"event": "ok", "host": "od-1", "task": "unlock od-1", "tags": ["od_step=unlock", "od_run=host:host-od-1"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-LOCK {\"releaseId\":\"0190a1b2-c3d4-7e5f-8a6b-1234567890ab\",\"user\":\"ana\",\"machine\":\"mbp\",\"environment\":\"prod east\",\"version\":\"v1.2.3\",\"startedAt\":\"2026-10-19T10:00:00.000Z\"}\nOD-UNLOCK released /srv/apps/alpha2"}
+{"event": "stats", "hosts": {"od-1": {"ok": 11, "failures": 0, "unreachable": 0, "changed": 0, "skipped": 0, "rescued": 0, "ignored": 0}}}

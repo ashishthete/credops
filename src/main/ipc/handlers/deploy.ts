@@ -1,3 +1,4 @@
+import type { Tooling } from '../../../shared/deploy'
 import type { Handlers } from '../../../shared/ipc'
 import type { DeployStore } from '../../deploy/deploy-store'
 
@@ -13,9 +14,10 @@ type DeployChannel =
   | 'deploy:reorder'
   | 'deploy:settings'
   | 'deploy:updateSettings'
+  | 'deploy:tooling'
 
-export function createDeployHandlers(deps: { deploys: DeployStore }): Pick<Handlers, DeployChannel> {
-  const { deploys } = deps
+export function createDeployHandlers(deps: { deploys: DeployStore; tooling: () => Promise<Tooling> }): Pick<Handlers, DeployChannel> {
+  const { deploys, tooling } = deps
   return {
     'app:list': (environmentId) => deploys.listApps(environmentId),
     'app:create': (input) => deploys.createApp(input),
@@ -28,5 +30,6 @@ export function createDeployHandlers(deps: { deploys: DeployStore }): Pick<Handl
     'deploy:reorder': (environmentId, ids) => deploys.reorder(environmentId, ids),
     'deploy:settings': (environmentId) => deploys.settings(environmentId),
     'deploy:updateSettings': (environmentId, patch) => deploys.updateSettings(environmentId, patch),
+    'deploy:tooling': () => tooling(),
   }
 }

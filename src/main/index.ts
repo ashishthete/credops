@@ -1,3 +1,5 @@
+import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir, hostname, userInfo } from 'node:os'
 import {
@@ -19,6 +21,7 @@ import { createAppHandlers } from './ipc/handlers/app'
 import { createAuditHandlers } from './ipc/handlers/audit'
 import { createIdentityHandlers } from './ipc/handlers/identities'
 import { createDeployHandlers } from './ipc/handlers/deploy'
+import { detectTools } from './deploy/tooling'
 import { DeployStore, dbSecretRefs } from './deploy/deploy-store'
 import { ReleaseStore } from './deploy/release-store'
 import { createTunnelHandlers } from './ipc/handlers/tunnels'
@@ -331,7 +334,19 @@ if (!app.requestSingleInstanceLock()) {
           }),
           ...createSshImportHandlers(importer),
           ...createTunnelHandlers({ store: tunnels, manager: runner }),
-          ...createDeployHandlers({ deploys }),
+          ...createDeployHandlers({
+            deploys,
+            tooling: () =>
+              detectTools({
+                env: process.env,
+                home: homedir(),
+                execFile: (file, args) =>
+                  new Promise((resolve, reject) =>
+                    execFile(file, args, { timeout: 10_000 }, (err, stdout, stderr) => (err ? reject(err) : resolve({ stdout: String(stdout), stderr: String(stderr) }))),
+                  ),
+                exists: (path) => existsSync(path),
+              }),
+          }),
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
           ...createOpsHandlers({ snippets, runs, containers }),
         },

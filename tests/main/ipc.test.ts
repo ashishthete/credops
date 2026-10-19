@@ -127,6 +127,7 @@ describe('deploy contract', () => {
     'deploy:reorder',
     'deploy:settings',
     'deploy:updateSettings',
+    'deploy:tooling',
   ]
 
   it('lists every deploy channel and the changed event, all validated', () => {
@@ -136,7 +137,7 @@ describe('deploy contract', () => {
   })
 
   it('wires every deploy channel', () => {
-    const handlers = createDeployHandlers({ deploys: {} as DeployStore })
+    const handlers = createDeployHandlers({ deploys: {} as DeployStore, tooling: async () => ({}) as never })
     expect(Object.keys(handlers).sort()).toEqual([...DEPLOY_CHANNELS].sort())
   })
 })

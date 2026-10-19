@@ -1,0 +1,5 @@
+{"event": "task_start", "name": "lock prep od-1", "tags": ["od_step=lock", "od_run=host:host-od-1"]}
+{"event": "ok", "host": "od-1", "task": "lock prep od-1", "tags": ["od_step=lock", "od_run=host:host-od-1"], "no_log": false, "rc": 0, "truncated": []}
+{"event": "task_start", "name": "lock od-1", "tags": ["od_step=lock", "od_run=host:host-od-1"]}
+{"event": "failed", "host": "od-1", "task": "lock od-1", "tags": ["od_step=lock", "od_run=host:host-od-1"], "no_log": false, "rc": 42, "truncated": [], "ignored": false, "msg": "non-zero return code", "stdout": "OD-LOCK {\"releaseId\":\"0190a1b2-c3d4-7e5f-8a6b-1234567890ab\",\"user\":\"ana\",\"machine\":\"mbp\",\"environment\":\"prod east\",\"version\":\"v1.2.3\",\"startedAt\":\"2026-10-19T10:00:00.000Z\"}\nOD-LOCK {\"releaseId\":\"0190a1b2-c3d4-7e5f-8a6b-aaaaaaaaaaaa\",\"user\":\"bob\",\"machine\":\"srv9\",\"environment\":\"prod east\",\"version\":\"v1.2.3\",\"startedAt\":\"2026-10-19T07:00:00.000Z\"}"}
+{"event": "stats", "hosts": {"od-1": {"ok": 1, "failures": 1, "unreachable": 0, "changed": 0, "skipped": 0, "rescued": 0, "ignored": 0}}}

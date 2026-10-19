@@ -415,7 +415,7 @@ function preflightTasks(plan: DeployPlan, d: PlanDeployment): Task[] {
     out.push(pf(d, 'docker-become', 'if docker info >/dev/null 2>&1; then echo "OD-PF docker become=ok"; else echo "OD-PF docker become=fail"; fi', { chdir: false, become: true }))
   out.push(
     pf(d, 'repo', ['R={{ d.repo | quote }}', 'if [ -d "$R/.git" ]; then echo "OD-PF repo exists=1 git=1"; elif [ -d "$R" ]; then echo "OD-PF repo exists=1 git=0"; else echo "OD-PF repo exists=0 git=0"; fi'].join('\n'), { chdir: false }),
-    pf(d, 'clean', ['git update-index -q --refresh', 'if git diff-index --quiet HEAD --; then echo "OD-PF clean ok=1"; else echo "OD-PF clean ok=0"; fi'].join('\n')),
+    pf(d, 'clean', ['git update-index -q --refresh', 'if git diff-index --quiet HEAD --; then echo "OD-PF clean ok=1"; else echo "OD-PF clean ok=0 files=$(git status --porcelain 2>/dev/null | wc -l | tr -d \' \')"; fi'].join('\n')),
     pf(d, 'fetch', [
       'B={{ d.branch | quote }}',
       `if ${FETCH} >/dev/null 2>&1; then f=1; else f=0; fi`,

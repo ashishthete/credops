@@ -32,6 +32,7 @@ import type {
   AppPatch,
   DeploymentInput,
   DeploymentMeta,
+  Tooling,
   DeploymentPatch,
   EnvDeploySettings,
   EnvDeploySettingsPatch,
@@ -176,6 +177,7 @@ export interface IpcContract {
   'deploy:reorder': { args: [environmentId: string, ids: string[]]; result: void }
   'deploy:settings': { args: [environmentId: string]; result: EnvDeploySettings }
   'deploy:updateSettings': { args: [environmentId: string, patch: EnvDeploySettingsPatch]; result: EnvDeploySettings }
+  'deploy:tooling': { args: []; result: Tooling }
   'snippets:list': { args: []; result: SnippetMeta[] }
   'snippets:create': { args: [input: SnippetInput]; result: SnippetMeta }
   'snippets:update': { args: [id: string, input: SnippetInput]; result: SnippetMeta }
@@ -287,6 +289,7 @@ export const CHANNELS = [
   'deploy:reorder',
   'deploy:settings',
   'deploy:updateSettings',
+  'deploy:tooling',
   'snippets:list',
   'snippets:create',
   'snippets:update',

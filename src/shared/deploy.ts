@@ -443,3 +443,14 @@ export interface ReleaseDetail extends ReleaseSummary {
   preflight: PreflightReport | null
   lastSeq: number
 }
+
+// ---- Tooling ----
+/** What `deploy:tooling` reports: the local tools a run needs. */
+export interface Tooling {
+  ansiblePlaybook: { path: string; version: string } | null
+  sshAgent: string | null
+  sshAdd: string | null
+  ssh: string | null
+  /** Plain-language reasons something is missing or unusable. */
+  problems: string[]
+}
