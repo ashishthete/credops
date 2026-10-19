@@ -1,5 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { Cable, Check, Layers, Pencil, SquareTerminal, StickyNote, Trash2, Vault, X } from 'lucide-react'
+import { useNavigate } from 'react-router'
+import { Boxes, Cable, Check, Layers, Play, Pencil, SquareTerminal, StickyNote, Trash2, Vault, X } from 'lucide-react'
 import { useRef, useState, type ReactNode } from 'react'
 import type { EnvironmentMeta, HostMeta } from '../../../../shared/inventory'
 import { inv, inventoryStore, useInventory, type InventoryData } from '../../inventory/store'
@@ -30,6 +31,7 @@ export function HostView({ hostId, environmentId, onDeleted }: HostViewProps) {
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   const [context, setContext] = useState<string | null>(environmentId ?? null)
   const { connect } = useConnect()
+  const navigate = useNavigate()
   const host = data?.hosts.find((h) => h.id === hostId)
 
   if (!data) {
@@ -90,6 +92,17 @@ export function HostView({ hostId, environmentId, onDeleted }: HostViewProps) {
           <>
             <Button size="sm" icon={<SquareTerminal aria-hidden className="size-3.5" />} onClick={() => void connect(host.id, context ?? undefined)}>
               Connect
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={<Boxes aria-hidden className="size-3.5" />}
+              onClick={() => navigate(`/ops/containers?host=${encodeURIComponent(host.id)}${context ? `&env=${encodeURIComponent(context)}` : ''}`)}
+            >
+              Containers
+            </Button>
+            <Button size="sm" variant="ghost" icon={<Play aria-hidden className="size-3.5" />} onClick={() => navigate(`/ops/run?hosts=${encodeURIComponent(host.id)}`)}>
+              Run…
             </Button>
             <Button size="sm" variant="ghost" icon={<Pencil aria-hidden className="size-3.5" />} onClick={() => setEditing(true)}>
               Edit

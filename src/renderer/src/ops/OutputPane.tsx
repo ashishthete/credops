@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { ArrowDown, Check, Copy } from 'lucide-react'
-import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { RUN_OUTPUT_CHARS } from '../../../shared/ops'
 import { fast, spring, useMotionSafe } from '../ui/motion'
 import type { HostOutput } from './runs'
@@ -112,9 +112,29 @@ function advance(prev: Spans, out: HostOutput | undefined): Spans {
   return { source: out, spans, total: out.total, chars, errs, nextKey, hidden }
 }
 
+/** An RFC 3339 timestamp at the start of a line, as `docker logs --timestamps` writes it. */
+const STAMP = /^(\d{4}-\d\d-\d\dT[\d:.]+(?:Z|[+-]\d\d:\d\d))(?= |$)/gm
+
+/** `text` with line-start timestamps dimmed. */
+function dimStamps(text: string): ReactNode[] {
+  const parts: ReactNode[] = []
+  let at = 0
+  for (const m of text.matchAll(STAMP)) {
+    if (m.index > at) parts.push(text.slice(at, m.index))
+    parts.push(
+      <span key={m.index} data-stamp className="text-muted/70">
+        {m[1]}
+      </span>,
+    )
+    at = m.index + m[1].length
+  }
+  if (at < text.length) parts.push(text.slice(at))
+  return parts
+}
+
 /** A span never changes once added, so it renders once (a single span over the char cap is cut, as a new one). */
-const Chunk = memo(function Chunk({ span }: { span: Span }) {
-  if (!span.err.length) return <span data-chunk>{span.text}</span>
+const Chunk = memo(function Chunk({ span, dim }: { span: Span; dim: boolean }) {
+  if (!span.err.length) return <span data-chunk>{dim ? dimStamps(span.text) : span.text}</span>
   const parts = []
   let at = 0
   for (const [a, b] of span.err) {
@@ -132,10 +152,10 @@ const Chunk = memo(function Chunk({ span }: { span: Span }) {
 
 /** A run of consecutive spans; it re-renders only when it gains a span (the newest block only). */
 const Block = memo(
-  function Block({ spans }: { spans: Span[] }) {
-    return spans.map((s) => <Chunk key={s.key} span={s} />)
+  function Block({ spans, dim }: { spans: Span[]; dim: boolean }) {
+    return spans.map((s) => <Chunk key={s.key} span={s} dim={dim} />)
   },
-  (a, b) => a.spans.length === b.spans.length && a.spans.every((s, i) => s === b.spans[i]),
+  (a, b) => a.dim === b.dim && a.spans.length === b.spans.length && a.spans.every((s, i) => s === b.spans[i]),
 )
 
 /** The spans grouped by key, so dropping the oldest block leaves the others as they were. */
@@ -153,7 +173,18 @@ function blocks(spans: Span[]): [number, Span[]][] {
  * A host's output, streamed: new text is appended as a span and earlier spans never re-render. Stderr is
  * tinted. The view follows the end until the user scrolls up, then offers "Jump to live".
  */
-export function OutputPane({ output, label, className = 'max-h-80' }: { output: HostOutput | undefined; label: string; className?: string }) {
+export function OutputPane({
+  output,
+  label,
+  className = 'max-h-80',
+  dimTimestamps = false,
+}: {
+  output: HostOutput | undefined
+  label: string
+  className?: string
+  /** Dim a leading timestamp on each line (container logs). */
+  dimTimestamps?: boolean
+}) {
   const motionSafe = useMotionSafe()
   const built = useRef<Spans>(NONE)
   if (built.current.source !== output) built.current = advance(built.current, output)
@@ -212,7 +243,7 @@ export function OutputPane({ output, label, className = 'max-h-80' }: { output: 
         {spans.length ? (
           <pre className="px-3 py-2.5 font-mono text-[12px] leading-[1.55] break-all whitespace-pre-wrap text-fg/90">
             {blocks(spans).map(([id, group]) => (
-              <Block key={id} spans={group} />
+              <Block key={id} spans={group} dim={dimTimestamps} />
             ))}
           </pre>
         ) : (

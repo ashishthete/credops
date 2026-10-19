@@ -30,8 +30,11 @@ vi.mock('../../src/renderer/src/terminal/sessions', async (importOriginal) => ({
 }))
 
 let where = ''
+let search = ''
 function Location() {
-  where = useLocation().pathname
+  const loc = useLocation()
+  where = loc.pathname
+  search = loc.search
   return null
 }
 const Router = ({ children }: { children: ReactNode }) => (
@@ -576,6 +579,18 @@ describe('HostDialog', () => {
     await user.click(await screen.findByRole('button', { name: 'Connect' }))
     await waitFor(() => expect(where).toBe('/terminals'))
     expect(sessions.openSsh).toHaveBeenCalledWith('web1', 'prod')
+  })
+
+  it('links to containers and run for this host', async () => {
+    const user = userEvent.setup()
+    setup()
+    render(<HostView hostId="web1" environmentId="prod" />)
+    await user.click(await screen.findByRole('button', { name: 'Containers' }))
+    expect(where).toBe('/ops/containers')
+    expect(search).toBe('?host=web1&env=prod')
+    await user.click(screen.getByRole('button', { name: 'Run…' }))
+    expect(where).toBe('/ops/run')
+    expect(search).toBe('?hosts=web1')
   })
 
   it('HostView connect outside any environment passes none, and a failed open stays put', async () => {

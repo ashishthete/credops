@@ -121,6 +121,14 @@ export function openSsh(hostId: string, environmentId?: string): Promise<string 
   return open("Couldn't open the session", () => api.invoke('ssh:open', { hostId, environmentId, cols, rows }))
 }
 
+/** Opens a `docker exec` tab into a container on the host; resolves undefined after a toast on failure. */
+export function openContainer(hostId: string, environmentId: string | null, ref: string): Promise<string | undefined> {
+  const { cols, rows } = getLastSize()
+  return open("Couldn't open a shell in the container", () =>
+    api.invoke('ssh:open', { hostId, environmentId: environmentId ?? undefined, cols, rows, container: ref }),
+  )
+}
+
 export function openLocal(): Promise<string | undefined> {
   const { cols, rows } = getLastSize()
   return open("Couldn't open a shell", () => api.invoke('shell:open', { cols, rows }))

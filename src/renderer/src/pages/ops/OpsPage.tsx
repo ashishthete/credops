@@ -3,6 +3,7 @@ import { Navigate, NavLink, useParams } from 'react-router'
 import { showOpsPage } from '../../ops/runs'
 import { EmptyState } from '../../ui/EmptyState'
 import { Play, Boxes, FileCode2, type LucideIcon } from 'lucide-react'
+import { ContainersTab } from './ContainersTab'
 import { RunTab } from './RunTab'
 
 const TABS = [
@@ -40,6 +41,8 @@ export function OpsPage() {
       </nav>
       {current.id === 'run' ? (
         <RunTab />
+      ) : current.id === 'containers' ? (
+        <ContainersTab />
       ) : (
         <div className="flex flex-1 items-center justify-center pb-16">
           <EmptyState icon={current.icon} title={current.blurb} text="" />
