@@ -102,6 +102,8 @@ interface Rig {
 
 async function rig(over: { access?: DeployAccess; finalize?: FinalizeSteps; maxEvents?: number } = {}): Promise<Rig> {
   const f = await makeDeployFixture({ maxEvents: over.maxEvents })
+  // The fixture shares app1 with protected prod; most tests want an unprotected staging, so unshare it here.
+  f.db.prepare('DELETE FROM environment_hosts WHERE environment_id = ?').run(f.prod.id)
   const runner = new FakeRunner()
   const clipboard = { async writeText(): Promise<void> {}, async readText(): Promise<string> { return '' } }
   const store = new SecretStore(f.db, f.vault, f.audit, { clipboard })
@@ -170,7 +172,8 @@ describe('ReleaseService', () => {
     const ev = audits(r, 'release.preflight')
     expect(ev).toHaveLength(1)
     expect(ev[0].outcome).toBe('success')
-    expect(JSON.stringify(ev[0].details)).toContain(id)
+    expect(ev[0]).toMatchObject({ targetType: 'release', targetId: id, targetLabel: 'staging release' })
+    expect(ev[0].details).toEqual({ deployments: [d.runs[0].deploymentId], commits: 1, blockers: 0 })
     expect(r.states).toContain(`${id}:ready`)
   })
 
@@ -196,6 +199,7 @@ describe('ReleaseService', () => {
 
   it('protected start without the typed name is CONFIRM_REQUIRED and audited denied', async () => {
     const r = await rig()
+    r.f.envs.putHost(r.f.prod.id, r.f.host.id, 'app')
     const d = dep(r, 'api', { environmentId: r.f.prod.id, deployTag: 'deploy_prod' })
     const id = await ready(r, [d], { envId: r.f.prod.id })
     for (const typedName of [undefined, 'Prod', 'prod ']) {
@@ -225,6 +229,7 @@ describe('ReleaseService', () => {
     expect(d.status).toBe('succeeded')
     expect(d.redeploy).toBe(true)
     expect(d.version).toBe('v1.4.0')
+    expect((r.f.db.prepare('SELECT version_bump AS b FROM releases WHERE id = ?').get(id) as { b: string }).b).toBe('none')
     expect(r.runner.kinds).toEqual(['preflight', 'release', 'unlock'])
     expect(r.f.deploys.settings(r.f.staging.id).currentVersion).toBe('v1.4.0')
   })
@@ -638,7 +643,8 @@ describe('ReleaseService', () => {
     const ev = audits(r, 'release.finish')
     expect(ev).toHaveLength(1)
     expect(ev[0].outcome).toBe('failure')
-    expect(ev[0].details).toMatchObject({ releaseId: release.id, interrupted: true })
+    expect(ev[0].details).toMatchObject({ interrupted: true, status: 'failed' })
+    expect(ev[0]).toMatchObject({ targetType: 'release', targetId: release.id })
     expect(r.svc.recoverInterrupted()).toEqual([])
   })
 
@@ -662,5 +668,141 @@ describe('ReleaseService', () => {
     expect(r.svc.events(id, 0).pop()).toMatchObject({ type: 'run.finished' })
     await expect(r.svc.discard(id)).rejects.toThrow(/cannot be discarded/)
     await expect(r.svc.start(id, {})).rejects.toThrow(/discarded/)
+  })
+
+  it('a host shared with a protected env requires the typed name', async () => {
+    const r = await rig()
+    r.f.envs.putHost(r.f.prod.id, r.f.host.id, 'app')
+    const id = await ready(r)
+    const err = await r.svc.start(id, {}).catch((e: unknown) => e)
+    expect((err as DeployError).code).toBe('CONFIRM_REQUIRED')
+    expect(audits(r, 'release.start').map((e) => e.outcome)).toEqual(['denied'])
+    expect(r.runner.kinds).toEqual(['preflight'])
+    await r.svc.start(id, { typedName: 'prod' })
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).status).toBe('succeeded')
+
+    // Two protected environments on the hosts are refused outright.
+    const other = r.f.envs.create({ name: 'dr', color: '#aa0000', protected: true })
+    r.f.envs.putHost(other.id, r.f.host.id, 'app')
+    const id2 = await ready(r, [r.f.deploys.list(r.f.staging.id)[0]])
+    const err2 = await r.svc.start(id2, { typedName: 'prod' }).catch((e: unknown) => e)
+    expect((err2 as DeployError).message).toBe('These hosts are in more than one protected environment; run one environment at a time')
+  })
+
+  it('step events update deployment_runs.steps, starting from planned pending steps', async () => {
+    const r = await rig()
+    const d = dep(r, 'api', { preHook: 'echo hi', urls: [{ url: 'http://x/health', from: 'mac' }] } as never)
+    const id = await ready(r, [d])
+    const planned = r.svc.detail(id).runs[0].steps
+    const runId = r.svc.detail(id).runs[0].id
+    expect(planned.map((x) => x.kind)).toEqual(['record', 'fetch', 'checkout', 'pre_hook', 'build', 'up', 'health', 'tag'])
+    expect(planned.every((x) => x.state === 'pending' && x.stepId === `${runId}:${x.kind}`)).toBe(true)
+    r.runner.on.release = (_p, _s, emit) => {
+      emit({ type: 'step.started', stepId: `${runId}:record`, kind: 'record', name: 'Record api', hostId: null, deploymentRunId: runId })
+      emit({ type: 'step.done', stepId: `${runId}:record`, state: 'ok', durationMs: 3 })
+    }
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    const steps = r.svc.detail(id).runs[0].steps
+    expect(steps).toHaveLength(planned.length)
+    expect(steps[0]).toMatchObject({ kind: 'record', state: 'ok' })
+    expect(steps[0].startedAt).not.toBeNull()
+    expect(steps[1].state).toBe('pending')
+  })
+
+  it('a stale preflight version cannot start', async () => {
+    const r = await rig()
+    r.f.deploys.updateSettings(r.f.staging.id, { versioned: true, currentVersion: 'v1.4.0' })
+    const a = await ready(r, [dep(r, 'api')], { bump: 'major' })
+    const b = await ready(r, [r.f.deploys.list(r.f.staging.id)[0]], { bump: 'minor' })
+    await r.svc.start(a, {})
+    await r.svc.whenIdle()
+    expect(r.f.deploys.settings(r.f.staging.id).currentVersion).toBe('v2.0.0')
+    await expect(r.svc.start(b, {})).rejects.toThrow('The version changed since preflight; run preflight again')
+    expect(r.f.deploys.settings(r.f.staging.id).currentVersion).toBe('v2.0.0')
+    expect(r.svc.detail(b).status).toBe('ready')
+  })
+
+  it('a release that is in flight rejects start, discard, break-lock, retry and rollback', async () => {
+    const r = await rig()
+    const g = gate()
+    r.runner.locks = { [r.f.host.id]: { holder: { releaseId: 'x', user: 'ana', machine: 'mbp', environment: 'staging', version: null, startedAt: new Date(NOW - 180 * 60000).toISOString() }, stale: true, raw: 'raw' } }
+    const id = await ready(r)
+    // Break-lock in flight: everything else on the same release is refused, and whenIdle waits for it.
+    r.runner.on['break-lock'] = async () => {
+      await g.p
+    }
+    const brk = r.svc.breakLock(id, r.f.host.id, { typedLabel: 'app1' })
+    for (let i = 0; i < 50 && !r.svc.hasActive() && r.runner.kinds.at(-1) !== 'break-lock'; i++) await new Promise((res) => setImmediate(res))
+    for (const call of [() => r.svc.start(id, {}), () => r.svc.discard(id), () => r.svc.breakLock(id, r.f.host.id, { typedLabel: 'app1' }), () => r.svc.retryVersion(id), () => r.svc.rollback(id, {})]) {
+      await expect(call()).rejects.toThrow('This release is busy')
+    }
+    const idle = r.svc.whenIdle()
+    g.open()
+    await brk
+    await idle
+    expect(r.svc.detail(id).status).toBe('ready')
+  })
+
+  it('audit rows name the release and carry ids and counts, never host details', async () => {
+    const r = await rig()
+    r.f.deploys.updateSettings(r.f.staging.id, { versioned: true, currentVersion: 'v1.4.0' })
+    const d = dep(r, 'api', { managedEnv: true, vaultIds: [DEFAULT_VAULT_ID], envTemplate: `TOKEN=\${secret:${r.f.secretId}}` })
+    const id = await ready(r, [d], { bump: 'minor' })
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    const start = audits(r, 'release.start')[0]
+    expect(start).toMatchObject({ targetType: 'release', targetId: id, targetLabel: 'staging v1.5.0' })
+    expect(start.details).toEqual({ kind: 'release', version: 'v1.5.0', bump: 'minor', redeploy: false, deployments: [d.id], hostCount: 1, credentialIds: [r.f.secretId] })
+    const fin = audits(r, 'release.finish')[0]
+    expect(fin).toMatchObject({ targetType: 'release', targetId: id, targetLabel: 'staging v1.5.0' })
+    expect(fin.details).toMatchObject({ status: 'succeeded', version: 'v1.5.0' })
+    expect(typeof (fin.details as { durationSec: number }).durationSec).toBe('number')
+    const all = JSON.stringify(r.f.audit.list({ actions: ['release.preflight', 'release.start', 'release.finish'] }))
+    for (const bad of ['app1', '10.0.0.7', r.f.host.id, '/srv/api']) expect(all).not.toContain(bad)
+
+    const failing = await rig()
+    failing.runner.on.release = (_p, _s, emit) => {
+      emit({ type: 'step.failed', stepId: 'x:build', error: 'compose broke', durationMs: 1 })
+      return { exitCode: 2 }
+    }
+    failing.f.deploys.updateSettings(failing.f.staging.id, { autoRollback: false })
+    const fid = await ready(failing)
+    await failing.svc.start(fid, {})
+    await failing.svc.whenIdle()
+    expect(audits(failing, 'release.finish')[0].details).toMatchObject({ status: 'failed', failedStep: 'x:build' })
+  })
+
+  it('lock-break and discard are audited against the release, without host details', async () => {
+    const r = await rig()
+    r.runner.locks = { [r.f.host.id]: { holder: { releaseId: 'x', user: 'ana', machine: 'mbp', environment: 'staging', version: null, startedAt: new Date(NOW - 180 * 60000).toISOString() }, stale: true, raw: 'raw' } }
+    const id = await ready(r)
+    await r.svc.breakLock(id, r.f.host.id, { typedLabel: 'app1' })
+    const lb = audits(r, 'deploy.lock_break')[0]
+    expect(lb).toMatchObject({ targetType: 'release', targetId: id, outcome: 'success' })
+    expect(lb.details).toEqual({ holder: 'ana@mbp', hostCount: 1 })
+    await r.svc.discard(id)
+    const dis = audits(r, 'release.discard')
+    expect(dis).toHaveLength(1)
+    expect(dis[0]).toMatchObject({ targetType: 'release', targetId: id, outcome: 'success' })
+  })
+
+  it('a throw after the run leaves no stranded row', async () => {
+    const r = await rig()
+    const id = await ready(r)
+    const original = r.f.releases.setStatus.bind(r.f.releases)
+    let armed = true
+    r.f.releases.setStatus = ((rid: string, status: string, extra?: never) => {
+      if (armed && status === 'succeeded') {
+        armed = false
+        throw new Error('disk full')
+      }
+      return original(rid, status as never, extra)
+    }) as never
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).status).toBe('failed')
+    expect(r.svc.events(id, 0).filter((e) => e.type === 'run.finished').length).toBeGreaterThan(0)
   })
 })

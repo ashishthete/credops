@@ -47,6 +47,7 @@ export interface ReleaseStatusExtra {
   releaseNotes?: string | null
   playbook?: string | null
   redeploy?: boolean
+  versionBump?: VersionBump
 }
 
 export interface RunPlan {
@@ -182,6 +183,7 @@ export class ReleaseStore {
       releaseNotes: 'release_notes',
       playbook: 'playbook',
       redeploy: 'redeploy',
+      versionBump: 'version_bump',
     }
     for (const k of Object.keys(cols) as (keyof ReleaseStatusExtra)[]) {
       if (extra[k] !== undefined) {

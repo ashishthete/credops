@@ -26,6 +26,7 @@ import {
 } from '../../shared/deploy'
 import type { AuditAction } from '../../shared/audit'
 import { CONFIRM_MESSAGE } from '../../shared/ops'
+import { ProtectError, confirmNeeded, protectionFor } from '../ops/protect'
 import type { ResolvedHost } from '../../shared/inventory'
 import type { AuditLog } from '../audit/audit-log'
 import type { Db } from '../db/connection'
@@ -84,6 +85,9 @@ interface Live {
   versionError: string | null
   busyText: string | null
   known: string[]
+  /** `<version|kind>`, the audit target label's second half. */
+  label: string
+  failedStep: string | null
 }
 
 /** The decrypted values of one release. Held by reference so `drop` can let go of them. */
@@ -91,6 +95,7 @@ interface Holder {
   secrets: RunSecrets | null
   envKey: Map<string, string>
   becomeKey: Map<string, string>
+  secretIds: string[]
   refs: DeployPlan['secretRefs']
 }
 
@@ -110,6 +115,8 @@ export class ReleaseService {
   private readonly queue = new Map<string, RunEventBody[]>()
   private readonly listeners = new Set<(batch: RunEvent[]) => void>()
   private readonly steps = new Map<string, DeploymentRunMeta['steps']>()
+  /** Runs whose step list changed since the last flush; written in the same transaction as the events. */
+  private readonly dirty = new Set<string>()
   private timer: unknown = null
   private readonly unsubscribe: () => void
 
@@ -171,10 +178,10 @@ export class ReleaseService {
       this.d.audit.append({
         action: 'release.finish',
         outcome: 'failure',
-        targetType: 'environment',
-        targetId: r.environmentId,
-        targetLabel: r.environmentName,
-        details: { releaseId: id, status: 'failed', interrupted: true },
+        targetType: 'release',
+        targetId: id,
+        targetLabel: `${r.environmentName} ${r.version ?? r.kind}`,
+        details: { status: 'failed', version: r.version, durationSec: null, interrupted: true },
       })
     }
     return ids
@@ -215,12 +222,13 @@ export class ReleaseService {
         steps: [],
       })),
     )
+    this.seedSteps(runs, deps, 'release', req.options.backup)
     if (req.releaseNotes) this.d.releases.setStatus(release.id, 'preflight', { releaseNotes: req.releaseNotes })
     this.emitState(release.id)
 
-    const live = this.register(release.id, env, 'preflight')
+    const live = this.register(release.id, env, 'preflight', tag ?? settings.currentVersion ?? 'release')
     for (const r of runs) live.runIds.add(r.id)
-    live.done = this.runPreflight(live, deps.map((dep, i) => ({ dep, run: runs[i] })), tag).finally(() => this.unregister(live))
+    live.done = this.runPreflight(live, deps.map((dep, i) => ({ dep, run: runs[i] })), tag).catch((e: unknown) => this.crash(live, e)).finally(() => this.unregister(live))
     return { releaseId: release.id }
   }
 
@@ -256,7 +264,7 @@ export class ReleaseService {
     this.push(id, { type: 'preflight.done', report })
     this.flush()
     this.setStatus(id, report.blocked ? 'blocked' : 'ready')
-    this.audit('release.preflight', 'success', live, { releaseId: id, blocked: report.blocked })
+    this.audit('release.preflight', 'success', live, { deployments: infos.map((i) => i.dep.id), commits: report.commitsTotal, blockers: report.checks.filter((c) => c.level === 'block').length })
     this.clearSteps(live)
   }
 
@@ -269,17 +277,19 @@ export class ReleaseService {
     if (rel.status !== 'ready') {
       throw new DeployError('INVALID_STATE', rel.status === 'blocked' ? 'This release is blocked; fix the failed checks and run preflight again' : `This release is ${rel.status}`)
     }
+    if (this.live.has(releaseId)) throw new DeployError('INVALID_STATE', 'This release is busy')
     const env = environmentMeta(this.d.db, rel.environmentId)
     await this.guard('release.start', 'release.start', env, this.depIds(rel), releaseId)
-    if (env.protected && confirm.typedName !== env.name) {
-      this.d.audit.append({ action: 'release.start', outcome: 'denied', targetType: 'environment', targetId: env.id, targetLabel: env.name, details: { releaseId, reason: 'confirm' } })
-      throw new DeployError('CONFIRM_REQUIRED', CONFIRM_MESSAGE)
+    this.confirmProtected('release.start', rel, env, rel.runs.map((r) => r.hostId).filter((h): h is string => h !== null), confirm.typedName)
+    const current = this.d.deploys.settings(env.id)
+    if (current.versioned && current.currentVersion !== rel.previousVersion) {
+      throw new DeployError('INVALID_STATE', 'The version changed since preflight; run preflight again')
     }
     const redeploy = (rel.preflight?.commitsTotal ?? 0) === 0
     if (redeploy && confirm.redeploy !== true) throw new DeployError('CONFIRM_REQUIRED', REDEPLOY_CONFIRM_MESSAGE)
 
     this.assertCapacity(env)
-    const live = this.register(releaseId, env, 'release')
+    const live = this.register(releaseId, env, 'release', rel.version ?? 'release')
     let ctx: { infos: Info[]; holder: Holder; tag: string | null; autoRollback: boolean; previousVersion: string | null; version: string | null }
     try {
       const infos = this.infosOf(rel)
@@ -295,13 +305,21 @@ export class ReleaseService {
         startedAt: this.d.now().toISOString(),
         redeploy,
         version,
+        ...(redeploy ? { versionBump: 'none' as const } : {}),
         playbook: generatePlaybook(plan),
       })
       ctx = { infos, holder, tag, autoRollback: settings.autoRollback, previousVersion: settings.currentVersion, version }
       this.emitState(releaseId)
-      this.audit('release.start', 'success', live, { releaseId, redeploy })
-      live.known = holder.secrets?.known ?? []
-      live.done = this.runRelease(live, ctx, plan, docker, rel.options.backup).finally(() => this.unregister(live))
+      this.audit('release.start', 'success', live, {
+        kind: 'release',
+        version,
+        bump: redeploy ? 'none' : ((this.d.db.prepare('SELECT version_bump AS b FROM releases WHERE id = ?').get(releaseId) as { b: string }).b),
+        redeploy,
+        deployments: infos.map((i) => i.dep.id),
+        hostCount: this.hostCount(infos),
+        credentialIds: holder.secretIds,
+      })
+      live.done = this.runRelease(live, ctx, plan, docker, rel.options.backup).catch((e: unknown) => this.crash(live, e)).finally(() => this.unregister(live))
     } catch (e) {
       this.unregister(live)
       throw e
@@ -360,7 +378,7 @@ export class ReleaseService {
       status = 'failed'
       error = this.red(live, e instanceof Error ? e.message : String(e))
     } finally {
-      await this.unlock(live, c.infos, c.holder)
+      await this.safeUnlock(live, c.infos, c.holder)
       this.finish(live, status, error, notes, c.holder)
     }
   }
@@ -425,14 +443,12 @@ export class ReleaseService {
   async rollback(releaseId: string, confirm: ReleaseConfirm = {}): Promise<{ releaseId: string }> {
     this.d.vault.assertUnlocked()
     const src = this.d.releases.detail(releaseId)
+    if (this.live.has(releaseId)) throw new DeployError('INVALID_STATE', 'This release is busy')
     const env = environmentMeta(this.d.db, src.environmentId)
     await this.guard('release.rollback', 'release.rollback', env, this.depIds(src), releaseId)
     const latest = this.d.releases.list({ environmentId: env.id, limit: 50 }).find((r) => r.kind === 'release' && (r.status === 'succeeded' || r.status === 'failed'))
     if (src.kind !== 'release' || !latest || latest.id !== src.id) throw new DeployError('INVALID_STATE', `Only the latest release of ${env.name} can be rolled back`)
-    if (env.protected && confirm.typedName !== env.name) {
-      this.d.audit.append({ action: 'release.rollback', outcome: 'denied', targetType: 'environment', targetId: env.id, targetLabel: env.name, details: { releaseId, reason: 'confirm' } })
-      throw new DeployError('CONFIRM_REQUIRED', CONFIRM_MESSAGE)
-    }
+    this.confirmProtected('release.rollback', src, env, src.runs.map((r) => r.hostId).filter((h): h is string => h !== null), confirm.typedName)
     const eligible = src.runs
       .filter((r) => (r.status === 'succeeded' || r.status === 'failed') && r.previousCommit !== null && SHA.test(r.previousCommit) && r.deploymentId !== null)
       .reverse()
@@ -467,10 +483,11 @@ export class ReleaseService {
       this.d.releases.setStatus(rel.id, 'running', { startedAt: this.d.now().toISOString() })
       return { rel, runs }
     })
-    const live = this.register(rb.rel.id, env, 'rollback')
+    const live = this.register(rb.rel.id, env, 'rollback', 'rollback')
     try {
       const infos: Info[] = eligible.map((r, i) => ({ run: rb.runs[i], dep: this.d.deploys.get(r.deploymentId as string) }))
       for (const i of infos) live.runIds.add(i.run.id)
+      this.seedSteps(rb.runs, infos.map((i) => i.dep), 'rollback', false)
       const holder = this.resolveSecrets(infos, { env: true })
       live.known = holder.secrets?.known ?? []
       const previous = new Map(infos.map((i, n) => [i.run.id, eligible[n].previousCommit as string]))
@@ -478,12 +495,12 @@ export class ReleaseService {
       const plan = this.plan('rollback', live, infos, { version: null, holder, docker, backup: false, previous })
       this.d.releases.setStatus(rb.rel.id, 'running', { playbook: generatePlaybook(plan) })
       this.emitState(rb.rel.id)
-      this.audit('release.rollback', 'success', live, { releaseId: rb.rel.id, rollbackOf: src.id })
-      live.done = this.runRollback(live, src, infos, holder, plan).finally(() => this.unregister(live))
+      this.audit('release.rollback', 'success', live, { rollbackOf: src.id, deployments: infos.map((i) => i.dep.id), hostCount: this.hostCount(infos) })
+      live.done = this.runRollback(live, src, infos, holder, plan).catch((e: unknown) => this.crash(live, e)).finally(() => this.unregister(live))
       return { releaseId: rb.rel.id }
     } catch (e) {
+      this.finish(live, 'failed', e instanceof Error ? e.message : String(e), null)
       this.unregister(live)
-      this.setStatus(rb.rel.id, 'failed', { finishedAt: this.d.now().toISOString(), error: redact(e instanceof Error ? e.message : String(e), live.known) })
       throw e
     }
   }
@@ -514,7 +531,7 @@ export class ReleaseService {
       status = 'failed'
       error = this.red(live, e instanceof Error ? e.message : String(e))
     } finally {
-      await this.unlock(live, infos, holder)
+      await this.safeUnlock(live, infos, holder)
       this.finish(live, status, error, null, holder)
     }
   }
@@ -524,6 +541,7 @@ export class ReleaseService {
   async breakLock(releaseId: string, hostId: string, confirm: BreakLockConfirm): Promise<void> {
     this.d.vault.assertUnlocked()
     const rel = this.d.releases.detail(releaseId)
+    if (this.live.has(releaseId)) throw new DeployError('INVALID_STATE', 'This release is busy')
     const env = environmentMeta(this.d.db, rel.environmentId)
     if (rel.status !== 'ready' && rel.status !== 'blocked') throw new DeployError('INVALID_STATE', `This release is ${rel.status}`)
     await this.guard('lock.break', 'deploy.lock_break', env, [], releaseId)
@@ -535,12 +553,12 @@ export class ReleaseService {
       throw new DeployError('INVALID_STATE', STALE_TEXT(minutes, `${lock.holder.user}@${lock.holder.machine}`))
     }
     if (confirm.typedLabel !== label) {
-      this.d.audit.append({ action: 'deploy.lock_break', outcome: 'denied', targetType: 'host', targetId: hostId, targetLabel: label, details: { releaseId, reason: 'confirm' } })
+      this.auditRelease('deploy.lock_break', 'denied', releaseId, env.name, rel.version ?? 'release', { reason: 'confirm', hostCount: 1 })
       throw new DeployError('CONFIRM_REQUIRED', BREAK_LOCK_CONFIRM_MESSAGE)
     }
     const infos = this.infosOf(rel).filter((i) => i.dep.hostId === hostId)
     if (infos.length === 0) throw new DeployError('INVALID_STATE', 'This release has no deployment on that host')
-    const live = this.register(releaseId, env, 'preflight')
+    const live = this.register(releaseId, env, 'preflight', rel.version ?? 'release')
     const run = async (): Promise<void> => {
       const brk = this.plan('break-lock', live, infos, { version: null, holder: null, docker: new Map(), lockRaw: { [hostId]: lock.raw } })
       const a = await this.exec(live, brk, EMPTY)
@@ -564,17 +582,17 @@ export class ReleaseService {
       }
     }
     let failure: unknown = null
-    try {
-      await run()
-    } catch (e) {
+    live.done = run().catch((e: unknown) => {
       failure = e
-    }
+    })
+    await live.done
     this.unregister(live)
+    const details = { holder: `${lock.holder.user}@${lock.holder.machine}`, hostCount: 1 }
     if (failure) {
-      this.d.audit.append({ action: 'deploy.lock_break', outcome: 'failure', targetType: 'host', targetId: hostId, targetLabel: label, details: { releaseId } })
+      this.auditRelease('deploy.lock_break', 'failure', releaseId, env.name, rel.version ?? 'release', details)
       throw failure
     }
-    this.d.audit.append({ action: 'deploy.lock_break', outcome: 'success', targetType: 'host', targetId: hostId, targetLabel: label, details: { releaseId } })
+    this.auditRelease('deploy.lock_break', 'success', releaseId, env.name, rel.version ?? 'release', details)
   }
 
   // ---- discard / retry ----
@@ -582,18 +600,21 @@ export class ReleaseService {
   async discard(releaseId: string): Promise<void> {
     this.d.vault.assertUnlocked()
     const rel = this.d.releases.get(releaseId)
+    if (this.live.has(releaseId)) throw new DeployError('INVALID_STATE', 'This release is busy')
     if (rel.status !== 'ready' && rel.status !== 'blocked') throw new DeployError('INVALID_STATE', `A ${rel.status} release cannot be discarded`)
     const env = environmentMeta(this.d.db, rel.environmentId)
-    await this.guard('deploy.edit', 'release.cancel', env, [], releaseId)
+    await this.guard('deploy.edit', 'release.discard', env, [], releaseId)
     this.push(releaseId, { type: 'run.finished', status: 'cancelled' })
     this.flush()
     this.d.releases.setStatus(releaseId, 'discarded', { finishedAt: this.d.now().toISOString() })
     this.emitState(releaseId)
+    this.auditRelease('release.discard', 'success', releaseId, env.name, rel.version ?? 'release', {})
   }
 
   async retryVersion(releaseId: string): Promise<void> {
     this.d.vault.assertUnlocked()
     const rel = this.d.releases.detail(releaseId)
+    if (this.live.has(releaseId)) throw new DeployError('INVALID_STATE', 'This release is busy')
     const env = environmentMeta(this.d.db, rel.environmentId)
     await this.guard('release.start', 'release.start', env, this.depIds(rel), releaseId)
     const tagFailed = rel.kind === 'release' && rel.status === 'failed' && rel.version !== null && (rel.error ?? '').startsWith(TAG_FAILED)
@@ -601,14 +622,14 @@ export class ReleaseService {
       throw new DeployError('INVALID_STATE', 'Only a release whose deployments all succeeded and whose version tag failed can retry the tag')
     }
     this.assertCapacity(env)
-    const live = this.register(releaseId, env, 'version')
+    const live = this.register(releaseId, env, 'version', rel.version ?? 'release')
     try {
       const infos = this.infosOf(rel)
       for (const i of infos) live.runIds.add(i.run.id)
       const tag = rel.version as string
       this.setStatus(releaseId, 'running', { error: null, finishedAt: null })
-      this.audit('release.start', 'success', live, { releaseId, retryVersion: true })
-      live.done = this.runRetry(live, infos, tag, rel.previousVersion).finally(() => this.unregister(live))
+      this.audit('release.start', 'success', live, { kind: 'release', version: rel.version, bump: 'none', redeploy: false, retryVersion: true, deployments: infos.map((i) => i.dep.id), hostCount: this.hostCount(infos), credentialIds: [] })
+      live.done = this.runRetry(live, infos, tag, rel.previousVersion).catch((e: unknown) => this.crash(live, e)).finally(() => this.unregister(live))
     } catch (e) {
       this.unregister(live)
       throw e
@@ -636,7 +657,7 @@ export class ReleaseService {
       status = 'failed'
       error = this.red(live, e instanceof Error ? e.message : String(e))
     } finally {
-      await this.unlock(live, infos, null)
+      await this.safeUnlock(live, infos, null)
       this.finish(live, status, error, notes, null)
     }
   }
@@ -732,6 +753,25 @@ export class ReleaseService {
     }
   }
 
+  /** Unlock is best-effort at the end of a run: a failure to even build its plan must not strand the release row. */
+  private async safeUnlock(live: Live, infos: Info[], holder: Holder | null): Promise<void> {
+    try {
+      await this.unlock(live, infos, holder)
+    } catch (e) {
+      this.push(live.id, { type: 'log', stepId: null, hostId: null, stream: 'ansible', line: this.red(live, `Unlock failed: ${e instanceof Error ? e.message : String(e)}`) })
+    }
+  }
+
+  /** A throw nothing else caught: end the row failed instead of leaving it preflight/running with an unhandled rejection. */
+  private crash(live: Live, e: unknown): void {
+    try {
+      const status = this.d.releases.get(live.id).status
+      if (status === 'preflight' || status === 'running' || status === 'rolling_back') this.finish(live, 'failed', e instanceof Error ? e.message : String(e), null)
+    } catch {
+      /* the store itself is failing; startup recovery will mark the row */
+    }
+  }
+
   private async unlock(live: Live, infos: Info[], holder: Holder | null): Promise<void> {
     void holder
     live.phase = 'unlock'
@@ -783,7 +823,14 @@ export class ReleaseService {
     this.flush()
     this.d.releases.setStatus(id, status, { finishedAt: now, error: safe, ...(notes !== null ? { releaseNotes: notes } : {}) })
     this.emitState(id)
-    this.audit('release.finish', status === 'succeeded' ? 'success' : status === 'cancelled' ? 'info' : 'failure', live, { releaseId: id, status })
+    const row = this.d.releases.get(id)
+    const durationSec = row.startedAt ? Math.max(0, Math.round((Date.parse(now) - Date.parse(row.startedAt)) / 1000)) : 0
+    this.audit('release.finish', status === 'succeeded' ? 'success' : status === 'cancelled' ? 'info' : 'failure', live, {
+      status,
+      version: row.version,
+      durationSec,
+      ...(live.failedStep ? { failedStep: live.failedStep } : {}),
+    })
     if (holder) holder.secrets = null
     live.known = []
     this.clearSteps(live)
@@ -887,7 +934,7 @@ export class ReleaseService {
       }
       return v
     }
-    const holder: Holder = { secrets: null, envKey: new Map(), becomeKey: new Map(), refs: {} }
+    const holder: Holder = { secrets: null, envKey: new Map(), becomeKey: new Map(), secretIds: [], refs: {} }
     for (const { run, dep } of infos) {
       if (dep.becomeSecretId) {
         const key = `BECOME_${run.id.replace(/-/g, '_')}`
@@ -912,6 +959,7 @@ export class ReleaseService {
       }
     }
     holder.secrets = { values, known: [...known] }
+    holder.secretIds = [...cache.keys()]
     return holder
   }
 
@@ -930,7 +978,34 @@ export class ReleaseService {
   private infosOf(rel: ReleaseDetail): Info[] {
     return rel.runs.map((run) => {
       if (run.deploymentId === null) throw new DeployError('INVALID_STATE', `${run.deploymentName} was removed since preflight; run preflight again`)
+      if (!this.steps.has(run.id)) this.steps.set(run.id, run.steps.map((x) => ({ ...x })))
       return { run, dep: this.d.deploys.get(run.deploymentId) }
+    })
+  }
+
+  /** The steps the playbook will run for a deployment, as pending rows (8b renders them before any event arrives). */
+  private seedSteps(runs: DeploymentRunMeta[], deps: DeploymentMeta[], kind: 'release' | 'rollback', backup: boolean): void {
+    runs.forEach((run, i) => {
+      const dep = deps[i]
+      const kinds: (StepKind | null)[] =
+        kind === 'release'
+          ? [
+              'record',
+              backup && dep.dbBackup && dep.backupDir ? 'backup' : null,
+              'fetch',
+              'checkout',
+              dep.managedEnv && dep.envTemplate ? 'env' : null,
+              dep.preHook ? 'pre_hook' : null,
+              'build',
+              'up',
+              dep.urls.length > 0 ? 'health' : null,
+              dep.postHook ? 'post_hook' : null,
+              'tag',
+            ]
+          : ['rb_checkout', dep.managedEnv && dep.envTemplate ? 'rb_env' : null, 'rb_build', 'rb_up', 'rb_tag']
+      const steps = kinds.flatMap((k) => (k ? [{ stepId: `${run.id}:${k}`, kind: k, state: 'pending' as const, startedAt: null, finishedAt: null }] : []))
+      this.d.releases.updateRun(run.id, { steps })
+      this.steps.set(run.id, steps)
     })
   }
 
@@ -944,7 +1019,7 @@ export class ReleaseService {
     if (running.length >= MAX_ACTIVE_RELEASES) throw new DeployError('BUSY', `At most ${MAX_ACTIVE_RELEASES} releases can run at once`)
   }
 
-  private register(id: string, env: { id: string; name: string }, phase: Phase): Live {
+  private register(id: string, env: { id: string; name: string }, phase: Phase, label: string): Live {
     const live: Live = {
       id,
       environmentId: env.id,
@@ -960,6 +1035,8 @@ export class ReleaseService {
       versionError: null,
       busyText: null,
       known: [],
+      label,
+      failedStep: null,
     }
     this.live.set(id, live)
     return live
@@ -975,16 +1052,46 @@ export class ReleaseService {
     this.d.audit.append({
       action: auditAction,
       outcome: 'denied',
-      targetType: 'environment',
-      targetId: env.id,
-      targetLabel: env.name,
-      details: { ...(releaseId ? { releaseId } : {}), reason: 'access' },
+      targetType: releaseId ? 'release' : 'environment',
+      targetId: releaseId ?? env.id,
+      targetLabel: releaseId ? `${env.name} release` : env.name,
+      details: { reason: 'access' },
     })
     throw new DeployError('DENIED', redact(res.reason ?? 'Not allowed'))
   }
 
   private audit(action: AuditAction, outcome: 'success' | 'failure' | 'denied' | 'info', live: Live, details: Record<string, unknown>): void {
-    this.d.audit.append({ action, outcome, targetType: 'environment', targetId: live.environmentId, targetLabel: live.environmentName, details })
+    this.d.audit.append({ action, outcome, targetType: 'release', targetId: live.id, targetLabel: `${live.environmentName} ${live.label}`, details })
+  }
+
+  /** Audit rows name the release and carry ids and counts only: never a host label, address, path or secret. */
+  private auditRelease(action: AuditAction, outcome: 'success' | 'failure' | 'denied' | 'info', releaseId: string, envName: string, label: string, details: Record<string, unknown>): void {
+    this.d.audit.append({ action, outcome, targetType: 'release', targetId: releaseId, targetLabel: `${envName} ${label}`, details })
+  }
+
+  private hostCount(infos: Info[]): number {
+    return new Set(infos.map((i) => i.dep.hostId)).size
+  }
+
+  /** The typed-name rule of Phase 7: every protected environment the target hosts serve counts, not only this one. */
+  private confirmProtected(action: AuditAction, rel: { id: string; version: string | null }, env: { id: string; name: string; protected: boolean }, hostIds: string[], typedName: string | undefined): void {
+    const ids = [...new Set(hostIds)]
+    const rows = ids.length === 0
+      ? []
+      : (this.d.db
+          .prepare(`SELECT e.id AS id, e.name AS name, e.protected AS protected FROM environments e JOIN environment_hosts eh ON eh.environment_id = e.id WHERE eh.host_id IN (${ids.map(() => '?').join(',')})`)
+          .all(...ids) as { id: string; name: string; protected: number }[])
+    const memberships = rows.map((r) => ({ id: r.id, name: r.name, protected: r.protected === 1 }))
+    let message = CONFIRM_MESSAGE
+    try {
+      const needed = confirmNeeded(protectionFor({ id: env.id, name: env.name, protected: env.protected }, memberships), 1, true)
+      if (needed === null || typedName === needed) return
+    } catch (e) {
+      if (!(e instanceof ProtectError)) throw e
+      message = e.message
+    }
+    this.auditRelease(action, 'denied', rel.id, env.name, rel.version ?? 'release', { reason: 'confirm' })
+    throw new DeployError('CONFIRM_REQUIRED', message)
   }
 
   private who(): string {
@@ -1009,7 +1116,10 @@ export class ReleaseService {
   }
 
   private clearSteps(live: Live): void {
-    for (const r of live.runIds) this.steps.delete(r)
+    for (const r of live.runIds) {
+      this.steps.delete(r)
+      this.dirty.delete(r)
+    }
   }
 
   // ---- the event stream ----
@@ -1030,10 +1140,23 @@ export class ReleaseService {
       this.timer = null
     }
     const all: RunEvent[] = []
-    for (const [releaseId, bodies] of [...this.queue]) {
-      this.queue.delete(releaseId)
-      if (bodies.length > 0) all.push(...this.d.releases.appendEvents(releaseId, bodies))
-    }
+    const pending = [...this.queue]
+    this.queue.clear()
+    this.d.releases.transaction(() => {
+      for (const [releaseId, bodies] of pending) {
+        if (bodies.length > 0) all.push(...this.d.releases.appendEvents(releaseId, bodies))
+      }
+      for (const runId of this.dirty) {
+        const steps = this.steps.get(runId)
+        if (!steps) continue
+        try {
+          this.d.releases.updateRun(runId, { steps })
+        } catch {
+          /* not one of our runs */
+        }
+      }
+      this.dirty.clear()
+    })
     if (all.length === 0) return
     this.d.emit(all)
     for (const fn of this.listeners) {
@@ -1066,6 +1189,7 @@ export class ReleaseService {
       case 'step.failed': {
         if (body.type === 'step.failed' && live) {
           live.failure ??= body.error
+          live.failedStep ??= body.stepId
           if (body.stepId === 'release:version') live.versionError = body.error
         }
         const runId = body.stepId.split(':')[0]
@@ -1114,11 +1238,8 @@ export class ReleaseService {
   }
 
   private saveSteps(runId: string): void {
-    try {
-      this.d.releases.updateRun(runId, { steps: this.steps.get(runId) ?? [] })
-    } catch {
-      /* not one of our runs */
-    }
+    this.dirty.add(runId)
+    if (this.timer === null) this.timer = this.d.clock.setTimeout(() => this.flush(), EVENT_BATCH_MS)
   }
 }
 

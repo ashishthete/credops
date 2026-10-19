@@ -76,6 +76,7 @@ export const AUDIT_ACTIONS = [
   'release.finish',
   'release.cancel',
   'release.rollback',
+  'release.discard',
 ] as const // later phases extend
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]
 
