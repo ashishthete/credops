@@ -441,3 +441,49 @@ All of these are controller's calls.
    when configured) and never fetch the become secret. A permission error is
    shown plainly and points to the host's docker setting. Fetching the become
    secret is a later addition.
+
+## Addendum A: config import/export (controller's call)
+
+The user asked for "import and export of whole config including deployments,
+in json or yaml, the best suitable one". Everything in this addendum is the
+controller's call. The plan builds it in Tasks 12 and 13.
+
+1. **Format.** The format is JSON.
+   - No YAML dependency exists, and adding one is not allowed.
+   - JSON round-trips exactly and is easy to validate strictly.
+   - The file is `opsdeck-config.json`, pretty-printed with 2 spaces.
+   - Top level:
+     `{ format: "opsdeck-config", version: 1, exportedAt, products, environments, hosts, identities, tunnels, services, deployments (checkouts), with environment deploy settings }`.
+     Groups and tags go in too, where present; today they are host tags
+     only.
+   - References between objects use the stable ids.
+2. **Secrets are never exported.**
+   - Vault items appear only as references `{ vaultName, itemName }`, and
+     only where config points at them.
+   - The file never contains passwords, keys, passphrases or tokens, or
+     the contents of any field marked secret.
+   - Releases, run logs, audit, known_hosts and session history are never
+     exported either.
+   - A test scans the export for fixture secret values.
+3. **Export.**
+   - It lives in Settings, as **Export config…**, using the save dialog.
+   - Main alone writes the file, with mode 0600.
+   - Audit: `config.export` with counts only.
+4. **Import.**
+   - It lives in Settings, as **Import config…**, using the open dialog.
+   - **Validation.** Main parses and validates the file strictly. An
+     unknown `format` or a newer `version` is refused, and the file is
+     capped at 5 MB.
+   - **Preview.** It shows what is added, what is updated (matched by id,
+     then by name within its parent) and what is skipped. Nothing is
+     applied until the user confirms.
+   - **Apply.** Everything is applied in one DB transaction, all or
+     nothing. Import never deletes anything that is not in the file.
+   - **Secret references.** A reference that cannot be resolved leaves the
+     field unset, and the result lists it as "needs a secret".
+   - **Protected environments.** Updating one needs its name typed.
+   - **Audit:** `config.import` with counts only.
+5. **Tests.**
+   - Round-trip fidelity: export, import into an empty DB, export again
+     gives the same config.
+   - Re-importing the same file is a no-op.
