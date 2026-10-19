@@ -125,8 +125,23 @@ Roadmap and contracts: `docs/superpowers/plans/2026-10-16-roadmap.md`. Conventio
     is flagged to the controller.
   - If a `pnpm` command rewrites `pnpm-workspace.yaml`, run
     `git checkout pnpm-workspace.yaml` before committing.
-- **Migration 7 only (`deployments`).** Earlier migrations are never edited,
-  and the number is never changed when branches merge. The DDL, verbatim:
+- **Migration 7 only (`deployments`), by controller ruling.**
+  - Phase 7 is migration 6, Phase 9 is 8 and Phase 10 is 9. Phase 6 adds
+    none.
+  - Migration 7 lands after Phase 7's migration 6. It doesn't reference any
+    Phase 7 table, so it is order-independent.
+  - Earlier migrations are never edited, and the number is never changed
+    when branches merge.
+  - **The runner must tolerate the gap.** Today `migrate()` skips every
+    `m.version <= MAX(version)`. If 8 merged before 7, a database that
+    already applied 7 would silently skip 6 later.
+    - Task 1 changes it to skip only versions **present in
+      `schema_migrations`**, applying the missing ones in ascending order.
+    - `currentVersion()` keeps returning MAX.
+    - If Phase 7 makes the same change first, keep whichever lands first.
+      The behaviour is identical.
+
+  The DDL, verbatim:
   ```sql
   ALTER TABLE environments ADD COLUMN versioned INTEGER NOT NULL DEFAULT 0 CHECK (versioned IN (0,1));
   ALTER TABLE environments ADD COLUMN auto_rollback INTEGER NOT NULL DEFAULT 1 CHECK (auto_rollback IN (0,1));
@@ -612,7 +627,7 @@ src/renderer/src/pages/deployments/*      DeploymentsPage, DeploymentDialog, Env
   - `src/shared/deploy.ts`;
   - `src/main/deploy/uuidv7.ts`.
 - Modify:
-  - `src/main/db/migrations.ts`;
+  - `src/main/db/migrations.ts` (migration 7, and gap-tolerant `migrate`);
   - `src/shared/audit.ts` (all of the Phase 8 actions above, at once).
 - Test:
   - `tests/main/inventory-schema.test.ts` (migration 7);
@@ -753,6 +768,12 @@ Also in this task:
 - the existing environments rows get `versioned 0`, `auto_rollback 1` and
   `current_version NULL`.
 
+`inventory-schema.test.ts`, test `migrate applies a missing lower version after a higher one (gap tolerance)`:
+- use a synthetic list `[1, 2, 4]` on a fresh DB, then `[1, 2, 3, 4]`;
+- the second run applies 3 only;
+- `from` and `to` report 4;
+- a third run applies nothing.
+
 `deploy-rules.test.ts`:
 - `bumpVersion`: the table of cases above;
 - `filterReverts`: these cases:
@@ -791,6 +812,8 @@ Expected: FAIL. There is no migration 7, and the modules are missing.
 - [ ] **Step 3: Implement**
   - Migration 7 is the DDL from Global Constraints, verbatim, as
     `{ version: 7, name: 'deployments', up }`.
+  - `migrate()` reads `SELECT version FROM schema_migrations` into a set and
+    applies, in ascending order, each listed migration not in it.
   - The rules are pure and import nothing from `main`.
 
 - [ ] **Step 4: Run the full suite and typecheck**

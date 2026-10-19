@@ -492,9 +492,11 @@ Expected: FAIL.
 
 **Files:**
 - Modify:
-  - Phase 6 `src/renderer/src/map/graph.ts` (input and attachments),
-    `layout.ts` (`ATTACH_H`), `nodes.tsx` (the attachment strip state) and
-    `useMapGraph.ts` (feeding deployments and active releases);
+  - Phase 6 `src/renderer/src/map/graph.ts` (the attachments input);
+  - `layout.ts` (`ATTACH_H`);
+  - `nodes.tsx` (`HostNode` uses `useHostDeployStatus`);
+  - `useMapGraph.ts` (feeds deployments from `deployStore`).
+- Create: `src/renderer/src/deploy/map-status.ts`.
   - `src/renderer/src/shell/Sidebar.tsx`;
   - `docs/superpowers/plans/2026-10-16-roadmap.md` (row 8 status).
 - Create: `src/renderer/src/deploy/commands.ts`.
@@ -503,19 +505,29 @@ Expected: FAIL.
   - `tests/renderer/deploy-commands.test.tsx` (new).
 
 **Interfaces:**
-- **Map (Phase 6 seam):**
-  - `MapAttachment` gains `state?: 'idle' | 'running' | 'failed'` and
-    `href?: string`;
-  - `buildGraph` input gains
-    `attachments?: Record<placementKey /* `${envId}:${hostId}` */, MapAttachment[]>`;
-  - `layout.ts`: `ATTACH_H = 20` when any host has attachments;
-  - one attachment per deployment on that host in that environment, with
-    `kind: 'deployment'` and label = deployment name;
-  - a running release pulses the attachment (motion-safe) and links to its
-    `ReleaseView`.
+- **Map.** This uses the Phase 6 seam, as confirmed by the Phase 6 planner
+  (d678bcd).
+  - **Static data goes in the graph.** `buildGraph` input gains
+    `attachments?: Record<hostId, Record<envId, MapAttachment[]>>`.
+    - `HostNodeData.attachments` for the placement node
+      `e:<envId>/h:<hostId>` gets one `MapAttachment { id: <deploymentId>, kind: 'deployment', label: <name> }`
+      per deployment of that host in that environment.
+    - Unassigned placements (`u/h:<hostId>`) get none.
+    - `MapNodeKind` is **not** extended. Deployments are attachments, not
+      nodes, so the `'app' | 'deployment'` comment stays a comment.
+  - **Layout.** In `layout.ts`, `ATTACH_H = 20`. It reserves the strip.
+  - **Live status stays out of the graph data, per Phase 6's rule.**
+    - Add a sibling hook, `useHostDeployStatus(hostId, envId)`, in
+      `src/renderer/src/deploy/map-status.ts`. It reads `releaseStore` and
+      returns `{ running: deploymentId[]; failed: deploymentId[]; lockBusy: boolean }`.
+    - `HostNode` calls it and styles its attachment chips:
+      - running gets the existing `od-pulse` class, which is already off
+        under reduced motion;
+      - failed gets a red dot.
+    - Clicking a running chip navigates to `/deployments/release/<id>`.
+  - **Pipeline connector bars** reuse `od-flow` with `--od-flow-dur` from
+    the exported `FLOW_DURATION` (`pages/tunnels/RouteLine.tsx`).
 
-  If Phase 6 shipped different names, adapt them at merge. The contract is
-  "attachments per host placement".
 - **Palette:**
   - `Release <env>…` opens the wizard;
   - `Open running release` appears when one is active;
@@ -528,8 +540,8 @@ Expected: FAIL.
 - **Roadmap:** mark row 8 as done after both plans have merged.
 
 - [ ] **Step 1: Write the failing tests**
-  - `buildGraph places deployment attachments on host placements and grows ATTACH_H`;
-  - `running release sets attachment state running`;
+  - `buildGraph places deployment attachments on e:<env>/h:<host> placements only`;
+  - `useHostDeployStatus reports running deployments and HostNode pulses them (not under reduced motion)`;
   - `palette commands register and open the wizard / release view`;
   - `sidebar badge shows active release count`.
 
