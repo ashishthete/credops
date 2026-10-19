@@ -67,6 +67,8 @@ export function InventoryTree({
     env: TreeRow
     x: number
     y: number
+    /** Top edge of the options button, when opened from it: a flipped menu sits above this. */
+    up?: number
   } | null>(null)
   const tabKey = useMemo(() => tabbableKey(rows, selected), [rows, selected])
 
@@ -94,9 +96,10 @@ export function InventoryTree({
   }
 
   /** The role menu belongs to a host listed under an environment. */
-  const openMenu = (host: TreeRow, x: number, y: number) => {
+  const openMenu = (host: TreeRow, x: number, y: number, up?: number) => {
     const env = rows.find((r) => r.key === host.parentKey)
-    if (host.kind === 'host' && env?.kind === 'environment') setMenu({ host, env, x, y })
+    // The options button toggles: a second click on it closes its own menu.
+    if (host.kind === 'host' && env?.kind === 'environment') setMenu((m) => (up !== undefined && m?.host.key === host.key ? null : { host, env, x, y, up }))
   }
 
   const onKeyDown = (e: KeyboardEvent<HTMLUListElement>) => {
@@ -193,7 +196,7 @@ export function InventoryTree({
                 menuOpen={menu?.host.key === row.key}
                 onMenu={
                   row.kind === 'host' && rows.some((r) => r.key === row.parentKey && r.kind === 'environment')
-                    ? (x, y) => openMenu(row, x, y)
+                    ? (x, y, up) => openMenu(row, x, y, up)
                     : undefined
                 }
                 {...dropHandlers(row)}
@@ -235,7 +238,7 @@ interface TreeItemProps {
   onToggle: () => void
   onHover: (on: boolean) => void
   /** Host rows under an environment: opens the role menu at a point. */
-  onMenu?: (x: number, y: number) => void
+  onMenu?: (x: number, y: number, up?: number) => void
   /** The role menu is open on this row. */
   menuOpen?: boolean
   onDragStart: (e: DragEvent) => void
@@ -445,7 +448,7 @@ function TreeItem({
             onClick={(e) => {
               e.stopPropagation()
               const box = e.currentTarget.getBoundingClientRect()
-              onMenu(box.left, box.bottom + 2)
+              onMenu(box.left, box.bottom + 2, box.top)
             }}
             className="relative grid size-5 shrink-0 place-items-center rounded text-muted opacity-0 transition-[opacity,color,background-color] group-hover/row:opacity-100 group-focus-visible/row:opacity-100 hover:bg-white/[0.06] hover:text-fg focus-visible:opacity-100"
           >
@@ -542,7 +545,7 @@ function RoleMenu({
   onSetRole,
   onRemove,
 }: {
-  menu: { host: TreeRow; env: TreeRow; x: number; y: number }
+  menu: { host: TreeRow; env: TreeRow; x: number; y: number; up?: number }
   onClose: () => void
   onSetRole: (host: TreeRow, environment: TreeRow, role: HostRole) => void
   onRemove: (host: TreeRow, environment: TreeRow) => void
@@ -557,7 +560,7 @@ function RoleMenu({
     const { width, height } = el.getBoundingClientRect()
     const gap = 8
     el.style.left = `${Math.max(gap, Math.min(menu.x, window.innerWidth - width - gap))}px`
-    el.style.top = `${menu.y + height > window.innerHeight - gap ? Math.max(gap, menu.y - height - 4) : menu.y}px`
+    el.style.top = `${menu.y + height > window.innerHeight - gap ? Math.max(gap, (menu.up ?? menu.y) - height - 2) : menu.y}px`
   }, [menu.x, menu.y])
 
   useEffect(() => {

@@ -553,6 +553,17 @@ describe('products page', () => {
     expect(item('web-1')).toHaveFocus()
   })
 
+  it('the options button toggles its menu', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const web1 = await screen.findByRole('treeitem', { name: 'web-1' })
+    const button = within(web1).getByRole('button', { name: 'Options for web-1' })
+    await user.click(button)
+    expect(await screen.findByRole('menu', { name: 'Options for web-1' })).toBeInTheDocument()
+    await user.click(button)
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+  })
+
   it('the role menu flips above and pulls in from the edge when it would overflow', async () => {
     const { innerHeight, innerWidth } = window
     Object.assign(window, { innerHeight: 300, innerWidth: 400 })
@@ -566,7 +577,7 @@ describe('products page', () => {
       fireEvent.contextMenu(web1, { clientX: 350, clientY: 250 })
       const menu = await screen.findByRole('menu', { name: 'Options for web-1' })
       expect(menu.style.left).toBe('192px')
-      expect(menu.style.top).toBe('96px')
+      expect(menu.style.top).toBe('98px')
       fireEvent.keyDown(menu, { key: 'Escape' })
       fireEvent.contextMenu(web1, { clientX: 20, clientY: 40 })
       const near = await screen.findByRole('menu', { name: 'Options for web-1' })
