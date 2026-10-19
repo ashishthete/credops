@@ -188,7 +188,7 @@ describe('containers tab review fixes', () => {
 
   it('main refusing inside the dialog shows inline', async () => {
     const invoke = await renderTab({}, '/ops/containers?host=h-app&env=e-prod')
-    const base = invoke.getMockImplementation()!
+    const base = invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
     invoke.mockImplementation(async (ch: string, ...a: unknown[]) => {
       if (ch === 'containers:action') throw new Error('Type the environment name to confirm')
       return base(ch, ...a)
