@@ -78,8 +78,8 @@ describe('shell', () => {
   })
 
   it('placeholder pages name their phase', async () => {
-    renderShell('/tunnels')
-    expect(await screen.findByText('Coming in phase 5')).toBeInTheDocument()
+    renderShell('/deployments')
+    expect(await screen.findByText('Coming in phase 8')).toBeInTheDocument()
   })
 
   it('sidebar shows up tunnels and a failed dot', async () => {

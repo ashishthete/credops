@@ -5,7 +5,9 @@ import { Button } from './Button'
 import { fast, spring, useMotionSafe } from './motion'
 
 export interface EmptyStateProps {
-  icon: LucideIcon
+  icon?: LucideIcon
+  /** A drawing shown in place of the icon tile; it handles its own reduced motion. */
+  art?: ReactNode
   title: string
   text: string
   action?: { label: string; run: () => void }
@@ -13,25 +15,38 @@ export interface EmptyStateProps {
   actions?: ReactNode
 }
 
-export function EmptyState({ icon: Icon, title, text, action, actions }: EmptyStateProps) {
+export function EmptyState({ icon: Icon, art, title, text, action, actions }: EmptyStateProps) {
   const motionSafe = useMotionSafe()
   return (
     <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
-      <motion.div
-        className="relative mb-5 grid size-14 place-items-center rounded-2xl border border-line bg-surface-2 text-accent"
-        initial={motionSafe ? { scale: 0.6, rotate: -12, opacity: 0 } : { opacity: 0 }}
-        animate={motionSafe ? { scale: 1, rotate: 0, opacity: 1 } : { opacity: 1 }}
-        transition={motionSafe ? { ...spring, damping: 14 } : fast}
-      >
-        <span aria-hidden className="absolute inset-0 rounded-2xl bg-accent/10 blur-xl" />
-        <motion.span
-          className="relative"
-          animate={motionSafe ? { y: [0, -3, 0] } : undefined}
-          transition={{ duration: 3.2, repeat: Infinity, ease: 'easeInOut', delay: 0.6 }}
+      {art ? (
+        <motion.div
+          className="mb-5"
+          initial={motionSafe ? { scale: 0.8, opacity: 0 } : { opacity: 0 }}
+          animate={motionSafe ? { scale: 1, opacity: 1 } : { opacity: 1 }}
+          transition={motionSafe ? { ...spring, damping: 16 } : fast}
         >
-          <Icon aria-hidden className="size-6" strokeWidth={1.8} />
-        </motion.span>
-      </motion.div>
+          {art}
+        </motion.div>
+      ) : (
+        Icon && (
+          <motion.div
+            className="relative mb-5 grid size-14 place-items-center rounded-2xl border border-line bg-surface-2 text-accent"
+            initial={motionSafe ? { scale: 0.6, rotate: -12, opacity: 0 } : { opacity: 0 }}
+            animate={motionSafe ? { scale: 1, rotate: 0, opacity: 1 } : { opacity: 1 }}
+            transition={motionSafe ? { ...spring, damping: 14 } : fast}
+          >
+            <span aria-hidden className="absolute inset-0 rounded-2xl bg-accent/10 blur-xl" />
+            <motion.span
+              className="relative"
+              animate={motionSafe ? { y: [0, -3, 0] } : undefined}
+              transition={{ duration: 3.2, repeat: Infinity, ease: 'easeInOut', delay: 0.6 }}
+            >
+              <Icon aria-hidden className="size-6" strokeWidth={1.8} />
+            </motion.span>
+          </motion.div>
+        )
+      )}
       <motion.div
         initial={motionSafe ? { opacity: 0, y: 6 } : { opacity: 0 }}
         animate={motionSafe ? { opacity: 1, y: 0 } : { opacity: 1 }}

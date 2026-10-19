@@ -89,12 +89,38 @@ samp {
   animation-play-state: paused;
 }
 
+/* A dashed stroke that streams along its path; set --od-flow-dur to change the speed. */
+.od-flow {
+  animation: od-flow var(--od-flow-dur, 1.6s) linear infinite;
+}
+
+/* A soft ring that keeps leaving a status dot or node, in its currentColor. */
+.od-pulse {
+  animation: od-pulse 1.6s ease-out infinite;
+}
+
 @keyframes od-shimmer {
   from {
     background-position: 150% 0;
   }
   to {
     background-position: -50% 0;
+  }
+}
+
+/* One dash period (3 + 5) per cycle, so the loop is seamless. */
+@keyframes od-flow {
+  to {
+    stroke-dashoffset: -8;
+  }
+}
+
+@keyframes od-pulse {
+  from {
+    box-shadow: 0 0 0 0 color-mix(in oklab, currentColor 55%, transparent);
+  }
+  to {
+    box-shadow: 0 0 0 6px transparent;
   }
 }
 
@@ -109,7 +135,9 @@ samp {
 
 @media (prefers-reduced-motion: reduce) {
   .skeleton-shimmer,
-  .toast-drain {
+  .toast-drain,
+  .od-flow,
+  .od-pulse {
     animation: none;
   }
 }

@@ -10,6 +10,7 @@ import { ProductsPage } from '../pages/products/ProductsPage'
 import { KnownHostsDialog, closeKnownHosts, openKnownHosts } from '../pages/terminals/KnownHostsDialog'
 import { PromptHost } from '../pages/terminals/PromptHost'
 import { TerminalDeck } from '../pages/terminals/TerminalDeck'
+import { TunnelsPage } from '../pages/tunnels/TunnelsPage'
 import { VaultsPage } from '../pages/vaults/VaultsPage'
 import { disposeAll } from '../terminal/registry'
 import { resetSessions, startSessionSync } from '../terminal/sessions'
@@ -22,7 +23,6 @@ import { SECTION_ICONS, Sidebar } from './Sidebar'
 
 // Sections a later phase builds out; each renders a placeholder until then.
 const PLACEHOLDERS = [
-  { id: 'tunnels', phase: 5, blurb: 'Port forwards that stay up' },
   { id: 'deployments', phase: 8, blurb: 'Ansible runs, streamed live' },
 ] as const
 
@@ -97,6 +97,7 @@ export function AppShell() {
             <Route path="/hosts" element={<HostsPage />} />
             <Route path="/environments" element={<Navigate to="/products" replace />} />
             <Route path="/vaults" element={<VaultsPage />} />
+            <Route path="/tunnels" element={<TunnelsPage />} />
             <Route path="/audit" element={<AuditPage />} />
             <Route path="*" element={<Navigate to={SECTIONS[0].path} replace />} />
           </Routes>
