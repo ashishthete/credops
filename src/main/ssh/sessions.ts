@@ -41,7 +41,7 @@ export interface SessionManagerDeps {
   hostInfo(hostId: string): { label: string; keepaliveSec: number | null; envVars: Record<string, string> }
   envColor(environmentId: string): string | null
   connect: typeof connectChain
-  plan(identity: IdentityRef): Promise<AuthPlan>
+  plan(identity: IdentityRef, hop: HopTarget): Promise<AuthPlan>
   knownHosts: Pick<KnownHostStore, 'check' | 'trust' | 'recordMismatch'>
   /** Shared with tunnels; `session:answer` and `session:prompts` go to it directly. */
   prompts: PromptBroker
@@ -377,8 +377,8 @@ export class SessionManager {
     this.publish(s)
     const targetHop = target.hops.at(-1)
     const deps: ConnectDeps = {
-      plan: async (identity) => {
-        const plan = await this.deps.plan(identity)
+      plan: async (identity, hop) => {
+        const plan = await this.deps.plan(identity, hop)
         if (attempt.hop === target.hops.length - 1) attempt.auth = plan.kind
         return plan
       },

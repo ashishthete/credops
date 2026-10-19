@@ -28,7 +28,8 @@ export function hopsOf(resolved: ResolvedHost, targetLabel: string): HopTarget[]
 }
 
 export interface ConnectDeps {
-  plan(identity: IdentityRef): Promise<AuthPlan>
+  /** `hop` names the host, so its ~/.ssh/config block can add key files. */
+  plan(identity: IdentityRef, hop: HopTarget): Promise<AuthPlan>
   /** True to proceed. Throws `HostKeyError` for a changed or revoked key; asks the user about an unknown one. */
   verifyHostKey(hop: HopTarget, keyType: string, keyBase64: string): Promise<boolean>
   askPassword(hop: HopTarget, username: string): Promise<string | null>
@@ -49,6 +50,33 @@ export class HostKeyError extends Error {
     super(code)
     this.name = 'HostKeyError'
   }
+}
+
+/** What a refused login tried: names and paths only, never a key or password. */
+export interface AuthSummary {
+  username: string
+  tried: string[]
+  missing: string[]
+  notes: string[]
+}
+
+export class AuthFailedError extends Error {
+  constructor(readonly summary: AuthSummary) {
+    super(AUTH_FAILED)
+    this.name = 'AuthFailedError'
+  }
+}
+
+/** "a", "a and b", "a, b and c". */
+const listed = (items: string[]): string =>
+  items.length < 2 ? (items[0] ?? '') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`
+
+/** "alpha refused user ubuntu. Tried: ssh-agent (no keys loaded), ~/.ssh/id_rsa. ~/.ssh/id_ed25519 not found." */
+function authMessage(label: string, { username, tried, missing, notes }: AuthSummary, user: boolean): string {
+  const parts = [user ? `${label} refused user ${username}.` : `${label} refused the login.`, `Tried: ${tried.length ? tried.join(', ') : 'nothing'}.`]
+  if (missing.length) parts.push(`${listed(missing)} not found.`)
+  for (const note of notes) parts.push(`${note}.`)
+  return parts.join(' ')
 }
 
 class ClosedError extends Error {
@@ -72,7 +100,8 @@ const HOST_KEY_MESSAGE: Record<HostKeyErrorCode, (label: string) => string> = {
   'host-key-rejected': (l) => `You didn't trust the host key for ${l}`,
 }
 
-export function describeError(err: unknown, hop: HopTarget | null): SessionError {
+/** `user: false` leaves the username out of an auth failure (tunnel events and errors never carry it). */
+export function describeError(err: unknown, hop: HopTarget | null, opts: { user?: boolean } = {}): SessionError {
   const label = hop?.label ?? 'The host'
   const make = (code: SessionError['code'], message: string): SessionError => ({
     code,
@@ -84,6 +113,7 @@ export function describeError(err: unknown, hop: HopTarget | null): SessionError
   const timeout = (): SessionError => make('timeout', `${label} didn't answer within ${READY_TIMEOUT_MS / 1000} s`)
 
   if (err instanceof HostKeyError) return { ...make(err.code, HOST_KEY_MESSAGE[err.code](label)), hostKey: err.info }
+  if (err instanceof AuthFailedError) return make('auth', authMessage(label, err.summary, opts.user !== false))
   if (err instanceof ClosedError) return make('closed', err.message)
   if (err instanceof HopTimeoutError) return timeout()
   const e = (err ?? {}) as { code?: unknown; message?: unknown; reason?: unknown; level?: unknown; hostname?: string }
@@ -119,8 +149,17 @@ async function dialHop(
   signal: AbortSignal,
   track: (client: Client) => void,
 ): Promise<Client> {
-  const plan = await deps.plan(hop.identity)
+  const plan = await deps.plan(hop.identity, hop)
   if (signal.aborted) throw new ClosedError()
+  // What the user typed in, by kind only, for the failure message.
+  const typed = new Set<string>()
+  const authFailed = (): AuthFailedError =>
+    new AuthFailedError({
+      username: plan.username,
+      tried: [...(plan.tried ?? plan.methods.map((m) => (m.type === 'publickey' ? m.label : m.type === 'agent' ? 'ssh-agent' : 'saved password'))), ...typed],
+      missing: plan.missing ?? [],
+      notes: plan.notes,
+    })
   const client = new Client()
   // Errors after ready also emit 'close', which is what the caller watches.
   client.on('error', () => {})
@@ -166,7 +205,7 @@ async function dialHop(
     const onAbort = (): void => fail(new ClosedError())
 
     signal.addEventListener('abort', onAbort, { once: true })
-    client.on('error', (err) => fail(hostKeyError ?? err))
+    client.on('error', (err) => fail(hostKeyError ?? (err.message === AUTH_FAILED ? authFailed() : err)))
     client.on('close', () => fail(hostKeyError ?? new Error('The server closed the connection')))
     client.once('ready', () => {
       if (settled) return
@@ -187,8 +226,14 @@ async function dialHop(
         username: plan.username,
         authHandler: authHandler(
           plan,
-          () => waitOnUser(() => deps.askPassword(hop, plan.username)),
-          (name, instructions, prompts) => waitOnUser(() => deps.askKeyboard(hop, name, instructions, prompts)),
+          () => {
+            typed.add('a typed password')
+            return waitOnUser(() => deps.askPassword(hop, plan.username))
+          },
+          (name, instructions, prompts) => {
+            typed.add('keyboard-interactive answers')
+            return waitOnUser(() => deps.askKeyboard(hop, name, instructions, prompts))
+          },
         ),
         hostVerifier: (key: Buffer, verify: (ok: boolean) => void) => {
           const keyType = blobKeyType(key)

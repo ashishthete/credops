@@ -9,7 +9,7 @@ import type { ParsedKey } from 'ssh2'
 import type { IdentityRef, ResolvedHost } from '../../src/shared/inventory'
 import type { HopState, SessionError } from '../../src/shared/ssh'
 import type { AuthPlan } from '../../src/main/ssh/auth'
-import { connectChain, describeError, HostKeyError, hopsOf } from '../../src/main/ssh/connect'
+import { AuthFailedError, connectChain, describeError, HostKeyError, hopsOf } from '../../src/main/ssh/connect'
 import type { ConnectDeps, HopTarget } from '../../src/main/ssh/connect'
 import { KnownHostStore } from '../../src/main/ssh/known-hosts'
 import { generateKey, startServer } from './ssh-server'
@@ -258,6 +258,43 @@ describe('connectChain', () => {
     expect(verifyHostKey).toHaveBeenCalledWith(hop('target', s.port), s.hostKeyType, s.hostKeyBase64)
   })
 
+  it('asks for the plan with the hop it dials, so ~/.ssh/config can be matched', async () => {
+    const s = await server()
+    const plan = vi.fn(async () => keyPlan())
+    await connect([hop('target', s.port)], deps({ plan }))
+    expect(plan).toHaveBeenCalledWith(globalId, hop('target', s.port))
+  })
+
+  it('an auth failure says who was refused and what was tried, with no secrets', async () => {
+    const s = await server()
+    const plan: AuthPlan = {
+      ...keyPlan(otherKey.privateKey),
+      kind: 'agent',
+      methods: [{ type: 'publickey', label: '~/.ssh/id_rsa', key: otherKey.privateKey }],
+      tried: ['ssh-agent (no keys loaded)', '~/.ssh/id_rsa'],
+      missing: ['~/.ssh/id_ed25519'],
+      notes: ['~/.ssh/work needs a passphrase: add it to ssh-agent (ssh-add) or link it in a vault'],
+    }
+    const { err, described } = await failure([hop('alpha', s.port)], deps({ plan: async () => plan }))
+    expect(err).toBeInstanceOf(AuthFailedError)
+    expect(described).toEqual({
+      code: 'auth',
+      hopLabel: 'alpha',
+      message:
+        'alpha refused user ops. Tried: ssh-agent (no keys loaded), ~/.ssh/id_rsa. ~/.ssh/id_ed25519 not found. ' +
+        '~/.ssh/work needs a passphrase: add it to ssh-agent (ssh-add) or link it in a vault.',
+    })
+    expect(described.message).not.toContain('PRIVATE KEY')
+  })
+
+  it('a typed password shows up in what was tried', async () => {
+    const s = await server({ users: [{ username: 'ops', password: 'right', publicKey: userKey.publicKey }] })
+    const askPassword = vi.fn(async () => 'wrong-secret')
+    const { described } = await failure([hop('target', s.port)], deps({ plan: async () => ({ ...keyPlan(otherKey.privateKey), tried: ['test key'] }), askPassword }))
+    expect(described.message).toBe('target refused user ops. Tried: test key, a typed password.')
+    expect(described.message).not.toContain('wrong-secret')
+  })
+
   it('falls back to one password prompt', async () => {
     const s = await server({ users: [{ username: 'ops', password: 'pw', publicKey: userKey.publicKey }] })
     const askPassword = vi.fn(async () => 'pw')
@@ -410,6 +447,13 @@ describe('describeError', () => {
       hopLabel: 'db',
       hostKey: info,
     })
+  })
+
+  it('an auth failure with nothing to try says so', () => {
+    const err = new AuthFailedError({ username: 'ubuntu', tried: [], missing: ['~/.ssh/id_ed25519', '~/.ssh/id_rsa'], notes: [] })
+    expect(describeError(err, h).message).toBe('db refused user ubuntu. Tried: nothing. ~/.ssh/id_ed25519 and ~/.ssh/id_rsa not found.')
+    // Tunnels keep the username out of their events and errors.
+    expect(describeError(err, h, { user: false }).message).toBe('db refused the login. Tried: nothing. ~/.ssh/id_ed25519 and ~/.ssh/id_rsa not found.')
   })
 
   it('leaves out hopLabel without a hop', () => {

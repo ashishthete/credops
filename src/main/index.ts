@@ -168,7 +168,7 @@ if (!app.requestSingleInstanceLock()) {
       const resolve = (hostId: string, environmentId?: string) =>
         resolveHost(inventoryDb, hostId, environmentId, { localUser: actor.osUser, sshConfig })
       const knownHosts = new KnownHostStore(db, service, log, { knownHostsPath: join(homedir(), '.ssh', 'known_hosts') })
-      const authDeps = { identities, env: process.env, home: homedir() }
+      const authDeps = { identities, env: process.env, home: homedir(), sshConfig }
       const envStore = environments
       const isLocked = (): boolean => !service.isUnlocked()
       // One queue for session and tunnel prompts, so one answer channel serves both.
@@ -181,7 +181,7 @@ if (!app.requestSingleInstanceLock()) {
         },
         envColor: (environmentId) => envStore.list().find((e) => e.id === environmentId)?.color ?? null,
         connect: connectChain,
-        plan: (identity) => authPlan(identity, authDeps),
+        plan: (identity, hop) => authPlan(identity, authDeps, hop),
         knownHosts,
         prompts,
         openLocal: (req) => spawnLocalShell({ ...req, env: process.env, home: homedir() }),
@@ -198,7 +198,7 @@ if (!app.requestSingleInstanceLock()) {
           return { label: h.label, keepaliveSec: h.keepaliveSec }
         },
         connect: connectChain,
-        plan: (identity) => authPlan(identity, authDeps),
+        plan: (identity, hop) => authPlan(identity, authDeps, hop),
         knownHosts,
         prompts,
         isLocked,

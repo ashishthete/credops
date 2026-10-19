@@ -58,7 +58,7 @@ export interface TunnelManagerDeps {
   resolve(hostId: string, environmentId?: string): ResolvedHost
   hostInfo(hostId: string): { label: string; keepaliveSec: number | null }
   connect: typeof connectChain
-  plan(identity: IdentityRef): Promise<AuthPlan>
+  plan(identity: IdentityRef, hop: HopTarget): Promise<AuthPlan>
   knownHosts: Pick<KnownHostStore, 'check' | 'trust' | 'recordMismatch'>
   prompts: PromptBroker
   isLocked(): boolean
@@ -681,9 +681,9 @@ export class TunnelManager {
 
     const dialing = (): boolean => link.state === 'dialing' && !link.abort.signal.aborted
     const deps: ConnectDeps = {
-      plan: async (identity) => {
+      plan: async (identity, hop) => {
         try {
-          return await this.deps.plan(identity)
+          return await this.deps.plan(identity, hop)
         } catch (err) {
           throw new ConfigError(messageOf(err))
         }
@@ -738,7 +738,7 @@ export class TunnelManager {
     // Any dial failure seen while locked (a cancelled prompt included) pauses.
     if (link.lockedDuringDial || this.deps.isLocked()) return { error: { ...LOCKED }, retryable: false, locked: true }
     if (err instanceof ConfigError) return { error: { code: 'unknown', message: redact(err.message) }, retryable: false, locked: false }
-    const { code, message, hopLabel } = describeError(err, hops[link.failedHop ?? link.hop] ?? null)
+    const { code, message, hopLabel } = describeError(err, hops[link.failedHop ?? link.hop] ?? null, { user: false })
     return { error: { code, message, ...(hopLabel ? { hopLabel } : {}) }, retryable: isRetryable(code), locked: false }
   }
 
