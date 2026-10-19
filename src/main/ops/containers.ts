@@ -42,6 +42,7 @@ const MAX_ERR_KEPT = 4096
 /** A `docker ps` line longer than this is skipped unparsed. */
 const MAX_PS_LINE = 65_536
 const QUITTING = 'OpsDeck is quitting'
+const LOCKED: SessionError = { code: 'locked', message: 'The vault was locked; follow the logs again after unlocking' }
 const EXEC_SHELL = 'command -v bash >/dev/null 2>&1 && exec bash || exec sh'
 
 /** A container exec tab's command; `SessionManager` sends it with a pty. */
@@ -497,9 +498,18 @@ export class ContainerService {
 
   /** The renderer reloaded or crashed: its follows have no viewer left, so each is stopped and stops counting. */
   unfollowAll(): void {
+    this.stopFollows(null)
+  }
+
+  /** Vault lock: every follow (container or compose) stops streaming and says why; new ones wait for unlock. */
+  vaultLocked(): void {
+    this.stopFollows(LOCKED)
+  }
+
+  private stopFollows(error: SessionError | null): void {
     for (const f of [...this.follows.values()]) {
       f.abort.abort()
-      this.endFollow(f, null)
+      this.endFollow(f, error)
     }
   }
 

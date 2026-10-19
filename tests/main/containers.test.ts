@@ -323,6 +323,18 @@ describe('ContainerService', () => {
     t.containers.unfollow(c)
   })
 
+  it('a vault lock ends every follow with the locked error', async () => {
+    const t = await setup()
+    t.fixture('logs.out', 'x')
+    const a = await t.containers.follow(t.ids['app-1']!, null, 'web-1', 10)
+    const b = await t.containers.follow(t.ids['app-1']!, null, 'web-2', 10)
+    t.containers.vaultLocked()
+    const locked = { code: 'locked', message: 'The vault was locked; follow the logs again after unlocking' }
+    expect(t.ends(a)).toEqual([{ followId: a, ended: true, error: locked }])
+    expect(t.ends(b)).toEqual([{ followId: b, ended: true, error: locked }])
+    await t.waitFor(() => expect(t.sh.running()).toBe(0))
+  })
+
   it("a failed logs or follow never reports the container's own stderr lines", async () => {
     const t = await setup()
     const host = t.ids['app-1']!
@@ -627,8 +639,16 @@ describe('ContainerService.followCompose', () => {
     await vi.waitFor(() => expect(r.ends(id)).toEqual([{ followId: id, ended: true, error: { code: 'unknown', message: 'docker logs exited with code 1 on app-1' } }]))
   })
 
+  it('a vault lock ends a compose follow too', async () => {
+    const r = composeRig()
+    const id = await r.service.followCompose(HOST, ENV, SPEC, 10)
+    r.service.vaultLocked()
+    expect(r.ends(id)).toEqual([{ followId: id, ended: true, error: { code: 'locked', message: 'The vault was locked; follow the logs again after unlocking' } }])
+  })
+
   it('followCompose never asks for a secret', async () => {
     const asked: string[] = []
+    // A tripwire: ContainerService has no secrets dep today, so this only fires if one is added and used.
     const secrets = new Proxy({}, { get: (_t, k) => (asked.push(String(k)), () => { throw new Error('a secret was asked for') }) })
     const r = composeRig({ ...({ secrets } as object), maxFollows: 3 })
     for (const useSudo of ['yes', 'no', 'auto'] as const) await r.service.followCompose(HOST, ENV, { ...SPEC, useSudo }, 10)

@@ -124,6 +124,8 @@ export class ServiceTunnels {
       t = this.deps.tunnels.create({ ...route, autoReconnect: true })
       this.deps.services.setTunnel(id, t.id, port)
     } else if (stale(t, route)) {
+      // A running tunnel restarts on the new route here too (TunnelManager.changed); the start below then
+      // returns that run as it is.
       this.deps.tunnels.update(t.id, route)
     }
     return this.deps.manager.start(t.id)
@@ -135,13 +137,14 @@ export class ServiceTunnels {
     return svc
   }
 
-  /** The service's tunnel, or null when it has none or it was deleted on the Tunnels page. */
+  /** The service's tunnel, or null when it has none or it was deleted on the Tunnels page. Any other read error is raised. */
   private tunnelOf(svc: DbServiceMeta): TunnelMeta | null {
     if (svc.tunnelId === null) return null
     try {
       return this.deps.tunnels.get(svc.tunnelId)
-    } catch {
-      return null
+    } catch (e) {
+      if (e instanceof Error && e.message === 'tunnel not found') return null
+      throw e
     }
   }
 

@@ -1,10 +1,13 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import { ServiceTunnels } from '../../src/main/deploy/service-tunnel'
 import { createServiceHandlers } from '../../src/main/ipc/handlers/services'
-import { TunnelLimitError } from '../../src/main/tunnels/manager'
+import { resolveHost } from '../../src/main/inventory/resolve'
+import { PromptBroker } from '../../src/main/ssh/prompts'
+import { TunnelLimitError, TunnelManager } from '../../src/main/tunnels/manager'
 import type { DbServiceMeta } from '../../src/shared/services'
 import { TUNNEL_LIMIT, type TunnelMeta, type TunnelRuntime, type TunnelState } from '../../src/shared/tunnels'
 import { makeDeployFixture } from './deploy-helpers'
+import { manualTimers } from './tunnel-helpers'
 
 const runtime = (id: string, state: TunnelState, over: Partial<TunnelRuntime> = {}): TunnelRuntime => ({
   id,
@@ -70,7 +73,7 @@ async function setup() {
   const db = (over: Record<string, unknown> = {}): DbServiceMeta =>
     f.services.create({ kind: 'db', environmentId: f.staging.id, name: 'main-db', dbEngine: 'postgres', dbAddress: '10.0.0.9', ...over }) as DbServiceMeta
   const svc = (id: string): DbServiceMeta => f.services.get(id) as DbServiceMeta
-  return { ...f, ...m, st, changed, ports, db, svc }
+  return { ...f, ...m, st, changed, ports, db, svc, sql: f.db }
 }
 
 describe('ServiceTunnels', () => {
@@ -201,6 +204,121 @@ describe('ServiceTunnels', () => {
     t.set(tunnelId, 'stopped')
     await t.st.open(d.id)
     expect(t.tunnels.get(tunnelId).targetPort).toBe(6543)
+  })
+
+  it('afterUpdate with no via-host leaves a stale tunnel alone', async () => {
+    const t = await setup()
+    const d = t.db()
+    await t.st.open(d.id)
+    const tunnelId = t.svc(d.id).tunnelId!
+    t.envs.removeHost(t.staging.id, t.host.id)
+    const row = t.tunnels.get(tunnelId)
+    for (const state of ['stopped', 'up'] as const) {
+      t.set(tunnelId, state)
+      expect(t.st.afterUpdate(t.services.update(d.id, { dbPort: state === 'up' ? 5434 : 5433 })), state).toBe(false)
+      expect(t.tunnels.get(tunnelId)).toEqual(row)
+    }
+    // The next open says why.
+    await expect(t.st.open(d.id)).rejects.toThrow('Pick a via-host for main-db; this environment has no app host')
+  })
+
+  it('open rethrows a tunnel read error instead of creating a second tunnel', async () => {
+    const t = await setup()
+    const d = t.db()
+    await t.st.open(d.id)
+    const spy = vi.spyOn(t.tunnels, 'get').mockImplementation(() => {
+      throw new Error('database is locked')
+    })
+    try {
+      await expect(t.st.open(d.id)).rejects.toThrow('database is locked')
+      expect(() => t.st.close(d.id)).toThrow('database is locked')
+    } finally {
+      spy.mockRestore()
+    }
+    expect(t.tunnels.list()).toHaveLength(1)
+    // A tunnel deleted on the Tunnels page still reads as gone, and the next open makes a new one.
+    t.tunnels.delete(t.svc(d.id).tunnelId!)
+    await t.st.open(d.id)
+    expect(t.tunnels.list()).toHaveLength(1)
+  })
+
+  it('open on a connecting tunnel with a stale route restarts it once and keeps one run (real TunnelManager)', async () => {
+    const t = await setup()
+    const mt = manualTimers()
+    const dials: number[] = []
+    const manager = new TunnelManager({
+      store: t.tunnels,
+      resolve: (hostId, environmentId) => resolveHost(t.sql, hostId, environmentId, { localUser: 'tester' }),
+      hostInfo: (id) => ({ label: t.hosts.list().find((h) => h.id === id)!.label, keepaliveSec: null }),
+      // Every dial hangs, so the tunnel stays connecting: the running case without a network.
+      connect: (() => {
+        dials.push(dials.length)
+        return new Promise(() => undefined)
+      }) as never,
+      plan: async () => ({ username: 'u', kind: 'agent', notes: [], methods: [] }) as never,
+      knownHosts: { check: () => 'trusted', trust: () => undefined, recordMismatch: () => undefined } as never,
+      prompts: new PromptBroker({ emit: () => undefined, isLocked: () => false }),
+      isLocked: () => false,
+      listen: async () => {
+        throw new Error('never reached')
+      },
+      audit: t.audit,
+      emit: () => undefined,
+      timers: mt.timers,
+      statsTimers: mt.timers,
+    })
+    onTestFinished(() => manager.stopAll('quit'))
+    t.tunnels.onChanged = (before, after) => manager.changed(before, after)
+    const st = new ServiceTunnels({
+      services: t.services,
+      tunnels: t.tunnels,
+      manager,
+      environments: () => t.envs.list(),
+      deploys: t.deploys,
+      hostLabel: (id) => t.hosts.list().find((h) => h.id === id)!.label,
+      freePort: async () => 15432,
+    })
+    const d = t.db()
+    expect((await st.open(d.id)).state).toBe('connecting')
+    const tunnelId = t.svc(d.id).tunnelId!
+    await vi.waitFor(() => expect(dials).toHaveLength(1))
+    // The user declined the restart: the route is left stale while the tunnel runs.
+    expect(st.afterUpdate(t.services.update(d.id, { dbPort: 6543 }))).toBe(true)
+    expect(t.tunnels.get(tunnelId).targetPort).toBe(5432)
+    const rt = await st.open(d.id)
+    expect(rt.state).toBe('connecting')
+    expect(t.tunnels.get(tunnelId).targetPort).toBe(6543)
+    // TunnelManager.changed restarted it on the new route; the start that follows is a no-op on the run.
+    expect(manager.status().filter((r) => r.state !== 'stopped').map((r) => r.id)).toEqual([tunnelId])
+    await vi.waitFor(() => expect(dials).toHaveLength(2))
+    // Opening again with the route current changes nothing.
+    await st.open(d.id)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(dials).toHaveLength(2)
+  })
+
+  it('the tunnel channels delegate to ServiceTunnels', async () => {
+    const t = await setup()
+    const call = createServiceHandlers({
+      services: t.services,
+      copy: () => ({}) as never,
+      deploys: t.deploys,
+      containers: { followCompose: async () => 'never' },
+      tunnels: t.st,
+      openExternal: async () => {},
+    })
+    const d = t.db()
+    const open = vi.spyOn(t.st, 'open')
+    const close = vi.spyOn(t.st, 'close')
+    const sync = vi.spyOn(t.st, 'sync')
+    const rt = await call['service:tunnelOpen'](d.id)
+    expect(open).toHaveBeenCalledWith(d.id)
+    expect(rt).toEqual(runtime(t.svc(d.id).tunnelId!, 'connecting'))
+    expect(await call['service:tunnelSync'](d.id)).toEqual(t.st.sync(d.id))
+    expect(sync).toHaveBeenCalledWith(d.id)
+    await call['service:tunnelClose'](d.id)
+    expect(close).toHaveBeenCalledWith(d.id)
+    expect(t.calls.slice(-1)).toEqual(['stop'])
   })
 
   it('delete with deleteTunnel removes the tunnel; without it the tunnel stays', async () => {

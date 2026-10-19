@@ -370,14 +370,14 @@ if (!app.requestSingleInstanceLock()) {
       // what is connected); runs end their queued and dialling hosts as `locked` while running
       // commands finish; exec links fail their dials as `locked` and close idle links; then every
       // prompt left is cancelled. Runs go before links so each dial a run aborts is already marked
-      // `locked` for that host. Separate listeners, so one failing never skips the others. Quit
-      // (before-quit) stops tunnels, closes sessions, cancels runs (writing their run.finish), stops
-      // container log follows, closes exec links, and only then locks the vault. Container follows
-      // have no lock listener: one already open keeps streaming through a lock (new calls are
-      // refused while locked), like a connected session.
+      // `locked` for that host. Every log follow (container and compose) stops and says the vault
+      // locked; a new one waits for unlock. Separate listeners, so one failing never
+      // skips the others. Quit (before-quit) stops tunnels, closes sessions, cancels runs (writing
+      // their run.finish), stops container log follows, closes exec links, and only then locks the vault.
       service.onLock(() => manager.vaultLocked())
       service.onLock(() => runner.vaultLocked())
       service.onLock(() => runs.vaultLocked())
+      service.onLock(() => containers.vaultLocked())
       service.onLock(() => links.vaultLocked())
       service.onLock(() => prompts.cancelAll())
       // Resumes paused tunnels; the first unlock also auto-starts.

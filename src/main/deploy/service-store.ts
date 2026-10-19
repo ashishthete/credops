@@ -376,7 +376,7 @@ export class ServiceStore {
   private refuseForeign(kind: ServiceKind, raw: object): void {
     const foreign: readonly string[] = kind === 'service' ? DB_FIELDS : APP_FIELDS
     const own: readonly string[] = kind === 'service' ? APP_FIELDS : DB_FIELDS
-    for (const k of foreign) if (!own.includes(k) && has(raw, k)) throw new Error(`that field does not apply to a ${kind} service`)
+    for (const k of foreign) if (!own.includes(k) && has(raw, k)) throw new Error(kind === 'service' ? 'that field only applies to a db service' : 'that field does not apply to a db service')
   }
 
   private checkName(raw: string, environmentId: string, selfId: string | null): string {
