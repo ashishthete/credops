@@ -111,15 +111,16 @@ function DialogPanel({
 
   return (
     <motion.div
-      // While it fades out, clicks go through to the page underneath.
-      className={`fixed inset-0 ${layer === 'prompt' ? 'z-[60]' : 'z-50'} flex items-center justify-center bg-black/50 px-4 backdrop-blur-md ${present ? '' : 'pointer-events-none'}`}
+      // Still swallows clicks while it fades out, so a second click meant for the dialog (a double-click
+      // on Delete) can never land on the page underneath.
+      className={`fixed inset-0 ${layer === 'prompt' ? 'z-[60]' : 'z-50'} flex items-center justify-center bg-black/50 px-4 backdrop-blur-md`}
       data-layer={layer}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0, transition: exitFast }}
       transition={fast}
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose()
+        if (present && e.target === e.currentTarget) onClose()
       }}
     >
       <div ref={shakeScope} className="w-full" style={{ maxWidth: width }}>
@@ -127,6 +128,8 @@ function DialogPanel({
           ref={panel}
           role="dialog"
           aria-modal="true"
+          // Out of the tab order and the accessibility tree once it starts to leave.
+          inert={!present}
           aria-labelledby={titleId}
           aria-describedby={description ? descId : undefined}
           tabIndex={-1}

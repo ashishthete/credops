@@ -62,6 +62,7 @@ export function AppShell() {
       // Events stop while unmounted (the vault locked); the next mount's session list is the truth.
       resetSessions()
       resetTunnels()
+      // Relies on a lock unmounting the shell; see the cache in VaultsPage.
       resetVaultsCache()
       closeKnownHosts()
     }

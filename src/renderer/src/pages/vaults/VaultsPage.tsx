@@ -40,7 +40,8 @@ const isTab = (t: string | null): t is Tab => TABS.some((x) => x.id === t)
 
 /**
  * What the page last showed, so coming back to it draws at once and refreshes underneath. Metadata
- * only, never a value; the shell drops it when it unmounts (the vault locked).
+ * only, never a value. AppShell drops it when it unmounts, which a lock always does: if the shell ever
+ * stays mounted across a lock, reset this on the lock as well.
  */
 const cache: { vaults: VaultMeta[] | null; data: Map<string, VaultData> } = { vaults: null, data: new Map() }
 
@@ -96,7 +97,8 @@ export function VaultsPage() {
       .then((v) => live && setVaults(v))
       .catch((err: unknown) => {
         if (!live) return
-        setVaults([])
+        // A failed refresh keeps what was showing.
+        setVaults((v) => v ?? [])
         fail("Couldn't load vaults", err)
       })
     return () => {
@@ -129,7 +131,7 @@ export function VaultsPage() {
       .then(([secrets, keys, identities]) => live && setData({ vaultId, secrets, keys, identities }))
       .catch((err: unknown) => {
         if (!live) return
-        setData({ vaultId, secrets: [], keys: [], identities: [] })
+        setData(cached ?? { vaultId, secrets: [], keys: [], identities: [] })
         fail("Couldn't load this vault", err)
       })
     return () => {

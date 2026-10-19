@@ -1,7 +1,7 @@
 import { useAnimate, useReducedMotion } from 'framer-motion'
 import { useEffect } from 'react'
 
-/** Snappy with a hint of bounce: settles in about 150 ms. */
+/** Snappy with a hint of bounce (damping ratio ~0.78): near its target in ~120 ms, overshoots ~2%, still by ~210 ms. */
 export const spring = { type: 'spring', stiffness: 600, damping: 38 } as const
 /** Fades and the reduced-motion fallback. */
 export const fast = { duration: 0.12 } as const

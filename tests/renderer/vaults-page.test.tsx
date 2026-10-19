@@ -738,4 +738,16 @@ describe('vaults page loading', () => {
     expect(await row('FRESH_TOKEN')).toBeInTheDocument()
     await waitFor(() => expect(screen.queryByRole('listitem', { name: 'DATABASE_URL' })).not.toBeInTheDocument())
   })
+
+  it('a failed refresh keeps the rows it last showed', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderPage()
+    await row('DATABASE_URL')
+    const nav = screen.getByRole('navigation', { name: 'Sections' })
+    await user.click(within(nav).getByRole('link', { name: /Hosts/ }))
+    failOnce(invoke, 'secret:list', 'disk on fire')
+    await user.click(within(nav).getByRole('link', { name: /Vaults/ }))
+    expect(await screen.findByText(/Couldn't load this vault/)).toBeInTheDocument()
+    expect(screen.getByRole('listitem', { name: 'DATABASE_URL' })).toBeInTheDocument()
+  })
 })

@@ -1,4 +1,4 @@
-import { AnimatePresence, motion } from 'framer-motion'
+import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
 import { FileUp, FolderOpen, KeyRound, LockKeyhole, Plus, ShieldX, UserRound, Wand2 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Button } from '../../ui/Button'
@@ -41,23 +41,34 @@ export function Toolbar({ tab, onNew }: { tab: Tab; onNew: (which: NewDialog) =>
   return (
     // The old tab's buttons pop out of the flow at once, so the new ones never wait for them.
     <AnimatePresence initial={false} mode="popLayout">
-      <motion.div
-        key={tab}
-        role="toolbar"
-        aria-label={set.label}
-        initial={motionSafe ? { opacity: 0, y: 3 } : { opacity: 0 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, transition: exitFast }}
-        transition={fast}
-        className="flex items-center gap-1.5 pb-1.5"
-      >
+      <ToolbarSet key={tab} label={set.label} motionSafe={motionSafe}>
         {set.actions.map((a) => (
           <Button key={a.which} size="sm" variant={a.primary ? 'primary' : 'ghost'} icon={a.icon} onClick={() => onNew(a.which)}>
             {a.label}
           </Button>
         ))}
-      </motion.div>
+      </ToolbarSet>
     </AnimatePresence>
+  )
+}
+
+/** One tab's buttons; while they fade out over the new ones they take no clicks or focus. */
+function ToolbarSet({ label, motionSafe, children }: { label: string; motionSafe: boolean; children: ReactNode }) {
+  const present = useIsPresent()
+  return (
+    <motion.div
+      role="toolbar"
+      aria-label={label}
+      inert={!present}
+      aria-hidden={!present || undefined}
+      initial={motionSafe ? { opacity: 0, y: 3 } : { opacity: 0 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, transition: exitFast }}
+      transition={fast}
+      className="flex items-center gap-1.5 pb-1.5"
+    >
+      {children}
+    </motion.div>
   )
 }
 

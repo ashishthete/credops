@@ -78,20 +78,21 @@ function PaletteDialog() {
 
   return (
     <motion.div
-      // While it fades out, clicks go through to the page underneath.
-      className={`fixed inset-0 z-50 flex items-start justify-center bg-black/45 px-4 pt-[14vh] backdrop-blur-md ${present ? '' : 'pointer-events-none'}`}
+      // Still swallows clicks while it fades out, so none lands on the page underneath.
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/45 px-4 pt-[14vh] backdrop-blur-md"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0, transition: exitFast }}
       transition={fast}
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) closeCommandPalette()
+        if (present && e.target === e.currentTarget) closeCommandPalette()
       }}
     >
       <motion.div
         role="dialog"
         aria-modal="true"
         aria-label="Command palette"
+        inert={!present}
         onKeyDown={onKeyDown}
         className="w-full max-w-[600px] overflow-hidden rounded-[14px] border border-line bg-surface shadow-pop"
         initial={motionSafe ? { opacity: 0, scale: 0.96, y: -8 } : { opacity: 0 }}
