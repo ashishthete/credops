@@ -119,7 +119,7 @@ describe('services section', () => {
     expect(within(core).getAllByRole('listitem').map((li) => li.getAttribute('aria-label'))).toEqual(['worker', 'api'])
   })
 
-  it('the environment view wires Logs to the logs pane and Copy to… to the copy dialog', async () => {
+  it('the environment view wires Logs, Deploy… and Copy to…', async () => {
     const user = userEvent.setup()
     const invoke = world({ 'service:logs': 'f1', 'containers:unfollow': undefined })
     await loadInventory()
@@ -135,8 +135,12 @@ describe('services section', () => {
     await waitFor(() => expect(calls(invoke, 'service:logs').map((c) => c.slice(1))).toEqual([['s1', 200]]))
     await user.click(screen.getByRole('button', { name: 'Close logs' }))
     await waitFor(() => expect(calls(invoke, 'containers:unfollow').map((c) => c[1])).toEqual(['f1']))
-    // Deploy stays for the picker (Task 10).
-    expect(within(services).queryByRole('button', { name: 'Deploy…' })).not.toBeInTheDocument()
+    // Deploy… opens the picker with nothing ticked.
+    await user.click(within(services).getByRole('button', { name: 'Deploy…' }))
+    const wizard = await screen.findByRole('dialog', { name: 'Deploy to staging' })
+    expect(within(wizard).getByRole('checkbox', { name: 'api' })).not.toBeChecked()
+    await user.click(within(wizard).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Deploy to staging' })).not.toBeInTheDocument())
 
     await user.click(within(services).getByRole('button', { name: 'Services options' }))
     await user.click(screen.getByRole('menuitem', { name: 'Copy to…' }))

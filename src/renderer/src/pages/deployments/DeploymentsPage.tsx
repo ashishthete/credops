@@ -15,6 +15,7 @@ import { Skeleton } from '../../ui/Skeleton'
 import { toast } from '../../ui/Toaster'
 import { DeploymentDialog, type DeploymentRequest } from './DeploymentDialog'
 import { EnvDeploySettings } from './EnvDeploySettings'
+import { DeployWizard } from './release/DeployWizard'
 
 const ANSIBLE_DOCS = 'https://docs.ansible.com/ansible/latest/installation_guide/'
 const INSTALL_COMMAND = 'brew install ansible'
@@ -37,6 +38,7 @@ export function DeploymentsPage() {
   const [params, setParams] = useSearchParams()
   const [dialog, setDialog] = useState<DeploymentRequest | null>(null)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
+  const [deploying, setDeploying] = useState(false)
 
   useEffect(() => startDeploySync(), [])
 
@@ -132,6 +134,9 @@ export function DeploymentsPage() {
         </div>
         {env && (
           <div className="flex items-center gap-2">
+            <Button size="sm" variant="ghost" icon={<Rocket aria-hidden className="size-3.5" />} disabled={!deployments.length} onClick={() => setDeploying(true)}>
+              Deploy…
+            </Button>
             <Button size="sm" icon={<Plus aria-hidden className="size-3.5" />} onClick={newDeployment}>
               New deployment
             </Button>
@@ -197,6 +202,7 @@ export function DeploymentsPage() {
       </div>
 
       <DeploymentDialog request={dialog} onClose={() => setDialog(null)} />
+      {deploying && envId && <DeployWizard key={envId} environmentId={envId} preselect={[]} onClose={() => setDeploying(false)} />}
       <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
     </div>
   )

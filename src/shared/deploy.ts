@@ -338,6 +338,8 @@ export interface PreflightReport {
   dockerModes: Record<string, DockerMode>
   /** Per deployment: the compose file's services (`docker compose config --services`), null when unknown. */
   composeServices: Record<string, string[] | null>
+  /** Per deployment: the compose services classed as databases, which a release never restarts. Filled from Task 15. */
+  composeDatabases?: Record<string, string[] | null>
   /**
    * Per service in the selection: `since` is its last deployed commit, else the deploy tag's commit; `count` is
    * how many commits of its checkout's list (newest first) come before `since`. `known` is false when `since`

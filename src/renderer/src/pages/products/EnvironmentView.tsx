@@ -16,6 +16,7 @@ import { Button } from '../../ui/Button'
 import { RowMenu } from '../../ui/common'
 import { fast, spring, staggerDelay, useMotionSafe } from '../../ui/motion'
 import { GlowDot, PaneHeader, ROLE_LABEL, ROLE_ORDER } from './ProductView'
+import { DeployWizard } from '../deployments/release/DeployWizard'
 import { CopyServicesDialog } from './services/CopyServicesDialog'
 import { ServiceLogs } from './services/ServiceLogs'
 import { ServicesSection } from './services/ServicesSection'
@@ -41,6 +42,8 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
   useEffect(() => startDeploySync(), [])
   const [logsOf, setLogsOf] = useState<AppServiceMeta | null>(null)
   const [copyFrom, setCopyFrom] = useState<EnvironmentMeta | null>(null)
+  // The services the deploy wizard starts with ticked; null while it is closed.
+  const [deployPick, setDeployPick] = useState<string[] | null>(null)
   const hostById = new Map(data.hosts.map((h) => [h.id, h]))
   const identity = env.defaultIdentityId ? data.identities.find((i) => i.id === env.defaultIdentityId) : undefined
   const jump = env.defaultJumpHostId ? hostById.get(env.defaultJumpHostId) : undefined
@@ -140,7 +143,7 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
           />
         </dl>
 
-        <ServicesSection env={env} data={data} onLogs={setLogsOf} onCopy={() => setCopyFrom(env)} />
+        <ServicesSection env={env} data={data} onDeploy={setDeployPick} onLogs={setLogsOf} onCopy={() => setCopyFrom(env)} />
 
         {groups.length === 0 ? (
           <div className="mt-6 flex flex-col items-center gap-2 rounded-xl border border-dashed border-line px-6 py-10 text-center">
@@ -212,6 +215,7 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
       </div>
       <ServiceLogs service={logsOf} onClose={() => setLogsOf(null)} />
       <CopyServicesDialog source={copyFrom} onClose={() => setCopyFrom(null)} />
+      {deployPick && <DeployWizard key={env.id} environmentId={env.id} preselect={deployPick} onClose={() => setDeployPick(null)} />}
     </>
   )
 }
