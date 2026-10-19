@@ -1,6 +1,6 @@
-import { createHash, randomBytes } from 'node:crypto'
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import type { HubMeta } from '../../shared/hub'
+import { SIGN_IN_TIMEOUT_MS, type HubMeta } from '../../shared/hub'
 
 export type OidcErrorCode =
   | 'config'
@@ -40,7 +40,6 @@ type Fetch = typeof fetch
 
 const GUID = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
 const AUTHORITY_PATH = new RegExp(`^/${GUID}/v2\\.0$`)
-const DEFAULT_TIMEOUT_MS = 5 * 60_000
 /** Refresh a minute early so a token never expires mid-request. */
 const EXPIRY_SKEW_MS = 60_000
 const NOT_ENTRA = "The Hub's sign-in authority is not Microsoft Entra"
@@ -63,17 +62,29 @@ export function checkAuthority(authority: string): URL {
   return u
 }
 
-async function request(f: Fetch, url: string, init?: RequestInit): Promise<Response> {
+const cancelled = (): OidcError => new OidcError('cancelled', 'Sign-in was cancelled')
+
+async function request(f: Fetch, url: string, init: RequestInit | undefined, signal?: AbortSignal): Promise<Response> {
+  if (signal?.aborted) throw cancelled()
   try {
-    return await f(url, init)
+    return await f(url, { ...init, ...(signal ? { signal } : {}) })
   } catch {
+    // An abort surfaces as an AbortError; either way the cause is dropped.
+    if (signal?.aborted) throw cancelled()
     throw new OidcError('network', 'Could not reach the sign-in service')
   }
 }
 
-export async function discover(authority: string, deps: { fetch: Fetch }): Promise<OidcEndpoints> {
+function sameState(got: string | null, want: string): boolean {
+  if (got === null) return false
+  const a = Buffer.from(got)
+  const b = Buffer.from(want)
+  return a.length === b.length && timingSafeEqual(a, b)
+}
+
+export async function discover(authority: string, deps: { fetch: Fetch; signal?: AbortSignal }): Promise<OidcEndpoints> {
   const base = stripSlash(checkAuthority(authority).href)
-  const res = await request(deps.fetch, `${base}/.well-known/openid-configuration`)
+  const res = await request(deps.fetch, `${base}/.well-known/openid-configuration`, undefined, deps.signal)
   const bad = new OidcError('discovery', 'The sign-in service returned an unusable configuration')
   if (!res.ok) throw bad
   let doc: unknown
@@ -131,7 +142,7 @@ export async function startLoopback(opts: {
     if (outcome instanceof OidcError) settle.fail(outcome)
     else settle.ok(outcome.code)
   }
-  const onAbort = (): void => finish(new OidcError('cancelled', 'Sign-in was cancelled'))
+  const onAbort = (): void => finish(cancelled())
 
   const reply = (res: ServerResponse, status: number, msg: string): void => {
     res.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', connection: 'close' })
@@ -145,7 +156,7 @@ export async function startLoopback(opts: {
       return void res.end()
     }
     const q = url.searchParams
-    if (q.get('state') !== opts.state) {
+    if (!sameState(q.get('state'), opts.state)) {
       reply(res, 400, 'Sign-in failed. You can close this tab.')
       return finish(new OidcError('state_mismatch', 'The sign-in response did not match the request'))
     }
@@ -179,7 +190,7 @@ export async function startLoopback(opts: {
     redirectUri: `http://${opts.host ?? '127.0.0.1'}:${port}${opts.path}`,
     code,
     close: () => {
-      finish(new OidcError('cancelled', 'Sign-in was cancelled'))
+      finish(cancelled())
       server.closeAllConnections()
     },
   }
@@ -206,18 +217,24 @@ async function tokenRequest(
   ep: OidcEndpoints,
   form: Record<string, string>,
   failure: { code: OidcErrorCode; message: string },
-  deps: { fetch: Fetch; now: () => number },
+  deps: { fetch: Fetch; now: () => number; signal?: AbortSignal },
 ): Promise<TokenSet> {
-  const res = await request(deps.fetch, ep.tokenEndpoint, {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
-    body: new URLSearchParams(form).toString(),
-  })
+  const res = await request(
+    deps.fetch,
+    ep.tokenEndpoint,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
+      body: new URLSearchParams(form).toString(),
+    },
+    deps.signal,
+  )
   let body: Record<string, unknown> = {}
   try {
     body = ((await res.json()) ?? {}) as Record<string, unknown>
   } catch {
-    // fall through to the status check
+    if (deps.signal?.aborted) throw cancelled()
+    // otherwise fall through to the status check
   }
   if (!res.ok) {
     if (form.grant_type === 'refresh_token' && body.error === 'invalid_grant') {
@@ -240,7 +257,7 @@ export function exchangeCode(
   ep: OidcEndpoints,
   cfg: EntraCfg,
   p: { code: string; verifier: string; redirectUri: string },
-  deps: { fetch: Fetch; now: () => number },
+  deps: { fetch: Fetch; now: () => number; signal?: AbortSignal },
 ): Promise<TokenSet> {
   return tokenRequest(
     ep,
@@ -261,7 +278,7 @@ export function refreshTokens(
   ep: OidcEndpoints,
   cfg: EntraCfg,
   refreshToken: string,
-  deps: { fetch: Fetch; now: () => number },
+  deps: { fetch: Fetch; now: () => number; signal?: AbortSignal },
 ): Promise<TokenSet> {
   return tokenRequest(
     ep,
@@ -285,7 +302,7 @@ export async function signIn(
   if (template.protocol !== 'http:' || (template.hostname !== '127.0.0.1' && template.hostname !== 'localhost')) {
     throw new OidcError('config', "The Hub's sign-in redirect is not a loopback address")
   }
-  if (deps.signal.aborted) throw new OidcError('cancelled', 'Sign-in was cancelled')
+  if (deps.signal.aborted) throw cancelled()
 
   const ep = await discover(cfg.authority, deps)
   const { verifier, challenge } = pkce()
@@ -293,18 +310,24 @@ export async function signIn(
   const lb = await startLoopback({
     path: template.pathname,
     state,
-    timeoutMs: deps.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    timeoutMs: deps.timeoutMs ?? SIGN_IN_TIMEOUT_MS,
     signal: deps.signal,
     host: template.hostname as '127.0.0.1' | 'localhost',
   })
   try {
-    try {
-      await deps.openBrowser(authorizeUrl(ep, cfg, { redirectUri: lb.redirectUri, state, challenge }))
-    } catch {
-      throw new OidcError('cancelled', 'Could not open the browser for sign-in')
-    }
-    const code = await lb.code
-    return await exchangeCode(ep, cfg, { code, verifier, redirectUri: lb.redirectUri }, deps)
+    // Race the browser launch against the loopback so a hung launcher cannot block Cancel or the timeout.
+    const opened = Promise.resolve()
+      .then(() => deps.openBrowser(authorizeUrl(ep, cfg, { redirectUri: lb.redirectUri, state, challenge })))
+      .catch(() => {
+        throw new OidcError('cancelled', 'Could not open the browser for sign-in')
+      })
+    opened.catch(() => undefined)
+    const code = await Promise.race([lb.code, opened.then(() => lb.code)])
+    if (deps.signal.aborted) throw cancelled()
+    const tokens = await exchangeCode(ep, cfg, { code, verifier, redirectUri: lb.redirectUri }, deps)
+    // A cancel that raced the exchange must not hand back credentials.
+    if (deps.signal.aborted) throw cancelled()
+    return tokens
   } finally {
     lb.close()
   }

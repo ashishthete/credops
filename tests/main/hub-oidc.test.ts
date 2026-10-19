@@ -187,11 +187,80 @@ describe('oidc sign-in', () => {
     await collect(signIn(cfg, deps()))
     fake.deny(false)
     await collect(signIn({ ...cfg, authority: 'https://evil.example/x/v2.0' }, deps()))
-    expect(messages.length).toBe(4)
+    expect(messages.length).toBe(4) // refresh, exchange, denied, non-entra
     for (const m of messages) {
       for (const s of [...secretsSeen(), 'stale-refresh-token', 'stale-code', 'stale-verifier', first.accessToken, first.refreshToken!]) {
         expect(m).not.toContain(s)
       }
     }
+  })
+
+  it('abort during the token request is cancelled and returns no tokens', async () => {
+    const ac = new AbortController()
+    const f = ((url: string, init?: RequestInit) => {
+      if (String(url).endsWith('/token')) ac.abort()
+      return fetch(url, init)
+    }) as typeof fetch
+    await expect(signIn(cfg, deps({ fetch: f, signal: ac.signal }))).rejects.toMatchObject({ code: 'cancelled' })
+  })
+
+  it('abort after the token response still returns no tokens', async () => {
+    const ac = new AbortController()
+    const f = (async (url: string, init?: RequestInit) => {
+      const r = await fetch(url, init)
+      if (String(url).endsWith('/token')) ac.abort()
+      return r
+    }) as typeof fetch
+    await expect(signIn(cfg, deps({ fetch: f, signal: ac.signal }))).rejects.toMatchObject({ code: 'cancelled' })
+  })
+
+  it('abort cancels a hung discovery and a hung browser launch', async () => {
+    const ac = new AbortController()
+    const hang = ((_u: string, init?: RequestInit) =>
+      new Promise((_, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('x', 'AbortError'))))) as unknown as typeof fetch
+    const p = signIn(cfg, deps({ fetch: hang, signal: ac.signal }))
+    ac.abort()
+    await expect(p).rejects.toMatchObject({ code: 'cancelled' })
+
+    const ac2 = new AbortController()
+    const p2 = signIn(cfg, deps({ signal: ac2.signal, openBrowser: () => new Promise<void>(() => undefined) }))
+    setTimeout(() => ac2.abort(), 50)
+    await expect(p2).rejects.toMatchObject({ code: 'cancelled' })
+  })
+
+  it('a throwing browser launch is cancelled', async () => {
+    await expect(signIn(cfg, deps({ openBrowser: async () => { throw new Error('nope') } }))).rejects.toMatchObject({ code: 'cancelled' })
+  })
+
+  it('a callback with a valid state but no code is exchange, and a bad state through signIn is state_mismatch', async () => {
+    const hit = (mut: (u: URL) => void) => async (url: string) => {
+      const r = await fetch(url, { redirect: 'manual' })
+      const back = new URL(r.headers.get('location')!)
+      mut(back)
+      await fetch(back)
+    }
+    await expect(signIn(cfg, deps({ openBrowser: hit((u) => u.searchParams.delete('code')) }))).rejects.toMatchObject({ code: 'exchange' })
+    await expect(signIn(cfg, deps({ openBrowser: hit((u) => u.searchParams.set('state', 'x')) }))).rejects.toMatchObject({ code: 'state_mismatch' })
+  })
+
+  it('times out through signIn when nobody answers', async () => {
+    await expect(signIn(cfg, deps({ openBrowser: async () => undefined, timeoutMs: 50 }))).rejects.toMatchObject({ code: 'timeout' })
+  })
+
+  it('a non-loopback redirect template is config', async () => {
+    for (const redirectUri of ['https://127.0.0.1/callback', 'http://evil.example/callback', 'not a url']) {
+      await expect(signIn({ ...cfg, redirectUri }, deps())).rejects.toMatchObject({ code: 'config' })
+    }
+  })
+
+  it('discovery endpoints on another origin are refused', async () => {
+    const tamper = (async (url: string, init?: RequestInit) => {
+      const r = await fetch(url, init)
+      if (!String(url).endsWith('openid-configuration')) return r
+      const doc = (await r.json()) as Record<string, string>
+      doc.token_endpoint = 'https://evil.example/token'
+      return new Response(JSON.stringify(doc), { status: 200 })
+    }) as typeof fetch
+    await expect(discover(fake.authority, { fetch: tamper })).rejects.toMatchObject({ code: 'discovery' })
   })
 })
