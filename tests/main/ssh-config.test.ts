@@ -3,7 +3,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, sym
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MAX_IMPORT_ALIASES } from '../../src/shared/inventory'
-import { globMatch, parseSshConfig, readSshIncludes } from '../../src/main/inventory/ssh-config'
+import { globMatch, matchSshConfig, parseSshConfig, readSshConfigMatch, readSshIncludes } from '../../src/main/inventory/ssh-config'
 
 const FIX = join(__dirname, '../fixtures/ssh')
 const opts = { home: '/home/t', sshDir: '/home/t/.ssh' }
@@ -307,5 +307,66 @@ describe('Include handling', () => {
     const r = readSshIncludes(sshDir)('conf*/x.conf')
     expect(r.files).toEqual([])
     expect(r.warnings).toEqual(["Include conf*/x.conf: wildcards in folder names aren't supported"])
+  })
+})
+
+describe('matchSshConfig', () => {
+  const match = (t: string, label: string, address: string) => matchSshConfig(t, opts, { label, address })
+
+  it('matches a Host alias equal to the label, with its User and IdentityFile', () => {
+    const text = 'Host alpha\n  HostName 203.0.113.23\n  User ubuntu\n  IdentityFile ~/.ssh/alpha_key\n'
+    expect(match(text, 'alpha', '203.0.113.23')).toEqual({ user: 'ubuntu', identityFiles: ['/home/t/.ssh/alpha_key'] })
+  })
+
+  it('matches by HostName equal to the address when no alias names the label', () => {
+    const text = 'Host prod-box\n  HostName 10.0.0.9\n  User deploy\n'
+    expect(match(text, 'my web', '10.0.0.9')).toEqual({ user: 'deploy', identityFiles: [] })
+  })
+
+  it('honours * and ? globs, and Host * fills what a named block leaves out', () => {
+    const text = 'Host web-?\n  User www\nHost *\n  User fallback\n  IdentityFile ~/.ssh/id_work\n'
+    expect(match(text, 'web-1', '10.0.0.1')).toEqual({ user: 'www', identityFiles: ['/home/t/.ssh/id_work'] })
+    expect(match(text, 'db', '10.0.0.2')).toEqual({ user: 'fallback', identityFiles: ['/home/t/.ssh/id_work'] })
+  })
+
+  it('a named block for the address wins over Host * for the label', () => {
+    const text = 'Host box\n  HostName 10.0.0.9\n  User ubuntu\nHost *\n  User fallback\n'
+    expect(match(text, 'other', '10.0.0.9')).toMatchObject({ user: 'ubuntu' })
+  })
+
+  it('keeps every IdentityFile in order, absolute ones outside ~/.ssh too, and drops relative ones', () => {
+    const text = 'Host a\n  IdentityFile ~/.ssh/one\n  IdentityFile /opt/keys/two\n  IdentityFile rel/three\n  IdentityFile ~/.ssh/one\n'
+    expect(match(text, 'a', 'a')).toEqual({ user: null, identityFiles: ['/home/t/.ssh/one', '/opt/keys/two'] })
+  })
+
+  it('no match and unsafe users give nothing', () => {
+    expect(match('Host other\n  User x\n', 'alpha', '1.2.3.4')).toBeNull()
+    expect(match('Host alpha\n  User -oProxyCommand=x\n', 'alpha', '1.2.3.4')).toEqual({ user: null, identityFiles: [] })
+  })
+})
+
+describe('readSshConfigMatch', () => {
+  let home = ''
+  afterEach(() => {
+    if (home) rmSync(home, { recursive: true, force: true })
+    home = ''
+  })
+
+  it('reads ~/.ssh/config from the given home, read-only', () => {
+    home = mkdtempSync(join(tmpdir(), 'opsdeck-cfg-'))
+    mkdirSync(join(home, '.ssh'))
+    const config = join(home, '.ssh', 'config')
+    writeFileSync(config, 'Host alpha\n  User ubuntu\n')
+    const read = readSshConfigMatch({ configPath: config, home, sshDir: join(home, '.ssh') })
+    expect(read({ label: 'alpha', address: '1.2.3.4' })).toEqual({ user: 'ubuntu', identityFiles: [] })
+    expect(readFileSync(config, 'utf8')).toBe('Host alpha\n  User ubuntu\n')
+  })
+
+  it('a missing or unreadable config falls back silently', () => {
+    home = mkdtempSync(join(tmpdir(), 'opsdeck-cfg-'))
+    const read = readSshConfigMatch({ configPath: join(home, '.ssh', 'config'), home, sshDir: join(home, '.ssh') })
+    expect(read({ label: 'alpha', address: '1.2.3.4' })).toBeNull()
+    mkdirSync(join(home, '.ssh', 'config'), { recursive: true })
+    expect(read({ label: 'alpha', address: '1.2.3.4' })).toBeNull()
   })
 })

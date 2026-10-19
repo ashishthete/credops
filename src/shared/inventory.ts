@@ -121,7 +121,9 @@ export interface HostMeta {
 export type ValueSource = 'host' | 'environment' | 'global'
 export type IdentityRef =
   | { source: 'host' | 'environment'; identityId: string; label: string; username: string; auth: IdentityAuth; vaultId: string }
-  | { source: 'global'; username: string; auth: 'default' } // agent, then ~/.ssh/id_ed25519, then id_rsa
+  // Your SSH keys: the agent, then the host's ~/.ssh/config IdentityFiles, then ~/.ssh/id_ed25519 and id_rsa.
+  // `userSource` is set when the username came from a ~/.ssh/config User; otherwise it is the local user.
+  | { source: 'global'; username: string; auth: 'default'; userSource?: 'ssh-config' }
 export interface ResolvedHop {
   hostId: string
   label: string

@@ -1,6 +1,6 @@
 import { lstatSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, isAbsolute, resolve, sep } from 'node:path'
-import { MAX_IMPORT_ALIASES, MAX_SSH_CONFIG_BYTES, type SshConfigEntry, type SshForward } from '../../shared/inventory'
+import { isSafeSshToken, MAX_IMPORT_ALIASES, MAX_SSH_CONFIG_BYTES, type SshConfigEntry, type SshForward } from '../../shared/inventory'
 
 export interface IncludeFile {
   path: string
@@ -44,6 +44,8 @@ const MAX_INCLUDE_DIRECTIVES = 1000
 const MAX_WARNINGS = 200
 /** Per host. */
 const MAX_FORWARDS = 64
+/** Per block. */
+const MAX_IDENTITY_FILES = 32
 /** Folder entries the Include reader looks at per parse, matched or not. */
 const MAX_INCLUDE_ENTRIES = 10_000
 const TOO_LARGE = 'ssh config is larger than 1 MiB'
@@ -61,9 +63,11 @@ interface Block {
   forwards: SshForward[]
   /** The block had more forwards than one host keeps. */
   moreForwards: boolean
+  /** Every IdentityFile in order (ssh tries them all), as written. */
+  identityFiles: string[]
 }
 
-const newBlock = (patterns: string[] | null): Block => ({ patterns, values: new Map(), forwards: [], moreForwards: false })
+const newBlock = (patterns: string[] | null): Block => ({ patterns, values: new Map(), forwards: [], moreForwards: false, identityFiles: [] })
 
 function addDirective(block: Block, key: string, args: string[], line: number): void {
   if (key === 'localforward' || key === 'remoteforward' || key === 'dynamicforward') {
@@ -74,6 +78,7 @@ function addDirective(block: Block, key: string, args: string[], line: number): 
     return
   }
   const value = args.join(' ')
+  if (key === 'identityfile' && value && block.identityFiles.length < MAX_IDENTITY_FILES) block.identityFiles.push(value)
   if (KEYS.has(key) && value && !block.values.has(key)) block.values.set(key, { value, line })
 }
 
@@ -144,10 +149,9 @@ function expandHome(value: string, home: string): string {
   return value.replace(/%d/g, home)
 }
 
-export function parseSshConfig(text: string, opts: ParseOptions): { entries: SshConfigEntry[]; warnings: string[] } {
+/** Reads the config and its includes into Host blocks, in file order, plus every concrete alias. */
+function readBlocks(text: string, opts: ParseOptions): { blocks: Block[]; aliases: Set<string>; warnings: string[] } {
   const warnings: string[] = []
-  if (tooLarge(text)) return { entries: [], warnings: [TOO_LARGE] }
-
   const blocks: Block[] = [newBlock(null)]
   const visited = new Set<string>(opts.rootPath ? [resolve(opts.rootPath)] : [])
   let inMatch = false
@@ -295,24 +299,34 @@ export function parseSshConfig(text: string, opts: ParseOptions): { entries: Ssh
   }
 
   walk(text, 0)
+  return { blocks, aliases, warnings }
+}
 
+export function parseSshConfig(text: string, opts: ParseOptions): { entries: SshConfigEntry[]; warnings: string[] } {
+  if (tooLarge(text)) return { entries: [], warnings: [TOO_LARGE] }
+  const { blocks, aliases, warnings } = readBlocks(text, opts)
   const entries: SshConfigEntry[] = []
   const shared = new Set<string>()
-  // Literal-only blocks are indexed by alias so matching stays linear in the config size.
+  const candidates = indexBlocks(blocks)
+  const budget: GlobBudget = { steps: MAX_GLOB_STEPS }
+  for (const alias of aliases) entries.push(buildEntry(alias, candidates(alias), opts, shared, budget))
+  if (budget.steps < 0) warnings.push('Wildcard Host matching took too long; some hosts are missing settings from wildcard blocks')
+  warnings.push(...shared)
+  return { entries, warnings: capWarnings(warnings) }
+}
+
+/**
+ * The blocks that may apply to a name, in file order: literal-only blocks naming it, plus every
+ * wildcard and top-level block (still to be matched). Indexed so matching stays linear in the config size.
+ */
+function indexBlocks(blocks: Block[]): (name: string) => Block[] {
   const byAlias = new Map<string, number[]>()
   const wild: number[] = []
   blocks.forEach((b, i) => {
     if (!b.patterns || b.patterns.some((p) => !isConcrete(p))) wild.push(i)
     else for (const p of new Set(b.patterns)) (byAlias.get(p) ?? byAlias.set(p, []).get(p)!).push(i)
   })
-  const budget: GlobBudget = { steps: MAX_GLOB_STEPS }
-  for (const alias of aliases) {
-    const idx = [...(byAlias.get(alias) ?? []), ...wild].sort((x, y) => x - y)
-    entries.push(buildEntry(alias, idx.map((i) => blocks[i]), opts, shared, budget))
-  }
-  if (budget.steps < 0) warnings.push('Wildcard Host matching took too long; some hosts are missing settings from wildcard blocks')
-  warnings.push(...shared)
-  return { entries, warnings: capWarnings(warnings) }
+  return (name) => [...(byAlias.get(name) ?? []), ...wild].sort((x, y) => x - y).map((i) => blocks[i])
 }
 
 function capWarnings(warnings: string[]): string[] {
@@ -383,6 +397,81 @@ function buildEntry(
   }
   if (moreForwards) shared.add(`More than ${MAX_FORWARDS} port forwards for a host; the rest are ignored`)
   return entry
+}
+
+export interface SshConfigTarget {
+  label: string
+  address: string
+}
+export interface SshConfigMatch {
+  /** A plain username, or null when no matching block sets one. */
+  user: string | null
+  /** Absolute paths, `~` expanded, in the order ssh tries them. Not checked: the reader decides. */
+  identityFiles: string[]
+}
+
+/**
+ * The ~/.ssh/config settings for a host OpsDeck knows by label and address: the blocks for a Host
+ * alias equal to the label, else for an alias whose HostName is the address, else for the address
+ * itself; failing all three, `Host *` and top-level lines for the label. Null when nothing applies.
+ */
+export function matchSshConfig(text: string, opts: ParseOptions, target: SshConfigTarget): SshConfigMatch | null {
+  if (tooLarge(text)) return null
+  const { blocks, aliases } = readBlocks(text, opts)
+  const candidates = indexBlocks(blocks)
+  const budget: GlobBudget = { steps: MAX_GLOB_STEPS }
+  /** Blocks that apply to `name`, and whether one names it more closely than `Host *`. */
+  const applying = (name: string): { blocks: Block[]; specific: boolean } => {
+    const out = candidates(name).filter((b) => !b.patterns || matchesPatterns(b.patterns, name, budget))
+    return { blocks: out, specific: out.some((b) => b.patterns?.some((p) => !p.startsWith('!') && p !== '*')) }
+  }
+  const first = (bs: Block[], key: string): string | undefined => bs.find((b) => b.values.has(key))?.values.get(key)?.value
+
+  const byLabel = applying(target.label)
+  let chosen = byLabel.specific ? byLabel.blocks : null
+  for (const alias of chosen ? [] : aliases) {
+    if (alias === target.label) continue
+    const a = applying(alias)
+    const hostName = first(a.blocks, 'hostname')?.replace(/%([h%])/g, (_, c: string) => (c === 'h' ? alias : '%')) ?? alias
+    if (hostName === target.address) {
+      chosen = a.blocks
+      break
+    }
+  }
+  if (!chosen && target.address !== target.label) {
+    const byAddress = applying(target.address)
+    if (byAddress.specific) chosen = byAddress.blocks
+  }
+  const used = chosen ?? byLabel.blocks
+  if (!used.some((b) => b.patterns !== null || b.values.size > 0 || b.identityFiles.length > 0)) return null
+
+  const user = first(used, 'user')?.trim() ?? null
+  const identityFiles = new Set<string>()
+  for (const raw of used.flatMap((b) => b.identityFiles)) {
+    if (identityFiles.size >= MAX_IDENTITY_FILES) break
+    if (raw.toLowerCase() === 'none') continue
+    const expanded = expandHome(raw, opts.home)
+    if (isAbsolute(expanded)) identityFiles.add(resolve(expanded))
+  }
+  return { user: user !== null && isSafeSshToken(user) ? user : null, identityFiles: [...identityFiles] }
+}
+
+/**
+ * Reads ~/.ssh/config read-only at each call and matches it. A missing, unreadable or oversized
+ * file gives null, so callers fall back silently.
+ */
+export function readSshConfigMatch(paths: { configPath: string; home: string; sshDir: string }): (target: SshConfigTarget) => SshConfigMatch | null {
+  return (target) => {
+    try {
+      const real = realpathSync(paths.configPath)
+      const st = statSync(real)
+      if (!st.isFile() || st.size > MAX_SSH_CONFIG_BYTES) return null
+      const text = readFileSync(real, 'utf8')
+      return matchSshConfig(text, { home: paths.home, sshDir: paths.sshDir, include: readSshIncludes(paths.sshDir), rootPath: real }, target)
+    } catch {
+      return null
+    }
+  }
 }
 
 /** Include reader confined to `sshDir`: globs only in the basename, symlinks must not escape. */

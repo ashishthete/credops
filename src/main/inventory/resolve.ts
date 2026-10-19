@@ -10,6 +10,13 @@ import {
 import type { IdentityAuth } from '../../shared/vault'
 import type { Db } from '../db/connection'
 import { hostRow } from './rows'
+import type { SshConfigMatch, SshConfigTarget } from './ssh-config'
+
+export interface ResolveOptions {
+  localUser: string
+  /** ~/.ssh/config lookup; its User names a host that has no OpsDeck identity. */
+  sshConfig?: (target: SshConfigTarget) => SshConfigMatch | null
+}
 
 type EnvDefaults = {
   id: string
@@ -45,7 +52,7 @@ function identityRef(db: Db, id: string, source: 'host' | 'environment'): Identi
 }
 
 /** Host's own value, then the environment's default (only in a context), then the global one. */
-function resolveFields(db: Db, hostId: string, environmentId: string | null, localUser: string): Fields {
+function resolveFields(db: Db, hostId: string, environmentId: string | null, opts: ResolveOptions): Fields {
   const host = hostRow(db, hostId)
   const env = environmentId === null ? null : envDefaults(db, environmentId)
   const pick = <T>(own: T | null, inherited: T | null | undefined): { value: T; source: 'host' | 'environment' } | null =>
@@ -53,13 +60,19 @@ function resolveFields(db: Db, hostId: string, environmentId: string | null, loc
 
   const port = pick(host.port, env?.default_port) ?? { value: DEFAULT_SSH_PORT, source: 'global' as ValueSource }
   const id = pick(host.identity_id, env?.default_identity_id)
-  const identity: IdentityRef = id
-    ? identityRef(db, id.value, id.source)
-    : { source: 'global', username: localUser, auth: 'default' }
+  const identity: IdentityRef = id ? identityRef(db, id.value, id.source) : globalIdentity(host, opts)
   const j = pick(host.jump_host_id, env?.default_jump_host_id)
   // A bastion never routes through itself.
   const jump = j && j.value !== hostId ? { hostId: j.value, source: j.source } : { hostId: null, source: null }
   return { port, identity, jump }
+}
+
+/** Like `ssh <host>`: the matching ~/.ssh/config block's User, else the local user. */
+function globalIdentity(host: { label: string; address: string }, opts: ResolveOptions): IdentityRef {
+  const user = opts.sshConfig?.({ label: host.label, address: host.address })?.user ?? null
+  return user === null
+    ? { source: 'global', username: opts.localUser, auth: 'default' }
+    : { source: 'global', username: user, auth: 'default', userSource: 'ssh-config' }
 }
 
 /**
@@ -70,11 +83,11 @@ export function resolveHost(
   db: Db,
   hostId: string,
   environmentId: string | undefined,
-  opts: { localUser: string },
+  opts: ResolveOptions,
 ): ResolvedHost {
   const host = hostRow(db, hostId)
   if (environmentId !== undefined && !isMember(db, environmentId, hostId)) throw new Error('host is not in that environment')
-  const own = resolveFields(db, hostId, environmentId ?? null, opts.localUser)
+  const own = resolveFields(db, hostId, environmentId ?? null, opts)
 
   const chain: ResolvedHop[] = []
   const path = [{ id: host.id, label: host.label }]
@@ -88,7 +101,7 @@ export function resolveHost(
     path.push({ id: hop.id, label: hop.label })
     // A hop takes the context only when it is a member of that environment.
     const context = environmentId !== undefined && isMember(db, environmentId, hop.id) ? environmentId : null
-    const f = resolveFields(db, hop.id, context, opts.localUser)
+    const f = resolveFields(db, hop.id, context, opts)
     chain.unshift({ hostId: hop.id, label: hop.label, address: hop.address, port: f.port.value, identity: f.identity })
     next = f.jump.hostId
   }

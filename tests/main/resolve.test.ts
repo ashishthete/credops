@@ -1,9 +1,13 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, onTestFinished } from 'vitest'
 import { randomUUID } from 'node:crypto'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { IpcMainInvokeEvent } from 'electron'
 import { registerHandlers } from '../../src/main/ipc/register'
 import { VALIDATORS } from '../../src/main/ipc/validators'
 import { inheritConflicts, resolveHost } from '../../src/main/inventory/resolve'
+import { readSshConfigMatch } from '../../src/main/inventory/ssh-config'
 import { MAX_JUMP_DEPTH } from '../../src/shared/inventory'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import { stubHandlers } from './ipc-helpers'
@@ -237,6 +241,56 @@ describe('resolveHost', () => {
     const h = f.hosts.create({ label: 'H', address: 'h', environments: [{ environmentId: prod.id, role: 'app' }] })
     f.vault.lock('manual')
     expect(resolve(f, h.id, prod.id).identity).toMatchObject({ source: 'environment', label: 'deploy' })
+  })
+})
+
+describe('resolveHost with ~/.ssh/config', () => {
+  it('a global identity takes User from the matching block and says so', async () => {
+    const { f, deploy } = await setup()
+    const alpha = f.hosts.create({ label: 'alpha', address: '203.0.113.23' })
+    const seen: unknown[] = []
+    const sshConfig = (t: { label: string; address: string }) => {
+      seen.push(t)
+      return t.label === 'alpha' ? { user: 'ubuntu', identityFiles: [] } : null
+    }
+    const r = resolveHost(f.db, alpha.id, undefined, { localUser: 'tester', sshConfig })
+    expect(r.identity).toEqual({ source: 'global', username: 'ubuntu', auth: 'default', userSource: 'ssh-config' })
+    expect(seen).toEqual([{ label: 'alpha', address: '203.0.113.23' }])
+
+    // No match, or a match without User: the local user, with no ssh-config source.
+    const other = f.hosts.create({ label: 'other', address: '10.0.0.2' })
+    expect(resolveHost(f.db, other.id, undefined, { localUser: 'tester', sshConfig }).identity).toEqual({
+      source: 'global', username: 'tester', auth: 'default',
+    })
+    const noUser = () => ({ user: null, identityFiles: ['/x'] })
+    expect(resolveHost(f.db, alpha.id, undefined, { localUser: 'tester', sshConfig: noUser }).identity).toEqual({
+      source: 'global', username: 'tester', auth: 'default',
+    })
+
+    // An OpsDeck identity always wins over the config.
+    f.hosts.update(alpha.id, { identityId: deploy.id })
+    expect(resolveHost(f.db, alpha.id, undefined, { localUser: 'tester', sshConfig }).identity).toMatchObject({ source: 'host', username: 'deploy' })
+  })
+
+  it('jump hops look up their own block', async () => {
+    const { f } = await setup()
+    const bastion = f.hosts.create({ label: 'bastion', address: 'b.example.com' })
+    const h = f.hosts.create({ label: 'inner', address: '10.0.0.9', jumpHostId: bastion.id })
+    const sshConfig = (t: { label: string }) => ({ user: `${t.label}-user`, identityFiles: [] })
+    const r = resolveHost(f.db, h.id, undefined, { localUser: 'tester', sshConfig })
+    expect(r.identity.username).toBe('inner-user')
+    expect(r.chain[0].identity).toEqual({ source: 'global', username: 'bastion-user', auth: 'default', userSource: 'ssh-config' })
+  })
+
+  it('reads a fixture config from a tmp home', async () => {
+    const { f } = await setup()
+    const home = mkdtempSync(join(tmpdir(), 'opsdeck-resolve-'))
+    onTestFinished(() => rmSync(home, { recursive: true, force: true }))
+    mkdirSync(join(home, '.ssh'))
+    writeFileSync(join(home, '.ssh', 'config'), 'Host alpha\n  HostName 203.0.113.23\n  User ubuntu\n')
+    const sshConfig = readSshConfigMatch({ configPath: join(home, '.ssh', 'config'), home, sshDir: join(home, '.ssh') })
+    const byAddress = f.hosts.create({ label: 'Alpha prod', address: '203.0.113.23' })
+    expect(resolveHost(f.db, byAddress.id, undefined, { localUser: 'tester', sshConfig }).identity.username).toBe('ubuntu')
   })
 })
 

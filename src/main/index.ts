@@ -35,6 +35,7 @@ import { HostStore } from './inventory/host-store'
 import { ProductStore } from './inventory/product-store'
 import { resolveHost } from './inventory/resolve'
 import { hostMeta } from './inventory/rows'
+import { readSshConfigMatch } from './inventory/ssh-config'
 import { SshImporter } from './inventory/ssh-import'
 import { redact } from './security/redact'
 import { authPlan } from './ssh/auth'
@@ -162,8 +163,10 @@ if (!app.requestSingleInstanceLock()) {
         localUser: actor.osUser,
       })
       const inventoryDb = db
+      // Read-only, at each resolve and connect, so edits to ~/.ssh/config apply without a restart.
+      const sshConfig = readSshConfigMatch({ configPath: join(homedir(), '.ssh', 'config'), home: homedir(), sshDir: join(homedir(), '.ssh') })
       const resolve = (hostId: string, environmentId?: string) =>
-        resolveHost(inventoryDb, hostId, environmentId, { localUser: actor.osUser })
+        resolveHost(inventoryDb, hostId, environmentId, { localUser: actor.osUser, sshConfig })
       const knownHosts = new KnownHostStore(db, service, log, { knownHostsPath: join(homedir(), '.ssh', 'known_hosts') })
       const authDeps = { identities, env: process.env, home: homedir() }
       const envStore = environments
