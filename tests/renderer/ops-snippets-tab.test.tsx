@@ -250,24 +250,34 @@ describe('Snippets tab', () => {
   it('the terminal toolbar button opens the picker, which inserts the chosen snippet', async () => {
     sessionStore.set({ sessions: [session()], order: ['sess-1'], activeId: 'sess-1' })
     const invoke = await renderTab({ 'snippets:render': 'df -h' })
-    const onSnippets = vi.fn(() => insertStore.set({ kind: 'pick' }))
     render(
       <MemoryRouter>
-        <TabStrip sessions={[session()]} activeId="sess-1" envName={() => undefined} onSelect={() => {}} onClose={() => {}} onNew={() => {}} onSnippets={onSnippets} />
+        <TabStrip sessions={[session()]} activeId="sess-1" envName={() => undefined} onSelect={() => {}} onClose={() => {}} onNew={() => {}} onSnippets={() => insertStore.set({ kind: 'pick' })} />
       </MemoryRouter>,
     )
     fireEvent.click(screen.getByRole('button', { name: 'Snippets' }))
-    expect(onSnippets).toHaveBeenCalled()
     const dialog = await screen.findByRole('dialog')
     fireEvent.click(within(dialog).getByRole('button', { name: /Disk usage/ }))
     await flush()
     expect(calls(invoke, 'session:write')[0].slice(1)).toEqual(['sess-1', 'df -h'])
   })
+
+  it('the fill dialog path ends on the terminals page too', async () => {
+    sessionStore.set({ sessions: [session()], order: ['sess-1'], activeId: 'sess-1' })
+    await renderTab({ 'snippets:render': 'tail -n 50 x' })
+    openMenu('Tail logs')
+    pick('Insert into terminal')
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.change(within(dialog).getByLabelText('file'), { target: { value: 'x' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Insert' }))
+    await flush()
+    expect(where).toBe('/terminals')
+  })
 })
 
 describe('Run tab ?snippet=', () => {
   it('opens the snippet mode with the snippet picked', async () => {
-    const invoke = mockBridge({ 'snippets:list': [disk, logs], 'snippets:render': 'tail -n 50 x' })
+    mockBridge({ 'snippets:list': [disk, logs], 'snippets:render': 'tail -n 50 x' })
     render(
       <MemoryRouter initialEntries={['/ops/run?snippet=s-logs']}>
         <RunTab />
@@ -277,6 +287,5 @@ describe('Run tab ?snippet=', () => {
     await waitFor(() => expect((screen.getByRole('combobox', { name: 'Snippet' }) as HTMLSelectElement).value).toBe('s-logs'))
     expect(screen.getByRole('radio', { name: 'Snippet' }).getAttribute('aria-checked')).toBe('true')
     expect((screen.getByLabelText('lines') as HTMLInputElement).value).toBe('50')
-    expect(invoke).toBeDefined()
   })
 })

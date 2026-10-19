@@ -24,6 +24,11 @@ export function insertTarget(): SessionMeta | undefined {
   return active?.state === 'ready' ? active : undefined
 }
 
+function noTerminal(): false {
+  toast({ title: 'No terminal is ready', description: 'Open a connected terminal tab to insert a snippet.', tone: 'info' })
+  return false
+}
+
 /**
  * Renders the snippet in main and types the result into the active terminal, without a newline, so it can be
  * read and edited before Enter. The toast names the snippet, never its text. `onError` shows a template error
@@ -31,10 +36,7 @@ export function insertTarget(): SessionMeta | undefined {
  */
 export async function insertSnippet(snippet: SnippetMeta, values: Record<string, string>, onError?: (message: string) => void): Promise<boolean> {
   const target = insertTarget()
-  if (!target) {
-    toast({ title: 'No terminal is ready', description: 'Open a connected terminal tab to insert a snippet.', tone: 'info' })
-    return false
-  }
+  if (!target) return noTerminal()
   const done = await attempt("Couldn't insert the snippet", async () => {
     const text = await api.invoke('snippets:render', snippet.id, values)
     await api.invoke('session:write', target.id, text)
@@ -51,7 +53,7 @@ export async function insertSnippet(snippet: SnippetMeta, values: Record<string,
 export function requestInsert(snippetId: string): void {
   const snippet = snippetStore.get().snippets.find((s) => s.id === snippetId)
   if (!snippet) return
-  if (!insertTarget()) return void toast({ title: 'No terminal is ready', description: 'Open a connected terminal tab to insert a snippet.', tone: 'info' })
+  if (!insertTarget()) return void noTerminal()
   if (snippet.variables.length) insertStore.set({ kind: 'fill', snippetId })
   else void insertSnippet(snippet, {})
 }

@@ -540,3 +540,20 @@ describe('terminals page', () => {
     })
   })
 })
+
+describe('terminal deck snippets', () => {
+  it('the Snippets button opens the picker and inserts into the active tab', async () => {
+    const snippet = {
+      id: 's1', label: 'Disk usage', script: 'df -h', description: '', tags: [], variables: [], destructive: false,
+      createdAt: '2026-10-19T09:00:00.000Z', updatedAt: '2026-10-19T09:00:00.000Z',
+    }
+    const invoke = await renderShell('/terminals', { 'snippets:list': [snippet], 'snippets:render': 'df -h' })
+    state(ssh('a'))
+    await flush()
+    fireEvent.click(screen.getByRole('button', { name: 'Snippets' }))
+    await flush()
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Insert a snippet' })).getByRole('button', { name: /Disk usage/ }))
+    await flush()
+    expect(calls(invoke, 'session:write').at(-1)?.slice(1)).toEqual(['a', 'df -h'])
+  })
+})
