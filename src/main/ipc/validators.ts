@@ -377,4 +377,7 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'tunnel:create': args(asTunnelInput),
   'tunnel:update': args(v.uuid(), asTunnelPatch),
   'tunnel:delete': args(v.uuid()),
+  'tunnel:start': args(v.uuid()),
+  'tunnel:stop': args(v.uuid()),
+  'tunnel:status': args(),
 }

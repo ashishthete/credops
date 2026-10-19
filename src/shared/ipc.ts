@@ -15,7 +15,7 @@ import type {
   SshImportRequest,
   SshImportResult,
 } from './inventory'
-import type { TunnelInput, TunnelMeta, TunnelPatch } from './tunnels'
+import type { TunnelEvent, TunnelInput, TunnelMeta, TunnelPatch, TunnelRuntime, TunnelStats } from './tunnels'
 import type {
   KnownHostMeta,
   OpenLocalRequest,
@@ -140,6 +140,9 @@ export interface IpcContract {
   'tunnel:create': { args: [input: TunnelInput]; result: TunnelMeta }
   'tunnel:update': { args: [id: string, patch: TunnelPatch]; result: TunnelMeta }
   'tunnel:delete': { args: [id: string]; result: void }
+  'tunnel:start': { args: [id: string]; result: TunnelRuntime }
+  'tunnel:stop': { args: [id: string]; result: void }
+  'tunnel:status': { args: []; result: TunnelRuntime[] }
 }
 
 export type Channel = keyof IpcContract
@@ -216,6 +219,9 @@ export const CHANNELS = [
   'tunnel:create',
   'tunnel:update',
   'tunnel:delete',
+  'tunnel:start',
+  'tunnel:stop',
+  'tunnel:status',
 ] as const satisfies readonly Channel[]
 
 // Fails typecheck if IpcContract gains a channel that CHANNELS does not list.
@@ -234,6 +240,9 @@ export interface EventContract {
   'session:state': SessionMeta
   'session:prompt': SessionPrompt
   'session:promptDone': { promptId: string }
+  'tunnel:state': TunnelRuntime
+  'tunnel:stats': TunnelStats[]
+  'tunnel:event': TunnelEvent
 }
 export type EventName = keyof EventContract
 export const EVENTS = [
@@ -242,6 +251,9 @@ export const EVENTS = [
   'session:state',
   'session:prompt',
   'session:promptDone',
+  'tunnel:state',
+  'tunnel:stats',
+  'tunnel:event',
 ] as const satisfies readonly EventName[]
 type MissingEvents = Exclude<EventName, (typeof EVENTS)[number]>
 export const eventsAreComplete: [MissingEvents] extends [never] ? true : never = true

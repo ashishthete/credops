@@ -44,6 +44,17 @@ describe('preload bridge', () => {
     expect(ipc.on).toHaveBeenCalledTimes(4)
   })
 
+  it('allows the tunnel events', () => {
+    const { ipc, emit } = fakeIpc()
+    const bridge = createBridge(ipc)
+    const listener = vi.fn()
+    bridge.on('tunnel:state', listener)
+    for (const e of ['tunnel:stats', 'tunnel:event'] as const) bridge.on(e, () => {})
+    emit('tunnel:state', {}, { id: 't', state: 'up' })
+    expect(listener).toHaveBeenCalledExactlyOnceWith({ id: 't', state: 'up' })
+    expect(ipc.on).toHaveBeenCalledTimes(3)
+  })
+
   it('passes only the payload and unsubscribes', () => {
     const { ipc, emit, listeners } = fakeIpc()
     const bridge = createBridge(ipc)

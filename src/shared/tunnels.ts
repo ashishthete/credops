@@ -3,6 +3,7 @@ import type { SshErrorCode } from './ssh'
 
 export const MAX_TUNNELS = 256
 export const MAX_RUNNING_TUNNELS = 64
+export const TUNNEL_LIMIT = `Too many running tunnels (${MAX_RUNNING_TUNNELS})`
 export const MAX_TUNNEL_CHANNELS = 128
 export const BACKOFF_BASE_MS = 1000
 export const BACKOFF_CAP_MS = 60000
@@ -78,6 +79,8 @@ export interface TunnelRuntime {
   state: TunnelState
   error: TunnelError | null
   failures: number
+  /** The failure count that turns `retrying` into `failed`, for "attempt 2 of 5". */
+  maxFailures: number
   /** ISO; null while paused or not retrying. */
   retryAt: string | null
   boundAddress: string | null
