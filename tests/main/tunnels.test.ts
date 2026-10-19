@@ -670,6 +670,7 @@ describe('TunnelManager', () => {
       products: t.products,
       resolve: vi.fn(),
       tunnels: t.manager,
+      openExternal: vi.fn(),
     })
     expect(() => handlers['host:delete'](hostId)).toThrow('host is the jump host for behind')
     t.vault.lock('manual')

@@ -92,6 +92,7 @@ const inProd: ResolvedHost = {
   hostId: 'web1',
   environmentId: 'prod',
   address: '10.0.0.5',
+  addressSource: 'host',
   port: { value: 2222, source: 'environment' },
   identity: { source: 'environment', identityId: 'id-deploy', label: 'deploy', username: 'deploy', auth: 'key', vaultId: DEFAULT_VAULT_ID },
   jump: { hostId: 'bastion', source: 'environment' },
@@ -100,6 +101,7 @@ const inProd: ResolvedHost = {
       hostId: 'bastion',
       label: 'bastion',
       address: 'bastion.example.com',
+      addressSource: 'host',
       port: 2222,
       identity: { source: 'environment', identityId: 'id-deploy', label: 'deploy', username: 'deploy', auth: 'key', vaultId: DEFAULT_VAULT_ID },
     },
@@ -110,6 +112,7 @@ const outside: ResolvedHost = {
   hostId: 'web1',
   environmentId: null,
   address: '10.0.0.5',
+  addressSource: 'host',
   port: { value: 22, source: 'global' },
   identity: { source: 'global', username: 'tester', auth: 'default' },
   jump: { hostId: null, source: null },
@@ -187,7 +190,18 @@ describe('HostView', () => {
     expect(within(row('User')).getByText('deploy')).toBeInTheDocument()
     expect(within(row('Jump via')).getByRole('list', { name: 'bastion → web-1' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'web-1', level: 2 })).toBeInTheDocument()
-    expect(screen.getByText('10.0.0.5')).toBeInTheDocument()
+    expect(screen.getAllByText('10.0.0.5').length).toBeGreaterThan(0)
+  })
+
+  it('connection card shows a domain-resolved address', async () => {
+    const user = userEvent.setup()
+    setup(world(), async (_h, e) => (e ? { ...inProd, address: 'db.staging.example.com', addressSource: 'domain' } : { ...outside, address: 'db' }))
+    render(<HostView hostId="web1" environmentId="prod" />)
+    expect(await within(row('Address')).findByText('db.staging.example.com')).toBeInTheDocument()
+    expect(within(row('Address')).getByText("From prod's domain")).toBeInTheDocument()
+    await user.click(within(card()).getByRole('radio', { name: 'Outside any environment' }))
+    expect(await within(row('Address')).findByText('db')).toBeInTheDocument()
+    expect(within(row('Address')).getByText('From this host')).toBeInTheDocument()
   })
 
   it('context switch re-resolves', async () => {

@@ -1,7 +1,7 @@
 import { motion } from 'framer-motion'
 import { Check, ShieldCheck } from 'lucide-react'
 import { useEffect, useId, useMemo, useState, type FormEvent } from 'react'
-import { DEFAULT_SSH_PORT, MAX_NAME, type EnvironmentMeta } from '../../../../shared/inventory'
+import { DEFAULT_SSH_PORT, MAX_NAME, MAX_URL, parseEnvDomain, type EnvironmentMeta } from '../../../../shared/inventory'
 import { identityChoices } from '../../inventory/choices'
 import { inv, type InventoryData } from '../../inventory/store'
 import { Button } from '../../ui/Button'
@@ -42,6 +42,7 @@ export function EnvironmentDialog({ open, environment, productIds, data, corrupt
   const [identityId, setIdentityId] = useState('')
   const [port, setPort] = useState('')
   const [jumpId, setJumpId] = useState('')
+  const [domain, setDomain] = useState('')
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
@@ -53,6 +54,7 @@ export function EnvironmentDialog({ open, environment, productIds, data, corrupt
     setIdentityId(environment?.defaultIdentityId ?? '')
     setPort(environment?.defaultPort != null ? String(environment.defaultPort) : '')
     setJumpId(environment?.defaultJumpHostId ?? '')
+    setDomain(environment?.domain ?? '')
     // productIds is read when the dialog opens, not tracked while it is open.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, environment])
@@ -66,7 +68,9 @@ export function EnvironmentDialog({ open, environment, productIds, data, corrupt
   const sortedProducts = useMemo(() => [...data.products].sort((a, b) => a.name.localeCompare(b.name)), [data.products])
 
   const parsedPort = parsePort(port)
-  const valid = name.trim().length > 0 && !parsedPort.error
+  const parsedDomain = domain.trim() ? parseEnvDomain(domain) : null
+  const domainError = parsedDomain && !parsedDomain.ok ? parsedDomain.error : undefined
+  const valid = name.trim().length > 0 && !parsedPort.error && !domainError
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -80,6 +84,7 @@ export function EnvironmentDialog({ open, environment, productIds, data, corrupt
         defaultPort: parsedPort.value,
         defaultIdentityId: identityId || null,
         defaultJumpHostId: jumpId || null,
+        domain: domain.trim() || null,
         productIds: products,
       },
       environment?.id,
@@ -131,6 +136,17 @@ export function EnvironmentDialog({ open, environment, productIds, data, corrupt
             {sortedProducts.length === 0 && <span className="text-[12px] text-muted">No products yet. It will sit under Unassigned.</span>}
           </div>
         </div>
+        <TextField
+          label="Domain or URL"
+          hint="e.g. staging.example.com"
+          error={domainError}
+          value={domain}
+          onChange={(e) => setDomain(e.target.value)}
+          maxLength={MAX_URL}
+          spellCheck={false}
+          autoCapitalize="off"
+          className="font-mono"
+        />
         <div className="grid grid-cols-[1fr_112px] gap-3">
           <SelectField label="Default identity" value={identityId} onChange={(e) => setIdentityId(e.target.value)}>
             <option value="">App default (your SSH keys)</option>

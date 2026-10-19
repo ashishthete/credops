@@ -77,6 +77,7 @@ export function environment(over: Partial<EnvironmentMeta> & { id: string; name:
     defaultIdentityId: null,
     defaultPort: null,
     defaultJumpHostId: null,
+    domain: null,
     productIds: [],
     hosts: [],
     createdAt: STAMP,

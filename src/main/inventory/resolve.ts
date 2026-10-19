@@ -1,5 +1,10 @@
 import {
   DEFAULT_SSH_PORT,
+  domainHost,
+  isBareName,
+  parseEnvDomain,
+  type AddressSource,
+  MAX_DOMAIN,
   MAX_JUMP_DEPTH,
   type IdentityRef,
   type InheritConflict,
@@ -20,12 +25,16 @@ export interface ResolveOptions {
 
 type EnvDefaults = {
   id: string
+  name: string
   default_identity_id: string | null
   default_port: number | null
   default_jump_host_id: string | null
+  domain: string | null
 }
 
 interface Fields {
+  address: string
+  addressSource: AddressSource
   port: ResolvedHost['port']
   identity: IdentityRef
   jump: ResolvedHost['jump']
@@ -36,7 +45,7 @@ const isMember = (db: Db, environmentId: string, hostId: string): boolean =>
 
 function envDefaults(db: Db, environmentId: string): EnvDefaults {
   const row = db
-    .prepare('SELECT id, default_identity_id, default_port, default_jump_host_id FROM environments WHERE id = ?')
+    .prepare('SELECT id, name, default_identity_id, default_port, default_jump_host_id, domain FROM environments WHERE id = ?')
     .get(environmentId) as EnvDefaults | undefined
   if (!row) throw new Error('environment not found')
   return row
@@ -49,6 +58,21 @@ function identityRef(db: Db, id: string, source: 'host' | 'environment'): Identi
     | undefined
   if (!row) throw new Error('identity not found')
   return { source, identityId: id, label: row.label, username: row.username, auth: row.auth, vaultId: row.vault_id }
+}
+
+/**
+ * A bare name (`db`) dials as `db.<domain host>` in an environment that has a domain; anything else is
+ * dialled as stored. A stored domain that no longer validates is ignored, so connecting still works.
+ */
+function contextAddress(address: string, label: string, env: EnvDefaults | null): { address: string; addressSource: AddressSource } {
+  const same = { address, addressSource: 'host' as const }
+  if (!env || env.domain === null || !isBareName(address)) return same
+  const parsed = parseEnvDomain(env.domain)
+  const suffix = parsed.ok ? domainHost(parsed.value) : null
+  if (suffix === null) return same
+  const expanded = `${address}.${suffix}`
+  if (expanded.length > MAX_DOMAIN) throw new Error(`${label} with ${env.name}'s domain is longer than ${MAX_DOMAIN} characters`)
+  return { address: expanded, addressSource: 'domain' }
 }
 
 /** Host's own value, then the environment's default (only in a context), then the global one. */
@@ -64,7 +88,7 @@ function resolveFields(db: Db, hostId: string, environmentId: string | null, opt
   const j = pick(host.jump_host_id, env?.default_jump_host_id)
   // A bastion never routes through itself.
   const jump = j && j.value !== hostId ? { hostId: j.value, source: j.source } : { hostId: null, source: null }
-  return { port, identity, jump }
+  return { ...contextAddress(host.address, host.label, env), port, identity, jump }
 }
 
 /** Like `ssh <host>`: the matching ~/.ssh/config block's User, else the local user. */
@@ -102,14 +126,15 @@ export function resolveHost(
     // A hop takes the context only when it is a member of that environment.
     const context = environmentId !== undefined && isMember(db, environmentId, hop.id) ? environmentId : null
     const f = resolveFields(db, hop.id, context, opts)
-    chain.unshift({ hostId: hop.id, label: hop.label, address: hop.address, port: f.port.value, identity: f.identity })
+    chain.unshift({ hostId: hop.id, label: hop.label, address: f.address, addressSource: f.addressSource, port: f.port.value, identity: f.identity })
     next = f.jump.hostId
   }
 
   return {
     hostId,
     environmentId: environmentId ?? null,
-    address: host.address,
+    address: own.address,
+    addressSource: own.addressSource,
     port: own.port,
     identity: own.identity,
     jump: own.jump,
@@ -126,7 +151,7 @@ export function inheritConflicts(db: Db, hostId: string): InheritConflict[] {
   const host = hostRow(db, hostId)
   const envs = db
     .prepare(
-      `SELECT e.id, e.default_identity_id, e.default_port, e.default_jump_host_id FROM environments e
+      `SELECT e.id, e.name, e.default_identity_id, e.default_port, e.default_jump_host_id, e.domain FROM environments e
         JOIN environment_hosts eh ON eh.environment_id = e.id WHERE eh.host_id = ? ORDER BY e.id`,
     )
     .all(hostId) as EnvDefaults[]

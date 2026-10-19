@@ -399,6 +399,7 @@ if (!app.requestSingleInstanceLock()) {
             products,
             resolve,
             tunnels: runner,
+            openExternal: (url) => shell.openExternal(url),
           }),
           ...createSshImportHandlers(importer),
           ...createTunnelHandlers({ store: tunnels, manager: runner }),

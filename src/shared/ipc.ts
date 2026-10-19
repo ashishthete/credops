@@ -141,6 +141,7 @@ export interface IpcContract {
   'env:create': { args: [input: EnvironmentInput]; result: EnvironmentMeta }
   'env:update': { args: [id: string, patch: EnvironmentPatch]; result: EnvironmentMeta }
   'env:delete': { args: [id: string]; result: void }
+  'env:openDomain': { args: [id: string]; result: void }
   'env:setProducts': { args: [id: string, productIds: string[]]; result: EnvironmentMeta }
   'env:putHost': { args: [id: string, hostId: string, role: HostRole]; result: EnvironmentMeta }
   'env:removeHost': { args: [id: string, hostId: string]; result: EnvironmentMeta }
@@ -269,6 +270,7 @@ export const CHANNELS = [
   'env:create',
   'env:update',
   'env:delete',
+  'env:openDomain',
   'env:setProducts',
   'env:putHost',
   'env:removeHost',

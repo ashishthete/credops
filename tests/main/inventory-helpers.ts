@@ -58,8 +58,12 @@ export async function makeInventory(): Promise<InventoryFixture> {
 }
 
 /** The inventory IPC handlers over a fixture; resolution runs as local user `tester`. */
-export function inventoryHandlers(f: InventoryFixture): ReturnType<typeof createInventoryHandlers> {
+export function inventoryHandlers(
+  f: InventoryFixture,
+  openExternal: (url: string) => Promise<void> = async () => {},
+): ReturnType<typeof createInventoryHandlers> {
   return createInventoryHandlers({
+    openExternal,
     hosts: f.hosts,
     environments: f.envs,
     products: f.products,

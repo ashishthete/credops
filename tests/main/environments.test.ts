@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import type { IpcMainInvokeEvent } from 'electron'
 import { registerHandlers } from '../../src/main/ipc/register'
@@ -16,6 +16,40 @@ const actions = (f: InventoryFixture, action: string) =>
     .filter((e) => e.action === action)
 
 describe('EnvironmentStore and ProductStore', () => {
+  it('domain round-trips as entered and clears', async () => {
+    const f = await makeInventory()
+    const e = f.envs.create({ name: 'staging', color: COLOR, domain: 'Staging.Example.com' })
+    expect(e.domain).toBe('Staging.Example.com')
+    expect(f.envs.create({ name: 'plain', color: COLOR }).domain).toBeNull()
+    expect(f.envs.update(e.id, { domain: 'https://staging.example.com/app' }).domain).toBe('https://staging.example.com/app')
+    expect(f.envs.update(e.id, {}).domain).toBe('https://staging.example.com/app')
+    expect(f.envs.update(e.id, { domain: null }).domain).toBeNull()
+    f.envs.update(e.id, { domain: 'a.example.com' })
+    expect(f.envs.update(e.id, { domain: '   ' }).domain).toBeNull()
+    expect(f.envs.get(e.id).domain).toBeNull()
+    const updates = actions(f, 'environment.update')
+    expect(updates[0]!.details).toEqual({ fields: ['domain'] })
+    expect(JSON.stringify(updates)).not.toContain('example.com')
+  })
+
+  it('domain is validated in the store', async () => {
+    const f = await makeInventory()
+    const e = f.envs.create({ name: 'staging', color: COLOR })
+    const events = f.audit.list({ limit: 1000 }).length
+    const bad: [string, string][] = [
+      ['ftp://x.example.com', 'Use an http:// or https:// URL'],
+      ['https://u:p@x.example.com', 'Leave the login out of the URL'],
+      ['a'.repeat(254), 'A domain is at most 253 characters'],
+    ]
+    for (const [domain, message] of bad) {
+      expect(() => f.envs.update(e.id, { domain })).toThrow(message)
+    }
+    expect(() => f.envs.create({ name: 'other', color: COLOR, domain: 'ftp://x.example.com' })).toThrow('Use an http:// or https:// URL')
+    expect(f.envs.list().map((x) => x.name)).toEqual(['staging'])
+    expect(f.envs.get(e.id).domain).toBeNull()
+    expect(f.audit.list({ limit: 1000 }).length).toBe(events)
+  })
+
   it('shared environment across products', async () => {
     const f = await makeInventory()
     const a = prod(f, 'Acme')
@@ -194,5 +228,66 @@ describe('environment and product IPC', () => {
     }
     const p = (await call('product:create', { name: 'p', color: COLOR, icon: 'leaf', repoUrl: null })) as { repoUrl: null }
     expect(p.repoUrl).toBeNull()
+  })
+
+  async function openSetup(domain: string | null, raw = false) {
+    const f = await makeInventory()
+    const openExternal = vi.fn(async (_url: string) => {})
+    const registered = new Map<string, (e: IpcMainInvokeEvent, ...a: unknown[]) => unknown>()
+    registerHandlers(
+      { handle: (c: string, fn: never) => void registered.set(c, fn) },
+      stubHandlers(inventoryHandlers(f, openExternal)),
+      (u) => u === 'file:///ok',
+      { validators: VALIDATORS },
+    )
+    const ev = { senderFrame: { url: 'file:///ok' } } as IpcMainInvokeEvent
+    const call = (c: string, ...a: unknown[]) => Promise.resolve(registered.get(c)!(ev, ...a))
+    const env = f.envs.create({ name: 'staging', color: COLOR, domain: raw ? null : domain })
+    if (raw) f.db.prepare('UPDATE environments SET domain = ? WHERE id = ?').run(domain, env.id)
+    return { f, env, openExternal, call }
+  }
+
+  it('rejects a bad domain at the boundary', async () => {
+    const { call, env } = await openSetup(null)
+    const err = await call('env:create', { name: 'e', color: COLOR, domain: 'ftp://x.example.com' }).catch((e: Error) => e)
+    expect((err as Error).message).toMatch(/invalid arguments/)
+    expect((err as Error).message).toContain('domain')
+    expect((err as Error).message).not.toContain('ftp')
+    await expect(call('env:update', env.id, { domain: 42 })).rejects.toThrow(/invalid arguments.*domain/)
+  })
+
+  it('env:openDomain opens only a re-validated http(s) URL', async () => {
+    const a = await openSetup('staging.example.com')
+    await a.call('env:openDomain', a.env.id)
+    expect(a.openExternal).toHaveBeenCalledTimes(1)
+    expect(a.openExternal).toHaveBeenCalledWith('https://staging.example.com')
+    const b = await openSetup('https://staging.example.com/app')
+    await b.call('env:openDomain', b.env.id)
+    expect(b.openExternal).toHaveBeenCalledWith('https://staging.example.com/app')
+    const none = await openSetup(null)
+    await expect(none.call('env:openDomain', none.env.id)).rejects.toThrow('This environment has no domain or URL')
+    expect(none.openExternal).not.toHaveBeenCalled()
+    for (const bad of ['javascript:alert(1)', 'file:///etc/passwd', 'https://u:p@evil.example.com', 'ftp://evil.example.com']) {
+      const c = await openSetup(bad, true)
+      await expect(c.call('env:openDomain', c.env.id)).rejects.toThrow("This environment's domain or URL can't be opened")
+      expect(c.openExternal).not.toHaveBeenCalled()
+    }
+  })
+
+  it('env:openDomain never opens a value the renderer passed', async () => {
+    const { call, env, openExternal } = await openSetup('https://staging.example.com')
+    await expect(call('env:openDomain', 'https://evil.example.com')).rejects.toThrow(/invalid arguments/)
+    expect(openExternal).not.toHaveBeenCalled()
+    await call('env:openDomain', env.id, 'https://evil.example.com')
+    expect(openExternal).toHaveBeenCalledTimes(1)
+    // The parsed href of the stored value, never the renderer's.
+    expect(openExternal).toHaveBeenCalledWith('https://staging.example.com/')
+  })
+
+  it('env:openDomain works while locked', async () => {
+    const { f, env, openExternal, call } = await openSetup('staging.example.com')
+    f.vault.lock('manual')
+    await call('env:openDomain', env.id)
+    expect(openExternal).toHaveBeenCalledWith('https://staging.example.com')
   })
 })

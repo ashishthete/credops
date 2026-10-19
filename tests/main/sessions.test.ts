@@ -68,6 +68,7 @@ async function setup(over: Partial<SessionManagerDeps> = {}) {
       hostId,
       environmentId: null,
       address: '127.0.0.1',
+      addressSource: 'host',
       port: { value: t.port, source: 'host' },
       identity: globalId,
       jump: { hostId: t.chain?.[0]?.hostId ?? null, source: t.chain ? 'host' : null },
@@ -314,7 +315,7 @@ describe('SessionManager', () => {
     const t = await setup()
     const jump = await server({ allowForward: true })
     t.trust(jump)
-    const chain: ResolvedHop[] = [{ hostId: randomUUID(), label: 'bastion', address: '127.0.0.1', port: jump.port, identity: globalId }]
+    const chain: ResolvedHop[] = [{ hostId: randomUUID(), label: 'bastion', address: '127.0.0.1', addressSource: 'host', port: jump.port, identity: globalId }]
     const { id } = t.manager.openSsh({ hostId: t.host(await closedPort(), chain), ...size })
     const failed = await t.waitState(id, 'failed')
     expect(failed.hops).toEqual([
@@ -570,7 +571,7 @@ describe('SessionManager', () => {
     const srv = await server()
     t.trust(jump)
     t.trust(srv)
-    const chain: ResolvedHop[] = [{ hostId: randomUUID(), label: 'bastion', address: '127.0.0.1', port: jump.port, identity: globalId }]
+    const chain: ResolvedHop[] = [{ hostId: randomUUID(), label: 'bastion', address: '127.0.0.1', addressSource: 'host', port: jump.port, identity: globalId }]
     const { id } = t.manager.openSsh({ hostId: t.host(srv.port, chain), ...size })
     await t.waitState(id, 'ready')
     await t.waitData(id, 'READY')

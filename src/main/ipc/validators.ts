@@ -14,6 +14,7 @@ import {
   MAX_TAG,
   MAX_TAGS,
   MAX_URL,
+  parseEnvDomain,
   OS_ICONS,
   PRODUCT_ICONS,
   REPO_URL,
@@ -345,6 +346,14 @@ const envName = v.str({ min: 1, max: MAX_NAME, trim: true })
 const envColor = v.str({ pattern: VAULT_COLOR })
 const envPort = v.nullable(v.int({ min: 1, max: 65535 }))
 const idList = v.array(v.uuid(), MAX_LINKS)
+/** Names the path and the rule, never the value. A blank string clears the field, as in the store. */
+const envDomain: Check<string | null> = v.nullable((value, path) => {
+  if (typeof value !== 'string') throw new InvalidArgs(path, 'must be a string')
+  if (value.length > MAX_URL || (value.trim() !== '' && !parseEnvDomain(value).ok)) {
+    throw new InvalidArgs(path, 'must be a domain or http(s) URL')
+  }
+  return value
+})
 
 export const asEnvironmentInput: Check<EnvironmentInput> = v.object({
   name: envName,
@@ -353,6 +362,7 @@ export const asEnvironmentInput: Check<EnvironmentInput> = v.object({
   defaultIdentityId: v.optional(nullableId),
   defaultPort: v.optional(envPort),
   defaultJumpHostId: v.optional(nullableId),
+  domain: v.optional(envDomain),
   productIds: v.optional(idList),
 }) as Check<EnvironmentInput>
 
@@ -363,6 +373,7 @@ export const asEnvironmentPatch: Check<EnvironmentPatch> = v.object({
   defaultIdentityId: v.optional(nullableId),
   defaultPort: v.optional(envPort),
   defaultJumpHostId: v.optional(nullableId),
+  domain: v.optional(envDomain),
 }) as Check<EnvironmentPatch>
 
 const productIcon = v.oneOf(PRODUCT_ICONS)
@@ -523,6 +534,7 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'env:create': args(asEnvironmentInput),
   'env:update': args(v.uuid(), asEnvironmentPatch),
   'env:delete': args(v.uuid()),
+  'env:openDomain': args(v.uuid()),
   'env:setProducts': args(v.uuid(), idList),
   'env:putHost': args(v.uuid(), v.uuid(), v.oneOf(HOST_ROLES)),
   'env:removeHost': args(v.uuid(), v.uuid()),

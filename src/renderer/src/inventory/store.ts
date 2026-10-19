@@ -127,10 +127,15 @@ function diff<T extends object>(input: Partial<T>, current: T | undefined, keys:
 }
 
 const HOST_KEYS = ['label', 'address', 'port', 'identityId', 'jumpHostId', 'tags', 'osIcon', 'notes', 'keepaliveSec', 'envVars'] as const satisfies readonly (keyof HostPatch)[]
-const ENV_KEYS = ['name', 'color', 'protected', 'defaultIdentityId', 'defaultPort', 'defaultJumpHostId'] as const satisfies readonly (keyof EnvironmentPatch)[]
+const ENV_KEYS = ['name', 'color', 'protected', 'defaultIdentityId', 'defaultPort', 'defaultJumpHostId', 'domain'] as const satisfies readonly (keyof EnvironmentPatch)[]
 
 const deleted = async (fn: () => Promise<unknown>, title: string) =>
   (await attempt(title, async () => (await fn(), true))) === true
+
+/** Main reads the stored value and opens it; the renderer sends only the id. */
+export async function openEnvironmentDomain(id: string): Promise<void> {
+  await attempt("Couldn't open the domain", () => api.invoke('env:openDomain', id))
+}
 
 export const inv = {
   async saveProduct(input: ProductInput, id?: string): Promise<ProductMeta | undefined> {
