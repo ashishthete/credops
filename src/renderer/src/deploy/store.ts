@@ -265,13 +265,27 @@ export async function openService(id: string): Promise<void> {
   await attempt("Couldn't open the service", () => api.invoke('service:open', id))
 }
 
-/** Rereads one environment's services: opening a tunnel can set its local port and tunnel. */
+/**
+ * Rereads one environment's services: opening a tunnel can set its local port and tunnel. When a local
+ * write landed during the read, the local list is kept and only those two fields are taken from the read.
+ */
 async function refreshServices(envId: string): Promise<void> {
   const seen = written
   const list = await api.invoke('service:list', envId).catch(() => null)
-  if (!list || seen !== written) return
+  if (!list) return
   const s = deployStore.get()
-  deployStore.set({ ...s, services: [...s.services.filter((x) => x.environmentId !== envId), ...list] })
+  if (seen === written) {
+    deployStore.set({ ...s, services: [...s.services.filter((x) => x.environmentId !== envId), ...list] })
+    return
+  }
+  const fresh = new Map(list.map((x) => [x.id, x]))
+  deployStore.set({
+    ...s,
+    services: s.services.map((x) => {
+      const f = fresh.get(x.id)
+      return x.kind === 'db' && f?.kind === 'db' ? { ...x, localPort: f.localPort, tunnelId: f.tunnelId } : x
+    }),
+  })
 }
 
 const envOf = (id: string): string | undefined => deployStore.get().services.find((x) => x.id === id)?.environmentId

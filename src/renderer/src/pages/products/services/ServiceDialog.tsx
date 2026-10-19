@@ -5,6 +5,7 @@ import type { EnvironmentMeta } from '../../../../../shared/inventory'
 import {
   COMPOSE_SERVICE,
   DB_DEFAULT_PORT,
+  envHosts,
   pickAppHost,
   type DbEngine,
   type ServiceInput,
@@ -181,13 +182,7 @@ export function ServiceDialog({ env, service, kind, onClose }: ServiceDialogProp
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   const restarted = useRef(false)
 
-  const hosts = useMemo(() => {
-    const byId = new Map(data?.hosts.map((h) => [h.id, h]))
-    return env.hosts.flatMap((m) => {
-      const h = byId.get(m.hostId)
-      return h ? [{ hostId: h.id, role: m.role, label: h.label }] : []
-    })
-  }, [data, env.hosts])
+  const hosts = useMemo(() => envHosts(env.hosts, data?.hosts ?? []), [data, env.hosts])
   const appHost = useMemo(() => {
     const id = pickAppHost(
       hosts,
@@ -236,9 +231,9 @@ export function ServiceDialog({ env, service, kind, onClose }: ServiceDialogProp
       description: 'Its open connections drop while it restarts. Later keeps the old route until the tunnel restarts.',
       confirmLabel: 'Restart',
       gentle: { cancelLabel: 'Later' },
+      // A failed restart leaves the old route running, so closing still marks the route changed.
       run: async () => {
-        restarted.current = true
-        await syncServiceTunnel(out.service.id)
+        restarted.current = await syncServiceTunnel(out.service.id)
       },
     })
   }

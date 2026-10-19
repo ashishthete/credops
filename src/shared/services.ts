@@ -117,6 +117,16 @@ export function pickAppHost(hosts: { hostId: string; role: HostRole; label: stri
   return apps[0]?.hostId ?? null
 }
 
+/** An environment's members with their labels, for `pickAppHost`; members missing from `hosts` are left out. */
+export function envHosts(members: { hostId: string; role: HostRole }[], hosts: { id: string; label: string }[]): { hostId: string; role: HostRole; label: string }[] {
+  const label = new Map(hosts.map((h) => [h.id, h.label]))
+  return members.flatMap((m) => (label.has(m.hostId) ? [{ hostId: m.hostId, role: m.role, label: label.get(m.hostId)! }] : []))
+}
+
+/** `pickAppHost` over an environment's members. */
+export const envAppHost = (members: { hostId: string; role: HostRole }[], hosts: { id: string; label: string }[], checkoutHostIds: string[]): string | null =>
+  pickAppHost(envHosts(members, hosts), checkoutHostIds)
+
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 /**

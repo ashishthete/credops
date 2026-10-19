@@ -3,7 +3,7 @@ import { ArrowUpDown, Boxes, CopyPlus, Database, FolderGit2, GitBranch, Pencil, 
 import { useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import type { DeploymentMeta } from '../../../../../shared/deploy'
 import type { EnvironmentMeta } from '../../../../../shared/inventory'
-import { pickAppHost, type AppServiceMeta, type DbServiceMeta, type ServiceKind, type ServiceMeta } from '../../../../../shared/services'
+import { envAppHost, type AppServiceMeta, type DbServiceMeta, type ServiceKind, type ServiceMeta } from '../../../../../shared/services'
 import { reorderServices, useDeploy, useDeployments, useServices } from '../../../deploy/store'
 import type { InventoryData } from '../../../inventory/store'
 import { Button } from '../../../ui/Button'
@@ -37,11 +37,12 @@ export function ServicesSection({ env, data, onDeploy, onLogs, onCopy }: Service
   const hostLabel = useMemo(() => new Map(data.hosts.map((h) => [h.id, h.label])), [data.hosts])
   const defaultVia = useMemo(
     () =>
-      pickAppHost(
-        env.hosts.map((m) => ({ hostId: m.hostId, role: m.role, label: hostLabel.get(m.hostId) ?? '' })),
+      envAppHost(
+        env.hosts,
+        data.hosts,
         checkouts.map((d) => d.hostId),
       ),
-    [env.hosts, hostLabel, checkouts],
+    [env.hosts, data.hosts, checkouts],
   )
 
   const groups = useMemo(() => {
@@ -232,6 +233,8 @@ function Reorder({
 }) {
   const motionSafe = useMotionSafe()
   const refs = useRef(new Map<string, HTMLLIElement | null>())
+  // The focused service is the selected one: it is what the arrows move.
+  const [selected, setSelected] = useState<string | null>(null)
   const onKeyDown = (e: KeyboardEvent, id: string) => {
     if (e.key === 'Enter') {
       e.preventDefault()
@@ -264,14 +267,16 @@ function Reorder({
               refs.current.set(id, el)
             }}
             role="option"
-            aria-selected={false}
+            aria-selected={selected === id}
             tabIndex={0}
+            onFocus={() => setSelected(id)}
+            onBlur={() => setSelected((s) => (s === id ? null : s))}
             layout={motionSafe ? 'position' : false}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={motionSafe ? { ...spring, delay: staggerDelay(i) } : fast}
             onKeyDown={(e) => onKeyDown(e, id)}
-            className="flex h-9 cursor-grab items-center rounded-lg px-3 text-[13px] text-fg outline-none focus-visible:bg-white/[0.05] focus-visible:shadow-[inset_0_0_0_1px_var(--accent)]"
+            className="flex h-9 cursor-default items-center rounded-lg px-3 text-[13px] text-fg outline-none focus-visible:bg-white/[0.05] focus-visible:shadow-[inset_0_0_0_1px_var(--accent)]"
           >
             {names.get(id)}
           </motion.li>

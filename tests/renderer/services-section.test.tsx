@@ -2,7 +2,7 @@ import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { loadDeploy, resetDeploy } from '../../src/renderer/src/deploy/store'
+import { createService, deployStore, loadDeploy, openServiceTunnel, resetDeploy } from '../../src/renderer/src/deploy/store'
 import { inventoryStore, loadInventory } from '../../src/renderer/src/inventory/store'
 import { EnvironmentView } from '../../src/renderer/src/pages/products/EnvironmentView'
 import { ServicesSection } from '../../src/renderer/src/pages/products/services/ServicesSection'
@@ -337,6 +337,30 @@ describe('services section', () => {
     expect(within(row('main-db')).queryByText('Route changed; restart to apply')).not.toBeInTheDocument()
   })
 
+  it('a failed restart from the prompt still marks the route changed', async () => {
+    const user = userEvent.setup()
+    const moved = dbService({ id: 'b1', name: 'main-db', position: 4, viaHostId: 'h1', localPort: 15432, tunnelId: 't1', dbPort: 5433 })
+    const invoke = world({ 'service:update': { service: moved, tunnelRestartNeeded: true } })
+    const base = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string) => {
+      if (channel === 'service:tunnelSync') throw new Error('The tunnel could not restart')
+      return base(channel)
+    })
+    tunnel('up')
+    await mount()
+    await user.click(await waitFor(() => within(row('main-db')).getByRole('button', { name: 'main-db options' })))
+    await user.click(screen.getByRole('menuitem', { name: 'Edit' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Edit main-db' })
+    const port = within(dialog).getByLabelText('Port')
+    await user.clear(port)
+    await user.type(port, '5433')
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+    const prompt = await screen.findByRole('dialog', { name: 'Restart the main-db tunnel with the new route?' })
+    await user.click(within(prompt).getByRole('button', { name: 'Restart' }))
+    await waitFor(() => expect(calls(invoke, 'service:tunnelSync')).toHaveLength(1))
+    expect(await within(row('main-db')).findByText('Route changed; restart to apply')).toBeInTheDocument()
+  })
+
   it('deleting a db with a tunnel shows the checkbox checked; unchecking keeps the tunnel', async () => {
     const user = userEvent.setup()
     const invoke = world({ 'service:delete': undefined })
@@ -397,9 +421,12 @@ describe('services section', () => {
     const list = await within(section()).findByRole('listbox', { name: 'Service order' })
     const order = () => within(list).getAllByRole('option').map((o) => o.textContent)
     expect(order()).toEqual(['worker', 'site', 'api', 'cron', 'main-db'])
-    within(list).getByRole('option', { name: 'api' }).focus()
+    act(() => within(list).getByRole('option', { name: 'api' }).focus())
+    expect(within(list).getByRole('option', { name: 'api' })).toHaveAttribute('aria-selected', 'true')
+    expect(within(list).getByRole('option', { name: 'site' })).toHaveAttribute('aria-selected', 'false')
     await user.keyboard('{ArrowUp}')
     expect(order()).toEqual(['worker', 'api', 'site', 'cron', 'main-db'])
+    expect(within(list).getByRole('option', { name: 'api' })).toHaveAttribute('aria-selected', 'true')
     await user.keyboard('{Enter}')
     await waitFor(() => expect(calls(invoke, 'service:reorder')[0].slice(1)).toEqual(['e1', ['s2', 's1', 's3', 's4', 'b1']]))
     // Refused: the previous order is back.
@@ -444,6 +471,33 @@ describe('services section', () => {
     expect(screen.queryByText(/as an app host/)).not.toBeInTheDocument()
   })
 
+  it('a tunnel open keeps the new local port and tunnel even when a local write lands during the reread', async () => {
+    const invoke = world({ 'service:tunnelOpen': tunnelRuntime({ id: 't9', state: 'up' }), 'service:create': appService({ id: 's9', name: 'new', environmentId: 'e1' }) })
+    await act(async () => {
+      await loadInventory()
+      await loadDeploy()
+    })
+    const base = invoke.getMockImplementation()!
+    let release: (v: ServiceMeta[]) => void = () => {}
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'service:list' && args[0] === 'e1') return new Promise<ServiceMeta[]>((r) => (release = r))
+      return base(channel)
+    })
+    let opening!: Promise<void>
+    act(() => {
+      opening = openServiceTunnel('b1')
+    })
+    await waitFor(() => expect(calls(invoke, 'service:list').some((c) => c[1] === 'e1')).toBe(true))
+    await act(async () => void (await createService({ kind: 'service', environmentId: 'e1', name: 'new', deploymentId: null, composeService: 'new', url: null, urlCheckFrom: 'host' })))
+    await act(async () => {
+      release(SERVICES.map((x) => (x.id === 'b1' ? { ...x, localPort: 15999, tunnelId: 't9' } : x)))
+      await opening
+    })
+    const b1 = deployStore.get().services.find((x) => x.id === 'b1')!
+    expect(b1.kind === 'db' && [b1.localPort, b1.tunnelId]).toEqual([15999, 't9'])
+    expect(deployStore.get().services.some((x) => x.id === 's9')).toBe(true)
+  })
+
   it('reduced motion: no transforms in the section', async () => {
     reduced.on = true
     world()
@@ -453,5 +507,17 @@ describe('services section', () => {
     for (const li of within(section()).getAllByRole('listitem')) {
       expect(li.style.transform ?? '').toBe('')
     }
+  })
+
+  it('with motion on the rows do carry a transform (the control for the test above)', async () => {
+    reduced.on = false
+    world()
+    tunnel('up')
+    await mount()
+    await waitFor(() => group('core'))
+    const transforms = within(section())
+      .getAllByRole('listitem')
+      .map((li) => li.style.transform ?? '')
+    expect(transforms.every((t) => t !== '')).toBe(true)
   })
 })

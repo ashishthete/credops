@@ -2,7 +2,7 @@ import { motion } from 'framer-motion'
 import { useId, useMemo, useState } from 'react'
 import { GIT_REF, REPO_PATH } from '../../../../../shared/deploy'
 import type { EnvironmentMeta, HostMeta } from '../../../../../shared/inventory'
-import { deriveTag, pickAppHost, type CopyServicesRequest, type CopyServicesResult, type DbServiceMeta } from '../../../../../shared/services'
+import { deriveTag, envAppHost, type CopyServicesRequest, type CopyServicesResult, type DbServiceMeta } from '../../../../../shared/services'
 import { deployStore, loadDeploy, useDeployments, useServices } from '../../../deploy/store'
 import { reloadInventory, useInventory } from '../../../inventory/store'
 import { api } from '../../../lib/api'
@@ -46,12 +46,13 @@ function CopyBody({ source, onClose }: { source: EnvironmentMeta; onClose: () =>
   const label = (id: string) => hosts.find((h) => h.id === id)?.label ?? ''
   const members = hosts.filter((h) => target?.hosts.some((m) => m.hostId === h.id))
   const others = hosts.filter((h) => !target?.hosts.some((m) => m.hostId === h.id))
-  const appHost = target
-    ? pickAppHost(
-        target.hosts.map((m) => ({ hostId: m.hostId, role: m.role, label: label(m.hostId) })),
-        deployStore.get().deployments.filter((d) => d.environmentId === target.id).map((d) => d.hostId),
-      )
-    : null
+  const appHostOf = (env: EnvironmentMeta) =>
+    envAppHost(
+      env.hosts,
+      hosts,
+      deployStore.get().deployments.filter((d) => d.environmentId === env.id).map((d) => d.hostId),
+    )
+  const appHost = target ? appHostOf(target) : null
   // The tag follows the environment's name when it holds it; otherwise it is asked for.
   const derived = (tag: string) => (target ? deriveTag(tag, source.name, target.name) : null)
 
@@ -59,12 +60,7 @@ function CopyBody({ source, onClose }: { source: EnvironmentMeta; onClose: () =>
     setTargetId(id)
     setError(null)
     const env = environments.find((e) => e.id === id)
-    const host = env
-      ? (pickAppHost(
-          env.hosts.map((m) => ({ hostId: m.hostId, role: m.role, label: label(m.hostId) })),
-          deployStore.get().deployments.filter((d) => d.environmentId === env.id).map((d) => d.hostId),
-        ) ?? '')
-      : ''
+    const host = env ? (appHostOf(env) ?? '') : ''
     setRows(Object.fromEntries(checkouts.map((d) => [d.id, { branch: d.defaultBranch, repoPath: d.repoPath, hostId: host, tag: '' }])))
     setDbRows(Object.fromEntries(dbs.map((s) => [s.id, { dbAddress: s.dbAddress, dbPort: String(s.dbPort), viaHostId: '' }])))
   }
