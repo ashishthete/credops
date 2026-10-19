@@ -164,6 +164,13 @@ describe('SshImporter.import', () => {
     expect(f.audit.list({ actions: ['tunnel.create'] })).toHaveLength(0)
   })
 
+  it('imports into an environment as app unless a role is given', async () => {
+    const f = await withConfig(fixture('basic.conf'))
+    const prod = prodEnv(f)
+    const r = await makeImporter(f).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'], environmentId: prod })
+    expect(r.created[0].environments).toEqual([{ environmentId: prod, role: 'app' }])
+  })
+
   it('gives existing-host tunnels the environment only when the host is a member', async () => {
     const f = await withConfig(fixture('basic.conf'))
     const prod = prodEnv(f)

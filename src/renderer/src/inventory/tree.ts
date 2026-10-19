@@ -6,7 +6,7 @@ export type NodeKey = string
 
 export interface TreeRow {
   key: NodeKey
-  kind: 'product' | 'environment' | 'host' | 'group'
+  kind: 'product' | 'environment' | 'host' | 'group' | 'hint'
   id: string
   depth: 0 | 1 | 2
   parentKey: NodeKey | null
@@ -16,6 +16,8 @@ export interface TreeRow {
   protected?: boolean
   /** Other places this environment or host appears; 0 = not shared. */
   sharedCount: number
+  /** Hosts only: "Product › Environment" for every other membership, sorted. */
+  alsoIn?: string[]
   expandable: boolean
   expanded: boolean
   childCount: number
@@ -38,10 +40,14 @@ export const compareHosts = (a: { role: HostRole | null; label: string }, b: { r
   (a.role === null ? ROLE_ORDER.length : ROLE_ORDER.indexOf(a.role)) - (b.role === null ? ROLE_ORDER.length : ROLE_ORDER.indexOf(b.role)) ||
   byName(a.label, b.label)
 
+/** Rows focus and arrow keys can land on; hints are text only. */
+export const isFocusable = (r: TreeRow) => r.kind !== 'hint'
+
 /** The visible rows, in order. Products by name; environments by name; hosts by role then label. */
 export function buildTree(data: InventoryData, expanded: ReadonlySet<NodeKey>): TreeRow[] {
   const envById = new Map(data.environments.map((e) => [e.id, e]))
   const hostById = new Map(data.hosts.map((h) => [h.id, h]))
+  const productName = new Map(data.products.map((p) => [p.id, p.name]))
   const rows: TreeRow[] = []
 
   // A host shows once under every placement of every environment it belongs to (or once if it has none).
@@ -60,29 +66,44 @@ export function buildTree(data: InventoryData, expanded: ReadonlySet<NodeKey>): 
       .sort((a, b) => compareHosts({ role: a.role, label: a.host.label }, { role: b.role, label: b.host.label }))
   }
 
-  const push = (row: Omit<TreeRow, 'expandable' | 'expanded'>) => {
-    const expandable = row.childCount > 0
+  /** Every "Product › Environment" the host sits in, keyed by where that environment shows in the tree. */
+  const placementsOf = (h: HostMeta) =>
+    h.environments.flatMap((m) => {
+      const env = envById.get(m.environmentId)
+      if (!env) return []
+      if (env.productIds.length === 0) return [{ key: `u/e:${env.id}`, label: env.name }]
+      return env.productIds.map((pid) => ({ key: `p:${pid}/e:${env.id}`, label: `${productName.get(pid) ?? pid} › ${env.name}` }))
+    })
+
+  const push = (row: Omit<TreeRow, 'expandable' | 'expanded'>, canOpen = row.childCount > 0) => {
+    const expandable = canOpen
     const open = expandable && expanded.has(row.key)
     rows.push({ ...row, expandable, expanded: open })
     return open
   }
 
   const addHosts = (envKey: NodeKey, envId: string, depth: 2) => {
-    for (const { host, role } of hostsOf(envId)) {
+    const hosts = hostsOf(envId)
+    for (const { host, role } of hosts) {
+      const alsoIn = placementsOf(host).filter((p) => p.key !== envKey).map((p) => p.label).sort(byName)
       push({
         key: `${envKey}/h:${host.id}`, kind: 'host', id: host.id, depth, parentKey: envKey, label: host.label,
-        color: envById.get(envId)?.color ?? UNASSIGNED_COLOR, role, sharedCount: hostAppearances(host) - 1, childCount: 0,
+        color: envById.get(envId)?.color ?? UNASSIGNED_COLOR, role, sharedCount: hostAppearances(host) - 1, alsoIn, childCount: 0,
       })
+    }
+    if (hosts.length === 0) {
+      push({ key: `${envKey}/hint`, kind: 'hint', id: envId, depth, parentKey: envKey, label: 'No hosts — drag one here', color: UNASSIGNED_COLOR, sharedCount: 0, childCount: 0 })
     }
   }
 
   const addEnv = (parentKey: NodeKey, envId: string) => {
     const env = envById.get(envId)!
     const key = `${parentKey}/e:${envId}`
+    // An empty environment still opens, to show where hosts can be dropped.
     if (push({
       key, kind: 'environment', id: envId, depth: 1, parentKey, label: env.name, color: env.color,
       protected: env.protected, sharedCount: placements(envId) - 1, childCount: hostsOf(envId).length,
-    })) addHosts(key, envId, 2)
+    }, true)) addHosts(key, envId, 2)
   }
 
   for (const p of [...data.products].sort((a, b) => byName(a.name, b.name))) {
@@ -116,6 +137,7 @@ export function moveFocus(
   key: NodeKey,
   keyName: 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End',
 ): { focus: NodeKey; toggle?: NodeKey } {
+  rows = rows.filter(isFocusable)
   const i = rows.findIndex((r) => r.key === key)
   if (i === -1 || rows.length === 0) return { focus: key }
   const row = rows[i]

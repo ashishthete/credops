@@ -46,9 +46,9 @@ export function MembershipEditor({ host, data, onRemove }: MembershipEditorProps
               className="group flex h-10 items-center gap-3 rounded-lg border border-line/70 bg-surface/50 pr-1.5 pl-3"
             >
               <span aria-hidden className="size-2 shrink-0 rounded-full" style={{ background: env.color, boxShadow: `0 0 10px ${env.color}` }} />
+              {where(env) && <span className="truncate text-[12px] text-muted">{where(env)} ›</span>}
               <span className="truncate text-[13px] font-medium text-fg">{env.name}</span>
               {env.protected && <Lock aria-label="Protected" className="size-3 shrink-0 text-warn" />}
-              {where(env) && <span className="truncate text-[12px] text-muted">{where(env)}</span>}
               <span className="relative ml-auto">
                 <select
                   aria-label={`Role in ${env.name}`}
@@ -78,7 +78,7 @@ export function MembershipEditor({ host, data, onRemove }: MembershipEditorProps
           ))}
         </AnimatePresence>
       </ul>
-      {available.length > 0 && <AddMenu envs={available} where={where} anchor={() => list.current} onPick={(e) => void inv.putHost(e.id, host.id, 'other')} />}
+      {available.length > 0 && <AddMenu envs={available} where={where} anchor={() => list.current} onPick={(e) => void inv.putHost(e.id, host.id, e.defaultJumpHostId === host.id ? 'bastion' : 'app')} />}
     </div>
   )
 }

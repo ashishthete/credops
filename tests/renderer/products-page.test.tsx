@@ -119,8 +119,20 @@ function renderPage(w: World = world()) {
       }
       case 'env:putHost': {
         const [envId, hostId, role] = args as [string, string, 'app']
-        w.environments = w.environments.map((e) => (e.id === envId ? { ...e, hosts: [...e.hosts, { hostId, role }] } : e))
-        w.hosts = w.hosts.map((h) => (h.id === hostId ? { ...h, environments: [...h.environments, { environmentId: envId, role }] } : h))
+        // The real upsert: an existing membership keeps its place and takes the new role.
+        const put = <T extends { role: 'app' }>(list: T[], match: (x: T) => boolean, add: T) =>
+          list.some(match) ? list.map((x) => (match(x) ? { ...x, role } : x)) : [...list, add]
+        w.environments = w.environments.map((e) =>
+          e.id === envId ? { ...e, hosts: put(e.hosts as never[], (m: { hostId: string }) => m.hostId === hostId, { hostId, role } as never) } : e,
+        )
+        w.hosts = w.hosts.map((h) =>
+          h.id === hostId
+            ? {
+                ...h,
+                environments: put(h.environments as never[], (m: { environmentId: string }) => m.environmentId === envId, { environmentId: envId, role } as never),
+              }
+            : h,
+        )
         return w.environments.find((e) => e.id === envId)
       }
       case 'env:removeHost': {
@@ -247,9 +259,9 @@ describe('products page', () => {
   it('protected and shared state is in the row description', async () => {
     renderPage()
     await screen.findByRole('treeitem', { name: 'Acme' })
-    expect(item('prod')).toHaveAccessibleDescription('Protected')
-    expect(item('analytics-db')).toHaveAccessibleDescription('Shared')
-    expect(item('staging')).not.toHaveAccessibleDescription()
+    expect(item('prod')).toHaveAccessibleDescription('Environment prod. Protected')
+    expect(item('analytics-db')).toHaveAccessibleDescription('Environment analytics-db. Shared')
+    expect(item('staging')).toHaveAccessibleDescription('Environment staging')
   })
 
   it('collapsing moves focus out of a hidden row', async () => {
@@ -330,7 +342,7 @@ describe('products page', () => {
 
     await waitFor(() => expect(screen.getAllByRole('treeitem', { name: 'web-1' })).toHaveLength(2))
     const [inProd, inStaging] = screen.getAllByRole('treeitem', { name: 'web-1' })
-    expect(within(inStaging).getByText('Shared')).toBeInTheDocument()
+    expect(inStaging).toHaveAccessibleDescription('Host web-1. Role App. Also in Acme › prod')
     fireEvent.mouseEnter(inProd)
     expect(inStaging).toHaveAttribute('data-shared-highlight', 'true')
     expect(inStaging).toHaveAttribute('data-pulse', 'true')
@@ -514,6 +526,158 @@ describe('products page', () => {
     await waitFor(() => expect(new URLSearchParams(where.split('?')[1]).get('node')).toBe('p:acme/e:staging/h:new-host'))
     expect(await screen.findByRole('heading', { name: 'db-2', level: 2 })).toBeInTheDocument()
     expect(screen.getByRole('treeitem', { name: 'db-2' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('a dropped host is a bastion where it is the jump host', async () => {
+    const w = world()
+    w.environments = w.environments.map((e) => (e.id === 'staging' ? { ...e, defaultJumpHostId: 'web1' } : e))
+    const { invoke } = renderPage(w)
+    const web1 = await screen.findByRole('treeitem', { name: 'web-1' })
+    fireEvent.dragStart(web1, { dataTransfer: dataTransfer() })
+    fireEvent.drop(item('staging'), { dataTransfer: dataTransfer() })
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:putHost', 'staging', 'web1', 'bastion'))
+  })
+
+  it('the context menu changes a host role', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderPage()
+    const web1 = await screen.findByRole('treeitem', { name: 'web-1' })
+    fireEvent.contextMenu(web1)
+    const menu = await screen.findByRole('menu', { name: 'Options for web-1' })
+    expect(within(menu).getByRole('menuitemradio', { name: 'Role: App' })).toHaveAttribute('aria-checked', 'true')
+    expect(within(menu).getByRole('menuitemradio', { name: 'Role: Database' })).toHaveAttribute('aria-checked', 'false')
+    await user.click(within(menu).getByRole('menuitemradio', { name: 'Role: Database' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:putHost', 'prod', 'web1', 'db'))
+    await waitFor(() => expect(within(item('web-1')).getByText('db')).toBeInTheDocument())
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    expect(item('web-1')).toHaveFocus()
+  })
+
+  it('Shift+F10 and the options button open the menu; remove asks first', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const web1 = await screen.findByRole('treeitem', { name: 'web-1' })
+    act(() => web1.focus())
+    await user.keyboard('{Shift>}{F10}{/Shift}')
+    expect(await screen.findByRole('menu', { name: 'Options for web-1' })).toBeInTheDocument()
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    expect(web1).toHaveFocus()
+
+    await user.click(within(web1).getByRole('button', { name: 'Options for web-1' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Remove from prod' }))
+    expect(await screen.findByText('Remove web-1 from prod?')).toBeInTheDocument()
+  })
+
+  it('a host in two environments names only the other one', async () => {
+    renderPage(sharedWorld())
+    await screen.findByRole('treeitem', { name: 'staging' })
+    const [inProd, inStaging] = screen.getAllByRole('treeitem', { name: 'web-1' })
+    expect(inProd).toHaveAccessibleDescription('Host web-1. Role App. Also in Acme › staging')
+    expect(inStaging).toHaveAccessibleDescription('Host web-1. Role App. Also in Acme › prod')
+    expect(within(inProd).getByTitle('Also in Acme › staging')).toBeInTheDocument()
+  })
+
+  it('an empty expanded environment shows a hint that arrow keys skip', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const staging = await screen.findByRole('treeitem', { name: 'staging' })
+    expect(staging).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getAllByText('No hosts — drag one here').length).toBeGreaterThan(0)
+    expect(items().every((el) => el.getAttribute('aria-label') !== 'No hosts — drag one here')).toBe(true)
+    act(() => staging.focus())
+    await user.keyboard('{ArrowDown}')
+    expect(item('Essentials')).toHaveFocus()
+    await user.keyboard('{ArrowUp}')
+    expect(staging).toHaveFocus()
+  })
+
+  it('dropping on the hint adds the host to that environment', async () => {
+    const { invoke } = renderPage()
+    const web1 = await screen.findByRole('treeitem', { name: 'web-1' })
+    fireEvent.dragStart(web1, { dataTransfer: dataTransfer() })
+    const hint = screen.getAllByText('No hosts — drag one here')[1]
+    fireEvent.dragOver(hint, { dataTransfer: dataTransfer() })
+    fireEvent.drop(hint, { dataTransfer: dataTransfer() })
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:putHost', 'staging', 'web1', 'app'))
+  })
+
+  describe('practical layouts', () => {
+    const layout = (): World => ({
+      products: [
+        product({ id: 'ent', name: 'Enterprize', environmentIds: ['stage', 'uat'] }),
+        product({ id: 'ess', name: 'Essentials', environmentIds: ['alpha'] }),
+      ],
+      environments: [
+        environment({
+          id: 'stage',
+          name: 'Stage',
+          productIds: ['ent'],
+          hosts: [
+            { hostId: 'alpha', role: 'app' },
+            { hostId: 'uat2', role: 'db' },
+            { hostId: 'jump', role: 'bastion' },
+          ],
+        }),
+        environment({ id: 'uat', name: 'UAT', productIds: ['ent'], hosts: [{ hostId: 'alpha', role: 'db' }] }),
+        environment({ id: 'alpha', name: 'alpha', productIds: ['ess'], hosts: [{ hostId: 'alpha', role: 'app' }] }),
+      ],
+      hosts: [
+        host({
+          id: 'alpha',
+          label: 'alpha',
+          environments: [
+            { environmentId: 'stage', role: 'app' },
+            { environmentId: 'uat', role: 'db' },
+            { environmentId: 'alpha', role: 'app' },
+          ],
+        }),
+        host({ id: 'uat2', label: 'uat2-db', environments: [{ environmentId: 'stage', role: 'db' }] }),
+        host({ id: 'jump', label: 'jump-1', environments: [{ environmentId: 'stage', role: 'bastion' }] }),
+      ],
+    })
+
+    it('B: one environment over several hosts shows each role', async () => {
+      renderPage(layout())
+      const stage = await screen.findByRole('treeitem', { name: 'Stage' })
+      expect(stage).toBeInTheDocument()
+      const roleOf = (name: string, nth = 0) => within(item(name, nth)).getByTitle(/^Role: /).textContent
+      expect(roleOf('uat2-db')).toBe('db')
+      expect(roleOf('jump-1')).toBe('bastion')
+      expect(item('uat2-db')).toHaveAccessibleDescription('Host uat2-db. Role Database')
+    })
+
+    it('C: a host running several environments says where else', async () => {
+      renderPage(layout())
+      await screen.findByRole('treeitem', { name: 'Stage' })
+      const rows = screen.getAllByRole('treeitem', { name: 'alpha' }).filter((el) => el.getAttribute('aria-level') === '3')
+      expect(rows).toHaveLength(3)
+      const descs = rows.map((r) => r.getAttribute('aria-describedby') && document.getElementById(r.getAttribute('aria-describedby')!)?.textContent)
+      expect(descs).toContain('Host alpha. Role App. Also in Enterprize › UAT, Essentials › alpha')
+      expect(descs).toContain('Host alpha. Role Database. Also in Enterprize › Stage, Essentials › alpha')
+      expect(descs).toContain('Host alpha. Role App. Also in Enterprize › Stage, Enterprize › UAT')
+    })
+
+    it('D: roles belong to the membership', async () => {
+      renderPage(layout())
+      await screen.findByRole('treeitem', { name: 'Stage' })
+      const hosts = screen.getAllByRole('treeitem', { name: 'alpha' }).filter((el) => el.getAttribute('aria-level') === '3')
+      const chips = hosts.map((r) => within(r).getByTitle(/^Role: /).textContent)
+      expect(chips.sort()).toEqual(['app', 'app', 'db'])
+    })
+
+    it('F: an environment and a host with one name read differently', async () => {
+      renderPage(layout())
+      await screen.findByRole('treeitem', { name: 'Stage' })
+      const same = screen.getAllByRole('treeitem', { name: 'alpha' })
+      const env = same.find((el) => el.getAttribute('aria-level') === '2')!
+      const hostRow = same.find((el) => el.getAttribute('aria-level') === '3')!
+      expect(env).toHaveAccessibleDescription('Environment alpha')
+      expect(hostRow.getAttribute('aria-describedby')).not.toBe(env.getAttribute('aria-describedby'))
+      expect(within(env).getByTitle('Environment alpha')).toBeInTheDocument()
+      expect(within(hostRow).getByTitle('Host alpha')).toBeInTheDocument()
+      expect(within(env).queryByTitle(/^Role: /)).not.toBeInTheDocument()
+    })
   })
 
   it('reduced motion', async () => {

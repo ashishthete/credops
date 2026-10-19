@@ -25,12 +25,14 @@ const data = (): InventoryData => ({
 
 const all = new Set(['p:p1', 'p:p2', 'p:p1/e:prod', 'p:p1/e:shared', 'p:p2/e:shared', 'u'])
 
+const HINT = 'No hosts — drag one here'
+
 describe('inventory tree', () => {
   it('builds the product tree', () => {
     const d = data()
     const rows = buildTree(d, all)
     expect(rows.map((r) => r.label)).toEqual([
-      'Acme', 'analytics-db', 'prod', 'bastion', 'web-1', 'Essentials', 'analytics-db', 'Unassigned', 'orphan',
+      'Acme', 'analytics-db', HINT, 'prod', 'bastion', 'web-1', 'Essentials', 'analytics-db', HINT, 'Unassigned', 'orphan',
     ])
     expect(rows.filter((r) => r.label === 'analytics-db').map((r) => r.sharedCount)).toEqual([1, 1])
   })
