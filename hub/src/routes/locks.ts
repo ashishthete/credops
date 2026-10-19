@@ -33,8 +33,8 @@ export function registerLocks(
           required: ['reason'],
           additionalProperties: false,
           properties: {
-            reason: { type: 'string', minLength: 1, maxLength: MAX_FREEZE_REASON },
-            hours: { type: 'number', minimum: 0, maximum: 1_000_000 },
+            reason: { type: 'string', minLength: 1, maxLength: MAX_FREEZE_REASON, pattern: '\\S' },
+            hours: { type: 'integer', minimum: 0, maximum: 1_000_000 },
           },
         },
       },
@@ -65,6 +65,11 @@ export function registerLocks(
     },
     async (req, reply) => {
       const environmentId = req.params.id
+      // Whether an environment exists, is frozen, or who froze it is for its holder, admins and people who can view it.
+      if (req.user.role !== 'admin' && locks.get(environmentId)?.holder.oid !== req.user.oid) {
+        const d = decide(req.user, directory.listGroups(), 'deploy.view', { environmentId })
+        if (!d.allowed) throw new HubHttpError(403, 'forbidden', d.reason)
+      }
       const typed = (req.body as { typedName?: unknown } | null | undefined)?.typedName
       if (typed !== undefined && (typeof typed !== 'string' || typed.length > 200)) throw new HubHttpError(400, 'bad_request', 'typedName must be a string')
       try {

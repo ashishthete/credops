@@ -71,7 +71,14 @@ export function buildApp(deps: HubDeps): FastifyInstance {
   const locks = new EnvLocks(deps.db, { now: deps.now })
   // A restart ends every release, so their locks go; live freezes stay.
   locks.clearReleaseLocks()
-  const sweep = setInterval(() => locks.sweepExpired(), 60_000)
+  const sweep = setInterval(() => {
+    try {
+      locks.sweepExpired()
+    } catch (err) {
+      // A timer must never take the Hub down. Only the error's name is logged.
+      app.log.error({ errName: err instanceof Error ? err.name : 'Error' }, 'lock sweep failed')
+    }
+  }, 60_000)
   sweep.unref()
   app.addHook('onClose', async () => clearInterval(sweep))
   const registry = new Registry(deps.db, { audit: deps.audit, directory, locks, now: deps.now })

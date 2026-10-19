@@ -50,7 +50,14 @@ export class EnvLocks {
   }
 
   private emit(environmentId: string): void {
-    for (const fn of this.listeners) fn(environmentId)
+    // The change is already committed: a listener that throws must not make the caller think it failed.
+    for (const fn of this.listeners) {
+      try {
+        fn(environmentId)
+      } catch {
+        // Listeners are advisory.
+      }
+    }
   }
 
   private expired(r: Row): boolean {
@@ -84,12 +91,15 @@ export class EnvLocks {
       .run(r.environment_id, r.kind, r.release_id, r.holder_oid, r.holder_name, r.reason, r.created_at, r.expires_at)
   }
 
-  /** Takes the release lock. The holder's own freeze is upgraded; anything else live is a 409. */
+  /**
+   * Takes the release lock. Anything live, including a freeze (even the caller's own), is a 409 and is left in
+   * place: a frozen environment refuses releases, and lifting the freeze is a separate, audited step.
+   */
   acquireRelease(environmentId: string, releaseId: string, holder: LockHolder): HubEnvLock {
     const row = inTransaction(this.db, (): Row => {
       this.assertEnv(environmentId)
       const existing = this.db.prepare('SELECT * FROM env_locks WHERE environment_id = ?').get(environmentId) as Row | undefined
-      if (existing && !this.expired(existing) && !(existing.kind === 'manual' && existing.holder_oid === holder.oid)) throw blocked(existing)
+      if (existing && !this.expired(existing)) throw blocked(existing)
       if (existing) this.db.prepare('DELETE FROM env_locks WHERE environment_id = ?').run(environmentId)
       const r: Row = {
         environment_id: environmentId,
@@ -163,10 +173,11 @@ export class EnvLocks {
     return out
   }
 
-  /** Deletes expired freezes; returns how many. Run every minute. */
+  /** Deletes expired freezes in one statement, so a freeze renewed meanwhile is never swept; returns how many. */
   sweepExpired(): number {
-    const rows = (this.db.prepare("SELECT * FROM env_locks WHERE kind = 'manual'").all() as unknown as Row[]).filter((r) => this.expired(r))
-    for (const r of rows) this.db.prepare('DELETE FROM env_locks WHERE environment_id = ?').run(r.environment_id)
+    const rows = this.db.prepare("DELETE FROM env_locks WHERE kind = 'manual' AND expires_at <= ? RETURNING environment_id").all(this.opts.now().toISOString()) as {
+      environment_id: string
+    }[]
     for (const r of rows) this.emit(r.environment_id)
     return rows.length
   }

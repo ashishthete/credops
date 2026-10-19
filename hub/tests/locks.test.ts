@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { fileURLToPath } from 'node:url'
+import { Worker } from 'node:worker_threads'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FREEZE_DEFAULT_HOURS, FREEZE_MAX_HOURS, type HubEnvLock } from '../../src/shared/hub'
 import { buildApp } from '../src/app'
 import { HubAudit } from '../src/audit'
@@ -40,34 +42,69 @@ async function setup(opts: { protectedEnv?: boolean } = {}) {
 
 describe('environment locks', () => {
   it('exactly one concurrent acquire wins', async () => {
-    const { locks } = await setup()
+    await setup()
+    hub.db.exec('PRAGMA wal_checkpoint(FULL)')
     const file = join(hub.config.dataDir, 'hub.db')
-    const handles = Array.from({ length: 10 }, () => openHubDb(file))
-    try {
-      const results = await Promise.all(
-        handles.map(async (db, i) => {
-          try {
-            return { ok: new EnvLocks(db, { now: () => hub.clock.now }).acquireRelease(ENV_ID, randomUUID(), { oid: `oid-${i}`, name: `User ${i}` }) }
-          } catch (e) {
-            return { err: e as { code?: string; status?: number; message: string } }
-          }
+    const N = 8
+    const gate = new SharedArrayBuffer(4)
+    const workers = Array.from(
+      { length: N },
+      (_, index) =>
+        new Worker(fileURLToPath(new URL('./acquire-worker.mjs', import.meta.url)), {
+          execArgv: ['--experimental-transform-types', '--disable-warning=ExperimentalWarning'],
+          workerData: { file, environmentId: ENV_ID, index, gate, nowIso: hub.clock.now.toISOString() },
         }),
-      )
-      const wins = results.filter((r) => 'ok' in r)
-      const losses = results.filter((r) => 'err' in r)
+    )
+    type Result = { index: number; won: boolean; status?: number; code?: string; message?: string }
+    try {
+      let ready = 0
+      const results = await new Promise<Result[]>((resolve, reject) => {
+        const out: Result[] = []
+        for (const w of workers) {
+          w.on('error', reject)
+          w.on('message', (m: Result & { ready?: number }) => {
+            if (m.ready !== undefined) {
+              // Every worker is connected and parked: release them together.
+              if (++ready === N) {
+                Atomics.store(new Int32Array(gate), 0, 1)
+                Atomics.notify(new Int32Array(gate), 0)
+              }
+              return
+            }
+            out.push(m)
+            if (out.length === N) resolve(out)
+          })
+        }
+      })
+      const wins = results.filter((r) => r.won)
       expect(wins).toHaveLength(1)
-      expect(losses).toHaveLength(9)
-      const winner = (wins[0] as { ok: HubEnvLock }).ok.holder.name
-      for (const l of losses) {
-        const e = (l as { err: { code?: string; status?: number; message: string } }).err
-        expect(e).toMatchObject({ status: 409, code: 'env_locked' })
-        expect(e.message).toContain(`Locked by ${winner} since `)
+      const row = hub.db.prepare('SELECT release_id FROM env_locks').get() as { release_id: string }
+      expect(row.release_id).toBe(`release-${wins[0].index}`)
+      for (const l of results.filter((r) => !r.won)) {
+        expect(l, JSON.stringify(l)).toMatchObject({ status: 409, code: 'env_locked' })
+        expect(l.message).toContain(`Locked by User ${wins[0].index} since `)
       }
-      expect(hub.db.prepare('SELECT COUNT(*) AS n FROM env_locks').get()).toEqual({ n: 1 })
-      locks.releaseFor((wins[0] as { ok: HubEnvLock }).ok.releaseId as string)
-      expect(hub.db.prepare('SELECT COUNT(*) AS n FROM env_locks').get()).toEqual({ n: 0 })
     } finally {
-      for (const h of handles) h.close()
+      await Promise.all(workers.map((w) => w.terminate()))
+    }
+  }, 15_000)
+
+  it('a second connection waits on a writer holding the lock, then loses cleanly', async () => {
+    await setup()
+    const file = join(hub.config.dataDir, 'hub.db')
+    const a = openHubDb(file)
+    const b = openHubDb(file)
+    try {
+      b.exec('PRAGMA busy_timeout = 0')
+      a.exec('BEGIN IMMEDIATE')
+      a.prepare("INSERT INTO env_locks(environment_id, kind, release_id, holder_oid, holder_name, created_at) VALUES (?, 'release', 'ra', 'oa', 'A', ?)").run(ENV_ID, hub.clock.now.toISOString())
+      // B cannot even read-then-write while A's transaction is open: it is refused, never a second winner.
+      expect(() => new EnvLocks(b, { now: () => hub.clock.now }).acquireRelease(ENV_ID, 'rb', { oid: 'ob', name: 'B' })).toThrow(/locked|busy/i)
+      a.exec('COMMIT')
+      expect(() => new EnvLocks(b, { now: () => hub.clock.now }).acquireRelease(ENV_ID, 'rb', { oid: 'ob', name: 'B' })).toThrow(/Locked by A since /)
+    } finally {
+      a.close()
+      b.close()
     }
   })
 
@@ -83,10 +120,12 @@ describe('environment locks', () => {
     const other = await freeze(cat)
     expect(other.statusCode).toBe(409)
     expect(other.json().error).toBe('env_locked')
-    // The holder can start a release, which upgrades the freeze to a release lock.
-    const rel = locks.acquireRelease(ENV_ID, 'r-1', holder(BOB))
-    expect(rel).toMatchObject({ kind: 'release', releaseId: 'r-1', holder: holder(BOB) })
+    // A frozen environment refuses releases, even the holder's own, and the freeze survives. Lifting it is a separate step.
+    expect(() => locks.acquireRelease(ENV_ID, 'r-1', holder(BOB))).toThrow(/Locked by Bob since .*: db migration/)
+    expect(locks.get(ENV_ID)).toMatchObject({ kind: 'manual', holder: holder(BOB), reason: 'db migration' })
     expect(hub.db.prepare('SELECT COUNT(*) AS n FROM env_locks').get()).toEqual({ n: 1 })
+    expect((await unfreeze(bob)).statusCode).toBe(204)
+    expect(locks.acquireRelease(ENV_ID, 'r-1', holder(BOB))).toMatchObject({ kind: 'release', releaseId: 'r-1' })
     // A release lock cannot be frozen over or lifted as a freeze.
     expect((await freeze(bob)).statusCode).toBe(409)
     expect((await unfreeze(bob)).statusCode).toBe(409)
@@ -96,10 +135,10 @@ describe('environment locks', () => {
     const { bob, admin } = await setup()
     const long = (await freeze(bob, { reason: 'x', hours: 500 })).json() as HubEnvLock
     expect(Date.parse(long.expiresAt as string) - Date.parse(long.createdAt)).toBe(FREEZE_MAX_HOURS * 3_600_000)
-    const short = (await freeze(bob, { reason: 'x', hours: 0.01 })).json() as HubEnvLock
+    const short = (await freeze(bob, { reason: 'x', hours: 0 })).json() as HubEnvLock
     expect(Date.parse(short.expiresAt as string) - Date.parse(short.createdAt)).toBe(3_600_000)
     expect(hub.db.prepare('SELECT COUNT(*) AS n FROM env_locks').get()).toEqual({ n: 1 })
-    for (const bad of [{}, { reason: '' }, { reason: 'x'.repeat(281) }, { reason: 'x', hours: 'soon' }]) {
+    for (const bad of [{}, { reason: '' }, { reason: 'x'.repeat(281) }, { reason: 'x', hours: 'soon' }, { reason: '   ' }, { reason: 'x', hours: 1.5 }]) {
       expect((await freeze(admin, bad)).statusCode, JSON.stringify(bad)).toBe(400)
     }
     expect((await call(admin, 'POST', '/api/v1/environments/e9999999-9999-4999-8999-999999999999/freeze', { reason: 'x' })).statusCode).toBe(404)
@@ -241,5 +280,54 @@ describe('environment locks', () => {
     const r = await call(admin, 'PUT', `/api/v1/admin/environments/${ENV_ID}`, manifest())
     expect(r.statusCode).toBe(409)
     expect(r.json()).toEqual({ error: 'conflict', message: 'A release is running on prod' })
+  })
+
+  it('an ungranted user cannot tell whether an environment exists, is frozen, or is releasing', async () => {
+    const { bob } = await setup()
+    const dan = (await hub.signIn({ oid: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', upn: 'dan@example.com', name: 'Dan' })).token
+    const ENV2 = 'e2222222-2222-4222-8222-222222222222'
+    const ENV3 = 'e3333333-3333-4333-8333-333333333333'
+    const admin = (await hub.signIn(ADMIN)).token
+    for (const [id, name] of [[ENV2, 'staging'], [ENV3, 'qa']]) {
+      const m = manifest()
+      m.environment = { ...m.environment, id, name }
+      m.hosts = []
+      m.deployments = []
+      m.requiredSecrets = []
+      expect((await call(admin, 'PUT', `/api/v1/admin/environments/${id}`, m)).statusCode).toBe(200)
+    }
+    await freeze(bob)
+    new EnvLocks(hub.db, { now: () => hub.clock.now }).acquireRelease(ENV3, 'r-1', holder(BOB))
+    const lift = (id: string) => call(dan, 'DELETE', `/api/v1/environments/${id}/freeze`, { typedName: 'prod' })
+    const seen = await Promise.all(['e9999999-9999-4999-8999-999999999999', ENV2, ENV_ID, ENV3].map(async (id) => (await lift(id)).body))
+    expect(new Set(seen).size).toBe(1)
+    expect(JSON.parse(seen[0])).toMatchObject({ error: 'forbidden' })
+    for (const body of seen) for (const leak of ['Bob', 'prod', 'staging', 'qa', 'release']) expect(body).not.toContain(leak)
+    expect(hub.db.prepare('SELECT COUNT(*) AS n FROM env_locks').get()).toEqual({ n: 2 })
+  })
+
+  it('a throwing change listener does not undo or fail the lock', async () => {
+    const { bob, locks } = await setup()
+    locks.onChange(() => {
+      throw new Error('listener bug')
+    })
+    expect((await freeze(bob)).statusCode).toBe(200)
+    expect(locks.get(ENV_ID)).not.toBeNull()
+    expect((await unfreeze(bob)).statusCode).toBe(204)
+    expect(locks.acquireRelease(ENV_ID, 'r-1', holder(BOB)).kind).toBe('release')
+  })
+
+  it('the sweep timer survives a failing sweep and logs only the error name', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      await setup()
+      hub.db.exec('DROP TABLE env_locks')
+      await vi.advanceTimersByTimeAsync(60_000)
+      const logged = hub.logs.join('')
+      expect(logged).toContain('lock sweep failed')
+      expect(logged).toContain('errName')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
