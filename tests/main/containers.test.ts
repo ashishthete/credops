@@ -240,6 +240,18 @@ describe('ContainerService', () => {
     ])
   })
 
+  it('audits an action on a full id by the container name from the last list', async () => {
+    const t = await setup()
+    t.fixture('ps.out', PS_FIXTURE)
+    await t.containers.list(t.ids['app-1']!, t.staging.id)
+    await t.containers.action(t.ids['app-1']!, t.staging.id, FULL_ID('a'), 'restart')
+    // a full id this host never listed keeps the short id
+    await t.containers.action(t.ids['app-1']!, t.staging.id, FULL_ID('e'), 'restart')
+    const rows = t.containerRows()
+    expect(rows[0]).toMatchObject({ targetLabel: 'shop-web-1@app-1', details: { containerId: 'a'.repeat(12) } })
+    expect(rows[1]).toMatchObject({ targetLabel: `${'e'.repeat(12)}@app-1` })
+  })
+
   it('audits actions by container@host label', async () => {
     const t = await setup()
     await t.containers.action(t.ids['app-1']!, t.staging.id, 'web-1', 'stop')

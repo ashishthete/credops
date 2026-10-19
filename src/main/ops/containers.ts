@@ -285,6 +285,8 @@ interface Follow {
  */
 export class ContainerService {
   private readonly follows = new Map<string, Follow>()
+  /** Container names by host and full id from the last list, so audit can name what an id refers to. */
+  private readonly names = new Map<string, Map<string, string>>()
   /** The aborts of one-shot commands still running, for quit. */
   private readonly inFlight = new Set<AbortController>()
   private readonly now: () => Date
@@ -316,6 +318,7 @@ export class ContainerService {
     const parser = new PsParser(this.maxContainers)
     await this.runOnce(hostId, environmentId, label, LIST_ARGV, (chunk, stream) => stream === 'out' && parser.push(chunk))
     parser.finish()
+    this.names.set(hostId, new Map(parser.containers.map((c) => [c.id, c.name])))
     return { containers: parser.containers, truncated: parser.truncated, skipped: parser.skipped, fetchedAt: this.now().toISOString() }
   }
 
@@ -331,7 +334,7 @@ export class ContainerService {
         action: `container.${action}`,
         outcome,
         targetType: 'container',
-        targetLabel: `${shortRef(ref)}@${label}`,
+        targetLabel: `${this.names.get(hostId)?.get(ref) ?? shortRef(ref)}@${label}`,
         details: { ...details, ...extra },
       })
     if (this.deps.isLocked()) {
