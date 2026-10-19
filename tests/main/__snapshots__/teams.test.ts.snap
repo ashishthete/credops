@@ -1,0 +1,101 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`buildTeamsCard > builds a succeeded card with facts and links 1`] = `
+{
+  "attachments": [
+    {
+      "content": {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "actions": [
+          {
+            "title": "Open shop.staging.example",
+            "type": "Action.OpenUrl",
+            "url": "https://shop.staging.example/",
+          },
+          {
+            "title": "Open grafana.example",
+            "type": "Action.OpenUrl",
+            "url": "https://grafana.example/d/1",
+          },
+          {
+            "title": "Open a.example",
+            "type": "Action.OpenUrl",
+            "url": "https://a.example/",
+          },
+        ],
+        "body": [
+          {
+            "bleed": true,
+            "items": [
+              {
+                "size": "Medium",
+                "text": "shop 1.4.0 deployed to staging",
+                "type": "TextBlock",
+                "weight": "Bolder",
+                "wrap": true,
+              },
+            ],
+            "style": "good",
+            "type": "Container",
+          },
+          {
+            "facts": [
+              {
+                "title": "Environment",
+                "value": "staging",
+              },
+              {
+                "title": "Product",
+                "value": "shop",
+              },
+              {
+                "title": "Deployment",
+                "value": "web, worker",
+              },
+              {
+                "title": "Hosts",
+                "value": "web-1, web-2",
+              },
+              {
+                "title": "Status",
+                "value": "Succeeded",
+              },
+              {
+                "title": "Version",
+                "value": "1.4.0",
+              },
+              {
+                "title": "Duration",
+                "value": "2m 05s",
+              },
+              {
+                "title": "By",
+                "value": "ashish@mbp",
+              },
+              {
+                "title": "At",
+                "value": "2026-10-19T10:00:00.000Z",
+              },
+            ],
+            "type": "FactSet",
+          },
+          {
+            "isSubtle": true,
+            "spacing": "Medium",
+            "text": "Adds checkout retries.",
+            "type": "TextBlock",
+            "wrap": true,
+          },
+        ],
+        "msteams": {
+          "width": "Full",
+        },
+        "type": "AdaptiveCard",
+        "version": "1.5",
+      },
+      "contentType": "application/vnd.microsoft.card.adaptive",
+    },
+  ],
+  "type": "message",
+}
+`;
