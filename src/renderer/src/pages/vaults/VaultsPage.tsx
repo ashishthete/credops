@@ -37,6 +37,18 @@ interface VaultData {
 }
 
 const isTab = (t: string | null): t is Tab => TABS.some((x) => x.id === t)
+
+/**
+ * What the page last showed, so coming back to it draws at once and refreshes underneath. Metadata
+ * only, never a value. AppShell drops it when it unmounts, which a lock always does: if the shell ever
+ * stays mounted across a lock, reset this on the lock as well.
+ */
+const cache: { vaults: VaultMeta[] | null; data: Map<string, VaultData> } = { vaults: null, data: new Map() }
+
+export function resetVaultsCache() {
+  cache.vaults = null
+  cache.data.clear()
+}
 const upsert = <T extends { id: string }>(list: T[], item: T) =>
   list.some((x) => x.id === item.id) ? list.map((x) => (x.id === item.id ? item : x)) : [...list, item]
 /** Hosts and environments read vaults, identities and keys, so the shared inventory re-reads after these change. */
@@ -49,10 +61,10 @@ export function VaultsPage() {
   const [params, setParams] = useSearchParams()
   const tab: Tab = isTab(params.get('tab')) ? (params.get('tab') as Tab) : 'secrets'
 
-  const [vaults, setVaults] = useState<VaultMeta[] | null>(null)
-  const [data, setData] = useState<VaultData | null>(null)
-  // Rows cascade in once per fresh load, not on every tab switch.
-  const [fresh, setFresh] = useState(true)
+  const [vaults, setVaults] = useState<VaultMeta[] | null>(cache.vaults)
+  const [data, setData] = useState<VaultData | null>(() => cache.data.get(params.get('vault') ?? DEFAULT_VAULT_ID) ?? null)
+  // Rows cascade in once per fresh load, not on every tab switch or a refresh of what's showing.
+  const [fresh, setFresh] = useState(data === null)
   const [query, setQuery] = useState('')
   const [dialog, setDialog] = useState<NewDialog | null>(null)
   const [vaultDialog, setVaultDialog] = useState<{ open: boolean; vault?: VaultMeta }>({ open: false })
@@ -85,7 +97,8 @@ export function VaultsPage() {
       .then((v) => live && setVaults(v))
       .catch((err: unknown) => {
         if (!live) return
-        setVaults([])
+        // A failed refresh keeps what was showing.
+        setVaults((v) => v ?? [])
         fail("Couldn't load vaults", err)
       })
     return () => {
@@ -93,12 +106,23 @@ export function VaultsPage() {
     }
   }, [])
 
-  // Lists are metadata only and load without an unlock; a corrupt vault has nothing to show.
-  const vaultsLoaded = vaults !== null
   useEffect(() => {
-    if (!vaultsLoaded || corrupt) return
+    if (vaults) cache.vaults = vaults
+  }, [vaults])
+  useEffect(() => {
+    if (data) cache.data.set(data.vaultId, data)
+  }, [data])
+
+  // Lists are metadata only and load without an unlock; a corrupt vault has nothing to show. The
+  // default vault (or one seen before) loads alongside the vault list rather than after it.
+  const vaultsLoaded = vaults !== null
+  const knownVault = vaultsLoaded || vaultId === DEFAULT_VAULT_ID || !!cache.vaults?.some((v) => v.id === vaultId)
+  useEffect(() => {
+    if (!knownVault || corrupt) return
     let live = true
-    setFresh(true)
+    const cached = cache.data.get(vaultId)
+    if (cached) setData(cached)
+    setFresh(!cached)
     Promise.all([
       api.invoke('secret:list', vaultId),
       api.invoke('key:list', vaultId),
@@ -107,14 +131,14 @@ export function VaultsPage() {
       .then(([secrets, keys, identities]) => live && setData({ vaultId, secrets, keys, identities }))
       .catch((err: unknown) => {
         if (!live) return
-        setData({ vaultId, secrets: [], keys: [], identities: [] })
+        setData(cached ?? { vaultId, secrets: [], keys: [], identities: [] })
         fail("Couldn't load this vault", err)
       })
     return () => {
       live = false
     }
     // Reloads when the vault changes, not when the vault list does.
-  }, [vaultId, vaultsLoaded, corrupt])
+  }, [vaultId, knownVault, corrupt])
 
   useEffect(() => setQuery(''), [vaultId, tab])
 

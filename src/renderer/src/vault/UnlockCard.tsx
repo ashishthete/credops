@@ -63,12 +63,15 @@ export function UnlockCard({
   autoQuick = true,
   onUnlocked,
   onWrong,
+  onForgot,
 }: {
   status: VaultStatus | null
   /** False after the user's own lock: they are walking away, so don't pop a Touch ID prompt. */
   autoQuick?: boolean
   onUnlocked: () => void
   onWrong: () => void
+  /** Shows the "Forgot password?" link, which offers the reset. */
+  onForgot?: () => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   // The password stays in the input until submit; state only knows whether it is empty.
@@ -169,6 +172,15 @@ export function UnlockCard({
           />
         )}
       </Button>
+      {onForgot && (
+        <button
+          type="button"
+          onClick={onForgot}
+          className="-mt-1 self-center rounded px-1 text-[12px] text-muted transition-colors duration-150 hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
+        >
+          Forgot password?
+        </button>
+      )}
       {showTouchId && (
         <>
           <div aria-hidden className="flex items-center gap-3 text-[11px] text-muted">

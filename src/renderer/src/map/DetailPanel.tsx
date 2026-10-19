@@ -14,7 +14,7 @@ import { tunnelStore, useTunnel } from '../tunnels/store'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { plural } from '../ui/common'
-import { fast, spring, useMotionSafe } from '../ui/motion'
+import { exitFast, fast, spring, useMotionSafe } from '../ui/motion'
 import type { EnvironmentNodeData, HostNodeData, MapGraph, MapNode, MapScope, ProductNodeData, TunnelEdgeData } from './graph'
 import { REACH_TEXT, useHostPresence } from './presence'
 
@@ -99,7 +99,7 @@ export function DetailPanel({ selection, graph, onClose, onFilter }: DetailPanel
           className="absolute inset-y-0 right-0 z-10 flex max-w-full flex-col border-l border-line bg-surface/95 shadow-pop backdrop-blur-xl focus:outline-none"
           initial={motionSafe ? { x: PANEL_W, opacity: 0 } : { opacity: 0 }}
           animate={motionSafe ? { x: 0, opacity: 1 } : { opacity: 1 }}
-          exit={motionSafe ? { x: PANEL_W, opacity: 0, transition: fast } : { opacity: 0, transition: fast }}
+          exit={motionSafe ? { x: PANEL_W, opacity: 0, transition: exitFast } : { opacity: 0, transition: exitFast }}
           transition={motionSafe ? spring : fast}
         >
           <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 pt-4 pb-5">

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { REVEAL_HIDE_MS, type SecretMeta } from '../../../../shared/vault'
 import { api } from '../../lib/api'
 import { Badge } from '../../ui/Badge'
-import { fast, spring, useMotionSafe } from '../../ui/motion'
+import { exitFast, fast, spring, useMotionSafe } from '../../ui/motion'
 import { toast } from '../../ui/Toaster'
 import { vaultStatusStore } from '../../vault/status'
 import { attempt, ListRow, RowMenu, type ConfirmRequest } from '../../ui/common'
@@ -177,7 +177,7 @@ function SecretRow({ secret: s, index, stagger, onEdit, onDelete }: SecretRowPro
               key="value"
               initial={motionSafe ? { opacity: 0, filter: 'blur(6px)', letterSpacing: '0.3em' } : { opacity: 0 }}
               animate={motionSafe ? { opacity: 1, filter: 'blur(0px)', letterSpacing: '0em' } : { opacity: 1 }}
-              transition={motionSafe ? { duration: 0.32, ease: 'easeOut' } : fast}
+              transition={motionSafe ? { duration: 0.18, ease: 'easeOut' } : fast}
               className="min-w-0 font-mono text-[12.5px] leading-5 break-all whitespace-pre-wrap text-fg select-all"
             >
               {reveal.value}
@@ -226,7 +226,7 @@ function SecretRow({ secret: s, index, stagger, onEdit, onDelete }: SecretRowPro
                 key={copied ? 'done' : 'copy'}
                 initial={motionSafe ? { scale: 0.4, opacity: 0, rotate: -30 } : { opacity: 0 }}
                 animate={{ scale: 1, opacity: 1, rotate: 0 }}
-                exit={{ scale: 0.4, opacity: 0 }}
+                exit={{ scale: 0.4, opacity: 0, transition: exitFast }}
                 transition={motionSafe ? spring : fast}
                 className={copied ? 'text-ok' : ''}
               >

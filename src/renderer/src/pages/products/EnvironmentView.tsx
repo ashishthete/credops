@@ -11,7 +11,7 @@ import { useConnect } from '../../terminal/connect'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
 import { RowMenu } from '../../ui/common'
-import { fast, spring, useMotionSafe } from '../../ui/motion'
+import { fast, spring, staggerDelay, useMotionSafe } from '../../ui/motion'
 import { GlowDot, PaneHeader, ROLE_LABEL, ROLE_ORDER } from './ProductView'
 
 interface EnvironmentViewProps {
@@ -131,7 +131,7 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
                     key={h.id}
                     initial={motionSafe ? { opacity: 0, x: -4 } : { opacity: 0 }}
                     animate={{ opacity: 1, x: 0 }}
-                    transition={motionSafe ? { ...spring, delay: i * 0.02 } : fast}
+                    transition={motionSafe ? { ...spring, delay: staggerDelay(i) } : fast}
                     className="group relative"
                   >
                     <button

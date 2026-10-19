@@ -14,6 +14,7 @@ type VaultChannel =
   | 'vault:delete'
   | 'vault:setQuickUnlock'
   | 'vault:setAutoLock'
+  | 'vault:reset'
 
 export function createVaultHandlers(vault: VaultService): Pick<Handlers, VaultChannel> {
   return {
@@ -29,5 +30,6 @@ export function createVaultHandlers(vault: VaultService): Pick<Handlers, VaultCh
     'vault:delete': (id) => vault.deleteVault(id),
     'vault:setQuickUnlock': (mode) => vault.setQuickUnlock(mode),
     'vault:setAutoLock': (minutes) => vault.setAutoLock(minutes),
+    'vault:reset': (confirm) => vault.reset(confirm),
   }
 }

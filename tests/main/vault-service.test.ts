@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { StatementSync } from 'node:sqlite'
 import { deriveKek, openSealed, type KdfParams } from '../../src/main/vault/crypto'
 import { unlockDelayMs, VaultService } from '../../src/main/vault/vault-service'
-import { DEFAULT_VAULT_ID, MAX_MASTER_PASSWORD, VAULT_LOCKED } from '../../src/shared/vault'
+import { DEFAULT_VAULT_ID, MAX_MASTER_PASSWORD, MIN_MASTER_PASSWORD, VAULT_LOCKED } from '../../src/shared/vault'
 import { auditRows, FAST_KDF, makeVault } from './vault-helpers'
 
 vi.mock('../../src/main/vault/crypto', async (importOriginal) => {
@@ -56,6 +56,10 @@ describe('VaultService', () => {
     await expect(fresh.vault.setup('short')).rejects.toThrow(/too short/)
     await expect(fresh.vault.setup('x'.repeat(MAX_MASTER_PASSWORD + 1))).rejects.toThrow(/too long/)
     expect(fresh.vault.status().setUp).toBe(false)
+    // The minimum is MIN_MASTER_PASSWORD (8): 7 is refused, 8 is accepted.
+    await expect(fresh.vault.setup('x'.repeat(MIN_MASTER_PASSWORD - 1))).rejects.toThrow(/too short/)
+    expect(MIN_MASTER_PASSWORD).toBe(8)
+    expect(await fresh.vault.setup('x'.repeat(MIN_MASTER_PASSWORD))).toMatchObject({ setUp: true })
   })
 
   it('unlock and lock', async () => {

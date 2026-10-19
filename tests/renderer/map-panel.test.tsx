@@ -65,7 +65,6 @@ const t1 = tunnelMeta({ id: 't1', label: 'pg-local', hostId: 'h1' })
 const flush = () => act(async () => {})
 const node = (id: string) => document.querySelector<HTMLElement>(`.react-flow__node[data-id="${id}"]`)
 const panel = (name: string) => screen.getByRole('complementary', { name })
-const section = (name: string) => within(screen.getByRole('navigation', { name: 'Sections' })).getByRole('link', { name: new RegExp(name) })
 // Lets a closing panel finish its exit animation.
 const settle = () => act(async () => {
   await vi.advanceTimersByTimeAsync(600)
@@ -169,7 +168,7 @@ describe('map detail panel', () => {
     await click(within(panel('web')).getByRole('button', { name: 'Connect' }))
     await flush()
     expect(invoke).toHaveBeenCalledWith('ssh:open', expect.objectContaining({ hostId: 'h1', environmentId: 'e2' }))
-    expect(section('Terminals')).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('button', { name: /Open sessions/ })).toHaveAttribute('aria-current', 'page')
   })
 
   it('Open host page goes to the host', async () => {
@@ -186,7 +185,7 @@ describe('map detail panel', () => {
     await flush()
     await flush()
     expect(calls(invoke, 'ssh:open')).toEqual([['ssh:open', expect.objectContaining({ hostId: 'h1', environmentId: 'e1' })]])
-    expect(section('Terminals')).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('button', { name: /Open sessions/ })).toHaveAttribute('aria-current', 'page')
   })
 
   it('the tunnel switch in the host panel starts and stops', async () => {

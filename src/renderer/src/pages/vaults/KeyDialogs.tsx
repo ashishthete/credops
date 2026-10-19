@@ -14,7 +14,7 @@ import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
 import { Dialog } from '../../ui/Dialog'
 import { SecretField, TextAreaField, TextField } from '../../ui/Field'
-import { fast, spring, useMotionSafe } from '../../ui/motion'
+import { exitFast, fast, spring, staggerDelay, useMotionSafe } from '../../ui/motion'
 import { Skeleton } from '../../ui/Skeleton'
 import { toast } from '../../ui/Toaster'
 import { withUnlock } from '../../vault/unlock'
@@ -52,7 +52,7 @@ function PassphraseSlot({ show, children }: { show: boolean; children: ReactNode
           key="passphrase"
           initial={motionSafe ? { opacity: 0, height: 0 } : { opacity: 0 }}
           animate={motionSafe ? { opacity: 1, height: 'auto' } : { opacity: 1 }}
-          exit={motionSafe ? { opacity: 0, height: 0, transition: fast } : { opacity: 0, transition: fast }}
+          exit={motionSafe ? { opacity: 0, height: 0, transition: exitFast } : { opacity: 0, transition: exitFast }}
           transition={motionSafe ? spring : fast}
           className="overflow-hidden"
         >
@@ -352,7 +352,7 @@ export function LinkKeyDialog({ open, vaultId, onClose, onSaved }: NewKeyDialogP
                   onClick={() => pick(c)}
                   initial={motionSafe ? { opacity: 0, y: 6 } : false}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ ...spring, delay: motionSafe ? i * 0.04 : 0 }}
+                  transition={{ ...spring, delay: motionSafe ? staggerDelay(i, 0.03) : 0 }}
                   className={`relative flex items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-55 ${
                     checked ? 'border-accent/60 bg-accent/8' : 'border-line bg-canvas/40 hover:border-muted/30'
                   }`}

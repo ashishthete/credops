@@ -9,7 +9,7 @@ import { tunnelStore } from '../../tunnels/store'
 import { Button } from '../../ui/Button'
 import { ConfirmDialog } from '../../ui/common'
 import { EmptyState } from '../../ui/EmptyState'
-import { fast, spring, useMotionSafe } from '../../ui/motion'
+import { exitFast, fast, spring, useMotionSafe } from '../../ui/motion'
 import { Skeleton } from '../../ui/Skeleton'
 import { ImportDialog } from '../hosts/ImportDialog'
 import { isRunning, TunnelCard } from './TunnelCard'
@@ -254,7 +254,7 @@ function HostGroup({ group, envById, onEdit, onDuplicate, onDelete }: HostGroupP
       layout={motionSafe ? 'position' : false}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      exit={{ opacity: 0, transition: fast }}
+      exit={{ opacity: 0, transition: exitFast }}
       transition={motionSafe ? spring : fast}
       className="mb-7"
     >
@@ -311,7 +311,7 @@ function CableArt() {
           className={motionSafe ? 'od-flow' : undefined}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          transition={{ duration: 0.6, delay: 0.15 }}
+          transition={{ duration: 0.3, delay: 0.05 }}
         />
         <motion.g
           animate={motionSafe ? { x: [0, 2.5, 0] } : undefined}

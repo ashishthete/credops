@@ -73,7 +73,7 @@ describe('shell', () => {
   it('Hosts no longer shows a placeholder', async () => {
     renderShell()
     act(() => {
-      fireEvent.keyDown(window, { key: '3', metaKey: true })
+      fireEvent.keyDown(window, { key: '2', metaKey: true })
     })
     // The page swaps its loading layout for the empty one once host:list lands, remounting the
     // heading; wait for that so the assertion never holds a detached node.
@@ -108,11 +108,11 @@ describe('shell', () => {
     expect(within(nav).getByRole('link', { name: /Map/ })).toHaveAttribute('aria-current', 'page')
   })
 
-  // The spec fixes Map at mod+6; the computed test above is what survives sections moving.
-  it('mod+6 opens Map', async () => {
+  // The spec fixes Map at mod+5; the computed test above is what survives sections moving.
+  it('mod+5 opens Map', async () => {
     renderShell()
     act(() => {
-      fireEvent.keyDown(window, { key: '6', metaKey: true })
+      fireEvent.keyDown(window, { key: '5', metaKey: true })
     })
     expect(await screen.findByRole('heading', { name: 'Map', level: 1 })).toBeInTheDocument()
   })

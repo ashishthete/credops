@@ -1,7 +1,7 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { CircleAlert, CircleCheck, Info, TriangleAlert, X, type LucideIcon } from 'lucide-react'
 import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
-import { fast, spring, useMotionSafe } from './motion'
+import { exitFast, fast, spring, useMotionSafe } from './motion'
 import { toneColor, type Tone } from './tone'
 
 export interface ToastOptions {
@@ -112,7 +112,7 @@ function ToastCard({ item }: { item: ToastItem }) {
       }}
       initial={motionSafe ? { opacity: 0, y: 24, scale: 0.95 } : { opacity: 0 }}
       animate={motionSafe ? { opacity: 1, y: 0, scale: 1 } : { opacity: 1 }}
-      exit={motionSafe ? { opacity: 0, x: 48, scale: 0.96, transition: fast } : { opacity: 0, transition: fast }}
+      exit={motionSafe ? { opacity: 0, x: 48, scale: 0.96, transition: exitFast } : { opacity: 0, transition: exitFast }}
       transition={motionSafe ? spring : fast}
       style={{ '--tone': toneColor[item.tone] } as CSSProperties}
       className={`pointer-events-auto relative overflow-hidden rounded-ui border border-line bg-surface-2/95 shadow-pop backdrop-blur-xl ${

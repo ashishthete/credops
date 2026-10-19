@@ -7,7 +7,7 @@ import { sourceLabel } from '../../inventory/choices'
 import { useInventory, type InventoryData } from '../../inventory/store'
 import { api } from '../../lib/api'
 import { errorText } from '../../ui/common'
-import { fast, spring, useMotionSafe } from '../../ui/motion'
+import { exitFast, fast, spring, staggerDelay, useMotionSafe } from '../../ui/motion'
 import { Skeleton } from '../../ui/Skeleton'
 import { LoginDialog } from './LoginDialog'
 
@@ -194,7 +194,7 @@ export function ConnectionCard({ hostId, environmentId, onContextChange }: Conne
                         key={`${i}:${label}`}
                         initial={motionSafe ? { opacity: 0, x: -6 } : { opacity: 0 }}
                         animate={{ opacity: 1, x: 0 }}
-                        transition={motionSafe ? { ...spring, delay: i * 0.05 } : fast}
+                        transition={motionSafe ? { ...spring, delay: staggerDelay(i, 0.04) } : fast}
                         className="flex items-center gap-1"
                       >
                         {i > 0 && <ChevronRight aria-hidden className="size-3 text-muted" />}
@@ -323,7 +323,7 @@ function Value({ id, children }: { id: string; children: ReactNode }) {
       data-value
       initial={motionSafe ? { opacity: 0, y: 6 } : { opacity: 0 }}
       animate={motionSafe ? { opacity: 1, y: 0 } : { opacity: 1 }}
-      exit={motionSafe ? { opacity: 0, y: -6 } : { opacity: 0 }}
+      exit={motionSafe ? { opacity: 0, y: -6, transition: exitFast } : { opacity: 0, transition: exitFast }}
       transition={motionSafe ? spring : fast}
       className="flex min-w-0 flex-wrap items-center"
     >
@@ -341,7 +341,7 @@ export function SourceChip({ source, label, color }: { source: ValueSource | nul
       key={`${source}:${label}`}
       initial={motionSafe ? { opacity: 0, scale: 0.9 } : { opacity: 0 }}
       animate={motionSafe ? { opacity: 1, scale: 1 } : { opacity: 1 }}
-      exit={{ opacity: 0 }}
+      exit={{ opacity: 0, transition: exitFast }}
       transition={motionSafe ? spring : fast}
       style={{ '--tone': tone } as CSSProperties}
       className={`inline-flex h-5 items-center gap-1.5 rounded-full px-2 text-[11.5px] leading-none font-medium whitespace-nowrap ${

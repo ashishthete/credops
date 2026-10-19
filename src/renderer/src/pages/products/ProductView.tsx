@@ -10,7 +10,7 @@ import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
 import { plural, RowMenu } from '../../ui/common'
 import { EmptyState } from '../../ui/EmptyState'
-import { fast, spring, useMotionSafe } from '../../ui/motion'
+import { fast, spring, staggerDelay, useMotionSafe } from '../../ui/motion'
 import { ProductTile } from './ProductDialog'
 
 export const ROLE_LABEL = { app: 'App', db: 'Database', bastion: 'Bastion', other: 'Other' } as const
@@ -130,7 +130,7 @@ function EnvironmentCard({
     <motion.li
       initial={stagger ? (motionSafe ? { opacity: 0, y: 8 } : { opacity: 0 }) : false}
       animate={{ opacity: 1, y: 0 }}
-      transition={motionSafe ? { ...spring, delay: index * 0.03 } : { ...fast, delay: index * 0.03 }}
+      transition={motionSafe ? { ...spring, delay: staggerDelay(index) } : { ...fast, delay: staggerDelay(index) }}
       className="relative"
     >
       <motion.button

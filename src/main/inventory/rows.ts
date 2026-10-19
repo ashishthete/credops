@@ -110,6 +110,17 @@ export function hostRow(db: Db, id: string): HostRow {
   return row
 }
 
+/** Rows grouped by `key`, keeping their order. */
+function groupBy<T extends Record<K, string>, K extends keyof T>(rows: T[], key: K): Map<string, T[]> {
+  const out = new Map<string, T[]>()
+  for (const r of rows) {
+    const list = out.get(r[key])
+    if (list) list.push(r)
+    else out.set(r[key], [r])
+  }
+  return out
+}
+
 export function hostMeta(db: Db, id: string): HostMeta {
   const r = hostRow(db, id)
   const vaults = db.prepare('SELECT vault_id FROM host_vaults WHERE host_id = ? ORDER BY vault_id').all(id) as {
@@ -118,6 +129,32 @@ export function hostMeta(db: Db, id: string): HostMeta {
   const envs = db
     .prepare('SELECT environment_id, role FROM environment_hosts WHERE host_id = ? ORDER BY environment_id')
     .all(id) as { environment_id: string; role: HostRole }[]
+  return toHostMeta(r, vaults, envs)
+}
+
+/** Every host, sorted by label, in three queries rather than three per host. */
+export function hostMetas(db: Db): HostMeta[] {
+  const rows = db.prepare('SELECT * FROM hosts ORDER BY label COLLATE NOCASE, id').all() as unknown as HostRow[]
+  const vaults = groupBy(
+    db.prepare('SELECT host_id, vault_id FROM host_vaults ORDER BY vault_id').all() as { host_id: string; vault_id: string }[],
+    'host_id',
+  )
+  const envs = groupBy(
+    db.prepare('SELECT host_id, environment_id, role FROM environment_hosts ORDER BY environment_id').all() as {
+      host_id: string
+      environment_id: string
+      role: HostRole
+    }[],
+    'host_id',
+  )
+  return rows.map((r) => toHostMeta(r, vaults.get(r.id) ?? [], envs.get(r.id) ?? []))
+}
+
+function toHostMeta(
+  r: HostRow,
+  vaults: { vault_id: string }[],
+  envs: { environment_id: string; role: HostRole }[],
+): HostMeta {
   return {
     id: r.id,
     label: r.label,
@@ -137,20 +174,20 @@ export function hostMeta(db: Db, id: string): HostMeta {
   }
 }
 
+interface EnvironmentRow {
+  id: string
+  name: string
+  color: string
+  protected: number
+  default_identity_id: string | null
+  default_port: number | null
+  default_jump_host_id: string | null
+  created_at: string
+  updated_at: string
+}
+
 export function environmentMeta(db: Db, id: string): EnvironmentMeta {
-  const r = db.prepare('SELECT * FROM environments WHERE id = ?').get(id) as
-    | {
-        id: string
-        name: string
-        color: string
-        protected: number
-        default_identity_id: string | null
-        default_port: number | null
-        default_jump_host_id: string | null
-        created_at: string
-        updated_at: string
-      }
-    | undefined
+  const r = db.prepare('SELECT * FROM environments WHERE id = ?').get(id) as EnvironmentRow | undefined
   if (!r) throw new Error('environment not found')
   const products = db
     .prepare('SELECT product_id FROM product_environments WHERE environment_id = ? ORDER BY product_id')
@@ -158,6 +195,35 @@ export function environmentMeta(db: Db, id: string): EnvironmentMeta {
   const hosts = db
     .prepare('SELECT host_id, role FROM environment_hosts WHERE environment_id = ? ORDER BY host_id')
     .all(id) as { host_id: string; role: HostRole }[]
+  return toEnvironmentMeta(r, products, hosts)
+}
+
+/** Every environment, sorted by name, in three queries rather than three per environment. */
+export function environmentMetas(db: Db): EnvironmentMeta[] {
+  const rows = db.prepare('SELECT * FROM environments ORDER BY name COLLATE NOCASE, id').all() as unknown as EnvironmentRow[]
+  const products = groupBy(
+    db.prepare('SELECT environment_id, product_id FROM product_environments ORDER BY product_id').all() as {
+      environment_id: string
+      product_id: string
+    }[],
+    'environment_id',
+  )
+  const hosts = groupBy(
+    db.prepare('SELECT environment_id, host_id, role FROM environment_hosts ORDER BY host_id').all() as {
+      environment_id: string
+      host_id: string
+      role: HostRole
+    }[],
+    'environment_id',
+  )
+  return rows.map((r) => toEnvironmentMeta(r, products.get(r.id) ?? [], hosts.get(r.id) ?? []))
+}
+
+function toEnvironmentMeta(
+  r: EnvironmentRow,
+  products: { product_id: string }[],
+  hosts: { host_id: string; role: HostRole }[],
+): EnvironmentMeta {
   return {
     id: r.id,
     name: r.name,

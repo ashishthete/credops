@@ -7,6 +7,7 @@ import { Button } from '../ui/Button'
 import { closeCommandPalette } from '../ui/commands'
 import { fast, spring, useMotionSafe, useShake } from '../ui/motion'
 import { toast } from '../ui/Toaster'
+import { ResetVaultsDialog } from './ResetVaultsDialog'
 import { SetupCard } from './SetupCard'
 import {
   peekLockReason,
@@ -119,6 +120,8 @@ function GateScreen({ status, hold, session, autoQuick, onSetUp, onUnlocked, onC
   const titleId = useId()
   const [shake, setShake] = useState(0)
   const shakeScope = useShake(shake)
+  // Here, not in the unlock card: the card's form and transformed section must not contain the dialog.
+  const [resetOpen, setResetOpen] = useState(false)
 
   let title = ''
   let description = ''
@@ -150,6 +153,7 @@ function GateScreen({ status, hold, session, autoQuick, onSetUp, onUnlocked, onC
         autoQuick={autoQuick}
         onUnlocked={onUnlocked}
         onWrong={() => setShake((n) => n + 1)}
+        onForgot={() => setResetOpen(true)}
       />
     )
   }
@@ -192,6 +196,7 @@ function GateScreen({ status, hold, session, autoQuick, onSetUp, onUnlocked, onC
           </motion.section>
         </div>
       </div>
+      <ResetVaultsDialog open={resetOpen} onClose={() => setResetOpen(false)} />
     </motion.div>
   )
 }

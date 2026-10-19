@@ -35,7 +35,7 @@ export interface Pty {
   kill(): void
 }
 
-export type CloseReason = 'user' | 'remote' | 'error' | 'quit'
+export type CloseReason = 'user' | 'remote' | 'error' | 'quit' | 'reset'
 type AuthAudit = AuthPlan['kind'] | 'prompt'
 
 export interface SessionManagerDeps {
@@ -289,7 +289,8 @@ export class SessionManager {
     }
   }
 
-  closeAll(reason: 'quit'): void {
+  /** Ends and forgets every session, SSH and local, scrollback included: on quit and on a vault reset. */
+  closeAll(reason: 'quit' | 'reset'): void {
     for (const s of [...this.sessions.values()]) {
       if (s.attempt) this.finish(s, s.attempt, reason, null)
       this.forget(s)
