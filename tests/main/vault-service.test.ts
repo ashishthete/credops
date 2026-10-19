@@ -129,6 +129,25 @@ describe('VaultService', () => {
     expect(seen).toHaveLength(1)
   })
 
+  it('a rejecting unlock listener and a throwing lock listener are both logged redacted', async () => {
+    const f = makeVault()
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const later = vi.fn()
+    f.vault.onUnlock(async () => {
+      throw new Error('async broke: -----BEGIN OPENSSH PRIVATE KEY-----abc')
+    })
+    f.vault.onLock(() => {
+      throw new Error('lock broke: -----BEGIN OPENSSH PRIVATE KEY-----abc')
+    })
+    f.vault.onLock(later)
+    await f.vault.setup(PW)
+    await new Promise((r) => setTimeout(r, 0))
+    f.vault.lock('manual')
+    expect(later).toHaveBeenCalledTimes(1)
+    expect(error).toHaveBeenCalledTimes(2)
+    expect(error.mock.calls.flat().map(String).join(' ')).not.toContain('BEGIN OPENSSH')
+  })
+
   it('unlock before setup throws', async () => {
     const { vault } = makeVault()
     await expect(vault.unlock(PW)).rejects.toThrow(/not set up/)

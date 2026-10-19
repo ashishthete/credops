@@ -108,8 +108,8 @@ export class VaultService {
   /** Bumped by every lock(); a password operation that saw it change while awaiting scrypt is abandoned. */
   private epoch = 0
   private readonly known = new Map<string, readonly string[]>()
-  private readonly lockListeners = new Set<(reason: LockReason) => void>()
-  private readonly unlockListeners = new Set<() => void>()
+  private readonly lockListeners = new Set<(reason: LockReason) => unknown>()
+  private readonly unlockListeners = new Set<() => unknown>()
   /** Set by install() on a locked-to-unlocked transition; serial() fires the unlock listeners once the section resolves. */
   private unlockedPending = false
   /** Chains password operations so the throttle check and failure count cannot interleave. */
@@ -310,22 +310,18 @@ export class VaultService {
       this.audit.append({ action: 'vault.lock', outcome: 'success', details: { reason } })
     } finally {
       for (const fn of this.lockListeners) {
-        try {
-          fn(reason)
-        } catch (err) {
-          console.error('vault lock listener failed:', err)
-        }
+        this.runListener('lock', () => fn(reason))
       }
     }
   }
 
-  onLock(fn: (reason: LockReason) => void): () => void {
+  onLock(fn: (reason: LockReason) => unknown): () => void {
     this.lockListeners.add(fn)
     return () => this.lockListeners.delete(fn)
   }
 
   /** Fires after each transition from locked to unlocked: setup, password or quick unlock. */
-  onUnlock(fn: () => void): () => void {
+  onUnlock(fn: () => unknown): () => void {
     this.unlockListeners.add(fn)
     return () => this.unlockListeners.delete(fn)
   }
@@ -643,11 +639,20 @@ export class VaultService {
     if (!this.unlockedPending) return
     this.unlockedPending = false
     for (const fn of [...this.unlockListeners]) {
-      try {
-        fn()
-      } catch (err) {
-        console.error('vault unlock listener failed:', redact(err instanceof Error ? err.message : String(err), this.knownValues()))
-      }
+      this.runListener('unlock', fn)
+    }
+  }
+
+  /** A listener that throws or rejects is logged redacted and never stops the others. */
+  private runListener(what: 'lock' | 'unlock', fn: () => unknown): void {
+    const fail = (err: unknown): void => {
+      console.error(`vault ${what} listener failed:`, redact(err instanceof Error ? err.message : String(err), this.knownValues()))
+    }
+    try {
+      const out = fn()
+      if (out instanceof Promise) out.catch(fail)
+    } catch (err) {
+      fail(err)
     }
   }
 }
