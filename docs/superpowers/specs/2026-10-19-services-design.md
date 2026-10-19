@@ -442,7 +442,7 @@ All of these are controller's calls.
    shown plainly and points to the host's docker setting. Fetching the become
    secret is a later addition.
 
-## Addendum A: config import/export (controller's call)
+## Addendum: config import/export (controller's call)
 
 The user asked for "import and export of whole config including deployments,
 in json or yaml, the best suitable one". Everything in this addendum is the
