@@ -117,7 +117,7 @@ describe('ReleaseStore', () => {
     const steps = [{ stepId: 's1', kind: 'record' as const, state: 'ok' as const, startedAt: 't0', finishedAt: 't1' }]
     f.releases.updateRun(run.id, { status: 'running', previousCommit: 'p1', deployedCommit: 'd1', commits, steps, backupFile: '/b/x.sql', startedAt: 't0' })
     f.releases.updateRun(run.id, { rolledBack: true })
-    const report = { releaseId: r.id, checks: [], commits: {}, dockerModes: {}, locks: {}, commitsTotal: 0, blocked: false }
+    const report = { releaseId: r.id, checks: [], commits: {}, dockerModes: {}, composeServices: {}, locks: {}, commitsTotal: 0, blocked: false }
     f.releases.appendEvents(r.id, [{ type: 'preflight.done', report }, log('hi')])
     f.releases.setStatus(r.id, 'ready', { releaseNotes: 'notes', playbook: '{"p":1}' })
     const detail = f.releases.detail(r.id)

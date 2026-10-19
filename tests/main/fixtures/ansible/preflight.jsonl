@@ -11,7 +11,7 @@
 {"event": "task_start", "name": "preflight fetch dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"]}
 {"event": "ok", "host": "od-1", "task": "preflight fetch dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF branch fetched=1 exists=1"}
 {"event": "task_start", "name": "preflight compose dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"]}
-{"event": "ok", "host": "od-1", "task": "preflight compose dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF compose exists=1"}
+{"event": "ok", "host": "od-1", "task": "preflight compose dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF compose exists=1 services_b64=d2ViCndvcmtlcgo="}
 {"event": "task_start", "name": "preflight disk dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"]}
 {"event": "ok", "host": "od-1", "task": "preflight disk dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF disk avail_kb=52428800"}
 {"event": "task_start", "name": "preflight tag dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"]}
@@ -51,7 +51,7 @@
 {"event": "task_start", "name": "preflight fetch dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"]}
 {"event": "ok", "host": "od-2", "task": "preflight fetch dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF branch fetched=1 exists=0"}
 {"event": "task_start", "name": "preflight compose dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"]}
-{"event": "ok", "host": "od-2", "task": "preflight compose dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF compose exists=1"}
+{"event": "ok", "host": "od-2", "task": "preflight compose dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF compose exists=1 services_b64=YXBpCg=="}
 {"event": "task_start", "name": "preflight disk dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"]}
 {"event": "ok", "host": "od-2", "task": "preflight disk dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF disk avail_kb=1258291"}
 {"event": "task_start", "name": "preflight tag dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"]}

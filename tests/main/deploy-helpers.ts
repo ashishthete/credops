@@ -113,8 +113,58 @@ export function depFixture(n: number, hostId: string, over: Partial<PlanDeployme
     becomeSecretKey: null,
     previousCommit: null,
     useSudo: 'auto',
+    composeProject: null,
+    services: null,
+    commitBases: { shas: [], tag: true },
     ...over,
   }
+}
+
+/**
+ * Splits shell text into words the way sh reads quotes: '…' is literal, "…" keeps $ text and takes
+ * backslash escapes, and a bare backslash escapes the next character. `;`, `&&`, `||`, `|` and newlines come out as their own
+ * tokens (a newline as `;`). Parse level only: nothing is expanded or run.
+ */
+export function shellWords(text: string): string[] {
+  const out: string[] = []
+  let word: string | null = null
+  const end = (): void => {
+    if (word !== null) out.push(word)
+    word = null
+  }
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (c === ' ' || c === '\t') end()
+    else if (c === '\n' || c === ';') {
+      end()
+      out.push(';')
+    } else if ((c === '&' && text[i + 1] === '&') || (c === '|' && text[i + 1] === '|')) {
+      end()
+      out.push(c + c)
+      i++
+    } else if (c === '|') {
+      end()
+      out.push('|')
+    } else if (c === "'") {
+      const j = text.indexOf("'", i + 1)
+      if (j < 0) throw new Error('unterminated single quote')
+      word = (word ?? '') + text.slice(i + 1, j)
+      i = j
+    } else if (c === '"') {
+      let w = ''
+      for (i++; i < text.length && text[i] !== '"'; i++) {
+        if (text[i] === '\\' && '$`"\\\n'.includes(text[i + 1])) i++
+        w += text[i]
+      }
+      if (i >= text.length) throw new Error('unterminated double quote')
+      word = (word ?? '') + w
+    } else if (c === '\\') {
+      word = (word ?? '') + (text[i + 1] ?? '')
+      i++
+    } else word = (word ?? '') + c
+  }
+  end()
+  return out
 }
 
 /** Two hosts behind one bastion, three deployments; dep 1 uses every optional feature. */

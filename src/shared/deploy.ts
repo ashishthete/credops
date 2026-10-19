@@ -318,7 +318,7 @@ export function lockHolderText(h: LockHolder, _now: number): string {
 
 // ---- Preflight ----
 export interface PreflightCheck {
-  /** tools, docker, repo, clean, branch, compose, disk, lock, tag, version-tag, reachable, auth or ansible */
+  /** tools, docker, repo, clean, branch, compose, deps, disk, lock, tag, version-tag, reachable, auth or ansible */
   id: string
   deploymentId: string | null
   hostId: string
@@ -335,6 +335,8 @@ export interface PreflightReport {
     { commits: CommitInfo[]; hiddenPairs: number; truncated: number; firstDeploy: boolean; head: string | null }
   >
   dockerModes: Record<string, DockerMode>
+  /** Per deployment: the compose file's services (`docker compose config --services`), null when unknown. */
+  composeServices: Record<string, string[] | null>
   locks: Record<string, { holder: LockHolder; stale: boolean; raw: string } | null>
   commitsTotal: number
   blocked: boolean

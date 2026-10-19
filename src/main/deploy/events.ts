@@ -1,4 +1,5 @@
 import {
+  COMPOSE_SERVICE,
   type CommitInfo,
   DISK_WARN_KB,
   LOCK_STALE_MS,
@@ -472,6 +473,44 @@ function decodeCommits(b64: string, deploymentId: string, cutOff: boolean, red: 
   return { commits, cut: cutOff }
 }
 
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+
+/**
+ * For each selected service, the services it depends on that are neither running nor selected (an up of
+ * the selection starts those itself). `configJson` is `docker compose config --format json`; `psJson` is
+ * `docker compose ps --status running --format json`, an array or one object per line. Throws on input it
+ * can't read; only services with something missing are returned.
+ */
+export function parseDeps(configJson: string, psJson: string, selected: string[]): { service: string; missing: string[] }[] {
+  const config: unknown = JSON.parse(configJson)
+  if (!isObj(config) || !isObj(config.services)) throw new Error('compose config has no services')
+  const services = config.services
+  const ps = psJson.trim()
+  const rows: unknown[] = !ps ? [] : ps.startsWith('[') ? (JSON.parse(ps) as unknown[]) : ps.split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l) as unknown)
+  if (!Array.isArray(rows)) throw new Error('compose ps is not a list')
+  const running = new Set(rows.flatMap((r) => (isObj(r) && typeof r.Service === 'string' ? [r.Service] : [])))
+  const chosen = new Set(selected)
+  const out: { service: string; missing: string[] }[] = []
+  for (const service of selected) {
+    const svc = services[service]
+    const dep = isObj(svc) ? svc.depends_on : undefined
+    const names = Array.isArray(dep) ? dep.filter((x): x is string => typeof x === 'string') : isObj(dep) ? Object.keys(dep) : []
+    const missing = names.filter((n) => !running.has(n) && !chosen.has(n))
+    if (missing.length) out.push({ service, missing })
+  }
+  return out
+}
+
+/** "a", "a and b", "a, b and c". */
+const andList = (xs: string[]): string => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`)
+
+/** The compose file's services from `services_b64`; null when absent, empty or any name is not a service name. */
+function decodeServices(b64: string | undefined): string[] | null {
+  if (!b64) return null
+  const names = Buffer.from(b64, 'base64').toString('utf8').split('\n').map((l) => l.trim()).filter(Boolean)
+  return names.length && names.every((n) => COMPOSE_SERVICE.test(n)) ? names : null
+}
+
 export interface ParsePreflightOptions {
   now: number
   /** Run keys whose output the callback plugin cut (EventTranslator.preflightCut()). */
@@ -487,6 +526,7 @@ export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, str
   const checks: PreflightCheck[] = []
   const commits: PreflightReport['commits'] = {}
   const dockerModes: Record<string, DockerMode> = {}
+  const composeServices: PreflightReport['composeServices'] = Object.fromEntries(plan.deployments.map((d) => [d.deploymentId, null]))
   const locks: PreflightReport['locks'] = {}
   const red = (s: string): string => redact(s, o.secrets ?? [])
   const cutRuns = new Set(o.cut ?? [])
@@ -562,7 +602,26 @@ export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, str
       const cp = get('compose')
       if (!cp) noResult('compose', 'The compose check')
       else if (cp.exists !== '1') add('compose', 'block', `compose file ${d.composeFile} not found in ${d.repoPath}`)
-      else add('compose', 'ok', `${d.composeFile} exists`)
+      else {
+        add('compose', 'ok', `${d.composeFile} exists`)
+        composeServices[d.deploymentId] = decodeServices(cp.services_b64)
+        // partial checkouts: a warning for what --no-deps leaves stopped, never a block
+        if (d.services !== null) {
+          const dp = get('deps')
+          let found: { service: string; missing: string[] }[] | null = null
+          try {
+            if (dp?.config_b64) found = parseDeps(Buffer.from(dp.config_b64, 'base64').toString('utf8'), Buffer.from(dp.ps_b64 ?? '', 'base64').toString('utf8'), d.services)
+          } catch {
+            found = null
+          }
+          if (found === null) add('deps', 'warn', `Couldn't check compose dependencies on ${hl}`)
+          else
+            for (const f of found) {
+              const one = f.missing.length === 1
+              add('deps', 'warn', `${f.service} depends on ${andList(f.missing)}, which ${one ? "isn't" : "aren't"} running. --no-deps won't start ${one ? 'it' : 'them'}`)
+            }
+        }
+      }
 
       const disk = get('disk')
       const kb = disk ? Number(disk.avail_kb) : NaN
@@ -645,5 +704,5 @@ export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, str
     }
   }
 
-  return { checks, commits, dockerModes, locks, commitsTotal, blocked: checks.some((c) => c.level === 'block') }
+  return { checks, commits, dockerModes, composeServices, locks, commitsTotal, blocked: checks.some((c) => c.level === 'block') }
 }

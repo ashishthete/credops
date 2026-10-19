@@ -46,6 +46,15 @@ export interface PlanDeployment {
   previousCommit: string | null
   /** Preflight walks the docker ladder by this setting. */
   useSudo: UseSudo
+  /** `-p` for every compose command; null lets compose name the project after the directory. */
+  composeProject: string | null
+  /** Compose services to build and up (with --no-deps), in position order; null means the whole checkout. */
+  services: string[] | null
+  /**
+   * Preflight lists commits from the merge-base of these (each selected service's last deployed commit, plus
+   * the deploy tag's commit when `tag`) to origin/<branch>. No shas: the tag range alone.
+   */
+  commitBases: { shas: string[]; tag: boolean }
 }
 
 export type PlanKind = 'preflight' | 'release' | 'rollback' | 'version' | 'unlock' | 'break-lock'

@@ -54,6 +54,7 @@ class FakeRunner implements DeployRunner {
             checks: this.checks,
             commits: Object.fromEntries(plan.deployments.map((d) => [d.deploymentId, { commits: [], hiddenPairs: 0, truncated: 0, firstDeploy: false, head: A }])),
             dockerModes: Object.fromEntries(plan.deployments.map((d) => [d.deploymentId, 'plain' as const])),
+            composeServices: Object.fromEntries(plan.deployments.map((d) => [d.deploymentId, null])),
             locks: this.locks,
             commitsTotal: this.commitsTotal,
             blocked: this.checks.some((c) => c.level === 'block'),

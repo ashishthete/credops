@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { CALLBACK_PLUGIN_SOURCE } from '../../src/main/deploy/callback-plugin'
-import { EventTranslator, parsePreflight, parseStreamLine } from '../../src/main/deploy/events'
+import { EventTranslator, parseDeps, parsePreflight, parseStreamLine } from '../../src/main/deploy/events'
 import { generatePlaybook } from '../../src/main/deploy/generate'
 import { MARK, parseMarker, parsePfLine, parsePrev } from '../../src/main/deploy/markers'
 import type { DeployPlan } from '../../src/main/deploy/runner'
@@ -517,6 +517,87 @@ describe('fix round 1', () => {
   it('the plugin tolerates extra Display arguments and non-string messages', () => {
     expect(CALLBACK_PLUGIN_SOURCE).toContain('def _warning(self, msg, *args, **kwargs):')
     expect(CALLBACK_PLUGIN_SOURCE).toContain('json.dumps(value, default=str)')
+  })
+})
+
+describe('compose services and dependencies', () => {
+  const b64 = (t: string): string => Buffer.from(t).toString('base64')
+  const CONFIG = JSON.stringify({
+    name: 'shop',
+    services: {
+      web: { image: 'web', depends_on: { api: { condition: 'service_started' }, cache: { condition: 'service_healthy' } } },
+      api: { image: 'api', depends_on: ['db'] },
+      worker: { image: 'w', depends_on: ['db', 'queue'] },
+      db: { image: 'pg' },
+      cache: { image: 'redis' },
+      queue: { image: 'q' },
+      solo: { image: 's' },
+    },
+  })
+  const PS_ARRAY = JSON.stringify([{ Service: 'db', State: 'running' }, { Service: 'cache', State: 'running' }])
+  const PS_NDJSON = [{ Service: 'db', State: 'running' }, { Service: 'cache', State: 'running' }].map((r) => JSON.stringify(r)).join('\n')
+
+  /** dep 3 alone on od-2, with a passing base and the given extra OD-PF lines. */
+  const one = (services: string[] | null, extra: string[]) => {
+    const p = planFixture({ kind: 'preflight' })
+    p.deployments = [{ ...p.deployments[2], services }]
+    p.hosts = [p.hosts[1]]
+    const base = ['tools missing=', 'docker plain=ok sudo=ok mode=plain use=auto', 'repo exists=1 git=1', 'clean ok=1', 'branch fetched=1 exists=1', 'disk avail_kb=9999999', 'tag exists=0 commit=', 'version-tag exists=0', 'commits log_b64=']
+    return parsePreflight(p, { [R3]: [...base, ...extra].map((l) => `OD-PF ${l}`).join('\n'), 'host:host-od-2': 'OD-PF lock repo=/x held=0 raw_b64=' }, { now: NOW })
+  }
+  const COMPOSE_OK = `compose exists=1 services_b64=${b64('web\napi\n')}`
+
+  it('parseDeps reads depends_on in array and map form and running names from array or NDJSON', () => {
+    for (const ps of [PS_ARRAY, PS_NDJSON, `${PS_NDJSON}\n`]) {
+      expect(parseDeps(CONFIG, ps, ['web', 'worker', 'solo'])).toEqual([
+        { service: 'web', missing: ['api'] },
+        { service: 'worker', missing: ['queue'] },
+      ])
+    }
+    // a dependency that is itself selected is started by the same up
+    expect(parseDeps(CONFIG, PS_ARRAY, ['web', 'api'])).toEqual([])
+    expect(parseDeps(CONFIG, '', ['api'])).toEqual([{ service: 'api', missing: ['db'] }])
+    expect(parseDeps(CONFIG, '[]', ['solo'])).toEqual([])
+  })
+
+  it("parseDeps failure gives the couldn't check warn and no deps warning", () => {
+    expect(() => parseDeps('{not json', PS_ARRAY, ['web'])).toThrow()
+    expect(() => parseDeps(CONFIG, '{"Service": ', ['web'])).toThrow()
+    expect(() => parseDeps('[]', PS_ARRAY, ['web'])).toThrow()
+    for (const deps of [`deps config_b64=${b64('{oops')} ps_b64=${b64(PS_ARRAY)}`, `deps config_b64= ps_b64=`, null]) {
+      const r = one(['web'], [COMPOSE_OK, ...(deps ? [deps] : [])])
+      expect(r.checks.filter((c) => c.id === 'deps').map((c) => `${c.level}: ${c.message}`)).toEqual(["warn: Couldn't check compose dependencies on label od-2"])
+      expect(r.blocked).toBe(false)
+    }
+  })
+
+  it('parsePreflight fills composeServices from services_b64, null when missing', () => {
+    const plan = planFixture({ kind: 'preflight' })
+    const { tr } = replay('preflight.jsonl', plan)
+    const r = parsePreflight(plan, tr.preflightOutput(), { now: NOW + 60_000, cut: tr.preflightCut() })
+    expect(r.composeServices).toEqual({ 'dep-1': ['web', 'worker'], 'dep-2': null, 'dep-3': ['api'] })
+    expect(one(null, ['compose exists=1']).composeServices).toEqual({ 'dep-3': null })
+    expect(one(null, ['compose exists=1 services_b64=']).composeServices).toEqual({ 'dep-3': null })
+    expect(one(null, [`compose exists=1 services_b64=${b64('web\n--rm\n')}`]).composeServices).toEqual({ 'dep-3': null })
+    expect(one(null, ['compose exists=0']).composeServices).toEqual({ 'dep-3': null })
+    expect(one(null, [COMPOSE_OK]).composeServices).toEqual({ 'dep-3': ['web', 'api'] })
+    expect(parsePreflight(planFixture({ kind: 'preflight' }), {}, { now: NOW }).composeServices).toEqual({ 'dep-1': null, 'dep-2': null, 'dep-3': null })
+  })
+
+  it('deps warnings are warn checks, never blocks', () => {
+    const r = one(['web', 'worker'], [COMPOSE_OK, `deps config_b64=${b64(CONFIG)} ps_b64=${b64(PS_NDJSON)}`])
+    expect(r.checks.filter((c) => c.id === 'deps')).toEqual([
+      { id: 'deps', deploymentId: 'dep-3', hostId: 'host-od-2', label: 'dep3', level: 'warn', message: "web depends on api, which isn't running. --no-deps won't start it" },
+      { id: 'deps', deploymentId: 'dep-3', hostId: 'host-od-2', label: 'dep3', level: 'warn', message: "worker depends on queue, which isn't running. --no-deps won't start it" },
+    ])
+    expect(r.blocked).toBe(false)
+    const two = one(['web'], [COMPOSE_OK, `deps config_b64=${b64(CONFIG)} ps_b64=`])
+    expect(two.checks.find((c) => c.id === 'deps')?.message).toBe("web depends on api and cache, which aren't running. --no-deps won't start them")
+    const three = one(['worker', 'api'], [COMPOSE_OK, `deps config_b64=${b64(JSON.stringify({ services: { worker: { depends_on: ['a', 'b', 'c'] } } }))} ps_b64=`])
+    expect(three.checks.find((c) => c.id === 'deps')?.message).toBe("worker depends on a, b and c, which aren't running. --no-deps won't start them")
+    // all running: no deps check at all; a whole checkout never gets one
+    expect(one(['api'], [COMPOSE_OK, `deps config_b64=${b64(CONFIG)} ps_b64=${b64(PS_ARRAY)}`]).checks.filter((c) => c.id === 'deps')).toEqual([])
+    expect(one(null, [COMPOSE_OK]).checks.filter((c) => c.id === 'deps')).toEqual([])
   })
 })
 

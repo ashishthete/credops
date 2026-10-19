@@ -251,11 +251,11 @@ export class ReleaseService {
       if (out?.preflight) report = { releaseId: id, ...out.preflight, checks: [...checks, ...out.preflight.checks] }
       else {
         if (err === null) checks.push(this.block('tools', 'Preflight did not finish; see the log'))
-        report = { releaseId: id, checks, commits: {}, dockerModes: {}, locks: {}, commitsTotal: 0, blocked: true }
+        report = { releaseId: id, checks, commits: {}, dockerModes: {}, composeServices: {}, locks: {}, commitsTotal: 0, blocked: true }
       }
     } catch (e) {
       const msg = this.red(live, e instanceof Error ? e.message : String(e))
-      report = { releaseId: id, checks: [this.block(e instanceof ToolingError ? 'ansible' : 'tools', msg)], commits: {}, dockerModes: {}, locks: {}, commitsTotal: 0, blocked: true }
+      report = { releaseId: id, checks: [this.block(e instanceof ToolingError ? 'ansible' : 'tools', msg)], commits: {}, dockerModes: {}, composeServices: {}, locks: {}, commitsTotal: 0, blocked: true }
     } finally {
       this.drop(holder)
     }
@@ -882,6 +882,10 @@ export class ReleaseService {
       becomeSecretKey: o.holder?.becomeKey.get(run.id) ?? null,
       previousCommit: kind === 'rollback' ? (o.previous?.get(run.id) ?? null) : null,
       useSudo: dep.useSudo,
+      // The whole checkout until service selection reaches the plan (Task 5).
+      composeProject: dep.composeProject,
+      services: null,
+      commitBases: { shas: [], tag: true },
     }))
     return {
       releaseId: live.id,
