@@ -294,6 +294,12 @@ export class TunnelManager {
     }
   }
 
+  /** On a vault reset: stops every tunnel, paused ones included, and lets the next unlock auto-start afresh. */
+  vaultReset(): void {
+    this.stopAll('reset')
+    this.autoStarted = false
+  }
+
   /** Store delete hook. It runs inside the store's write path, so it never throws. */
   removed(id: string): void {
     try {

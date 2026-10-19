@@ -224,6 +224,10 @@ if (!app.requestSingleInstanceLock()) {
       service.onLock(() => prompts.cancelAll())
       // Resumes paused tunnels; the first unlock also auto-starts.
       service.onUnlock(() => runner.vaultUnlocked())
+      // A reset needs no password, so nothing the old one guarded may survive it: every session
+      // (local shells too, for their scrollback) and every tunnel goes before the gate opens.
+      service.onReset(() => manager.closeAll('reset'))
+      service.onReset(() => runner.vaultReset())
       stopAutoLock = new AutoLock({
         idleSeconds: () => powerMonitor.getSystemIdleTime(),
         minutes: () => service.autoLockMinutes(),

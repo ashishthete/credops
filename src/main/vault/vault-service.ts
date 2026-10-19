@@ -111,6 +111,7 @@ export class VaultService {
   private readonly known = new Map<string, readonly string[]>()
   private readonly lockListeners = new Set<(reason: LockReason) => unknown>()
   private readonly unlockListeners = new Set<() => unknown>()
+  private readonly resetListeners = new Set<() => unknown>()
   /** Set by install() on a locked-to-unlocked transition; serial() fires the unlock listeners once the section resolves. */
   private unlockedPending = false
   /** Chains password operations so the throttle check and failure count cannot interleave. */
@@ -327,6 +328,15 @@ export class VaultService {
     return () => this.unlockListeners.delete(fn)
   }
 
+  /**
+   * Fires after a reset has committed, before reset() resolves: whatever the old password guarded
+   * and outlives a lock (live sessions, tunnels) must be gone before the gate opens on setup.
+   */
+  onReset(fn: () => unknown): () => void {
+    this.resetListeners.add(fn)
+    return () => this.resetListeners.delete(fn)
+  }
+
   changePassword(current: string, next: string): Promise<UnlockResult> {
     return this.serial(async () => {
       this.assertUnlocked()
@@ -434,6 +444,7 @@ export class VaultService {
       this.corrupt = []
       this.known.clear()
       this.audit.append({ action: 'vault.reset', outcome: 'success', details: counts })
+      for (const fn of [...this.resetListeners]) this.runListener('reset', fn)
       return this.status()
     })
   }
@@ -692,7 +703,7 @@ export class VaultService {
   }
 
   /** A listener that throws or rejects is logged redacted and never stops the others. */
-  private runListener(what: 'lock' | 'unlock', fn: () => unknown): void {
+  private runListener(what: 'lock' | 'unlock' | 'reset', fn: () => unknown): void {
     const fail = (err: unknown): void => {
       console.error(`vault ${what} listener failed:`, redact(err instanceof Error ? err.message : String(err), this.knownValues()))
     }

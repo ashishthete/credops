@@ -13,6 +13,7 @@ const POINTS = [
   "The master password can't be recovered.",
   'Resetting permanently erases every secret in every vault: passwords, private keys, passphrases and other secret items.',
   'It also turns off Touch ID quick unlock.',
+  'Open terminals and tunnels will be closed.',
   'Products, environments, hosts, services, tunnels and other settings are kept.',
   'Hosts and checkouts that used a vault secret will need it added again.',
 ]

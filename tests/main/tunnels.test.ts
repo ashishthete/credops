@@ -18,6 +18,7 @@ import type { AuthPlan } from '../../src/main/ssh/auth'
 import { connectChain } from '../../src/main/ssh/connect'
 import { KnownHostStore } from '../../src/main/ssh/known-hosts'
 import { PromptBroker } from '../../src/main/ssh/prompts'
+import { SessionManager } from '../../src/main/ssh/sessions'
 import { resolveHost } from '../../src/main/inventory/resolve'
 import { hostMeta } from '../../src/main/inventory/rows'
 import { createInventoryHandlers } from '../../src/main/ipc/handlers/inventory'
@@ -150,6 +151,7 @@ async function setup(opts: SetupOpts = {}) {
   f.vault.onLock(() => manager.vaultLocked())
   f.vault.onLock(() => broker.cancelAll())
   f.vault.onUnlock(() => manager.vaultUnlocked())
+  f.vault.onReset(() => manager.vaultReset())
   onTestFinished(() => manager.stopAll('quit'))
 
   let hostN = 0
@@ -878,5 +880,73 @@ describe('TunnelManager', () => {
     const runtimes = [denied.id, blocked.id, ok.id].map((id) => t.manager.runtime(id))
     const everything = JSON.stringify(tunnelSide) + JSON.stringify(runtimes) + auditRows(t.db) + JSON.stringify(warn.mock.calls)
     expect(everything).not.toContain(TUNNEL_USER.username)
+  })
+})
+
+describe('vault reset', () => {
+  it('closes every session and stops every tunnel, paused ones too, before reset() resolves', async () => {
+    const t = await setup()
+    const srv = await server()
+    const unknown = await server()
+    const echo = await target()
+    const sessions = new SessionManager({
+      resolve: (hostId, environmentId) => resolveHost(t.db, hostId, environmentId, { localUser: 'tester' }),
+      hostInfo: (hostId) => ({ ...hostMeta(t.db, hostId), envVars: {} }),
+      envColor: () => null,
+      connect: connectChain,
+      plan: async () => passwordPlan(),
+      knownHosts: t.knownHosts,
+      prompts: t.broker,
+      audit: t.audit,
+      isLocked: () => !t.vault.isUnlocked(),
+      emit: () => {},
+    })
+    // The same order as src/main/index.ts: sessions first.
+    t.vault.onReset(() => sessions.closeAll('reset'))
+    onTestFinished(() => sessions.closeAll('quit'))
+
+    const hostId = t.host(srv)
+    const shell = sessions.openSsh({ hostId, cols: 80, rows: 24 })
+    await t.waitFor(() => expect(sessions.list()[0]?.state).toBe('ready'))
+    const up = t.tunnel(hostId, { label: 'up', targetPort: echo.port })
+    const paused = t.tunnel(t.host(unknown, false), { label: 'paused', targetPort: echo.port })
+    t.manager.start(up.id)
+    const { boundPort } = await t.waitState(up.id, 'up')
+    t.manager.start(paused.id)
+    await t.waitPrompt()
+
+    t.vault.lock('manual')
+    await t.waitState(paused.id, 'retrying', (rt) => rt.error?.code === 'locked')
+    // Locking keeps both: the reset is what has to end them.
+    expect(sessions.list().map((s) => s.id)).toEqual([shell.id])
+    expect(t.manager.runtime(up.id).state).toBe('up')
+
+    await t.vault.reset('RESET')
+    expect(sessions.list()).toEqual([])
+    expect(() => sessions.attach(shell.id)).toThrow('session not found')
+    expect(t.manager.status().map((r) => r.state)).toEqual(['stopped', 'stopped'])
+    expect(t.audits('tunnel.stop').map((a) => [a.targetLabel, a.details.reason])).toEqual([['up', 'reset']])
+    expect(t.audit.list({ actions: ['ssh.close'] }).map((a) => a.details.reason)).toEqual(['reset'])
+    await expect(dial(boundPort!)).rejects.toThrow()
+    await t.waitFor(() => expect(srv.connections() + unknown.connections()).toBe(0))
+
+    // Setup is a first unlock again: nothing paused comes back.
+    await t.vault.setup('a new password')
+    expect(t.manager.status().map((r) => r.state)).toEqual(['stopped', 'stopped'])
+  })
+
+  it('lets the first unlock after setup auto-start again', async () => {
+    const t = await setup()
+    const srv = await server()
+    const echo = await target()
+    const auto = t.tunnel(t.host(srv), { label: 'auto', targetPort: echo.port, autoStart: true })
+    t.vault.lock('manual')
+    await t.vault.unlock('correct horse')
+    await t.waitState(auto.id, 'up')
+    t.vault.lock('manual')
+    await t.vault.reset('RESET')
+    expect(t.manager.runtime(auto.id).state).toBe('stopped')
+    await t.vault.setup('a new password')
+    await t.waitState(auto.id, 'up')
   })
 })

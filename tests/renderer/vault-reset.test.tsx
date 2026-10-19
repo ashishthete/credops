@@ -70,6 +70,7 @@ describe('forgot password', () => {
     expect(within(dialog).getByText("The master password can't be recovered.")).toBeInTheDocument()
     expect(within(dialog).getByText(/permanently erases every secret in every vault/)).toBeInTheDocument()
     expect(within(dialog).getByText(/turns off Touch ID quick unlock/)).toBeInTheDocument()
+    expect(within(dialog).getByText('Open terminals and tunnels will be closed.')).toBeInTheDocument()
     expect(within(dialog).getByText(/Products, environments, hosts, services, tunnels and other settings are kept/)).toBeInTheDocument()
     expect(within(dialog).getByText(/will need it added again/)).toBeInTheDocument()
 
