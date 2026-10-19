@@ -72,13 +72,16 @@ describe('ReleaseStore', () => {
     f.releases.appendEvents(r.id, Array.from({ length: 4 }, (_, i) => log(`l${i}`)))
     const out = f.releases.appendEvents(r.id, [log('x1'), log('x2'), log('x3')])
     f.releases.appendEvents(r.id, [log('x4')])
-    f.releases.appendEvents(r.id, [{ type: 'run.finished', status: 'failed' }])
+    const finished = f.releases.appendEvents(r.id, [{ type: 'run.finished', status: 'failed' }])
+    expect(finished.map((e) => e.type)).toEqual(['log.truncated', 'run.finished'])
     const all = f.releases.events(r.id, 0, 100)
     expect(all.filter((e) => e.type === 'log')).toHaveLength(5)
     expect(all.filter((e) => e.type === 'log.truncated')).toHaveLength(1)
     expect(all.at(-1)).toMatchObject({ type: 'run.finished' })
-    expect(out.some((e) => e.type === 'log.truncated')).toBe(true)
+    expect(out).toHaveLength(1) // dropped logs add no events until the next non-log event
     expect(all.map((e) => e.seq)).toEqual(all.map((_, i) => i + 1))
+    // x2, x3 in one batch, x4 in the next: the stored count keeps up.
+    expect(all.find((e) => e.type === 'log.truncated')).toMatchObject({ dropped: 3 })
   })
 
   it('createRuns stores planned pending steps', async () => {
@@ -192,5 +195,42 @@ describe('ReleaseStore', () => {
       }),
     ).toThrow('boom')
     expect(f.releases.detail(r.id).runs[0].status).toBe('running')
+  })
+
+  it('failInterrupted also settles run steps', async () => {
+    const { f, d } = await release()
+    const rel = f.releases.createRelease({
+      environmentId: f.prod.id, kind: 'release', status: 'running', version: null, previousVersion: null,
+      versionBump: 'none', redeploy: false, rollbackOf: null, options: DEFAULT_RELEASE_OPTIONS, triggeredBy: 'u@m',
+    })
+    const [dr] = f.releases.createRuns(rel.id, [
+      { deploymentId: d.id, deploymentName: 'api', hostId: d.hostId, hostLabel: 'app1', position: 0, branch: 'main',
+        steps: [{ stepId: 'a', kind: 'record' }, { stepId: 'b', kind: 'fetch' }, { stepId: 'c', kind: 'unlock' }] },
+    ])
+    f.releases.updateRun(dr.id, {
+      status: 'running',
+      steps: [
+        { stepId: 'a', kind: 'record', state: 'ok', startedAt: 't0', finishedAt: 't1' },
+        { stepId: 'b', kind: 'fetch', state: 'running', startedAt: 't1', finishedAt: null },
+        { stepId: 'c', kind: 'unlock', state: 'pending', startedAt: null, finishedAt: null },
+      ],
+    })
+    f.releases.failInterrupted()
+    const steps = f.releases.detail(rel.id).runs[0].steps
+    expect(steps[0]).toMatchObject({ state: 'ok', finishedAt: 't1' })
+    expect(steps[1]).toMatchObject({ state: 'failed', startedAt: 't1' })
+    expect(steps[1].finishedAt).not.toBeNull()
+    expect(steps[2]).toMatchObject({ state: 'skipped', finishedAt: null })
+  })
+
+  it('failInterrupted fails a release stuck in preflight but leaves ready alone', async () => {
+    const { f, r } = await release()
+    const pre = f.releases.createRelease({
+      environmentId: f.prod.id, kind: 'release', status: 'preflight', version: null, previousVersion: null,
+      versionBump: 'none', redeploy: false, rollbackOf: null, options: DEFAULT_RELEASE_OPTIONS, triggeredBy: 'u@m',
+    })
+    expect(f.releases.failInterrupted()).toEqual([pre.id])
+    expect(f.releases.get(pre.id)).toMatchObject({ status: 'failed', error: 'interrupted: OpsDeck quit during the run' })
+    expect(f.releases.get(r.id).status).toBe('ready')
   })
 })

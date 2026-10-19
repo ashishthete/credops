@@ -265,13 +265,14 @@ export class DeployStore {
         ? this.db.prepare(`SELECT * FROM deployments ${order}`).all()
         : this.db.prepare(`SELECT * FROM deployments WHERE environment_id = ? ${order}`).all(environmentId)
     ) as unknown as DeploymentRow[]
-    return rows.map((r) => this.meta(r))
+    const vaults = this.vaultMap()
+    return rows.map((r) => this.meta(r, vaults.get(r.id) ?? []))
   }
 
   get(id: string): DeploymentMeta {
     const row = this.db.prepare('SELECT * FROM deployments WHERE id = ?').get(id) as DeploymentRow | undefined
     if (!row) throw new Error('deployment not found')
-    return this.meta(row)
+    return this.meta(row, this.vaultMap(id).get(id) ?? [])
   }
 
   create(input: DeploymentInput): DeploymentMeta {
@@ -417,15 +418,21 @@ export class DeployStore {
   /** Renumbers `position` 0..n-1 in the given order. `ids` must be exactly the environment's deployments. */
   reorder(environmentId: string, ids: string[]): void {
     this.vault.assertUnlocked()
-    inTransaction(this.db, () => {
-      const have = (this.db.prepare('SELECT id FROM deployments WHERE environment_id = ?').all(environmentId) as { id: string }[]).map((r) => r.id)
-      if (ids.length !== have.length || new Set(ids).size !== ids.length || !ids.every((i) => have.includes(i))) {
+    const moved = inTransaction(this.db, () => {
+      if (!this.db.prepare('SELECT 1 FROM environments WHERE id = ?').get(environmentId)) throw new Error('environment not found')
+      const have = this.db.prepare('SELECT id, position FROM deployments WHERE environment_id = ?').all(environmentId) as { id: string; position: number }[]
+      const known = new Set(have.map((r) => r.id))
+      if (ids.length !== have.length || new Set(ids).size !== ids.length || !ids.every((i) => known.has(i))) {
         throw new Error(REORDER_MESSAGE)
       }
+      const pos = new Map(have.map((r) => [r.id, r.position]))
+      if (ids.every((i, n) => pos.get(i) === n)) return false
       const upd = this.db.prepare('UPDATE deployments SET position = ?, updated_at = ? WHERE id = ?')
       const ts = this.now().toISOString()
-      ids.forEach((i, pos) => upd.run(pos, ts, i))
+      ids.forEach((i, n) => upd.run(n, ts, i))
+      return true
     })
+    if (!moved) return
     this.audit.append({
       action: 'deploy.update',
       outcome: 'success',
@@ -449,22 +456,24 @@ export class DeployStore {
 
   updateSettings(environmentId: string, patch: EnvDeploySettingsPatch): EnvDeploySettings {
     this.vault.assertUnlocked()
-    const before = this.settings(environmentId)
     if (patch.currentVersion !== undefined && patch.currentVersion !== null && !VERSION.test(patch.currentVersion)) {
       throw new Error('version must look like v1.2.3')
     }
-    const next = {
-      versioned: patch.versioned ?? before.versioned,
-      autoRollback: patch.autoRollback ?? before.autoRollback,
-      currentVersion: patch.currentVersion === undefined ? before.currentVersion : patch.currentVersion,
-    }
-    const fields = (['versioned', 'autoRollback', 'currentVersion'] as const).filter((k) => next[k] !== before[k])
-    if (fields.length === 0) return before
-    inTransaction(this.db, () =>
+    const fields = inTransaction(this.db, () => {
+      const before = this.settings(environmentId)
+      const next = {
+        versioned: patch.versioned ?? before.versioned,
+        autoRollback: patch.autoRollback ?? before.autoRollback,
+        currentVersion: patch.currentVersion === undefined ? before.currentVersion : patch.currentVersion,
+      }
+      const changed = (['versioned', 'autoRollback', 'currentVersion'] as const).filter((k) => next[k] !== before[k])
+      if (changed.length === 0) return changed
       this.db
         .prepare('UPDATE environments SET versioned = ?, auto_rollback = ?, current_version = ?, updated_at = ? WHERE id = ?')
-        .run(next.versioned ? 1 : 0, next.autoRollback ? 1 : 0, next.currentVersion, this.now().toISOString(), environmentId),
-    )
+        .run(next.versioned ? 1 : 0, next.autoRollback ? 1 : 0, next.currentVersion, this.now().toISOString(), environmentId)
+      return changed
+    })
+    if (fields.length === 0) return this.settings(environmentId)
     this.audit.append({
       action: 'deploy.settings',
       outcome: 'success',
@@ -484,8 +493,19 @@ export class DeployStore {
 
   // ---- internals ----
 
-  private meta(r: DeploymentRow): DeploymentMeta {
-    const vaultIds = (this.db.prepare('SELECT vault_id FROM deployment_vaults WHERE deployment_id = ? ORDER BY vault_id').all(r.id) as { vault_id: string }[]).map((x) => x.vault_id)
+  /** deployment id -> sorted vault ids, in one query (all deployments, or just `only`). */
+  private vaultMap(only?: string): Map<string, string[]> {
+    const rows = (
+      only === undefined
+        ? this.db.prepare('SELECT deployment_id, vault_id FROM deployment_vaults ORDER BY vault_id').all()
+        : this.db.prepare('SELECT deployment_id, vault_id FROM deployment_vaults WHERE deployment_id = ? ORDER BY vault_id').all(only)
+    ) as { deployment_id: string; vault_id: string }[]
+    const out = new Map<string, string[]>()
+    for (const r of rows) out.set(r.deployment_id, [...(out.get(r.deployment_id) ?? []), r.vault_id])
+    return out
+  }
+
+  private meta(r: DeploymentRow, vaultIds: string[]): DeploymentMeta {
     return {
       id: r.id,
       name: r.name,
@@ -549,8 +569,11 @@ export class DeployStore {
     const name = checkText(f.name, 'deployment name', MAX_NAME)
     this.checkMembership(f.environmentId, f.hostId)
     if (f.appId !== null) {
-      const app = this.db.prepare('SELECT host_id FROM apps WHERE id = ?').get(f.appId) as { host_id: string } | undefined
+      const app = this.db.prepare('SELECT host_id, environment_id FROM apps WHERE id = ?').get(f.appId) as
+        | { host_id: string; environment_id: string }
+        | undefined
       if (!app || app.host_id !== f.hostId) throw new Error("app isn't on that host")
+      if (app.environment_id !== f.environmentId) throw new Error("app isn't in that environment")
     }
     const dup = this.db
       .prepare('SELECT id FROM deployments WHERE environment_id = ? AND name = ? COLLATE NOCASE')
@@ -581,7 +604,7 @@ export class DeployStore {
 
     if (f.becomeSecretId !== null && !this.secrets.exists(f.becomeSecretId)) throw new Error('become secret not found')
 
-    const vaultIds = [...new Set(f.vaultIds)]
+    const vaultIds = [...new Set(f.vaultIds)].sort()
     for (const v of vaultIds) if (!this.db.prepare('SELECT 1 FROM vaults WHERE id = ?').get(v)) throw new Error('vault not found')
 
     const managedEnv = f.managedEnv === true

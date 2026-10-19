@@ -136,6 +136,8 @@ export class ReleaseStore {
   private readonly db: Db
   private readonly now: () => Date
   private readonly maxEvents: number
+  /** Logs dropped since the last `log.truncated`, per release; flushed with the next non-log event. */
+  private readonly dropped = new Map<string, number>()
 
   constructor(deps: ReleaseStoreDeps) {
     this.db = deps.db
@@ -275,15 +277,17 @@ export class ReleaseStore {
 
   // ---- events ----
 
-  /** Appends in order, assigning seq and UUIDv7 ids. Logs past the cap are dropped with one `log.truncated`. */
+  /**
+   * Appends in order, assigning seq and UUIDv7 ids. Logs past the cap are dropped. run_events is append-only,
+   * so the drop count can't be edited in place: it is written as one `log.truncated` (dropped = lines since the
+   * previous marker) just before the next non-log event.
+   */
   appendEvents(releaseId: string, bodies: RunEventBody[]): RunEvent[] {
     this.row(releaseId)
     return this.transaction(() => {
-      const q = (sql: string) => this.db.prepare(sql).get(releaseId) as { n: number }
-      let logs = q("SELECT COUNT(*) AS n FROM run_events WHERE release_id = ? AND type = 'log'").n
-      let truncated = q("SELECT COUNT(*) AS n FROM run_events WHERE release_id = ? AND type = 'log.truncated'").n > 0
+      let logs = (this.db.prepare("SELECT COUNT(*) AS n FROM run_events WHERE release_id = ? AND type = 'log'").get(releaseId) as { n: number }).n
       let seq = (this.db.prepare('SELECT COALESCE(MAX(seq), 0) AS s FROM run_events WHERE release_id = ?').get(releaseId) as { s: number }).s
-      let dropped = 0
+      let dropped = this.dropped.get(releaseId) ?? 0
       const out: RunEvent[] = []
       const ins = this.db.prepare('INSERT INTO run_events(id, release_id, seq, at, type, payload) VALUES (?,?,?,?,?,?)')
       const put = (body: RunEventBody) => {
@@ -295,16 +299,17 @@ export class ReleaseStore {
         if (body.type === 'log') {
           if (logs >= this.maxEvents) {
             dropped++
-            if (!truncated) {
-              truncated = true
-              put({ type: 'log.truncated', dropped })
-            }
             continue
           }
           logs++
+        } else if (dropped > 0) {
+          put({ type: 'log.truncated', dropped })
+          dropped = 0
         }
         put(body)
       }
+      if (dropped > 0) this.dropped.set(releaseId, dropped)
+      else this.dropped.delete(releaseId)
       return out
     })
   }
@@ -319,15 +324,26 @@ export class ReleaseStore {
 
   // ---- startup ----
 
-  /** A release left running or rolling back by a quit can never finish: mark it failed. Returns their ids. */
+  /**
+   * A release left preflight, running or rolling back by a quit can never finish: mark it failed (its runs and
+   * their steps too). `ready` is a stable waiting state and stays. Returns the ids.
+   */
   failInterrupted(): string[] {
-    const ids = (this.db.prepare("SELECT id FROM releases WHERE status IN ('running','rolling_back') ORDER BY id").all() as { id: string }[]).map((r) => r.id)
+    const ids = (this.db.prepare("SELECT id FROM releases WHERE status IN ('preflight','running','rolling_back') ORDER BY id").all() as { id: string }[]).map((r) => r.id)
     if (ids.length === 0) return ids
     const ts = this.now().toISOString()
     this.transaction(() => {
       for (const id of ids) {
-        this.db.prepare("UPDATE deployment_runs SET status = 'failed', finished_at = ? WHERE release_id = ? AND status = 'running'").run(ts, id)
-        this.db.prepare("UPDATE deployment_runs SET status = 'cancelled' WHERE release_id = ? AND status = 'pending'").run(id)
+        const runs = this.db.prepare("SELECT id, status, steps FROM deployment_runs WHERE release_id = ? AND status IN ('running','pending')").all(id) as unknown as Pick<RunRow, 'id' | 'status' | 'steps'>[]
+        for (const run of runs) {
+          const steps = (JSON.parse(run.steps) as DeploymentRunMeta['steps']).map((st) =>
+            st.state === 'running' ? { ...st, state: 'failed' as const, finishedAt: ts } : st.state === 'pending' ? { ...st, state: 'skipped' as const } : st,
+          )
+          const status = run.status === 'running' ? 'failed' : 'cancelled'
+          this.db
+            .prepare('UPDATE deployment_runs SET status = ?, steps = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?')
+            .run(status, JSON.stringify(steps), run.status === 'running' ? ts : null, run.id)
+        }
         this.setStatus(id, 'failed', { error: INTERRUPTED_MESSAGE, finishedAt: ts })
         this.appendEvents(id, [{ type: 'run.finished', status: 'failed', error: INTERRUPTED_MESSAGE }])
       }

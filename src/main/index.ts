@@ -167,7 +167,8 @@ if (!app.requestSingleInstanceLock()) {
       const snippets = new SnippetStore({ db, audit: log, vault: service })
       const deploys = new DeployStore({ db, audit: log, vault: service, secrets: dbSecretRefs(db) })
       deploys.onChanged = (environmentId) => pushEvent(mainWindow, 'deploy:changed', { environmentId })
-      // A run left running by a quit can never finish; mark it failed before anything reads it.
+      // Startup recovery lives here (Task 7 must not add a second call): a release left preflight, running or
+      // rolling back by a quit can never finish, so mark it failed before anything reads it.
       new ReleaseStore({ db }).failInterrupted()
       const importer = new SshImporter({
         db,

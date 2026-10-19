@@ -77,6 +77,40 @@ describe('DeployStore', () => {
     expect(f.deploys.list()[0].appId).toBeNull()
   })
 
+  it("rejects an app from another environment on the same host", async () => {
+    const f = await makeDeployFixture()
+    const prodApp = f.deploys.createApp({ environmentId: f.prod.id, hostId: f.host.id, name: 'shop' })
+    expect(() => f.deploys.create(f.input({ appId: prodApp.id }))).toThrow("app isn't in that environment")
+    const d = f.deploys.create(f.input())
+    expect(() => f.deploys.update(d.id, { appId: prodApp.id })).toThrow("app isn't in that environment")
+    const ok = f.deploys.createApp({ environmentId: f.staging.id, hostId: f.host.id, name: 'shop' })
+    expect(f.deploys.update(d.id, { appId: ok.id }).appId).toBe(ok.id)
+  })
+
+  it('vault order is not a change and is not audited', async () => {
+    const f = await makeDeployFixture()
+    const other = f.vault.createVault({ name: 'Other', color: '#112233' })
+    const d = f.deploys.create(f.input({ vaultIds: [DEFAULT_VAULT_ID, other.id] }))
+    const before = f.audit.list({ actions: ['deploy.update'] }).length
+    const n = f.changed.length
+    f.deploys.update(d.id, { vaultIds: [other.id, DEFAULT_VAULT_ID] })
+    expect(f.audit.list({ actions: ['deploy.update'] })).toHaveLength(before)
+    expect(f.changed).toHaveLength(n)
+    expect([...f.deploys.get(d.id).vaultIds].sort()).toEqual([DEFAULT_VAULT_ID, other.id].sort())
+  })
+
+  it('reorder rejects an unknown environment and skips a no-op', async () => {
+    const f = await makeDeployFixture()
+    const a = f.deploys.create(f.input({ name: 'a' }))
+    const b = f.deploys.create(f.input({ name: 'b' }))
+    expect(() => f.deploys.reorder('00000000-0000-4000-8000-000000000000', [])).toThrow('environment not found')
+    const n = f.audit.list({ actions: ['deploy.update'] }).length
+    const c = f.changed.length
+    f.deploys.reorder(f.staging.id, [a.id, b.id])
+    expect(f.audit.list({ actions: ['deploy.update'] })).toHaveLength(n)
+    expect(f.changed).toHaveLength(c)
+  })
+
   it('rejects a duplicate name in the environment and caps the count', async () => {
     const f = await makeDeployFixture()
     f.deploys.create(f.input())
