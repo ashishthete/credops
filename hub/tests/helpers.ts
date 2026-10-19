@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { FastifyInstance } from 'fastify'
+import { HubAudit } from '../src/audit'
 import { buildApp } from '../src/app'
 import type { HubConfig } from '../src/config'
 import { openHubDb, type HubDb } from '../src/db'
@@ -13,6 +14,7 @@ export const CLIENT = '22222222-2222-4222-8222-222222222222'
 export interface TestHub {
   app: FastifyInstance
   db: HubDb
+  audit: HubAudit
   config: HubConfig
   logs: string[]
   close: () => Promise<void>
@@ -39,11 +41,13 @@ export async function testHub(overrides: Partial<HubConfig> = {}): Promise<TestH
   }
   const db = openHubDb(join(dataDir, 'hub.db'))
   const logs: string[] = []
-  const app = buildApp({ config, db, now: () => new Date(), ids: randomUUID, log: { write: (m) => void logs.push(m) } })
+  const audit = new HubAudit(db)
+  const app = buildApp({ config, db, audit, now: () => new Date(), ids: randomUUID, log: { write: (m) => void logs.push(m) } })
   await app.ready()
   return {
     app,
     db,
+    audit,
     config,
     logs,
     close: async () => {

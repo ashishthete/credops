@@ -40,3 +40,55 @@ export interface HubErrorBody {
   error: HubErrorCode
   message: string
 }
+
+export const HUB_AUDIT_ACTIONS = [
+  'hub.start',
+  'hub.stop',
+  'session.create',
+  'session.denied',
+  'session.revoke',
+  'user.update',
+  'group.create',
+  'group.update',
+  'group.delete',
+  'member.add',
+  'member.remove',
+  'grant.add',
+  'grant.remove',
+  'audit.verify',
+] as const
+export type HubAuditAction = (typeof HUB_AUDIT_ACTIONS)[number]
+
+export interface HubActor {
+  oid: string
+  upn: string
+  name: string
+  role: HubRole | null
+}
+
+export type HubAuditOutcome = 'success' | 'failure' | 'denied' | 'info'
+
+export interface HubAuditEvent {
+  id: number
+  ts: string
+  actor: HubActor | null
+  viaGroup: string | null
+  action: HubAuditAction
+  targetType: string | null
+  targetId: string | null
+  targetLabel: string | null
+  outcome: HubAuditOutcome
+  details: Record<string, unknown>
+  prevHash: string
+  hash: string
+}
+
+export interface HubAuditFilter {
+  actions?: HubAuditAction[]
+  actorOid?: string
+  outcome?: HubAuditEvent['outcome']
+  from?: string
+  to?: string
+  beforeId?: number
+  limit?: number
+}

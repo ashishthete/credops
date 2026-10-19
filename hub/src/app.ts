@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { HUB_BODY_LIMIT } from '../../src/shared/hub'
+import type { HubAudit } from './audit'
 import type { HubConfig } from './config'
 import type { HubDb } from './db'
 import { installErrorHandler } from './errors'
@@ -9,6 +10,7 @@ import { registerMeta } from './routes/meta'
 export interface HubDeps {
   config: HubConfig
   db: HubDb
+  audit: HubAudit
   now: () => Date
   ids: () => string
   /** pino destination; defaults to stdout */
@@ -35,6 +37,9 @@ export function buildApp(deps: HubDeps): FastifyInstance {
     },
   })
   installErrorHandler(app, () => [])
+  app.addHook('onClose', async () => {
+    deps.audit.append({ action: 'hub.stop', outcome: 'info', actor: null })
+  })
   registerMeta(app, deps)
   return app
 }
