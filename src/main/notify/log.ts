@@ -1,7 +1,7 @@
 import type { Db } from '../db/connection'
 import { MAX_NOTIFY_LOG, type NotificationRecord, type NotifyLogFilter } from '../../shared/settings'
 
-interface Row {
+export interface LogRow {
   id: string
   at: string
   source_type: NotificationRecord['sourceType']
@@ -12,7 +12,7 @@ interface Row {
   detail: string | null
 }
 
-export const toRecord = (r: Row): NotificationRecord => ({
+export const toRecord = (r: LogRow): NotificationRecord => ({
   id: r.id,
   at: r.at,
   sourceType: r.source_type,
@@ -37,5 +37,5 @@ export function listNotifications(db: Db, filter: NotifyLogFilter = {}): Notific
   }
   const limit = Math.min(Math.max(filter.limit ?? 50, 1), MAX_NOTIFY_LOG)
   const sql = `SELECT * FROM notification_log ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY at DESC, id DESC LIMIT ?`
-  return (db.prepare(sql).all(...params, limit) as unknown as Row[]).map(toRecord)
+  return (db.prepare(sql).all(...params, limit) as unknown as LogRow[]).map(toRecord)
 }

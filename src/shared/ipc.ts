@@ -398,6 +398,8 @@ export interface EventContract {
   'release:state': ReleaseSummary
   // A clicked macOS alert: the renderer navigates to this hash route.
   'app:navigate': { route: string }
+  // One notification reached a terminal state (sent, failed or skipped); detail never holds a URL or value.
+  'notify:sent': NotificationRecord
 }
 export type EventName = keyof EventContract
 export const EVENTS = [
@@ -415,6 +417,7 @@ export const EVENTS = [
   'deploy:event',
   'release:state',
   'app:navigate',
+  'notify:sent',
 ] as const satisfies readonly EventName[]
 type MissingEvents = Exclude<EventName, (typeof EVENTS)[number]>
 export const eventsAreComplete: [MissingEvents] extends [never] ? true : never = true

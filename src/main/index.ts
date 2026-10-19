@@ -27,6 +27,8 @@ import { createSettingsHandlers } from './ipc/handlers/settings'
 import { createNotifyHandlers } from './ipc/handlers/notify'
 import { MacNotifier } from './notify/macos'
 import { LocalSink } from './notify/sink'
+import { NotificationDispatcher } from './notify/dispatcher'
+import { createFinalizeSteps } from './notify/finalize'
 import { IntegrationStore } from './settings/integration-store'
 import { SettingsStore } from './settings/settings-store'
 import { detectTools } from './deploy/tooling'
@@ -35,7 +37,6 @@ import { prepareHosts } from './deploy/hostkeys'
 import { LocalRunner, nodeFs, nodeSpawn } from './deploy/local-runner'
 import { startTap } from './deploy/log-tap'
 import { localAllowAll } from './deploy/access'
-import { noopFinalize } from './deploy/finalize'
 import { ReleaseService } from './deploy/release-service'
 import { DeployStore, dbSecretRefs } from './deploy/deploy-store'
 import { ServiceStore } from './deploy/service-store'
@@ -210,6 +211,20 @@ if (!app.requestSingleInstanceLock()) {
         notifier: macNotifier,
         knownSecrets,
       })
+      const notifyDispatcher = new NotificationDispatcher({
+        db,
+        sink: notifySink,
+        integrations,
+        settings: settingsStore,
+        vault: service,
+        audit: log,
+        // The release service is built below; the dispatcher reads it only when an event arrives.
+        runs: { runMeta: (id, status) => release.runMeta(id, status) },
+        tunnels,
+        knownSecrets,
+      })
+      notifyDispatcher.onSent((record) => pushEvent(mainWindow, 'notify:sent', record))
+      service.onUnlock(() => void notifyDispatcher.flushPending())
       const snippets = new SnippetStore({ db, audit: log, vault: service })
       const deploys = new DeployStore({ db, audit: log, vault: service, secrets: dbSecretRefs(db) })
       deploys.onChanged = (environmentId) => pushEvent(mainWindow, 'deploy:changed', { environmentId })
@@ -285,7 +300,7 @@ if (!app.requestSingleInstanceLock()) {
         releases: releaseStore,
         runner: localRunner,
         access: localAllowAll,
-        finalize: noopFinalize,
+        finalize: createFinalizeSteps({ dispatcher: notifyDispatcher }),
         audit: log,
         vault: service,
         resolve,
@@ -298,6 +313,9 @@ if (!app.requestSingleInstanceLock()) {
         clock: { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: (h) => clearTimeout(h as NodeJS.Timeout) },
       })
       releaseService = release
+      release.onEvent((batch) => {
+        for (const e of batch) void notifyDispatcher.onRunEvent(e)
+      })
       // Startup recovery lives here (Task 7 must not add a second call): a release left preflight, running or
       // rolling back by a quit can never finish, so mark it failed (and audit it) before anything reads it.
       release.recoverInterrupted()
@@ -336,6 +354,7 @@ if (!app.requestSingleInstanceLock()) {
         emit: (event, payload) => pushEvent(mainWindow, event, payload),
       })
       tunnelManager = runner
+      runner.onEvent((e) => void notifyDispatcher.onTunnelEvent(e))
       const hostStore = hosts
       // Pooled exec-only links for runs and containers, apart from interactive sessions.
       const links = new ExecLinks({
