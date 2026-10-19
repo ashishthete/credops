@@ -130,9 +130,21 @@ samp {
   animation: od-pulse 1.6s ease-out infinite;
 }
 
-/* Map: a node arriving on the canvas. Goes on the node content: the wrapper's transform is React Flow's. */
+/* Map: a node arriving on the canvas, and its edges. It scales through `scale`, not `transform`, because
+   the node wrapper's transform is React Flow's translate. */
 .od-node-enter {
   animation: od-node-enter 160ms ease-out both;
+}
+
+.react-flow__edge.od-edge-enter {
+  animation: od-fade-in 160ms ease-out both;
+}
+
+/* A removed node or edge, fading out before the map drops it; it no longer takes the pointer. */
+.react-flow__node.od-leaving,
+.react-flow__edge.od-leaving {
+  pointer-events: none;
+  animation: od-fade-out 180ms ease-in forwards;
 }
 
 /* React Flow owns the node wrapper; it takes the app focus ring and the panel chrome here, not via utilities. */
@@ -233,7 +245,19 @@ samp {
 @keyframes od-node-enter {
   from {
     opacity: 0;
-    transform: scale(0.96);
+    scale: 0.96;
+  }
+}
+
+@keyframes od-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes od-fade-out {
+  to {
+    opacity: 0;
   }
 }
 
@@ -277,7 +301,9 @@ samp {
   .od-flow,
   .od-pulse,
   .od-travel,
-  .od-node-enter {
+  .od-node-enter,
+  .od-edge-enter,
+  .od-leaving {
     animation: none;
   }
 

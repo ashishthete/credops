@@ -96,7 +96,7 @@ const HostNode = memo(function HostNode({ data, selected }: NodeProps<Node<FlowD
     <div
       className={`flex h-full w-full flex-col justify-center gap-1 rounded-[10px] border bg-surface px-2.5 transition-[box-shadow,border-color,translate] ${
         selected ? 'border-accent shadow-[0_0_0_3px_color-mix(in_oklab,var(--accent)_35%,transparent)]' : 'border-line hover:border-muted/40'
-      } ${motionSafe ? 'od-node-enter hover:-translate-y-0.5 hover:shadow-pop' : ''}`}
+      } ${motionSafe ? 'hover:-translate-y-0.5 hover:shadow-pop' : ''}`}
     >
       <div className="flex min-w-0 items-center gap-1.5">
         <span role="img" aria-label={data.role ? ROLE_LABEL[data.role] : 'No role'} title={data.role ? ROLE_LABEL[data.role] : 'No role'} className="text-muted">

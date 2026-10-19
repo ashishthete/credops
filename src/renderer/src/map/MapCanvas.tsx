@@ -28,6 +28,7 @@ import { EdgeActionsContext, edgeTypes, type EdgeActions, type MapFlowEdge } fro
 import type { MapGraph } from './graph'
 import { VIRTUALIZE_AT, type MapLayout } from './layout'
 import { nodeTypes, type MapFlowNode } from './nodes'
+import { cancelGlide, useGraphTransition } from './useGraphTransition'
 import { MAX_ZOOM, MIN_ZOOM, loadViewport, saveViewport } from './viewport'
 
 /** Imperative moves the page asks of the canvas. */
@@ -131,6 +132,12 @@ function flowNodes(graph: MapGraph, layout: MapLayout): MapFlowNode[] {
   })
 }
 
+/** A new frame of nodes, except that a node mid-drag keeps the position the drag gave it. */
+function keepDragged(next: MapFlowNode[], current: MapFlowNode[]): MapFlowNode[] {
+  const dragged = new Map(current.flatMap((n) => (n.dragging ? [[n.id, n] as const] : [])))
+  return dragged.size ? next.map((n) => dragged.get(n.id) ?? n) : next
+}
+
 /**
  * The React Flow canvas for a graph and its layout. Needs a `ReactFlowProvider` above it, so the page
  * and its toolbar can reach the viewport through `useReactFlow` too.
@@ -157,27 +164,35 @@ export const MapCanvas = memo(function MapCanvas({
   })
 
   const base = useMemo(() => flowNodes(graph, layout), [graph, layout])
+  const baseEdges = useMemo(() => flowEdges(graph), [graph])
+  const target = useMemo(() => ({ nodes: base, edges: baseEdges }), [base, baseEdges])
+  // Inventory changes glide; a new scope is a different map, so it is drawn at once (its viewport is
+  // restored or fitted around what it shows, not around nodes still leaving).
+  const [drawnScope, setDrawnScope] = useState(scopeKey)
+  if (drawnScope !== scopeKey) setDrawnScope(scopeKey)
+  const shown = useGraphTransition(target, { motionSafe: motionSafe && drawnScope === scopeKey })
 
-  // Drags and measurements apply to a local copy, which only a new graph or layout resets.
-  const [local, setLocal] = useState({ from: base, nodes: base })
-  if (local.from !== base) setLocal({ from: base, nodes: base })
+  // Drags and measurements apply to a local copy, which each new frame of the transition resets; a node
+  // being dragged keeps its dragged position through those frames.
+  const [local, setLocal] = useState({ from: shown.nodes, nodes: shown.nodes })
+  if (local.from !== shown.nodes) setLocal({ from: shown.nodes, nodes: keepDragged(shown.nodes, local.nodes) })
   // Selection belongs to the page, so React Flow's own select changes are dropped.
   const onNodesChange = useCallback((changes: NodeChange<MapFlowNode>[]) => {
     const kept = changes.filter((c) => c.type !== 'select')
     if (kept.length) setLocal((s) => ({ ...s, nodes: applyNodeChanges(kept, s.nodes) }))
   }, [])
 
-  const baseEdges = useMemo(() => flowEdges(graph), [graph])
   // The selected tunnel glows (tokens.css) and an edge to a faded node fades too; every other edge keeps
-  // its identity.
+  // its identity. A leaving edge is left as the transition drew it.
   const edges = useMemo(
     () =>
-      baseEdges.map((e) => {
+      shown.edges.map((e) => {
+        if (e.data?.leaving) return e
         const selected = e.id === selectedId
-        const className = dimmed && (dimmed.has(e.source) || dimmed.has(e.target)) ? 'od-dimmed' : undefined
-        return selected || className ? { ...e, selected, className } : e
+        const faded = !!dimmed && (dimmed.has(e.source) || dimmed.has(e.target))
+        return selected || faded ? { ...e, selected, className: [e.className, faded && 'od-dimmed'].filter(Boolean).join(' ') || undefined } : e
       }),
-    [baseEdges, selectedId, dimmed],
+    [shown.edges, selectedId, dimmed],
   )
 
   // Hovering an edge rings its two end nodes.
@@ -194,11 +209,12 @@ export const MapCanvas = memo(function MapCanvas({
   const nodes = useMemo(
     () =>
       local.nodes.map((n) => {
+        if (n.data.leaving) return n
         const selected = n.id === selectedId
         const faded = !!dimmed?.has(n.id)
         const lit = highlightId === n.id
         // The ring plays once with motion, and simply shows under reduced motion.
-        const className = [faded && 'od-dimmed', lit && 'od-highlight', lit && motionSafe && 'od-ring'].filter(Boolean).join(' ') || undefined
+        const className = [n.className, faded && 'od-dimmed', lit && 'od-highlight', lit && motionSafe && 'od-ring'].filter(Boolean).join(' ') || undefined
         const near = !!related?.has(n.id)
         const domAttributes = faded ? (near ? DIMMED_RELATED : DIMMED) : near ? RELATED : undefined
         return !!n.selected === selected && n.className === className && n.domAttributes === domAttributes
@@ -218,6 +234,8 @@ export const MapCanvas = memo(function MapCanvas({
   // Only the grabbed node is pinned: a group carries its hosts along, and with selectNodesOnDrag off
   // React Flow unselects the page's selection inside the drag rather than dragging it too.
   const onNodeDragStop = useCallback((_: unknown, n: MapFlowNode) => onPin(n.id, n.position), [onPin])
+  // Input wins: a node taken hold of mid-glide stops gliding, and its drop lands where it was let go.
+  const onNodeDragStart = useCallback((_: unknown, n: MapFlowNode) => cancelGlide(n.id), [])
 
   useImperativeHandle(
     ref,
@@ -294,6 +312,7 @@ export const MapCanvas = memo(function MapCanvas({
         onEdgeMouseEnter={onEdgeMouseEnter}
         onEdgeMouseLeave={onEdgeMouseLeave}
         onPaneClick={onPaneClick}
+        onNodeDragStart={onNodeDragStart}
         onNodeDragStop={onNodeDragStop}
         selectNodesOnDrag={false}
         onMoveEnd={onMoveEnd}

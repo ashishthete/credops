@@ -317,6 +317,11 @@ describe('map toolbar', () => {
     fireEvent.click(within(toolbar()).getByRole('button', { name: 'Reset layout' }))
     await flush()
     expect(pinsStore.get().all).toBeUndefined()
+    // It glides back rather than jumping.
+    expect(flowNode('e:e1/h:h2').position).toEqual(pinned)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300)
+    })
     expect(flowNode('e:e1/h:h2').position).toEqual(start)
     expect(within(toolbar()).queryByRole('button', { name: 'Reset layout' })).toBeNull()
   })
