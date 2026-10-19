@@ -1,9 +1,9 @@
 import { AnimatePresence } from 'framer-motion'
-import { useEffect, useState, useSyncExternalStore } from 'react'
-import { useNavigate } from 'react-router'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useLocation, useNavigate } from 'react-router'
 import type { SessionMeta } from '../../../../shared/ssh'
 import { useInventory } from '../../inventory/store'
-import { closeSession, nextTab, openLocal, reconnectSession, sessionStore, setActive } from '../../terminal/sessions'
+import { closeSession, lastCloseWasExit, nextTab, openLocal, reconnectSession, sessionStore, setActive } from '../../terminal/sessions'
 import { TerminalView } from '../../terminal/TerminalView'
 import { ConfirmDialog, type ConfirmRequest } from '../../ui/common'
 import { useShortcut } from '../../ui/shortcuts'
@@ -31,6 +31,18 @@ export function TerminalDeck({ visible }: { visible: boolean }) {
   const byId = new Map(sessions.map((s) => [s.id, s]))
   const tabs = order.flatMap((id) => byId.get(id) ?? [])
   const active = activeId ? byId.get(activeId) : undefined
+
+  // Where you were before Terminals; when the last tab's shell exits, the deck goes back there
+  // (or home). Closing the last tab by hand stays here, on QuickConnect.
+  const location = useLocation()
+  const before = useRef<string | null>(null)
+  if (!location.pathname.startsWith('/terminals')) before.current = location.pathname + location.search
+  const hadTabs = useRef(tabs.length > 0)
+  useEffect(() => {
+    const had = hadTabs.current
+    hadTabs.current = tabs.length > 0
+    if (had && tabs.length === 0 && visible && lastCloseWasExit()) navigate(before.current ?? '/')
+  }, [tabs.length, visible, navigate])
 
   const envName = (id: string | null) => (id ? inventory?.environments.find((e) => e.id === id)?.name : undefined)
 

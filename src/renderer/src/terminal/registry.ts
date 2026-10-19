@@ -24,6 +24,38 @@ interface Entry extends TerminalHandle {
 
 const entries = new Map<string, Entry>()
 
+/** The bundled font first; the fallbacks keep cells monospaced if it hasn't loaded. */
+export const TERMINAL_FONT = '"JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace'
+const FONT_SIZE = 13
+
+/**
+ * xterm measures its cell from the font at open time. The bundled font loads lazily, so the first
+ * terminal could measure (and draw) a fallback; once it arrives, every terminal re-measures.
+ */
+let fontReady: Promise<void> | null = null
+export function loadTerminalFont(): Promise<void> {
+  fontReady ??= (async () => {
+    try {
+      await Promise.all([
+        document.fonts.load(`400 ${FONT_SIZE}px "JetBrains Mono Variable"`),
+        document.fonts.load(`700 ${FONT_SIZE}px "JetBrains Mono Variable"`),
+      ])
+    } catch {
+      return // no FontFaceSet (tests) or the font failed: the fallbacks stay
+    }
+    for (const { term, fit } of entries.values()) {
+      term.options.fontFamily = 'monospace' // a real change makes xterm re-measure
+      term.options.fontFamily = TERMINAL_FONT
+      try {
+        fit.fit()
+      } catch {
+        /* not laid out yet */
+      }
+    }
+  })()
+  return fontReady
+}
+
 let lastSize = { cols: 80, rows: 24 }
 /** The size of the most recently fitted terminal; new sessions open at it. */
 export const getLastSize = () => lastSize
@@ -37,8 +69,10 @@ export function getTerminal(id: string): TerminalHandle {
   if (!entry) {
     const term = new Terminal({
       scrollback: 10_000,
-      fontFamily: 'JetBrains Mono Variable',
-      fontSize: 13,
+      fontFamily: TERMINAL_FONT,
+      fontSize: FONT_SIZE,
+      lineHeight: 1.2,
+      fontWeightBold: 'bold',
       cursorBlink: true,
       allowProposedApi: false,
       theme: terminalTheme,
@@ -50,6 +84,7 @@ export function getTerminal(id: string): TerminalHandle {
     term.loadAddon(new WebLinksAddon((_event, url) => void window.open(url)))
     entry = { term, fit, search, attach: null, attachEnd: 0, queue: null, queuedChars: 0 }
     entries.set(id, entry)
+    void loadTerminalFont()
   }
   return entry
 }

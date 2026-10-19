@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act } from '@testing-library/react'
 import type { SessionMeta, SessionPrompt } from '../../src/shared/ssh'
-import { attachSession, disposeAll, disposeTerminal, getTerminal, writeData } from '../../src/renderer/src/terminal/registry'
+import { attachSession, disposeAll, disposeTerminal, getTerminal, TERMINAL_FONT, writeData } from '../../src/renderer/src/terminal/registry'
 import {
   closeSession,
+  lastCloseWasExit,
   moveTab,
   nextTab,
   openLocal,
@@ -55,11 +56,11 @@ describe('session store', () => {
     await state(meta('a'))
     await state(meta('b'))
     await state(meta('c'))
-    await state(meta('b', { state: 'closed' }))
+    await state(meta('b', { state: 'failed' }))
 
     let s = sessionStore.get()
     expect(s.order).toEqual(['a', 'b', 'c'])
-    expect(s.sessions.map((m) => m.state)).toEqual(['ready', 'closed', 'ready'])
+    expect(s.sessions.map((m) => m.state)).toEqual(['ready', 'failed', 'ready'])
     expect(s.activeId).toBe('a')
 
     act(() => nextTab(1))
@@ -76,6 +77,28 @@ describe('session store', () => {
     await state(meta('d'))
     act(() => moveTab('d', 0))
     expect(sessionStore.get().order).toEqual(['d', 'a'])
+    stop()
+  })
+
+  it('a shell that exits on its own closes its tab; a drop or a failure keeps it', async () => {
+    const invoke = mockBridge({ 'session:list': [] })
+    const stop = startSessionSync()
+    await state(meta('a'))
+    await state(meta('b'))
+    await state(meta('c'))
+    await state(meta('a', { state: 'closed' }))
+    await act(async () => {})
+    expect(invoke).toHaveBeenCalledWith('session:close', 'a')
+    expect(sessionStore.get().order).toEqual(['b', 'c'])
+    expect(lastCloseWasExit()).toBe(true)
+
+    await state(meta('b', { state: 'failed', error: { code: 'closed', message: 'The connection to b was lost' } }))
+    await act(async () => {})
+    expect(sessionStore.get().order).toEqual(['b', 'c'])
+    expect(invoke).not.toHaveBeenCalledWith('session:close', 'b')
+
+    await act(() => closeSession('c'))
+    expect(lastCloseWasExit()).toBe(false)
     stop()
   })
 
@@ -184,8 +207,9 @@ describe('session store', () => {
     getTerminal('x')
     expect(fake.terms[0].options).toMatchObject({
       scrollback: 10_000,
-      fontFamily: 'JetBrains Mono Variable',
+      fontFamily: TERMINAL_FONT,
       fontSize: 13,
+      lineHeight: 1.2,
       cursorBlink: true,
       allowProposedApi: false,
     })

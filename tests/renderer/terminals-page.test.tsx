@@ -294,6 +294,18 @@ describe('terminals page', () => {
     expect(tab('db-primary')).toBeInTheDocument()
   })
 
+  it('typing exit in the last tab closes it and goes back to the page you came from', async () => {
+    const invoke = await renderShell('/hosts', { 'shell:open': meta('s1', { label: 'Local shell 1' }) })
+    key('t')
+    await flush()
+    expect(tab('Local shell 1')).toBeVisible()
+    state(meta('s1', { label: 'Local shell 1', state: 'closed' }))
+    await flush()
+    expect(calls(invoke, 'session:close')).toHaveLength(1)
+    expect(screen.queryByRole('tab', { name: /Local shell 1/ })).toBeNull()
+    expect(screen.getByRole('heading', { name: 'Hosts', level: 1 })).toBeInTheDocument()
+  })
+
   it('QuickConnect puts recently connected hosts first', async () => {
     await renderShell('/terminals', {
       'host:list': [host({ id: 'h7', label: 'alpha' }), host({ id: 'h8', label: 'zulu' })],
