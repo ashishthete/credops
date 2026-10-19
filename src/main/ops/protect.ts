@@ -1,0 +1,57 @@
+/**
+ * The protected-environment rule (G9). It runs in main; the renderer only mirrors it to show the dialog.
+ * Protection belongs to the environments the target hosts serve, not to the context a request names:
+ * a run with no context on a prod host still needs the name typed.
+ */
+import { DESTRUCTIVE_PATTERN } from '../../shared/ops'
+
+export const CONFIRM_MESSAGE = 'Type the environment name to confirm'
+export const MULTIPLE_PROTECTED_MESSAGE = 'These hosts are in more than one protected environment; run one environment at a time'
+
+export class ProtectError extends Error {
+  constructor(
+    readonly code: 'confirm' | 'multiple-protected',
+    message: string,
+  ) {
+    super(message)
+    this.name = 'ProtectError'
+  }
+}
+
+export interface ProtectionEnv {
+  id: string
+  name: string
+  protected: boolean
+}
+
+export function isDestructive(command: string, snippetFlag: boolean): boolean {
+  return snippetFlag || DESTRUCTIVE_PATTERN.test(command)
+}
+
+/**
+ * The environment whose protection governs a run or container action. A protected context is used as is.
+ * Otherwise every protected environment any target host belongs to counts (`memberships`, duplicates fine):
+ * one is the run's environment, more than one is refused. With none, the context (or null) comes back.
+ */
+export function protectionFor<E extends ProtectionEnv>(context: E | null, memberships: readonly E[]): E | null {
+  if (context?.protected) return context
+  const found = new Map<string, E>()
+  for (const env of memberships) if (env.protected) found.set(env.id, env)
+  if (found.size > 1) throw new ProtectError('multiple-protected', MULTIPLE_PROTECTED_MESSAGE)
+  const [only] = found.values()
+  return only ?? context
+}
+
+/** The name the user must type, or null when no confirmation is needed. Hosts outside any environment are never protected. */
+export function confirmNeeded(
+  env: { name: string; protected: boolean } | null,
+  targetCount: number,
+  destructive: boolean,
+): string | null {
+  return env?.protected && (targetCount > 1 || destructive) ? env.name : null
+}
+
+/** Exact, case-sensitive match. */
+export function checkConfirm(needed: string | null, given: string | undefined): void {
+  if (needed !== null && given !== needed) throw new ProtectError('confirm', CONFIRM_MESSAGE)
+}
