@@ -279,11 +279,16 @@ It extends the Phase 7 `ContainersManager` follow with a compose variant
 instead of adding a new streamer (controller's call). The variant keeps the
 pooled exec links, the follow limit, the `containers:logs`-style events and the
 `logsError` stderr handling. Every argument is validated by the Phase 8 rules
-(`REPO_PATH`, `COMPOSE_FILE`, `COMPOSE_PROJECT`) and shell-quoted. **Privilege (controller's call).** Docker access follows Phase 7's per-host
-docker rule (plain, or `sudo -n` when the host is set to use sudo). Logs never
-fetch the become secret. If the command fails with a permission error, the logs
-pane says so plainly, for example "Docker on <host> needs sudo for logs;
-check the host's docker setting", and links to that setting. Reading logs is not audited, as in
+(`REPO_PATH`, `COMPOSE_FILE`, `COMPOSE_PROJECT`) and shell-quoted. **Privilege (controller's call, amended at pre-flight F11).** Phase 7 has no
+per-host docker or sudo setting, so docker access follows the checkout's
+`use_sudo`:
+- `yes` uses `sudo -n`;
+- `no` uses plain docker;
+- `auto` uses plain docker when `docker info` works, else `sudo -n`.
+
+Logs never fetch the become secret. If the command fails with a permission
+error, the logs pane says so plainly, for example "Docker on <host> needs sudo
+for logs; check the checkout's sudo setting", and links to that setting. Reading logs is not audited, as in
 Phase 7, and needs no protected confirmation. Log lines stay in the renderer's
 ring buffer and are never written to disk.
 
@@ -343,7 +348,10 @@ target `db_address:db_port`. Host resolution (identity, jump host, environment
 defaults), status, auto-reconnect and failure notifications are all Phase 5's
 own. When the address, port or via-host change, a stopped tunnel is updated
 and a running one is restarted after the user agrees. The exact flow is the
-builder's call, because `TunnelPatch` locks the route fields today. The tunnel
+builder's call. `TunnelPatch` accepts route fields, but `TunnelStore.update`
+restarts a running tunnel at once, through `TunnelManager.changed`. So OpsDeck
+must not write a running tunnel's new route until the user agrees (pre-flight
+F15). The tunnel
 also appears on the Tunnels page with the service name as its label. Deleting
 the service asks whether to delete its tunnel too.
 
@@ -437,9 +445,11 @@ All of these are controller's calls.
 6. **Migration from `apps`.** There is no data migration: `services` is
    created directly and `apps` is dropped. `compose_service` is required for
    kind `service` and defaults to the service name in the form.
-7. **Logs privilege.** Logs follow Phase 7's per-host docker rule (`sudo -n`
-   when configured) and never fetch the become secret. A permission error is
-   shown plainly and points to the host's docker setting. Fetching the become
+7. **Logs privilege.** Logs follow the checkout's `use_sudo` (`yes`:
+   `sudo -n`; `no`: plain; `auto`: decided by `docker info`), because Phase 7
+   has no per-host docker setting (amended at pre-flight F11). They never
+   fetch the become secret. A permission error is shown plainly and points
+   to the checkout's sudo setting. Fetching the become
    secret is a later addition.
 
 ## Addendum: config import/export (controller's call)
