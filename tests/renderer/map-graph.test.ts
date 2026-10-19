@@ -65,6 +65,16 @@ describe('buildGraph', () => {
     expect(m['m:pB>e:e1']).toEqual({ kind: 'membership', primary: false })
   })
 
+  it('product scope restricts the primary product', () => {
+    const d = basic()
+    d.products = [product({ id: 'pA', name: 'Web' }), product({ id: 'pB', name: 'Api' })]
+    d.environments = [d.environments[0]]
+    d.environments[0].productIds = ['pA', 'pB']
+    const g = build(d, { kind: 'product', productId: 'pB' })
+    expect(g.edges.filter((e) => e.data.kind === 'membership').map((e) => [e.id, e.data])).toEqual([['m:pB>e:e1', { kind: 'membership', primary: true }]])
+    expect(ids(g)).toEqual(['p:pB', 'e:e1', 'e:e1/h:h1', 'e:e1/h:h2'])
+  })
+
   it('hosts in no environment land in the unassigned group', () => {
     const d = basic()
     expect(ids(build(d))).not.toContain('u')
@@ -99,6 +109,17 @@ describe('buildGraph', () => {
     expect(e[0].data).toEqual({ kind: 'jump', viaEnvDefault: true })
   })
 
+  it('a jump host with several placements prefers the same-environment one', () => {
+    const d = basic()
+    d.environments[0].hosts = [{ hostId: 'h1', role: 'bastion' }, { hostId: 'h2', role: 'app' }]
+    d.environments[1].hosts = [{ hostId: 'h1', role: 'bastion' }, { hostId: 'h3', role: 'app' }]
+    d.hosts[0].environments = [{ environmentId: 'e1', role: 'bastion' }, { environmentId: 'e2', role: 'bastion' }]
+    d.hosts[2].jumpHostId = 'h1'
+    d.hosts[1].jumpHostId = 'h1'
+    const j = build(d).edges.filter((x) => x.data.kind === 'jump').map((x) => x.id)
+    expect(j).toEqual(['j:e:e1/h:h1>e:e1/h:h2', 'j:e:e2/h:h1>e:e2/h:h3'])
+  })
+
   it('a jump host outside the scope becomes a chip, not an edge', () => {
     const d = basic()
     d.hosts.push(host({ id: 'hb', label: 'bastion', environments: [{ environmentId: 'e2', role: 'bastion' }] }))
@@ -126,6 +147,14 @@ describe('buildGraph', () => {
     const t = (environmentId: string | null) => build(d, ALL, [tunnelMeta({ id: 't1', hostId: 'h1', environmentId })]).edges.find((e) => e.id === 't:t1')!
     expect(t('e2').target).toBe('e:e2/h:h1')
     expect(t(null).target).toBe('e:e1/h:h1')
+  })
+
+  it('a tunnel environment out of scope falls back to the first in-scope placement', () => {
+    const d = basic()
+    d.environments[1].hosts.push({ hostId: 'h1', role: 'app' })
+    d.hosts[0].environments.push({ environmentId: 'e2', role: 'app' })
+    const g = build(d, { kind: 'environment', environmentId: 'e1' }, [tunnelMeta({ id: 't1', hostId: 'h1', environmentId: 'e2' })])
+    expect(g.edges.find((e) => e.id === 't:t1')!.target).toBe('e:e1/h:h1')
   })
 
   it('a tunnel whose host is out of scope is omitted', () => {
@@ -165,6 +194,7 @@ describe('buildGraph', () => {
     }
     const pick = <T,>(xs: T[]): T | null => (xs.length ? xs[rnd(xs.length)] : null)
     for (let i = 0; i < 50; i++) {
+      const at = `iteration ${i}, seed ${seed}`
       const products = Array.from({ length: rnd(4) }, (_, k) => product({ id: `p${k}`, name: `P${rnd(9)}` }))
       const hostIds = Array.from({ length: rnd(8) }, (_, k) => `h${k}`)
       const environments = Array.from({ length: rnd(5) }, (_, k) =>
@@ -191,13 +221,13 @@ describe('buildGraph', () => {
       if (e) scopes.push({ kind: 'environment', environmentId: e.id })
       const g = buildGraph({ data: { ...empty, products, environments, hosts }, tunnels, scope: scopes[rnd(scopes.length)] })
       const known = new Set(g.nodes.map((n) => n.id))
-      expect(known.size).toBe(g.nodes.length)
-      expect(new Set(g.edges.map((x) => x.id)).size).toBe(g.edges.length)
+      expect(known.size, at).toBe(g.nodes.length)
+      expect(new Set(g.edges.map((x) => x.id)).size, at).toBe(g.edges.length)
       for (const x of g.edges) {
-        expect(known.has(x.source)).toBe(true)
-        expect(known.has(x.target)).toBe(true)
+        expect(known.has(x.source), `${at}: ${x.id} source`).toBe(true)
+        expect(known.has(x.target), `${at}: ${x.id} target`).toBe(true)
       }
-      for (const n of g.nodes) if (n.parentId) expect(known.has(n.parentId)).toBe(true)
+      for (const n of g.nodes) if (n.parentId) expect(known.has(n.parentId), `${at}: ${n.id} parent`).toBe(true)
     }
   })
 
@@ -219,6 +249,7 @@ describe('parseScope', () => {
     expect(q('product=p1&env=e2')).toEqual({ kind: 'environment', environmentId: 'e2' })
     expect(q('product=p1')).toEqual({ kind: 'product', productId: 'p1' })
     expect(q('env=nope')).toEqual(ALL)
+    expect(q('env=nope&product=p1')).toEqual(ALL)
     expect(q('product=nope')).toEqual(ALL)
     expect(q('')).toEqual(ALL)
   })

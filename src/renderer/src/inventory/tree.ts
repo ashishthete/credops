@@ -30,8 +30,13 @@ export function environmentKey(env: EnvironmentMeta, preferProduct?: string): No
 
 /** Bastions first: they're how you reach the rest. */
 export const ROLE_ORDER = ['bastion', 'app', 'db', 'other'] as const satisfies readonly HostRole[]
-const UNASSIGNED_COLOR = '#8a91a3'
-const byName = (a: string, b: string) => a.localeCompare(b)
+export const UNASSIGNED_COLOR = '#8a91a3'
+export const byName = (a: string, b: string) => a.localeCompare(b)
+
+/** Hosts by role (bastions first, role-less last), then label. */
+export const compareHosts = (a: { role: HostRole | null; label: string }, b: { role: HostRole | null; label: string }) =>
+  (a.role === null ? ROLE_ORDER.length : ROLE_ORDER.indexOf(a.role)) - (b.role === null ? ROLE_ORDER.length : ROLE_ORDER.indexOf(b.role)) ||
+  byName(a.label, b.label)
 
 /** The visible rows, in order. Products by name; environments by name; hosts by role then label. */
 export function buildTree(data: InventoryData, expanded: ReadonlySet<NodeKey>): TreeRow[] {
@@ -52,7 +57,7 @@ export function buildTree(data: InventoryData, expanded: ReadonlySet<NodeKey>): 
         const h = hostById.get(m.hostId)
         return h ? [{ host: h, role: m.role }] : []
       })
-      .sort((a, b) => ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role) || byName(a.host.label, b.host.label))
+      .sort((a, b) => compareHosts({ role: a.role, label: a.host.label }, { role: b.role, label: b.host.label }))
   }
 
   const push = (row: Omit<TreeRow, 'expandable' | 'expanded'>) => {
