@@ -108,6 +108,21 @@ describe('sessions and users', () => {
     hub = await testHub()
     await hub.signIn(BOB)
     const ev = hub.audit.list({ actions: ['session.create'] })[0]
-    expect(ev.details).toEqual({ created: true, bootstrapped: false, pending: true })
+    expect(ev.details).toEqual({ created: true, bootstrapped: false, recovery: false, pending: true })
+  })
+})
+
+describe('bootstrap recovery', () => {
+  it('is flagged recovery after a previous bootstrap and never while an admin is enabled', async () => {
+    hub = await testHub()
+    await hub.signIn(ADMIN)
+    hub.db.prepare("UPDATE users SET role = 'maintainer' WHERE oid = ?").run(ADMIN.oid)
+    const r = await hub.signIn(ADMIN)
+    expect(r.body.user.role).toBe('admin')
+    const evs = hub.audit.list({ actions: ['session.create'] })
+    expect(evs[0].details).toMatchObject({ bootstrapped: true, recovery: true })
+    expect(evs[1].details).toMatchObject({ bootstrapped: true, recovery: false })
+    await hub.signIn(ADMIN)
+    expect(hub.audit.list({ actions: ['session.create'] })[0].details).toMatchObject({ bootstrapped: false, recovery: false })
   })
 })

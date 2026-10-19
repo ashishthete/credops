@@ -8,6 +8,9 @@ import type { HubAudit } from './audit'
 import type { HubConfig } from './config'
 import type { HubDb } from './db'
 import { installErrorHandler } from './errors'
+import { makeAuth } from './auth/plugin'
+import { registerAccess } from './routes/access'
+import { registerAdmin } from './routes/admin'
 import { registerMeta } from './routes/meta'
 import { registerSession } from './routes/session'
 
@@ -47,7 +50,10 @@ export function buildApp(deps: HubDeps): FastifyInstance {
   })
   registerMeta(app, deps)
   const sessions = new SessionStore(deps.db, { now: deps.now, ttlHours: deps.config.sessionTtlHours })
-  const directory = new Directory(deps.db, { firstAdmin: deps.config.firstAdmin, now: deps.now })
-  registerSession(app, { audit: deps.audit, verifier: deps.verifier, sessions, directory, now: deps.now })
+  const directory = new Directory(deps.db, { firstAdmin: deps.config.firstAdmin, now: deps.now, ids: deps.ids, audit: deps.audit, sessions })
+  const auth = makeAuth({ sessions, directory, now: deps.now })
+  registerSession(app, { audit: deps.audit, verifier: deps.verifier, sessions, directory, now: deps.now }, auth)
+  registerAdmin(app, { directory, audit: deps.audit, auth })
+  registerAccess(app, { directory, auth })
   return app
 }

@@ -113,3 +113,53 @@ export interface HubSession {
   expiresAt: string
   user: HubUser
 }
+
+export type GrantScope =
+  | { kind: 'all' }
+  | { kind: 'environment'; environmentId: string }
+  | { kind: 'deployment'; environmentId: string; deploymentId: string }
+
+export interface HubGrant {
+  id: string
+  groupId: string
+  scope: GrantScope
+  createdAt: string
+}
+
+export interface HubGroup {
+  id: string
+  name: string
+  description: string
+  builtin: boolean
+  memberOids: string[]
+  grants: HubGrant[]
+  createdAt: string
+  updatedAt: string
+}
+
+// Phase 8's DeployAction names, plus Hub-only 'env.lock' (10b manual freeze) and 'admin'
+export type HubAction =
+  | 'deploy.view'
+  | 'deploy.edit'
+  | 'release.start'
+  | 'release.rollback'
+  | 'release.cancel'
+  | 'lock.break'
+  | 'env.lock'
+  | 'admin'
+
+export interface AccessTarget {
+  environmentId: string
+  deploymentIds?: string[]
+}
+
+export type HubDenyCode = 'pending' | 'disabled' | 'no_grant' | 'admin_only'
+
+export type HubDecision =
+  | {
+      allowed: true
+      via: { role: HubRole; groupId: string | null; groupName: string | null }
+      /** Set when the union of several grants covers the target; one entry per deployment. */
+      vias?: { deploymentId: string; groupId: string; groupName: string }[]
+    }
+  | { allowed: false; code: HubDenyCode; reason: string }

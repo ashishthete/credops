@@ -110,7 +110,9 @@ export class HubAudit {
     const details = JSON.parse(detailsJson) as Record<string, unknown>
     const clean = (v: string | null | undefined): string | null => (v == null ? null : redact(v, secrets))
 
-    this.db.exec('BEGIN IMMEDIATE')
+    // Inside a caller's transaction the audit row commits or rolls back with it.
+    const own = !this.db.isTransaction
+    if (own) this.db.exec('BEGIN IMMEDIATE')
     try {
       const last = this.db.prepare('SELECT hash FROM audit ORDER BY id DESC LIMIT 1').get() as
         | { hash: string }
@@ -150,10 +152,10 @@ export class HubAudit {
           body.prevHash,
           hash,
         )
-      this.db.exec('COMMIT')
+      if (own) this.db.exec('COMMIT')
       return { id: Number(res.lastInsertRowid), ...body, hash }
     } catch (err) {
-      if (this.db.isTransaction) this.db.exec('ROLLBACK')
+      if (own && this.db.isTransaction) this.db.exec('ROLLBACK')
       throw err
     }
   }

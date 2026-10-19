@@ -15,8 +15,7 @@ export interface SessionRouteDeps {
   now: () => Date
 }
 
-export function registerSession(app: FastifyInstance, deps: SessionRouteDeps): void {
-  const auth = makeAuth(deps)
+export function registerSession(app: FastifyInstance, deps: SessionRouteDeps, auth: ReturnType<typeof makeAuth>): void {
 
   app.post('/api/v1/session', async (req, reply) => {
     const entraToken = bearerOf(req)
@@ -29,7 +28,7 @@ export function registerSession(app: FastifyInstance, deps: SessionRouteDeps): v
       deps.audit.append({ action: 'session.denied', outcome: 'denied', actor: null, details: { reason } })
       throw new HubHttpError(401, 'unauthenticated', 'Microsoft sign-in token was not accepted')
     }
-    const { user, created, bootstrapped } = deps.directory.upsertOnSignIn(identity)
+    const { user, created, bootstrapped, recovery } = deps.directory.upsertOnSignIn(identity)
     const actor = { oid: user.oid, upn: user.upn, name: user.name, role: user.role }
     if (user.status === 'disabled') {
       deps.audit.append({ action: 'session.denied', outcome: 'denied', actor, details: { reason: 'disabled' } })
@@ -43,13 +42,13 @@ export function registerSession(app: FastifyInstance, deps: SessionRouteDeps): v
       actor,
       targetType: 'user',
       targetId: user.oid,
-      details: { created, bootstrapped, pending: user.status === 'pending' },
+      details: { created, bootstrapped, recovery, pending: user.status === 'pending' },
     })
     const session: HubSession = { token, expiresAt, user: deps.directory.get(user.oid)! }
     return reply.code(201).send(session)
   })
 
-  app.delete('/api/v1/session', { preHandler: auth.requireUser }, async (req, reply) => {
+  app.delete('/api/v1/session', { onRequest: auth.requireUser }, async (req, reply) => {
     deps.sessions.revoke(req.sessionToken)
     deps.audit.append({
       action: 'session.revoke',
@@ -61,5 +60,5 @@ export function registerSession(app: FastifyInstance, deps: SessionRouteDeps): v
     return reply.code(204).send()
   })
 
-  app.get('/api/v1/me', { preHandler: auth.requireUser }, async (req) => req.user)
+  app.get('/api/v1/me', { onRequest: auth.requireUser }, async (req) => req.user)
 }
