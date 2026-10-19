@@ -126,6 +126,19 @@ export function Composer({ onConfirm }: { onConfirm: (req: ConfirmRequest) => vo
     setValues(Object.fromEntries((s?.variables ?? []).map((v) => [v.name, v.default ?? ''])))
   }
 
+  // `?snippet=<id>` (the palette, the Snippets tab) opens the snippet's mode with it picked, once it is loaded.
+  const seededSnippet = useRef<string | null>(null)
+  const wantedSnippet = params.get('snippet')
+  useEffect(() => {
+    if (!wantedSnippet || seededSnippet.current === wantedSnippet || !loaded) return
+    seededSnippet.current = wantedSnippet
+    if (!snippets.some((s) => s.id === wantedSnippet)) return
+    setCommandMode('snippet')
+    pickSnippet(wantedSnippet)
+    // pickSnippet only reads the loaded snippets.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wantedSnippet, loaded, snippets])
+
   // Options.
   const [concurrency, setConcurrency] = useState(DEFAULT_CONCURRENCY)
   const [timeoutSec, setTimeoutSec] = useState(DEFAULT_RUN_TIMEOUT_SEC)

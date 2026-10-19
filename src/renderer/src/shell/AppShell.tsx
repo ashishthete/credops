@@ -16,6 +16,8 @@ import { VaultsPage } from '../pages/vaults/VaultsPage'
 import { resetOps, startOpsSync } from '../ops/runs'
 import { disposeAll } from '../terminal/registry'
 import { resetSessions, startSessionSync } from '../terminal/sessions'
+import { InsertHost } from '../pages/ops/InsertHost'
+import { useOpsCommands } from '../ops/commands'
 import { useTunnelCommands } from '../tunnels/commands'
 import { resetTunnels, startTunnelSync } from '../tunnels/store'
 import { registerCommand } from '../ui/commands'
@@ -36,6 +38,7 @@ export function AppShell() {
   useSectionNavigation()
   useInventoryCommands()
   useTunnelCommands()
+  useOpsCommands()
   // The shell mounts only while unlocked, so every unlock reloads (F22).
   useEffect(() => {
     void loadInventory()
@@ -114,6 +117,7 @@ export function AppShell() {
         <TerminalDeck visible={location.pathname === '/terminals'} />
       </main>
       <PromptHost />
+      <InsertHost />
       <KnownHostsDialog />
     </div>
   )

@@ -1,10 +1,10 @@
 import { useEffect } from 'react'
 import { Navigate, NavLink, useParams } from 'react-router'
 import { showOpsPage } from '../../ops/runs'
-import { EmptyState } from '../../ui/EmptyState'
 import { Play, Boxes, FileCode2, type LucideIcon } from 'lucide-react'
 import { ContainersTab } from './ContainersTab'
 import { RunTab } from './RunTab'
+import { SnippetsTab } from './SnippetsTab'
 
 const TABS = [
   { id: 'run', label: 'Run', icon: Play, blurb: 'Run a command on many hosts' },
@@ -12,7 +12,7 @@ const TABS = [
   { id: 'containers', label: 'Containers', icon: Boxes, blurb: 'Docker containers on a host' },
 ] as const satisfies readonly { id: string; label: string; icon: LucideIcon; blurb: string }[]
 
-/** The Ops section: tabs over `/ops/:tab`. Each tab's content arrives with its own task. */
+/** The Ops section: tabs over `/ops/:tab`.  */
 export function OpsPage() {
   const { tab } = useParams()
   // While the page shows, a finished run is in its recent runs; it is toasted only when the page is away.
@@ -44,9 +44,7 @@ export function OpsPage() {
       ) : current.id === 'containers' ? (
         <ContainersTab />
       ) : (
-        <div className="flex flex-1 items-center justify-center pb-16">
-          <EmptyState icon={current.icon} title={current.blurb} text="" />
-        </div>
+        <SnippetsTab />
       )}
     </div>
   )
