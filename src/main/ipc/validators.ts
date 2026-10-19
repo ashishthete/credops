@@ -684,6 +684,8 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'notify:log': args(asNotifyLogFilter),
   'qa:dispatch': args(v.uuid()),
   'qa:list': args(),
+  'ai:status': args(),
+  'ai:cancel': args(v.uuid()),
   'release:preflight': args(asPreflightRequest),
   'release:start': args(v.uuid(), asReleaseConfirm),
   'release:cancel': args(v.uuid()),

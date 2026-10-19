@@ -25,6 +25,8 @@ import { createDeployHandlers } from './ipc/handlers/deploy'
 import { createServiceHandlers } from './ipc/handlers/services'
 import { createSettingsHandlers } from './ipc/handlers/settings'
 import { createNotifyHandlers, createQaHandlers } from './ipc/handlers/notify'
+import { createAiHandlers } from './ipc/handlers/ai'
+import { AiRequests, ClaudeClient } from './ai/claude'
 import { MacNotifier } from './notify/macos'
 import { LocalSink } from './notify/sink'
 import { NotificationDispatcher } from './notify/dispatcher'
@@ -240,6 +242,9 @@ if (!app.requestSingleInstanceLock()) {
       })
       qaService = qa
       qa.onState((item) => pushEvent(mainWindow, 'qa:state', item))
+      const aiRequests = new AiRequests()
+      const claude = new ClaudeClient({ settings: settingsStore, secrets, vault: service, knownSecrets })
+      service.onLock(() => aiRequests.cancelAll())
       const snippets = new SnippetStore({ db, audit: log, vault: service })
       const deploys = new DeployStore({ db, audit: log, vault: service, secrets: dbSecretRefs(db) })
       deploys.onChanged = (environmentId) => pushEvent(mainWindow, 'deploy:changed', { environmentId })
@@ -480,6 +485,7 @@ if (!app.requestSingleInstanceLock()) {
           }),
           ...createSettingsHandlers({ settings: settingsStore, integrations }),
           ...createQaHandlers({ qa, integrations }),
+          ...createAiHandlers({ settings: settingsStore, requests: aiRequests }),
           ...createNotifyHandlers({ db, sink: notifySink, settings: settingsStore, integrations, mac: macNotifier, audit: log, actor }),
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
           ...createOpsHandlers({ snippets, runs, containers }),

@@ -222,6 +222,8 @@ export interface IpcContract {
   'notify:log': { args: [filter: NotifyLogFilter]; result: NotificationRecord[] }
   'qa:dispatch': { args: [environmentId: string]; result: QaDispatch }
   'qa:list': { args: []; result: QaDispatch[] }
+  'ai:status': { args: []; result: IntegrationStatus['ai'] }
+  'ai:cancel': { args: [requestId: string]; result: void }
   'snippets:list': { args: []; result: SnippetMeta[] }
   'snippets:create': { args: [input: SnippetInput]; result: SnippetMeta }
   'snippets:update': { args: [id: string, input: SnippetInput]; result: SnippetMeta }
@@ -357,6 +359,8 @@ export const CHANNELS = [
   'notify:log',
   'qa:dispatch',
   'qa:list',
+  'ai:status',
+  'ai:cancel',
   'snippets:list',
   'snippets:create',
   'snippets:update',
@@ -407,6 +411,8 @@ export interface EventContract {
   'notify:sent': NotificationRecord
   // A QA dispatch changed state (dispatched, running, passed, failed or unknown).
   'qa:state': QaDispatch
+  // A streamed text delta of a live AI request.
+  'ai:delta': { requestId: string; text: string }
 }
 export type EventName = keyof EventContract
 export const EVENTS = [
@@ -426,6 +432,7 @@ export const EVENTS = [
   'app:navigate',
   'notify:sent',
   'qa:state',
+  'ai:delta',
 ] as const satisfies readonly EventName[]
 type MissingEvents = Exclude<EventName, (typeof EVENTS)[number]>
 export const eventsAreComplete: [MissingEvents] extends [never] ? true : never = true
