@@ -238,6 +238,15 @@ function useNow(everyMs: number | null, key: string): number {
   return now
 }
 
+/** The state's one-word name, shared by every tunnel row. */
+export const STATE_WORD: Record<TunnelState, string> = {
+  stopped: 'Stopped',
+  connecting: 'Connecting',
+  up: 'Up',
+  retrying: 'Retrying',
+  failed: 'Failed',
+}
+
 /** The status dot's colour per state. */
 export const STATE_DOT: Record<TunnelState, string> = {
   stopped: 'bg-muted/50 text-muted',

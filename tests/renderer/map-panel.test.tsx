@@ -1,18 +1,41 @@
 import './flow-stubs'
-import { act, cleanup, fireEvent, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { inventoryStore, reloadInventory } from '../../src/renderer/src/inventory/store'
 import { resetSessions } from '../../src/renderer/src/terminal/sessions'
 import { resetTunnels } from '../../src/renderer/src/tunnels/store'
 import { clearToasts } from '../../src/renderer/src/ui/Toaster'
-import { defaultVault, environment, host, identity, mockBridge, product, session, tunnelMeta, tunnelRuntime } from './helpers'
-import { renderShell } from './shell-helpers'
+import { AppShell } from '../../src/renderer/src/shell/AppShell'
+import { defaultVault, emitBridgeEvent, environment, host, identity, mockBridge, product, session, tunnelMeta, tunnelRuntime } from './helpers'
 
 // Connect lands on the Terminals page, which mounts xterm.
 vi.mock('@xterm/xterm', async () => ({ Terminal: (await import('./terminal-fakes')).FakeTerminal }))
 vi.mock('@xterm/addon-fit', async () => ({ FitAddon: (await import('./terminal-fakes')).FakeFit }))
 vi.mock('@xterm/addon-search', async () => ({ SearchAddon: (await import('./terminal-fakes')).FakeSearch }))
 vi.mock('@xterm/addon-web-links', async () => ({ WebLinksAddon: (await import('./terminal-fakes')).FakeWebLinks }))
+
+// framer-motion caches matchMedia, so reduced motion is driven through useMotionSafe.
+const motion = vi.hoisted(() => ({ safe: true }))
+vi.mock('../../src/renderer/src/ui/motion', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/renderer/src/ui/motion')>()),
+  useMotionSafe: () => motion.safe,
+}))
+
+// The real canvas still renders; this counts its renders and spies on fitView.
+const seen = vi.hoisted(() => ({ flowRenders: 0, fitView: vi.fn() }))
+vi.mock('@xyflow/react', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@xyflow/react')>()
+  const { createElement } = await import('react')
+  return {
+    ...actual,
+    ReactFlow: (props: Parameters<typeof actual.ReactFlow>[0]) => {
+      seen.flowRenders++
+      return createElement(actual.ReactFlow, props)
+    },
+    useReactFlow: () => ({ ...actual.useReactFlow(), fitView: seen.fitView }),
+  }
+})
 
 // Values that exist in the inventory but must never reach the panel.
 const USERNAME = 'sentinel-username-7q'
@@ -49,7 +72,14 @@ const settle = () => act(async () => {
 })
 const calls = (invoke: ReturnType<typeof mockBridge>, channel: string) => (invoke.mock.calls as unknown[][]).filter((c) => c[0] === channel)
 
-async function renderMap(over: Record<string, unknown> = {}) {
+// Where the router is, read back after each render.
+const at = { search: '' }
+function LocationProbe() {
+  at.search = useLocation().search
+  return null
+}
+
+async function renderMap(over: Record<string, unknown> = {}, path = '/map') {
   const invoke = mockBridge({
     'product:list': [web],
     'env:list': [prod, stage],
@@ -61,7 +91,14 @@ async function renderMap(over: Record<string, unknown> = {}) {
     'session:attach': { meta: {}, buffer: '', end: 0 },
     ...over,
   })
-  renderShell('/map')
+  render(
+    <MemoryRouter initialEntries={[path]}>
+      <AppShell />
+      <Routes>
+        <Route path="*" element={<LocationProbe />} />
+      </Routes>
+    </MemoryRouter>,
+  )
   await flush()
   await flush()
   return invoke
@@ -74,6 +111,9 @@ async function click(el: Element) {
 
 beforeEach(() => {
   vi.useFakeTimers()
+  motion.safe = true
+  seen.flowRenders = 0
+  seen.fitView.mockClear()
   inventoryStore.set(null)
   resetTunnels()
   resetSessions()
@@ -259,5 +299,60 @@ describe('map detail panel', () => {
     expect(screen.queryByRole('complementary', { name: 'pg' })).toBeNull()
     expect(document.querySelector('.react-flow__node.selected')).toBeNull()
     expect(node('e:e1')).not.toBeNull()
+  })
+
+  it('double-click on a group or product frames it', async () => {
+    await renderMap()
+    fireEvent.doubleClick(node('e:e1')!)
+    await flush()
+    expect(seen.fitView).toHaveBeenLastCalledWith({ nodes: [{ id: 'e:e1' }], duration: 300, padding: 0.15 })
+    cleanup()
+
+    motion.safe = false
+    await renderMap()
+    fireEvent.doubleClick(node('p:p1')!)
+    await flush()
+    expect(seen.fitView).toHaveBeenLastCalledWith({ nodes: [{ id: 'p:p1' }], duration: 0, padding: 0.15 })
+  })
+
+  it('the panel slides in with motion and only fades in under reduced motion', async () => {
+    await renderMap()
+    await click(node('e:e1/h:h1')!)
+    expect(panel('web').style.transform).toMatch(/translateX\(340px\)/)
+    await click(within(panel('web')).getByRole('button', { name: 'Close' }))
+    await settle()
+
+    motion.safe = false
+    await click(node('e:e1/h:h1')!)
+    const p = panel('web')
+    expect(p.style.opacity).toBe('0')
+    expect(p.style.transform).not.toMatch(/translateX/)
+  })
+
+  it('stats ticks with the panel open leave the canvas alone', async () => {
+    await renderMap({ 'tunnel:status': [tunnelRuntime({ id: 't1', state: 'up' })] })
+    await click(node('e:e1/h:h1')!)
+    expect(panel('web')).toBeInTheDocument()
+    const renders = seen.flowRenders
+    act(() => emitBridgeEvent('tunnel:stats', [{ id: 't1', bytesIn: 10, bytesOut: 20, rateIn: 1, rateOut: 2, connections: 1, rejected: 0 }]))
+    act(() => emitBridgeEvent('tunnel:stats', [{ id: 't1', bytesIn: 30, bytesOut: 40, rateIn: 3, rateOut: 4, connections: 2, rejected: 0 }]))
+    await flush()
+    expect(seen.flowRenders).toBe(renders)
+    expect(panel('web')).toBeInTheDocument()
+  })
+
+  it('the filter writes ?env= exactly, drops ?product= and keeps other params', async () => {
+    await renderMap()
+    await click(node('e:e1')!)
+    await click(within(panel('Prod')).getByRole('button', { name: 'Filter to this environment' }))
+    expect(at.search).toBe('?env=e1')
+    cleanup()
+
+    await renderMap({}, '/map?product=p1&keep=1')
+    await click(node('e:e1')!)
+    await click(within(panel('Prod')).getByRole('button', { name: 'Filter to this environment' }))
+    expect(at.search).toBe('?keep=1&env=e1')
+    await click(within(panel('Prod')).getByRole('button', { name: 'Filter to this environment' }))
+    expect(at.search).toBe('?keep=1&env=e1')
   })
 })

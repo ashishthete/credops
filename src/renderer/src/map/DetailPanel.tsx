@@ -2,14 +2,13 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { ArrowUpRight, Cable, Filter, Laptop, Lock, SquareTerminal, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
-import type { TunnelState } from '../../../shared/tunnels'
 import { useInventory, type InventoryData } from '../inventory/store'
 import { environmentKey, ROLE_ORDER } from '../inventory/tree'
 import { OS_META } from '../pages/hosts/HostDialog'
 import { PRODUCT_ICON } from '../pages/products/ProductDialog'
 import { GlowDot, ROLE_LABEL } from '../pages/products/ProductView'
 import { RouteLine } from '../pages/tunnels/RouteLine'
-import { StatusLine, TUNNEL_TYPE, TunnelSwitch } from '../pages/tunnels/TunnelCard'
+import { STATE_WORD, StatusLine, TUNNEL_TYPE, TunnelSwitch } from '../pages/tunnels/TunnelCard'
 import { useConnect } from '../terminal/connect'
 import { tunnelStore, useTunnel } from '../tunnels/store'
 import { Badge } from '../ui/Badge'
@@ -29,14 +28,6 @@ export interface DetailPanelProps {
 }
 
 export const PANEL_W = 340
-
-const STATE_WORD: Record<TunnelState, string> = {
-  stopped: 'Stopped',
-  connecting: 'Connecting',
-  up: 'Up',
-  retrying: 'Retrying',
-  failed: 'Failed',
-}
 
 type Subject = { kind: 'node'; node: MapNode } | { kind: 'edge'; id: string; data: TunnelEdgeData }
 
@@ -117,7 +108,7 @@ export function DetailPanel({ selection, graph, onClose, onFilter }: DetailPanel
             ) : subject.node.data.kind === 'host' ? (
               <HostDetails d={subject.node.data} data={data} onClose={close} />
             ) : subject.node.data.kind === 'environment' ? (
-              <EnvironmentDetails d={subject.node.data} data={data} onClose={close} onFilter={onFilter} />
+              <EnvironmentDetails id={subject.node.id} d={subject.node.data} graph={graph} data={data} onClose={close} onFilter={onFilter} />
             ) : subject.node.data.kind === 'product' ? (
               <ProductDetails d={subject.node.data} data={data} onClose={close} onFilter={onFilter} />
             ) : (
@@ -303,25 +294,34 @@ function TunnelRow({ id }: { id: string }) {
 }
 
 function EnvironmentDetails({
+  id,
   d,
+  graph,
   data,
   onClose,
   onFilter,
 }: {
+  id: string
   d: EnvironmentNodeData
+  graph: MapGraph
   data: InventoryData
   onClose: () => void
   onFilter: (scope: MapScope) => void
 }) {
   const navigate = useNavigate()
   const env = d.environmentId ? data.environments.find((e) => e.id === d.environmentId) : undefined
-  const roles = useMemo(() => {
-    if (!env) return ''
-    const known = new Set(data.hosts.map((h) => h.id))
+  // The count and the breakdown both come from the group's drawn host nodes, so they always agree.
+  const { hostCount, roles } = useMemo(() => {
     const count = new Map<string, number>()
-    for (const m of env.hosts) if (known.has(m.hostId)) count.set(m.role, (count.get(m.role) ?? 0) + 1)
-    return ROLE_ORDER.flatMap((r) => (count.get(r) ? [`${ROLE_LABEL[r]} ${count.get(r)}`] : [])).join(' · ')
-  }, [env, data.hosts])
+    let hostCount = 0
+    for (const n of graph.nodes) {
+      if (n.parentId !== id || n.data.kind !== 'host') continue
+      hostCount++
+      if (n.data.role) count.set(n.data.role, (count.get(n.data.role) ?? 0) + 1)
+    }
+    const roles = ROLE_ORDER.flatMap((r) => (count.get(r) ? [`${ROLE_LABEL[r]} ${count.get(r)}`] : [])).join(' · ')
+    return { hostCount, roles }
+  }, [graph, id])
 
   return (
     <>
@@ -340,7 +340,7 @@ function EnvironmentDetails({
       />
       <Section label="Products">{d.productNames.length ? d.productNames.join(', ') : <span className="text-muted">None</span>}</Section>
       <Section label="Hosts">
-        {plural(d.hostCount, 'host')}
+        {plural(hostCount, 'host')}
         {roles && <span className="block text-muted">{roles}</span>}
       </Section>
       {env && (

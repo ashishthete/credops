@@ -1,6 +1,6 @@
 import { ReactFlowProvider, useReactFlow } from '@xyflow/react'
 import { FileDown, Network, Plus } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 import { useInventory } from '../../inventory/store'
 import { DetailPanel, selectionSubject, type MapSelection } from '../../map/DetailPanel'
@@ -96,14 +96,14 @@ function MapBody() {
   // latest values through a ref, so the handler (and with it the canvas) stays put when the viewport
   // helpers or the graph change.
   const activateWith = useRef({ graph, connect, flow, motionSafe })
-  useEffect(() => {
+  useLayoutEffect(() => {
     activateWith.current = { graph, connect, flow, motionSafe }
   })
   const onActivate = useCallback((id: string) => {
-    const { graph, connect, flow, motionSafe } = activateWith.current
-    const d = graph?.nodes.find((n) => n.id === id)?.data
-    if (d?.kind === 'host') void connect(d.hostId, d.environmentId ?? undefined)
-    else if (d) void flow.fitView({ nodes: [{ id }], duration: motionSafe ? FIT_MS : 0, padding: FIT_PADDING })
+    const latest = activateWith.current
+    const d = latest.graph?.nodes.find((n) => n.id === id)?.data
+    if (d?.kind === 'host') void latest.connect(d.hostId, d.environmentId ?? undefined)
+    else if (d) void latest.flow.fitView({ nodes: [{ id }], duration: latest.motionSafe ? FIT_MS : 0, padding: FIT_PADDING })
   }, [])
 
   return (

@@ -1,21 +1,13 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { Plus } from 'lucide-react'
 import { useMemo, useState, useSyncExternalStore } from 'react'
-import type { TunnelMeta, TunnelState } from '../../../../shared/tunnels'
+import type { TunnelMeta } from '../../../../shared/tunnels'
 import { startTunnel, stopTunnel, tunnelStore, useTunnel } from '../../tunnels/store'
 import { fast, spring, useMotionSafe } from '../../ui/motion'
 import { Switch } from '../../ui/Switch'
 import { hostPort } from '../tunnels/RouteLine'
-import { isRunning, STATE_DOT, TUNNEL_TYPE } from '../tunnels/TunnelCard'
+import { isRunning, STATE_DOT, STATE_WORD, TUNNEL_TYPE } from '../tunnels/TunnelCard'
 import { TunnelDialog, type TunnelRequest } from '../tunnels/TunnelDialog'
-
-const STATE_WORD: Record<TunnelState, string> = {
-  stopped: 'Stopped',
-  connecting: 'Connecting',
-  up: 'Up',
-  retrying: 'Retrying',
-  failed: 'Failed',
-}
 
 /** `127.0.0.1:5433 → localhost:5432`, `web-1:8080 → localhost:3000`, `SOCKS on 127.0.0.1:1080`. */
 function routeSummary(t: TunnelMeta, hostLabel: string): string {
