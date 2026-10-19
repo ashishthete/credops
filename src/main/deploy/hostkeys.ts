@@ -44,7 +44,7 @@ export interface PrepareDeps {
   timeoutMs?: number
 }
 
-const passwordMessage = (label: string): string => `Deploys need key or agent auth; "${label}" uses a password`
+export const passwordMessage = (label: string): string => `Deploys need key or agent auth; "${label}" uses a password`
 
 export async function prepareHosts(plan: DeployPlan, deps: PrepareDeps): Promise<PreparedHosts> {
   const links = new Map<string, Client>()

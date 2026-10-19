@@ -199,6 +199,22 @@ export class KnownHostStore {
     return meta(row)
   }
 
+  /**
+   * The pinned keys for one address as plain known_hosts lines (public keys only): the app's own rows plus
+   * unhashed-or-matching lines from the OpenSSH file. Revoked and cert-authority entries are not pins.
+   */
+  async pinned(address: string, port: number): Promise<string[]> {
+    const token = hostToken(address, port)
+    const lines = new Set<string>()
+    for (const r of this.db.prepare('SELECT key_type, key FROM known_hosts WHERE host = ?').all(token) as unknown as Pick<Row, 'key_type' | 'key'>[]) {
+      lines.add(`${token} ${r.key_type} ${r.key}`)
+    }
+    for (const l of await this.readLines()) {
+      if (l.marker === null && l.matches(token)) lines.add(`${token} ${l.keyType} ${l.key}`)
+    }
+    return [...lines].sort()
+  }
+
   /** Works while locked. */
   list(): KnownHostMeta[] {
     const rows = this.db.prepare('SELECT * FROM known_hosts ORDER BY host, key_type').all() as unknown as Row[]

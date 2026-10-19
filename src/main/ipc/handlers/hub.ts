@@ -4,12 +4,15 @@ import type {
   GrantScope,
   HubAction,
   HubAuditEvent,
+  HubCatalogEnv,
   HubDecision,
   HubGroup,
   HubUser,
 } from '../../../shared/hub'
 import type { Handlers } from '../../../shared/ipc'
 import { HubError } from '../../hub/client'
+import type { HubCatalog } from '../../hub/catalog'
+import type { HubPublisher } from '../../hub/publish'
 import type { HubConnection } from '../../hub/connection'
 
 type HubChannel = Extract<keyof Handlers, `hub:${string}`>
@@ -21,8 +24,10 @@ export function createHubHandlers(deps: {
   conn: Pick<HubConnection, 'client' | 'status' | 'connect' | 'signIn' | 'cancelSignIn' | 'signOut' | 'unlink' | 'me'>
   vault: { assertUnlocked(): void }
   audit: { append(input: AuditInput): unknown }
+  catalog: Pick<HubCatalog, 'refresh'>
+  publisher: Pick<HubPublisher, 'publish' | 'unpublish'>
 }): Pick<Handlers, HubChannel> {
-  const { conn, vault, audit } = deps
+  const { conn, vault, audit, catalog, publisher } = deps
   const record = (op: string, target: string): void => {
     audit.append({ action: 'hub.admin', outcome: 'success', details: { op, target } })
   }
@@ -103,5 +108,10 @@ export function createHubHandlers(deps: {
     'hub:audit': (filter) => conn.client().get<HubAuditEvent[]>(`${ADMIN}/audit`, filter as Record<string, string | number | string[]>),
     'hub:verifyAudit': () =>
       mutate(() => [['audit.verify', 'hub']], () => conn.client().post<{ ok: boolean; count: number; brokenAtId?: number }>(`${ADMIN}/audit/verify`)),
+    'hub:catalog': () => catalog.refresh(),
+    // The publisher audits `hub.publish` / `hub.unpublish` itself, with counts and no addresses.
+    'hub:publish': (environmentId) => publisher.publish(environmentId),
+    'hub:unpublish': (environmentId) => publisher.unpublish(environmentId),
+    'hub:adminEnvironments': () => conn.client().get<HubCatalogEnv[]>(`${ADMIN}/environments`),
   }
 }

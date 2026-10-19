@@ -28,7 +28,9 @@ import { LocalRunner, nodeFs, nodeSpawn } from './deploy/local-runner'
 import { startTap } from './deploy/log-tap'
 import { localAllowAll } from './deploy/access'
 import { HubAccess, RoutingAccess } from './hub/access'
+import { HubCatalog } from './hub/catalog'
 import { HubConnection } from './hub/connection'
+import { HubPublisher } from './hub/publish'
 import { createHubHandlers } from './ipc/handlers/hub'
 import { noopFinalize } from './deploy/finalize'
 import { ReleaseService } from './deploy/release-service'
@@ -258,11 +260,31 @@ if (!app.requestSingleInstanceLock()) {
         emit: (status) => pushEvent(mainWindow, 'hub:state', status),
       })
       hubConnection = hub
+      const hubCatalog = new HubCatalog({ client: () => hub.client() })
+      hubCatalog.onChange(() => pushEvent(mainWindow, 'hub:catalog', {}))
+      hub.onState(() => hubCatalog.onStatus(hub.status()))
+      const hubPublisher = new HubPublisher({
+        db,
+        envs: envStore,
+        deploys,
+        knownHosts,
+        secrets: secrets!,
+        resolve: (hostId, environmentId) => resolve(hostId, environmentId),
+        audit: log,
+        vault: service,
+        client: () => hub.client(),
+        hubId: () => {
+          const s = hub.status()
+          if (!s.linked) throw new Error('Link a Hub first')
+          return s.hubId
+        },
+        onChanged: () => hubCatalog.refresh().catch(() => undefined),
+      })
       const hubEnvLink = db.prepare('SELECT 1 AS x FROM hub_env_links WHERE environment_id = ?')
       const access = new RoutingAccess({
         local: localAllowAll,
         hub: new HubAccess(hub, { now: () => Date.now() }),
-        isHubTarget: (environmentId) => hubEnvLink.get(environmentId) !== undefined,
+        isHubTarget: (environmentId) => hubEnvLink.get(environmentId) !== undefined || hubCatalog.isHubEnv(environmentId),
       })
       const release = new ReleaseService({
         db,
@@ -427,7 +449,7 @@ if (!app.requestSingleInstanceLock()) {
           ...createDeployHandlers({ deploys, releases: release, tooling: () => detectTools(toolDeps) }),
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
           ...createOpsHandlers({ snippets, runs, containers }),
-          ...createHubHandlers({ conn: hub, vault: service, audit: log }),
+          ...createHubHandlers({ conn: hub, vault: service, audit: log, catalog: hubCatalog, publisher: hubPublisher }),
         },
         (url) => isTrustedSender(url, { devServerUrl, rendererFile }),
         { validators: VALIDATORS, knownSecrets },

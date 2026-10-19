@@ -11,7 +11,7 @@ const UUID = '11111111-1111-4111-8111-111111111111'
 
 describe('hub ipc validators', () => {
   it('every new channel has a validator', () => {
-    expect(HUB_CHANNELS).toHaveLength(20)
+    expect(HUB_CHANNELS).toHaveLength(24)
     for (const c of HUB_CHANNELS) expect(typeof VALIDATORS[c]).toBe('function')
   })
 
@@ -30,6 +30,11 @@ describe('hub ipc validators', () => {
       expect(msg).not.toContain('10.0.0.5')
       expect(msg).not.toContain('secret-path')
     }
+  })
+
+  it('publish channels take one environment uuid', () => {
+    expect(() => VALIDATORS['hub:publish'](['nope'])).toThrow(/invalid arguments: \[0\]/)
+    expect(VALIDATORS['hub:unpublish']([UUID])).toEqual([UUID])
   })
 
   it('caps deploymentIds at 200 and checks action, scope and filter shapes', () => {
@@ -61,7 +66,7 @@ describe('hub handlers', () => {
       unlink: vi.fn(),
       me: vi.fn(),
     }
-    const handlers = createHubHandlers({ conn: conn as never, vault, audit })
+    const handlers = createHubHandlers({ conn: conn as never, vault, audit, catalog: { refresh: vi.fn(async () => []) }, publisher: { publish: vi.fn(async () => ({ manifestHash: 'h', missingSecrets: [] })), unpublish: vi.fn(async () => undefined) } })
     const registered = new Map<string, (...a: unknown[]) => unknown>()
     registerHandlers({ handle: (c: string, fn: never) => void registered.set(c, fn) }, stubHandlers(handlers), (u) => u === 'file:///ok', {
       validators: VALIDATORS,

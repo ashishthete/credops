@@ -11,6 +11,8 @@ import { installErrorHandler } from './errors'
 import { makeAuth } from './auth/plugin'
 import { registerAccess } from './routes/access'
 import { registerAdmin } from './routes/admin'
+import { Registry } from './registry'
+import { registerRegistry } from './routes/registry'
 import { registerMeta } from './routes/meta'
 import { registerSession } from './routes/session'
 
@@ -55,5 +57,7 @@ export function buildApp(deps: HubDeps): FastifyInstance {
   registerSession(app, { audit: deps.audit, verifier: deps.verifier, sessions, directory, now: deps.now }, auth)
   registerAdmin(app, { directory, audit: deps.audit, auth })
   registerAccess(app, { directory, auth })
+  const registry = new Registry(deps.db, { audit: deps.audit, directory, now: deps.now })
+  registerRegistry(app, { registry, directory, auth })
   return app
 }

@@ -47,7 +47,24 @@ INSERT INTO grants VALUES ('${DEFAULT_ALL_GRANT_ID}', '${DEFAULT_GROUP_ID}', 'al
 INSERT INTO hub_meta(key, value) VALUES ('hub_id', '${randomUUID()}');
 `
 
-export const HUB_MIGRATIONS: Migration[] = [{ version: 1, name: 'core', up: CORE }]
+const REGISTRY = `
+CREATE TABLE environments(id TEXT PRIMARY KEY, name TEXT NOT NULL, protected INTEGER NOT NULL CHECK (protected IN (0,1)),
+  versioned INTEGER NOT NULL, auto_rollback INTEGER NOT NULL, current_version TEXT,
+  integrations TEXT NOT NULL, manifest_hash TEXT NOT NULL, published_by TEXT NOT NULL, published_at TEXT NOT NULL);
+CREATE TABLE hosts(id TEXT PRIMARY KEY, environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+  label TEXT NOT NULL, address TEXT NOT NULL, port INTEGER NOT NULL, username TEXT NOT NULL,
+  hops TEXT NOT NULL, known_hosts TEXT NOT NULL, use_sudo TEXT NOT NULL);
+CREATE TABLE apps(id TEXT PRIMARY KEY, environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, meta TEXT NOT NULL);
+CREATE TABLE deployments(id TEXT PRIMARY KEY, environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+  host_id TEXT NOT NULL REFERENCES hosts(id) ON DELETE CASCADE, app_id TEXT, name TEXT NOT NULL,
+  position INTEGER NOT NULL, meta TEXT NOT NULL);
+`
+
+export const HUB_MIGRATIONS: Migration[] = [
+  { version: 1, name: 'core', up: CORE },
+  { version: 2, name: 'registry', up: REGISTRY },
+]
 
 export function openHubDb(file: string): HubDb {
   const db = new DatabaseSync(file)

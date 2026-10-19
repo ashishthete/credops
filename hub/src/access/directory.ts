@@ -298,6 +298,17 @@ export class Directory {
       if (g.builtin === 1) throw new HubHttpError(409, 'builtin_group', 'The Default group cannot be changed')
       const count = (this.db.prepare('SELECT COUNT(*) AS n FROM grants WHERE group_id = ?').get(groupId) as { n: number }).n
       if (count >= MAX_GRANTS_PER_GROUP) throw new HubHttpError(409, 'conflict', 'Too many grants in this group')
+      if (scope.kind !== 'all') {
+        if (!this.db.prepare('SELECT 1 FROM environments WHERE id = ?').get(scope.environmentId)) {
+          throw new HubHttpError(404, 'not_found', 'That environment is not published to this Hub')
+        }
+        if (
+          scope.kind === 'deployment' &&
+          !this.db.prepare('SELECT 1 FROM deployments WHERE id = ? AND environment_id = ?').get(scope.deploymentId, scope.environmentId)
+        ) {
+          throw new HubHttpError(404, 'not_found', 'That deployment is not published to this Hub')
+        }
+      }
       const id = this.opts.ids()
       const now = this.opts.now().toISOString()
       try {

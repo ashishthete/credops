@@ -1,0 +1,142 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { describe, expect, it, onTestFinished, vi } from 'vitest'
+import { HubPublisher, buildManifest } from '../../src/main/hub/publish'
+import { resolveHost } from '../../src/main/inventory/resolve'
+import { KnownHostStore } from '../../src/main/ssh/known-hosts'
+import type { HubEnvManifest } from '../../src/shared/hub'
+import { SecretStore } from '../../src/main/vault/secret-store'
+import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
+import { makeDeployFixture, type DeployFixture } from './deploy-helpers'
+import { auditRows } from './vault-helpers'
+import { generateKey } from './ssh-server'
+
+const SUDO_PW = 'sudo-pw-plaintext-9'
+
+function pubKey(): { type: string; b64: string } {
+  const parsed = generateKey('ed25519').public
+  return { type: parsed.type, b64: parsed.getPublicSSH().toString('base64') }
+}
+
+async function setup() {
+  const f: DeployFixture = await makeDeployFixture()
+  const dir = mkdtempSync(join(tmpdir(), 'opsdeck-pub-'))
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }))
+  const knownHosts = new KnownHostStore(f.db, f.vault, f.audit, { knownHostsPath: join(dir, 'known_hosts') })
+  const bastion = f.hosts.create({ label: 'bastion', address: '203.0.113.9', port: 2222 })
+  f.hosts.update(f.host.id, { jumpHostId: bastion.id })
+  f.envs.putHost(f.prod.id, bastion.id, 'bastion')
+  const clipboard = { async writeText(): Promise<void> {}, async readText(): Promise<string> { return '' } }
+  const secrets = new SecretStore(f.db, f.vault, f.audit, { clipboard })
+  const sudo = secrets.create({ vaultId: DEFAULT_VAULT_ID, name: 'sudo', kind: 'password', value: SUDO_PW })
+  f.deploys.create(
+    f.input({ environmentId: f.prod.id, managedEnv: true, envTemplate: `DB=\${secret:${f.secretId}}\n`, becomeSecretId: sudo.id, vaultIds: [DEFAULT_VAULT_ID] }),
+  )
+  const trust = (address: string, port: number): void => {
+    const k = pubKey()
+    knownHosts.trust(address, port, k.type, k.b64)
+  }
+  const deps = {
+    db: f.db,
+    envs: f.envs,
+    deploys: f.deploys,
+    knownHosts,
+    secrets,
+    resolve: (hostId: string, environmentId: string) => resolveHost(f.db, hostId, environmentId, { localUser: 'tester' }),
+  }
+  return { f, deps, trust, secrets, sudo }
+}
+
+describe('buildManifest', () => {
+  it('builds a manifest with hops and pinned host keys', async () => {
+    const { f, deps, trust } = await setup()
+    trust('203.0.113.9', 2222)
+    trust('10.0.0.7', 22)
+    const m = await buildManifest(f.prod.id, deps)
+    expect(m.environment).toMatchObject({ id: f.prod.id, name: 'prod', protected: true })
+    expect(m.hosts).toHaveLength(1)
+    const h = m.hosts[0]
+    expect(h).toMatchObject({ id: f.host.id, label: 'app1', address: '10.0.0.7', port: 22, username: 'tester' })
+    expect(h.hops.map((x) => [x.label, x.address, x.port])).toEqual([
+      ['bastion', '203.0.113.9', 2222],
+      ['app1', '10.0.0.7', 22],
+    ])
+    expect(h.hops[h.hops.length - 1].hostId).toBe(f.host.id)
+    expect(h.knownHosts).toHaveLength(2)
+    expect(h.knownHosts.some((l) => l.startsWith('[203.0.113.9]:2222 ssh-ed25519 '))).toBe(true)
+    expect(h.knownHosts.some((l) => l.startsWith('10.0.0.7 ssh-ed25519 '))).toBe(true)
+    expect(m.deployments).toHaveLength(1)
+    expect(m.requiredSecrets.map((s) => s.name).sort()).toEqual(['envsecret', 'sudo'])
+  })
+
+  it('refuses a hop with no pinned key', async () => {
+    const { f, deps, trust } = await setup()
+    trust('10.0.0.7', 22)
+    await expect(buildManifest(f.prod.id, deps)).rejects.toThrow('Connect to bastion once from OpsDeck so its host key is pinned, then publish')
+  })
+
+  it('refuses a host with a password identity', async () => {
+    const { f, deps, trust } = await setup()
+    trust('203.0.113.9', 2222)
+    trust('10.0.0.7', 22)
+    const id = f.identities.create({ vaultId: DEFAULT_VAULT_ID, label: 'pw', username: 'ops', auth: 'password', password: 'x' })
+    f.hosts.update(f.host.id, { identityId: id.id })
+    await expect(buildManifest(f.prod.id, deps)).rejects.toThrow('Deploys need key or agent auth; "app1" uses a password')
+  })
+
+  it('manifest contains no secret values', async () => {
+    const { f, deps, trust } = await setup()
+    trust('203.0.113.9', 2222)
+    trust('10.0.0.7', 22)
+    const text = JSON.stringify(await buildManifest(f.prod.id, deps))
+    expect(text).not.toContain(SUDO_PW)
+    expect(text).not.toContain('sekret-value-1')
+  })
+})
+
+describe('HubPublisher', () => {
+  it('publish records hub_env_links and audits', async () => {
+    const { f, deps, trust } = await setup()
+    trust('203.0.113.9', 2222)
+    trust('10.0.0.7', 22)
+    f.db.prepare("INSERT INTO hub_link(id, url, hub_id, hub_name, linked_at, updated_at) VALUES (1,'http://127.0.0.1:1','hub-1','Hub','t','t')").run()
+    const put = vi.fn(async (_path: string, _body: unknown) => ({ manifestHash: 'abc123', missingSecrets: ['s1'] }))
+    const del = vi.fn(async () => undefined)
+    const changed = vi.fn()
+    const pub = new HubPublisher({ ...deps, audit: f.audit, vault: f.vault, client: () => ({ put: put as never, del }), hubId: () => 'hub-1', now: () => new Date(Date.UTC(2026, 0, 2)), onChanged: changed })
+    const res = await pub.publish(f.prod.id)
+    expect(res).toEqual({ manifestHash: 'abc123', missingSecrets: ['s1'] })
+    expect(put.mock.calls[0][0]).toBe(`/api/v1/admin/environments/${f.prod.id}`)
+    const body = put.mock.calls[0][1] as HubEnvManifest
+    expect(body.environment.id).toBe(f.prod.id)
+    expect(f.db.prepare('SELECT * FROM hub_env_links').all()).toEqual([
+      { environment_id: f.prod.id, hub_id: 'hub-1', published_at: '2026-01-02T00:00:00.000Z', manifest_hash: 'abc123' },
+    ])
+    const rows = auditRows(f.db)
+    expect(rows).toContain('hub.publish')
+    expect(rows).not.toContain(SUDO_PW)
+    const row = f.db.prepare("SELECT target_label, details FROM audit_events WHERE action = 'hub.publish'").get() as { target_label: string; details: string }
+    expect(row.target_label).toBe('prod')
+    expect(JSON.parse(row.details)).toEqual({ manifestHash: 'abc123', hosts: 1, deployments: 1, missing: 1 })
+    expect(changed).toHaveBeenCalled()
+
+    await pub.unpublish(f.prod.id)
+    expect(del).toHaveBeenCalledWith(`/api/v1/admin/environments/${f.prod.id}`)
+    expect(f.db.prepare('SELECT COUNT(*) AS n FROM hub_env_links').get()).toEqual({ n: 0 })
+    expect(auditRows(f.db)).toContain('hub.unpublish')
+  })
+
+  it('a failed PUT leaves no link and no audit', async () => {
+    const { f, deps, trust } = await setup()
+    trust('203.0.113.9', 2222)
+    trust('10.0.0.7', 22)
+    const put = vi.fn(async () => {
+      throw new Error('boom')
+    })
+    const pub = new HubPublisher({ ...deps, audit: f.audit, vault: f.vault, client: () => ({ put: put as never, del: vi.fn() }), hubId: () => 'hub-1' })
+    await expect(pub.publish(f.prod.id)).rejects.toThrow('boom')
+    expect(f.db.prepare('SELECT COUNT(*) AS n FROM hub_env_links').get()).toEqual({ n: 0 })
+    expect(auditRows(f.db)).not.toContain('hub.publish')
+  })
+})

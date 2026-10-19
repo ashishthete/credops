@@ -5,8 +5,10 @@ import type {
   HubAction,
   HubAuditEvent,
   HubAuditFilter,
+  HubCatalogEnv,
   HubDecision,
   HubGroup,
+  HubPublishResult,
   HubRole,
   HubStatus,
   HubUser,
@@ -231,6 +233,10 @@ export interface IpcContract {
   'hub:removeGrant': { args: [grantId: string]; result: void }
   'hub:audit': { args: [filter: HubAuditFilter]; result: HubAuditEvent[] }
   'hub:verifyAudit': { args: []; result: { ok: boolean; count: number; brokenAtId?: number } }
+  'hub:catalog': { args: []; result: HubCatalogEnv[] }
+  'hub:publish': { args: [environmentId: string]; result: HubPublishResult }
+  'hub:unpublish': { args: [environmentId: string]; result: void }
+  'hub:adminEnvironments': { args: []; result: HubCatalogEnv[] }
   'snippets:list': { args: []; result: SnippetMeta[] }
   'snippets:create': { args: [input: SnippetInput]; result: SnippetMeta }
   'snippets:update': { args: [id: string, input: SnippetInput]; result: SnippetMeta }
@@ -375,6 +381,10 @@ export const CHANNELS = [
   'hub:removeGrant',
   'hub:audit',
   'hub:verifyAudit',
+  'hub:catalog',
+  'hub:publish',
+  'hub:unpublish',
+  'hub:adminEnvironments',
   'snippets:list',
   'snippets:create',
   'snippets:update',
@@ -420,6 +430,8 @@ export interface EventContract {
   'deploy:event': DeployRunEvent[]
   'release:state': ReleaseSummary
   'hub:state': HubStatus
+  // The signed-in person's catalog changed; refetch with hub:catalog.
+  'hub:catalog': Record<string, never>
 }
 export type EventName = keyof EventContract
 export const EVENTS = [
@@ -437,6 +449,7 @@ export const EVENTS = [
   'deploy:event',
   'release:state',
   'hub:state',
+  'hub:catalog',
 ] as const satisfies readonly EventName[]
 type MissingEvents = Exclude<EventName, (typeof EVENTS)[number]>
 export const eventsAreComplete: [MissingEvents] extends [never] ? true : never = true

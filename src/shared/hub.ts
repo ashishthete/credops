@@ -1,3 +1,5 @@
+import type { DeploymentMeta, UseSudo } from './deploy'
+
 export const HUB_API_VERSION = 1
 export const DEFAULT_GROUP_ID = '00000000-0000-4000-8000-000000000001'
 export const DEFAULT_ALL_GRANT_ID = '00000000-0000-4000-8000-000000000002'
@@ -12,6 +14,13 @@ export const GROUP_NAME = /^[\p{L}\p{N} ._-]{1,64}$/u
 export const MAX_GROUP_DESCRIPTION = 280
 export const HUB_BODY_LIMIT = 1_048_576
 export const MAX_BULK_MEMBERS = 500
+export const MAX_SECRET_BYTES = 65_536
+export const MAX_MANIFEST_BYTES = 1_048_576
+export const FREEZE_DEFAULT_HOURS = 4
+export const FREEZE_MAX_HOURS = 24
+export const LIVE_HEARTBEAT_MS = 15_000
+export const LIVE_MAX_STREAMS_PER_USER = 4
+export const MAX_FREEZE_REASON = 280
 
 export type HubRole = 'admin' | 'maintainer'
 export type HubUserStatus = 'pending' | 'active' | 'disabled'
@@ -56,6 +65,23 @@ export const HUB_AUDIT_ACTIONS = [
   'grant.add',
   'grant.remove',
   'audit.verify',
+  'env.publish',
+  'env.unpublish',
+  'secret.set',
+  'secret.delete',
+  'deploykey.create',
+  'lock.freeze',
+  'lock.unfreeze',
+  'lock.break',
+  'release.preflight',
+  'release.start',
+  'release.finish',
+  'release.cancel',
+  'release.rollback',
+  'deploy.lock_break',
+  'notify.sent',
+  'notify.failed',
+  'access.denied',
 ] as const
 export type HubAuditAction = (typeof HUB_AUDIT_ACTIONS)[number]
 
@@ -178,3 +204,77 @@ export type HubStatus =
       user: HubUser | null
       sessionExpiresAt: string | null
     }
+
+// ---- Environment registry (10b) ----
+
+export interface HubHop {
+  hostId: string | null
+  label: string
+  address: string
+  port: number
+  username: string
+}
+
+/** The Phase 9 integration settings a Hub run needs; the Teams webhook is a Hub secret with a fixed name, not a reference. */
+export interface HubIntegrations {
+  notifyEvents: string[]
+  emailTo: string[]
+  emailCc: string[]
+  qaOnDeploy: boolean
+  qa: unknown | null
+  qaWait: boolean
+}
+
+export const EMPTY_HUB_INTEGRATIONS: HubIntegrations = {
+  notifyEvents: [],
+  emailTo: [],
+  emailCc: [],
+  qaOnDeploy: false,
+  qa: null,
+  qaWait: false,
+}
+
+/** What an admin publishes: addresses, jump chains and pinned public host keys. Never a secret value. */
+export interface HubEnvManifest {
+  environment: {
+    id: string
+    name: string
+    protected: boolean
+    versioned: boolean
+    autoRollback: boolean
+    currentVersion: string | null
+  }
+  hosts: {
+    id: string
+    label: string
+    address: string
+    port: number
+    username: string
+    useSudo: UseSudo
+    /** Jump chain, target last. */
+    hops: HubHop[]
+    /** OpenSSH known_hosts lines, public keys only. */
+    knownHosts: string[]
+  }[]
+  apps: { id: string; name: string; composeProject: string | null; description: string }[]
+  deployments: Omit<DeploymentMeta, 'vaultIds' | 'createdAt' | 'updatedAt'>[]
+  integrations: HubIntegrations
+  requiredSecrets: { secretId: string; name: string; usedBy: string[] }[]
+}
+
+/** What any signed-in person with a view grant sees: no addresses, hops or host keys. */
+export interface HubCatalogEnv {
+  environment: HubEnvManifest['environment']
+  hosts: { id: string; label: string }[]
+  apps: HubEnvManifest['apps']
+  deployments: HubEnvManifest['deployments']
+  missingSecrets: number
+  deployKey: { fingerprint: string } | null
+  publishedAt: string
+  publishedBy: string
+}
+
+export interface HubPublishResult {
+  manifestHash: string
+  missingSecrets: string[]
+}

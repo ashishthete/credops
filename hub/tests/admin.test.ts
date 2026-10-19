@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { DEFAULT_GROUP_ID } from '../../src/shared/hub'
 import { testHub, type TestHub } from './helpers'
+import { manifest } from './manifest'
 
 let hub: TestHub
 afterEach(async () => hub.close())
@@ -10,7 +11,7 @@ const BOB = { oid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', upn: 'bob@example.com
 const CAROL = { oid: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', upn: 'carol@example.com', name: 'Carol' }
 const E1 = 'e1111111-1111-4111-8111-111111111111'
 
-const call = (token: string, method: 'GET' | 'POST' | 'PATCH' | 'DELETE', url: string, payload?: unknown) =>
+const call = (token: string, method: 'GET' | 'PUT' | 'POST' | 'PATCH' | 'DELETE', url: string, payload?: unknown) =>
   hub.app.inject({ method, url, headers: { authorization: `Bearer ${token}` }, ...(payload === undefined ? {} : { payload: payload as object }) })
 
 async function setup() {
@@ -25,6 +26,12 @@ const snapshot = (): string =>
   JSON.stringify(
     ['users', 'groups', 'group_members', 'grants', 'sessions'].map((t) => hub.db.prepare(`SELECT * FROM ${t} ORDER BY 1, 2`).all()),
   )
+
+/** Grants need a published environment: publish the standard one (its id is E1). */
+async function publishE1(admin: string) {
+  const r = await call(admin, 'PUT', `/api/v1/admin/environments/${E1}`, manifest())
+  expect(r.statusCode).toBe(200)
+}
 
 async function createGroup(admin: string, name: string) {
   const r = await call(admin, 'POST', '/api/v1/admin/groups', { name, description: '' })
@@ -74,6 +81,7 @@ describe('admin api', () => {
 
   it('duplicate grants conflict and bad ids are 400', async () => {
     const { admin } = await setup()
+    await publishE1(admin)
     const g = await createGroup(admin, 'Pay')
     const scope = { kind: 'environment', environmentId: E1 }
     expect((await call(admin, 'POST', `/api/v1/admin/groups/${g}/grants`, { scope })).statusCode).toBe(201)
@@ -108,6 +116,7 @@ describe('admin api', () => {
 
   it('authorization changes apply on the next request', async () => {
     const { admin, bob } = await setup()
+    await publishE1(admin)
     const g = await createGroup(admin, 'Pay')
     const grant = (await call(admin, 'POST', `/api/v1/admin/groups/${g}/grants`, { scope: { kind: 'environment', environmentId: E1 } })).json()
     await call(admin, 'POST', `/api/v1/admin/groups/${g}/members`, { oids: [BOB.oid] })
