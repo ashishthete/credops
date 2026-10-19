@@ -5,10 +5,10 @@ import { useNavigate, useSearchParams } from 'react-router'
 import { useInventory, type InventoryData } from '../../inventory/store'
 import { byName } from '../../inventory/tree'
 import { DetailPanel, selectionSubject, type MapSelection } from '../../map/DetailPanel'
-import { buildGraph, parseScope, scopeKey, type MapGraph, type MapScope } from '../../map/graph'
+import { parseScope, scopeKey, type MapGraph, type MapScope } from '../../map/graph'
 import { MapCanvas, type MapCanvasHandle } from '../../map/MapCanvas'
 import { searchGraph } from '../../map/search'
-import { useMapGraph } from '../../map/useMapGraph'
+import { fullGraph, useMapGraph, useTunnelMetas } from '../../map/useMapGraph'
 import { clearPins, setPin, usePins } from '../../map/viewport'
 import { useConnect } from '../../terminal/connect'
 import { tunnelStore } from '../../tunnels/store'
@@ -26,8 +26,6 @@ const NO_MATCHES = { matches: [] as string[], best: null }
 
 const FIELD =
   'h-7 rounded-lg border border-line bg-surface-2/60 px-2 text-[12.5px] text-fg transition-colors hover:border-muted/30 focus:border-accent/60 focus:outline-none [color-scheme:dark]'
-
-const tunnelMetas = () => tunnelStore.get().tunnels
 
 /** The search params for a scope: `?product=` or `?env=`, or neither for everything. */
 function scopeParams(scope: MapScope, current: URLSearchParams): URLSearchParams {
@@ -142,10 +140,10 @@ function MapBody() {
   const [query, setQuery] = useState('')
   const searching = query.trim() !== ''
   const found = useMemo(() => (graph && searching ? searchGraph(graph, query) : NO_MATCHES), [graph, query, searching])
-  const metas = useSyncExternalStore(tunnelStore.subscribe, tunnelMetas)
+  const metas = useTunnelMetas()
   const filtered = scope.kind !== 'all'
   const foundAnywhere = useMemo(
-    () => (data && filtered && searching && found.best === null ? searchGraph(buildGraph({ data, tunnels: metas, scope: { kind: 'all' } }), query) : NO_MATCHES),
+    () => (data && filtered && searching && found.best === null ? searchGraph(fullGraph(data, metas), query) : NO_MATCHES),
     [data, metas, filtered, searching, found, query],
   )
   // Everything but the matches and the groups they sit in fades.
@@ -174,12 +172,13 @@ function MapBody() {
     const timer = setTimeout(() => setHighlightId(null), HIGHLIGHT_MS)
     return () => clearTimeout(timer)
   }, [highlightId])
-  // The panel takes focus when it opens (its effect runs first); hand it back to the search box.
+  // The panel takes focus when it opens (its effect runs first); hand it back to the search box. This
+  // runs after every commit, so the request never outlives the zoom that made it.
   useEffect(() => {
     if (!keepSearchFocus.current) return
     keepSearchFocus.current = false
     searchBox.current?.focus()
-  }, [live])
+  })
   // A match outside the filter: the filter is cleared first, and the zoom waits for the wider graph.
   useEffect(() => {
     if (pendingZoom && graph?.nodes.some((n) => n.id === pendingZoom)) {

@@ -28,7 +28,7 @@ import { EdgeActionsContext, edgeTypes, type EdgeActions, type MapFlowEdge } fro
 import type { MapGraph } from './graph'
 import { VIRTUALIZE_AT, type MapLayout } from './layout'
 import { nodeTypes, type MapFlowNode } from './nodes'
-import { loadViewport, saveViewport } from './viewport'
+import { MAX_ZOOM, MIN_ZOOM, loadViewport, saveViewport } from './viewport'
 
 /** Imperative moves the page asks of the canvas. */
 export interface MapCanvasHandle {
@@ -215,13 +215,9 @@ export const MapCanvas = memo(function MapCanvas({
   const onNodeDoubleClick = useCallback((_: unknown, n: MapFlowNode) => onActivate(n.id), [onActivate])
   const onEdgeClick = useCallback((_: unknown, e: MapFlowEdge) => onEdgeSelect(e.id), [onEdgeSelect])
   const onPaneClick = useCallback(() => onSelect(null), [onSelect])
-  // Every node in the drag (a group carries its hosts along, so only it is pinned).
-  const onNodeDragStop = useCallback(
-    (_: unknown, _node: MapFlowNode, dragged: MapFlowNode[]) => {
-      for (const n of dragged) onPin(n.id, n.position)
-    },
-    [onPin],
-  )
+  // Only the grabbed node is pinned: a group carries its hosts along, and with selectNodesOnDrag off
+  // React Flow unselects the page's selection inside the drag rather than dragging it too.
+  const onNodeDragStop = useCallback((_: unknown, n: MapFlowNode) => onPin(n.id, n.position), [onPin])
 
   useImperativeHandle(
     ref,
@@ -234,6 +230,28 @@ export const MapCanvas = memo(function MapCanvas({
     [],
   )
 
+  // A move is saved for the scope it happened in once it has settled. A newer move in the same scope
+  // replaces it; switching scope or leaving the page saves it at once.
+  const pendingSave = useRef<{ scope: string; timer: ReturnType<typeof setTimeout>; save: () => void } | null>(null)
+  const flushSave = useCallback(() => {
+    if (!pendingSave.current) return
+    clearTimeout(pendingSave.current.timer)
+    pendingSave.current.save()
+  }, [])
+  const onMoveEnd = useCallback(
+    (_: unknown, vp: Viewport) => {
+      if (pendingSave.current?.scope === scopeKey) clearTimeout(pendingSave.current.timer)
+      else flushSave()
+      const save = () => {
+        pendingSave.current = null
+        saveViewport(scopeKey, vp)
+      }
+      pendingSave.current = { scope: scopeKey, timer: setTimeout(save, SAVE_DEBOUNCE_MS), save }
+    },
+    [scopeKey, flushSave],
+  )
+  useEffect(() => flushSave, [flushSave])
+
   // The first scope's viewport goes in as React Flow's starting one (or it fits); later scopes restore
   // theirs here, or fit when they have none stored.
   const [initialViewport] = useState(() => loadViewport(scopeKey))
@@ -241,33 +259,12 @@ export const MapCanvas = memo(function MapCanvas({
   useEffect(() => {
     if (shownScope.current === scopeKey) return
     shownScope.current = scopeKey
+    flushSave()
     const { flow } = latest.current
     const stored = loadViewport(scopeKey)
     if (stored) void flow.setViewport(stored)
     else void flow.fitView({ padding: FIT_PADDING })
-  }, [scopeKey])
-
-  // A move is saved for the scope it happened in once it has settled; leaving the page saves it at once.
-  const pendingSave = useRef<{ timer: ReturnType<typeof setTimeout>; save: () => void } | null>(null)
-  const onMoveEnd = useCallback(
-    (_: unknown, vp: Viewport) => {
-      if (pendingSave.current) clearTimeout(pendingSave.current.timer)
-      const save = () => {
-        pendingSave.current = null
-        saveViewport(scopeKey, vp)
-      }
-      pendingSave.current = { timer: setTimeout(save, SAVE_DEBOUNCE_MS), save }
-    },
-    [scopeKey],
-  )
-  useEffect(
-    () => () => {
-      if (!pendingSave.current) return
-      clearTimeout(pendingSave.current.timer)
-      pendingSave.current.save()
-    },
-    [],
-  )
+  }, [scopeKey, flushSave])
 
   // Canvas keys live here, not in global shortcuts, so typing in a search box never zooms.
   const onKeyDown = useCallback(
@@ -298,6 +295,7 @@ export const MapCanvas = memo(function MapCanvas({
         onEdgeMouseLeave={onEdgeMouseLeave}
         onPaneClick={onPaneClick}
         onNodeDragStop={onNodeDragStop}
+        selectNodesOnDrag={false}
         onMoveEnd={onMoveEnd}
         nodesConnectable={false}
         elementsSelectable
@@ -309,8 +307,8 @@ export const MapCanvas = memo(function MapCanvas({
         deleteKeyCode={null}
         panActivationKeyCode={null}
         zoomOnDoubleClick={false}
-        minZoom={0.2}
-        maxZoom={2}
+        minZoom={MIN_ZOOM}
+        maxZoom={MAX_ZOOM}
         defaultViewport={initialViewport ?? undefined}
         fitView={!initialViewport}
         fitViewOptions={FIT_OPTIONS}

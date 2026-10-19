@@ -95,6 +95,24 @@ async function renderMap(path = '/map') {
   await flush()
 }
 
+// A real drag through d3-drag: press, move past the threshold, release; React Flow then calls
+// onNodeDragStop. d3-drag listens for the moves on `event.view`, which jsdom won't take in the constructor.
+async function drag(id: string, dx: number) {
+  const mouse = (target: Element | Window, type: 'mouseDown' | 'mouseMove' | 'mouseUp', clientX: number) => {
+    const event = createEvent[type](target, { button: 0, buttons: 1, clientX, clientY: 100 })
+    Object.defineProperty(event, 'view', { value: window })
+    fireEvent(target, event)
+  }
+  mouse(node(id)!, 'mouseDown', 200)
+  mouse(window, 'mouseMove', 200 + dx / 2)
+  mouse(window, 'mouseMove', 200 + dx)
+  mouse(window, 'mouseUp', 200 + dx)
+  // d3-drag swallows the click that ends a drag until its next tick.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10)
+  })
+}
+
 async function change(el: HTMLElement, value: string) {
   fireEvent.change(el, { target: { value } })
   await flush()
@@ -284,23 +302,8 @@ describe('map toolbar', () => {
     const start = flowNode('e:e1/h:h2').position
     expect(within(toolbar()).queryByRole('button', { name: 'Reset layout' })).toBeNull()
 
-    // A real drag through d3-drag: press, move past the threshold, release. React Flow then calls
-    // onNodeDragStop. Leftwards, because pg sits in the last column of a one-row group and pins clamp inside it.
-    // d3-drag listens for the moves on `event.view`, which jsdom won't take in the constructor.
-    const mouse = (target: Element | Window, type: 'mouseDown' | 'mouseMove' | 'mouseUp', clientX: number) => {
-      const event = createEvent[type](target, { button: 0, buttons: 1, clientX, clientY: 100 })
-      Object.defineProperty(event, 'view', { value: window })
-      fireEvent(target, event)
-    }
-    const el = node('e:e1/h:h2')!
-    mouse(el, 'mouseDown', 200)
-    mouse(window, 'mouseMove', 170)
-    mouse(window, 'mouseMove', 140)
-    mouse(window, 'mouseUp', 140)
-    // d3-drag swallows the click that ends a drag until its next tick.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(10)
-    })
+    // Leftwards, because pg sits in the last column of a one-row group and pins clamp inside it.
+    await drag('e:e1/h:h2', -60)
 
     const pinned = pinsStore.get().all?.['e:e1/h:h2']
     expect(pinned).toBeDefined()
@@ -316,5 +319,50 @@ describe('map toolbar', () => {
     expect(pinsStore.get().all).toBeUndefined()
     expect(flowNode('e:e1/h:h2').position).toEqual(start)
     expect(within(toolbar()).queryByRole('button', { name: 'Reset layout' })).toBeNull()
+  })
+
+  it('dragging one host moves and pins only that host, even with another selected', async () => {
+    await renderMap()
+    fireEvent.click(node('e:e1/h:h1')!)
+    await flush()
+    expect(node('e:e1/h:h1')).toHaveClass('selected')
+    const selectedAt = flowNode('e:e1/h:h1').position
+
+    await drag('e:e1/h:h2', -60)
+    expect(Object.keys(pinsStore.get().all ?? {})).toEqual(['e:e1/h:h2'])
+    expect(flowNode('e:e1/h:h1').position).toEqual(selectedAt)
+    expect(node('e:e1/h:h1')).toHaveClass('selected')
+  })
+
+  it('a pan saved just before a scope switch is kept', async () => {
+    await renderMap()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    act(() => {
+      ;(seen.flow.onMoveEnd as (e: null, vp: object) => void)(null, { x: 11, y: 12, zoom: 1.1 })
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    // The switch's own fit ends a move in the new scope; the old scope's pan must still land.
+    await change(select('Product'), 'pA')
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    expect(JSON.parse(localStorage.getItem(VIEWPORT_KEY)!).all).toEqual({ x: 11, y: 12, zoom: 1.1 })
+  })
+
+  it('after a search zoom, a later selection focuses its panel as usual', async () => {
+    await renderMap()
+    await change(search(), 'pg')
+    await key(search(), 'Enter')
+    expect(search()).toHaveFocus()
+
+    fireEvent.click(node('e:e1/h:h1')!)
+    await flush()
+    const panel = screen.getByRole('complementary', { name: 'web-1' })
+    expect(search()).not.toHaveFocus()
+    expect(panel.contains(document.activeElement)).toBe(true)
   })
 })

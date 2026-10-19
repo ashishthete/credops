@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   MAX_VIEWPORTS,
+  MAX_ZOOM,
+  MIN_ZOOM,
   VIEWPORT_KEY,
   clearPins,
   loadViewport,
@@ -68,6 +70,29 @@ describe('viewport storage', () => {
     expect(JSON.parse(localStorage.getItem(VIEWPORT_KEY)!)).toEqual({ 'e:e1': { x: 0, y: 0, zoom: 2 } })
     localStorage.setItem(VIEWPORT_KEY, '[1,2]')
     expect(loadViewport('0')).toBeNull()
+  })
+
+  it('rejects a zoom of zero or less and clamps the rest to the canvas range', () => {
+    expect([MIN_ZOOM, MAX_ZOOM]).toEqual([0.2, 2])
+    localStorage.setItem(
+      VIEWPORT_KEY,
+      JSON.stringify({
+        zero: { x: 0, y: 0, zoom: 0 },
+        negative: { x: 0, y: 0, zoom: -1 },
+        huge: { x: 5, y: 6, zoom: 1e6 },
+        tiny: { x: 1, y: 1, zoom: 0.001 },
+      }),
+    )
+    expect(loadViewport('zero')).toBeNull()
+    expect(loadViewport('negative')).toBeNull()
+    expect(loadViewport('huge')).toEqual({ x: 5, y: 6, zoom: 2 })
+    expect(loadViewport('tiny')).toEqual({ x: 1, y: 1, zoom: 0.2 })
+
+    // Saving applies the same rules.
+    saveViewport('all', { x: 0, y: 0, zoom: 0 })
+    expect(loadViewport('all')).toBeNull()
+    saveViewport('all', { x: 0, y: 0, zoom: 40 })
+    expect(JSON.parse(localStorage.getItem(VIEWPORT_KEY)!).all).toEqual({ x: 0, y: 0, zoom: 2 })
   })
 })
 

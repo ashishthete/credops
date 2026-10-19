@@ -11,9 +11,17 @@ export interface Viewport {
 // Per-scope viewports, `{ [scopeKey]: { x, y, zoom } }`, oldest write first.
 export const VIEWPORT_KEY = 'opsdeck.map.viewport'
 export const MAX_VIEWPORTS = 32
+/** The canvas's zoom range; a stored zoom outside it is pulled back in. */
+export const MIN_ZOOM = 0.2
+export const MAX_ZOOM = 2
 
 const isViewport = (v: unknown): v is Viewport =>
-  typeof v === 'object' && v !== null && ['x', 'y', 'zoom'].every((k) => Number.isFinite((v as Record<string, unknown>)[k]))
+  typeof v === 'object' &&
+  v !== null &&
+  ['x', 'y', 'zoom'].every((k) => Number.isFinite((v as Record<string, unknown>)[k])) &&
+  (v as Viewport).zoom > 0
+
+const clean = (v: Viewport): Viewport => ({ x: v.x, y: v.y, zoom: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, v.zoom)) })
 
 /** Every valid entry, in write order; anything unreadable reads as nothing stored. */
 function readAll(): [string, Viewport][] {
@@ -21,7 +29,7 @@ function readAll(): [string, Viewport][] {
     const raw = localStorage.getItem(VIEWPORT_KEY)
     const parsed: unknown = raw ? JSON.parse(raw) : null
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return []
-    return Object.entries(parsed).flatMap(([k, v]) => (isViewport(v) ? [[k, { x: v.x, y: v.y, zoom: v.zoom }] as [string, Viewport]] : []))
+    return Object.entries(parsed).flatMap(([k, v]) => (isViewport(v) ? [[k, clean(v)] as [string, Viewport]] : []))
   } catch {
     return []
   }
@@ -33,8 +41,9 @@ export function loadViewport(scopeKey: string): Viewport | null {
 
 /** Writes `scopeKey` as the newest entry, dropping the oldest past MAX_VIEWPORTS. */
 export function saveViewport(scopeKey: string, vp: Viewport): void {
+  if (!isViewport(vp)) return
   // Scope keys are never integer-like ('all', 'p:…', 'e:…'), so object key order is write order.
-  const entries = [...readAll().filter(([k]) => k !== scopeKey), [scopeKey, { x: vp.x, y: vp.y, zoom: vp.zoom }] as [string, Viewport]]
+  const entries = [...readAll().filter(([k]) => k !== scopeKey), [scopeKey, clean(vp)] as [string, Viewport]]
   try {
     localStorage.setItem(VIEWPORT_KEY, JSON.stringify(Object.fromEntries(entries.slice(-MAX_VIEWPORTS))))
   } catch {
