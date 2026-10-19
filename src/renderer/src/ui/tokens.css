@@ -160,6 +160,46 @@ samp {
   box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 70%, transparent);
 }
 
+/* Map edges: React Flow owns the edge paths, so their transitions and hover glow live here. */
+.od-edge {
+  transition: stroke 200ms ease-out;
+}
+
+.react-flow__edge:hover .od-edge {
+  filter: drop-shadow(0 0 4px var(--od-tone, var(--muted)));
+}
+
+/* The two ends of a hovered edge. */
+.react-flow__node[data-related] {
+  border-radius: 10px;
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 28%, transparent);
+}
+
+.react-flow__node-product[data-related] {
+  border-radius: 9999px;
+}
+
+.react-flow__node-environment[data-related],
+.react-flow__node-mac[data-related] {
+  border-radius: 12px;
+}
+
+/* The dot travelling an up tunnel: fades in and out at the ends of each pass. */
+.od-travel {
+  animation: od-travel var(--od-flow-dur, 1.6s) linear infinite;
+}
+
+@keyframes od-travel {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  15%,
+  85% {
+    opacity: 1;
+  }
+}
+
 @keyframes od-node-enter {
   from {
     opacity: 0;
@@ -206,7 +246,16 @@ samp {
   .toast-drain,
   .od-flow,
   .od-pulse,
+  .od-travel,
   .od-node-enter {
     animation: none;
+  }
+
+  .od-travel {
+    display: none;
+  }
+
+  .od-edge {
+    transition: none;
   }
 }

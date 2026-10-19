@@ -12,7 +12,7 @@ export const breakSide = (code: TunnelErrorCode | undefined): 'local' | 'remote'
   code && LOCAL_FAILURES.includes(code) ? 'local' : 'remote'
 
 // Dash speed in three steps of combined throughput: idle, busy, flat out.
-const FLOW_DURATION = ['2.4s', '1.1s', '0.45s'] as const
+export const FLOW_DURATION = ['2.4s', '1.1s', '0.45s'] as const
 
 export function flowStep(bytesPerSec: number): 0 | 1 | 2 {
   return bytesPerSec >= 1_000_000 ? 2 : bytesPerSec >= 10_000 ? 1 : 0

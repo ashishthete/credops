@@ -6,12 +6,12 @@ import {
   ReactFlow,
   applyNodeChanges,
   useReactFlow,
-  type Edge,
   type NodeChange,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { memo, useCallback, useMemo, useState, type KeyboardEvent } from 'react'
+import { memo, useCallback, useMemo, useState, type KeyboardEvent, type MouseEvent } from 'react'
 import { useMotionSafe } from '../ui/motion'
+import { EdgeSelectContext, edgeTypes, type MapFlowEdge } from './edges'
 import type { MapGraph } from './graph'
 import { VIRTUALIZE_AT, type MapLayout } from './layout'
 import { nodeTypes, type MapFlowNode } from './nodes'
@@ -59,6 +59,23 @@ function alsoIn(graph: MapGraph): Map<string, string[]> {
   }
   return out
 }
+
+/**
+ * Flow edges for a graph. Tunnels and jumps draw above the group frames, memberships under them;
+ * a membership takes its product's colour.
+ */
+function flowEdges(graph: MapGraph): MapFlowEdge[] {
+  const productColor = new Map(graph.nodes.flatMap((n) => (n.data.kind === 'product' ? [[n.id, n.data.color] as const] : [])))
+  return graph.edges.map((e): MapFlowEdge => {
+    const base = { id: e.id, source: e.source, target: e.target }
+    const d = e.data
+    if (d.kind === 'membership') return { ...base, type: 'membership', zIndex: 0, data: { ...d, color: productColor.get(e.source) ?? 'var(--muted)' } }
+    return d.kind === 'jump' ? { ...base, type: 'jump', zIndex: 1, data: { ...d } } : { ...base, type: 'tunnel', zIndex: 1, data: { ...d } }
+  })
+}
+
+/** Marks the two ends of a hovered edge; one shared object, so an unchanged node keeps its identity. */
+const RELATED = { 'data-related': '' } as MapFlowNode['domAttributes']
 
 /** Flow nodes for a laid-out graph: position, size and data only; selection and styling come later. */
 function flowNodes(graph: MapGraph, layout: MapLayout): MapFlowNode[] {
@@ -108,20 +125,29 @@ export const MapCanvas = memo(function MapCanvas({
     if (kept.length) setLocal((s) => ({ ...s, nodes: applyNodeChanges(kept, s.nodes) }))
   }, [])
 
+  const edges = useMemo(() => flowEdges(graph), [graph])
+
+  // Hovering an edge rings its two end nodes.
+  const [hoveredEdge, setHoveredEdge] = useState<string | null>(null)
+  const related = useMemo(() => {
+    const e = hoveredEdge ? graph.edges.find((x) => x.id === hoveredEdge) : undefined
+    return e ? new Set([e.source, e.target]) : null
+  }, [graph, hoveredEdge])
+  const onEdgeMouseEnter = useCallback((_: MouseEvent, e: MapFlowEdge) => setHoveredEdge(e.id), [])
+  const onEdgeMouseLeave = useCallback(() => setHoveredEdge(null), [])
+
   // Selection and styling go on at render time, so changing them never moves a dragged node back.
   const nodes = useMemo(
     () =>
       local.nodes.map((n) => {
         const selected = n.id === selectedId
         const className = [dimmed?.has(n.id) && 'od-dimmed', highlightId === n.id && 'od-highlight'].filter(Boolean).join(' ') || undefined
-        return !!n.selected === selected && n.className === className ? n : { ...n, selected, className }
+        const domAttributes = related?.has(n.id) ? RELATED : undefined
+        return !!n.selected === selected && n.className === className && n.domAttributes === domAttributes
+          ? n
+          : { ...n, selected, className, domAttributes }
       }),
-    [local.nodes, selectedId, dimmed, highlightId],
-  )
-
-  const edges = useMemo(
-    (): Edge[] => graph.edges.map((e) => ({ id: e.id, source: e.source, target: e.target, data: { ...e.data } })),
-    [graph],
+    [local.nodes, selectedId, dimmed, highlightId, related],
   )
 
   const colors = useMemo(() => minimapColors(graph), [graph])
@@ -129,7 +155,7 @@ export const MapCanvas = memo(function MapCanvas({
 
   const onNodeClick = useCallback((_: unknown, n: MapFlowNode) => onSelect(n.id), [onSelect])
   const onNodeDoubleClick = useCallback((_: unknown, n: MapFlowNode) => onActivate(n.id), [onActivate])
-  const onEdgeClick = useCallback((_: unknown, e: Edge) => onEdgeSelect(e.id), [onEdgeSelect])
+  const onEdgeClick = useCallback((_: unknown, e: MapFlowEdge) => onEdgeSelect(e.id), [onEdgeSelect])
   const onPaneClick = useCallback(() => onSelect(null), [onSelect])
 
   // Canvas keys live here, not in global shortcuts, so typing in a search box never zooms.
@@ -147,41 +173,46 @@ export const MapCanvas = memo(function MapCanvas({
   )
 
   return (
-    <ReactFlow<MapFlowNode>
-      nodes={nodes}
-      edges={edges}
-      nodeTypes={nodeTypes}
-      onNodesChange={onNodesChange}
-      onNodeClick={onNodeClick}
-      onNodeDoubleClick={onNodeDoubleClick}
-      onEdgeClick={onEdgeClick}
-      onPaneClick={onPaneClick}
-      nodesConnectable={false}
-      elementsSelectable
-      nodesFocusable={false}
-      edgesFocusable={false}
-      // Keyboard is ours (Task 8): no built-in live region, Backspace deletes nothing, Space is free,
-      // and double-click means activate, not zoom.
-      disableKeyboardA11y
-      deleteKeyCode={null}
-      panActivationKeyCode={null}
-      zoomOnDoubleClick={false}
-      minZoom={0.2}
-      maxZoom={2}
-      fitView
-      fitViewOptions={{ padding: FIT_PADDING }}
-      proOptions={{ hideAttribution: true }}
-      onlyRenderVisibleElements={nodes.length > VIRTUALIZE_AT}
-      colorMode="dark"
-      // These land on React Flow's own role="application" root, the canvas's one tab stop.
-      tabIndex={0}
-      aria-roledescription="map"
-      aria-label="Topology map"
-      onKeyDown={onKeyDown}
-    >
-      <Background variant={BackgroundVariant.Dots} />
-      <MiniMap<MapFlowNode> pannable zoomable nodeColor={nodeColor} />
-      <Controls showInteractive={false} />
-    </ReactFlow>
+    <EdgeSelectContext.Provider value={onEdgeSelect}>
+      <ReactFlow<MapFlowNode, MapFlowEdge>
+        nodes={nodes}
+        edges={edges}
+        nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
+        onNodesChange={onNodesChange}
+        onNodeClick={onNodeClick}
+        onNodeDoubleClick={onNodeDoubleClick}
+        onEdgeClick={onEdgeClick}
+        onEdgeMouseEnter={onEdgeMouseEnter}
+        onEdgeMouseLeave={onEdgeMouseLeave}
+        onPaneClick={onPaneClick}
+        nodesConnectable={false}
+        elementsSelectable
+        nodesFocusable={false}
+        edgesFocusable={false}
+        // Keyboard is ours (Task 8): no built-in live region, Backspace deletes nothing, Space is free,
+        // and double-click means activate, not zoom.
+        disableKeyboardA11y
+        deleteKeyCode={null}
+        panActivationKeyCode={null}
+        zoomOnDoubleClick={false}
+        minZoom={0.2}
+        maxZoom={2}
+        fitView
+        fitViewOptions={{ padding: FIT_PADDING }}
+        proOptions={{ hideAttribution: true }}
+        onlyRenderVisibleElements={nodes.length > VIRTUALIZE_AT}
+        colorMode="dark"
+        // These land on React Flow's own role="application" root, the canvas's one tab stop.
+        tabIndex={0}
+        aria-roledescription="map"
+        aria-label="Topology map"
+        onKeyDown={onKeyDown}
+      >
+        <Background variant={BackgroundVariant.Dots} />
+        <MiniMap<MapFlowNode> pannable zoomable nodeColor={nodeColor} />
+        <Controls showInteractive={false} />
+      </ReactFlow>
+    </EdgeSelectContext.Provider>
   )
 })
