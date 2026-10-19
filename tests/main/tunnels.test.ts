@@ -891,10 +891,12 @@ describe('TunnelManager', () => {
 })
 
 describe('vault reset', () => {
-  it('closes every session and stops every tunnel, paused ones too, before reset() resolves', async () => {
+  it('closes every session, local shells too, and stops every tunnel, paused ones too, before reset() resolves', async () => {
     const t = await setup({ wire: false })
     const srv = await server()
     const unknown = await server()
+    let localOutput: ((chunk: string) => void) | null = null
+    const localKill = vi.fn()
     const echo = await target()
     const sessions = new SessionManager({
       resolve: (hostId, environmentId) => resolveHost(t.db, hostId, environmentId, { localUser: 'tester' }),
@@ -907,6 +909,14 @@ describe('vault reset', () => {
       audit: t.audit,
       isLocked: () => !t.vault.isUnlocked(),
       emit: () => {},
+      // A fake local shell: its scrollback may hold earlier SSH output, so a reset ends it too.
+      openLocal: () => ({
+        write: () => {},
+        resize: () => {},
+        onData: (cb) => void (localOutput = cb),
+        onExit: () => {},
+        kill: localKill,
+      }),
     })
     wireVaultHooks(t.vault, hookTargets(t.manager, t.broker, sessions))
     onTestFinished(() => sessions.closeAll('quit'))
@@ -914,6 +924,9 @@ describe('vault reset', () => {
     const hostId = t.host(srv)
     const shell = sessions.openSsh({ hostId, cols: 80, rows: 24 })
     await t.waitFor(() => expect(sessions.list()[0]?.state).toBe('ready'))
+    const local = sessions.openLocal({ cols: 80, rows: 24 })
+    localOutput!('$ ssh prod-db\r\n')
+    expect(sessions.attach(local.id).buffer).toContain('ssh prod-db')
     const up = t.tunnel(hostId, { label: 'up', targetPort: echo.port })
     const paused = t.tunnel(t.host(unknown, false), { label: 'paused', targetPort: echo.port })
     t.manager.start(up.id)
@@ -924,12 +937,15 @@ describe('vault reset', () => {
     t.vault.lock('manual')
     await t.waitState(paused.id, 'retrying', (rt) => rt.error?.code === 'locked')
     // Locking keeps both: the reset is what has to end them.
-    expect(sessions.list().map((s) => s.id)).toEqual([shell.id])
+    expect(sessions.list().map((s) => s.id)).toEqual([shell.id, local.id])
     expect(t.manager.runtime(up.id).state).toBe('up')
 
     await t.vault.reset('RESET')
     expect(sessions.list()).toEqual([])
     expect(() => sessions.attach(shell.id)).toThrow('session not found')
+    expect(() => sessions.attach(local.id)).toThrow('session not found')
+    expect(localKill).toHaveBeenCalledOnce()
+    expect(t.audit.list({ actions: ['shell.close'] }).map((a) => a.details.reason)).toEqual(['reset'])
     expect(t.manager.status().map((r) => r.state)).toEqual(['stopped', 'stopped'])
     expect(t.audits('tunnel.stop').map((a) => [a.targetLabel, a.details.reason])).toEqual([['up', 'reset']])
     expect(t.audit.list({ actions: ['ssh.close'] }).map((a) => a.details.reason)).toEqual(['reset'])
