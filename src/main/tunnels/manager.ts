@@ -305,11 +305,12 @@ export class TunnelManager {
   }
 
   /** Store update hook: a running tunnel whose connection details changed restarts. Never throws. */
-  changed(_before: TunnelMeta, after: TunnelMeta): void {
+  changed(before: TunnelMeta, after: TunnelMeta): void {
     try {
       const run = this.runs.get(after.id)
       if (!run) return
-      if (!TUNNEL_ROUTE_FIELDS.some((k) => run.meta[k] !== after[k])) {
+      // Compare the stored rows, as the dialog does: run.meta can lag a cascade (environment cleared).
+      if (!TUNNEL_ROUTE_FIELDS.some((k) => before[k] !== after[k])) {
         run.meta = after
         return
       }

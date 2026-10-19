@@ -720,6 +720,23 @@ describe('TunnelManager', () => {
     expect(JSON.stringify(t.events)).not.toContain('host is not in that environment')
   })
 
+  it('renaming a running tunnel after its environment was cleared does not restart it', async () => {
+    const t = await setup()
+    const srv = await server()
+    const echo = await target()
+    const hostId = t.host(srv)
+    const env = t.envs.create({ name: 'staging', color: '#aabbcc' })
+    t.envs.putHost(env.id, hostId, 'db')
+    const tun = t.tunnel(hostId, { targetPort: echo.port, environmentId: env.id })
+    t.manager.start(tun.id)
+    await t.waitState(tun.id, 'up')
+    t.envs.delete(env.id)
+    t.store.update(tun.id, { label: 'renamed' })
+    expect(t.audits('tunnel.stop')).toEqual([])
+    expect(t.manager.runtime(tun.id).state).toBe('up')
+    t.manager.stop(tun.id)
+  })
+
   it('R tunnel goes up and its probe falls back to keepalive when prohibited', async () => {
     const t = await setup()
     const srv = await server({ allowForward: false, allowRemoteForward: true })
