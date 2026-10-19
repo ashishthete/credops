@@ -21,6 +21,7 @@ import { createAppHandlers } from './ipc/handlers/app'
 import { createAuditHandlers } from './ipc/handlers/audit'
 import { createIdentityHandlers } from './ipc/handlers/identities'
 import { createDeployHandlers } from './ipc/handlers/deploy'
+import { createServiceHandlers } from './ipc/handlers/services'
 import { detectTools } from './deploy/tooling'
 import { startPrivateAgent, type ChildLike } from './deploy/agent'
 import { prepareHosts } from './deploy/hostkeys'
@@ -30,6 +31,7 @@ import { localAllowAll } from './deploy/access'
 import { noopFinalize } from './deploy/finalize'
 import { ReleaseService } from './deploy/release-service'
 import { DeployStore, dbSecretRefs } from './deploy/deploy-store'
+import { ServiceStore } from './deploy/service-store'
 import { ReleaseStore } from './deploy/release-store'
 import { createTunnelHandlers } from './ipc/handlers/tunnels'
 import { createOpsHandlers } from './ipc/handlers/ops'
@@ -181,6 +183,8 @@ if (!app.requestSingleInstanceLock()) {
       const snippets = new SnippetStore({ db, audit: log, vault: service })
       const deploys = new DeployStore({ db, audit: log, vault: service, secrets: dbSecretRefs(db) })
       deploys.onChanged = (environmentId) => pushEvent(mainWindow, 'deploy:changed', { environmentId })
+      const services = new ServiceStore({ db, audit: log, vault: service })
+      services.onChanged = (environmentId) => pushEvent(mainWindow, 'deploy:changed', { environmentId })
       const releaseStore = new ReleaseStore({ db })
       const importer = new SshImporter({
         db,
@@ -404,6 +408,7 @@ if (!app.requestSingleInstanceLock()) {
           ...createSshImportHandlers(importer),
           ...createTunnelHandlers({ store: tunnels, manager: runner }),
           ...createDeployHandlers({ deploys, releases: release, tooling: () => detectTools(toolDeps) }),
+          ...createServiceHandlers({ services }),
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
           ...createOpsHandlers({ snippets, runs, containers }),
         },

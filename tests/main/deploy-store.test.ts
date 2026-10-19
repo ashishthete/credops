@@ -65,10 +65,28 @@ describe('DeployStore', () => {
     expect(f.deploys.list()).toEqual([])
   })
 
-  it('checks the host is in the environment', async () => {
+  it('a checkout on a non-member host adds it as an app host', async () => {
     const f = await makeDeployFixture()
     const other = f.hosts.create({ label: 'lonely', address: '10.0.0.8' })
-    expect(() => f.deploys.create(f.input({ hostId: other.id }))).toThrow("host isn't in that environment")
+    const role = (hostId: string) =>
+      (f.db.prepare('SELECT role FROM environment_hosts WHERE environment_id = ? AND host_id = ?').get(f.staging.id, hostId) as { role: string } | undefined)?.role
+    expect(role(other.id)).toBeUndefined()
+    const d = f.deploys.create(f.input({ hostId: other.id }))
+    expect(d.hostId).toBe(other.id)
+    expect(role(other.id)).toBe('app')
+    // An existing membership keeps its role.
+    f.envs.putHost(f.staging.id, f.host.id, 'db')
+    f.deploys.create(f.input({ name: 'worker' }))
+    expect(role(f.host.id)).toBe('db')
+    // Removed after the checkout was saved: an update puts it back.
+    f.db.prepare('DELETE FROM environment_hosts WHERE environment_id = ? AND host_id = ?').run(f.staging.id, other.id)
+    f.deploys.update(d.id, { name: 'api2' })
+    expect(role(other.id)).toBe('app')
+    // A failed save adds nothing.
+    const third = f.hosts.create({ label: 'third', address: '10.0.0.10' })
+    expect(() => f.deploys.create(f.input({ name: 'bad', hostId: third.id, repoPath: 'relative' }))).toThrow()
+    expect(role(third.id)).toBeUndefined()
+    expect(() => f.deploys.create(f.input({ hostId: '00000000-0000-4000-8000-000000000000' }))).toThrow('host not found')
   })
 
   it('checkout stores repoUrl and composeProject', async () => {

@@ -41,6 +41,7 @@ import type {
   ReleaseSummary,
   RunEvent as DeployRunEvent,
 } from './deploy'
+import type { ServiceInput, ServiceMeta, ServicePatch, ServiceUpdateResult } from './services'
 import type { TunnelEvent, TunnelInput, TunnelMeta, TunnelPatch, TunnelRuntime, TunnelStats } from './tunnels'
 import type {
   KnownHostMeta,
@@ -191,6 +192,12 @@ export interface IpcContract {
   'release:get': { args: [releaseId: string]; result: ReleaseDetail }
   'release:events': { args: [releaseId: string, afterSeq: number, limit?: number]; result: DeployRunEvent[] }
   'release:active': { args: []; result: ReleaseSummary[] }
+  // Writes emit `deploy:changed`. `tunnelRestartNeeded` says a running db tunnel still uses the old target.
+  'service:list': { args: [environmentId?: string]; result: ServiceMeta[] }
+  'service:create': { args: [input: ServiceInput]; result: ServiceMeta }
+  'service:update': { args: [id: string, patch: ServicePatch]; result: ServiceUpdateResult }
+  'service:delete': { args: [id: string, opts: { deleteTunnel: boolean }]; result: void }
+  'service:reorder': { args: [environmentId: string, ids: string[]]; result: void }
   'snippets:list': { args: []; result: SnippetMeta[] }
   'snippets:create': { args: [input: SnippetInput]; result: SnippetMeta }
   'snippets:update': { args: [id: string, input: SnippetInput]; result: SnippetMeta }
@@ -311,6 +318,11 @@ export const CHANNELS = [
   'release:get',
   'release:events',
   'release:active',
+  'service:list',
+  'service:create',
+  'service:update',
+  'service:delete',
+  'service:reorder',
   'snippets:list',
   'snippets:create',
   'snippets:update',

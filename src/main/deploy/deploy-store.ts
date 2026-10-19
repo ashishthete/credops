@@ -438,18 +438,20 @@ export class DeployStore {
     return { environment: this.envName(environmentId) }
   }
 
-  private checkMembership(environmentId: string, hostId: string): void {
+  /** A checkout's host joins its environment as an `app` host when it isn't a member yet; a member keeps its role. */
+  private ensureMembership(environmentId: string, hostId: string): void {
     if (!this.db.prepare('SELECT 1 FROM hosts WHERE id = ?').get(hostId)) throw new Error('host not found')
     if (!this.db.prepare('SELECT 1 FROM environments WHERE id = ?').get(environmentId)) throw new Error('environment not found')
-    if (!this.db.prepare('SELECT 1 FROM environment_hosts WHERE environment_id = ? AND host_id = ?').get(environmentId, hostId)) {
-      throw new Error("host isn't in that environment")
-    }
+    this.db.prepare("INSERT OR IGNORE INTO environment_hosts(environment_id, host_id, role) VALUES (?, ?, 'app')").run(environmentId, hostId)
   }
 
-  /** Checks every rule on a fully merged deployment. Messages name the rule, never the value. */
+  /**
+   * Checks every rule on a fully merged deployment. Messages name the rule, never the value. Runs inside the write
+   * transaction: it adds the host to the environment, which a later failing rule rolls back.
+   */
   private validate(f: Fields, selfId: string | null): Fields {
     const name = checkText(f.name, 'deployment name', MAX_NAME)
-    this.checkMembership(f.environmentId, f.hostId)
+    this.ensureMembership(f.environmentId, f.hostId)
     const dup = this.db
       .prepare('SELECT id FROM deployments WHERE environment_id = ? AND name = ? COLLATE NOCASE')
       .get(f.environmentId, name) as { id: string } | undefined

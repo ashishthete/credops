@@ -1,6 +1,7 @@
 import type { DeployPlan, PlanDeployment, PlanHop } from '../../src/main/deploy/runner'
 import { DeployStore, dbSecretRefs } from '../../src/main/deploy/deploy-store'
 import { ReleaseStore } from '../../src/main/deploy/release-store'
+import { ServiceStore } from '../../src/main/deploy/service-store'
 import type { DeploymentInput } from '../../src/shared/deploy'
 import { SecretStore } from '../../src/main/vault/secret-store'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
@@ -21,6 +22,8 @@ export type DeployFixture = InventoryFixture & {
   secretId: string
   deploys: DeployStore
   releases: ReleaseStore
+  services: ServiceStore
+  /** Environment ids passed to `onChanged`, by the deploy and the service store alike. */
   changed: string[]
   /** A valid input for staging/app1; override fields per test. */
   input(over?: Partial<DeploymentInput>): DeploymentInput
@@ -41,6 +44,8 @@ export async function makeDeployFixture(opts: { maxEvents?: number } = {}): Prom
   const deploys = new DeployStore({ db: f.db, audit: f.audit, vault: f.vault, secrets: dbSecretRefs(f.db) })
   deploys.onChanged = (environmentId) => changed.push(environmentId)
   const releases = new ReleaseStore({ db: f.db, maxEvents: opts.maxEvents })
+  const services = new ServiceStore({ db: f.db, audit: f.audit, vault: f.vault })
+  services.onChanged = (environmentId) => changed.push(environmentId)
   return {
     ...f,
     staging,
@@ -49,6 +54,7 @@ export async function makeDeployFixture(opts: { maxEvents?: number } = {}): Prom
     secretId: secret.id,
     deploys,
     releases,
+    services,
     changed,
     input: (over = {}) => ({
       name: 'api',

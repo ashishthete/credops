@@ -87,6 +87,7 @@ import {
   type SecretPatch,
   type VaultInput,
 } from '../../shared/vault'
+import { MAX_SERVICES, type ServiceInput, type ServicePatch } from '../../shared/services'
 import { MAX_PRIVATE_KEY_BYTES } from '../vault/openssh'
 import { InvalidArgs, args, v, type ArgsValidator, type Check } from './validate'
 
@@ -291,6 +292,54 @@ export const asReleaseListFilter: Check<ReleaseListFilter> = v.object({
   limit: v.optional(v.int({ min: 1, max: 200 })),
   before: v.optional(v.uuid()),
 }) as Check<ReleaseListFilter>
+
+// Services. Each kind's shape has only its own keys, so a field of the other kind fails here; the store owns the
+// content rules (compose service, address, membership of the checkout).
+const serviceCommon = {
+  environmentId: v.uuid(),
+  name: deployName,
+  description: v.optional(v.str({ max: MAX_DESCRIPTION })),
+}
+const servicePort = v.int({ min: 1, max: 65535 })
+const appServiceFields = {
+  deploymentId: nullableId,
+  composeService: v.str({ min: 1, max: 63 }),
+  url: v.nullable(v.str({ max: MAX_URL })),
+  urlCheckFrom: v.oneOf(['mac', 'host'] as const),
+}
+const dbServiceFields = {
+  dbEngine: v.oneOf(['postgres', 'mysql', 'mongodb', 'redis', 'other'] as const),
+  dbAddress: v.str({ min: 1, max: MAX_ADDRESS }),
+  dbPort: servicePort,
+  viaHostId: nullableId,
+  localPort: v.nullable(servicePort),
+}
+export const asServiceInput: Check<ServiceInput> = v.tagged('kind', {
+  service: v.object({
+    kind: v.oneOf(['service'] as const),
+    ...serviceCommon,
+    deploymentId: nullableId,
+    composeService: v.optional(appServiceFields.composeService),
+    url: v.optional(appServiceFields.url),
+    urlCheckFrom: v.optional(appServiceFields.urlCheckFrom),
+  }),
+  db: v.object({
+    kind: v.oneOf(['db'] as const),
+    ...serviceCommon,
+    dbEngine: dbServiceFields.dbEngine,
+    dbAddress: dbServiceFields.dbAddress,
+    dbPort: v.optional(dbServiceFields.dbPort),
+    viaHostId: v.optional(dbServiceFields.viaHostId),
+    localPort: v.optional(dbServiceFields.localPort),
+  }),
+}) as Check<ServiceInput>
+// The patch can't know the kind: both kinds' keys are allowed here and the store refuses the other kind's. The kind
+// and environment are not keys, so changing them fails validation.
+export const asServicePatch: Check<ServicePatch> = v.object({
+  name: v.optional(deployName),
+  description: serviceCommon.description,
+  ...Object.fromEntries(Object.entries({ ...appServiceFields, ...dbServiceFields }).map(([k, c]) => [k, v.optional(c as Check<unknown>)])),
+}) as Check<ServicePatch>
 
 const tunnelBindAddress = v.str({ min: 1, max: MAX_BIND_ADDRESS, pattern: BIND_ADDRESS, trim: true })
 const tunnelBindPort = v.int({ min: 0, max: 65535 })
@@ -551,6 +600,11 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'deploy:settings': args(v.uuid()),
   'deploy:updateSettings': args(v.uuid(), asEnvDeploySettingsPatch),
   'deploy:tooling': args(),
+  'service:list': args(v.optional(v.uuid())),
+  'service:create': args(asServiceInput),
+  'service:update': args(v.uuid(), asServicePatch),
+  'service:delete': args(v.uuid(), v.object({ deleteTunnel: v.bool() })),
+  'service:reorder': args(v.uuid(), v.array(v.uuid(), MAX_SERVICES)),
   'release:preflight': args(asPreflightRequest),
   'release:start': args(v.uuid(), asReleaseConfirm),
   'release:cancel': args(v.uuid()),
