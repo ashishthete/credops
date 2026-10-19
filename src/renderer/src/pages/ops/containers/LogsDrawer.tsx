@@ -1,6 +1,6 @@
 import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
 import { X } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react'
 import { LOG_TAIL_DEFAULT } from '../../../../../shared/ops'
 import { api } from '../../../lib/api'
 import { clearFollow, followStore, onContainerLog } from '../../../ops/containers'
@@ -12,6 +12,23 @@ import { fast, spring, useMotionSafe } from '../../../ui/motion'
 import { Switch } from '../../../ui/Switch'
 
 const TAILS = [100, 200, 1000, 5000] as const
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+/** Keeps Tab inside the sheet. */
+function trapTab(e: KeyboardEvent<HTMLElement>): void {
+  if (e.key !== 'Tab') return
+  const items = [...e.currentTarget.querySelectorAll<HTMLElement>(FOCUSABLE)]
+  if (!items.length) return
+  const first = items[0]
+  const last = items[items.length - 1]
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault()
+    last.focus()
+  } else if (!e.shiftKey && (document.activeElement === last || !e.currentTarget.contains(document.activeElement))) {
+    e.preventDefault()
+    first.focus()
+  }
+}
 
 /** The logs of one container in a side sheet: a tail snapshot, or a live follow that stops on close. */
 export function LogsDrawer({
@@ -40,7 +57,8 @@ export function LogsDrawer({
             key="sheet"
             role="dialog"
             aria-label={`Logs of ${target.ref}`}
-            onKeyDown={(e) => e.key === 'Escape' && onClose()}
+            aria-modal="true"
+            onKeyDown={trapTab}
             initial={motionSafe ? { x: '100%' } : { opacity: 0 }}
             animate={{ x: 0, opacity: 1 }}
             exit={motionSafe ? { x: '100%', transition: fast } : { opacity: 0, transition: fast }}
@@ -64,7 +82,14 @@ function LogsBody({ target, onClose }: { target: { hostId: string; environmentId
   const [endNote, setEndNote] = useState(false)
   // False while the sheet animates out: the follow stops at the close, not after the animation.
   const present = useIsPresent()
+  const presentRef = useRef(present)
+  presentRef.current = present
+  // Every follow this sheet started, cleared from the store when it unmounts.
+  const started = useRef(new Set<string>())
   const closeRef = useRef<HTMLButtonElement>(null)
+  const liveId = useRef<string | null>(null)
+  // Follows that ended, including one that ended before its reply named it.
+  const endedIds = useRef(new Set<string>())
   // Chars ever received per follow, so the pane knows what is new once the text is trimmed at its cap.
   const totals = useRef(new Map<string, number>())
   const [, bump] = useState(0)
@@ -72,15 +97,33 @@ function LogsBody({ target, onClose }: { target: { hostId: string; environmentId
 
   useEffect(() => closeRef.current?.focus(), [])
   useEffect(
+    () => () => {
+      for (const id of started.current) clearFollow(id)
+    },
+    [],
+  )
+  // Escape closes from anywhere while the sheet is open.
+  useEffect(() => {
+    if (!present) return
+    const onKey = (e: globalThis.KeyboardEvent) => e.key === 'Escape' && onClose()
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [present, onClose])
+  useEffect(
     () =>
       onContainerLog((event) => {
         if ('chunk' in event) totals.current.set(event.followId, (totals.current.get(event.followId) ?? 0) + event.chunk.length)
-        else if (event.followId === liveId.current) setEndNote(true)
+        else {
+          endedIds.current.add(event.followId)
+          if (event.followId === liveId.current) {
+            setEndNote(true)
+            setFollowing(false)
+          }
+        }
         bump((n) => n + 1)
       }),
     [],
   )
-  const liveId = useRef<string | null>(null)
 
   // A snapshot while not following.
   useEffect(() => {
@@ -107,15 +150,24 @@ function LogsBody({ target, onClose }: { target: { hostId: string; environmentId
         return
       }
       id = got
-      if (cancelled) return void stop(got)
+      started.current.add(got)
+      if (cancelled) return void stop(got, true)
+      // It ended before this reply named it.
+      if (endedIds.current.has(got)) {
+        setEndNote(true)
+        setFollowing(false)
+        return
+      }
       liveId.current = got
       setFollowId(got)
     })
     return () => {
       cancelled = true
       liveId.current = null
-      setFollowId(null)
-      if (id) void stop(id)
+      // While the sheet animates out its last lines stay on screen; unmounting clears them.
+      const closing = !presentRef.current
+      if (!closing) setFollowId(null)
+      if (id) void stop(id, !closing)
     }
   }, [following, present, tail, hostId, environmentId, ref])
 
@@ -166,7 +218,7 @@ function LogsBody({ target, onClose }: { target: { hostId: string; environmentId
   )
 }
 
-function stop(followId: string): Promise<void> {
-  clearFollow(followId)
+function stop(followId: string, clear: boolean): Promise<void> {
+  if (clear) clearFollow(followId)
   return api.invoke('containers:unfollow', followId).catch(() => {})
 }

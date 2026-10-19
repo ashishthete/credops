@@ -1,5 +1,6 @@
 import { motion } from 'framer-motion'
 import { Minus, Play, Plus, Search, ShieldAlert, ShieldCheck } from 'lucide-react'
+import { useSearchParams } from 'react-router'
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { HOST_ROLES, type HostRole } from '../../../../../shared/inventory'
 import { DEFAULT_CONCURRENCY, DEFAULT_RUN_TIMEOUT_SEC, DESTRUCTIVE_PATTERN, MAX_CONCURRENCY, type RunRequest } from '../../../../../shared/ops'
@@ -59,6 +60,20 @@ export function Composer({ onConfirm }: { onConfirm: (req: ConfirmRequest) => vo
   const [role, setRole] = useState<Role>('all')
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set())
   const [contextId, setContextId] = useState('')
+
+  // `?hosts=a,b` (the Host view's Run… button) preselects those hosts once the inventory has them.
+  const [params] = useSearchParams()
+  const seeded = useRef<string | null>(null)
+  useEffect(() => {
+    const q = params.get('hosts')
+    if (!q || seeded.current === q || !hosts.length) return
+    seeded.current = q
+    const known = new Set(hosts.map((h) => h.id))
+    const ids = q.split(',').filter((id) => known.has(id))
+    if (!ids.length) return
+    setTargetMode('hosts')
+    setPicked(new Set(ids))
+  }, [params, hosts])
 
   const env = environments.find((e) => e.id === envId)
   const roleCounts = useMemo(() => {

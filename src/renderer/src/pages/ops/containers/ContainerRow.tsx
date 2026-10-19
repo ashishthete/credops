@@ -38,6 +38,7 @@ export function ContainerRow({
 }) {
   const motionSafe = useMotionSafe()
   const running = c.state === 'running' || c.state === 'restarting' || c.state === 'paused'
+  const canExec = c.state === 'running' || c.state === 'restarting'
   const icon = 'size-3.5'
   return (
     <ListRow label={c.name} index={index} stagger={stagger}>
@@ -81,7 +82,8 @@ export function ContainerRow({
           size="sm"
           variant="ghost"
           aria-label={`Shell in ${c.name}`}
-          disabled={!running}
+          disabled={!canExec}
+          title={canExec ? undefined : c.state === 'paused' ? 'A paused container cannot run a shell; unpause it first' : 'Start the container to open a shell'}
           icon={<SquareTerminal aria-hidden className={icon} />}
           onClick={actions.shell}
         >

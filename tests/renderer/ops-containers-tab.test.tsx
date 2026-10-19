@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { inventoryStore } from '../../src/renderer/src/inventory/store'
 import { applyContainerLog, resetContainers } from '../../src/renderer/src/ops/containers'
@@ -7,7 +7,8 @@ import { ContainersTab } from '../../src/renderer/src/pages/ops/ContainersTab'
 import { resetSessions } from '../../src/renderer/src/terminal/sessions'
 import { clearToasts, toast } from '../../src/renderer/src/ui/Toaster'
 import type { ContainerList, ContainerMeta } from '../../src/shared/ops'
-import { environment, host, mockBridge } from './helpers'
+import { vaultStatusStore } from '../../src/renderer/src/vault/status'
+import { environment, host, mockBridge, vaultStatus } from './helpers'
 
 const motion = vi.hoisted(() => ({ safe: true }))
 vi.mock('../../src/renderer/src/ui/motion', async (importOriginal) => ({
@@ -35,8 +36,9 @@ const list = (containers: ContainerMeta[]): ContainerList => ({ containers, trun
 
 const app1 = host({ id: 'h-app', label: 'app-1' })
 const stg1 = host({ id: 'h-stg', label: 'stg-1' })
-const prod = environment({ id: 'e-prod', name: 'prod', protected: true, hosts: [{ hostId: 'h-app', role: 'app' }] })
-const staging = environment({ id: 'e-stg', name: 'staging', hosts: [{ hostId: 'h-stg', role: 'app' }] })
+const prod = environment({ id: 'e-prod', name: 'prod', protected: true, hosts: [{ hostId: 'h-app', role: 'app' }, { hostId: 'h-both', role: 'app' }] })
+const both = host({ id: 'h-both', label: 'both-1' })
+const staging = environment({ id: 'e-stg', name: 'staging', hosts: [{ hostId: 'h-stg', role: 'app' }, { hostId: 'h-both', role: 'app' }] })
 
 const containers = list([
   c('web-1', { project: 'shop', ports: '0.0.0.0:80->80/tcp' }),
@@ -55,7 +57,7 @@ const calls = (invoke: ReturnType<typeof mockBridge>, channel: string) => (invok
 
 async function renderTab(results: Record<string, unknown> = {}, entry = '/ops/containers?host=h-app&env=e-prod') {
   const invoke = mockBridge({ 'containers:list': containers, ...results })
-  inventoryStore.set({ products: [], environments: [prod, staging], hosts: [app1, stg1], identities: [], vaults: [] })
+  inventoryStore.set({ products: [], environments: [prod, staging], hosts: [app1, stg1, both], identities: [], vaults: [] })
   render(
     <MemoryRouter initialEntries={[entry]}>
       <Routes>
@@ -173,5 +175,156 @@ describe('containers tab', () => {
     const open = calls(invoke, 'ssh:open')[0][1] as Record<string, unknown>
     expect(open).toMatchObject({ hostId: 'h-app', environmentId: 'e-prod', container: 'web-1' })
     expect(where).toBe('/terminals')
+  })
+})
+
+describe('containers tab review fixes', () => {
+  it('a host in staging and prod, picked under staging, still asks for the prod name', async () => {
+    await renderTab({}, '/ops/containers?host=h-both&env=e-stg')
+    fireEvent.click(screen.getByRole('button', { name: 'Restart web-1' }))
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByLabelText('Type prod to confirm')).toBeInTheDocument()
+  })
+
+  it('main refusing inside the dialog shows inline', async () => {
+    const invoke = await renderTab({}, '/ops/containers?host=h-app&env=e-prod')
+    const base = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (ch: string, ...a: unknown[]) => {
+      if (ch === 'containers:action') throw new Error('Type the environment name to confirm')
+      return base(ch, ...a)
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Stop web-1' }))
+    const dialog = screen.getByRole('dialog')
+    fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: 'prod' } })
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Stop container' }))
+    })
+    expect(within(screen.getByRole('dialog')).getByRole('alert')).toHaveTextContent('Type the environment name to confirm')
+  })
+
+  it('a host in two protected environments is refused in a blocked dialog', async () => {
+    const prod2 = environment({ id: 'e-prod2', name: 'prod2', protected: true, hosts: [{ hostId: 'h-both', role: 'app' }] })
+    mockBridge({ 'containers:list': containers })
+    inventoryStore.set({ products: [], environments: [prod, prod2, staging], hosts: [app1, stg1, both], identities: [], vaults: [] })
+    render(
+      <MemoryRouter initialEntries={['/ops/containers?host=h-both&env=e-stg']}>
+        <ContainersTab />
+      </MemoryRouter>,
+    )
+    await flush()
+    fireEvent.click(screen.getByRole('button', { name: 'Stop web-1' }))
+    expect(screen.getByRole('dialog')).toHaveTextContent(/more than one protected environment/)
+    expect(screen.getByRole('button', { name: 'Stop container' })).toBeDisabled()
+  })
+
+  it('a link change resets the picked host', async () => {
+    mockBridge({ 'containers:list': containers })
+    inventoryStore.set({ products: [], environments: [prod, staging], hosts: [app1, stg1, both], identities: [], vaults: [] })
+    let go: (to: string) => void = () => {}
+    function Nav() {
+      go = useNavigate()
+      return null
+    }
+    render(
+      <MemoryRouter initialEntries={['/ops/containers?host=h-app&env=e-prod']}>
+        <ContainersTab />
+        <Nav />
+      </MemoryRouter>,
+    )
+    await flush()
+    fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'h-stg|e-stg' } })
+    expect(screen.getByLabelText('Host')).toHaveValue('h-stg|e-stg')
+    act(() => go('/ops/containers?host=h-both&env=e-prod'))
+    await flush()
+    expect(screen.getByLabelText('Host')).toHaveValue('h-both|e-prod')
+  })
+
+  it('a project named Standalone does not collide with standalone containers', async () => {
+    await renderTab({ 'containers:list': list([c('a', { project: 'Standalone' }), c('b')]) })
+    expect(screen.getAllByRole('region')).toHaveLength(2)
+    fireEvent.click(screen.getAllByRole('button', { name: /Standalone/ })[0])
+    await waitFor(() => expect(screen.queryByRole('listitem', { name: 'a' })).not.toBeInTheDocument())
+    expect(screen.getByRole('listitem', { name: 'b' })).toBeInTheDocument()
+  })
+
+  it('remembers the pick and offers a host without environments', async () => {
+    const lone = host({ id: 'h-lone', label: 'lone-1' })
+    mockBridge({ 'containers:list': containers })
+    inventoryStore.set({ products: [], environments: [prod], hosts: [app1, lone], identities: [], vaults: [] })
+    const view = render(
+      <MemoryRouter initialEntries={['/ops/containers']}>
+        <ContainersTab />
+      </MemoryRouter>,
+    )
+    await flush()
+    fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'h-lone|' } })
+    expect(localStorage.getItem('opsdeck.containers.target')).toBe('h-lone|')
+    view.unmount()
+    const invoke = mockBridge({ 'containers:list': containers })
+    render(
+      <MemoryRouter initialEntries={['/ops/containers']}>
+        <ContainersTab />
+      </MemoryRouter>,
+    )
+    await flush()
+    expect(screen.getByLabelText('Host')).toHaveValue('h-lone|')
+    expect(calls(invoke, 'containers:list')[0].slice(1)).toEqual(['h-lone', null])
+  })
+
+  it('auto-refresh runs every 10 s and pauses when hidden or locked', async () => {
+    vi.useFakeTimers()
+    try {
+      const invoke = await renderTab()
+      const n = () => calls(invoke, 'containers:list').length
+      const start = n()
+      await act(async () => void (await vi.advanceTimersByTimeAsync(10_000)))
+      expect(n()).toBe(start + 1)
+      const vis = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+      await act(async () => void (await vi.advanceTimersByTimeAsync(10_000)))
+      expect(n()).toBe(start + 1)
+      vis.mockRestore()
+      vaultStatusStore.set(vaultStatus({ unlocked: false }))
+      await act(async () => void (await vi.advanceTimersByTimeAsync(10_000)))
+      expect(n()).toBe(start + 1)
+      vaultStatusStore.set(null)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('unmounting the tab unfollows', async () => {
+    const invoke = await renderTab({ 'containers:logs': 'x', 'containers:follow': 'f9', 'containers:unfollow': undefined })
+    fireEvent.click(screen.getByRole('button', { name: 'Logs of web-1' }))
+    await flush()
+    fireEvent.click(screen.getByRole('switch', { name: 'Follow' }))
+    await flush()
+    cleanup()
+    await flush()
+    expect(calls(invoke, 'containers:unfollow').map((x) => x[1])).toEqual(['f9'])
+  })
+
+  it('an ended follow turns the switch off, even one that ends before the reply', async () => {
+    await renderTab({ 'containers:logs': 'x', 'containers:follow': 'f2', 'containers:unfollow': undefined })
+    fireEvent.click(screen.getByRole('button', { name: 'Logs of web-1' }))
+    await flush()
+    fireEvent.click(screen.getByRole('switch', { name: 'Follow' }))
+    await flush()
+    act(() => applyContainerLog({ followId: 'f2', ended: true, error: null }))
+    expect(screen.getByRole('switch', { name: 'Follow' })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('the drawer is modal and Escape closes it from anywhere', async () => {
+    await renderTab({ 'containers:logs': 'x' })
+    fireEvent.click(screen.getByRole('button', { name: 'Logs of web-1' }))
+    await flush()
+    expect(screen.getByRole('dialog', { name: 'Logs of web-1' })).toHaveAttribute('aria-modal', 'true')
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('Shell is disabled for a paused container', async () => {
+    await renderTab({ 'containers:list': list([c('p', { state: 'paused' })]) })
+    expect(screen.getByRole('button', { name: 'Shell in p' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Shell in p' })).toHaveAttribute('title', expect.stringMatching(/paused/i))
   })
 })

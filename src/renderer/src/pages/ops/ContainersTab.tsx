@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { useSearchParams } from 'react-router'
 import type { ContainerAction, ContainerMeta } from '../../../../shared/ops'
 import { useInventory } from '../../inventory/store'
+import { runProtection } from '../../ops/protect'
 import { containerAction, containerKey, containerStore, loadContainers } from '../../ops/containers'
 import { useConnect } from '../../terminal/connect'
 import { Button } from '../../ui/Button'
@@ -18,6 +19,7 @@ import { vaultStatusStore } from '../../vault/status'
 import { ContainerRow } from './containers/ContainerRow'
 import { LogsDrawer } from './containers/LogsDrawer'
 
+const STANDALONE = 'standalone'
 const REFRESH_MS = 10_000
 const LAST_KEY = 'opsdeck.containers.target'
 const PAST: Record<ContainerAction, string> = { start: 'Started', stop: 'Stopped', restart: 'Restarted' }
@@ -78,7 +80,10 @@ export function ContainersTab() {
   }, [data])
 
   // The link's host (and environment), else the last choice, else the first.
-  const [picked, setPicked] = useState<string | null>(null)
+  // A pick holds only for the link it was made under: a new link (a palette entry, Host view) wins.
+  const link = params.toString()
+  const [pick, setPick] = useState<{ value: string; link: string } | null>(null)
+  const picked = pick?.link === link ? pick.value : null
   const wanted = (() => {
     const host = params.get('host')
     if (!host) return null
@@ -132,20 +137,34 @@ export function ContainersTab() {
   }, [list, filter, runningOnly])
   const groups = useMemo(() => group(shown), [shown])
 
-  const run = async (c: ContainerMeta, action: ContainerAction, confirmName?: string) => {
+  /** A refusal from main comes back as `{ refused }` for the confirm dialog to show inline; otherwise it toasts. */
+  const run = async (c: ContainerMeta, action: ContainerAction, confirmName?: string, inline = false) => {
     if (!hostId) return
-    if (await containerAction(hostId, environmentId, c.name, action, confirmName)) toast({ title: `${PAST[action]} ${c.name} on ${hostLabel}`, tone: 'success' })
+    let message: string | undefined
+    const done = await containerAction(hostId, environmentId, c.name, action, confirmName, inline ? (m) => (message = m) : undefined)
+    if (done) toast({ title: `${PAST[action]} ${c.name} on ${hostLabel}`, tone: 'success' })
+    return message === undefined ? undefined : { refused: message }
   }
   const act = (c: ContainerMeta, action: ContainerAction) => {
-    if (action !== 'start' && env?.protected) {
-      setConfirm({
-        title: `${action === 'stop' ? 'Stop' : 'Restart'} ${c.name}?`,
-        description: `${c.name} is running in ${env.name}, a protected environment.`,
-        confirmLabel: action === 'stop' ? 'Stop container' : 'Restart container',
-        typeToConfirm: env.name,
-        run: () => run(c, action, env.name),
-      })
-      return
+    if (action !== 'start' && hostId) {
+      // Main's rule, mirrored: a host's protected environment counts even when the pick is another one.
+      const { needed, refused } = runProtection(env, data?.environments ?? [], [hostId], 1, true)
+      const title = `${action === 'stop' ? 'Stop' : 'Restart'} ${c.name}?`
+      const confirmLabel = action === 'stop' ? 'Stop container' : 'Restart container'
+      if (refused) {
+        setConfirm({ title, description: refused, confirmLabel, blocked: true, run: async () => {} })
+        return
+      }
+      if (needed) {
+        setConfirm({
+          title,
+          description: `${c.name} is running in ${needed}, a protected environment.`,
+          confirmLabel,
+          typeToConfirm: needed,
+          run: () => run(c, action, needed, true),
+        })
+        return
+      }
     }
     void run(c, action)
   }
@@ -165,7 +184,7 @@ export function ContainersTab() {
             label="Host"
             value={choice?.value ?? ''}
             onChange={(e) => {
-              setPicked(e.target.value)
+              setPick({ value: e.target.value, link })
               remember(e.target.value)
             }}
             disabled={!choices.length}
@@ -216,13 +235,15 @@ export function ContainersTab() {
             {list.truncated && <p className="text-[12px] text-muted">Showing the first containers only; filter to narrow down.</p>}
             {groups.map(([project, items]) => {
               const name = project ?? 'Standalone'
-              const open = !collapsed.has(name)
+              // The standalone group has its own key, so a project named "Standalone" stays apart from it.
+              const id = project === null ? STANDALONE : `project:${project}`
+              const open = !collapsed.has(id)
               return (
-                <section key={name} aria-label={name}>
+                <section key={id} aria-label={name}>
                   <button
                     type="button"
                     aria-expanded={open}
-                    onClick={() => toggle(name)}
+                    onClick={() => toggle(id)}
                     className="mb-1 flex items-center gap-1.5 text-[11.5px] font-semibold tracking-[0.06em] text-muted uppercase hover:text-fg"
                   >
                     <ChevronRight aria-hidden className={`size-3.5 transition-transform ${open ? 'rotate-90' : ''}`} />

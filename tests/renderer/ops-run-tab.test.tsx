@@ -118,11 +118,15 @@ const chip = (label: string) => screen.getByRole('button', { name: new RegExp(`^
 
 let stopSync: (() => void) | null = null
 
-async function renderTab(results: Record<string, unknown> = {}) {
+async function renderTab(results: Record<string, unknown> = {}, entry = '/ops/run') {
   const invoke = mockBridge({ 'snippets:list': [snippet], ...results })
   inventoryStore.set({ products: [], environments: [prod, staging, audit], hosts: [...prodHosts, stg, ops], identities: [], vaults: [] })
   stopSync = startOpsSync()
-  const view = render(<RunTab />)
+  const view = render(
+    <MemoryRouter initialEntries={[entry]}>
+      <RunTab />
+    </MemoryRouter>,
+  )
   await flush()
   return { invoke, ...view }
 }
@@ -158,6 +162,13 @@ afterEach(async () => {
 })
 
 describe('run tab', () => {
+  it('/ops/run?hosts=web1 preselects web1', async () => {
+    await renderTab({}, '/ops/run?hosts=h-web-1,nope')
+    const list = screen.getByRole('list', { name: 'Target hosts' })
+    expect(within(list).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['web-1'])
+    expect(screen.getByRole('radio', { name: 'Hosts' })).toHaveAttribute('aria-checked', 'true')
+  })
+
   it('picking an environment and role previews matching hosts', async () => {
     await renderTab()
     fireEvent.change(screen.getByRole('combobox', { name: 'Environment' }), { target: { value: 'e-prod' } })
