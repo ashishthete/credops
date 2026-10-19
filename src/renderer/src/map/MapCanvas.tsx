@@ -11,7 +11,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import { memo, useCallback, useMemo, useState, type KeyboardEvent, type MouseEvent } from 'react'
 import { useMotionSafe } from '../ui/motion'
-import { EdgeSelectContext, edgeTypes, type MapFlowEdge } from './edges'
+import { EdgeActionsContext, edgeTypes, type EdgeActions, type MapFlowEdge } from './edges'
 import type { MapGraph } from './graph'
 import { VIRTUALIZE_AT, type MapLayout } from './layout'
 import { nodeTypes, type MapFlowNode } from './nodes'
@@ -135,6 +135,7 @@ export const MapCanvas = memo(function MapCanvas({
   }, [graph, hoveredEdge])
   const onEdgeMouseEnter = useCallback((_: MouseEvent, e: MapFlowEdge) => setHoveredEdge(e.id), [])
   const onEdgeMouseLeave = useCallback(() => setHoveredEdge(null), [])
+  const edgeActions = useMemo((): EdgeActions => ({ select: onEdgeSelect, hover: setHoveredEdge }), [onEdgeSelect])
 
   // Selection and styling go on at render time, so changing them never moves a dragged node back.
   const nodes = useMemo(
@@ -173,7 +174,7 @@ export const MapCanvas = memo(function MapCanvas({
   )
 
   return (
-    <EdgeSelectContext.Provider value={onEdgeSelect}>
+    <EdgeActionsContext.Provider value={edgeActions}>
       <ReactFlow<MapFlowNode, MapFlowEdge>
         nodes={nodes}
         edges={edges}
@@ -213,6 +214,6 @@ export const MapCanvas = memo(function MapCanvas({
         <MiniMap<MapFlowNode> pannable zoomable nodeColor={nodeColor} />
         <Controls showInteractive={false} />
       </ReactFlow>
-    </EdgeSelectContext.Provider>
+    </EdgeActionsContext.Provider>
   )
 })

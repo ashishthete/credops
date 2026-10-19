@@ -164,6 +164,11 @@ describe('map edges', () => {
     expect(pathOf('t:t1')).toHaveClass('od-flow')
     expect(pathOf('t:t1')).toHaveAttribute('stroke-dasharray', '3 5')
 
+    act(() => emitBridgeEvent('tunnel:state', tunnelRuntime({ id: 't1', state: 'connecting' })))
+    expect(pathOf('t:t1')).toHaveAttribute('data-tone', 'warn')
+    expect(pathOf('t:t1')).not.toHaveClass('od-flow')
+    expect(pathOf('t:t1')).toHaveAttribute('stroke-dasharray', '3 5')
+
     act(() => emitBridgeEvent('tunnel:state', tunnelRuntime({ id: 't1', state: 'retrying' })))
     expect(pathOf('t:t1')).toHaveAttribute('data-tone', 'warn')
     expect(pathOf('t:t1')).not.toHaveClass('od-flow')
@@ -324,6 +329,26 @@ describe('map edges', () => {
     expect(nodeEl('e:e1/h:h3')).not.toHaveAttribute('data-related')
     fireEvent.mouseLeave(edge('t:t1')!)
     await flush()
+    expect(nodeEl('mac')).not.toHaveAttribute('data-related')
+  })
+
+  it('focusing the chip lights the edge and rings its end nodes, as hover does', async () => {
+    await renderMap()
+    const nodeEl = (id: string) => document.querySelector<HTMLElement>(`.react-flow__node[data-id="${id}"]`)!
+    const chip = screen.getByRole('button', { name: 'api-local, Local forward, up' })
+    expect(chip.className).toContain('focus-visible:ring-2')
+    expect(pathOf('t:t1').getAttribute('class')).toBe('react-flow__edge-path od-edge od-flow')
+
+    act(() => chip.focus())
+    await flush()
+    expect(pathOf('t:t1')).toHaveClass('od-edge-lit')
+    expect(nodeEl('mac')).toHaveAttribute('data-related')
+    expect(nodeEl('e:e1/h:h2')).toHaveAttribute('data-related')
+    expect(nodeEl('e:e1/h:h3')).not.toHaveAttribute('data-related')
+
+    act(() => chip.blur())
+    await flush()
+    expect(pathOf('t:t1')).not.toHaveClass('od-edge-lit')
     expect(nodeEl('mac')).not.toHaveAttribute('data-related')
   })
 

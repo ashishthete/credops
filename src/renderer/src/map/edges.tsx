@@ -1,6 +1,6 @@
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, getSmoothStepPath, getStraightPath, type Edge, type EdgeProps } from '@xyflow/react'
 import { ShieldCheck, Unplug } from 'lucide-react'
-import { createContext, memo, useContext, useSyncExternalStore, type CSSProperties } from 'react'
+import { createContext, memo, useContext, useState, useSyncExternalStore, type CSSProperties } from 'react'
 import type { TunnelState } from '../../../shared/tunnels'
 import { formatRate, TUNNEL_TYPE } from '../pages/tunnels/TunnelCard'
 import { FLOW_DURATION, flowStep } from '../pages/tunnels/RouteLine'
@@ -38,8 +38,14 @@ const FLOW_WIDTH = [1.5, 2.25, 3] as const
 const FLOW_DASH = '3 5'
 const DOTTED = '1 4'
 
-/** The chip's click handler; MapCanvas provides it, so it never rides in edge data. */
-export const EdgeSelectContext = createContext<(id: string) => void>(() => {})
+export interface EdgeActions {
+  select: (id: string) => void
+  /** Lights an edge's two end nodes, as hovering the edge does; null clears it. */
+  hover: (id: string | null) => void
+}
+
+/** The chip's handlers; MapCanvas provides them, so they never ride in edge data. */
+export const EdgeActionsContext = createContext<EdgeActions>({ select: () => {}, hover: () => {} })
 
 /** One rate as a number, so a tick re-renders only the edge whose own rates moved. */
 function useRate(tunnelId: string, key: 'rateIn' | 'rateOut'): number {
@@ -60,7 +66,9 @@ const TunnelEdge = memo(function TunnelEdge({
 }: EdgeProps<Edge<FlowData<TunnelEdgeData>, 'tunnel'>>) {
   const { tunnelId, tunnelType, label } = data!
   const motionSafe = useMotionSafe()
-  const onSelect = useContext(EdgeSelectContext)
+  const actions = useContext(EdgeActionsContext)
+  // A focused chip lights its edge the way hover does, for keyboard users.
+  const [focused, setFocused] = useState(false)
   const state = useTunnel(tunnelId).runtime?.state ?? 'stopped'
   const rateIn = useRate(tunnelId, 'rateIn')
   const rateOut = useRate(tunnelId, 'rateOut')
@@ -82,7 +90,7 @@ const TunnelEdge = memo(function TunnelEdge({
         data-tone={tone}
         data-source={source}
         data-target={target}
-        className={`od-edge ${flowing ? 'od-flow' : ''}`}
+        className={['od-edge', flowing && 'od-flow', focused && 'od-edge-lit'].filter(Boolean).join(' ')}
         strokeDasharray={dash}
         strokeLinecap="round"
         style={
@@ -111,8 +119,16 @@ const TunnelEdge = memo(function TunnelEdge({
         <button
           type="button"
           aria-label={`${label}, ${kind.title}, ${state}`}
-          onClick={() => onSelect(id)}
-          className="nodrag nopan absolute flex max-w-56 items-center gap-1.5 rounded-full border border-line bg-surface/95 py-0.5 pr-2 pl-0.5 text-[10.5px] leading-none whitespace-nowrap text-fg shadow-sm hover:border-muted/50"
+          onClick={() => actions.select(id)}
+          onFocus={() => {
+            setFocused(true)
+            actions.hover(id)
+          }}
+          onBlur={() => {
+            setFocused(false)
+            actions.hover(null)
+          }}
+          className="nodrag nopan absolute flex max-w-56 items-center gap-1.5 rounded-full border border-line bg-surface/95 py-0.5 pr-2 pl-0.5 text-[10.5px] leading-none whitespace-nowrap text-fg shadow-sm outline-none hover:border-muted/50 focus-visible:ring-2 focus-visible:ring-accent/70"
           style={{ transform: `translate(-50%, calc(-100% - 6px)) translate(${labelX}px, ${labelY}px)`, pointerEvents: 'all' }}
         >
           <span
