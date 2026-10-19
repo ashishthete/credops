@@ -96,8 +96,35 @@ describe('vault schema', () => {
 })
 
 describe('migration versions', () => {
-  it('are contiguous from 1 and strictly increasing', () => {
-    expect(migrations.map((m) => m.version)).toEqual(migrations.map((_, i) => i + 1))
+  // Version 8 is Phase 9's and merges from another branch, so this branch alone may skip it.
+  it('are strictly increasing and unique, skipping only the other branch\'s version 8', () => {
+    const versions = migrations.map((m) => m.version)
+    expect(versions).toEqual([...new Set(versions)].sort((a, b) => a - b))
+    expect(versions.filter((v, i) => v !== i + 1 && v !== i + 2)).toEqual([])
+    expect(versions.slice(0, 7)).toEqual([1, 2, 3, 4, 5, 6, 7])
+  })
+})
+
+describe('hub schema', () => {
+  it('migration 9 creates hub_link and hub_env_links', () => {
+    const db = openDatabase(':memory:')
+    expect(currentVersion(db)).toBe(9)
+    expect(migrations.find((m) => m.version === 9)?.name).toBe('hub')
+    const insert = (id: number, enc: unknown, exp: unknown) =>
+      db
+        .prepare(
+          "INSERT INTO hub_link(id,url,hub_id,hub_name,session_enc,session_expires_at,linked_at,updated_at) VALUES (?,'u','h','n',?,?,'t','t')",
+        )
+        .run(id, enc as null, exp as null)
+    insert(1, null, null)
+    // A second row violates id = 1.
+    expect(() => insert(2, null, null)).toThrow(/CHECK constraint failed/)
+    db.exec('DELETE FROM hub_link')
+    // A session without an expiry (or the reverse) is rejected.
+    expect(() => insert(1, Buffer.from('x'), null)).toThrow(/CHECK constraint failed/)
+    insert(1, Buffer.from('x'), 't')
+    const cols = db.prepare("SELECT name FROM pragma_table_info('hub_env_links')").all().map((r) => (r as { name: string }).name)
+    expect(cols).toEqual(['environment_id', 'hub_id', 'published_at', 'manifest_hash'])
   })
 })
 

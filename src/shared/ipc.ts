@@ -1,5 +1,17 @@
 import type { AuditEvent, AuditFilter, ChainVerification } from './audit'
 import type {
+  AccessTarget,
+  GrantScope,
+  HubAction,
+  HubAuditEvent,
+  HubAuditFilter,
+  HubDecision,
+  HubGroup,
+  HubRole,
+  HubStatus,
+  HubUser,
+} from './hub'
+import type {
   EnvironmentInput,
   EnvironmentMeta,
   EnvironmentPatch,
@@ -198,6 +210,27 @@ export interface IpcContract {
   'release:get': { args: [releaseId: string]; result: ReleaseDetail }
   'release:events': { args: [releaseId: string, afterSeq: number, limit?: number]; result: DeployRunEvent[] }
   'release:active': { args: []; result: ReleaseSummary[] }
+  // Hub (Phase 10). Results carry no token; `hub:state` pushes the same token-free HubStatus.
+  'hub:status': { args: []; result: HubStatus }
+  'hub:connect': { args: [url: string]; result: HubStatus }
+  'hub:signIn': { args: []; result: HubStatus }
+  'hub:cancelSignIn': { args: []; result: void }
+  'hub:signOut': { args: []; result: HubStatus }
+  'hub:unlink': { args: []; result: HubStatus }
+  'hub:me': { args: []; result: HubUser }
+  'hub:access': { args: [action: HubAction, target: AccessTarget]; result: HubDecision }
+  'hub:users': { args: []; result: HubUser[] }
+  'hub:updateUser': { args: [oid: string, patch: { role?: HubRole; disabled?: boolean }]; result: HubUser }
+  'hub:groups': { args: []; result: HubGroup[] }
+  'hub:createGroup': { args: [input: { name: string; description?: string }]; result: HubGroup }
+  'hub:updateGroup': { args: [id: string, patch: { name?: string; description?: string }]; result: HubGroup }
+  'hub:deleteGroup': { args: [id: string]; result: void }
+  'hub:addMembers': { args: [groupId: string, oids: string[]]; result: HubGroup }
+  'hub:removeMember': { args: [groupId: string, oid: string]; result: HubGroup }
+  'hub:addGrant': { args: [groupId: string, scope: GrantScope]; result: HubGroup }
+  'hub:removeGrant': { args: [grantId: string]; result: void }
+  'hub:audit': { args: [filter: HubAuditFilter]; result: HubAuditEvent[] }
+  'hub:verifyAudit': { args: []; result: { ok: boolean; count: number; brokenAtId?: number } }
   'snippets:list': { args: []; result: SnippetMeta[] }
   'snippets:create': { args: [input: SnippetInput]; result: SnippetMeta }
   'snippets:update': { args: [id: string, input: SnippetInput]; result: SnippetMeta }
@@ -322,6 +355,26 @@ export const CHANNELS = [
   'release:get',
   'release:events',
   'release:active',
+  'hub:status',
+  'hub:connect',
+  'hub:signIn',
+  'hub:cancelSignIn',
+  'hub:signOut',
+  'hub:unlink',
+  'hub:me',
+  'hub:access',
+  'hub:users',
+  'hub:updateUser',
+  'hub:groups',
+  'hub:createGroup',
+  'hub:updateGroup',
+  'hub:deleteGroup',
+  'hub:addMembers',
+  'hub:removeMember',
+  'hub:addGrant',
+  'hub:removeGrant',
+  'hub:audit',
+  'hub:verifyAudit',
   'snippets:list',
   'snippets:create',
   'snippets:update',
@@ -366,6 +419,7 @@ export interface EventContract {
   // Batched run events of a release (about every EVENT_BATCH_MS), already persisted with their seq.
   'deploy:event': DeployRunEvent[]
   'release:state': ReleaseSummary
+  'hub:state': HubStatus
 }
 export type EventName = keyof EventContract
 export const EVENTS = [
@@ -382,6 +436,7 @@ export const EVENTS = [
   'deploy:changed',
   'deploy:event',
   'release:state',
+  'hub:state',
 ] as const satisfies readonly EventName[]
 type MissingEvents = Exclude<EventName, (typeof EVENTS)[number]>
 export const eventsAreComplete: [MissingEvents] extends [never] ? true : never = true

@@ -205,6 +205,22 @@ CREATE TRIGGER run_events_append_only BEFORE UPDATE ON run_events
   BEGIN SELECT RAISE(ABORT, 'run_events is append-only'); END;
 `,
   },
+  {
+    // Version 8 belongs to Phase 9 (notifications), which merges separately; migrate() applies by set.
+    version: 9,
+    name: 'hub',
+    up: `
+CREATE TABLE hub_link(id INTEGER PRIMARY KEY CHECK (id = 1),
+  url TEXT NOT NULL, hub_id TEXT NOT NULL, hub_name TEXT NOT NULL,
+  user_oid TEXT, user_upn TEXT, user_name TEXT,
+  session_enc BLOB, session_expires_at TEXT, refresh_enc BLOB,
+  linked_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  CHECK ((session_enc IS NULL) = (session_expires_at IS NULL)));
+CREATE TABLE hub_env_links(
+  environment_id TEXT PRIMARY KEY REFERENCES environments(id) ON DELETE CASCADE,
+  hub_id TEXT NOT NULL, published_at TEXT NOT NULL, manifest_hash TEXT NOT NULL);
+`,
+  },
 ]
 
 const ENSURE_TABLE = `CREATE TABLE IF NOT EXISTS schema_migrations(

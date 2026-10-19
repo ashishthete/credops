@@ -1,0 +1,329 @@
+import { createServer, type Server } from 'node:http'
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { AuditLog } from '../../src/main/audit/audit-log'
+import { openDatabase, type Db } from '../../src/main/db/connection'
+import { HubClient, HubError } from '../../src/main/hub/client'
+import { HubConnection } from '../../src/main/hub/connection'
+import type { HubStatus } from '../../src/shared/hub'
+import { testHub, type TestHub } from './hub-fixture'
+
+const fakeKeychain = (available = true) => ({
+  available: () => available,
+  encrypt: (plain: string) => Buffer.from(`enc:${Buffer.from(plain).reverse().toString('base64')}`),
+  decrypt: (blob: Buffer) => Buffer.from(blob.toString().slice(4), 'base64').reverse().toString(),
+})
+
+const fakeBrowser = async (url: string): Promise<void> => {
+  const r = await fetch(url, { redirect: 'manual' })
+  await fetch(r.headers.get('location')!)
+}
+
+const ADMIN = { oid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', upn: 'admin@example.com', name: 'Admin' }
+const BOB = { oid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', upn: 'bob@example.com', name: 'Bob' }
+
+let hub: TestHub
+let hubUrl: string
+let dir: string
+let db: Db
+let audit: AuditLog
+let states: HubStatus[]
+let opened: string[]
+
+beforeEach(async () => {
+  hub = await testHub()
+  await hub.app.listen({ host: '127.0.0.1', port: 0 })
+  const addr = hub.app.server.address() as { port: number }
+  hubUrl = `http://127.0.0.1:${addr.port}`
+  dir = mkdtempSync(join(tmpdir(), 'opsdeck-hubconn-'))
+  db = openDatabase(join(dir, 'opsdeck.db'))
+  audit = new AuditLog(db)
+  states = []
+  opened = []
+  hub.entra.setUser(ADMIN)
+})
+afterEach(async () => {
+  await hub.close()
+  db.close()
+  rmSync(dir, { recursive: true, force: true })
+})
+
+const make = (over: Partial<ConstructorParameters<typeof HubConnection>[0]> = {}) =>
+  new HubConnection({
+    db,
+    audit,
+    keychain: fakeKeychain(),
+    fetch,
+    openBrowser: async (u) => {
+      opened.push(u)
+      await fakeBrowser(u)
+    },
+    now: () => Date.now(),
+    emit: (s) => states.push(s),
+    ...over,
+  })
+
+const actions = (): string[] => audit.list({}).map((e) => e.action).reverse()
+const expireHubSessions = (): void => void hub.db.prepare('UPDATE sessions SET expires_at = ?').run('2000-01-01T00:00:00.000Z')
+
+describe('hub connection', () => {
+  it('connects, signs in, and reports pending', async () => {
+    // The first user takes the admin bootstrap so the next one is pending.
+    await hub.signIn(ADMIN)
+    hub.entra.setUser(BOB)
+    const conn = make()
+    expect(conn.status()).toEqual({ linked: false })
+    const linked = await conn.connect(hubUrl)
+    expect(linked).toMatchObject({ linked: true, hubName: 'Test Hub', signedIn: false })
+    const s = await conn.signIn()
+    expect(s).toMatchObject({ linked: true, signedIn: true, signingIn: false, online: true })
+    expect((s as { user: { status: string } }).user.status).toBe('pending')
+    expect(opened).toHaveLength(1)
+    expect(actions().filter((a) => a.startsWith('hub.'))).toEqual(['hub.link', 'hub.signin'])
+    expect(states.at(-1)).toMatchObject({ signedIn: true })
+  })
+
+  it('refuses sign-in without keychain', async () => {
+    const conn = make({ keychain: fakeKeychain(false) })
+    await conn.connect(hubUrl)
+    await expect(conn.signIn()).rejects.toThrow("Keychain unavailable: OpsDeck can't store a Hub sign-in safely")
+    expect(opened).toEqual([])
+    const row = db.prepare('SELECT session_enc, refresh_enc FROM hub_link').get()
+    expect({ ...row }).toEqual({ session_enc: null, refresh_enc: null })
+  })
+
+  it('rejects an incompatible hub and a non-entra authority', async () => {
+    const old = await stubHub((_req, res) => {
+      res.setHeader('content-type', 'application/json')
+      res.end(JSON.stringify({ hubId: 'h', name: 'n', apiVersion: 2, entra: {} }))
+    })
+    try {
+      await expect(make().connect(old.url)).rejects.toMatchObject({ code: 'incompatible' })
+    } finally {
+      await old.close()
+    }
+    const bad = await stubHub((_req, res) => {
+      res.setHeader('content-type', 'application/json')
+      res.end(
+        JSON.stringify({
+          hubId: 'h',
+          name: 'n',
+          apiVersion: 1,
+          entra: { authority: 'https://evil.example.com/x', clientId: 'c', scopes: [], redirectUri: 'http://127.0.0.1/callback' },
+        }),
+      )
+    })
+    try {
+      await expect(make().connect(bad.url)).rejects.toThrow(/not Microsoft Entra/)
+      expect({ ...db.prepare('SELECT COUNT(*) AS n FROM hub_link').get() }).toEqual({ n: 0 })
+    } finally {
+      await bad.close()
+    }
+  })
+
+  it('refuses http to a non-loopback host, other schemes and embedded credentials', async () => {
+    const conn = make()
+    await expect(conn.connect('ftp://127.0.0.1:1')).rejects.toThrow()
+    await expect(conn.connect('http://10.0.0.5:8787')).rejects.toThrow()
+    await expect(conn.connect('http://user:pw@127.0.0.1:8787')).rejects.toThrow()
+  })
+
+  it('renews an expired hub session with the refresh token', async () => {
+    const conn = make()
+    await conn.connect(hubUrl)
+    await conn.signIn()
+    const read = () => db.prepare('SELECT session_enc, refresh_enc FROM hub_link').get() as { session_enc: Buffer; refresh_enc: Buffer }
+    const before = read()
+    expireHubSessions()
+    const me = await conn.me()
+    expect(me.upn).toBe('admin@example.com')
+    expect(opened).toHaveLength(1)
+    const after = read()
+    expect(Buffer.from(after.session_enc).equals(Buffer.from(before.session_enc))).toBe(false)
+    expect(Buffer.from(after.refresh_enc).equals(Buffer.from(before.refresh_enc))).toBe(false)
+    expect(conn.status()).toMatchObject({ signedIn: true })
+  })
+
+  it('keeps the old refresh token when a refresh returns none', async () => {
+    const conn = make()
+    await conn.connect(hubUrl)
+    await conn.signIn()
+    const old = db.prepare('SELECT refresh_enc FROM hub_link').get() as { refresh_enc: Buffer }
+    const strip: typeof fetch = async (input, init) => {
+      const res = await fetch(input, init)
+      if (!String(input).includes('/token')) return res
+      const body = (await res.json()) as Record<string, unknown>
+      delete body.refresh_token
+      return new Response(JSON.stringify(body), { status: res.status, headers: { 'content-type': 'application/json' } })
+    }
+    const conn2 = make({ fetch: strip })
+    expireHubSessions()
+    await conn2.me()
+    const now = db.prepare('SELECT refresh_enc FROM hub_link').get() as { refresh_enc: Buffer }
+    expect(Buffer.from(now.refresh_enc).equals(Buffer.from(old.refresh_enc))).toBe(true)
+  })
+
+  it('falls back to signed out when refresh is rejected', async () => {
+    const conn = make()
+    await conn.connect(hubUrl)
+    await conn.signIn()
+    expireHubSessions()
+    const refused: typeof fetch = async (input, init) => {
+      if (String(input).includes('/token')) {
+        return new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400, headers: { 'content-type': 'application/json' } })
+      }
+      return fetch(input, init)
+    }
+    const c2 = make({ fetch: refused })
+    await expect(c2.me()).rejects.toMatchObject({ code: 'unauthenticated', message: 'Sign in to the Hub again' })
+    expect(c2.status()).toMatchObject({ linked: true, signedIn: false, user: null })
+    expect(states.at(-1)).toMatchObject({ signedIn: false })
+    const row = db.prepare('SELECT session_enc, refresh_enc, session_expires_at FROM hub_link').get()
+    expect({ ...(row as object) }).toEqual({ session_enc: null, refresh_enc: null, session_expires_at: null })
+  })
+
+  it('status and errors never carry tokens', async () => {
+    const conn = make()
+    await conn.connect(hubUrl)
+    const s = await conn.signIn()
+    const tokens = conn.knownValues()
+    expect(tokens.length).toBe(2)
+    for (const t of tokens) expect(JSON.stringify(s) + JSON.stringify(conn.status())).not.toContain(t)
+    for (const e of audit.list({})) for (const t of tokens) expect(JSON.stringify(e)).not.toContain(t)
+    // A Hub 500 whose message echoes the session token is redacted.
+    const stub = await stubHub((_req, res) => {
+      res.statusCode = 500
+      res.setHeader('content-type', 'application/json')
+      res.end(JSON.stringify({ error: 'internal', message: `boom ${tokens[0]} and ${tokens[1]}` }))
+    })
+    try {
+      const c = new HubClient({ baseUrl: stub.url, fetch, token: () => tokens[0]!, renew: async () => false, knownSecrets: () => tokens })
+      const err = await c.get('/api/v1/me').catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(HubError)
+      for (const t of tokens) expect((err as Error).message).not.toContain(t)
+      expect((err as HubError).status).toBe(500)
+    } finally {
+      await stub.close()
+    }
+  })
+
+  it('db file holds no token plaintext', async () => {
+    const conn = make()
+    await conn.connect(hubUrl)
+    await conn.signIn()
+    const tokens = conn.knownValues()
+    expect(tokens.length).toBe(2)
+    const files = readdirSync(dir).filter((f) => f.startsWith('opsdeck.db'))
+    expect(files.length).toBeGreaterThan(0)
+    for (const f of files) {
+      const bytes = readFileSync(join(dir, f)).toString('latin1')
+      for (const t of tokens) expect(bytes).not.toContain(t)
+    }
+  })
+
+  it('sign-out clears tokens, revokes the session and audits', async () => {
+    const conn = make()
+    await conn.connect(hubUrl)
+    await conn.signIn()
+    const s = await conn.signOut()
+    expect(s).toMatchObject({ linked: true, signedIn: false })
+    expect({ ...hub.db.prepare('SELECT COUNT(*) AS n FROM sessions').get() }).toEqual({ n: 0 })
+    expect(conn.knownValues()).toEqual([])
+    expect(actions()).toContain('hub.signout')
+  })
+
+  it('unlink removes the link and env links', async () => {
+    const conn = make()
+    await conn.connect(hubUrl)
+    await conn.signIn()
+    db.exec('PRAGMA foreign_keys = OFF')
+    db.prepare("INSERT INTO hub_env_links VALUES ('e','h','t','m')").run()
+    expect(await conn.unlink()).toEqual({ linked: false })
+    expect({ ...db.prepare('SELECT COUNT(*) AS n FROM hub_link').get() }).toEqual({ n: 0 })
+    expect({ ...db.prepare('SELECT COUNT(*) AS n FROM hub_env_links').get() }).toEqual({ n: 0 })
+    expect(actions().filter((a) => a.startsWith('hub.'))).toEqual(['hub.link', 'hub.signin', 'hub.signout', 'hub.unlink'])
+  })
+
+  it('cancelSignIn aborts a pending sign-in', async () => {
+    const conn = make({ openBrowser: () => new Promise<void>(() => undefined) })
+    await conn.connect(hubUrl)
+    const p = conn.signIn()
+    p.catch(() => undefined)
+    await vi.waitFor(() => expect(conn.status()).toMatchObject({ signingIn: true }))
+    conn.cancelSignIn()
+    await expect(p).rejects.toThrow(/cancel/i)
+    expect(conn.status()).toMatchObject({ signingIn: false, signedIn: false })
+  })
+})
+
+describe('hub client', () => {
+  it("reports an unreachable hub as Can't reach the Hub", async () => {
+    const c = new HubClient({ baseUrl: 'http://127.0.0.1:1', fetch, token: () => null, renew: async () => false, knownSecrets: () => [] })
+    await expect(c.get('/api/v1/meta')).rejects.toMatchObject({ code: 'network', message: "Can't reach the Hub" })
+  })
+
+  it('renews once on session_expired and retries', async () => {
+    let n = 0
+    const stub = await stubHub((req, res) => {
+      res.setHeader('content-type', 'application/json')
+      n++
+      if (req.headers.authorization === 'Bearer old') {
+        res.statusCode = 401
+        return void res.end(JSON.stringify({ error: 'session_expired', message: 'x' }))
+      }
+      res.end(JSON.stringify({ ok: true }))
+    })
+    try {
+      let tok = 'old'
+      const renew = vi.fn(async () => ((tok = 'new'), true))
+      const c = new HubClient({ baseUrl: stub.url, fetch, token: () => tok, renew, knownSecrets: () => [] })
+      await expect(c.get('/x')).resolves.toEqual({ ok: true })
+      expect(renew).toHaveBeenCalledTimes(1)
+      expect(n).toBe(2)
+    } finally {
+      await stub.close()
+    }
+  })
+
+  it('times out', async () => {
+    const stub = await stubHub(() => undefined)
+    try {
+      const c = new HubClient({ baseUrl: stub.url, fetch, token: () => null, renew: async () => false, knownSecrets: () => [], timeoutMs: 50 })
+      await expect(c.get('/x')).rejects.toMatchObject({ code: 'timeout' })
+    } finally {
+      await stub.close()
+    }
+  })
+
+  it('sends repeated query params', async () => {
+    let seen = ''
+    const stub = await stubHub((req, res) => {
+      seen = req.url ?? ''
+      res.setHeader('content-type', 'application/json')
+      res.end('{}')
+    })
+    try {
+      const c = new HubClient({ baseUrl: stub.url, fetch, token: () => null, renew: async () => false, knownSecrets: () => [] })
+      await c.get('/a', { deploymentIds: ['x', 'y'], action: 'deploy.view' })
+      expect(seen).toBe('/a?deploymentIds=x&deploymentIds=y&action=deploy.view')
+    } finally {
+      await stub.close()
+    }
+  })
+})
+
+async function stubHub(handler: Parameters<typeof createServer>[1] & object): Promise<{ url: string; close(): Promise<void> }> {
+  const server: Server = createServer(handler)
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+  const port = (server.address() as { port: number }).port
+  return {
+    url: `http://127.0.0.1:${port}`,
+    close: () =>
+      new Promise<void>((r) => {
+        server.closeAllConnections()
+        server.close(() => r())
+      }),
+  }
+}

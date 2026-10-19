@@ -163,3 +163,18 @@ export type HubDecision =
       vias?: { deploymentId: string; groupId: string; groupName: string }[]
     }
   | { allowed: false; code: HubDenyCode; reason: string }
+
+/** The only Hub state the renderer sees. It never carries a token. */
+export type HubStatus =
+  | { linked: false }
+  | {
+      linked: true
+      url: string
+      hubId: string
+      hubName: string
+      signedIn: boolean
+      signingIn: boolean
+      online: boolean
+      user: HubUser | null
+      sessionExpiresAt: string | null
+    }

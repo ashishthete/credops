@@ -63,6 +63,7 @@ import {
   type ReleaseConfirm,
   type ReleaseListFilter,
 } from '../../shared/deploy'
+import { GROUP_NAME, HUB_AUDIT_ACTIONS, MAX_BULK_MEMBERS, MAX_GROUP_DESCRIPTION } from '../../shared/hub'
 import { BIND_ADDRESS, MAX_BIND_ADDRESS, type TunnelInput, type TunnelPatch } from '../../shared/tunnels'
 import { MAX_COLS, MAX_ROWS, MAX_WRITE_CHARS, type OpenLocalRequest, type OpenSshRequest, type PromptAnswer } from '../../shared/ssh'
 import {
@@ -487,6 +488,50 @@ export const asRunRequest: Check<RunRequest> = v.object({
 
 const logTail = v.int({ min: 0, max: LOG_TAIL_MAX })
 
+// ---- Hub (Phase 10) ----
+const HUB_ACTIONS = ['deploy.view', 'deploy.edit', 'release.start', 'release.rollback', 'release.cancel', 'lock.break', 'env.lock', 'admin'] as const
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]'])
+/** https, or http to a loopback host; no credentials. Errors name the path only, never the URL. */
+const hubUrl: Check<string> = (value, path) => {
+  const s = v.str({ min: 1, max: 2048, trim: true })(value, path)
+  let u: URL
+  try {
+    u = new URL(s)
+  } catch {
+    throw new InvalidArgs(path, 'must be a URL')
+  }
+  if (!(u.protocol === 'https:' || (u.protocol === 'http:' && LOOPBACK_HOSTS.has(u.hostname)))) {
+    throw new InvalidArgs(path, 'must be an https URL (http only for localhost)')
+  }
+  if (u.username || u.password) throw new InvalidArgs(path, 'must not contain credentials')
+  return s
+}
+const hubId = v.str({ min: 1, max: 100 })
+const asHubAccessTarget = v.object({ environmentId: v.uuid(), deploymentIds: v.optional(v.array(v.uuid(), 200)) })
+const asHubUserPatch = v.object({ role: v.optional(v.oneOf(['admin', 'maintainer'] as const)), disabled: v.optional(v.bool()) })
+const asHubGroupInput = v.object({
+  name: v.str({ pattern: GROUP_NAME }),
+  description: v.optional(v.str({ max: MAX_GROUP_DESCRIPTION })),
+})
+const asHubGroupPatch = v.object({
+  name: v.optional(v.str({ pattern: GROUP_NAME })),
+  description: v.optional(v.str({ max: MAX_GROUP_DESCRIPTION })),
+})
+const asGrantScope = v.tagged('kind', {
+  all: v.object({ kind: v.oneOf(['all'] as const) }),
+  environment: v.object({ kind: v.oneOf(['environment'] as const), environmentId: v.uuid() }),
+  deployment: v.object({ kind: v.oneOf(['deployment'] as const), environmentId: v.uuid(), deploymentId: v.uuid() }),
+})
+const asHubAuditFilter = v.object({
+  actions: v.optional(v.array(v.oneOf(HUB_AUDIT_ACTIONS), HUB_AUDIT_ACTIONS.length)),
+  actorOid: v.optional(hubId),
+  outcome: v.optional(v.oneOf(['success', 'failure', 'denied', 'info'] as const)),
+  from: v.optional(v.str({ max: 40 })),
+  to: v.optional(v.str({ max: 40 })),
+  beforeId: v.optional(v.int({ min: 0, max: Number.MAX_SAFE_INTEGER })),
+  limit: v.optional(v.int({ min: 1, max: 1000 })),
+})
+
 /** Every channel must have an entry; each later task adds its own. */
 export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']> } = {
   'app:info': args(),
@@ -586,6 +631,26 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'release:get': args(v.uuid()),
   'release:events': args(v.uuid(), v.int({ min: 0, max: Number.MAX_SAFE_INTEGER }), v.optional(v.int({ min: 1, max: MAX_EVENTS_PAGE }))),
   'release:active': args(),
+  'hub:status': args(),
+  'hub:connect': args(hubUrl),
+  'hub:signIn': args(),
+  'hub:cancelSignIn': args(),
+  'hub:signOut': args(),
+  'hub:unlink': args(),
+  'hub:me': args(),
+  'hub:access': args(v.oneOf(HUB_ACTIONS), asHubAccessTarget),
+  'hub:users': args(),
+  'hub:updateUser': args(v.uuid(), asHubUserPatch),
+  'hub:groups': args(),
+  'hub:createGroup': args(asHubGroupInput),
+  'hub:updateGroup': args(v.uuid(), asHubGroupPatch),
+  'hub:deleteGroup': args(v.uuid()),
+  'hub:addMembers': args(v.uuid(), v.array(v.uuid(), MAX_BULK_MEMBERS, { min: 1 })),
+  'hub:removeMember': args(v.uuid(), v.uuid()),
+  'hub:addGrant': args(v.uuid(), asGrantScope),
+  'hub:removeGrant': args(v.uuid()),
+  'hub:audit': args(asHubAuditFilter),
+  'hub:verifyAudit': args(),
   'snippets:list': args(),
   'snippets:create': args(asSnippetInput),
   'snippets:update': args(v.uuid(), asSnippetInput),

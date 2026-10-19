@@ -27,6 +27,9 @@ import { prepareHosts } from './deploy/hostkeys'
 import { LocalRunner, nodeFs, nodeSpawn } from './deploy/local-runner'
 import { startTap } from './deploy/log-tap'
 import { localAllowAll } from './deploy/access'
+import { HubAccess, RoutingAccess } from './hub/access'
+import { HubConnection } from './hub/connection'
+import { createHubHandlers } from './ipc/handlers/hub'
 import { noopFinalize } from './deploy/finalize'
 import { ReleaseService } from './deploy/release-service'
 import { DeployStore, dbSecretRefs } from './deploy/deploy-store'
@@ -92,6 +95,7 @@ let execLinks: ExecLinks | null = null
 let runManager: RunManager | null = null
 let containerService: ContainerService | null = null
 let releaseService: ReleaseService | null = null
+let hubConnection: HubConnection | null = null
 let quitConfirmed = false
 let quitPrompting = false
 const RELEASE_QUIT_WAIT_MS = 20_000
@@ -147,7 +151,8 @@ if (!app.requestSingleInstanceLock()) {
         secrets?.knownValues()
         keys?.knownValues()
         identities?.knownValues()
-        return vault?.knownValues() ?? []
+        const hubTokens = hubConnection?.knownValues() ?? []
+        return [...hubTokens, ...(vault?.knownValues() ?? [])]
       }
       audit = new AuditLog(db, { knownSecrets })
       audit.append({ action: 'app.start', outcome: 'info', details: { version: app.getVersion() } })
@@ -243,12 +248,28 @@ if (!app.requestSingleInstanceLock()) {
         userAgentSock: process.env.SSH_AUTH_SOCK ?? null,
         sshConfig,
       })
+      const hub = new HubConnection({
+        db,
+        audit: log,
+        keychain: quick.keychain,
+        fetch: globalThis.fetch,
+        openBrowser: (url) => shell.openExternal(url),
+        now: () => Date.now(),
+        emit: (status) => pushEvent(mainWindow, 'hub:state', status),
+      })
+      hubConnection = hub
+      const hubEnvLink = db.prepare('SELECT 1 AS x FROM hub_env_links WHERE environment_id = ?')
+      const access = new RoutingAccess({
+        local: localAllowAll,
+        hub: new HubAccess(hub, { now: () => Date.now() }),
+        isHubTarget: (environmentId) => hubEnvLink.get(environmentId) !== undefined,
+      })
       const release = new ReleaseService({
         db,
         deploys,
         releases: releaseStore,
         runner: localRunner,
-        access: localAllowAll,
+        access,
         finalize: noopFinalize,
         audit: log,
         vault: service,
@@ -406,6 +427,7 @@ if (!app.requestSingleInstanceLock()) {
           ...createDeployHandlers({ deploys, releases: release, tooling: () => detectTools(toolDeps) }),
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
           ...createOpsHandlers({ snippets, runs, containers }),
+          ...createHubHandlers({ conn: hub, vault: service, audit: log }),
         },
         (url) => isTrustedSender(url, { devServerUrl, rendererFile }),
         { validators: VALIDATORS, knownSecrets },
