@@ -380,6 +380,8 @@ describe('parseTemplate', () => {
     "builtin declare 'a'[{{n}}]=1",
     "\\declare 'a'[{{n}}]=1",
     "declare >/dev/null 'a'[{{n}}]=1",
+    "declare 'a'[$(echo {{n}})]=1",
+    "export 'a'[$(printf %s $(echo {{n}}))]=1",
     // zsh subscripts special parameters the same way as names
     'echo $@[{{n}}]',
     'echo $*[{{n}}]',
@@ -404,6 +406,7 @@ describe('parseTemplate', () => {
       '( printf %s {{v}} )',
       'echo "$@" {{v}}',
       'echo $# {{v}}',
+      'export X=$(printf %s {{v}})',
     ]) {
       expect({ script, variables: parseTemplate(script).variables }).toEqual({ script, variables: ['v'] })
     }

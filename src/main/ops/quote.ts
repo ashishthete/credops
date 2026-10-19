@@ -298,10 +298,11 @@ export function parseTemplate(script: string): ParsedTemplate {
       if (error) throw new TemplateError(error)
       if (s[i - 1] === '$') throw new TemplateError(`{{${name}}} can't follow a $`)
       // A declaration builtin reads `'a'[…]` as a subscript once quotes are removed, so any [ before the
-      // word's first = counts, quoted or not.
+      // word's first = counts, quoted or not; so does one in an enclosing word (`'a'[$(echo {{n}})]`).
       if (wordStart) f.wordBegin = i
-      if (f.declaration && f.wordBegin >= 0) {
-        const head = s.slice(f.wordBegin, i)
+      for (const g of stack) {
+        if (!g.declaration || g.wordBegin < 0) continue
+        const head = s.slice(g.wordBegin, i)
         const bracket = head.indexOf('[')
         const equals = head.indexOf('=')
         if (bracket !== -1 && (equals === -1 || bracket < equals)) ambiguity ??= 'declarationSubscript'
