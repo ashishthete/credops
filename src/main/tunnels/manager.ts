@@ -89,8 +89,6 @@ export class TunnelLimitError extends Error {
 
 const LOCKED: TunnelError = { code: 'locked', message: 'Waiting for unlock' }
 
-/** Changing any of these on a running tunnel restarts it; a label or flag change doesn't. */
-
 /** How a failure is handled: `stage` says what has to be redone, `locked` pauses instead of counting. */
 interface Failure {
   error: TunnelError

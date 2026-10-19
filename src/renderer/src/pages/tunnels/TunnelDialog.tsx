@@ -1,22 +1,25 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { Cable, Check, Copy, Lock, RotateCw, TriangleAlert } from 'lucide-react'
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type KeyboardEvent } from 'react'
-import { HOST_ADDRESS, MAX_ADDRESS, type EnvironmentMeta } from '../../../../shared/inventory'
-import {
-  BIND_ADDRESS,
-  MAX_BIND_ADDRESS,
-  TUNNEL_ROUTE_FIELDS,
-  isLoopback,
-  type TunnelInput,
-  type TunnelMeta,
-  type TunnelPatch,
-  type TunnelType,
-} from '../../../../shared/tunnels'
+import { MAX_ADDRESS } from '../../../../shared/inventory'
+import { MAX_BIND_ADDRESS, TUNNEL_ROUTE_FIELDS, isLoopback, type TunnelInput, type TunnelMeta, type TunnelType } from '../../../../shared/tunnels'
 import { MAX_LABEL } from '../../../../shared/vault'
 import { useInventory } from '../../inventory/store'
-import { createTunnel, deleteTunnel, tunnelStore, updateTunnel } from '../../tunnels/store'
+import {
+  PLACEHOLDER,
+  changes,
+  checkForm,
+  clashWith,
+  fieldOf,
+  formFrom,
+  sshCommand,
+  whole,
+  type FieldName,
+  type Form,
+  type TunnelRequest,
+} from '../../tunnels/form'
+import { createTunnel, tunnelStore, updateTunnel } from '../../tunnels/store'
 import { Button } from '../../ui/Button'
-import type { ConfirmRequest } from '../../ui/common'
 import { Dialog } from '../../ui/Dialog'
 import { SelectField, TextField } from '../../ui/Field'
 import { fast, spring, useMotionSafe } from '../../ui/motion'
@@ -25,23 +28,7 @@ import { toast } from '../../ui/Toaster'
 import { hostPort, RouteLine } from './RouteLine'
 import { isRunning, TUNNEL_TYPE } from './TunnelCard'
 
-/** What the dialog was opened for: a new tunnel (optionally for a host), or an edit or copy of a saved one. */
-export type TunnelRequest = { kind: 'new'; hostId?: string; environmentId?: string } | { kind: 'edit' | 'duplicate'; id: string }
-
-interface Form {
-  label: string
-  hostId: string
-  environmentId: string
-  type: TunnelType
-  bindAddress: string
-  bindPort: string
-  targetHost: string
-  targetPort: string
-  autoStart: boolean
-  autoReconnect: boolean
-}
-
-type FieldName = 'label' | 'hostId' | 'environmentId' | 'bindAddress' | 'bindPort' | 'targetHost' | 'targetPort'
+export type { TunnelRequest } from '../../tunnels/form'
 
 const TYPES: { type: TunnelType; label: string; hint: string }[] = [
   { type: 'L', label: 'Local', hint: 'Reach a port on the server from this Mac' },
@@ -54,138 +41,6 @@ const BIND_CHOICES = [
   { address: '0.0.0.0', title: 'Every network interface' },
 ]
 
-const PLACEHOLDER = '…'
-
-function formFrom(request: TunnelRequest, tunnels: readonly TunnelMeta[]): { form: Form; original?: TunnelMeta } {
-  const blank: Form = {
-    label: '',
-    hostId: '',
-    environmentId: '',
-    type: 'L',
-    bindAddress: '127.0.0.1',
-    bindPort: '',
-    targetHost: 'localhost',
-    targetPort: '',
-    autoStart: false,
-    autoReconnect: true,
-  }
-  if (request.kind === 'new') return { form: { ...blank, hostId: request.hostId ?? '', environmentId: request.environmentId ?? '' } }
-  const t = tunnels.find((x) => x.id === request.id)
-  if (!t) return { form: blank }
-  const form: Form = {
-    label: t.label,
-    hostId: t.hostId,
-    environmentId: t.environmentId ?? '',
-    type: t.type,
-    bindAddress: t.bindAddress,
-    bindPort: String(t.bindPort),
-    targetHost: t.targetHost ?? 'localhost',
-    targetPort: t.targetPort != null ? String(t.targetPort) : '',
-    autoStart: t.autoStart,
-    autoReconnect: t.autoReconnect,
-  }
-  if (request.kind === 'edit') return { form, original: t }
-  // A copy that could run beside the original: the next port up (0 already means "any free port").
-  const port = t.bindPort === 0 ? 0 : Math.min(t.bindPort + 1, 65535)
-  return { form: { ...form, label: `${t.label} copy`.slice(0, MAX_LABEL), bindPort: String(port) } }
-}
-
-const whole = (text: string) => (/^\d+$/.test(text.trim()) ? Number(text.trim()) : NaN)
-
-interface Check {
-  /** Shape errors, in the store's own words; a blank required field is just not ready yet. */
-  errors: Partial<Record<FieldName, string>>
-  /** The tunnel as the store would save it, once every field is ready. */
-  fields: Omit<TunnelMeta, 'id' | 'createdAt' | 'updatedAt'> | null
-}
-
-/** The store's rules (main/tunnels/tunnel-store.ts), checked for shape; the store still has the last word. */
-function check(f: Form, environments: readonly EnvironmentMeta[]): Check {
-  const errors: Check['errors'] = {}
-  const label = f.label.trim()
-  if (label.length > MAX_LABEL) errors.label = `tunnel label must be 1-${MAX_LABEL} characters`
-  if (f.environmentId && !environments.some((e) => e.id === f.environmentId && e.hosts.some((h) => h.hostId === f.hostId))) {
-    errors.environmentId = 'host is not in that environment'
-  }
-  const bindAddress = f.bindAddress.trim()
-  if (bindAddress && (bindAddress.length > MAX_BIND_ADDRESS || !BIND_ADDRESS.test(bindAddress))) {
-    errors.bindAddress = 'bind address must be an IP address or localhost'
-  }
-  const bindPort = whole(f.bindPort)
-  if (f.bindPort.trim() && !(bindPort >= 0 && bindPort <= 65535)) errors.bindPort = 'bind port must be 0-65535'
-  const dynamic = f.type === 'D'
-  const targetHost = f.targetHost.trim()
-  const targetPort = whole(f.targetPort)
-  if (!dynamic) {
-    if (targetHost && (targetHost.length > MAX_ADDRESS || !HOST_ADDRESS.test(targetHost))) errors.targetHost = 'host address is invalid'
-    if (f.targetPort.trim() && !(targetPort >= 1 && targetPort <= 65535)) errors.targetPort = 'port must be 1-65535'
-  }
-  const ready =
-    label.length > 0 && !!f.hostId && !!bindAddress && f.bindPort.trim() !== '' && (dynamic || (!!targetHost && f.targetPort.trim() !== ''))
-  if (!ready || Object.keys(errors).length) return { errors, fields: null }
-  return {
-    errors,
-    fields: {
-      label,
-      hostId: f.hostId,
-      environmentId: f.environmentId || null,
-      type: f.type,
-      bindAddress: bindAddress.toLowerCase() === 'localhost' ? 'localhost' : bindAddress,
-      bindPort,
-      targetHost: dynamic ? null : targetHost,
-      targetPort: dynamic ? null : targetPort,
-      autoStart: f.autoStart,
-      autoReconnect: f.autoReconnect,
-    },
-  }
-}
-
-/** Which field a store error is about, by the rule it names; anything else shows above the buttons. */
-function fieldOf(message: string): FieldName | null {
-  const m = message.toLowerCase()
-  if (m.startsWith('tunnel label')) return 'label'
-  if (m.startsWith('host not found')) return 'hostId'
-  if (m.startsWith('environment') || m.startsWith('host is not in that environment')) return 'environmentId'
-  if (m.startsWith('bind address')) return 'bindAddress'
-  if (m.startsWith('bind port')) return 'bindPort'
-  if (m.startsWith('target host') || m.startsWith('host address')) return 'targetHost'
-  if (m.startsWith('port must be')) return 'targetPort'
-  return null
-}
-
-const WILDCARD = new Set(['0.0.0.0', '::', '*', ''])
-const sameLocal = (a: string) => (a.toLowerCase() === 'localhost' ? '127.0.0.1' : a.toLowerCase())
-
-/** Another saved tunnel that listens on the same port, so the two can't both run. Port 0 never clashes. */
-function clashWith(f: Form, tunnels: readonly TunnelMeta[], selfId: string | undefined): TunnelMeta | undefined {
-  const port = whole(f.bindPort)
-  if (!(port > 0)) return undefined
-  const address = sameLocal(f.bindAddress.trim())
-  return tunnels.find((t) => {
-    if (t.id === selfId || t.bindPort !== port) return false
-    // L and D listen on this machine; R listens on its server.
-    if (f.type === 'R' || t.type === 'R') return f.type === 'R' && t.type === 'R' && t.hostId === f.hostId
-    const other = sameLocal(t.bindAddress)
-    return other === address || WILDCARD.has(other) || WILDCARD.has(address)
-  })
-}
-
-/** The fields that differ from the saved tunnel; clearing a value sends null, as the store expects. */
-function changes(original: TunnelMeta, fields: NonNullable<Check['fields']>): TunnelPatch {
-  const out: Record<string, unknown> = {}
-  for (const [k, v] of Object.entries(fields)) if (original[k as keyof TunnelMeta] !== v) out[k] = v
-  return out as TunnelPatch
-}
-
-/** Safe to paste into a shell as is; anything else is single-quoted. */
-const shellWord = (s: string) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`)
-
-/** The equivalent `ssh` command, naming the host by its label (never its address or user). */
-function sshCommand(f: Form, hostLabel: string | undefined): string {
-  const bind = hostPort(f.bindAddress.trim() || PLACEHOLDER, f.bindPort.trim() || PLACEHOLDER)
-  const spec = f.type === 'D' ? bind : `${bind}:${hostPort(f.targetHost.trim() || PLACEHOLDER, f.targetPort.trim() || PLACEHOLDER)}`
-  return `ssh -${f.type} ${spec} ${hostLabel ? shellWord(hostLabel) : PLACEHOLDER}`
-}
 
 interface TunnelDialogProps {
   request: TunnelRequest | null
@@ -202,9 +57,11 @@ export function TunnelDialog({ request, onClose }: TunnelDialogProps) {
   const last = useRef(request)
   if (request) last.current = request
   const r = request ?? last.current
-  const open = request !== null
+  // An edit or copy of a tunnel deleted elsewhere (before opening or mid-edit) has nothing to show.
+  const gone = !!request && request.kind !== 'new' && !tunnels.some((t) => t.id === request.id)
+  const open = request !== null && !gone
 
-  const [form, setForm] = useState<Form>(() => (r ? formFrom(r, tunnels).form : formFrom({ kind: 'new' }, []).form))
+  const [form, setForm] = useState<Form>(() => (r && formFrom(r, tunnels)?.form) || formFrom({ kind: 'new' }, [])!.form)
   // The tunnel as it was when the dialog opened; an edit sends only what changed from this.
   const [original, setOriginal] = useState<TunnelMeta | undefined>()
   const [serverError, setServerError] = useState<{ field: FieldName | null; message: string } | null>(null)
@@ -213,8 +70,9 @@ export function TunnelDialog({ request, onClose }: TunnelDialogProps) {
 
   const requestKey = request ? (request.kind === 'new' ? `new:${request.hostId ?? ''}:${request.environmentId ?? ''}` : `${request.kind}:${request.id}`) : null
   useEffect(() => {
-    if (!request) return
+    if (!request || gone) return
     const next = formFrom(request, tunnelStore.get().tunnels)
+    if (!next) return
     setForm(next.form)
     setOriginal(next.original)
     setServerError(null)
@@ -222,6 +80,14 @@ export function TunnelDialog({ request, onClose }: TunnelDialogProps) {
     // Reset when the dialog opens or switches tunnel, not when the store refreshes mid-edit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestKey])
+
+  useEffect(() => {
+    if (!gone) return
+    toast({ title: 'That tunnel no longer exists', tone: 'info' })
+    onClose()
+    // Once per request that turned out empty.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gone, requestKey])
 
   const hosts = useMemo(() => [...(data?.hosts ?? [])].sort((a, b) => a.label.localeCompare(b.label)), [data])
   const environments = useMemo(() => data?.environments ?? [], [data])
@@ -244,7 +110,7 @@ export function TunnelDialog({ request, onClose }: TunnelDialogProps) {
     setServerError(null)
   }
 
-  const result = check(form, environments)
+  const result = checkForm(form, environments)
   const errorFor = (name: FieldName) => result.errors[name] ?? (serverError?.field === name ? serverError.message : undefined)
 
   const patch = original && result.fields ? changes(original, result.fields) : null
@@ -648,27 +514,4 @@ function CopyCommand({ command }: { command: string }) {
       </button>
     </div>
   )
-}
-
-/**
- * The delete confirmation for a tunnel. A running tunnel is stopped first; in a protected environment
- * the user types the environment's name.
- */
-export function tunnelDeleteRequest(meta: TunnelMeta, environment: EnvironmentMeta | undefined, running: boolean): ConfirmRequest {
-  const guarded = environment?.protected ? environment.name : undefined
-  return {
-    title: `Delete ${meta.label}?`,
-    description: [
-      running ? 'It will be stopped first.' : '',
-      'The tunnel is removed from this machine.',
-      guarded ? `It belongs to the protected ${guarded} environment.` : '',
-    ]
-      .filter(Boolean)
-      .join(' '),
-    confirmLabel: 'Delete tunnel',
-    typeToConfirm: guarded,
-    run: async () => {
-      if (await deleteTunnel(meta.id)) toast({ title: `Deleted ${meta.label}`, tone: 'success' })
-    },
-  }
 }

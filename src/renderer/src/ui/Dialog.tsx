@@ -29,12 +29,13 @@ const FOCUSABLE =
 /** Modal dialog: focus trap, Esc to close, focus handed back to the opener on close. */
 export function Dialog(props: DialogProps) {
   const opener = useRef<Element | null>(null)
+  const wasOpen = useRef(false)
+  // Noted while rendering the open: an autoFocus field inside takes focus during commit, before any effect here runs.
+  if (props.open && !wasOpen.current && !opener.current) opener.current = document.activeElement
 
   useLayoutEffect(() => {
-    if (props.open) {
-      opener.current = document.activeElement
-      return
-    }
+    wasOpen.current = props.open
+    if (props.open) return
     const el = opener.current
     opener.current = null
     if (el instanceof HTMLElement && el.isConnected) el.focus()

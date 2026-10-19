@@ -13,7 +13,8 @@ import { fast, spring, useMotionSafe } from '../../ui/motion'
 import { Skeleton } from '../../ui/Skeleton'
 import { ImportDialog } from '../hosts/ImportDialog'
 import { isRunning, TunnelCard } from './TunnelCard'
-import { TunnelDialog, tunnelDeleteRequest, type TunnelRequest } from './TunnelDialog'
+import { tunnelDeleteRequest } from './deleteRequest'
+import { TunnelDialog, type TunnelRequest } from './TunnelDialog'
 
 type Filter = 'all' | 'running' | 'failed'
 
