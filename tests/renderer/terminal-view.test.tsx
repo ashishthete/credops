@@ -116,7 +116,7 @@ describe('TerminalView', () => {
     expect(key({ key: 'w', metaKey: true })).toBe(false)
     expect(key({ key: 't', metaKey: true })).toBe(false)
     // Every section shortcut, mod+1 to the last, reaches the window.
-    for (let i = 0; i < SECTIONS.length; i++) expect(key({ key: String(i + 1), metaKey: true }), `mod+${i + 1}`).toBe(false)
+    for (let i = 0; i < Math.min(SECTIONS.length, 9); i++) expect(key({ key: String(i + 1), metaKey: true }), `mod+${i + 1}`).toBe(false)
     expect(key({ key: '}', code: 'BracketRight', metaKey: true, shiftKey: true })).toBe(false)
     expect(key({ key: 'c', ctrlKey: true })).toBe(true)
     expect(key({ key: 'w', ctrlKey: true })).toBe(true)

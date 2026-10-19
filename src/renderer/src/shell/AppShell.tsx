@@ -1,10 +1,13 @@
 import { motion } from 'framer-motion'
 import { useEffect, useRef } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router'
+import { useHubCommands } from '../hub/commands'
+import { resetHub, startHubSync } from '../hub/store'
 import { useInventoryCommands } from '../inventory/commands'
 import { loadInventory } from '../inventory/store'
 import { useMapCommands } from '../map/commands'
 import { AuditPage } from '../pages/AuditPage'
+import { HubPage } from '../pages/hub/HubPage'
 import { HostsPage } from '../pages/hosts/HostsPage'
 import { MapPage } from '../pages/map/MapPage'
 import { OpsPage } from '../pages/ops/OpsPage'
@@ -37,6 +40,7 @@ export function AppShell() {
   useTunnelCommands()
   useMapCommands()
   useOpsCommands()
+  useHubCommands()
   // The shell mounts only while unlocked, so every unlock reloads (F22).
   useEffect(() => {
     void loadInventory()
@@ -56,15 +60,18 @@ export function AppShell() {
     const stop = startSessionSync()
     const stopTunnels = startTunnelSync()
     const stopOps = startOpsSync()
+    const stopHub = startHubSync()
     return () => {
       stop()
       stopTunnels()
       stopOps()
+      stopHub()
       disposeAll()
       // Events stop while unmounted (the vault locked); the next mount's session list is the truth.
       resetSessions()
       resetTunnels()
       resetOps()
+      resetHub()
       closeKnownHosts()
     }
   }, [])
@@ -98,6 +105,7 @@ export function AppShell() {
             <Route path="/map" element={<MapPage />} />
             <Route path="/ops" element={<Navigate to="/ops/run" replace />} />
             <Route path="/ops/:tab" element={<OpsPage />} />
+            <Route path="/hub" element={<HubPage />} />
             <Route path="/audit" element={<AuditPage />} />
             <Route path="*" element={<Navigate to={SECTIONS[0].path} replace />} />
           </Routes>
@@ -126,7 +134,7 @@ function useSectionNavigation() {
         title: `Go to ${s.label}`,
         section: 'Navigate',
         keywords: [s.id],
-        shortcut: sectionShortcut(i),
+        shortcut: sectionShortcut(i) ?? undefined,
         run: () => navigateRef.current(s.path),
       }),
     )

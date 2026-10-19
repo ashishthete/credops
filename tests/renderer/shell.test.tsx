@@ -87,13 +87,14 @@ describe('shell', () => {
     expect(await screen.findByRole('heading', { name: 'Products', level: 1 })).toBeInTheDocument()
   })
 
-  it(`${shortcutOf('audit')} jumps to Audit`, async () => {
+  it(`${shortcutOf('hub')} jumps to the Hub; Audit, the tenth section, has no digit shortcut`, async () => {
     renderShell()
     expect(SECTIONS.at(-1)!.id).toBe('audit')
+    expect(sectionShortcut(SECTIONS.length - 1)).toBeNull()
     act(() => {
-      fireEvent.keyDown(window, { key: digitOf('audit'), metaKey: true })
+      fireEvent.keyDown(window, { key: digitOf('hub'), metaKey: true })
     })
-    expect(await screen.findByRole('heading', { name: 'Audit trail' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Hub' })).toBeInTheDocument()
   })
 
   // With an empty inventory the page shows its empty state, never the React Flow canvas, so this
@@ -161,7 +162,7 @@ describe('shell', () => {
     const { unmount } = renderShell()
     await screen.findByText(/tester@mac/)
     const nav = commandStore.get().filter((c) => c.section === 'Navigate')
-    expect(nav.map((c) => c.shortcut)).toEqual(SECTIONS.map((_, i) => `mod+${i + 1}`))
+    expect(nav.map((c) => c.shortcut)).toEqual(SECTIONS.map((_, i) => sectionShortcut(i) ?? undefined))
     expect(nav.find((c) => c.id === 'nav.map')).toMatchObject({ title: 'Go to Map', shortcut: shortcutOf('map') })
     unmount()
     expect(commandStore.get().filter((c) => c.section === 'Navigate')).toHaveLength(0)

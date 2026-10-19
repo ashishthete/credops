@@ -9,6 +9,7 @@ import {
   Search,
   Server,
   SquareTerminal,
+  Users,
   Wrench,
   type LucideIcon,
 } from 'lucide-react'
@@ -36,6 +37,7 @@ export const SECTION_ICONS: Record<SectionId, LucideIcon> = {
   map: Network,
   ops: Wrench,
   deployments: Rocket,
+  hub: Users,
   audit: ScrollText,
 }
 
@@ -114,10 +116,12 @@ export function Sidebar() {
                   {s.id === 'terminals' && <LiveCount />}
                   {s.id === 'tunnels' && <TunnelBadge />}
                   {s.id === 'ops' && <RunBadge />}
-                  <Keys
-                    combo={sectionShortcut(i)}
-                    className="relative opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
-                  />
+                  {sectionShortcut(i) && (
+                    <Keys
+                      combo={sectionShortcut(i)!}
+                      className="relative opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+                    />
+                  )}
                 </>
               )}
             </NavLink>
