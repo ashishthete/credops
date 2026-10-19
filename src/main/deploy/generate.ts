@@ -192,7 +192,7 @@ const taskBackup = (d: PlanDeployment): Task => {
     'umask 077',
     'mkdir -p {{ d.backup_dir | quote }}',
     'PGPASSWORD="$DB_PASS" pg_dump -Fc -h "$DB_HOST" -p "${DB_PORT:-5432}" -U "$DB_USER" -d "$DB_NAME" -f "$F.part" || { rm -f "$F.part"; exit 1; }',
-    'mv -f "$F.part" "$F"',
+    'mv -f "$F.part" "$F" || exit 1',
     'echo "backup written: $F"',
   ].join('\n')
   return sh(
@@ -224,7 +224,7 @@ const ENV_CMD = [
   'rm -f .env.opsdeck-none',
   'if [ -f .env ]; then cp -p .env .env.opsdeck-prev && chmod 600 .env.opsdeck-prev || exit 1; else rm -f .env.opsdeck-prev; : > .env.opsdeck-none; fi',
   // scopes the backup to this release: rb_env restores only when this names the release being rolled back
-  "printf '%s' {{ od.rel | quote }} > .env.opsdeck-rel",
+  "printf '%s' {{ od.rel | quote }} > .env.opsdeck-rel || exit 1",
   'base64 -d > .env.opsdeck-new && chmod 600 .env.opsdeck-new && mv -f .env.opsdeck-new .env',
 ].join('\n')
 const RB_ENV_CMD = [
@@ -437,9 +437,11 @@ function preflightTasks(plan: DeployPlan, d: PlanDeployment): Task[] {
       'T={{ d.tag | quote }}',
       'B={{ d.branch | quote }}',
       REMOTE_TAG,
-      'if [ -n "$c" ] && git cat-file -e "$c^{commit}" 2>/dev/null; then R="$c..origin/$B"; else R="origin/$B"; fi',
-      'out=$(git log --no-merges --max-count=501 --pretty=tformat:%H%x1f%s%x1f%an%x1f%aI%x1e "$R" 2>/dev/null | base64 | tr -d \'\\n\')',
-      'echo "OD-PF commits log_b64=$out"',
+      'if [ "$ok" = 0 ]; then echo "OD-PF commits unknown"; else',
+      '  if [ -n "$c" ] && git cat-file -e "$c^{commit}" 2>/dev/null; then R="$c..origin/$B"; else R="origin/$B"; fi',
+      '  out=$(git log --no-merges --max-count=501 --pretty=tformat:%H%x1f%s%x1f%an%x1f%aI%x1e "$R" 2>/dev/null | base64 | tr -d \'\\n\')',
+      '  echo "OD-PF commits log_b64=$out"',
+      'fi',
     ].join('\n')),
   )
   return out

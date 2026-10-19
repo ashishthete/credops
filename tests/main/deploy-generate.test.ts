@@ -575,6 +575,15 @@ describe('fix round 1', () => {
     expect(c.indexOf('mv -f .env.opsdeck-prev .env')).toBeLessThan(c.indexOf('OD-ENV skipped'))
   })
 
+  it('checks the rel marker write and the backup mv, and flags unknown commits', () => {
+    const all = every(plays(planFixture())[0].tasks).map(({ t }) => cmdOf(t)).join('\n')
+    expect(all).toContain('> .env.opsdeck-rel || exit 1')
+    expect(all).toContain('mv -f "$F.part" "$F" || exit 1')
+    const pf = every(plays(planFixture({ kind: 'preflight' }))[0].tasks).map(({ t }) => cmdOf(t)).join('\n')
+    expect(pf).toContain('OD-PF commits unknown')
+    expect(pf).toContain('if [ "$ok" = 0 ]; then echo "OD-PF commits unknown"; else')
+  })
+
   it('ls-remote failure is reported as unknown, not as no tag', () => {
     const rec = cmdOf(flat(plays(planFixture())[0].tasks).find((t) => step(t) === 'record')!)
     expect(rec).toContain('OD-PREV unknown')
