@@ -249,11 +249,12 @@ Roadmap and contracts: `docs/superpowers/plans/2026-10-16-roadmap.md`. Conventio
   generated YAML and shell injection impossible. No user string that isn't
   base64 contains `{`, `}`, a quote, `$`, a backtick, `;`, `|`, `&` or a
   newline:
-  - `REPO_PATH = /^\/[A-Za-z0-9._@+\/-]{1,255}$/`. It must be absolute, must
-    not contain `..`, and must not end in `/`;
-  - `GIT_REF = /^(?!.*\.\.)(?!.*\/\/)(?!\/)(?!.*\/$)(?!.*\.lock$)[A-Za-z0-9._\/-]{1,200}$/`,
-    for branch and tag;
-  - `COMPOSE_FILE = /^(?!\/)(?!.*\.\.)[A-Za-z0-9._\/-]{1,200}$/`, a path
+  - `REPO_PATH = /^(?!.*\.\.)(?!.*\/\/)(?!.*\/\.(?:\/|$))\/[A-Za-z0-9._@+\/-]{1,255}(?<!\/)$/`.
+    It must be absolute, and must not contain `..`, `//` or a `/.`
+    segment, and must not end in `/`;
+  - `GIT_REF = /^(?!.*\.\.)(?!.*\/\/)(?!\/)(?!.*\/$)(?!.*\.lock$)(?!-)[A-Za-z0-9._\/-]{1,200}$/`,
+    for branch and tag (a leading `-` would be parsed as a git option);
+  - `COMPOSE_FILE = /^(?!\/)(?!-)(?!.*\.\.)[A-Za-z0-9._\/-]{1,200}$/`, a path
     relative to the repo;
   - `BACKUP_DIR` uses the same rule as `REPO_PATH`;
   - each URL must parse with `new URL`, use `http:` or `https:`, have no
