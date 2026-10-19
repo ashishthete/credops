@@ -42,6 +42,20 @@ import {
   type RunRequest,
   type SnippetInput,
 } from '../../shared/ops'
+import {
+  MAX_DEPLOYMENTS,
+  MAX_ENV_TEMPLATE,
+  MAX_HOOK,
+  MAX_URL as MAX_HEALTH_URL,
+  MAX_URLS,
+  VERSION,
+  type AppInput,
+  type AppPatch,
+  type DeploymentInput,
+  type DeploymentPatch,
+  type EnvDeploySettingsPatch,
+  type HealthUrl,
+} from '../../shared/deploy'
 import { BIND_ADDRESS, MAX_BIND_ADDRESS, type TunnelInput, type TunnelPatch } from '../../shared/tunnels'
 import { MAX_COLS, MAX_ROWS, MAX_WRITE_CHARS, type OpenLocalRequest, type OpenSshRequest, type PromptAnswer } from '../../shared/ssh'
 import {
@@ -206,6 +220,73 @@ export const asHostPatch: Check<HostPatch> = v.object({
   keepaliveSec: v.optional(keepaliveSec),
   envVars: v.optional(envVars),
 }) as Check<HostPatch>
+
+// Deploy config. Shapes and ranges only: the store owns the content rules (paths, refs, memberships).
+const deployName = v.str({ min: 1, max: MAX_NAME, trim: true })
+const deployPath = v.str({ min: 1, max: 1024 })
+const healthUrl = v.object({ url: v.str({ min: 1, max: MAX_HEALTH_URL }), from: v.oneOf(['host', 'mac'] as const) })
+const deployFields = {
+  appId: v.optional(nullableId),
+  repoPath: deployPath,
+  defaultBranch: v.str({ min: 1, max: 255 }),
+  deployTag: v.str({ min: 1, max: 255 }),
+  composeFile: v.str({ min: 1, max: 255 }),
+  position: v.int({ min: 0, max: 1_000_000 }),
+  urls: v.array(healthUrl, MAX_URLS),
+  healthStatus: v.int({ min: 100, max: 599 }),
+  healthTimeoutSec: v.int({ min: 5, max: 600 }),
+  dbBackup: v.bool(),
+  backupDir: v.nullable(deployPath),
+  preHook: v.nullable(v.str({ max: MAX_HOOK })),
+  postHook: v.nullable(v.str({ max: MAX_HOOK })),
+  buildTimeoutSec: v.int({ min: 10, max: 3600 }),
+  composeTimeoutSec: v.int({ min: 10, max: 3600 }),
+  useSudo: v.oneOf(['auto', 'yes', 'no'] as const),
+  becomeSecretId: nullableId,
+  managedEnv: v.bool(),
+  envTemplate: v.nullable(v.str({ max: MAX_ENV_TEMPLATE })),
+  vaultIds: v.array(v.uuid(), MAX_LINKS),
+}
+const { appId: _appId, ...deployRest } = deployFields
+void _appId
+const deployOptional = Object.fromEntries(Object.entries(deployRest).map(([k, c]) => [k, v.optional(c as Check<unknown>)]))
+
+export const asDeploymentInput: Check<DeploymentInput> = v.object({
+  name: deployName,
+  environmentId: v.uuid(),
+  hostId: v.uuid(),
+  appId: v.optional(nullableId),
+  ...deployOptional,
+  repoPath: deployPath,
+  defaultBranch: deployFields.defaultBranch,
+  deployTag: deployFields.deployTag,
+}) as Check<DeploymentInput>
+// The environment and host are fixed at creation: they are not keys here, so a move fails validation.
+export const asDeploymentPatch: Check<DeploymentPatch> = v.object({
+  name: v.optional(deployName),
+  appId: v.optional(nullableId),
+  ...deployOptional,
+}) as Check<DeploymentPatch>
+export const asEnvDeploySettingsPatch: Check<EnvDeploySettingsPatch> = v.object({
+  versioned: v.optional(v.bool()),
+  autoRollback: v.optional(v.bool()),
+  currentVersion: v.optional(v.nullable(v.str({ max: 64, pattern: VERSION }))),
+}) as Check<EnvDeploySettingsPatch>
+const appName = v.str({ min: 1, max: MAX_NAME, trim: true })
+const composeProject = v.nullable(v.str({ min: 1, max: 63 }))
+const appDescription = v.str({ max: 1000 })
+export const asAppInput: Check<AppInput> = v.object({
+  environmentId: v.uuid(),
+  hostId: v.uuid(),
+  name: appName,
+  composeProject: v.optional(composeProject),
+  description: v.optional(appDescription),
+}) as Check<AppInput>
+export const asAppPatch: Check<AppPatch> = v.object({
+  name: v.optional(appName),
+  composeProject: v.optional(composeProject),
+  description: v.optional(appDescription),
+}) as Check<AppPatch>
 
 const tunnelBindAddress = v.str({ min: 1, max: MAX_BIND_ADDRESS, pattern: BIND_ADDRESS, trim: true })
 const tunnelBindPort = v.int({ min: 0, max: 65535 })
@@ -447,6 +528,17 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'tunnel:start': args(v.uuid()),
   'tunnel:stop': args(v.uuid()),
   'tunnel:status': args(),
+  'app:list': args(v.optional(v.uuid())),
+  'app:create': args(asAppInput),
+  'app:update': args(v.uuid(), asAppPatch),
+  'app:delete': args(v.uuid()),
+  'deploy:list': args(v.optional(v.uuid())),
+  'deploy:create': args(asDeploymentInput),
+  'deploy:update': args(v.uuid(), asDeploymentPatch),
+  'deploy:delete': args(v.uuid()),
+  'deploy:reorder': args(v.uuid(), v.array(v.uuid(), MAX_DEPLOYMENTS)),
+  'deploy:settings': args(v.uuid()),
+  'deploy:updateSettings': args(v.uuid(), asEnvDeploySettingsPatch),
   'snippets:list': args(),
   'snippets:create': args(asSnippetInput),
   'snippets:update': args(v.uuid(), asSnippetInput),

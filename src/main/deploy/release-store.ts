@@ -1,0 +1,386 @@
+import {
+  MAX_EVENTS_PER_RELEASE,
+  type CommitInfo,
+  type DeploymentRunMeta,
+  type DeploymentRunStatus,
+  type PreflightReport,
+  type ReleaseDetail,
+  type ReleaseKind,
+  type ReleaseOptions,
+  type ReleaseStatus,
+  type ReleaseSummary,
+  type RunEvent,
+  type RunEventBody,
+  type StepKind,
+  type VersionBump,
+} from '../../shared/deploy'
+import type { Db } from '../db/connection'
+import { inTransaction } from '../db/tx'
+import { uuidv7 } from './uuidv7'
+
+export interface ReleaseStoreDeps {
+  db: Db
+  now?: () => Date
+  /** Cap on `log` events per release; later ones are dropped with a single `log.truncated`. */
+  maxEvents?: number
+}
+
+export interface NewRelease {
+  environmentId: string
+  kind: ReleaseKind
+  status: ReleaseStatus
+  version: string | null
+  previousVersion: string | null
+  versionBump: VersionBump
+  redeploy: boolean
+  rollbackOf: string | null
+  options: ReleaseOptions
+  triggeredBy: string
+}
+
+export interface ReleaseStatusExtra {
+  startedAt?: string | null
+  finishedAt?: string | null
+  version?: string | null
+  previousVersion?: string | null
+  error?: string | null
+  releaseNotes?: string | null
+  playbook?: string | null
+}
+
+export interface RunPlan {
+  deploymentId: string | null
+  deploymentName: string
+  hostId: string | null
+  hostLabel: string
+  position: number
+  branch: string
+  steps: { stepId: string; kind: StepKind }[]
+}
+
+export interface RunPatch {
+  status?: DeploymentRunStatus
+  rolledBack?: boolean
+  previousCommit?: string | null
+  deployedCommit?: string | null
+  commits?: CommitInfo[]
+  steps?: DeploymentRunMeta['steps']
+  backupFile?: string | null
+  startedAt?: string | null
+  finishedAt?: string | null
+}
+
+export const INTERRUPTED_MESSAGE = 'interrupted: OpsDeck quit during the run'
+const MAX_PAGE = 5000
+
+interface ReleaseRow {
+  id: string
+  environment_id: string
+  environment_name: string
+  kind: ReleaseKind
+  status: ReleaseStatus
+  version: string | null
+  previous_version: string | null
+  redeploy: number
+  rollback_of: string | null
+  options: string
+  release_notes: string | null
+  error: string | null
+  playbook: string | null
+  triggered_by: string
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+  deployment_count: number
+  host_count: number
+}
+
+interface RunRow {
+  id: string
+  release_id: string
+  deployment_id: string | null
+  deployment_name: string
+  host_id: string | null
+  host_label: string
+  position: number
+  branch: string
+  previous_commit: string | null
+  deployed_commit: string | null
+  commits: string
+  steps: string
+  status: DeploymentRunStatus
+  rolled_back: number
+  backup_file: string | null
+  started_at: string | null
+  finished_at: string | null
+}
+
+interface EventRow {
+  id: string
+  release_id: string
+  seq: number
+  at: string
+  payload: string
+}
+
+const SELECT = `SELECT r.*, e.name AS environment_name,
+  (SELECT COUNT(*) FROM deployment_runs d WHERE d.release_id = r.id) AS deployment_count,
+  (SELECT COUNT(DISTINCT d.host_id) FROM deployment_runs d WHERE d.release_id = r.id) AS host_count
+  FROM releases r JOIN environments e ON e.id = r.environment_id`
+
+/**
+ * Releases, their per-deployment runs and the append-only event stream. Holds no secrets: events are
+ * redacted by the engine before they get here. `transaction()` lets a caller group run updates with events.
+ */
+export class ReleaseStore {
+  private readonly db: Db
+  private readonly now: () => Date
+  private readonly maxEvents: number
+
+  constructor(deps: ReleaseStoreDeps) {
+    this.db = deps.db
+    this.now = deps.now ?? (() => new Date())
+    this.maxEvents = deps.maxEvents ?? MAX_EVENTS_PER_RELEASE
+  }
+
+  /** Joins the caller's transaction when one is open, otherwise runs `fn` in its own. */
+  transaction<T>(fn: () => T): T {
+    return this.db.isTransaction ? fn() : inTransaction(this.db, fn)
+  }
+
+  createRelease(input: NewRelease): ReleaseSummary {
+    const id = uuidv7()
+    this.db
+      .prepare(
+        `INSERT INTO releases(id, environment_id, kind, status, version, previous_version, version_bump, redeploy,
+          rollback_of, options, triggered_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(
+        id, input.environmentId, input.kind, input.status, input.version, input.previousVersion, input.versionBump,
+        input.redeploy ? 1 : 0, input.rollbackOf, JSON.stringify(input.options), input.triggeredBy, this.now().toISOString(),
+      )
+    return this.get(id)
+  }
+
+  get(id: string): ReleaseSummary {
+    return summary(this.row(id))
+  }
+
+  setStatus(id: string, status: ReleaseStatus, extra: ReleaseStatusExtra = {}): void {
+    this.row(id)
+    const sets = ['status = ?']
+    const args: (string | number | null)[] = [status]
+    const cols: Record<keyof ReleaseStatusExtra, string> = {
+      startedAt: 'started_at',
+      finishedAt: 'finished_at',
+      version: 'version',
+      previousVersion: 'previous_version',
+      error: 'error',
+      releaseNotes: 'release_notes',
+      playbook: 'playbook',
+    }
+    for (const k of Object.keys(cols) as (keyof ReleaseStatusExtra)[]) {
+      if (extra[k] !== undefined) {
+        sets.push(`${cols[k]} = ?`)
+        args.push(extra[k] as string | null)
+      }
+    }
+    this.db.prepare(`UPDATE releases SET ${sets.join(', ')} WHERE id = ?`).run(...args, id)
+  }
+
+  detail(id: string): ReleaseDetail {
+    const r = this.row(id)
+    const runs = (this.db.prepare('SELECT * FROM deployment_runs WHERE release_id = ? ORDER BY position, id').all(id) as unknown as RunRow[]).map(runMeta)
+    const last = this.db.prepare('SELECT MAX(seq) AS s FROM run_events WHERE release_id = ?').get(id) as { s: number | null }
+    const pf = this.db
+      .prepare("SELECT payload FROM run_events WHERE release_id = ? AND type = 'preflight.done' ORDER BY seq DESC LIMIT 1")
+      .get(id) as { payload: string } | undefined
+    const preflight = pf ? ((JSON.parse(pf.payload) as { report: PreflightReport }).report ?? null) : null
+    return {
+      ...summary(r),
+      options: JSON.parse(r.options) as ReleaseOptions,
+      releaseNotes: r.release_notes,
+      playbook: r.playbook,
+      runs,
+      preflight,
+      lastSeq: last.s ?? 0,
+    }
+  }
+
+  /** Newest first. `before` is a release id to page from. */
+  list(q: { environmentId?: string; limit: number; before?: string }): ReleaseSummary[] {
+    const where: string[] = []
+    const args: (string | number)[] = []
+    if (q.environmentId !== undefined) {
+      where.push('r.environment_id = ?')
+      args.push(q.environmentId)
+    }
+    if (q.before !== undefined) {
+      where.push('r.id < ?')
+      args.push(q.before)
+    }
+    const limit = Math.max(1, Math.min(Math.floor(q.limit), 200))
+    const sql = `${SELECT}${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY r.id DESC LIMIT ?`
+    return (this.db.prepare(sql).all(...args, limit) as unknown as ReleaseRow[]).map(summary)
+  }
+
+  /** Releases that are executing right now (running or rolling back). */
+  active(): ReleaseSummary[] {
+    return (this.db.prepare(`${SELECT} WHERE r.status IN ('running','rolling_back') ORDER BY r.id`).all() as unknown as ReleaseRow[]).map(summary)
+  }
+
+  // ---- runs ----
+
+  /** Plans one run per deployment; steps start `pending` with null times. */
+  createRuns(releaseId: string, plans: RunPlan[]): DeploymentRunMeta[] {
+    this.row(releaseId)
+    return this.transaction(() => {
+      const ins = this.db.prepare(
+        `INSERT INTO deployment_runs(id, release_id, deployment_id, deployment_name, host_id, host_label, position, branch, steps, status)
+         VALUES (?,?,?,?,?,?,?,?,?, 'pending')`,
+      )
+      return plans.map((p) => {
+        const id = uuidv7()
+        const steps = p.steps.map((s) => ({ stepId: s.stepId, kind: s.kind, state: 'pending' as const, startedAt: null, finishedAt: null }))
+        ins.run(id, releaseId, p.deploymentId, p.deploymentName, p.hostId, p.hostLabel, p.position, p.branch, JSON.stringify(steps))
+        return runMeta(this.db.prepare('SELECT * FROM deployment_runs WHERE id = ?').get(id) as unknown as RunRow)
+      })
+    })
+  }
+
+  updateRun(runId: string, patch: RunPatch): void {
+    const cols: [keyof RunPatch, string, (v: never) => string | number | null][] = [
+      ['status', 'status', (v) => v],
+      ['rolledBack', 'rolled_back', (v: boolean) => (v ? 1 : 0)],
+      ['previousCommit', 'previous_commit', (v) => v],
+      ['deployedCommit', 'deployed_commit', (v) => v],
+      ['commits', 'commits', (v) => JSON.stringify(v)],
+      ['steps', 'steps', (v) => JSON.stringify(v)],
+      ['backupFile', 'backup_file', (v) => v],
+      ['startedAt', 'started_at', (v) => v],
+      ['finishedAt', 'finished_at', (v) => v],
+    ]
+    const sets: string[] = []
+    const args: (string | number | null)[] = []
+    for (const [k, col, enc] of cols) {
+      if (patch[k] !== undefined) {
+        sets.push(`${col} = ?`)
+        args.push(enc(patch[k] as never))
+      }
+    }
+    if (sets.length === 0) return
+    const res = this.db.prepare(`UPDATE deployment_runs SET ${sets.join(', ')} WHERE id = ?`).run(...args, runId)
+    if (res.changes === 0) throw new Error('deployment run not found')
+  }
+
+  // ---- events ----
+
+  /** Appends in order, assigning seq and UUIDv7 ids. Logs past the cap are dropped with one `log.truncated`. */
+  appendEvents(releaseId: string, bodies: RunEventBody[]): RunEvent[] {
+    this.row(releaseId)
+    return this.transaction(() => {
+      const q = (sql: string) => this.db.prepare(sql).get(releaseId) as { n: number }
+      let logs = q("SELECT COUNT(*) AS n FROM run_events WHERE release_id = ? AND type = 'log'").n
+      let truncated = q("SELECT COUNT(*) AS n FROM run_events WHERE release_id = ? AND type = 'log.truncated'").n > 0
+      let seq = (this.db.prepare('SELECT COALESCE(MAX(seq), 0) AS s FROM run_events WHERE release_id = ?').get(releaseId) as { s: number }).s
+      let dropped = 0
+      const out: RunEvent[] = []
+      const ins = this.db.prepare('INSERT INTO run_events(id, release_id, seq, at, type, payload) VALUES (?,?,?,?,?,?)')
+      const put = (body: RunEventBody) => {
+        const ev = { id: uuidv7(), runId: releaseId, seq: ++seq, at: this.now().toISOString(), ...body } as RunEvent
+        ins.run(ev.id, releaseId, ev.seq, ev.at, ev.type, JSON.stringify(body))
+        out.push(ev)
+      }
+      for (const body of bodies) {
+        if (body.type === 'log') {
+          if (logs >= this.maxEvents) {
+            dropped++
+            if (!truncated) {
+              truncated = true
+              put({ type: 'log.truncated', dropped })
+            }
+            continue
+          }
+          logs++
+        }
+        put(body)
+      }
+      return out
+    })
+  }
+
+  events(releaseId: string, afterSeq: number, limit: number): RunEvent[] {
+    const n = Math.max(1, Math.min(Math.floor(limit), MAX_PAGE))
+    const rows = this.db
+      .prepare('SELECT id, release_id, seq, at, payload FROM run_events WHERE release_id = ? AND seq > ? ORDER BY seq LIMIT ?')
+      .all(releaseId, afterSeq, n) as unknown as EventRow[]
+    return rows.map((r) => ({ id: r.id, runId: r.release_id, seq: r.seq, at: r.at, ...(JSON.parse(r.payload) as RunEventBody) }) as RunEvent)
+  }
+
+  // ---- startup ----
+
+  /** A release left running or rolling back by a quit can never finish: mark it failed. Returns their ids. */
+  failInterrupted(): string[] {
+    const ids = (this.db.prepare("SELECT id FROM releases WHERE status IN ('running','rolling_back') ORDER BY id").all() as { id: string }[]).map((r) => r.id)
+    if (ids.length === 0) return ids
+    const ts = this.now().toISOString()
+    this.transaction(() => {
+      for (const id of ids) {
+        this.db.prepare("UPDATE deployment_runs SET status = 'failed', finished_at = ? WHERE release_id = ? AND status = 'running'").run(ts, id)
+        this.db.prepare("UPDATE deployment_runs SET status = 'cancelled' WHERE release_id = ? AND status = 'pending'").run(id)
+        this.setStatus(id, 'failed', { error: INTERRUPTED_MESSAGE, finishedAt: ts })
+        this.appendEvents(id, [{ type: 'run.finished', status: 'failed', error: INTERRUPTED_MESSAGE }])
+      }
+    })
+    return ids
+  }
+
+  private row(id: string): ReleaseRow {
+    const row = this.db.prepare(`${SELECT} WHERE r.id = ?`).get(id) as ReleaseRow | undefined
+    if (!row) throw new Error('release not found')
+    return row
+  }
+}
+
+function summary(r: ReleaseRow): ReleaseSummary {
+  return {
+    id: r.id,
+    environmentId: r.environment_id,
+    environmentName: r.environment_name,
+    kind: r.kind,
+    status: r.status,
+    version: r.version,
+    previousVersion: r.previous_version,
+    redeploy: r.redeploy === 1,
+    rollbackOf: r.rollback_of,
+    triggeredBy: r.triggered_by,
+    createdAt: r.created_at,
+    startedAt: r.started_at,
+    finishedAt: r.finished_at,
+    deploymentCount: r.deployment_count,
+    hostCount: r.host_count,
+    error: r.error,
+  }
+}
+
+function runMeta(r: RunRow): DeploymentRunMeta {
+  return {
+    id: r.id,
+    releaseId: r.release_id,
+    deploymentId: r.deployment_id,
+    deploymentName: r.deployment_name,
+    hostId: r.host_id,
+    hostLabel: r.host_label,
+    position: r.position,
+    branch: r.branch,
+    previousCommit: r.previous_commit,
+    deployedCommit: r.deployed_commit,
+    commits: JSON.parse(r.commits) as CommitInfo[],
+    status: r.status,
+    rolledBack: r.rolled_back === 1,
+    backupFile: r.backup_file,
+    startedAt: r.started_at,
+    finishedAt: r.finished_at,
+    steps: JSON.parse(r.steps) as DeploymentRunMeta['steps'],
+  }
+}

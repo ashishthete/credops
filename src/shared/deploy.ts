@@ -23,6 +23,8 @@ export const BACKUP_DIR = REPO_PATH
 export const GIT_REF = /^(?!.*\.\.)(?!.*\/\/)(?!\/)(?!.*\/$)(?!.*\.lock$)(?!-)[A-Za-z0-9._/-]{1,200}$/
 export const COMPOSE_FILE = /^(?!\/)(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,200}$/
 export const VERSION = /^v\d+\.\d+\.\d+$/
+export const COMPOSE_PROJECT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/
+export const MAX_URL = 2048
 export const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
 
 /** Errors cross IPC as messages only, so the renderer matches on this text. */
@@ -120,7 +122,8 @@ export interface EnvDeploySettings {
   autoRollback: boolean
   currentVersion: string | null
 }
-export type EnvDeploySettingsPatch = Partial<Pick<EnvDeploySettings, 'versioned' | 'autoRollback'>>
+/** `currentVersion` is a manual correction (null clears it); it must match VERSION. */
+export type EnvDeploySettingsPatch = Partial<Pick<EnvDeploySettings, 'versioned' | 'autoRollback' | 'currentVersion'>>
 
 // ---- Versions ----
 export type VersionBump = 'major' | 'minor' | 'patch' | 'none'

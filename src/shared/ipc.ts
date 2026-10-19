@@ -26,6 +26,16 @@ import type {
   SnippetInput,
   SnippetMeta,
 } from './ops'
+import type {
+  AppInput,
+  AppMeta,
+  AppPatch,
+  DeploymentInput,
+  DeploymentMeta,
+  DeploymentPatch,
+  EnvDeploySettings,
+  EnvDeploySettingsPatch,
+} from './deploy'
 import type { TunnelEvent, TunnelInput, TunnelMeta, TunnelPatch, TunnelRuntime, TunnelStats } from './tunnels'
 import type {
   KnownHostMeta,
@@ -154,6 +164,18 @@ export interface IpcContract {
   'tunnel:start': { args: [id: string]; result: TunnelRuntime }
   'tunnel:stop': { args: [id: string]; result: void }
   'tunnel:status': { args: []; result: TunnelRuntime[] }
+  'app:list': { args: [environmentId?: string]; result: AppMeta[] }
+  'app:create': { args: [input: AppInput]; result: AppMeta }
+  'app:update': { args: [id: string, patch: AppPatch]; result: AppMeta }
+  'app:delete': { args: [id: string]; result: void }
+  'deploy:list': { args: [environmentId?: string]; result: DeploymentMeta[] }
+  'deploy:create': { args: [input: DeploymentInput]; result: DeploymentMeta }
+  // The environment and host are fixed at creation: a patch that names either is rejected.
+  'deploy:update': { args: [id: string, patch: DeploymentPatch]; result: DeploymentMeta }
+  'deploy:delete': { args: [id: string]; result: void }
+  'deploy:reorder': { args: [environmentId: string, ids: string[]]; result: void }
+  'deploy:settings': { args: [environmentId: string]; result: EnvDeploySettings }
+  'deploy:updateSettings': { args: [environmentId: string, patch: EnvDeploySettingsPatch]; result: EnvDeploySettings }
   'snippets:list': { args: []; result: SnippetMeta[] }
   'snippets:create': { args: [input: SnippetInput]; result: SnippetMeta }
   'snippets:update': { args: [id: string, input: SnippetInput]; result: SnippetMeta }
@@ -254,6 +276,17 @@ export const CHANNELS = [
   'tunnel:start',
   'tunnel:stop',
   'tunnel:status',
+  'app:list',
+  'app:create',
+  'app:update',
+  'app:delete',
+  'deploy:list',
+  'deploy:create',
+  'deploy:update',
+  'deploy:delete',
+  'deploy:reorder',
+  'deploy:settings',
+  'deploy:updateSettings',
   'snippets:list',
   'snippets:create',
   'snippets:update',
@@ -293,6 +326,8 @@ export interface EventContract {
   // Output chunks are run output: never logged, audited or toasted.
   'run:event': RunEvent
   'containers:logs': ContainerLogEvent
+  // Pushed after a committed deploy-config change; the payload says which environment to refetch.
+  'deploy:changed': { environmentId: string }
 }
 export type EventName = keyof EventContract
 export const EVENTS = [
@@ -306,6 +341,7 @@ export const EVENTS = [
   'tunnel:event',
   'run:event',
   'containers:logs',
+  'deploy:changed',
 ] as const satisfies readonly EventName[]
 type MissingEvents = Exclude<EventName, (typeof EVENTS)[number]>
 export const eventsAreComplete: [MissingEvents] extends [never] ? true : never = true

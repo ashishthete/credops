@@ -18,6 +18,9 @@ import { openDatabase, type Db } from './db/connection'
 import { createAppHandlers } from './ipc/handlers/app'
 import { createAuditHandlers } from './ipc/handlers/audit'
 import { createIdentityHandlers } from './ipc/handlers/identities'
+import { createDeployHandlers } from './ipc/handlers/deploy'
+import { DeployStore, dbSecretRefs } from './deploy/deploy-store'
+import { ReleaseStore } from './deploy/release-store'
 import { createTunnelHandlers } from './ipc/handlers/tunnels'
 import { createOpsHandlers } from './ipc/handlers/ops'
 import { listen, realExecFile, whoHolds } from './tunnels/bind'
@@ -162,6 +165,10 @@ if (!app.requestSingleInstanceLock()) {
       products = new ProductStore(db, service, log)
       const tunnels = new TunnelStore({ db, audit: log, vault: service })
       const snippets = new SnippetStore({ db, audit: log, vault: service })
+      const deploys = new DeployStore({ db, audit: log, vault: service, secrets: dbSecretRefs(db) })
+      deploys.onChanged = (environmentId) => pushEvent(mainWindow, 'deploy:changed', { environmentId })
+      // A run left running by a quit can never finish; mark it failed before anything reads it.
+      new ReleaseStore({ db }).failInterrupted()
       const importer = new SshImporter({
         db,
         vault: service,
@@ -323,6 +330,7 @@ if (!app.requestSingleInstanceLock()) {
           }),
           ...createSshImportHandlers(importer),
           ...createTunnelHandlers({ store: tunnels, manager: runner }),
+          ...createDeployHandlers({ deploys }),
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
           ...createOpsHandlers({ snippets, runs, containers }),
         },

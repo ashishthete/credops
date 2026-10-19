@@ -9,6 +9,8 @@ import { createAuditHandlers } from '../../src/main/ipc/handlers/audit'
 import { isTrustedSender, registerHandlers } from '../../src/main/ipc/register'
 import { VALIDATORS } from '../../src/main/ipc/validators'
 import { CHANNELS, EVENTS } from '../../src/shared/ipc'
+import { createDeployHandlers } from '../../src/main/ipc/handlers/deploy'
+import type { DeployStore } from '../../src/main/deploy/deploy-store'
 import { createOpsHandlers } from '../../src/main/ipc/handlers/ops'
 import type { ContainerService } from '../../src/main/ops/containers'
 import type { RunManager } from '../../src/main/ops/run-manager'
@@ -109,6 +111,33 @@ describe('ops contract', () => {
   it('wires every ops channel', () => {
     const handlers = createOpsHandlers({ snippets: {} as SnippetStore, runs: {} as RunManager, containers: {} as ContainerService })
     expect(Object.keys(handlers).sort()).toEqual([...OPS_CHANNELS].sort())
+  })
+})
+
+describe('deploy contract', () => {
+  const DEPLOY_CHANNELS = [
+    'app:list',
+    'app:create',
+    'app:update',
+    'app:delete',
+    'deploy:list',
+    'deploy:create',
+    'deploy:update',
+    'deploy:delete',
+    'deploy:reorder',
+    'deploy:settings',
+    'deploy:updateSettings',
+  ]
+
+  it('lists every deploy channel and the changed event, all validated', () => {
+    expect(CHANNELS).toEqual(expect.arrayContaining(DEPLOY_CHANNELS))
+    expect(EVENTS).toContain('deploy:changed')
+    for (const c of DEPLOY_CHANNELS) expect(VALIDATORS).toHaveProperty([c])
+  })
+
+  it('wires every deploy channel', () => {
+    const handlers = createDeployHandlers({ deploys: {} as DeployStore })
+    expect(Object.keys(handlers).sort()).toEqual([...DEPLOY_CHANNELS].sort())
   })
 })
 
