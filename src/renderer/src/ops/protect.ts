@@ -15,7 +15,7 @@ export interface RunProtection {
 
 /**
  * Mirrors main's rule so the dialog shows before main is asked; main still checks, and its refusal wins.
- * A protected context is used as is. Otherwise every protected environment a target host belongs to counts:
+ * Every protected environment a target host belongs to counts, and so does a protected context:
  * one governs the run, more than one is refused. The name is needed for many hosts or a destructive command.
  */
 export function runProtection(
@@ -25,13 +25,13 @@ export function runProtection(
   targetCount: number,
   destructive: boolean,
 ): RunProtection {
-  let env = context
-  if (!context?.protected) {
-    const ids = new Set(hostIds)
-    const found = environments.filter((e) => e.protected && e.hosts.some((m) => ids.has(m.hostId)))
-    if (found.length > 1) return { env: null, needed: null, refused: MULTIPLE_PROTECTED }
-    env = found[0] ?? context
+  const ids = new Set(hostIds)
+  const found = environments.filter((e) => e.protected && e.hosts.some((m) => ids.has(m.hostId)))
+  // A protected context does not hide another protected environment of the hosts.
+  if (context?.protected ? found.some((e) => e.id !== context.id) : found.length > 1) {
+    return { env: null, needed: null, refused: MULTIPLE_PROTECTED }
   }
+  const env = context?.protected ? context : (found[0] ?? context)
   const needed = env?.protected && (targetCount > 1 || destructive) ? env.name : null
   return { env, needed, refused: null }
 }

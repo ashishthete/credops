@@ -532,8 +532,12 @@ describe('protect', () => {
     expect(protectionFor(null, [staging, prod, prod])).toBe(prod)
     // an unprotected context does not hide a prod host
     expect(protectionFor(staging, [prod])).toBe(prod)
-    // a protected context is the run's environment
-    expect(protectionFor(prod, [prod, prodEu])).toBe(prod)
+    // a protected context is the run's environment while the hosts are in it alone
+    expect(protectionFor(prod, [prod, prod])).toBe(prod)
+    expect(protectionFor(prod, [])).toBe(prod)
+    // a second protected environment of the hosts is not hidden by the context
+    expect(() => protectionFor(prod, [prod, prodEu])).toThrow(ProtectError)
+    expect(() => protectionFor(prodEu, [prod])).toThrow(ProtectError)
     expect(() => protectionFor(null, [prod, prodEu])).toThrow(
       new ProtectError('multiple-protected', 'These hosts are in more than one protected environment; run one environment at a time'),
     )

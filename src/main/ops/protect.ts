@@ -28,14 +28,18 @@ export function isDestructive(command: string, snippetFlag: boolean): boolean {
 }
 
 /**
- * The environment whose protection governs a run or container action. A protected context is used as is.
- * Otherwise every protected environment any target host belongs to counts (`memberships`, duplicates fine):
- * one is the run's environment, more than one is refused. With none, the context (or null) comes back.
+ * The environment whose protection governs a run or container action. Every protected environment any target host
+ * belongs to counts (`memberships`, duplicates fine), and so does a protected context: one is the run's environment,
+ * more than one is refused. With none, the context (or null) comes back.
  */
 export function protectionFor<E extends ProtectionEnv>(context: E | null, memberships: readonly E[]): E | null {
-  if (context?.protected) return context
   const found = new Map<string, E>()
   for (const env of memberships) if (env.protected) found.set(env.id, env)
+  // A protected context does not hide another protected environment of the hosts: its name alone would not cover them.
+  if (context?.protected) {
+    if ([...found.keys()].some((id) => id !== context.id)) throw new ProtectError('multiple-protected', MULTIPLE_PROTECTED_MESSAGE)
+    return context
+  }
   if (found.size > 1) throw new ProtectError('multiple-protected', MULTIPLE_PROTECTED_MESSAGE)
   const [only] = found.values()
   return only ?? context

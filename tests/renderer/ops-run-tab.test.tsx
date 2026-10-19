@@ -328,6 +328,9 @@ describe('run tab', () => {
     expect(runProtection(null, envs, ['h-stg-1'], 3, true)).toEqual({ env: null, needed: null, refused: null })
     expect(runProtection(null, envs, ['h-db-1'], 1, false)).toEqual({ env: prod, needed: null, refused: null })
     expect(runProtection(null, envs, ['h-db-1', 'h-ops-1'], 2, false).refused).toBe(MULTIPLE_PROTECTED_MESSAGE)
+    // a protected context does not hide a second protected environment of the hosts
+    expect(runProtection(prod, envs, ['h-db-1', 'h-ops-1'], 2, false).refused).toBe(MULTIPLE_PROTECTED_MESSAGE)
+    expect(runProtection(prod, envs, ['h-db-1', 'h-db-2'], 2, false)).toEqual({ env: prod, needed: 'prod', refused: null })
   })
 
   it('a saved request is checked against the inventory as it is now', () => {
