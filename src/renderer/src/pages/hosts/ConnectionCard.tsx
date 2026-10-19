@@ -9,13 +9,15 @@ import { api } from '../../lib/api'
 import { errorText } from '../../ui/common'
 import { fast, spring, useMotionSafe } from '../../ui/motion'
 import { Skeleton } from '../../ui/Skeleton'
+import { LoginDialog } from './LoginDialog'
 
 const CONFLICT_NOUN: Record<InheritConflict['field'], string> = { identity: 'identity', port: 'port', jumpHost: 'jump host' }
+const YOUR_KEYS = 'Your SSH keys (agent, then ~/.ssh keys)'
 const AUTH_LABEL: Record<IdentityRef['auth'], string> = {
-  agent: 'ssh-agent',
+  agent: YOUR_KEYS,
   key: 'SSH key',
   password: 'Password',
-  default: 'ssh-agent, then default key',
+  default: YOUR_KEYS,
 }
 
 /** "jump host loop: web-1 → a → b → a": b's jump host closes the loop, so b is the hop to change. */
@@ -113,6 +115,8 @@ export function ConnectionCard({ hostId, environmentId, onContextChange }: Conne
     <SourceChip source={source} label={sourceLabel(source, sourceEnv?.name)} color={source === 'environment' ? sourceEnv?.color : undefined} />
   )
   const route = resolved ? [...resolved.chain.map((h) => h.label), self?.label ?? resolved.address] : []
+  const [changing, setChanging] = useState(false)
+  const fromSshConfig = resolved?.identity.source === 'global' && resolved.identity.userSource === 'ssh-config'
 
   return (
     <section aria-label="Connection" aria-busy={state.kind === 'loading' || stale || undefined} className="overflow-hidden rounded-xl border border-line bg-surface/60">
@@ -141,7 +145,24 @@ export function ConnectionCard({ hostId, environmentId, onContextChange }: Conne
         </div>
       ) : (
         <dl className={`divide-y divide-line/60 transition-opacity duration-150 ${stale ? 'opacity-55' : ''}`}>
-          <Row icon={UserRound} term="User" loading={!resolved} chip={resolved && chip(resolved.identity.source)}>
+          <Row
+            icon={UserRound}
+            term="User"
+            loading={!resolved}
+            chip={resolved && (fromSshConfig ? <SourceChip source="global" label="From ~/.ssh/config" /> : chip(resolved.identity.source))}
+            action={
+              resolved &&
+              self && (
+                <button
+                  type="button"
+                  onClick={() => setChanging(true)}
+                  className="rounded-md px-1.5 text-[12px] font-medium text-accent transition-colors hover:bg-accent/10"
+                >
+                  Change
+                </button>
+              )
+            }
+          >
             {resolved && (
               <Value id={`u:${resolved.identity.username}:${resolved.identity.source}`}>
                 <span className="font-mono text-fg">{resolved.identity.username}</span>
@@ -215,6 +236,7 @@ export function ConnectionCard({ hostId, environmentId, onContextChange }: Conne
           </motion.p>
         ))}
       </AnimatePresence>
+      {self && resolved && <LoginDialog open={changing} host={self} current={resolved.identity} onClose={() => setChanging(false)} />}
     </section>
   )
 }
@@ -242,7 +264,22 @@ function Segment({ checked, onSelect, label, color }: { checked: boolean; onSele
   )
 }
 
-function Row({ icon: Icon, term, loading, chip, children }: { icon: LucideIcon; term: string; loading: boolean; chip: ReactNode; children: ReactNode }) {
+function Row({
+  icon: Icon,
+  term,
+  loading,
+  chip,
+  action,
+  children,
+}: {
+  icon: LucideIcon
+  term: string
+  loading: boolean
+  chip: ReactNode
+  /** A small action after the chip, e.g. "Change". */
+  action?: ReactNode
+  children: ReactNode
+}) {
   return (
     <div role="group" aria-label={term} className="grid grid-cols-[104px_1fr_auto] items-center gap-3 px-4 py-2.5">
       <dt className="flex items-center gap-1.5 text-[12px] text-muted">
@@ -258,10 +295,11 @@ function Row({ icon: Icon, term, loading, chip, children }: { icon: LucideIcon; 
           </AnimatePresence>
         )}
       </dd>
-      <dd className="flex justify-end">
+      <dd className="flex items-center justify-end gap-2">
         <AnimatePresence mode="popLayout" initial={false}>
           {chip}
         </AnimatePresence>
+        {action}
       </dd>
     </div>
   )

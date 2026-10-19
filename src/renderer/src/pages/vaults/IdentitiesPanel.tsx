@@ -84,7 +84,7 @@ interface IdentityRowProps {
 function IdentityRow({ identity: idn, sshKey, index, stagger, onEdit, onDelete }: IdentityRowProps) {
   const how =
     idn.auth === 'agent'
-      ? { icon: Fingerprint, text: 'SSH agent' }
+      ? { icon: Fingerprint, text: 'Your SSH keys' }
       : idn.auth === 'key'
         ? { icon: KeyRound, text: sshKey?.label ?? 'Missing key' }
         : { icon: RectangleEllipsis, text: idn.hasPassword ? 'Password' : 'No password stored' }

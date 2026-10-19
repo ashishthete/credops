@@ -18,7 +18,7 @@ import { toast } from '../../ui/Toaster'
 import { attempt } from '../../ui/common'
 
 const AUTH_LABEL: Record<IdentityAuth, string> = {
-  agent: 'SSH agent',
+  agent: 'Your SSH keys (agent, then ~/.ssh keys)',
   key: 'SSH key from this vault',
   password: 'Password',
 }

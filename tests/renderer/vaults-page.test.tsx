@@ -376,6 +376,10 @@ describe('vaults page', () => {
     const dialog = await screen.findByRole('dialog', { name: 'New identity' })
     await user.type(within(dialog).getByLabelText('Label'), 'ops')
     await user.type(within(dialog).getByLabelText('Username'), 'ubuntu')
+    // New identities default to the OpenSSH-like chain, under its user-facing name.
+    const method = within(dialog).getByLabelText('Authentication')
+    expect(method).toHaveValue('agent')
+    expect(within(method).getByRole('option', { name: 'Your SSH keys (agent, then ~/.ssh keys)' })).toBeInTheDocument()
     await user.selectOptions(within(dialog).getByLabelText('Authentication'), 'key')
     const save = within(dialog).getByRole('button', { name: 'Save identity' })
     expect(save).toBeDisabled()

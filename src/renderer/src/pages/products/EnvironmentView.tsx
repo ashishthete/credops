@@ -92,7 +92,7 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
           <Default
             icon={KeyRound}
             term="Identity"
-            value={identity ? `${identity.label} (${identity.username})` : 'ssh-agent, then default key'}
+            value={identity ? `${identity.label} (${identity.username})` : 'Your SSH keys (agent, then ~/.ssh keys)'}
             source={env.defaultIdentityId ? inherited : appDefault}
           />
           <Default

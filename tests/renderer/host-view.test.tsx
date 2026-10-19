@@ -10,7 +10,7 @@ import { resetTunnels, tunnelStore } from '../../src/renderer/src/tunnels/store'
 import { Toaster } from '../../src/renderer/src/ui/Toaster'
 import { vaultStatusStore } from '../../src/renderer/src/vault/status'
 import type { HostMeta, ResolvedHost } from '../../src/shared/inventory'
-import { DEFAULT_VAULT_ID, type IdentityMeta, type VaultMeta } from '../../src/shared/vault'
+import { DEFAULT_VAULT_ID, type IdentityMeta, type SshKeyMeta, type VaultMeta } from '../../src/shared/vault'
 import { defaultVault, environment, host, mockBridge, tunnelMeta, tunnelRuntime, vaultStatus } from './helpers'
 
 // framer-motion caches matchMedia, so reduced motion is driven through useMotionSafe (F18).
@@ -457,6 +457,171 @@ describe('HostView', () => {
     await user.clear(port)
     await user.click(within(dialog).getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('host:update', 'web1', { port: null }))
+  })
+})
+
+describe('Change login', () => {
+  const sshKey = (over: Partial<SshKeyMeta> & { id: string; label: string; vaultId: string }): SshKeyMeta => ({
+    keyType: 'ssh-ed25519',
+    publicKey: 'ssh-ed25519 AAAA',
+    fingerprint: 'SHA256:abc',
+    source: 'generated',
+    filePath: null,
+    hasPassphrase: false,
+    createdAt: TS,
+    updatedAt: TS,
+    ...over,
+  })
+
+  /** setup() plus identity and key IPC; created identities land in the data so a reload sees them. */
+  function setupLogin(data: InventoryData = world(), keys: SshKeyMeta[] = [], resolved: ResolvedHost = outside) {
+    const invoke = setup(data, async () => resolved)
+    const base = invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      switch (channel) {
+        case 'key:list':
+          return keys
+        case 'identity:list':
+          return data.identities
+        case 'identity:create': {
+          const input = args[0] as IdentityMeta & { password?: string }
+          const row = identity({ id: 'id-new', label: input.label, vaultId: input.vaultId, username: input.username, auth: input.auth, sshKeyId: input.sshKeyId ?? null, hasPassword: !!input.password })
+          data.identities = [...data.identities, row]
+          return row
+        }
+        case 'key:scanLocal':
+          return [{ path: '/home/tester/.ssh/id_work', keyType: 'ssh-ed25519', fingerprint: 'SHA256:work', encrypted: false, alreadyLinked: false }]
+        case 'key:link': {
+          const k = sshKey({ id: 'k-linked', label: (args[0] as { label: string }).label, vaultId: (args[0] as { vaultId: string }).vaultId, source: 'file', filePath: '/home/tester/.ssh/id_work' })
+          keys = [...keys, k]
+          return k
+        }
+      }
+      return base(channel, ...args)
+    })
+    return invoke
+  }
+
+  const openChange = async (user: ReturnType<typeof userEvent.setup>) => {
+    await within(row('User')).findByText(/tester|ubuntu/)
+    await user.click(within(row('User')).getByRole('button', { name: 'Change' }))
+    return screen.findByRole('dialog', { name: 'Change login' })
+  }
+
+  it('names the default chain plainly and credits ~/.ssh/config for the user', async () => {
+    setup(world(), async () => ({ ...outside, identity: { source: 'global', username: 'ubuntu', auth: 'default', userSource: 'ssh-config' } }))
+    render(<HostView hostId="web1" />)
+    expect(await within(row('User')).findByText('ubuntu')).toBeInTheDocument()
+    expect(within(row('User')).getByText('From ~/.ssh/config')).toBeInTheDocument()
+    expect(within(row('User')).getByText('Your SSH keys (agent, then ~/.ssh keys)')).toBeInTheDocument()
+  })
+
+  it('without ~/.ssh/config the user is the app default', async () => {
+    setup()
+    render(<HostView hostId="web1" />)
+    expect(await within(row('User')).findByText('tester')).toBeInTheDocument()
+    expect(within(row('User')).getByText('App default')).toBeInTheDocument()
+  })
+
+  it('saves your SSH keys as a new identity in the Default vault and sets it on the host', async () => {
+    const user = userEvent.setup()
+    const invoke = setupLogin()
+    render(<HostView hostId="web1" />)
+    const dialog = await openChange(user)
+    const name = within(dialog).getByLabelText('Username')
+    expect(name).toHaveValue('tester')
+    expect(within(dialog).getByRole('radio', { name: 'Your SSH keys (default)' })).toBeChecked()
+    await user.clear(name)
+    await user.type(name, 'ubuntu')
+    await user.click(within(dialog).getByRole('button', { name: 'Save login' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('identity:create', { vaultId: DEFAULT_VAULT_ID, label: 'ubuntu', username: 'ubuntu', auth: 'agent' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('host:update', 'web1', { identityId: 'id-new' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Change login' })).not.toBeInTheDocument())
+    expect(inventoryStore.get()!.identities.some((i) => i.id === 'id-new')).toBe(true)
+  })
+
+  it("reuses a matching identity in the host's vault", async () => {
+    const user = userEvent.setup()
+    const data = world()
+    const team = vault('team', 'Team')
+    data.vaults = [defaultVault, team]
+    data.hosts = data.hosts.map((h) => (h.id === 'web1' ? { ...h, vaultIds: ['team'] } : h))
+    // Same username and method, but in the Default vault: not the host's vault, so not a match.
+    data.identities = [...data.identities, identity({ id: 'id-elsewhere', label: 'tester', vaultId: DEFAULT_VAULT_ID, username: 'tester' }), identity({ id: 'id-team', label: 'tester', vaultId: 'team', username: 'tester' })]
+    const invoke = setupLogin(data)
+    render(<HostView hostId="web1" />)
+    const dialog = await openChange(user)
+    await user.click(within(dialog).getByRole('button', { name: 'Save login' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('host:update', 'web1', { identityId: 'id-team' }))
+    expect(invoke).not.toHaveBeenCalledWith('identity:create', expect.anything())
+  })
+
+  it('a key in a vault: picks an existing key', async () => {
+    const user = userEvent.setup()
+    const invoke = setupLogin(world(), [sshKey({ id: 'k1', label: 'deploy key', vaultId: DEFAULT_VAULT_ID }), sshKey({ id: 'k2', label: 'other vault', vaultId: 'team' })])
+    render(<HostView hostId="web1" />)
+    const dialog = await openChange(user)
+    await user.click(within(dialog).getByRole('radio', { name: 'A key in a vault' }))
+    const save = within(dialog).getByRole('button', { name: 'Save login' })
+    expect(save).toBeDisabled()
+    const keySelect = await within(dialog).findByLabelText('SSH key')
+    await waitFor(() => expect(within(keySelect).getAllByRole('option').map((o) => o.textContent)).toEqual(['Pick a key…', 'deploy key · ssh-ed25519']))
+    await user.selectOptions(keySelect, 'k1')
+    await user.click(save)
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('identity:create', { vaultId: DEFAULT_VAULT_ID, label: 'tester · deploy key', username: 'tester', auth: 'key', sshKeyId: 'k1' }),
+    )
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('host:update', 'web1', { identityId: 'id-new' }))
+  })
+
+  it('a key in a vault: Link key file… comes back with the new key picked', async () => {
+    const user = userEvent.setup()
+    setupLogin()
+    render(<HostView hostId="web1" />)
+    const dialog = await openChange(user)
+    await user.click(within(dialog).getByRole('radio', { name: 'A key in a vault' }))
+    expect(within(dialog).getByRole('button', { name: 'Import key file…' })).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Link key file…' }))
+    const link = await screen.findByRole('dialog', { name: 'Link from ~/.ssh' })
+    await user.click(await within(link).findByRole('radio', { name: /id_work/ }))
+    await user.click(within(link).getByRole('button', { name: 'Link key' }))
+    const back = await screen.findByRole('dialog', { name: 'Change login' })
+    await waitFor(() => expect(within(back).getByLabelText('SSH key')).toHaveValue('k-linked'))
+    expect(within(back).getByLabelText('Username')).toHaveValue('tester')
+  })
+
+  it('password: creates a password identity and never shows the password again', async () => {
+    const user = userEvent.setup()
+    const invoke = setupLogin()
+    render(<HostView hostId="web1" />)
+    let dialog = await openChange(user)
+    await user.click(within(dialog).getByRole('radio', { name: 'Password' }))
+    const save = within(dialog).getByRole('button', { name: 'Save login' })
+    expect(save).toBeDisabled()
+    const field = within(dialog).getByLabelText('Password', { selector: 'input' })
+    expect(field).toHaveAttribute('type', 'password')
+    await user.type(field, 'hunter2')
+    await user.click(save)
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('identity:create', { vaultId: DEFAULT_VAULT_ID, label: 'tester@web-1', username: 'tester', auth: 'password', password: 'hunter2' }),
+    )
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('host:update', 'web1', { identityId: 'id-new' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Change login' })).not.toBeInTheDocument())
+    expect(document.body.textContent).not.toContain('hunter2')
+    dialog = await openChange(user)
+    await user.click(within(dialog).getByRole('radio', { name: 'Password' }))
+    expect(within(dialog).getByLabelText('Password', { selector: 'input' })).toHaveValue('')
+  })
+
+  it('prefills the method from an identity the host already uses', async () => {
+    const user = userEvent.setup()
+    setupLogin(world(), [], inProd)
+    render(<HostView hostId="web1" environmentId="prod" />)
+    await within(card()).findByText('2222')
+    await user.click(within(row('User')).getByRole('button', { name: 'Change' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Change login' })
+    expect(within(dialog).getByLabelText('Username')).toHaveValue('deploy')
+    expect(within(dialog).getByRole('radio', { name: 'A key in a vault' })).toBeChecked()
   })
 })
 

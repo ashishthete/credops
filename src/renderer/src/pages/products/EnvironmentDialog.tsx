@@ -133,7 +133,7 @@ export function EnvironmentDialog({ open, environment, productIds, data, corrupt
         </div>
         <div className="grid grid-cols-[1fr_112px] gap-3">
           <SelectField label="Default identity" value={identityId} onChange={(e) => setIdentityId(e.target.value)}>
-            <option value="">App default (ssh-agent)</option>
+            <option value="">App default (your SSH keys)</option>
             {groups.map((g) => (
               <optgroup key={g.vault.id} label={`${g.group}: ${g.vault.name}`}>
                 {g.identities.map((i) => (
