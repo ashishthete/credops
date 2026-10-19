@@ -92,3 +92,9 @@ export interface HubAuditFilter {
   beforeId?: number
   limit?: number
 }
+
+export interface HubIdentity {
+  oid: string
+  upn: string
+  name: string
+}
