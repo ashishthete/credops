@@ -146,6 +146,7 @@ Roadmap and contracts: `docs/superpowers/plans/2026-10-16-roadmap.md`. Conventio
   ALTER TABLE environments ADD COLUMN versioned INTEGER NOT NULL DEFAULT 0 CHECK (versioned IN (0,1));
   ALTER TABLE environments ADD COLUMN auto_rollback INTEGER NOT NULL DEFAULT 1 CHECK (auto_rollback IN (0,1));
   ALTER TABLE environments ADD COLUMN current_version TEXT;
+  ALTER TABLE environments ADD COLUMN domain TEXT;
   CREATE TABLE apps(id TEXT PRIMARY KEY,
     environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
     host_id TEXT NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
@@ -215,6 +216,10 @@ Roadmap and contracts: `docs/superpowers/plans/2026-10-16-roadmap.md`. Conventio
     `environment_integrations`**, which the Phase 9 plan already assumes.
   - `current_version` matches `^v\d+\.\d+\.\d+$` or is NULL. The store
     checks it, since an added column can't carry a pattern CHECK.
+  - `domain` is the environment's optional **Domain or URL** (user
+    decision, 2026-10-19; Task 10). It is stored as entered, and is NULL
+    when unset. It has no CHECK: `EnvironmentStore` validates it with the
+    shared `parseEnvDomain`.
 - **Ids:**
   - `releases.id`, `deployment_runs.id` and `run_events.id` are **UUIDv7**,
     from `src/main/deploy/uuidv7.ts`. That is RFC 9562: a 48-bit ms
@@ -586,6 +591,18 @@ Roadmap and contracts: `docs/superpowers/plans/2026-10-16-roadmap.md`. Conventio
 6. **Ansible missing** gives one clear, actionable error before anything
    runs, and leaves no release row in `running`. *Pinned:* the Task 4 test
    `missing ansible-playbook explains how to install`.
+7. **The environment domain never mis-expands or opens something unsafe.**
+   - The domain is lowercased and loses its trailing dot before it is used
+     as a suffix.
+   - IPv4, IPv6 (`::1`, `fe80::1%en0`), all-digit addresses and `localhost`
+     are never treated as bare names.
+   - An IP-literal domain never becomes a suffix.
+   - `env:openDomain` takes only an id and re-validates the stored value
+     before `shell.openExternal`.
+   - *Pinned:* the Task 10 tests
+     `dotted, IP and localhost addresses are untouched`,
+     `trailing dot and uppercase in the domain` and
+     `env:openDomain never opens a value the renderer passed`.
 
 ## File map
 
@@ -616,6 +633,13 @@ tests/main/deploy-helpers.ts              fixtures, FakeAnsible, fake agent/tap 
 tests/main/fixtures/ansible/*.jsonl       recorded callback output (T4, T6)
 src/renderer/src/deploy/store.ts          apps/deployments/settings store (T9)
 src/renderer/src/pages/deployments/*      DeploymentsPage, DeploymentDialog, EnvTemplateEditor, EnvDeploySettings (T9)
+src/shared/inventory.ts                   environment domain: parseEnvDomain, domainHost, domainOpenUrl, isBareName (T10)
+src/main/inventory/rows.ts, environment-store.ts   checkDomain, domain column, get(id) (T10)
+src/main/inventory/resolve.ts             bare-name expansion in the environment's context (T10)
+src/main/ipc/handlers/inventory.ts        env:openDomain via injected openExternal (T10)
+src/renderer/src/pages/products/EnvironmentDialog.tsx, EnvironmentView.tsx   Domain or URL field, Open (T10)
+src/renderer/src/pages/hosts/ConnectionCard.tsx   Address row with its source (T10)
+tests/main/env-domain.test.ts             shared domain rules (T10)
 ```
 
 ---
@@ -767,6 +791,12 @@ Also in this task:
 - an `UPDATE run_events` aborts with `run_events is append-only`;
 - the existing environments rows get `versioned 0`, `auto_rollback 1` and
   `current_version NULL`.
+- **Amendment (Task 10, environment Domain or URL):** `environments` has a
+  nullable `domain TEXT` column (`PRAGMA table_info(environments)` gives
+  `type 'TEXT'`, `notnull 0`, `dflt_value null`), and existing rows get
+  `domain NULL`. Migration 7 is the only migration that adds it; no earlier
+  migration is edited. Task 1 adds only the column. Task 10 adds the types,
+  the store, the IPC and the UI.
 
 `inventory-schema.test.ts`, test `migrate applies a missing lower version after a higher one (gap tolerance)`:
 - use a synthetic list `[1, 2, 4]` on a fresh DB, then `[1, 2, 3, 4]`;
@@ -1769,6 +1799,427 @@ Expected: FAIL.
 
 ---
 
+### Task 10: Environment Domain or URL
+
+This task implements the user decision of 2026-10-19
+(`.superpowers/sdd/cross-phase-notes.md`, "user decision: environment Domain
+field"):
+- An environment gets an optional **Domain or URL**: a hostname, or an
+  http(s) URL. It is stored as entered.
+- EnvironmentView shows it, with an **Open** button.
+- In the environment's context, a host whose address is a bare name connects
+  as `<address>.<host of the domain/URL>`.
+
+The column comes from migration 7 (Task 1's amendment). This task adds no
+migration.
+
+**Files:**
+- Modify:
+  - `src/shared/inventory.ts`:
+    - `MAX_DOMAIN`, `EnvDomain`, `parseEnvDomain`, `domainHost`,
+      `domainOpenUrl`, `isBareName` and `AddressSource`;
+    - `domain` on `EnvironmentInput` and `EnvironmentMeta`;
+    - `addressSource` on `ResolvedHost` and `ResolvedHop`;
+  - `src/shared/ipc.ts`: the `env:openDomain` channel, in `IpcContract`
+    and `CHANNELS`;
+  - `src/main/inventory/rows.ts`: `checkDomain`, and `environmentMeta`
+    reads `domain`;
+  - `src/main/inventory/environment-store.ts`: `create` and `update`
+    write `domain`, and a new `get(id)` is added;
+  - `src/main/inventory/resolve.ts`: bare-name expansion;
+  - `src/main/ipc/validators.ts`:
+    - `domain` in `asEnvironmentInput` and `asEnvironmentPatch`;
+    - `'env:openDomain': args(v.uuid())`;
+  - `src/main/ipc/handlers/inventory.ts`: the `env:openDomain` handler and
+    an `openExternal` dependency;
+  - `src/main/index.ts`: wires `openExternal: (url) => shell.openExternal(url)`;
+  - `src/renderer/src/inventory/choices.ts`: `addressSourceLabel`;
+  - `src/renderer/src/inventory/store.ts`: `domain` in the environment save,
+    and `openEnvironmentDomain(id)`;
+  - `src/renderer/src/pages/products/EnvironmentDialog.tsx`: the field;
+  - `src/renderer/src/pages/products/EnvironmentView.tsx`: the `Default`
+    cell and the Open button;
+  - `src/renderer/src/pages/hosts/ConnectionCard.tsx`: an `Address` row;
+  - `tests/main/inventory-helpers.ts` and `tests/renderer/helpers.tsx`:
+    `domain: null` in the environment fixtures.
+- Test:
+  - `tests/main/env-domain.test.ts` (new): the shared rules;
+  - `tests/main/environments.test.ts`: the store and IPC;
+  - `tests/main/resolve.test.ts`: bare-name resolution;
+  - `tests/renderer/inventory-tree.test.ts`: `addressSourceLabel`;
+  - `tests/renderer/products-page.test.tsx`: the dialog and EnvironmentView;
+  - `tests/renderer/host-view.test.tsx`: the connection card.
+
+**Interfaces.**
+
+Consumes:
+- `environments.domain`, from migration 7 (Task 1);
+- `resolveHost`, `environmentMeta` and `EnvironmentStore` (Phase 3);
+- `TextField`'s `hint` and `error` (Phase 1);
+- `attempt` (Phase 2).
+
+Produces, in `src/shared/inventory.ts`. It stays free of Node and Electron
+imports, and uses the global `URL`, which exists in both main and the
+renderer.
+- `MAX_DOMAIN = 253`.
+- `interface EnvDomain { kind: 'host' | 'url'; host: string /* the hostname as written; brackets kept for IPv6 */ }`.
+- `parseEnvDomain(raw: string): { ok: true; value: EnvDomain } | { ok: false; error: string }`.
+  The input is trimmed first. The rules apply in this order, and the first
+  failing rule gives its message. A message never contains the input.
+  1. Any whitespace, or any character matched by `UNSAFE_SSH_CHAR`, fails
+     with the generic message. This runs before `new URL`, because the URL
+     parser silently strips tabs and newlines.
+  2. If the value contains `://`, it is a URL:
+     - a scheme other than `http` or `https` (case-insensitive) fails with
+       `Use an http:// or https:// URL`;
+     - if `new URL` throws, it fails with the generic message;
+     - a non-empty `username` or `password` fails with
+       `Leave the login out of the URL`;
+     - a value longer than `MAX_URL` fails with
+       `A URL is at most 2048 characters`;
+     - a hostname longer than `MAX_DOMAIN` fails with
+       `A domain is at most 253 characters`;
+     - the hostname must be a valid host. That is an IPv4 address, a
+       bracketed IPv6 address, or a hostname by the rule below. Otherwise
+       it fails with the generic message.
+  3. Otherwise it is a hostname:
+     - a value longer than `MAX_DOMAIN` fails with
+       `A domain is at most 253 characters`;
+     - the value must be dot-separated labels of 1–63 characters from
+       `[A-Za-z0-9-]`, with no leading or trailing `-`. A single trailing
+       dot is allowed. Otherwise it fails with the generic message.
+  - The generic message is
+    `Enter a domain like staging.example.com or an http(s) URL`.
+- `domainHost(d: EnvDomain): string | null`. It gives the suffix that
+  bare names take:
+  - the host, lowercased, with one trailing dot removed;
+  - `null` when the host is an IPv4 or IPv6 literal, because an IP can't be
+    a suffix.
+- `domainOpenUrl(d: EnvDomain, raw: string): string`. A host gives
+  `https://<host as written>`. A URL gives `new URL(raw.trim()).href`.
+- `isBareName(address: string): boolean`. It is true when the address:
+  - has no `.`, `:` or `%`;
+  - contains at least one letter;
+  - and isn't `localhost` (case-insensitive).
+
+  So `db`, `db-1` and `db_1` are bare. `db.internal`, `10.0.0.5`, `10`,
+  `::1`, `fe80::1%en0` and `LOCALHOST` are not.
+- `type AddressSource = 'host' | 'domain'`.
+- `EnvironmentInput.domain?: string | null`, which `EnvironmentPatch`
+  inherits, and `EnvironmentMeta.domain: string | null`.
+- `ResolvedHost.addressSource: AddressSource` and
+  `ResolvedHop.addressSource: AddressSource`. `address` is the dialled
+  address, after any expansion.
+
+Produces elsewhere:
+- `IpcContract['env:openDomain']: { args: [id: string]; result: void }`.
+  The renderer passes **only the environment id**. Main reads the stored
+  value, re-validates it with `parseEnvDomain`, and opens `domainOpenUrl`.
+  A renderer-supplied URL never reaches `shell.openExternal`.
+- `rows.ts`: `checkDomain(raw: string | null | undefined): string | null`.
+  `null`, `undefined`, and an empty or whitespace-only string give `null`.
+  A valid value gives the trimmed value. Otherwise it throws
+  `new Error(<the parseEnvDomain message>)`.
+- `createInventoryHandlers` deps gain
+  `openExternal: (url: string) => Promise<void>`.
+- `choices.ts`: `addressSourceLabel(source: AddressSource, envName?: string): string`.
+  `'host'` gives `From this host`, and `'domain'` gives
+  `` `From ${envName ?? 'environment'}'s domain` ``.
+- `inventory/store.ts`: `openEnvironmentDomain(id: string): Promise<void>`,
+  through `attempt`.
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/main/env-domain.test.ts` (new). Use `describe('parseEnvDomain')` and
+`describe('bare names')`.
+- `accepts hostnames and http(s) URLs`. Each of these gives `ok: true`:
+  - `staging.example.com` gives `kind 'host'`;
+  - `Staging.Example.COM.`;
+  - `intranet`;
+  - `https://staging.example.com/app` gives `kind 'url'` and
+    `host 'staging.example.com'`;
+  - `http://staging.example.com:8080`;
+  - `HTTPS://staging.example.com`;
+  - `https://10.0.0.5/`;
+  - `https://[::1]:8443/`;
+  - `  staging.example.com  `, trimmed.
+- `rejects a scheme other than http(s)`. `ftp://files.example.com`,
+  `file:///etc/passwd` and `ssh://staging.example.com` each give
+  `Use an http:// or https:// URL`.
+- `rejects a login in the URL`. `https://user:pass@staging.example.com`,
+  `https://user@staging.example.com` and `http://:pw@staging.example.com`
+  each give `Leave the login out of the URL`.
+- `rejects a length over 253`:
+  - a hostname of exactly 253 characters (labels of 63 characters) is
+    accepted;
+  - at 254 characters it gives `A domain is at most 253 characters`;
+  - so does `https://` followed by the 254-character hostname;
+  - a URL over 2048 characters with a short host gives
+    `A URL is at most 2048 characters`.
+- `rejects anything else with the generic message`. Each of these gives
+  `Enter a domain like staging.example.com or an http(s) URL`:
+  - `staging example.com`, `-x.example.com`, `x-.example.com`;
+  - `staging.example.com/app`, which has a path but no scheme;
+  - `staging.example.com:8443`;
+  - `javascript:alert(1)`;
+  - `https://`;
+  - `https://exa\tmple.com`, `https://exa\nmple.com` and
+    `staging.exa‮mple.com`;
+  - a label of 64 characters;
+  - `a..b`.
+- `messages never echo the input`. For every rejected case above, the error
+  doesn't contain the input, nor `user`, `pass` or `ftp`.
+- `domainHost lowercases, drops one trailing dot, and refuses IP literals`:
+  - `Staging.Example.COM.` gives `staging.example.com`;
+  - the URL `https://Staging.Example.com:8443/app` gives
+    `staging.example.com`;
+  - `https://10.0.0.5/` and `https://[::1]/` give `null`.
+- `domainOpenUrl`:
+  - `staging.example.com` gives `https://staging.example.com`;
+  - `https://staging.example.com/app?x=1` gives
+    `https://staging.example.com/app?x=1`;
+  - `HTTP://Staging.Example.com` gives `http://staging.example.com/`, the
+    parsed `href`.
+- `isBareName`: the true and false lists above.
+
+`tests/main/environments.test.ts`, in `EnvironmentStore and ProductStore`:
+- `domain round-trips as entered and clears`:
+  - create with `domain: 'Staging.Example.com'` and get back exactly
+    `Staging.Example.com`;
+  - `update(id, { domain: 'https://staging.example.com/app' })` stores it
+    as entered;
+  - `update(id, { domain: null })` gives `domain null`. So does
+    `update(id, { domain: '   ' })`;
+  - `update(id, {})` leaves it unchanged;
+  - an environment created without `domain` gets `null`;
+  - the `environment.update` audit row has `details.fields` containing
+    `'domain'`, and its JSON doesn't contain `staging.example.com`.
+- `domain is validated in the store`:
+  - `ftp://x.example.com` throws `Use an http:// or https:// URL`;
+  - `https://u:p@x.example.com` throws `Leave the login out of the URL`;
+  - a 254-character hostname throws `A domain is at most 253 characters`;
+  - none of these writes a row or an audit event.
+
+`tests/main/environments.test.ts`, in `environment and product IPC`:
+- `rejects a bad domain at the boundary`:
+  - `env:create` with `domain: 'ftp://x.example.com'` rejects with
+    `InvalidArgs`. The message names the path `domain` and doesn't contain
+    `ftp`;
+  - `env:update` with `domain: 42` rejects the same way.
+- `env:openDomain opens only a re-validated http(s) URL`. `openExternal` is
+  `vi.fn(async () => {})`, passed to `createInventoryHandlers`. No network
+  is used.
+  - With domain `staging.example.com`, the call gives `openExternal` called
+    once, with `https://staging.example.com`.
+  - With `https://staging.example.com/app`, it is called with
+    `https://staging.example.com/app`.
+  - With no domain, the call rejects with
+    `This environment has no domain or URL`, and `openExternal` isn't
+    called.
+  - Each of `javascript:alert(1)`, `file:///etc/passwd`,
+    `https://u:p@evil.example.com` and `ftp://evil.example.com` is written
+    straight into `environments.domain` with SQL, which bypasses the
+    store. Each rejects with
+    `This environment's domain or URL can't be opened`, and `openExternal`
+    isn't called.
+- `env:openDomain never opens a value the renderer passed`. This goes
+  through `registerHandlers` with the real `VALIDATORS`:
+  - `invoke('env:openDomain', 'https://evil.example.com')` fails
+    validation, because the argument isn't a uuid. `openExternal` isn't
+    called;
+  - `invoke('env:openDomain', id, 'https://evil.example.com')` is
+    truncated to the id. `openExternal` is called with the stored
+    `https://staging.example.com`, and never with `evil`.
+- `env:openDomain works while locked`. It reads one non-secret column, the
+  same as `env:list`.
+
+`tests/main/resolve.test.ts`, in `resolveHost`:
+- `a bare name takes the environment's domain only in its context`. A host
+  with address `db` is a member of env `staging`, whose domain is
+  `staging.example.com`:
+  - in the context, `address` is `db.staging.example.com` and
+    `addressSource` is `'domain'`;
+  - outside any environment, `address` is `db` and `addressSource` is
+    `'host'`;
+  - in the context of another member environment with no domain, it is
+    `db`, `'host'`.
+- `a URL domain contributes its hostname`. The domain
+  `https://Staging.Example.com:8443/app` gives `db.staging.example.com`.
+- `trailing dot and uppercase in the domain`. `Staging.Example.COM.` gives
+  `db.staging.example.com`, with no double dot and no uppercase.
+- `dotted, IP and localhost addresses are untouched`. In a context with a
+  domain, each of `db.internal`, `10.0.0.5`, `::1`, `fe80::1%en0`,
+  `localhost` and `10` resolves to itself, with `addressSource 'host'`.
+- `an IP-literal domain never expands`. The domains `https://10.0.0.5:8080`
+  and `https://[::1]/` leave `db` as `db`.
+- `hops expand only when they take the context`. The target `app` jumps via
+  the bare `bastion`, which is a member, and via the bare `edge`, which
+  isn't:
+  - the member hop's `address` is `bastion.staging.example.com`, with
+    `addressSource 'domain'`;
+  - the non-member hop stays `edge`, `'host'`.
+- `an expansion over 253 characters is refused`. A 63-character bare name
+  plus a 200-character domain throws
+  `<label> with staging's domain is longer than 253 characters`.
+- `a stored domain that no longer validates is ignored`. A domain written
+  as `ftp://x.example.com` through SQL leaves `db` as `db`, `'host'`. It
+  doesn't throw, so connecting still works.
+
+`tests/renderer/inventory-tree.test.ts`, next to the `sourceLabel` cases:
+- `addressSourceLabel`:
+  - `('domain', 'staging')` gives `From staging's domain`;
+  - `('domain')` gives `From environment's domain`;
+  - `('host')` gives `From this host`.
+
+`tests/renderer/products-page.test.tsx`:
+- `environment dialog edits the domain or URL`:
+  - the dialog has a text field labelled `Domain or URL`, with the hint
+    `e.g. staging.example.com` as its description;
+  - typing `https://u:p@x.example.com` replaces the hint with
+    `Leave the login out of the URL`, under the same field. The input has
+    `aria-invalid="true"`, its `aria-describedby` element's text is the
+    error, and the hint text is gone. Save is disabled;
+  - typing `ftp://x.example.com` shows `Use an http:// or https:// URL` in
+    the same place;
+  - the error appears under `Domain or URL` and nowhere else. The `Name`
+    and `Default port` fields have no error;
+  - after `staging.example.com`, Save sends `env:update` with a patch
+    containing `domain: 'staging.example.com'`;
+  - reopening and clearing the field sends `domain: null`;
+  - on a new environment, `env:create` gets `domain` as typed, or `null`
+    when it is empty.
+- `environment view shows the domain with Open`:
+  - with `domain: 'staging.example.com'`, the defaults grid has a cell
+    whose term is `Domain or URL` and whose value is `staging.example.com`,
+    in mono;
+  - its button, with the text `Open` and the accessible name
+    `Open staging.example.com in your browser`, calls
+    `invoke('env:openDomain', <env id>)` with only the id;
+  - with a URL, the value is shown exactly as stored;
+  - with `domain: null`, the value is `None` and there is no Open button;
+  - a rejected open surfaces through `attempt`'s toast. The test asserts
+    the toast text `This environment's domain or URL can't be opened`.
+
+`tests/renderer/host-view.test.tsx`:
+- `connection card shows a domain-resolved address`:
+  - `host:resolve` is mocked to return `address: 'db.staging.example.com'`
+    and `addressSource: 'domain'` in the `staging` context;
+  - the `Address` row shows `db.staging.example.com`, with the chip
+    `From staging's domain`;
+  - after switching to `Outside any environment`, it shows `db` with
+    `From this host`.
+
+- [ ] **Step 2: Run them and watch them fail**
+
+Run: `./node_modules/.bin/vitest run tests/main/env-domain.test.ts tests/main/environments.test.ts tests/main/resolve.test.ts tests/renderer/inventory-tree.test.ts tests/renderer/products-page.test.tsx tests/renderer/host-view.test.tsx`
+Expected: FAIL. `parseEnvDomain` and `env:openDomain` are missing, the
+resolution isn't there, and neither is the field.
+
+- [ ] **Step 3: Implement** (signatures only; the bodies follow the rules
+  above).
+  - **`shared/inventory.ts`.** Add the functions listed under Interfaces.
+    `parseEnvDomain` is the only validator. The dialog, the IPC validator,
+    the store, resolve and the open handler all call it, so the rules
+    can't drift.
+  - **`validators.ts`.** Add
+    `const envDomain: Check<string | null>`. It is
+    `v.nullable` over a `Check` that requires a string of at most
+    `MAX_URL` and calls `parseEnvDomain`. On failure it throws
+    `InvalidArgs(\`${path}: must be a domain or http(s) URL\`)`, which
+    names the path and the rule, never the value. Add
+    `domain: v.optional(envDomain)` to `asEnvironmentInput` and
+    `asEnvironmentPatch`.
+  - **`rows.ts`.** Add `checkDomain`. `environmentMeta` maps `r.domain`.
+  - **`environment-store.ts`.**
+    - `create` writes `checkDomain(input.domain)` into the INSERT.
+    - `update` computes
+      `domain = patch.domain === undefined ? before.domain : checkDomain(patch.domain)`,
+      and adds `domain !== before.domain && 'domain'` to `fields`. The
+      audit stays as `{ fields }`, with no value.
+  - **`resolve.ts`.**
+    - `EnvDefaults` gains `domain: string | null`, and the `envDefaults`
+      SELECT reads it.
+    - `inheritConflicts` doesn't compare `domain`. Expansion is
+      context-only, so there is nothing to disagree on outside a context.
+    - Add `function contextAddress(address: string, label: string, env: (EnvDefaults & { name: string }) | null): { address: string; addressSource: AddressSource }`.
+      - It expands only when `env` is set, `isBareName(address)` holds, and
+        `parseEnvDomain(env.domain)` is ok with a non-null `domainHost`.
+      - An over-long result throws
+        `${label} with ${env.name}'s domain is longer than 253 characters`.
+      - A stored value that fails `parseEnvDomain` is ignored.
+    - `resolveFields` returns `address` and `addressSource`. It takes the
+      hop's context exactly as it takes the other defaults, and both the
+      target and the hops use it.
+    - `connect.ts` already dials `resolved.address` and `hop.address`, so
+      it needs no change. Known-host trust is keyed by the dialled FQDN.
+    - Check that Task 7 builds each `PlanHop.address` from
+      `resolveHost(hostId, release.environmentId)`, not from
+      `hosts.address`. If it doesn't, switch it, and add the case `a bare
+      host deploys to its domain-expanded name` to the Task 7 tests.
+  - **`handlers/inventory.ts`.** Add the channel to `InventoryChannel`.
+    `'env:openDomain': async (id) => {…}`:
+    - it reads `environments.get(id).domain`, using a new
+      `EnvironmentStore.get(id): EnvironmentMeta`. That method returns
+      `environmentMeta(db, id)`, works while locked, and throws
+      `environment not found`;
+    - `null` throws `This environment has no domain or URL`;
+    - a failed `parseEnvDomain` throws
+      `This environment's domain or URL can't be opened`;
+    - the computed URL must match `/^https?:\/\//i`, the same guard as the
+      window-open handler, or it throws the same error;
+    - then it awaits `openExternal(url)`. No audit is written, since this
+      is a read with no side effect on data. It doesn't call
+      `assertUnlocked`.
+  - **`index.ts`.** Pass `openExternal: (url) => shell.openExternal(url)`.
+    No module under test imports `shell`.
+  - **`choices.ts`.** Add `addressSourceLabel`. `sourceLabel` is unchanged.
+  - **`inventory/store.ts`.**
+    - The environment save passes `domain`: trimmed, with `''` becoming
+      `null`.
+    - `openEnvironmentDomain(id)` is
+      `attempt(() => api.invoke('env:openDomain', id))`.
+  - **`EnvironmentDialog.tsx`.**
+    - A `TextField label="Domain or URL"`, with `placeholder` empty,
+      `hint="e.g. staging.example.com"`, `className="font-mono"`,
+      `spellCheck={false}`, `autoCapitalize="off"` and `maxLength={MAX_URL}`.
+      It is placed after the Products group and before the defaults grid.
+    - Its `error` is the `parseEnvDomain` message for a non-empty value,
+      and `valid` also requires that there is no domain error.
+  - **`EnvironmentView.tsx`.**
+    - The `Default` grid becomes `grid-cols-4`, with a fourth cell:
+      `icon={Globe}`, `term="Domain or URL"`, `value={env.domain ?? 'None'}`,
+      `mono` when it is set, and `source` `Used for bare host names` when
+      it is set, or `Not set`.
+    - `Default` gains an optional `action?: ReactNode`. It holds a small
+      ghost `Button` with the text `Open` and the icon `ExternalLink`, and
+      `aria-label={\`Open ${env.domain} in your browser\`}`. Its `onClick`
+      is `() => void openEnvironmentDomain(env.id)`.
+  - **`ConnectionCard.tsx`.**
+    - Add an `Address` row first. It uses the icon `Globe` and
+      `<Value id={\`a:${resolved.address}\`}>`, with a mono value.
+    - Its chip is a `SourceChip` with `source` `'host'` or `'environment'`,
+      for colour, and `label={addressSourceLabel(resolved.addressSource, sourceEnv?.name)}`.
+
+- [ ] **Step 4: Run the full suite and typecheck**
+
+Run: `./node_modules/.bin/vitest run && ./node_modules/.bin/tsc --noEmit -p tsconfig.node.json && ./node_modules/.bin/tsc --noEmit -p tsconfig.web.json`
+Expected: PASS.
+
+After the Phase 6 and 7 rebase, any `EnvironmentMeta` or `ResolvedHost`
+literal in their tests or fixtures also needs `domain: null` or
+`addressSource: 'host'`. `tsc` lists each one.
+
+- [ ] **Step 5: Commit**: `feat(inventory): environment Domain or URL with bare-name resolution`
+
+**Constraints for this task:**
+- No test touches the network.
+- `shell.openExternal` is always a `vi.fn` injected through the handler
+  deps.
+- No DNS lookup is used to decide whether a name is bare. The decision is
+  purely syntactic.
+
+---
+
 ## Self-review notes
 
 - **Spec coverage** (§8.4):
@@ -1790,6 +2241,13 @@ Expected: FAIL.
   - finalize hooks for Phase 9: T7;
   - the §9a agent, ProxyJump, known_hosts, the password rejection, sudo,
     and rollback as the previous commit plus a rebuild: T3, T5.
+- **User decision, environment Domain or URL** (cross-phase notes,
+  2026-10-19):
+  - the column comes from migration 7 (the Task 1 amendment);
+  - the field, validation, Open and bare-name resolution are in T10;
+  - a release always runs in its environment's context, so
+    `PlanHop.address` must come from `resolveHost(hostId, environmentId)`
+    to get the expanded name. T10 Step 3 checks this.
 - **Deliberately out of 8a:**
   - the pipeline animation, the live log UI, the wizard, history and map
     attachments are in 8b;
@@ -1800,7 +2258,9 @@ Expected: FAIL.
   - `RunEventBody` and `RunEvent` (T1, used by T2, T4, T6 and T7);
   - `PreflightReport` (T1, used by T4 and T7);
   - `StepKind` (T1, used by T3 and T4);
-  - `RunSecrets` and `RunOutcome` (T6, used by T7).
+  - `RunSecrets` and `RunOutcome` (T6, used by T7);
+  - `EnvDomain`, `parseEnvDomain` and `AddressSource` (T10, used by the
+    main and renderer code in T10 only).
 
   The names were checked for consistency across tasks.
 - **No secret value** appears anywhere in this plan. The fixture strings
