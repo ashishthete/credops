@@ -5,6 +5,7 @@ import { HOST_ROLES, type HostRole, type SshImportCandidate, type SshImportPrevi
 import { DEFAULT_VAULT_ID } from '../../../../shared/vault'
 import { inv, useInventory } from '../../inventory/store'
 import { api } from '../../lib/api'
+import { loadTunnels } from '../../tunnels/store'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
 import { errorText, plural } from '../../ui/common'
@@ -111,6 +112,7 @@ export function ImportDialog({ open, onClose, onImported }: ImportDialogProps) {
       ...(environmentId ? { environmentId, role } : {}),
       ...(forwardCount > 0 && !withForwards ? { forwards: false } : {}),
     })
+    if (res && res.tunnelsCreated > 0) void loadTunnels()
     if (!mounted.current) {
       if (res) toast({ title: `Imported ${plural(res.created.length, 'host')}${res.tunnelsCreated > 0 ? `, ${plural(res.tunnelsCreated, 'tunnel')}` : ''}`, tone: 'success' })
       return

@@ -2,6 +2,7 @@ import { vi } from 'vitest'
 import type { AuditEvent } from '../../src/shared/audit'
 import type { EnvironmentMeta, HostMeta, ProductMeta } from '../../src/shared/inventory'
 import type { AppInfo } from '../../src/shared/ipc'
+import type { TunnelMeta, TunnelRuntime } from '../../src/shared/tunnels'
 import { DEFAULT_VAULT_ID, type VaultMeta, type VaultStatus } from '../../src/shared/vault'
 
 export const appInfo: AppInfo = {
@@ -111,6 +112,7 @@ export function mockBridge(results: Record<string, unknown> = {}) {
     if (channel === 'vault:list') return [defaultVault]
     if (channel === 'secret:list' || channel === 'key:list' || channel === 'identity:list') return []
     if (channel === 'product:list' || channel === 'env:list' || channel === 'host:list') return []
+    if (channel === 'tunnel:list' || channel === 'tunnel:status') return []
     return null
   })
   bridgeListeners.clear()
@@ -131,4 +133,39 @@ const bridgeListeners = new Map<string, Set<(payload: unknown) => void>>()
 /** Delivers a main-process push event to whatever subscribed through the mock bridge. */
 export function emitBridgeEvent(event: string, payload: unknown) {
   bridgeListeners.get(event)?.forEach((l) => l(payload))
+}
+
+export function tunnelMeta(over: Partial<TunnelMeta> & { id: string }): TunnelMeta {
+  return {
+    label: over.id,
+    hostId: 'h1',
+    environmentId: null,
+    type: 'L',
+    bindAddress: '127.0.0.1',
+    bindPort: 5433,
+    targetHost: 'localhost',
+    targetPort: 5432,
+    autoStart: false,
+    autoReconnect: true,
+    createdAt: STAMP,
+    updatedAt: STAMP,
+    ...over,
+  }
+}
+
+export function tunnelRuntime(over: Partial<TunnelRuntime> & { id: string }): TunnelRuntime {
+  return {
+    state: 'up',
+    error: null,
+    failures: 0,
+    maxFailures: 5,
+    retryAt: null,
+    boundAddress: '127.0.0.1',
+    boundPort: 5433,
+    liveness: 'probe',
+    startedAt: STAMP,
+    upAt: STAMP,
+    lastProbeAt: null,
+    ...over,
+  }
 }

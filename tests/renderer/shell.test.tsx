@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { AppShell } from '../../src/renderer/src/shell/AppShell'
 import { SECTIONS } from '../../src/renderer/src/shell/sections'
 import { commandStore } from '../../src/renderer/src/ui/commands'
-import { mockBridge } from './helpers'
+import { mockBridge, tunnelMeta, tunnelRuntime } from './helpers'
 
 function renderShell(path = '/') {
   return render(
@@ -80,6 +80,21 @@ describe('shell', () => {
   it('placeholder pages name their phase', async () => {
     renderShell('/tunnels')
     expect(await screen.findByText('Coming in phase 5')).toBeInTheDocument()
+  })
+
+  it('sidebar shows up tunnels and a failed dot', async () => {
+    mockBridge({
+      'tunnel:list': [tunnelMeta({ id: 'a' }), tunnelMeta({ id: 'b' }), tunnelMeta({ id: 'c' })],
+      'tunnel:status': [
+        tunnelRuntime({ id: 'a' }),
+        tunnelRuntime({ id: 'b' }),
+        tunnelRuntime({ id: 'c', state: 'failed' }),
+      ],
+    })
+    renderShell('/audit')
+    const badge = await screen.findByLabelText('2 tunnels up, 1 failed')
+    expect(badge).toHaveTextContent('2')
+    expect(badge.querySelector('[data-dot="failed"]')).not.toBeNull()
   })
 
   it('sections are palette commands while mounted', async () => {

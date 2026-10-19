@@ -15,7 +15,9 @@ import { NavLink } from 'react-router'
 import type { AppInfo } from '../../../shared/ipc'
 import { api } from '../lib/api'
 import { sessionStore } from '../terminal/sessions'
+import { tunnelStore } from '../tunnels/store'
 import { openCommandPalette } from '../ui/commands'
+import { plural } from '../ui/common'
 import { spring, useMotionSafe } from '../ui/motion'
 import { formatShortcut } from '../ui/shortcuts'
 import { Skeleton } from '../ui/Skeleton'
@@ -105,6 +107,7 @@ export function Sidebar() {
                   />
                   <span className="relative flex-1">{s.label}</span>
                   {s.id === 'terminals' && <LiveCount />}
+                  {s.id === 'tunnels' && <TunnelBadge />}
                   <Keys
                     combo={sectionShortcut(i)}
                     className="relative opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
@@ -171,6 +174,47 @@ function LiveCount() {
     >
       {count}
     </motion.span>
+  )
+}
+
+interface TunnelSummary {
+  up: number
+  failed: number
+  /** Retrying or connecting. */
+  busy: number
+}
+
+let tunnelSummary: TunnelSummary = { up: 0, failed: 0, busy: 0 }
+// Snapshot identity must hold until the counts change, or useSyncExternalStore loops.
+function summarizeTunnels(): TunnelSummary {
+  const counts: TunnelSummary = { up: 0, failed: 0, busy: 0 }
+  for (const rt of Object.values(tunnelStore.get().runtime)) {
+    if (rt.state === 'up') counts.up++
+    else if (rt.state === 'failed') counts.failed++
+    else if (rt.state === 'retrying' || rt.state === 'connecting') counts.busy++
+  }
+  const c = tunnelSummary
+  if (c.up !== counts.up || c.failed !== counts.failed || c.busy !== counts.busy) tunnelSummary = counts
+  return tunnelSummary
+}
+
+/** Tunnels that are up, with a red dot when one failed or an amber one while any is (re)connecting. */
+function TunnelBadge() {
+  const { up, failed, busy } = useSyncExternalStore(tunnelStore.subscribe, summarizeTunnels)
+  if (!up && !failed && !busy) return null
+  const parts = [`${plural(up, 'tunnel')} up`]
+  if (failed) parts.push(`${failed} failed`)
+  if (busy) parts.push(`${busy} reconnecting`)
+  const dot = failed ? 'bg-err' : busy ? 'bg-warn' : ''
+  return (
+    <span
+      data-badge
+      aria-label={parts.join(', ')}
+      className="absolute right-2.5 flex h-[18px] min-w-[18px] items-center justify-center gap-1 rounded-full bg-ok/15 px-1.5 text-[10.5px] font-semibold text-ok tabular-nums transition-opacity group-hover:opacity-0 group-focus-visible:opacity-0"
+    >
+      {dot && <span aria-hidden data-dot={failed ? 'failed' : 'busy'} className={`size-1.5 rounded-full ${dot}`} />}
+      {up}
+    </span>
   )
 }
 

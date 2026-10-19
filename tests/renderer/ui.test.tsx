@@ -1,8 +1,11 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CommandPalette, closeCommandPalette, registerCommand } from '../../src/renderer/src/ui/CommandPalette'
 import { getRecents, resetRecents } from '../../src/renderer/src/ui/commands'
+import { Sparkline, sparkPoints } from '../../src/renderer/src/ui/Sparkline'
+import { Switch } from '../../src/renderer/src/ui/Switch'
 import { Toaster, clearToasts, toast } from '../../src/renderer/src/ui/Toaster'
 import { useShortcut } from '../../src/renderer/src/ui/shortcuts'
 
@@ -280,5 +283,49 @@ describe('shortcuts', () => {
     expect(onW).not.toHaveBeenCalled()
     fireEvent.keyDown(area, { key: 'w', metaKey: true })
     expect(onW).toHaveBeenCalledOnce()
+  })
+})
+
+describe('Switch', () => {
+  function Harness({ busy = false }: { busy?: boolean }) {
+    const [on, setOn] = useState(false)
+    return <Switch checked={on} onChange={setOn} label="Auto-start" busy={busy} />
+  }
+
+  it('Switch toggles with click and Space and exposes aria-checked', async () => {
+    const user = userEvent.setup()
+    render(<Harness />)
+    const sw = screen.getByRole('switch', { name: 'Auto-start' })
+    expect(sw).toHaveAttribute('aria-checked', 'false')
+    await user.click(sw)
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    sw.focus()
+    await user.keyboard(' ')
+    expect(sw).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('a busy Switch ignores clicks', async () => {
+    const user = userEvent.setup()
+    render(<Harness busy />)
+    const sw = screen.getByRole('switch')
+    await user.click(sw)
+    expect(sw).toHaveAttribute('aria-checked', 'false')
+    expect(sw).toHaveAttribute('aria-busy', 'true')
+  })
+})
+
+describe('Sparkline', () => {
+  it('Sparkline scales points', () => {
+    expect(sparkPoints([0, 5, 10], 10)).toBe('0,24 50,12 100,0')
+    const { container } = render(<Sparkline values={[0, 5, 10]} max={10} tone="success" label="Inbound" />)
+    expect(container.querySelector('svg')).toHaveAttribute('aria-hidden', 'true')
+    expect(container.querySelector('polyline')).toHaveAttribute('points', '0,24 50,12 100,0')
+    expect(screen.getByText('Inbound')).toBeInTheDocument()
+  })
+
+  it('Sparkline all-zero is flat', () => {
+    expect(sparkPoints([0, 0, 0])).toBe('0,24 50,24 100,24')
+    const { container } = render(<Sparkline values={[0, 0]} tone="info" label="Idle" />)
+    expect(container.querySelector('polyline')).toHaveAttribute('points', '0,24 100,24')
   })
 })

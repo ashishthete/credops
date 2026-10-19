@@ -310,6 +310,21 @@ describe('hosts page', () => {
     expect(await within(dialog).findByText(/, 3 tunnels/)).toBeInTheDocument()
   })
 
+  it('import reloads tunnels', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderApp(world())
+    const lists = () => invoke.mock.calls.filter(([c]) => c === 'tunnel:list').length
+    await user.click(await screen.findByRole('button', { name: 'Import from ~/.ssh/config' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(await within(dialog).findByRole('checkbox', { name: 'Select all' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Next' }))
+    await waitFor(() => expect(lists()).toBeGreaterThan(0))
+    const before = lists()
+    await user.click(within(dialog).getByRole('button', { name: 'Import 1 host' }))
+    await within(dialog).findByText(/, 3 tunnels/)
+    await waitFor(() => expect(lists()).toBe(before + 1))
+  })
+
   it('import wizard reaches its summary under StrictMode', async () => {
     const user = userEvent.setup()
     renderApp(world(), '/hosts', { strict: true })

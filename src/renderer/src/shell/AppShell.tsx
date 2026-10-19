@@ -13,6 +13,7 @@ import { TerminalDeck } from '../pages/terminals/TerminalDeck'
 import { VaultsPage } from '../pages/vaults/VaultsPage'
 import { disposeAll } from '../terminal/registry'
 import { resetSessions, startSessionSync } from '../terminal/sessions'
+import { resetTunnels, startTunnelSync } from '../tunnels/store'
 import { registerCommand } from '../ui/commands'
 import { fast, useMotionSafe } from '../ui/motion'
 import { useShortcut } from '../ui/shortcuts'
@@ -48,11 +49,14 @@ export function AppShell() {
   )
   useEffect(() => {
     const stop = startSessionSync()
+    const stopTunnels = startTunnelSync()
     return () => {
       stop()
+      stopTunnels()
       disposeAll()
       // Events stop while unmounted (the vault locked); the next mount's session list is the truth.
       resetSessions()
+      resetTunnels()
       closeKnownHosts()
     }
   }, [])
