@@ -11,6 +11,7 @@ export const MARK = {
   BACKUP: 'OD-BACKUP',
   HEALTH: 'OD-HEALTH',
   ENV: 'OD-ENV',
+  TAG: 'OD-TAG',
   PF: 'OD-PF',
 } as const
 export type MarkName = (typeof MARK)[keyof typeof MARK]

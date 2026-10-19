@@ -448,6 +448,8 @@ export interface ReleaseDetail extends ReleaseSummary {
 /** What `deploy:tooling` reports: the local tools a run needs. */
 export interface Tooling {
   ansiblePlaybook: { path: string; version: string } | null
+  /** Why ansiblePlaybook is null, or 'ok'. */
+  ansibleStatus: 'ok' | 'missing' | 'old' | 'broken'
   sshAgent: string | null
   sshAdd: string | null
   ssh: string | null

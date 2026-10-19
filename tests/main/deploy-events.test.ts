@@ -389,6 +389,137 @@ describe('preflight parsing', () => {
   })
 })
 
+describe('fix round 1', () => {
+  const one = (extra: string[]) => {
+    const p = planFixture({ kind: 'preflight' })
+    p.deployments = [p.deployments[2]]
+    p.hosts = [p.hosts[1]]
+    p.deployments[0].useSudo = 'no'
+    const base = ['tools missing=', 'repo exists=1 git=1', 'clean ok=1', 'branch fetched=1 exists=1', 'compose exists=1', 'disk avail_kb=9999999', 'tag exists=0 commit=', 'version-tag exists=0', 'commits log_b64=']
+    return parsePreflight(p, { [R3]: [...extra, ...base].map((l) => `OD-PF ${l}`).join('\n'), 'host:host-od-2': 'OD-PF lock repo=/x held=0 raw_b64=' }, { now: NOW })
+  }
+
+  it('use_sudo no never resolves to sudo mode', () => {
+    const r = one(['docker plain=fail sudo=ok mode=plain use=no'])
+    expect(r.dockerModes).toEqual({})
+    expect(r.checks.find((c) => c.id === 'docker')).toMatchObject({ level: 'block' })
+    expect(r.checks.find((c) => c.id === 'docker')!.message).toContain('sudo is turned off')
+    expect(one(['docker plain=fail sudo=skip mode=plain use=no']).dockerModes).toEqual({})
+  })
+
+  it('a failed version step is a release step and never fails a deployment', () => {
+    const plan = planFixture({ kind: 'version' })
+    const tr = new EventTranslator({ plan, secrets: () => [], now: clock().now })
+    const tags = ['od_step=version', `od_run=${R1}`]
+    const out = [
+      ...tr.feed(JSON.stringify({ event: 'task_start', name: 'version dep1', tags })),
+      ...tr.feed(JSON.stringify({ event: 'failed', host: 'od-1', task: 'version dep1', tags, rc: 1, stderr: 'remote rejected' })),
+    ]
+    expect(of(out, 'step.started')[0]).toMatchObject({ stepId: 'release:version', deploymentRunId: null, hostId: null })
+    expect(of(out, 'step.failed')[0].stepId).toBe('release:version')
+    expect(of(out, 'deployment.updated')).toEqual([])
+    // a stopped run: finish() does not touch the deployment either
+    const tr2 = new EventTranslator({ plan, secrets: () => [], now: clock().now })
+    tr2.feed(JSON.stringify({ event: 'task_start', name: 'version dep1', tags }))
+    const fin = tr2.finish(null, 'SIGTERM')
+    expect(of(fin, 'step.failed')[0].stepId).toBe('release:version')
+    expect(of(fin, 'deployment.updated')).toEqual([])
+  })
+
+  it('a tag failure (marker, rc 0) is a warning; the next deployment still runs and nothing rolls back', () => {
+    const plan = planFixture()
+    const c = clock()
+    const tr = new EventTranslator({ plan, secrets: () => [], now: c.now })
+    const events: RunEventBody[] = []
+    const run = (id: string, kind: string, res: Record<string, unknown> = {}) => {
+      const tags = [`od_step=${kind}`, `od_run=${id}`]
+      events.push(...tr.feed(JSON.stringify({ event: 'task_start', name: `${kind} x`, tags })))
+      events.push(...tr.feed(JSON.stringify({ event: 'ok', host: 'od-1', task: `${kind} x`, tags, rc: 0, ...res })))
+    }
+    run(R1, 'up')
+    run(R1, 'tag', { stdout: 'fatal: remote denied\nOD-TAG failed rc=128', stderr: 'permission denied' })
+    run(R2, 'record', { stdout: 'OD-PREV none' })
+    run(R2, 'tag')
+    const done = of(events, 'step.done').filter((e) => e.stepId.endsWith(':tag'))
+    expect(done[0]).toMatchObject({ stepId: `${R1}:tag`, state: 'warn' })
+    expect(done[0].message).toContain('exit code 128')
+    expect(done[1]).toMatchObject({ stepId: `${R2}:tag`, state: 'ok' })
+    expect(of(events, 'step.failed')).toEqual([])
+    expect(of(events, 'deployment.updated').filter((u) => 'status' in u).map((u) => [u.deploymentRunId, u.status])).toEqual([[R1, 'succeeded'], [R2, 'running'], [R2, 'succeeded']])
+    expect(of(events, 'log').some((l) => l.line.includes('OD-TAG'))).toBe(false)
+  })
+
+  it('an rb_tag marker failure still ends rolled_back', () => {
+    const tr = new EventTranslator({ plan: planFixture({ kind: 'rollback' }), secrets: () => [], now: clock().now })
+    const tags = ['od_step=rb_tag', `od_run=${R1}`]
+    tr.feed(JSON.stringify({ event: 'task_start', name: 'rb_tag x', tags }))
+    const out = tr.feed(JSON.stringify({ event: 'ok', host: 'od-1', task: 'rb_tag x', tags, rc: 0, stdout: 'OD-TAG failed rc=1' }))
+    expect(of(out, 'step.done')[0].state).toBe('warn')
+    expect(of(out, 'deployment.updated')).toEqual([{ type: 'deployment.updated', deploymentRunId: R1, status: 'rolled_back' }])
+  })
+
+  it('cuts at MAX_LOG_LINE with the (cut) suffix', () => {
+    const tr = new EventTranslator({ plan: planFixture(), secrets: () => [], now: clock().now })
+    expect(tr.feed('x'.repeat(MAX_LOG_LINE + 50))[0]).toMatchObject({ line: expect.stringMatching(/ …\(cut\)$/) })
+    expect((tr.feed('x'.repeat(MAX_LOG_LINE + 50))[0] as { line: string }).line.length).toBeLessThanOrEqual(MAX_LOG_LINE)
+  })
+
+  it('preflight warnings carry a null stepId', () => {
+    const tr = new EventTranslator({ plan: planFixture({ kind: 'preflight' }), secrets: () => [], now: clock().now })
+    tr.feed(JSON.stringify({ event: 'task_start', name: 'preflight tools dep1', tags: ['od_step=preflight', `od_run=${R1}`] }))
+    expect(of(tr.feed(JSON.stringify({ event: 'warning', msg: 'w' })), 'log')[0].stepId).toBeNull()
+  })
+
+  it('stream lines of another run or kind stay in the log', () => {
+    const tr = new EventTranslator({ plan: planFixture(), secrets: () => [], now: clock().now })
+    const tags = ['od_step=build', `od_run=${R1}`]
+    tr.feed(JSON.stringify({ event: 'task_start', name: 'build dep1', tags }))
+    const out = tr.feed(JSON.stringify({ event: 'failed', host: 'od-1', task: 'build dep1', tags, rc: 1, stdout: `${R2}:build\tother run\n${R1}:up\tother kind\n${R1}:build\town` }))
+    expect(of(out, 'log').map((l) => l.line)).toEqual([`${R2}:build\tother run`, `${R1}:up\tother kind`])
+  })
+
+  it('commit text and lock holder fields are redacted; head is the newest commit even when reverted; a cut always warns', () => {
+    const p = planFixture({ kind: 'preflight' })
+    p.deployments = [p.deployments[2]]
+    p.hosts = [p.hosts[1]]
+    const rec = (sha: string, s: string, a: string) => `${sha.repeat(40)}\x1f${s}\x1f${a}\x1f2026-10-18T09:00:00+00:00\x1e\n`
+    const log = Buffer.from(rec('2', 'Revert "Add x"', 'ana') + rec('1', 'Add x token-9999', 'bob-9999')).toString('base64')
+    const holder = Buffer.from(JSON.stringify({ releaseId: 'r-9999', user: 'u', machine: 'm', environment: 'env-9999', version: null, startedAt: '2026-10-19T09:30:00.000Z' })).toString('base64')
+    const lines = ['tools missing=', 'docker plain=ok sudo=ok mode=plain use=auto', 'repo exists=1 git=1', 'clean ok=1', 'branch fetched=1 exists=1', 'compose exists=1', 'disk avail_kb=9999999', 'tag exists=0 commit=', 'version-tag exists=0', `commits log_b64=${log}`]
+    const out = { [R3]: lines.map((l) => `OD-PF ${l}`).join('\n'), 'host:host-od-2': `OD-PF lock repo=/x held=1 raw_b64=${holder}` }
+    const r = parsePreflight(p, out, { now: NOW, cut: [R3], secrets: ['9999'] })
+    // raw is the exact lock file text, kept verbatim for the break-lock compare
+    expect(JSON.stringify({ ...r, locks: {} })).not.toContain('9999')
+    expect(JSON.stringify(r.locks['host-od-2']!.holder)).not.toContain('9999')
+    expect(r.commits['dep-3'].head).toBe('2'.repeat(40))
+    expect(r.commits['dep-3'].truncated).toBeGreaterThanOrEqual(1)
+    expect(r.checks.find((c) => c.id === 'commits')).toMatchObject({ level: 'warn' })
+    // lock.busy holder too
+    const tr = new EventTranslator({ plan: planFixture(), secrets: () => ['9999'], now: () => NOW })
+    const tags = ['od_step=lock', 'od_run=host:host-od-1']
+    tr.feed(JSON.stringify({ event: 'task_start', name: 'lock od-1', tags }))
+    const ev = tr.feed(JSON.stringify({ event: 'failed', host: 'od-1', task: 'lock od-1', tags, rc: 42, stdout: `OD-LOCK ${JSON.stringify({ releaseId: 'r-9999', user: 'u', machine: 'm', environment: 'env-9999', version: null, startedAt: '2026-10-19T09:30:00.000Z' })}` }))
+    expect(JSON.stringify(ev)).not.toContain('9999')
+  })
+
+  it('a cut and more than MAX_COMMITS commits warns with the count', () => {
+    const p = planFixture({ kind: 'preflight' })
+    p.deployments = [p.deployments[2]]
+    p.hosts = [p.hosts[1]]
+    const rec = (i: number) => `${i.toString(16).padStart(40, '0')}\x1fs${i}\x1fa\x1f2026-10-18T09:00:00+00:00\x1e\n`
+    const log = Buffer.from(Array.from({ length: 501 }, (_, i) => rec(i)).join('')).toString('base64')
+    const lines = ['tools missing=', 'docker plain=ok sudo=ok mode=plain use=auto', 'repo exists=1 git=1', 'clean ok=1', 'branch fetched=1 exists=1', 'compose exists=1', 'disk avail_kb=9999999', 'tag exists=0 commit=', 'version-tag exists=0', `commits log_b64=${log}`]
+    const r = parsePreflight(p, { [R3]: lines.map((l) => `OD-PF ${l}`).join('\n'), 'host:host-od-2': 'OD-PF lock repo=/x held=0 raw_b64=' }, { now: NOW })
+    expect(r.checks.find((c) => c.id === 'commits')).toMatchObject({ level: 'warn' })
+    expect(r.checks.find((c) => c.id === 'commits')!.message).toContain('at least 1')
+  })
+
+  it('the plugin tolerates extra Display arguments and non-string messages', () => {
+    expect(CALLBACK_PLUGIN_SOURCE).toContain('def _warning(self, msg, *args, **kwargs):')
+    expect(CALLBACK_PLUGIN_SOURCE).toContain('json.dumps(value, default=str)')
+  })
+})
+
 describe('markers and the generator agree', () => {
   it('parses marker lines', () => {
     expect(parseMarker('OD-PREV none')).toEqual({ mark: 'OD-PREV', rest: 'none' })
@@ -414,7 +545,7 @@ describe('markers and the generator agree', () => {
     for (const n of names) expect(seen.has(n), n).toBe(true)
   })
 
-  it('preflight output of every generated check is understood by parsePreflight', () => {
+  it('every generated preflight check name is one parsePreflight knows (fields are covered by the fixtures)', () => {
     const text = generatePlaybook(planFixture({ kind: 'preflight' }))
     const checks = new Set([...text.matchAll(/OD-PF ([a-z-]+)/g)].map((m) => m[1]))
     expect([...checks].sort()).toEqual(['branch', 'clean', 'commits', 'compose', 'disk', 'docker', 'lock', 'repo', 'tag', 'tools', 'version-tag'])

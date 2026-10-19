@@ -304,10 +304,14 @@ function taskHealth(d: PlanDeployment, i: number): Task {
 }
 
 const PUSH_TAG = 'git push -f origin "refs/tags/$T"'
+// Tagging is best effort: the deploy already happened. The task never fails the host; a failure is
+// reported through OD-TAG so the translator can warn without the playbook rescuing.
+const TAG_FAILED = '|| echo "OD-TAG failed rc=$?"'
 const taskTag = (d: PlanDeployment): Task =>
-  sh(nm('tag', d), 'tag', runOf(d), ['T={{ d.tag | quote }}', `${GIT_ID} git tag -fa "$T" -m "OpsDeck deploy" HEAD && ${PUSH_TAG}`].join('\n'), {
+  sh(nm('tag', d), 'tag', runOf(d), ['T={{ d.tag | quote }}', `{ ${GIT_ID} git tag -fa "$T" -m "OpsDeck deploy" HEAD && ${PUSH_TAG}; } ${TAG_FAILED}`].join('\n'), {
     timeout: T_SHORT,
     chdir: IN_REPO,
+    failedWhen: false,
     guarded: true,
   })
 
@@ -320,9 +324,10 @@ const taskRbCheckout = (d: PlanDeployment): Task =>
   })
 const taskRbEnv = (d: PlanDeployment): Task => envTask('rb_env', d)
 const taskRbTag = (d: PlanDeployment): Task =>
-  sh(nm('rb_tag', d), 'rb_tag', runOf(d), ['T={{ d.tag | quote }}', 'P={{ d.prev | quote }}', `${GIT_ID} git tag -fa "$T" -m "OpsDeck rollback" "$P" && ${PUSH_TAG}`].join('\n'), {
+  sh(nm('rb_tag', d), 'rb_tag', runOf(d), ['T={{ d.tag | quote }}', 'P={{ d.prev | quote }}', `{ ${GIT_ID} git tag -fa "$T" -m "OpsDeck rollback" "$P" && ${PUSH_TAG}; } ${TAG_FAILED}`].join('\n'), {
     timeout: T_SHORT,
     chdir: IN_REPO,
+    failedWhen: false,
     guarded: true,
   })
 
@@ -407,7 +412,7 @@ function preflightTasks(plan: DeployPlan, d: PlanDeployment): Task[] {
     pf(d, 'tools', [`miss=""`, `for t in ${tools.join(' ')}; do command -v "$t" >/dev/null 2>&1 || miss="$miss,$t"; done`, 'echo "OD-PF tools missing=${miss#,}"'].join('\n'), { chdir: false }),
     pf(d, 'docker', [
       'docker info >/dev/null 2>&1 && p=ok || p=fail',
-      'sudo -n docker info >/dev/null 2>&1 && s=ok || s=fail',
+      d.useSudo === 'no' ? 's=skip' : 'sudo -n docker info >/dev/null 2>&1 && s=ok || s=fail',
       `echo "OD-PF docker plain=$p sudo=$s mode=${d.docker} use=${d.useSudo}"`,
     ].join('\n'), { chdir: false }),
   )
@@ -415,7 +420,7 @@ function preflightTasks(plan: DeployPlan, d: PlanDeployment): Task[] {
     out.push(pf(d, 'docker-become', 'if docker info >/dev/null 2>&1; then echo "OD-PF docker become=ok"; else echo "OD-PF docker become=fail"; fi', { chdir: false, become: true }))
   out.push(
     pf(d, 'repo', ['R={{ d.repo | quote }}', 'if [ -d "$R/.git" ]; then echo "OD-PF repo exists=1 git=1"; elif [ -d "$R" ]; then echo "OD-PF repo exists=1 git=0"; else echo "OD-PF repo exists=0 git=0"; fi'].join('\n'), { chdir: false }),
-    pf(d, 'clean', ['git update-index -q --refresh', 'if git diff-index --quiet HEAD --; then echo "OD-PF clean ok=1"; else echo "OD-PF clean ok=0 files=$(git status --porcelain 2>/dev/null | wc -l | tr -d \' \')"; fi'].join('\n')),
+    pf(d, 'clean', ['git update-index -q --refresh', 'if git diff-index --quiet HEAD --; then echo "OD-PF clean ok=1"; else echo "OD-PF clean ok=0 files=$(git status --porcelain --untracked-files=no 2>/dev/null | wc -l | tr -d \' \')"; fi'].join('\n')),
     pf(d, 'fetch', [
       'B={{ d.branch | quote }}',
       `if ${FETCH} >/dev/null 2>&1; then f=1; else f=0; fi`,

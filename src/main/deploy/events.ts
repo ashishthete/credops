@@ -48,7 +48,7 @@ interface Active {
 }
 
 const STEP_KINDS = new Set<string>(Object.keys(STEP_LABEL))
-const cut = (s: string): string => (s.length > MAX_LOG_LINE ? `${s.slice(0, MAX_LOG_LINE - 1)}…` : s)
+const cut = (s: string): string => (s.length > MAX_LOG_LINE ? `${s.slice(0, MAX_LOG_LINE - 7)} …(cut)` : s)
 
 /** Turns the callback plugin's JSON lines into run events, redacting every string that leaves. */
 export class EventTranslator {
@@ -63,9 +63,13 @@ export class EventTranslator {
   private readonly unknownPrevious = new Set<string>()
   private current: { stepId: string; kind: StepKind; run: string; name: string } | null = null
   private sawFailure = false
+  private tagNote: string | null = null
+  private readonly versionTasks: number
 
   constructor(private readonly o: { plan: DeployPlan; secrets: () => string[]; now: () => number }) {
     for (const d of o.plan.deployments) this.depByRun.set(d.runId, d)
+    // one version task per repo on each host (the generator skips repeats)
+    this.versionTasks = Math.max(1, new Set(o.plan.deployments.map((d) => `${d.hostId}\n${d.repoPath}`)).size)
     for (const h of o.plan.hosts) {
       this.hostByAlias.set(h.alias, h)
       this.hostById.set(h.hostId, h)
@@ -145,7 +149,7 @@ export class EventTranslator {
 
   // ---- internals
   private ansibleLog(line: string): RunEventBody {
-    return { type: 'log', stepId: this.current?.stepId ?? null, hostId: null, stream: 'ansible', line: this.line(line) }
+    return { type: 'log', stepId: this.current?.stepId || null, hostId: null, stream: 'ansible', line: this.line(line) }
   }
 
   private tagsOf(tags: string[] | undefined): { kind: string; run: string } | null {
@@ -155,6 +159,8 @@ export class EventTranslator {
   }
 
   private describe(kind: StepKind, run: string): { stepId: string; hostId: string | null; deploymentRunId: string | null; name: string; expected: number } {
+    // a version tag is a release-level step: its failure never fails the deployment that is already up
+    if (kind === 'version') return { stepId: 'release:version', hostId: null, deploymentRunId: null, name: STEP_LABEL.version, expected: this.versionTasks }
     const dep = this.depByRun.get(run)
     if (dep) {
       const expected = kind === 'health' ? Math.max(1, dep.urls.length) : 1
@@ -238,6 +244,19 @@ export class EventTranslator {
       if (a) this.settle(d.stepId, a, { state: 'skipped' }, out)
       return out
     }
+    if ((kind === 'tag' || kind === 'rb_tag') && a) {
+      // best effort: the playbook never fails on tagging, so a failure arrives as the OD-TAG marker or a non-zero rc
+      const note = this.tagNote
+      this.tagNote = null
+      const tagRc = note !== null ? Number(/rc=(\d+)/.exec(note)?.[1] ?? 1) : rc
+      if (note !== null || (e.event === 'ok' && rc !== null && rc !== 0)) {
+        a.done = true
+        const text = this.errorText(kind, d.name, tagRc, msg, lines.slice(-ERROR_CONTEXT_LINES), hidden)
+        out.push({ type: 'step.done', stepId: d.stepId, state: 'warn', durationMs: this.o.now() - a.startedAt, message: text })
+        this.onDone(a, out)
+        return out
+      }
+    }
     if (e.event === 'failed' && e.ignored !== true) {
       const ctx = lines.slice(-ERROR_CONTEXT_LINES)
       return this.failStep(kind, t.run, this.errorText(kind, d.name, rc, msg, ctx, hidden), out, lines, rc)
@@ -310,6 +329,10 @@ export class EventTranslator {
     return this.red(text).slice(0, MAX_ERROR)
   }
 
+  private redHolder(h: LockHolder): LockHolder {
+    return { ...h, releaseId: this.red(h.releaseId), user: this.red(h.user), machine: this.red(h.machine), environment: this.red(h.environment), version: h.version === null ? null : this.red(h.version) }
+  }
+
   private lockBusy(hostId: string | null, lines: string[]): { event: RunEventBody; error: string } | null {
     if (!hostId) return null
     // the busy repo is the last lock line printed before exit 42
@@ -321,7 +344,7 @@ export class EventTranslator {
     const text = this.line(lockHolderText(holder, this.o.now()))
     const label = this.hostById.get(hostId)?.label ?? hostId
     return {
-      event: { type: 'lock.busy', hostId, holder: { ...holder, user: this.red(holder.user), machine: this.red(holder.machine) }, stale, text },
+      event: { type: 'lock.busy', hostId, holder: this.redHolder(holder), stale, text },
       error: this.line(`${label} is locked: ${text}`),
     }
   }
@@ -335,7 +358,7 @@ export class EventTranslator {
         const l = raw.replace(/\r$/, '')
         if (l === '') continue
         const s = parseStreamLine(l)
-        if (s) {
+        if (s && `${s.runId}:${s.kind}` === d.stepId) {
           // the tail of the step's own stream.log lines: error context only, the log tap already delivers them
           ctx.push(s.text)
           continue
@@ -372,6 +395,10 @@ export class EventTranslator {
     if (mark === MARK.BACKUP && run) {
       const file = rest.trim()
       if (file) out.push({ type: 'deployment.updated', deploymentRunId: run, status: 'running', backupFile: this.red(file) })
+      return true
+    }
+    if (mark === MARK.TAG) {
+      this.tagNote = rest
       return true
     }
     // lock lines carry the holder; the busy one is read from the failed result
@@ -417,11 +444,10 @@ function parseHolder(raw: string): LockHolder {
 const GB = 1024 * 1024
 const gb = (kb: number): string => String(Number((kb / GB).toFixed(1)))
 
-function decodeCommits(b64: string, deploymentId: string, cutOff: boolean): { commits: CommitInfo[]; cut: boolean } {
+function decodeCommits(b64: string, deploymentId: string, cutOff: boolean, red: (s: string) => string): { commits: CommitInfo[]; cut: boolean } {
   let text = Buffer.from(b64, 'base64').toString('utf8')
   // records end with \x1e; a cut line may stop mid-record, so only complete records are used
   const end = text.lastIndexOf('\x1e')
-  const partial = end !== text.length - 1
   text = end < 0 ? '' : text.slice(0, end + 1)
   const commits: CommitInfo[] = []
   for (const rec of text.split('\x1e')) {
@@ -429,9 +455,9 @@ function decodeCommits(b64: string, deploymentId: string, cutOff: boolean): { co
     if (!r) continue
     const [sha, subject, author, date] = r.split('\x1f')
     if (!sha || !/^[0-9a-f]{40}$/.test(sha) || subject === undefined || author === undefined || date === undefined) continue
-    commits.push({ sha, subject, author, date, deploymentId })
+    commits.push({ sha, subject: red(subject), author: red(author), date, deploymentId })
   }
-  return { commits, cut: cutOff && partial }
+  return { commits, cut: cutOff }
 }
 
 export interface ParsePreflightOptions {
@@ -485,7 +511,7 @@ export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, str
     else if (dk.use !== 'yes' && dk.plain === 'ok') {
       dockerModes[d.deploymentId] = 'plain'
       add('docker', 'ok', `docker works without sudo on ${hl}`)
-    } else if (dk.sudo === 'ok') {
+    } else if (dk.use !== 'no' && dk.sudo === 'ok') {
       dockerModes[d.deploymentId] = 'sudo'
       add('docker', 'ok', `docker works with sudo on ${hl}`)
     } else if (become?.become === 'ok') {
@@ -549,23 +575,23 @@ export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, str
       let list: CommitInfo[] = []
       let hidden = 0
       let truncated = 0
+      let newest: string | null = null
       if (!cm) {
         if (!tagUnknown) noResult('commits', 'The commit list')
       } else if ('unknown' in cm) {
         add('commits', 'block', `could not list the commits to deploy on ${hl}: origin was unreachable`)
       } else if (typeof cm.log_b64 === 'string') {
-        const dec = decodeCommits(cm.log_b64, d.deploymentId, cutRuns.has(d.runId))
+        const dec = decodeCommits(cm.log_b64, d.deploymentId, cutRuns.has(d.runId), red)
         const f = filterReverts(dec.commits)
+        newest = dec.commits[0]?.sha ?? null
         hidden = f.hiddenPairs
         truncated = Math.max(0, f.kept.length - MAX_COMMITS)
         list = f.kept.slice(0, MAX_COMMITS)
-        if (dec.cut) {
-          truncated = Math.max(truncated, 1)
-          add('commits', 'warn', `the commit list was cut off; showing the newest ${list.length}`)
-        }
+        if (dec.cut) truncated = Math.max(truncated, 1)
+        if (truncated > 0) add('commits', 'warn', `the commit list is not complete (at least ${truncated} more not shown); showing the newest ${list.length}`)
       }
       commitsTotal += list.length
-      commits[d.deploymentId] = { commits: list, hiddenPairs: hidden, truncated, firstDeploy, head: list[0]?.sha ?? null }
+      commits[d.deploymentId] = { commits: list, hiddenPairs: hidden, truncated, firstDeploy, head: newest }
     }
   }
 
@@ -601,7 +627,8 @@ export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, str
       const holder = parseHolder(rawText)
       const at = Date.parse(holder.startedAt)
       const stale = Number.isFinite(at) && o.now - at > LOCK_STALE_MS
-      locks[h.hostId] = { holder, stale, raw: rawText }
+      const safe: LockHolder = { ...holder, releaseId: red(holder.releaseId), user: red(holder.user), machine: red(holder.machine), environment: red(holder.environment), version: holder.version === null ? null : red(holder.version) }
+      locks[h.hostId] = { holder: safe, stale, raw: rawText }
       add('block', `${red(lockHolderText(holder, o.now))}${stale ? ' (older than 2 hours; it may be stale and can be broken)' : ''}`)
     }
   }

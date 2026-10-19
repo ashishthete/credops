@@ -602,6 +602,28 @@ describe('fix round 1', () => {
     expect(pf).toContain('git ls-remote origin "refs/tags/$T" "refs/tags/$T^{}"')
   })
 
+  it('useSudo no never probes sudo; tag and rb_tag never fail the host and mark their failure', () => {
+    const no = planFixture({ kind: 'preflight' })
+    no.deployments[0].useSudo = 'no'
+    const dk = every(plays(no)[0].tasks).map(({ t }) => t).find((t) => String(t.name) === 'preflight docker dep1')!
+    expect(cmdOf(dk)).not.toContain('sudo -n')
+    expect(cmdOf(dk)).toContain('s=skip')
+    expect(cmdOf(dk)).toContain('use=no')
+    const auto = every(plays(planFixture({ kind: 'preflight' }))[0].tasks).map(({ t }) => t).find((t) => String(t.name) === 'preflight docker dep1')!
+    expect(cmdOf(auto)).toContain('sudo -n docker info')
+    const rel = flat(plays(planFixture())[0].tasks).find((t) => step(t) === 'tag')!
+    const rb = flat(plays(planFixture({ kind: 'rollback' }))[0].tasks).find((t) => step(t) === 'rb_tag')!
+    for (const t of [rel, rb]) {
+      expect(t.failed_when).toBe(false)
+      expect(cmdOf(t)).toContain('|| echo "OD-TAG failed rc=$?"')
+    }
+  })
+
+  it('the clean count is tracked files only', () => {
+    const c = every(plays(planFixture({ kind: 'preflight' }))[0].tasks).map(({ t }) => cmdOf(t)).join('\n')
+    expect(c).toContain('git status --porcelain --untracked-files=no')
+  })
+
   it('no_log only where a secret value flows; become tasks stay visible', () => {
     const plan = planFixture()
     const p = plays(plan)[0]

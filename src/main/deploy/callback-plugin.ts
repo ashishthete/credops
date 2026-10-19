@@ -33,8 +33,13 @@ CAP = 65536
 
 def _cap(value):
     """Returns (text, cut) with text at most CAP bytes of UTF-8."""
-    if not isinstance(value, str):
+    if value is None:
         return None, False
+    if not isinstance(value, str):
+        try:
+            value = json.dumps(value, default=str)
+        except Exception:
+            value = str(value)
     raw = value.encode("utf-8", "replace")
     if len(raw) <= CAP:
         return value, False
@@ -60,7 +65,7 @@ class CallbackModule(CallbackBase):
     def _drop(self, *args, **kwargs):
         return None
 
-    def _warning(self, msg, formatted=False):
+    def _warning(self, msg, *args, **kwargs):
         text, _ = _cap(str(msg))
         self._emit({"event": "warning", "msg": text})
 
