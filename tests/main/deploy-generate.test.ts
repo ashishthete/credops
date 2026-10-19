@@ -113,8 +113,13 @@ describe('release playbook', () => {
     expect(backup).not.toContain('. ./.env')
     expect(backup).not.toContain('set -a')
     expect(backup).toContain('DB_USER|DB_HOST|DB_PORT|DB_NAME|DB_PASS')
-    expect(backup).toContain('PGPASSWORD="$DB_PASS" pg_dump -Fc -h "$DB_HOST" -p "${DB_PORT:-5432}" -U "$DB_USER" -d "$DB_NAME" -f "$F"')
-    expect(backup).toContain('F={{ d.backup_dir | quote }}/{{ d.backup_label | quote }}.dump')
+    expect(backup).toContain('PGPASSWORD="$DB_PASS" pg_dump -Fc -h "$DB_HOST" -p "${DB_PORT:-5432}" -U "$DB_USER" -d "$DB_NAME" -f "$F.part"')
+    expect(backup).toContain('F={{ d.backup_dir | quote }}/{{ d.backup_label | quote }}-{{ d.run }}.dump')
+    expect(backup).toContain('-f "$F.part" || { rm -f "$F.part"; exit 1; }')
+    expect(backup).toContain('mv -f "$F.part" "$F"')
+    expect(backup).not.toContain('rm -f "$F";')
+    expect(backup).toContain('"${DB_PASS-}"')
+    expect(backup).not.toContain('DB_PASS:?')
     expect(backup).not.toMatch(/pg_dump[^\n]*(DATABASE_URL|\$DB_PASS)/)
     expect(backup).toContain('OD-BACKUP')
   })
@@ -145,6 +150,11 @@ describe('release playbook', () => {
     expect(m.cmd).toContain('cp -p .env .env.opsdeck-prev')
     expect(m.cmd).toContain('chmod 600 .env.opsdeck-prev')
     expect(m.cmd).toContain('.env.opsdeck-none')
+    // the release marker is written after prev/marker and before the new .env lands
+    const i = m.cmd.indexOf('.env.opsdeck-rel')
+    expect(i).toBeGreaterThan(m.cmd.indexOf(': > .env.opsdeck-none'))
+    expect(i).toBeLessThan(m.cmd.indexOf('base64 -d'))
+    expect(m.cmd).toContain('printf \'%s\' {{ od.rel | quote }} > .env.opsdeck-rel')
   })
 })
 
@@ -552,6 +562,24 @@ describe('fix round 1', () => {
     expect(m.cmd).toContain('mv -f .env.opsdeck-prev .env')
     expect(m.cmd).toContain('.env.opsdeck-none')
     expect(m.cmd).toContain('rm -f .env')
+  })
+
+  it('rb_env acts only when .env.opsdeck-rel names this release, and cleans up', () => {
+    const rb = flat(plays(planFixture({ kind: 'rollback' }))[0].tasks).find((t) => step(t) === 'rb_env')!
+    const c = cmdOf(rb)
+    expect(c).toContain('if [ "$(cat .env.opsdeck-rel 2>/dev/null)" = {{ od.rel | quote }} ]; then')
+    expect(c).toContain('OD-ENV skipped')
+    expect(c).toContain('rm -f .env.opsdeck-rel .env.opsdeck-prev .env.opsdeck-none')
+    // the restore sits inside the guard
+    expect(c.indexOf('mv -f .env.opsdeck-prev .env')).toBeGreaterThan(c.indexOf('if [ "$(cat'))
+    expect(c.indexOf('mv -f .env.opsdeck-prev .env')).toBeLessThan(c.indexOf('OD-ENV skipped'))
+  })
+
+  it('ls-remote failure is reported as unknown, not as no tag', () => {
+    const rec = cmdOf(flat(plays(planFixture())[0].tasks).find((t) => step(t) === 'record')!)
+    expect(rec).toContain('OD-PREV unknown')
+    const pf = every(plays(planFixture({ kind: 'preflight' }))[0].tasks).map(({ t }) => cmdOf(t)).join('\n')
+    expect(pf).toContain('OD-PF tag exists=unknown')
   })
 
   it('tag and rb_tag are annotated, forced and pushed; OD-PREV and the range read origin', () => {

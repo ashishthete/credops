@@ -162,7 +162,10 @@ function runOf(d: PlanDeployment): string {
 const nm = (kind: string, d: PlanDeployment): string => `${kind} ${sanitizeIdent(d.name)}`
 
 // ---- release steps
-const REMOTE_TAG = 'c=$(git ls-remote origin "refs/tags/$T" "refs/tags/$T^{}" 2>/dev/null | awk \'END {print $1}\')'
+// ok=0 when ls-remote itself fails (network, auth): that is "unknown", not "no tag".
+const REMOTE_TAG = [
+  'if o=$(git ls-remote origin "refs/tags/$T" "refs/tags/$T^{}" 2>/dev/null); then ok=1; c=$(echo "$o" | awk \'END {print $1}\'); else ok=0; c=""; fi',
+].join('\n')
 const GIT_ID = 'GIT_COMMITTER_NAME=OpsDeck GIT_COMMITTER_EMAIL=opsdeck@localhost'
 
 /** The deployed commit is read from origin (peeled), so a stale local tag or a fetch cannot change it. */
@@ -170,7 +173,7 @@ const taskRecord = (d: PlanDeployment): Task =>
   sh(nm('record', d), 'record', runOf(d), [
     'T={{ d.tag | quote }}',
     REMOTE_TAG,
-    'if [ -n "$c" ]; then echo "OD-PREV $c"; else echo "OD-PREV none"; fi',
+    'if [ "$ok" = 0 ]; then echo "OD-PREV unknown"; elif [ -n "$c" ]; then echo "OD-PREV $c"; else echo "OD-PREV none"; fi',
   ].join('\n'), { timeout: T_SHORT, chdir: IN_REPO, guarded: true })
 
 const taskBackup = (d: PlanDeployment): Task => {
@@ -185,17 +188,18 @@ const taskBackup = (d: PlanDeployment): Task => {
     '  case "$v" in \\"*\\") v="${v#\\"}"; v="${v%\\"}";; \\\'*\\\') v="${v#\\\'}"; v="${v%\\\'}";; esac',
     '  case "$k" in DB_USER|DB_HOST|DB_PORT|DB_NAME|DB_PASS) printf -v "$k" \'%s\' "$v";; esac',
     'done < .env',
-    ': "${DB_USER:?DB_USER is not set in .env}" "${DB_HOST:?DB_HOST is not set in .env}" "${DB_NAME:?DB_NAME is not set in .env}" "${DB_PASS:?DB_PASS is not set in .env}"',
+    ': "${DB_USER:?DB_USER is not set in .env}" "${DB_HOST:?DB_HOST is not set in .env}" "${DB_NAME:?DB_NAME is not set in .env}" "${DB_PASS-}"',
     'umask 077',
     'mkdir -p {{ d.backup_dir | quote }}',
-    'PGPASSWORD="$DB_PASS" pg_dump -Fc -h "$DB_HOST" -p "${DB_PORT:-5432}" -U "$DB_USER" -d "$DB_NAME" -f "$F" || { rm -f "$F"; exit 1; }',
+    'PGPASSWORD="$DB_PASS" pg_dump -Fc -h "$DB_HOST" -p "${DB_PORT:-5432}" -U "$DB_USER" -d "$DB_NAME" -f "$F.part" || { rm -f "$F.part"; exit 1; }',
+    'mv -f "$F.part" "$F"',
     'echo "backup written: $F"',
   ].join('\n')
   return sh(
     nm('backup', d),
     'backup',
     runOf(d),
-    streamed('backup', body, { pre: 'F={{ d.backup_dir | quote }}/{{ d.backup_label | quote }}.dump', post: 'echo "OD-BACKUP $F"' }),
+    streamed('backup', body, { pre: 'F={{ d.backup_dir | quote }}/{{ d.backup_label | quote }}-{{ d.run }}.dump', post: 'echo "OD-BACKUP $F"' }),
     { timeout: T_BACKUP, chdir: IN_REPO, guarded: true },
   )
 }
@@ -219,13 +223,21 @@ const ENV_CMD = [
   'umask 077',
   'rm -f .env.opsdeck-none',
   'if [ -f .env ]; then cp -p .env .env.opsdeck-prev && chmod 600 .env.opsdeck-prev || exit 1; else rm -f .env.opsdeck-prev; : > .env.opsdeck-none; fi',
+  // scopes the backup to this release: rb_env restores only when this names the release being rolled back
+  "printf '%s' {{ od.rel | quote }} > .env.opsdeck-rel",
   'base64 -d > .env.opsdeck-new && chmod 600 .env.opsdeck-new && mv -f .env.opsdeck-new .env',
 ].join('\n')
 const RB_ENV_CMD = [
   'umask 077',
-  'if [ -f .env.opsdeck-prev ]; then mv -f .env.opsdeck-prev .env',
-  'elif [ -f .env.opsdeck-none ]; then rm -f .env .env.opsdeck-none',
+  'if [ "$(cat .env.opsdeck-rel 2>/dev/null)" = {{ od.rel | quote }} ]; then',
+  '  if [ -f .env.opsdeck-prev ]; then mv -f .env.opsdeck-prev .env',
+  '  elif [ -f .env.opsdeck-none ]; then rm -f .env',
+  '  fi',
+  '  echo "OD-ENV restored"',
+  'else',
+  '  echo "OD-ENV skipped: .env was not written by this release"',
   'fi',
+  'rm -f .env.opsdeck-rel .env.opsdeck-prev .env.opsdeck-none',
 ].join('\n')
 
 function envTask(kind: 'env' | 'rb_env', d: PlanDeployment): Task {
@@ -379,13 +391,12 @@ const taskVersion = (d: PlanDeployment): Task =>
   })
 
 // ---- preflight
-function pf(d: PlanDeployment, check: string, cmd: string, o: { chdir?: boolean; become?: boolean; noLog?: boolean } = {}): Task {
+function pf(d: PlanDeployment, check: string, cmd: string, o: { chdir?: boolean; become?: boolean } = {}): Task {
   return sh(`preflight ${check} ${sanitizeIdent(d.name)}`, 'preflight', runOf(d), cmd, {
     timeout: T_PREFLIGHT,
     chdir: o.chdir === false ? undefined : IN_REPO,
     failedWhen: false,
     become: o.become,
-    noLog: o.noLog,
   })
 }
 
@@ -416,7 +427,7 @@ function preflightTasks(plan: DeployPlan, d: PlanDeployment): Task[] {
     pf(d, 'tag', [
       'T={{ d.tag | quote }}',
       REMOTE_TAG,
-      'if [ -n "$c" ]; then echo "OD-PF tag exists=1 commit=$c"; else echo "OD-PF tag exists=0 commit="; fi',
+      'if [ "$ok" = 0 ]; then echo "OD-PF tag exists=unknown commit="; elif [ -n "$c" ]; then echo "OD-PF tag exists=1 commit=$c"; else echo "OD-PF tag exists=0 commit="; fi',
     ].join('\n')),
   )
   if (plan.version !== null)
