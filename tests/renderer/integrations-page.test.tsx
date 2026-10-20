@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { inventoryStore } from '../../src/renderer/src/inventory/store'
-import { IntegrationsPage } from '../../src/renderer/src/pages/settings/IntegrationsPage'
+import { SettingsPage } from '../../src/renderer/src/pages/settings/SettingsPage'
 import { AppEvents } from '../../src/renderer/src/settings/events'
 import { resetIntegrations } from '../../src/renderer/src/settings/store'
 import { toast } from '../../src/renderer/src/ui/Toaster'
@@ -47,7 +47,7 @@ function Location() {
 const renderPage = () =>
   render(
     <MemoryRouter initialEntries={['/settings']}>
-      <IntegrationsPage />
+      <SettingsPage />
     </MemoryRouter>,
   )
 const card = (name: string) => screen.getByRole('region', { name })

@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
@@ -8,6 +9,7 @@ import { VAULT_LOCKED } from '../../src/shared/vault'
 import { ContainerService, type ContainerServiceDeps } from '../../src/main/ops/containers'
 import type { Lease } from '../../src/main/ops/exec-links'
 import { CONFIRM_MESSAGE } from '../../src/main/ops/protect'
+import { shellWords } from './deploy-helpers'
 import { makeRunSetup } from './ops-helpers'
 
 const FULL_ID = (c: string): string => c.repeat(64)
@@ -321,6 +323,18 @@ describe('ContainerService', () => {
     t.containers.unfollow(c)
   })
 
+  it('a vault lock ends every follow with the locked error', async () => {
+    const t = await setup()
+    t.fixture('logs.out', 'x')
+    const a = await t.containers.follow(t.ids['app-1']!, null, 'web-1', 10)
+    const b = await t.containers.follow(t.ids['app-1']!, null, 'web-2', 10)
+    t.containers.vaultLocked()
+    const locked = { code: 'locked', message: 'The vault was locked; follow the logs again after unlocking' }
+    expect(t.ends(a)).toEqual([{ followId: a, ended: true, error: locked }])
+    expect(t.ends(b)).toEqual([{ followId: b, ended: true, error: locked }])
+    await t.waitFor(() => expect(t.sh.running()).toBe(0))
+  })
+
   it("a failed logs or follow never reports the container's own stderr lines", async () => {
     const t = await setup()
     const host = t.ids['app-1']!
@@ -478,5 +492,172 @@ describe('ContainerService leases', () => {
     expect(((await list) as Error).message).toBe('Timed out waiting for a connection to app-1')
     expect(((await action) as Error).message).toBe('Timed out waiting for a connection to app-1')
     expect(audit).toEqual([expect.objectContaining({ action: 'container.start', outcome: 'failure' })])
+  })
+})
+
+/** A channel the test drives by hand: data, stderr, exit and close. */
+class FakeChannel extends EventEmitter {
+  readonly stderr = new EventEmitter()
+  readonly signals: string[] = []
+  readonly writes: string[] = []
+  private closed = false
+  signal(name: string): void {
+    this.signals.push(name)
+  }
+  write(d: unknown): boolean {
+    this.writes.push(String(d))
+    return true
+  }
+  close(): void {
+    if (this.closed) return
+    this.closed = true
+    this.emit('close')
+  }
+  /** docker exits with `code`, then the channel closes. */
+  end(code: number): void {
+    this.emit('exit', code)
+    this.close()
+  }
+}
+
+function channelClient() {
+  const execs: { command: string; env: unknown; ch: FakeChannel }[] = []
+  const client = {
+    exec: ((command: string, opts: { env?: unknown }, cb: (err: Error | undefined, ch: FakeChannel) => void) => {
+      const ch = new FakeChannel()
+      execs.push({ command, env: opts.env, ch })
+      cb(undefined, ch)
+    }) as unknown as Client['exec'],
+  }
+  return { client, execs }
+}
+
+describe('ContainerService.followCompose', () => {
+  const HOST = '6f2c1a52-8c55-4a43-9f29-2a5d8e1f4b10'
+  const ENV = '0190a1b2-c3d4-7e5f-8a6b-1234567890ab'
+  const SPEC = { repoPath: '/srv/app', composeFile: 'deploy/compose.yml', composeProject: null, composeService: 'web', useSudo: 'no' as const }
+
+  function composeRig(over: Partial<ContainerServiceDeps> = {}) {
+    const c = channelClient()
+    const f = fakeLinks(c.client)
+    const events: ContainerLogEvent[] = []
+    const { service, audit } = unitService(f.links, { emit: (_e, p) => void events.push(p), ...over })
+    const ends = (id: string) => events.filter((e) => e.followId === id && 'ended' in e)
+    const chunks = (id: string): string => events.flatMap((e) => (e.followId === id && 'chunk' in e ? [e.chunk] : [])).join('')
+    return { ...c, ...f, service, audit, events, ends, chunks }
+  }
+
+  it('followCompose runs cd + compose logs -f --tail n svc with -p only when set', async () => {
+    const r = composeRig()
+    await r.service.followCompose(HOST, ENV, SPEC, 50)
+    await r.service.followCompose(HOST, ENV, { ...SPEC, composeProject: 'shop', composeService: 'api.v2' }, 0)
+    expect(shellWords(r.execs[0]!.command)).toEqual(['cd', '/srv/app', '&&', 'docker', 'compose', '-f', 'deploy/compose.yml', 'logs', '-f', '--tail', '50', 'web'])
+    expect(shellWords(r.execs[1]!.command)).toEqual([
+      'cd', '/srv/app', '&&', 'docker', 'compose', '-f', 'deploy/compose.yml', '-p', 'shop', 'logs', '-f', '--tail', '0', 'api.v2',
+    ])
+    // Same lease owner and env as any container follow; logs are never audited.
+    expect(r.owners).toEqual([`containers:${HOST}`, `containers:${HOST}`])
+    expect(r.execs[0]!.env).toEqual({ OD_HOST: 'app-1' })
+    expect(r.audit).toEqual([])
+  })
+
+  it('followCompose uses sudo -n for yes, plain for no, the docker-info switch for auto', async () => {
+    const r = composeRig({ maxFollows: 3 })
+    await r.service.followCompose(HOST, ENV, { ...SPEC, useSudo: 'yes' }, 10)
+    await r.service.followCompose(HOST, ENV, { ...SPEC, useSudo: 'no' }, 10)
+    await r.service.followCompose(HOST, ENV, { ...SPEC, useSudo: 'auto' }, 10)
+    const tail = ['compose', '-f', 'deploy/compose.yml', 'logs', '-f', '--tail', '10', 'web']
+    const [yes, no, auto] = r.execs.map((e) => shellWords(e.command))
+    expect(yes).toEqual(['cd', '/srv/app', '&&', 'sudo', '-n', 'docker', ...tail])
+    expect(no).toEqual(['cd', '/srv/app', '&&', 'docker', ...tail])
+    const run = auto!.indexOf('$D')
+    expect(auto!.slice(0, run)).toEqual([
+      'cd', '/srv/app', '&&', 'if', 'docker', 'info', '>/dev/null', '2>&1', ';', 'then', 'D=docker', ';', 'else', 'D=sudo -n docker', ';', 'fi', '&&',
+    ])
+    expect(auto!.slice(run + 1)).toEqual(tail)
+  })
+
+  it('followCompose refuses a bad repo path, compose file, project or service', async () => {
+    const r = composeRig()
+    const bad: [Record<string, unknown>, string][] = [
+      [{ repoPath: 'srv/app' }, 'invalid repo path'],
+      [{ repoPath: '/srv/../etc' }, 'invalid repo path'],
+      [{ repoPath: '/srv/app; rm -rf /' }, 'invalid repo path'],
+      [{ composeFile: '-f' }, 'invalid compose file'],
+      [{ composeFile: '/etc/compose.yml' }, 'invalid compose file'],
+      [{ composeProject: '-p' }, 'invalid compose project'],
+      [{ composeService: 'web svc' }, 'invalid compose service'],
+      [{ composeService: '$(id)' }, 'invalid compose service'],
+      [{ useSudo: 'always' }, 'useSudo must be auto, yes or no'],
+    ]
+    for (const [over, message] of bad) {
+      await expect(r.service.followCompose(HOST, ENV, { ...SPEC, ...over } as never, 10), JSON.stringify(over)).rejects.toThrow(new Error(message))
+    }
+    await expect(r.service.followCompose(HOST, ENV, SPEC, -1)).rejects.toThrow(/^tail must be a whole number/)
+    expect(r.owners).toEqual([])
+    expect(r.execs).toEqual([])
+  })
+
+  it('followCompose counts toward maxFollows and emits containers:logs', async () => {
+    const r = composeRig({ maxFollows: 2 })
+    const a = await r.service.followCompose(HOST, ENV, SPEC, 10)
+    const b = await r.service.follow(HOST, ENV, 'web-1', 10)
+    const full = new Error('app-1 already has 2 log follows open; stop one first')
+    await expect(r.service.followCompose(HOST, ENV, SPEC, 10)).rejects.toThrow(full)
+    await expect(r.service.follow(HOST, ENV, 'web-2', 10)).rejects.toThrow(full)
+
+    r.execs[0]!.ch.emit('data', Buffer.from('web-1  | GET / 200\n'))
+    await vi.waitFor(() => expect(r.chunks(a)).toBe('web-1  | GET / 200\n'))
+    r.execs[0]!.ch.end(0)
+    await vi.waitFor(() => expect(r.ends(a)).toEqual([{ followId: a, ended: true, error: null }]))
+    // An ended follow frees its slot.
+    const c = await r.service.followCompose(HOST, ENV, SPEC, 10)
+    r.service.unfollow(c)
+    r.service.unfollow(b)
+    expect(r.ends(c)).toEqual([{ followId: c, ended: true, error: null }])
+    expect(r.audit).toEqual([])
+  })
+
+  it('a docker permission error ends the follow with the sudo hint', async () => {
+    const r = composeRig({ maxFollows: 4 })
+    const hint = { code: 'unknown', message: "Docker on app-1 needs sudo for logs; check the checkout's sudo setting" }
+    const stderr = [
+      'permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get "http://%2Fvar%2Frun%2Fdocker.sock/v1.47/containers/json": dial unix /var/run/docker.sock: connect: permission denied',
+      'sudo: a password is required',
+      'sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper',
+    ]
+    for (const [i, line] of stderr.entries()) {
+      const id = await r.service.followCompose(HOST, ENV, { ...SPEC, useSudo: i === 0 ? 'no' : 'yes' }, 10)
+      r.execs[i]!.ch.stderr.emit('data', Buffer.from(`${line}\n`))
+      r.execs[i]!.ch.end(1)
+      await vi.waitFor(() => expect(r.ends(id)).toEqual([{ followId: id, ended: true, error: hint }]))
+    }
+    // Any other failure keeps the logs error.
+    const id = await r.service.followCompose(HOST, ENV, SPEC, 10)
+    r.execs[3]!.ch.stderr.emit('data', Buffer.from('no such service: web\n'))
+    r.execs[3]!.ch.end(1)
+    await vi.waitFor(() => expect(r.ends(id)).toEqual([{ followId: id, ended: true, error: { code: 'unknown', message: 'docker logs exited with code 1 on app-1' } }]))
+  })
+
+  it('a vault lock ends a compose follow too', async () => {
+    const r = composeRig()
+    const id = await r.service.followCompose(HOST, ENV, SPEC, 10)
+    r.service.vaultLocked()
+    expect(r.ends(id)).toEqual([{ followId: id, ended: true, error: { code: 'locked', message: 'The vault was locked; follow the logs again after unlocking' } }])
+  })
+
+  it('followCompose never asks for a secret', async () => {
+    const asked: string[] = []
+    // A tripwire: ContainerService has no secrets dep today, so this only fires if one is added and used.
+    const secrets = new Proxy({}, { get: (_t, k) => (asked.push(String(k)), () => { throw new Error('a secret was asked for') }) })
+    const r = composeRig({ ...({ secrets } as object), maxFollows: 3 })
+    for (const useSudo of ['yes', 'no', 'auto'] as const) await r.service.followCompose(HOST, ENV, { ...SPEC, useSudo }, 10)
+    for (const e of r.execs) {
+      // No password on stdin and no `sudo -S`: sudo only ever runs non-interactive.
+      expect(e.ch.writes).toEqual([])
+      expect(shellWords(e.command)).not.toContain('-S')
+      expect(e.env).toEqual({ OD_HOST: 'app-1' })
+    }
+    expect(asked).toEqual([])
   })
 })

@@ -2,6 +2,8 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { resetReleases } from '../../src/renderer/src/deploy/releases'
+import { resetDeploy } from '../../src/renderer/src/deploy/store'
 import { inventoryStore } from '../../src/renderer/src/inventory/store'
 import { buildTree } from '../../src/renderer/src/inventory/tree'
 import { ProductsPage } from '../../src/renderer/src/pages/products/ProductsPage'
@@ -10,7 +12,7 @@ import { vaultStatusStore } from '../../src/renderer/src/vault/status'
 import { cancelUnlock } from '../../src/renderer/src/vault/unlock'
 import type { EnvironmentMeta, HostMeta, ProductMeta } from '../../src/shared/inventory'
 import { DEFAULT_VAULT_ID, type IdentityMeta } from '../../src/shared/vault'
-import { defaultVault, environment, host, mockBridge, product, vaultStatus } from './helpers'
+import { appService, defaultVault, deploymentMeta, environment, host, mockBridge, product, vaultStatus } from './helpers'
 
 // framer-motion caches matchMedia, so reduced motion is driven through useMotionSafe (F18).
 const motion = vi.hoisted(() => ({ safe: true }))
@@ -85,8 +87,8 @@ function Location() {
   return null
 }
 
-function renderPage(w: World = world()) {
-  const invoke = mockBridge({ 'vault:status': vaultStatus({ unlocked: true }), 'identity:list': [deploy], 'vault:list': [defaultVault] })
+function renderPage(w: World = world(), extra: Record<string, unknown> = {}) {
+  const invoke = mockBridge({ 'vault:status': vaultStatus({ unlocked: true }), 'identity:list': [deploy], 'vault:list': [defaultVault], ...extra })
   const base = invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
   invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
     switch (channel) {
@@ -173,6 +175,8 @@ afterEach(() => {
     cancelUnlock()
     clearToasts()
   })
+  resetDeploy()
+  resetReleases()
 })
 
 describe('products page', () => {
@@ -288,6 +292,26 @@ describe('products page', () => {
     await user.click(await within(details).findByRole('button', { name: 'Connect to web-1' }))
     await waitFor(() => expect(where).toBe('/terminals'))
     expect(sessions.openSsh).toHaveBeenCalledWith('web1', 'prod')
+  })
+
+  it('a service row Deploy opens the deploy wizard with only that service ticked', async () => {
+    const user = userEvent.setup()
+    renderPage(world(), {
+      'deploy:list': [deploymentMeta({ id: 'd1', name: 'core', environmentId: 'prod', hostId: 'web1' })],
+      'service:list': [
+        appService({ id: 's1', name: 'api', environmentId: 'prod', deploymentId: 'd1' }),
+        appService({ id: 's2', name: 'worker', environmentId: 'prod', deploymentId: 'd1', position: 1 }),
+      ],
+    })
+    await screen.findByRole('treeitem', { name: 'Acme' })
+    await user.click(item('prod'))
+    const details = screen.getByRole('region', { name: 'Details' })
+    await user.click(await within(details).findByRole('button', { name: 'Deploy api' }))
+    const wizard = await screen.findByRole('dialog', { name: 'Deploy to prod' })
+    expect(within(wizard).getByRole('checkbox', { name: 'api' })).toBeChecked()
+    expect(within(wizard).getByRole('checkbox', { name: 'worker' })).not.toBeChecked()
+    await user.click(within(wizard).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Deploy to prod' })).not.toBeInTheDocument())
   })
 
   it('environment dialog saves defaults', async () => {

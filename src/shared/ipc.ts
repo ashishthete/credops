@@ -1,5 +1,6 @@
 import type { ExplainSubject, Explanation, ReleaseNotesRequest, ReleaseNotesResult } from './ai'
 import type { AuditEvent, AuditFilter, ChainVerification } from './audit'
+import type { ConfigCounts } from './config-file'
 import type {
   EnvironmentInput,
   EnvironmentMeta,
@@ -229,6 +230,14 @@ export interface IpcContract {
   'ai:releaseNotes': { args: [requestId: string, req: ReleaseNotesRequest]; result: ReleaseNotesResult }
   'ai:explain': { args: [requestId: string, subject: ExplainSubject]; result: Explanation }
   'ai:command': { args: [requestId: string, index: number, mode: 'copy' | 'run']; result: void }
+  // A kind `service` with a checkout: `docker compose logs -f` streamed as `containers:logs`; stop it with `containers:unfollow`.
+  'service:logs': { args: [id: string, tail: number]; result: string }
+  // Opens the stored URL in the browser; refused when the service has none.
+  'service:open': { args: [id: string]; result: void }
+  // A db service's Phase 5 tunnel: open creates it on first use and starts it; sync applies a changed route.
+  'service:tunnelOpen': { args: [id: string]; result: TunnelRuntime }
+  'service:tunnelClose': { args: [id: string]; result: void }
+  'service:tunnelSync': { args: [id: string]; result: TunnelRuntime | null }
   'snippets:list': { args: []; result: SnippetMeta[] }
   'snippets:create': { args: [input: SnippetInput]; result: SnippetMeta }
   'snippets:update': { args: [id: string, input: SnippetInput]; result: SnippetMeta }
@@ -250,6 +259,8 @@ export interface IpcContract {
   // Returns the followId; lines arrive as containers:logs events.
   'containers:follow': { args: [hostId: string, environmentId: string | null, ref: string, tail: number]; result: string }
   'containers:unfollow': { args: [followId: string]; result: void }
+  /** Asks where to save with a dialog in main: the renderer never sends a path. */
+  'config:export': { args: []; result: { path: string; counts: ConfigCounts } | null }
 }
 
 export type Channel = keyof IpcContract
@@ -370,6 +381,11 @@ export const CHANNELS = [
   'ai:releaseNotes',
   'ai:explain',
   'ai:command',
+  'service:logs',
+  'service:open',
+  'service:tunnelOpen',
+  'service:tunnelClose',
+  'service:tunnelSync',
   'snippets:list',
   'snippets:create',
   'snippets:update',
@@ -385,6 +401,7 @@ export const CHANNELS = [
   'containers:logs',
   'containers:follow',
   'containers:unfollow',
+  'config:export',
 ] as const satisfies readonly Channel[]
 
 // Fails typecheck if IpcContract gains a channel that CHANNELS does not list.

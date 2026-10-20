@@ -339,6 +339,12 @@ export interface PreflightReport {
   /** Per deployment: the compose file's services (`docker compose config --services`), null when unknown. */
   composeServices: Record<string, string[] | null>
   /**
+   * Per deployment: the compose services classed as databases, which a release never restarts.
+   * Task 15 owns filling it, from image-based classification in main; the renderer never guesses from names.
+   * Absent until then, and the picker shows no database rows.
+   */
+  composeDatabases?: Record<string, string[] | null>
+  /**
    * Per service in the selection: `since` is its last deployed commit, else the deploy tag's commit; `count` is
    * how many commits of its checkout's list (newest first) come before `since`. `known` is false when `since`
    * is not in the list, and then `count` is the list length.
@@ -409,6 +415,10 @@ export interface ReleaseSummary {
   finishedAt: string | null
   deploymentCount: number
   hostCount: number
+  /** The services this release was confirmed for; a rollback release names the services it rolls back. */
+  serviceIds: string[]
+  /** The run entries: every service the release deploys, including a whole checkout's. */
+  serviceCount: number
   error: string | null
 }
 
@@ -430,6 +440,10 @@ export interface DeploymentRunMeta {
   startedAt: string | null
   finishedAt: string | null
   steps: { stepId: string; kind: StepKind; state: StepState; startedAt: string | null; finishedAt: string | null; error?: string }[]
+  /** The selected services this run deploys, with their commits. */
+  services: RunService[]
+  /** True when the run rebuilds the whole checkout (`services` null in the plan). */
+  wholeCheckout: boolean
 }
 
 export interface ReleaseDetail extends ReleaseSummary {
@@ -442,12 +456,16 @@ export interface ReleaseDetail extends ReleaseSummary {
   lastSeq: number
 }
 
-/** One service of a run; at preflight `previousCommit` is its last deployed commit and `deployedCommit` is null. */
+/**
+ * One service of a run. At preflight `previousCommit` and `previousReleaseId` are its last deployed commit and
+ * release (Start refuses when either has moved since) and `deployedCommit` is null.
+ */
 export interface RunService {
   id: string
   name: string
   composeService: string
   previousCommit: string | null
+  previousReleaseId: string | null
   deployedCommit: string | null
 }
 

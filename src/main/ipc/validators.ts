@@ -715,6 +715,11 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'ai:releaseNotes': args(v.uuid(), asReleaseNotesRequest),
   'ai:explain': args(v.uuid(), asExplainSubject),
   'ai:command': args(v.uuid(), v.int({ min: 0, max: MAX_COMMANDS - 1 }), v.oneOf(['copy', 'run'] as const)),
+  'service:logs': args(v.uuid(), logTail),
+  'service:open': args(v.uuid()),
+  'service:tunnelOpen': args(v.uuid()),
+  'service:tunnelClose': args(v.uuid()),
+  'service:tunnelSync': args(v.uuid()),
   'release:preflight': args(asPreflightRequest),
   'release:start': args(v.uuid(), asReleaseConfirm),
   'release:cancel': args(v.uuid()),
@@ -742,4 +747,5 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'containers:logs': args(v.uuid(), nullableId, containerRef, logTail),
   'containers:follow': args(v.uuid(), nullableId, containerRef, logTail),
   'containers:unfollow': args(v.uuid()),
+  'config:export': args(),
 }

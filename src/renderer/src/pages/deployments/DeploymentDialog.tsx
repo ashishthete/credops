@@ -4,16 +4,18 @@ import { MAX_URLS } from '../../../../shared/deploy'
 import type { SecretMeta } from '../../../../shared/vault'
 import { blankForm, checkForm, formFrom, toInput, toPatch, type DeploymentForm, type FormField } from '../../deploy/form'
 import { createDeployment, deployStore, updateDeployment } from '../../deploy/store'
-import { useInventory } from '../../inventory/store'
+import { reloadInventory, useInventory } from '../../inventory/store'
 import { api } from '../../lib/api'
 import { Button } from '../../ui/Button'
 import { Dialog } from '../../ui/Dialog'
 import { SelectField, TextAreaField, TextField } from '../../ui/Field'
 import { Segmented } from '../../ui/Segmented'
 import { Switch } from '../../ui/Switch'
+import { toast } from '../../ui/Toaster'
 import { EnvTemplateEditor } from './EnvTemplateEditor'
 
-export type DeploymentRequest = { kind: 'new'; environmentId: string } | { kind: 'edit'; id: string }
+/** `focus: 'useSudo'` opens the edit on the sudo setting (from a logs follow docker refused). */
+export type DeploymentRequest = { kind: 'new'; environmentId: string } | { kind: 'edit'; id: string; focus?: 'useSudo' }
 
 interface DeploymentDialogProps {
   request: DeploymentRequest | null
@@ -43,6 +45,7 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
   const r = request ?? last.current
   const original = r?.kind === 'edit' ? deployStore.get().deployments.find((d) => d.id === r.id) : undefined
   const environmentId = r?.kind === 'new' ? r.environmentId : (original?.environmentId ?? '')
+  const focusSudo = r?.kind === 'edit' && r.focus === 'useSudo'
 
   const [form, setForm] = useState<DeploymentForm>(blankForm)
   const [touched, setTouched] = useState<Set<FormField>>(new Set())
@@ -72,11 +75,13 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key])
 
-  const hosts = useMemo(() => {
-    const env = data?.environments.find((e) => e.id === environmentId)
-    const byId = new Map(data?.hosts.map((h) => [h.id, h]))
-    return (env?.hosts ?? []).flatMap((m) => (byId.has(m.hostId) ? [byId.get(m.hostId)!] : [])).sort((a, b) => a.label.localeCompare(b.label))
-  }, [data, environmentId])
+  const env = data?.environments.find((e) => e.id === environmentId)
+  // Members first; any other host can be picked too, and saving adds it to the environment as an app host.
+  const { hosts, others } = useMemo(() => {
+    const members = new Set(env?.hosts.map((m) => m.hostId))
+    const all = [...(data?.hosts ?? [])].sort((a, b) => a.label.localeCompare(b.label))
+    return { hosts: all.filter((h) => members.has(h.id)), others: all.filter((h) => !members.has(h.id)) }
+  }, [data, env])
   const vaults = data?.vaults ?? []
   const available = useMemo(() => secrets.filter((s) => form.vaultIds.includes(s.vaultId)), [secrets, form.vaultIds])
 
@@ -117,7 +122,13 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
           onError,
         )
     setBusy(false)
-    if (meta) onClose()
+    if (!meta) return
+    const joined = others.find((h) => h.id === meta.hostId)
+    if (joined && env) {
+      toast({ title: `Added ${joined.label} to ${env.name} as an app host`, tone: 'success' })
+      void reloadInventory()
+    }
+    onClose()
   }
 
   const setUrl = (i: number, change: Partial<(typeof form.urls)[number]>) =>
@@ -144,7 +155,7 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
     >
       <form id={formId} onSubmit={submit} noValidate className="flex max-h-[62vh] flex-col gap-5 overflow-y-auto px-0.5 pb-1">
         <Section title="Source">
-          <TextField label="Name" autoFocus value={form.name} onChange={(e) => set({ name: e.target.value })} error={err('name')} />
+          <TextField label="Name" autoFocus={!focusSudo} value={form.name} onChange={(e) => set({ name: e.target.value })} error={err('name')} />
           <div className="grid grid-cols-2 gap-3">
             <SelectField label="Host" value={form.hostId} onChange={(e) => set({ hostId: e.target.value })} error={err('hostId')}>
               <option value="">Choose a host…</option>
@@ -153,6 +164,15 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
                   {h.label}
                 </option>
               ))}
+              {others.length > 0 && (
+                <optgroup label="Other hosts (joins as an app host)">
+                  {others.map((h) => (
+                    <option key={h.id} value={h.id}>
+                      {h.label}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </SelectField>
             <TextField
               label="Compose project"
@@ -251,7 +271,7 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
 
         <Section title="Privilege">
           <div className="grid grid-cols-2 gap-3">
-            <SelectField label="Use sudo" value={form.useSudo} onChange={(e) => set({ useSudo: e.target.value as DeploymentForm['useSudo'] })}>
+            <SelectField label="Use sudo" autoFocus={focusSudo} value={form.useSudo} onChange={(e) => set({ useSudo: e.target.value as DeploymentForm['useSudo'] })}>
               <option value="auto">Automatic</option>
               <option value="yes">Always</option>
               <option value="no">Never</option>

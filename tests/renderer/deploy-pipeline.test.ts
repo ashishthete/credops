@@ -1,0 +1,105 @@
+import { describe, expect, it } from 'vitest'
+import { etaMs, initialPipeline, reducePipeline, type PipelineState } from '../../src/renderer/src/deploy/pipeline'
+import { events, healthFailure, OK_RUN, releaseDetail } from './fixtures/release-events'
+
+const chipsOf = (s: PipelineState, runId: string) => s.lanes.flatMap((l) => l.runs).find((r) => r.runId === runId)!.chips
+const states = (s: PipelineState, runId: string) => Object.fromEntries(chipsOf(s, runId).map((c) => [c.kind, c.state]))
+
+describe('pipeline reducer', () => {
+  it('fixture ok run ends with every chip ok and result succeeded', () => {
+    const start = initialPipeline(releaseDetail())
+    expect(start.lanes.map((l) => [l.hostLabel, l.runs.map((r) => r.name)])).toEqual([
+      ['app1', ['core', 'web']],
+      ['app2', ['site']],
+    ])
+    expect(start.lanes.flatMap((l) => l.runs.flatMap((r) => r.chips)).every((c) => c.state === 'pending')).toBe(true)
+
+    const s = reducePipeline(start, events(OK_RUN))
+    const all = [...s.lanes.flatMap((l) => [l.lock!, ...l.runs.flatMap((r) => r.chips), l.unlock!]), ...s.release]
+    expect(all.every((c) => c.state === 'ok')).toBe(true)
+    expect(all.every((c) => c.durationMs === 1000)).toBe(true)
+    expect(s.lanes.flatMap((l) => l.runs.map((r) => r.status))).toEqual(['succeeded', 'succeeded', 'succeeded'])
+    expect(s.lanes[0].runs[0].deployedCommit).toBe('b'.repeat(40))
+    expect(s.result).toEqual({ status: 'succeeded' })
+    expect(s.status).toBe('succeeded')
+    expect(s.version).toEqual({ from: 'v1.4.0', to: 'v1.5.0' })
+    expect(s.lastSeq).toBe(events(OK_RUN).length)
+    expect(s.gap).toBe(false)
+    // Pure: the input is untouched.
+    expect(start.lanes.flatMap((l) => l.runs.flatMap((r) => r.chips)).every((c) => c.state === 'pending')).toBe(true)
+  })
+
+  it('lane rows name their services or whole checkout', () => {
+    const s = initialPipeline(releaseDetail())
+    const rows = s.lanes.flatMap((l) => l.runs.map((r) => ({ name: r.name, services: r.services, whole: r.wholeCheckout })))
+    expect(rows).toEqual([
+      { name: 'core', services: ['api', 'worker'], whole: false },
+      { name: 'web', services: [], whole: true },
+      { name: 'site', services: ['site'], whole: false },
+    ])
+  })
+
+  it('health failure marks the chip failed and later chips stay pending', () => {
+    const s = reducePipeline(initialPipeline(releaseDetail()), events(healthFailure(false)))
+    const r3 = chipsOf(s, 'r3')
+    expect(r3.find((c) => c.kind === 'health')).toMatchObject({ state: 'failed', error: 'health check failed on app2', durationMs: 5000 })
+    expect(states(s, 'r3')).toMatchObject({ up: 'ok', health: 'failed', tag: 'pending' })
+    expect(states(s, 'r2')).toEqual(Object.fromEntries(chipsOf(s, 'r2').map((c) => [c.kind, 'pending'])))
+    expect(s.result).toEqual({ status: 'failed', error: 'health check failed on app2' })
+    expect(s.rollback.active).toBe(false)
+  })
+
+  it('auto-rollback marks earlier chips rolled_back', () => {
+    const s = reducePipeline(initialPipeline(releaseDetail()), events(healthFailure(true)))
+    expect(states(s, 'r1')).toMatchObject({ record: 'rolled_back', build: 'rolled_back', tag: 'rolled_back', rb_checkout: 'ok', rb_up: 'ok' })
+    expect(s.rollback).toEqual({ active: false, runIds: ['r1'], ok: true })
+    expect(s.lanes[0].runs[0].status).toBe('rolled_back')
+    expect(s.status).toBe('rolled_back')
+    // The failed run is not rolled back.
+    expect(states(s, 'r3').health).toBe('failed')
+  })
+
+  it('lock.busy is surfaced with holder text', () => {
+    const holder = { releaseId: 'other', user: 'ana', machine: 'mbp', environment: 'staging', version: 'v1.5.0', startedAt: '10:42' }
+    const s = reducePipeline(initialPipeline(releaseDetail()), events([{ type: 'lock.busy', hostId: 'h1', holder, stale: false, text: 'ana@mbp is deploying v1.5.0 since 10:42' }]))
+    expect(s.lockBusy).toEqual([{ hostId: 'h1', text: 'ana@mbp is deploying v1.5.0 since 10:42', stale: false }])
+  })
+
+  it('replay equals live, including after a seq gap refetch', () => {
+    const all = events(healthFailure(true))
+    const start = initialPipeline(releaseDetail())
+    const batch = reducePipeline(start, all)
+    const single = all.reduce((s, e) => reducePipeline(s, [e]), start)
+    expect(single).toEqual(batch)
+
+    // Live: the first part arrives, a batch is missed, the next one shows the gap; the refetch fills it in.
+    const cut = 10
+    let live = reducePipeline(start, all.slice(0, cut))
+    live = reducePipeline(live, all.slice(cut + 5, cut + 8))
+    expect(live.gap).toBe(true)
+    expect(live.lastSeq).toBe(cut)
+    live = reducePipeline(live, all.filter((e) => e.seq > live.lastSeq))
+    // A late duplicate changes nothing.
+    live = reducePipeline(live, all.slice(cut + 5, cut + 8))
+    expect(live).toEqual(batch)
+  })
+
+  it('etaMs uses the median of history', () => {
+    const detail = releaseDetail({ runs: [releaseDetail().runs[2]] })
+    const start = initialPipeline(detail)
+    // One lane: lock, seven run steps, unlock, then the version step.
+    const history = { build: [10_000, 30_000, 20_000], up: [4_000, 6_000], lock: [1_000] }
+    expect(etaMs(start, history, 0)).toBe(1_000 + 20_000 + 5_000)
+    // A running build has used 15 s of its 20 s median.
+    const t0 = Date.parse(events([{ type: 'run.started', kind: 'release', version: null }])[0].at)
+    const s = reducePipeline(start, events([
+      { type: 'run.started', kind: 'release', version: null },
+      { type: 'step.started', stepId: 'host:h2:lock', kind: 'lock', name: 'lock', hostId: 'h2', deploymentRunId: null },
+      { type: 'step.done', stepId: 'host:h2:lock', state: 'ok', durationMs: 900 },
+      { type: 'step.started', stepId: 'r3:build', kind: 'build', name: 'build', hostId: 'h2', deploymentRunId: 'r3' },
+    ]))
+    const buildStart = t0 + 3_000
+    expect(etaMs(s, history, buildStart + 15_000)).toBe(5_000 + 5_000)
+    expect(etaMs(s, {}, 0)).toBeNull()
+  })
+})

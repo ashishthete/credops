@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { InventoryData } from '../../src/renderer/src/inventory/store'
 import { buildGraph, type MapScope } from '../../src/renderer/src/map/graph'
 import {
-  COL_GAP, GAP, GROUP_HEADER, GROUP_PAD, HOST_H, HOST_W, MAC_H, PRODUCT_H, PRODUCT_W, ROW_GAP,
+  ATTACH_H, COL_GAP, GAP, GROUP_HEADER, GROUP_PAD, HOST_H, HOST_W, MAC_H, PRODUCT_H, PRODUCT_W, ROW_GAP,
   diffLayout, layoutGraph, type MapLayout, type Placed,
 } from '../../src/renderer/src/map/layout'
 import { environment, host, product, tunnelMeta } from './helpers'
@@ -29,9 +29,10 @@ describe('layoutGraph', () => {
     const at = (id: string) => [l.positions[`e:e1/h:${id}`].x, l.positions[`e:e1/h:${id}`].y]
     expect(at('h1')).toEqual([16, 40])
     expect(at('h2')).toEqual([240, 40])
-    expect(at('h3')).toEqual([16, 120])
-    expect(at('h4')).toEqual([240, 120])
-    expect(l.positions['e:e1']).toMatchObject({ width: 464, height: 200 })
+    // Each row keeps ATTACH_H under its hosts for their services' chips.
+    expect(at('h3')).toEqual([16, 140])
+    expect(at('h4')).toEqual([240, 140])
+    expect(l.positions['e:e1']).toMatchObject({ width: 464, height: 240 })
     expect(l.positions['e:e1/h:h1']).toMatchObject({ width: HOST_W, height: HOST_H })
   })
 
@@ -39,8 +40,8 @@ describe('layoutGraph', () => {
     const l = layout(inventory([{ id: 'e1', name: 'Prod', productIds: [], hostIds: hosts(50) }]))
     const g = l.positions['e:e1']
     expect(g.width).toBe(2 * GROUP_PAD + 6 * HOST_W + 5 * GAP)
-    expect(g.height).toBe(GROUP_HEADER + GROUP_PAD + 9 * HOST_H + 8 * GAP)
-    expect(l.positions['e:e1/h:h006']).toMatchObject({ x: GROUP_PAD, y: GROUP_HEADER + HOST_H + GAP })
+    expect(g.height).toBe(GROUP_HEADER + GROUP_PAD + 9 * (HOST_H + ATTACH_H) + 8 * GAP)
+    expect(l.positions['e:e1/h:h006']).toMatchObject({ x: GROUP_PAD, y: GROUP_HEADER + HOST_H + ATTACH_H + GAP })
   })
 
   it('sizes an empty group as one host cell', () => {
@@ -61,14 +62,14 @@ describe('layoutGraph', () => {
       ),
     )
     const x = PRODUCT_W + COL_GAP
-    expect(l.positions['e:e1']).toMatchObject({ x, y: 0, height: 120 })
-    expect(l.positions['e:e2']).toMatchObject({ x, y: 120 + ROW_GAP })
-    expect(l.positions['e:e3']).toMatchObject({ x, y: 2 * (120 + ROW_GAP) })
-    expect(l.positions['p:a']).toMatchObject({ x: 0, y: (0 + 120 + ROW_GAP + 120) / 2 - PRODUCT_H / 2 })
-    expect(l.positions['p:b'].y).toBe(2 * (120 + ROW_GAP) + 60 - PRODUCT_H / 2)
+    expect(l.positions['e:e1']).toMatchObject({ x, y: 0, height: 140 })
+    expect(l.positions['e:e2']).toMatchObject({ x, y: 140 + ROW_GAP })
+    expect(l.positions['e:e3']).toMatchObject({ x, y: 2 * (140 + ROW_GAP) })
+    expect(l.positions['p:a']).toMatchObject({ x: 0, y: (0 + 140 + ROW_GAP + 140) / 2 - PRODUCT_H / 2 })
+    expect(l.positions['p:b'].y).toBe(2 * (140 + ROW_GAP) + 70 - PRODUCT_H / 2)
     // Product without groups is stacked after the previous one; product-less groups follow.
-    expect(l.positions['p:c'].y).toBe(3 * (120 + ROW_GAP))
-    expect(l.positions['e:e4'].y).toBe(3 * (120 + ROW_GAP) + PRODUCT_H + ROW_GAP)
+    expect(l.positions['p:c'].y).toBe(3 * (140 + ROW_GAP))
+    expect(l.positions['e:e4'].y).toBe(3 * (140 + ROW_GAP) + PRODUCT_H + ROW_GAP)
   })
 
   it('places this Mac right of the widest group, centred on tunnelled hosts', () => {

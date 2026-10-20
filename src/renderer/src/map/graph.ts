@@ -1,4 +1,6 @@
+import type { DeploymentMeta } from '../../../shared/deploy'
 import type { EnvironmentMeta, HostMeta, HostRole, OsIcon, ProductIcon } from '../../../shared/inventory'
+import type { ServiceMeta } from '../../../shared/services'
 import type { TunnelMeta, TunnelType } from '../../../shared/tunnels'
 import type { InventoryData } from '../inventory/store'
 import { byName, compareHosts, UNASSIGNED_COLOR } from '../inventory/tree'
@@ -19,14 +21,40 @@ export function parseScope(params: URLSearchParams, data: InventoryData): MapSco
   return { kind: 'all' }
 }
 
-/** Phase 8 adds 'app' | 'deployment'. */
+/** Services are drawn on their host's node as attachments, not as nodes of their own. */
 export type MapNodeKind = 'product' | 'environment' | 'host' | 'mac'
 
-/** The Phase 8 seam: things attached to a host (apps, deployments). Always empty for now. */
+/** A service drawn under the host it runs on. */
 export interface MapAttachment {
+  /** The service id. */
   id: string
-  kind: string
+  kind: 'service' | 'db'
   label: string
+}
+
+/** Per host, then per environment, the services drawn under that placement. */
+export type MapAttachments = Record<string, Record<string, MapAttachment[]>>
+
+/**
+ * A `service` attaches to its checkout's host; a `db` to the environment's host whose address is its
+ * `dbAddress`, and nowhere when none is. Order follows the services' positions.
+ */
+export function buildAttachments(data: InventoryData, services: ServiceMeta[], deployments: DeploymentMeta[]): MapAttachments {
+  const checkoutHost = new Map(deployments.map((d) => [d.id, d.hostId]))
+  const hostById = new Map(data.hosts.map((h) => [h.id, h]))
+  const envById = new Map(data.environments.map((e) => [e.id, e]))
+  const out: MapAttachments = {}
+  for (const s of [...services].sort((a, b) => a.position - b.position)) {
+    const env = envById.get(s.environmentId)
+    if (!env) continue
+    const hostId =
+      s.kind === 'service'
+        ? s.deploymentId ? checkoutHost.get(s.deploymentId) : undefined
+        : env.hosts.find((m) => hostById.get(m.hostId)?.address === s.dbAddress)?.hostId
+    if (!hostId || !env.hosts.some((m) => m.hostId === hostId)) continue
+    ;((out[hostId] ??= {})[env.id] ??= []).push({ id: s.id, kind: s.kind, label: s.name })
+  }
+  return out
 }
 
 export interface ProductNodeData {
@@ -110,7 +138,19 @@ interface Group {
   primaryProductId: string | null
 }
 
-export function buildGraph({ data, tunnels, scope }: { data: InventoryData; tunnels: TunnelMeta[]; scope: MapScope }): MapGraph {
+const NO_ATTACHMENTS: MapAttachments = {}
+
+export function buildGraph({
+  data,
+  tunnels,
+  scope,
+  attachments = NO_ATTACHMENTS,
+}: {
+  data: InventoryData
+  tunnels: TunnelMeta[]
+  scope: MapScope
+  attachments?: MapAttachments
+}): MapGraph {
   const productById = new Map(data.products.map((p) => [p.id, p]))
   const hostById = new Map(data.hosts.map((h) => [h.id, h]))
   const vaultName = new Map(data.vaults.map((v) => [v.id, v.name]))
@@ -185,7 +225,9 @@ export function buildGraph({ data, tunnels, scope }: { data: InventoryData; tunn
       const data: HostNodeData = {
           kind: 'host', hostId: host.id, environmentId: g.env?.id ?? null, label: host.label, address: host.address, role,
           osIcon: host.osIcon, tags: [...host.tags], vaultNames: host.vaultIds.flatMap((v) => vaultName.get(v) ?? []),
-          sharedCount: placementCount.get(host.id) ?? 1, jumpLabel: null, attachments: [],
+          sharedCount: placementCount.get(host.id) ?? 1, jumpLabel: null,
+          // Only an environment placement carries services; the unassigned group has none.
+          attachments: g.env ? [...(attachments[host.id]?.[g.env.id] ?? [])] : [],
       }
       nodes.push({ id, parentId: g.id, data })
       hostNodes.push({ id, data, host, env: g.env })

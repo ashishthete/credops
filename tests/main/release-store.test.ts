@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { uuidv7Time } from '../../src/main/deploy/uuidv7'
-import { DEFAULT_RELEASE_OPTIONS, type RunEventBody } from '../../src/shared/deploy'
+import { DEFAULT_RELEASE_OPTIONS, type PreflightReport, type RunEventBody, type RunService } from '../../src/shared/deploy'
 import { makeDeployFixture } from './deploy-helpers'
 
 const log = (line: string): RunEventBody => ({ type: 'log', stepId: null, hostId: null, stream: 'out', line })
@@ -109,6 +109,13 @@ describe('ReleaseStore', () => {
       { stepId: 'X:fetch', kind: 'fetch', state: 'pending', startedAt: null, finishedAt: null },
     ])
     expect(f.releases.get(r.id)).toMatchObject({ deploymentCount: 1, hostCount: 1 })
+  })
+
+  it('detail gives a report stored before services empty composeServices and serviceCommits', async () => {
+    const { f, r } = await release()
+    const old = { releaseId: r.id, checks: [], commits: {}, dockerModes: {}, locks: {}, commitsTotal: 0, blocked: false }
+    f.releases.appendEvents(r.id, [{ type: 'preflight.done', report: old as unknown as PreflightReport }])
+    expect(f.releases.detail(r.id).preflight).toEqual({ ...old, composeServices: {}, serviceCommits: {} })
   })
 
   it('detail joins runs with parsed steps and commits', async () => {
@@ -235,5 +242,106 @@ describe('ReleaseStore', () => {
     expect(f.releases.failInterrupted()).toEqual([pre.id])
     expect(f.releases.get(pre.id)).toMatchObject({ status: 'failed', error: 'interrupted: OpsDeck quit during the run' })
     expect(f.releases.get(r.id).status).toBe('ready')
+  })
+
+  describe('per-service record', () => {
+    const SA = 'a'.repeat(40)
+    const SB = 'b'.repeat(40)
+    const entry = (id: string, over: Partial<RunService> = {}): RunService => ({ id, name: id, composeService: id, previousCommit: null, previousReleaseId: null, deployedCommit: null, ...over })
+    type F = Awaited<ReturnType<typeof release>>['f']
+    type D = Awaited<ReturnType<typeof release>>['d']
+    /** One release with one run listing `services`; started unless `started` is false. */
+    const rel = (f: F, d: D, services: RunService[], o: { started?: boolean; runStatus?: 'succeeded' | 'failed' | 'rolled_back'; kind?: 'release' | 'rollback'; status?: 'succeeded' | 'rolled_back'; serviceIds?: string[] } = {}) => {
+      const r = f.releases.createRelease({
+        environmentId: f.staging.id, kind: o.kind ?? 'release', status: 'ready', version: null, previousVersion: null, versionBump: 'none',
+        redeploy: false, rollbackOf: null, options: DEFAULT_RELEASE_OPTIONS, triggeredBy: 'ana@mbp', serviceIds: o.serviceIds ?? services.map((s) => s.id),
+      })
+      const [run] = f.releases.createRuns(r.id, [
+        { deploymentId: d.id, deploymentName: 'api', hostId: d.hostId, hostLabel: 'app1', position: 0, branch: 'main', steps: [], services, wholeCheckout: false },
+      ])
+      if (o.started !== false) f.releases.setStatus(r.id, o.status ?? 'succeeded', { startedAt: '2026-01-01T00:00:00.000Z' })
+      if (o.runStatus) f.releases.updateRun(run.id, { status: o.runStatus })
+      return { id: r.id, runId: run.id }
+    }
+
+    it('service_ids and runs.services round-trip; summary has serviceIds and serviceCount', async () => {
+      const { f, d } = await release()
+      const services = [entry('s1', { previousCommit: SA }), entry('s2')]
+      const { id, runId } = rel(f, d, services)
+      expect(f.releases.get(id)).toMatchObject({ serviceIds: ['s1', 's2'], serviceCount: 2 })
+      expect(f.releases.list({ limit: 5 })[0]).toMatchObject({ serviceIds: ['s1', 's2'], serviceCount: 2 })
+      expect(f.releases.detail(id).runs[0]).toMatchObject({ services, wholeCheckout: false })
+      f.releases.setRunServices(runId, services.map((s) => ({ ...s, deployedCommit: SB })))
+      expect(f.releases.detail(id).runs[0].services.map((s) => s.deployedCommit)).toEqual([SB, SB])
+      expect(() => f.releases.setRunServices('nope', [])).toThrow('deployment run not found')
+    })
+
+    it('runs.services is shape-checked on read: bad JSON or malformed entries read as none', async () => {
+      const { f, d } = await release()
+      const good = entry('s1', { previousCommit: SA })
+      const { id, runId } = rel(f, d, [good])
+      const put = (v: string) => f.db.prepare('UPDATE deployment_runs SET services = ? WHERE id = ?').run(v, runId)
+      put(JSON.stringify([good, { id: 5, name: 'x', composeService: 'x', previousCommit: null, previousReleaseId: null, deployedCommit: null }, { id: 's2', name: 's2' }, 'junk', null, { ...good, id: 's3', previousCommit: 7 }]))
+      expect(f.releases.detail(id).runs[0].services).toEqual([good])
+      put(JSON.stringify([{ ...good, extra: 'dropped' }]))
+      expect(f.releases.detail(id).runs[0].services).toEqual([good])
+      for (const bad of ['{"id":"s1"}', 'not json', '"s1"']) {
+        put(bad)
+        expect(f.releases.detail(id).runs[0].services).toEqual([])
+      }
+      // An entry stored before previousReleaseId reads it as null; a wrong type drops the entry.
+      const { previousReleaseId: _, ...older } = good
+      put(JSON.stringify([older, { ...good, id: 's4', previousReleaseId: 3 }]))
+      expect(f.releases.detail(id).runs[0].services).toEqual([good])
+    })
+
+    it('serviceCount counts the run entries; service_ids is shape-checked on read', async () => {
+      const { f, d } = await release()
+      // A whole checkout picked by checkout: no explicit ids, two entries.
+      const { id } = rel(f, d, [entry('s1'), entry('s2')], { serviceIds: [] })
+      expect(f.releases.get(id)).toMatchObject({ serviceIds: [], serviceCount: 2 })
+      expect(f.releases.list({ limit: 5 }).find((x) => x.id === id)).toMatchObject({ serviceCount: 2 })
+      const put = (v: string) => f.db.prepare('UPDATE releases SET service_ids = ? WHERE id = ?').run(v, id)
+      for (const [bad, ids] of [['not json', []], ['{"a":1}', []], ['"s1"', []], ['["s1", 2, null, {"id":"s3"}, "s2"]', ['s1', 's2']]] as const) {
+        put(bad)
+        expect(f.releases.get(id).serviceIds).toEqual(ids)
+      }
+      f.db.prepare('UPDATE deployment_runs SET services = ? WHERE release_id = ?').run('not json', id)
+      expect(f.releases.get(id).serviceCount).toBe(0)
+    })
+
+    it('latestTouching ignores releases that never started', async () => {
+      const { f, d } = await release()
+      const r1 = rel(f, d, [entry('s1'), entry('s2')])
+      const r2 = rel(f, d, [entry('s2')], { kind: 'rollback' })
+      rel(f, d, [entry('s1'), entry('s2')], { started: false })
+      const m = f.releases.latestTouching(['s1', 's2', 's3'])
+      expect(Object.fromEntries(m)).toEqual({ s1: r1.id, s2: r2.id })
+      expect(f.releases.latestTouching([]).size).toBe(0)
+    })
+
+    it('previousTouching returns the earlier succeeded deploy of that service', async () => {
+      const { f, d } = await release()
+      const r1 = rel(f, d, [entry('s1', { deployedCommit: SA })], { runStatus: 'succeeded' })
+      rel(f, d, [entry('s1', { deployedCommit: SB })], { runStatus: 'failed' })
+      rel(f, d, [entry('s1', { deployedCommit: SB })], { runStatus: 'succeeded', started: false })
+      const r4 = rel(f, d, [entry('s1', { deployedCommit: SB })], { runStatus: 'succeeded' })
+      expect(f.releases.previousTouching('s1', r4.id)).toEqual({ releaseId: r1.id, commit: SA })
+      expect(f.releases.previousTouching('s1', r1.id)).toBeNull()
+      expect(f.releases.previousTouching('s2', r4.id)).toBeNull()
+    })
+
+    it('previousTouching counts a rollback release whose run ended rolled_back and skips a rolled-back release', async () => {
+      const { f, d } = await release()
+      const r1 = rel(f, d, [entry('s1', { deployedCommit: SA })], { runStatus: 'succeeded' })
+      // A rollback run that did not finish rolled_back does not count.
+      rel(f, d, [entry('s1', { deployedCommit: SB })], { kind: 'rollback', runStatus: 'failed' })
+      const rb = rel(f, d, [entry('s1', { deployedCommit: SB })], { kind: 'rollback', runStatus: 'rolled_back' })
+      const gone = rel(f, d, [entry('s1', { deployedCommit: SA })], { runStatus: 'succeeded', status: 'rolled_back' })
+      const r5 = rel(f, d, [entry('s1')], { runStatus: 'succeeded' })
+      expect(f.releases.previousTouching('s1', r5.id)).toEqual({ releaseId: rb.id, commit: SB })
+      expect(f.releases.previousTouching('s1', gone.id)).toEqual({ releaseId: rb.id, commit: SB })
+      expect(f.releases.previousTouching('s1', rb.id)).toEqual({ releaseId: r1.id, commit: SA })
+    })
   })
 })

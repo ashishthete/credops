@@ -55,7 +55,8 @@ function useSavedText(saved: string | null, valid: (v: string) => boolean, save:
   return { text, setText: (v: string) => (setText(v), setTouched(false)), commit, error: touched && !ok }
 }
 
-export function IntegrationsPage() {
+/** The AI, SendGrid, GitHub and macOS cards; a section of the Settings page. */
+export function IntegrationsSection() {
   const { settings, status, secrets } = useIntegrations()
   const inventory = useInventory()
   const environments = inventory?.environments ?? []
@@ -85,11 +86,11 @@ export function IntegrationsPage() {
 
   const disabled = !settings
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="app-drag flex h-16 shrink-0 items-end px-8 pb-3">
-        <h1 className="text-[19px] font-semibold tracking-tight text-fg">AI &amp; integrations</h1>
-      </div>
-      <div className="mx-auto grid max-w-[880px] grid-cols-1 gap-4 px-8 pb-10 lg:grid-cols-2">
+    <section aria-labelledby="settings-integrations" className="mt-2 max-w-[880px]">
+      <h2 id="settings-integrations" className="mb-3 text-[14px] font-semibold text-fg">
+        AI &amp; integrations
+      </h2>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card title="AI" index={0} configured={status ? status.ai.configured : null}>
           <div className="flex flex-col gap-1">
             <TextField
@@ -202,6 +203,6 @@ export function IntegrationsPage() {
           </Button>
         </Card>
       </div>
-    </div>
+    </section>
   )
 }

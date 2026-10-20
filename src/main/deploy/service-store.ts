@@ -295,7 +295,7 @@ export class ServiceStore {
   setTunnel(id: string, tunnelId: string | null, localPort: number | null): DbServiceMeta {
     this.vault.assertUnlocked()
     const before = this.get(id)
-    if (before.kind !== 'db') throw new Error('that field does not apply to a service service')
+    if (before.kind !== 'db') throw new Error('only a db service has a tunnel')
     inTransaction(this.db, () => {
       if (tunnelId !== null && !this.db.prepare('SELECT 1 FROM tunnels WHERE id = ?').get(tunnelId)) throw new Error('tunnel not found')
       const port = localPort === null ? null : checkPort(localPort)
@@ -376,7 +376,7 @@ export class ServiceStore {
   private refuseForeign(kind: ServiceKind, raw: object): void {
     const foreign: readonly string[] = kind === 'service' ? DB_FIELDS : APP_FIELDS
     const own: readonly string[] = kind === 'service' ? APP_FIELDS : DB_FIELDS
-    for (const k of foreign) if (!own.includes(k) && has(raw, k)) throw new Error(`that field does not apply to a ${kind} service`)
+    for (const k of foreign) if (!own.includes(k) && has(raw, k)) throw new Error(kind === 'service' ? 'that field only applies to a db service' : 'that field does not apply to a db service')
   }
 
   private checkName(raw: string, environmentId: string, selfId: string | null): string {

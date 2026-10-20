@@ -75,7 +75,7 @@ export function resolveSelection(
 
 /** A run's service entries at preflight: every tracked service when whole, else the selected ones. */
 export function runServicesOf(g: SelectionGroup): RunService[] {
-  return (g.whole ? g.tracked : g.selected).map((s) => ({ id: s.id, name: s.name, composeService: s.composeService, previousCommit: s.lastDeployedCommit, deployedCommit: null }))
+  return (g.whole ? g.tracked : g.selected).map((s) => ({ id: s.id, name: s.name, composeService: s.composeService, previousCommit: s.lastDeployedCommit, previousReleaseId: s.lastReleaseId, deployedCommit: null }))
 }
 
 /**

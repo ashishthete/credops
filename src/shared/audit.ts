@@ -87,6 +87,8 @@ export const AUDIT_ACTIONS = [
   'ai.release_notes',
   'ai.explain',
   'ai.command',
+  'config.export',
+  'config.import',
 ] as const // later phases extend
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]
 

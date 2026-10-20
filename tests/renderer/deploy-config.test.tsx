@@ -7,7 +7,7 @@ import { inventoryStore, loadInventory } from '../../src/renderer/src/inventory/
 import { DeploymentsPage } from '../../src/renderer/src/pages/deployments/DeploymentsPage'
 import { Toaster, clearToasts } from '../../src/renderer/src/ui/Toaster'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
-import { defaultVault, deploymentMeta, envSettings, environment, host, emitBridgeEvent, mockBridge, product, toolingOk } from './helpers'
+import { appService, defaultVault, deploymentMeta, envSettings, environment, host, emitBridgeEvent, mockBridge, product, toolingOk } from './helpers'
 
 // framer-motion caches matchMedia, so reduced motion is driven through its hook directly.
 const reduced = vi.hoisted(() => ({ on: false }))
@@ -74,6 +74,19 @@ describe('deployments page', () => {
     expect(within(app1).getByText('1 URL')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'staging', pressed: true })).toBeInTheDocument()
     expect(screen.getByTestId('current-version')).toHaveTextContent('v1.2.0')
+  })
+
+  it('Deploy… opens the service picker with nothing ticked', async () => {
+    world({
+      'deploy:list': [deploymentMeta({ id: 'd1', name: 'core', environmentId: 'e1', hostId: 'h1' })],
+      'service:list': [appService({ id: 's1', name: 'api', environmentId: 'e1', deploymentId: 'd1' })],
+    })
+    const user = userEvent.setup()
+    await open()
+    await user.click(await screen.findByRole('button', { name: 'Deploy…' }))
+    const wizard = await screen.findByRole('dialog', { name: 'Deploy to staging' })
+    expect(within(wizard).getByRole('checkbox', { name: 'api' })).not.toBeChecked()
+    expect(within(wizard).getByRole('button', { name: 'Run preflight' })).toBeDisabled()
   })
 
   it('shows the empty state for an environment with no deployments', async () => {

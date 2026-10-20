@@ -82,7 +82,7 @@ export class EventTranslator {
   preflightOutput(): Record<string, string> {
     return Object.fromEntries([...this.pf].map(([k, v]) => [k, v.join('\n')]))
   }
-  /** Runs whose preflight output the plugin cut at its cap. */
+  /** Runs whose preflight commits output the plugin cut at its cap. */
   preflightCut(): string[] {
     return [...this.pfCut]
   }
@@ -421,7 +421,10 @@ export class EventTranslator {
   // ---- preflight
   private collectPreflight(run: string, e: ResultEvent): void {
     if (e.no_log) return
-    if (e.truncated?.includes('stdout')) this.pfCut.add(run)
+    // only the commit list reads the cut flag, so a cut in another check (the deps config can be large)
+    // must not mark it; a task whose check can't be read counts as possibly the commits one
+    const check = /^preflight (\S+)/.exec(e.task ?? '')?.[1]
+    if (e.truncated?.includes('stdout') && (check === undefined || check === 'commits')) this.pfCut.add(run)
     if (typeof e.stdout === 'string' && e.stdout) {
       const list = this.pf.get(run) ?? []
       list.push(e.stdout)
@@ -494,8 +497,14 @@ export function parseDeps(configJson: string, psJson: string, selected: string[]
   for (const service of selected) {
     const svc = services[service]
     const dep = isObj(svc) ? svc.depends_on : undefined
-    const names = Array.isArray(dep) ? dep.filter((x): x is string => typeof x === 'string') : isObj(dep) ? Object.keys(dep) : []
-    const missing = names.filter((n) => !running.has(n) && !chosen.has(n))
+    // A one-shot dependency (a migrations job) has exited by design, so it never counts as not running.
+    const names = Array.isArray(dep)
+      ? dep.filter((x): x is string => typeof x === 'string')
+      : isObj(dep)
+        ? Object.keys(dep).filter((n) => !(isObj(dep[n]) && dep[n].condition === 'service_completed_successfully'))
+        : []
+    // Names come from the host's compose file; anything that isn't a service name is dropped.
+    const missing = names.filter((n) => COMPOSE_SERVICE.test(n) && !running.has(n) && !chosen.has(n))
     if (missing.length) out.push({ service, missing })
   }
   return out
