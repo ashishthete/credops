@@ -279,11 +279,16 @@ It extends the Phase 7 `ContainersManager` follow with a compose variant
 instead of adding a new streamer (controller's call). The variant keeps the
 pooled exec links, the follow limit, the `containers:logs`-style events and the
 `logsError` stderr handling. Every argument is validated by the Phase 8 rules
-(`REPO_PATH`, `COMPOSE_FILE`, `COMPOSE_PROJECT`) and shell-quoted. **Privilege (controller's call).** Docker access follows Phase 7's per-host
-docker rule (plain, or `sudo -n` when the host is set to use sudo). Logs never
-fetch the become secret. If the command fails with a permission error, the logs
-pane says so plainly, for example "Docker on <host> needs sudo for logs;
-check the host's docker setting", and links to that setting. Reading logs is not audited, as in
+(`REPO_PATH`, `COMPOSE_FILE`, `COMPOSE_PROJECT`) and shell-quoted. **Privilege (controller's call, amended at pre-flight F11).** Phase 7 has no
+per-host docker or sudo setting, so docker access follows the checkout's
+`use_sudo`:
+- `yes` uses `sudo -n`;
+- `no` uses plain docker;
+- `auto` uses plain docker when `docker info` works, else `sudo -n`.
+
+Logs never fetch the become secret. If the command fails with a permission
+error, the logs pane says so plainly, for example "Docker on <host> needs sudo
+for logs; check the checkout's sudo setting", and links to that setting. Reading logs is not audited, as in
 Phase 7, and needs no protected confirmation. Log lines stay in the renderer's
 ring buffer and are never written to disk.
 
@@ -343,7 +348,10 @@ target `db_address:db_port`. Host resolution (identity, jump host, environment
 defaults), status, auto-reconnect and failure notifications are all Phase 5's
 own. When the address, port or via-host change, a stopped tunnel is updated
 and a running one is restarted after the user agrees. The exact flow is the
-builder's call, because `TunnelPatch` locks the route fields today. The tunnel
+builder's call. `TunnelPatch` accepts route fields, but `TunnelStore.update`
+restarts a running tunnel at once, through `TunnelManager.changed`. So OpsDeck
+must not write a running tunnel's new route until the user agrees (pre-flight
+F15). The tunnel
 also appears on the Tunnels page with the service name as its label. Deleting
 the service asks whether to delete its tunnel too.
 
@@ -437,7 +445,55 @@ All of these are controller's calls.
 6. **Migration from `apps`.** There is no data migration: `services` is
    created directly and `apps` is dropped. `compose_service` is required for
    kind `service` and defaults to the service name in the form.
-7. **Logs privilege.** Logs follow Phase 7's per-host docker rule (`sudo -n`
-   when configured) and never fetch the become secret. A permission error is
-   shown plainly and points to the host's docker setting. Fetching the become
+7. **Logs privilege.** Logs follow the checkout's `use_sudo` (`yes`:
+   `sudo -n`; `no`: plain; `auto`: decided by `docker info`), because Phase 7
+   has no per-host docker setting (amended at pre-flight F11). They never
+   fetch the become secret. A permission error is shown plainly and points
+   to the checkout's sudo setting. Fetching the become
    secret is a later addition.
+
+## Addendum: config import/export (controller's call)
+
+The user asked for "import and export of whole config including deployments,
+in json or yaml, the best suitable one". Everything in this addendum is the
+controller's call. The plan builds it in Tasks 12 and 13.
+
+1. **Format.** The format is JSON.
+   - No YAML dependency exists, and adding one is not allowed.
+   - JSON round-trips exactly and is easy to validate strictly.
+   - The file is `opsdeck-config.json`, pretty-printed with 2 spaces.
+   - Top level:
+     `{ format: "opsdeck-config", version: 1, exportedAt, products, environments, hosts, identities, tunnels, services, deployments (checkouts), with environment deploy settings }`.
+     Groups and tags go in too, where present; today they are host tags
+     only.
+   - References between objects use the stable ids.
+2. **Secrets are never exported.**
+   - Vault items appear only as references `{ vaultName, itemName }`, and
+     only where config points at them.
+   - The file never contains passwords, keys, passphrases or tokens, or
+     the contents of any field marked secret.
+   - Releases, run logs, audit, known_hosts and session history are never
+     exported either.
+   - A test scans the export for fixture secret values.
+3. **Export.**
+   - It lives in Settings, as **Export config…**, using the save dialog.
+   - Main alone writes the file, with mode 0600.
+   - Audit: `config.export` with counts only.
+4. **Import.**
+   - It lives in Settings, as **Import config…**, using the open dialog.
+   - **Validation.** Main parses and validates the file strictly. An
+     unknown `format` or a newer `version` is refused, and the file is
+     capped at 5 MB.
+   - **Preview.** It shows what is added, what is updated (matched by id,
+     then by name within its parent) and what is skipped. Nothing is
+     applied until the user confirms.
+   - **Apply.** Everything is applied in one DB transaction, all or
+     nothing. Import never deletes anything that is not in the file.
+   - **Secret references.** A reference that cannot be resolved leaves the
+     field unset, and the result lists it as "needs a secret".
+   - **Protected environments.** Updating one needs its name typed.
+   - **Audit:** `config.import` with counts only.
+5. **Tests.**
+   - Round-trip fidelity: export, import into an empty DB, export again
+     gives the same config.
+   - Re-importing the same file is a no-op.

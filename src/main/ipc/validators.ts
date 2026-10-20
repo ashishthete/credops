@@ -14,6 +14,7 @@ import {
   MAX_TAG,
   MAX_TAGS,
   MAX_URL,
+  parseEnvDomain,
   OS_ICONS,
   PRODUCT_ICONS,
   REPO_URL,
@@ -42,6 +43,25 @@ import {
   type RunRequest,
   type SnippetInput,
 } from '../../shared/ops'
+import {
+  MAX_DEPLOYMENTS,
+  MAX_ENV_TEMPLATE,
+  MAX_EVENTS_PAGE,
+  MAX_HOOK,
+  MAX_RELEASE_NOTES,
+  MAX_URL as MAX_HEALTH_URL,
+  MAX_URLS,
+  VERSION,
+  type DeploymentInput,
+  type DeploymentPatch,
+  type BreakLockConfirm,
+  type EnvDeploySettingsPatch,
+  type HealthUrl,
+  type PreflightRequest,
+  type ReleaseConfirm,
+  type ReleaseListFilter,
+  MAX_COMMITS,
+} from '../../shared/deploy'
 import { BIND_ADDRESS, MAX_BIND_ADDRESS, type TunnelInput, type TunnelPatch } from '../../shared/tunnels'
 import { MAX_COLS, MAX_ROWS, MAX_WRITE_CHARS, type OpenLocalRequest, type OpenSshRequest, type PromptAnswer } from '../../shared/ssh'
 import {
@@ -68,7 +88,21 @@ import {
   type SecretPatch,
   type VaultInput,
 } from '../../shared/vault'
+import {
+  MAX_EMAIL,
+  MAX_GIT_REF,
+  MAX_RECIPIENTS,
+  MAX_NOTIFY_LOG,
+  NOTIFY_EVENTS,
+  NOTIFY_SOURCES,
+  type EnvironmentIntegrationsPatch,
+  type NotifyLogFilter,
+  type NotifyTestTarget,
+  type IntegrationSettingsPatch,
+} from '../../shared/settings'
+import { MAX_SERVICES, type CopyServicesRequest, type ServiceInput, type ServicePatch } from '../../shared/services'
 import { MAX_PRIVATE_KEY_BYTES } from '../vault/openssh'
+import { MAX_COMMANDS, MAX_NOTES_SUBJECT, type ExplainSubject, type ReleaseNotesRequest } from '../../shared/ai'
 import { InvalidArgs, args, v, type ArgsValidator, type Check } from './validate'
 
 const OUTCOMES = ['success', 'failure', 'denied', 'info'] as const
@@ -207,6 +241,201 @@ export const asHostPatch: Check<HostPatch> = v.object({
   envVars: v.optional(envVars),
 }) as Check<HostPatch>
 
+// Deploy config. Shapes and ranges only: the store owns the content rules (paths, refs, memberships).
+const deployName = v.str({ min: 1, max: MAX_NAME, trim: true })
+const deployPath = v.str({ min: 1, max: 1024 })
+const healthUrl = v.object({ url: v.str({ min: 1, max: MAX_HEALTH_URL }), from: v.oneOf(['host', 'mac'] as const) })
+const deployFields = {
+  repoUrl: v.nullable(v.str({ max: MAX_URL })),
+  composeProject: v.nullable(v.str({ max: 63 })),
+  repoPath: deployPath,
+  defaultBranch: v.str({ min: 1, max: 255 }),
+  deployTag: v.str({ min: 1, max: 255 }),
+  composeFile: v.str({ min: 1, max: 255 }),
+  position: v.int({ min: 0, max: 1_000_000 }),
+  urls: v.array(healthUrl, MAX_URLS),
+  healthStatus: v.int({ min: 100, max: 599 }),
+  healthTimeoutSec: v.int({ min: 5, max: 600 }),
+  dbBackup: v.bool(),
+  backupDir: v.nullable(deployPath),
+  preHook: v.nullable(v.str({ max: MAX_HOOK })),
+  postHook: v.nullable(v.str({ max: MAX_HOOK })),
+  buildTimeoutSec: v.int({ min: 10, max: 3600 }),
+  composeTimeoutSec: v.int({ min: 10, max: 3600 }),
+  useSudo: v.oneOf(['auto', 'yes', 'no'] as const),
+  becomeSecretId: nullableId,
+  managedEnv: v.bool(),
+  envTemplate: v.nullable(v.str({ max: MAX_ENV_TEMPLATE })),
+  vaultIds: v.array(v.uuid(), MAX_LINKS),
+}
+const deployOptional = Object.fromEntries(Object.entries(deployFields).map(([k, c]) => [k, v.optional(c as Check<unknown>)]))
+
+export const asDeploymentInput: Check<DeploymentInput> = v.object({
+  name: deployName,
+  environmentId: v.uuid(),
+  hostId: v.uuid(),
+  ...deployOptional,
+  repoPath: deployPath,
+  defaultBranch: deployFields.defaultBranch,
+  deployTag: deployFields.deployTag,
+}) as Check<DeploymentInput>
+// The environment and host are fixed at creation: they are not keys here, so a move fails validation.
+export const asDeploymentPatch: Check<DeploymentPatch> = v.object({
+  name: v.optional(deployName),
+  ...deployOptional,
+}) as Check<DeploymentPatch>
+export const asEnvDeploySettingsPatch: Check<EnvDeploySettingsPatch> = v.object({
+  versioned: v.optional(v.bool()),
+  autoRollback: v.optional(v.bool()),
+  currentVersion: v.optional(v.nullable(v.str({ max: 64, pattern: VERSION }))),
+}) as Check<EnvDeploySettingsPatch>
+export const asPreflightRequest: Check<PreflightRequest> = v.object({
+  environmentId: v.uuid(),
+  serviceIds: v.array(v.uuid(), MAX_SERVICES),
+  checkoutIds: v.optional(v.array(v.uuid(), MAX_DEPLOYMENTS)),
+  bump: v.oneOf(['major', 'minor', 'patch', 'none'] as const),
+  options: v.object({ backup: v.bool(), notify: v.bool(), qa: v.bool() }),
+  releaseNotes: v.optional(v.str({ max: MAX_RELEASE_NOTES })),
+}) as Check<PreflightRequest>
+export const asReleaseConfirm: Check<ReleaseConfirm> = v.object({
+  typedName: v.optional(v.str({ max: MAX_NAME })),
+  redeploy: v.optional(v.bool()),
+}) as Check<ReleaseConfirm>
+export const asBreakLockConfirm: Check<BreakLockConfirm> = v.object({ typedLabel: v.str({ max: MAX_NAME }) }) as Check<BreakLockConfirm>
+export const asReleaseListFilter: Check<ReleaseListFilter> = v.object({
+  environmentId: v.optional(v.uuid()),
+  limit: v.optional(v.int({ min: 1, max: 200 })),
+  before: v.optional(v.uuid()),
+}) as Check<ReleaseListFilter>
+
+// Services. Each kind's shape has only its own keys, so a field of the other kind fails here; the store owns the
+// content rules (compose service, address, membership of the checkout).
+const serviceCommon = {
+  environmentId: v.uuid(),
+  name: deployName,
+  description: v.optional(v.str({ max: MAX_DESCRIPTION })),
+}
+const servicePort = v.int({ min: 1, max: 65535 })
+const appServiceFields = {
+  deploymentId: nullableId,
+  composeService: v.str({ min: 1, max: 63 }),
+  url: v.nullable(v.str({ max: MAX_URL })),
+  urlCheckFrom: v.oneOf(['mac', 'host'] as const),
+}
+const dbServiceFields = {
+  dbEngine: v.oneOf(['postgres', 'mysql', 'mongodb', 'redis', 'other'] as const),
+  dbAddress: v.str({ min: 1, max: MAX_ADDRESS }),
+  dbPort: servicePort,
+  viaHostId: nullableId,
+  localPort: v.nullable(servicePort),
+}
+export const asServiceInput: Check<ServiceInput> = v.tagged('kind', {
+  service: v.object({
+    kind: v.oneOf(['service'] as const),
+    ...serviceCommon,
+    deploymentId: nullableId,
+    composeService: v.optional(appServiceFields.composeService),
+    url: v.optional(appServiceFields.url),
+    urlCheckFrom: v.optional(appServiceFields.urlCheckFrom),
+  }),
+  db: v.object({
+    kind: v.oneOf(['db'] as const),
+    ...serviceCommon,
+    dbEngine: dbServiceFields.dbEngine,
+    dbAddress: dbServiceFields.dbAddress,
+    dbPort: v.optional(dbServiceFields.dbPort),
+    viaHostId: v.optional(dbServiceFields.viaHostId),
+    localPort: v.optional(dbServiceFields.localPort),
+  }),
+}) as Check<ServiceInput>
+// The patch can't know the kind: both kinds' keys are allowed here and the store refuses the other kind's. The kind
+// and environment are not keys, so changing them fails validation.
+export const asServicePatch: Check<ServicePatch> = v.object({
+  name: v.optional(deployName),
+  description: serviceCommon.description,
+  ...Object.fromEntries(Object.entries({ ...appServiceFields, ...dbServiceFields }).map(([k, c]) => [k, v.optional(c as Check<unknown>)])),
+}) as Check<ServicePatch>
+
+// Content rules (model pattern, secret kinds, email syntax, repo shape) are the stores': their messages name the rule.
+const nullableSecretId = v.nullable(v.uuid())
+export const asSettingsPatch: Check<IntegrationSettingsPatch> = v.object({
+  aiModel: v.optional(v.str({ min: 1, max: 80 })),
+  aiApiKeySecretId: v.optional(nullableSecretId),
+  sendgridApiKeySecretId: v.optional(nullableSecretId),
+  sendgridFrom: v.optional(v.nullable(v.str({ max: MAX_EMAIL }))),
+  githubTokenSecretId: v.optional(nullableSecretId),
+  macos: v.optional(v.bool()),
+  macosUnscoped: v.optional(v.bool()),
+}) as Check<IntegrationSettingsPatch>
+
+const recipients = v.array(v.str({ min: 1, max: MAX_EMAIL }), MAX_RECIPIENTS)
+export const asIntegrationPatch: Check<EnvironmentIntegrationsPatch> = v.object({
+  notifyEvents: v.optional(v.array(v.oneOf(NOTIFY_EVENTS), NOTIFY_EVENTS.length)),
+  teamsWebhookSecretId: v.optional(nullableSecretId),
+  emailTo: v.optional(recipients),
+  emailCc: v.optional(recipients),
+  qaOnDeploy: v.optional(v.bool()),
+  qa: v.optional(
+    v.nullable(v.object({ repo: v.str({ min: 1, max: 201 }), workflow: v.str({ min: 1, max: 210 }), ref: v.str({ max: MAX_GIT_REF + 10 }) })),
+  ),
+  qaWait: v.optional(v.bool()),
+}) as Check<EnvironmentIntegrationsPatch>
+
+export const asNotifyTestTarget: Check<NotifyTestTarget> = v.tagged('channel', {
+  teams: v.object({ channel: v.oneOf(['teams'] as const), environmentId: v.uuid() }),
+  email: v.object({ channel: v.oneOf(['email'] as const), environmentId: v.uuid() }),
+  macos: v.object({ channel: v.oneOf(['macos'] as const) }),
+}) as Check<NotifyTestTarget>
+
+export const asNotifyLogFilter: Check<NotifyLogFilter> = v.object({
+  sourceType: v.optional(v.oneOf(NOTIFY_SOURCES)),
+  sourceId: v.optional(v.str({ min: 1, max: 64 })),
+  environmentId: v.optional(v.uuid()),
+  limit: v.optional(v.int({ min: 1, max: MAX_NOTIFY_LOG })),
+}) as Check<NotifyLogFilter>
+
+export const asReleaseNotesRequest: Check<ReleaseNotesRequest> = v.object({
+  environmentId: v.uuid(),
+  productName: v.nullable(v.str({ max: 200 })),
+  deployments: v.array(v.object({ id: v.uuid(), name: v.str({ min: 1, max: 200 }) }), 200),
+  version: v.nullable(v.str({ max: 200 })),
+  commits: v.array(
+    v.object({
+      sha: v.str({ max: 64 }),
+      subject: v.str({ max: MAX_NOTES_SUBJECT }),
+      author: v.str({ max: 400 }),
+      date: v.str({ max: 64 }),
+      deploymentId: v.uuid(),
+    }),
+    MAX_COMMITS,
+  ),
+}) as Check<ReleaseNotesRequest>
+
+export const asExplainSubject: Check<ExplainSubject> = v.tagged('kind', {
+  release: v.object({ kind: v.oneOf(['release'] as const), releaseId: v.uuid(), stepId: v.str({ min: 1, max: 200 }) }),
+  session: v.object({ kind: v.oneOf(['session'] as const), sessionId: v.uuid() }),
+  tunnel: v.object({ kind: v.oneOf(['tunnel'] as const), tunnelId: v.uuid() }),
+}) as Check<ExplainSubject>
+
+export const asCopyServicesRequest: Check<CopyServicesRequest> = v.object({
+  sourceEnvironmentId: v.uuid(),
+  targetEnvironmentId: v.uuid(),
+  checkouts: v.array(
+    v.object({
+      deploymentId: v.uuid(),
+      branch: deployFields.defaultBranch,
+      repoPath: deployPath,
+      hostId: v.uuid(),
+      deployTag: deployFields.deployTag,
+    }),
+    MAX_DEPLOYMENTS,
+  ),
+  dbs: v.array(
+    v.object({ serviceId: v.uuid(), dbAddress: dbServiceFields.dbAddress, dbPort: servicePort, viaHostId: nullableId }),
+    MAX_SERVICES,
+  ),
+}) as Check<CopyServicesRequest>
+
 const tunnelBindAddress = v.str({ min: 1, max: MAX_BIND_ADDRESS, pattern: BIND_ADDRESS, trim: true })
 const tunnelBindPort = v.int({ min: 0, max: 65535 })
 const tunnelTargetPort = v.int({ min: 1, max: 65535 })
@@ -241,6 +470,14 @@ const envName = v.str({ min: 1, max: MAX_NAME, trim: true })
 const envColor = v.str({ pattern: VAULT_COLOR })
 const envPort = v.nullable(v.int({ min: 1, max: 65535 }))
 const idList = v.array(v.uuid(), MAX_LINKS)
+/** Names the path and the rule, never the value. A blank string clears the field, as in the store. */
+const envDomain: Check<string | null> = v.nullable((value, path) => {
+  if (typeof value !== 'string') throw new InvalidArgs(path, 'must be a string')
+  if (value.length > MAX_URL || (value.trim() !== '' && !parseEnvDomain(value).ok)) {
+    throw new InvalidArgs(path, 'must be a domain or http(s) URL')
+  }
+  return value
+})
 
 export const asEnvironmentInput: Check<EnvironmentInput> = v.object({
   name: envName,
@@ -249,6 +486,7 @@ export const asEnvironmentInput: Check<EnvironmentInput> = v.object({
   defaultIdentityId: v.optional(nullableId),
   defaultPort: v.optional(envPort),
   defaultJumpHostId: v.optional(nullableId),
+  domain: v.optional(envDomain),
   productIds: v.optional(idList),
 }) as Check<EnvironmentInput>
 
@@ -259,6 +497,7 @@ export const asEnvironmentPatch: Check<EnvironmentPatch> = v.object({
   defaultIdentityId: v.optional(nullableId),
   defaultPort: v.optional(envPort),
   defaultJumpHostId: v.optional(nullableId),
+  domain: v.optional(envDomain),
 }) as Check<EnvironmentPatch>
 
 const productIcon = v.oneOf(PRODUCT_ICONS)
@@ -421,6 +660,7 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'env:create': args(asEnvironmentInput),
   'env:update': args(v.uuid(), asEnvironmentPatch),
   'env:delete': args(v.uuid()),
+  'env:openDomain': args(v.uuid()),
   'env:setProducts': args(v.uuid(), idList),
   'env:putHost': args(v.uuid(), v.uuid(), v.oneOf(HOST_ROLES)),
   'env:removeHost': args(v.uuid(), v.uuid()),
@@ -449,6 +689,51 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'tunnel:start': args(v.uuid()),
   'tunnel:stop': args(v.uuid()),
   'tunnel:status': args(),
+  'deploy:list': args(v.optional(v.uuid())),
+  'deploy:create': args(asDeploymentInput),
+  'deploy:update': args(v.uuid(), asDeploymentPatch),
+  'deploy:delete': args(v.uuid()),
+  'deploy:reorder': args(v.uuid(), v.array(v.uuid(), MAX_DEPLOYMENTS)),
+  'deploy:settings': args(v.uuid()),
+  'deploy:updateSettings': args(v.uuid(), asEnvDeploySettingsPatch),
+  'deploy:tooling': args(),
+  'service:list': args(v.optional(v.uuid())),
+  'service:create': args(asServiceInput),
+  'service:update': args(v.uuid(), asServicePatch),
+  'service:delete': args(v.uuid(), v.object({ deleteTunnel: v.bool() })),
+  'service:reorder': args(v.uuid(), v.array(v.uuid(), MAX_SERVICES)),
+  'service:copy': args(asCopyServicesRequest),
+  'settings:get': args(),
+  'settings:update': args(asSettingsPatch),
+  'settings:status': args(),
+  'integration:get': args(v.uuid()),
+  'integration:update': args(v.uuid(), asIntegrationPatch),
+  'notify:test': args(asNotifyTestTarget),
+  'notify:log': args(asNotifyLogFilter),
+  'qa:dispatch': args(v.uuid()),
+  'qa:list': args(),
+  'ai:status': args(),
+  'ai:cancel': args(v.uuid()),
+  'ai:releaseNotes': args(v.uuid(), asReleaseNotesRequest),
+  'ai:explain': args(v.uuid(), asExplainSubject),
+  'ai:command': args(v.uuid(), v.int({ min: 0, max: MAX_COMMANDS - 1 }), v.oneOf(['copy', 'run'] as const)),
+  'service:logs': args(v.uuid(), logTail),
+  'service:open': args(v.uuid()),
+  'service:tunnelOpen': args(v.uuid()),
+  'service:tunnelClose': args(v.uuid()),
+  'service:tunnelSync': args(v.uuid()),
+  'release:preflight': args(asPreflightRequest),
+  'release:start': args(v.uuid(), asReleaseConfirm),
+  'release:cancel': args(v.uuid()),
+  'release:rollback': args(v.uuid(), asReleaseConfirm),
+  'release:break-lock': args(v.uuid(), v.uuid(), asBreakLockConfirm),
+  'release:discard': args(v.uuid()),
+  'release:set-notes': args(v.uuid(), v.str({ max: MAX_RELEASE_NOTES })),
+  'release:retry-version': args(v.uuid()),
+  'release:list': args(asReleaseListFilter),
+  'release:get': args(v.uuid()),
+  'release:events': args(v.uuid(), v.int({ min: 0, max: Number.MAX_SAFE_INTEGER }), v.optional(v.int({ min: 1, max: MAX_EVENTS_PAGE }))),
+  'release:active': args(),
   'snippets:list': args(),
   'snippets:create': args(asSnippetInput),
   'snippets:update': args(v.uuid(), asSnippetInput),
@@ -464,4 +749,5 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'containers:logs': args(v.uuid(), nullableId, containerRef, logTail),
   'containers:follow': args(v.uuid(), nullableId, containerRef, logTail),
   'containers:unfollow': args(v.uuid()),
+  'config:export': args(),
 }

@@ -11,7 +11,7 @@ import type { AuditLog } from '../audit/audit-log'
 import type { Db } from '../db/connection'
 import { inTransaction } from '../db/tx'
 import type { VaultService } from '../vault/vault-service'
-import { checkColor, checkName, checkPort, environmentMeta, environmentMetas, hostRow } from './rows'
+import { checkColor, checkDomain, checkName, checkPort, environmentMeta, environmentMetas, hostRow } from './rows'
 
 const exists = (db: Db, table: string, id: string): boolean => db.prepare(`SELECT 1 FROM ${table} WHERE id = ?`).get(id) !== undefined
 
@@ -28,6 +28,11 @@ export class EnvironmentStore {
     return environmentMetas(this.db)
   }
 
+  /** One environment. Works while locked. */
+  get(id: string): EnvironmentMeta {
+    return environmentMeta(this.db, id)
+  }
+
   create(input: EnvironmentInput): EnvironmentMeta {
     this.vault.assertUnlocked()
     const id = inTransaction(this.db, () => {
@@ -36,16 +41,17 @@ export class EnvironmentStore {
       const identityId = this.checkIdentity(input.defaultIdentityId)
       const port = input.defaultPort == null ? null : checkPort(input.defaultPort)
       const jumpHostId = this.checkJump(input.defaultJumpHostId)
+      const domain = checkDomain(input.domain)
       const productIds = this.checkProducts(input.productIds ?? [])
       this.checkNamesFree(name, productIds)
       const newId = randomUUID()
       const ts = new Date().toISOString()
       this.db
         .prepare(
-          `INSERT INTO environments(id, name, color, protected, default_identity_id, default_port, default_jump_host_id, created_at, updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?)`,
+          `INSERT INTO environments(id, name, color, protected, default_identity_id, default_port, default_jump_host_id, domain, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?)`,
         )
-        .run(newId, name, color, input.protected ? 1 : 0, identityId, port, jumpHostId, ts, ts)
+        .run(newId, name, color, input.protected ? 1 : 0, identityId, port, jumpHostId, domain, ts, ts)
       for (const p of productIds) {
         this.db.prepare('INSERT INTO product_environments(product_id, environment_id) VALUES (?,?)').run(p, newId)
       }
@@ -76,6 +82,7 @@ export class EnvironmentStore {
       const port =
         patch.defaultPort === undefined ? before.defaultPort : patch.defaultPort === null ? null : checkPort(patch.defaultPort)
       const jumpHostId = patch.defaultJumpHostId === undefined ? before.defaultJumpHostId : this.checkJump(patch.defaultJumpHostId)
+      const domain = patch.domain === undefined ? before.domain : checkDomain(patch.domain)
       const fields = [
         name !== before.name && 'name',
         color !== before.color && 'color',
@@ -83,14 +90,15 @@ export class EnvironmentStore {
         identityId !== before.defaultIdentityId && 'defaultIdentityId',
         port !== before.defaultPort && 'defaultPort',
         jumpHostId !== before.defaultJumpHostId && 'defaultJumpHostId',
+        domain !== before.domain && 'domain',
       ].filter(Boolean)
       if (fields.length === 0) return null
       this.db
         .prepare(
           `UPDATE environments SET name = ?, color = ?, protected = ?, default_identity_id = ?, default_port = ?,
-            default_jump_host_id = ?, updated_at = ? WHERE id = ?`,
+            default_jump_host_id = ?, domain = ?, updated_at = ? WHERE id = ?`,
         )
-        .run(name, color, isProtected ? 1 : 0, identityId, port, jumpHostId, new Date().toISOString(), id)
+        .run(name, color, isProtected ? 1 : 0, identityId, port, jumpHostId, domain, new Date().toISOString(), id)
       return { name, fields }
     })
     if (next === null) return environmentMeta(this.db, id)

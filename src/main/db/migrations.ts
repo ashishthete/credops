@@ -136,6 +136,120 @@ CREATE TABLE snippets (
 CREATE UNIQUE INDEX snippets_label ON snippets (label COLLATE NOCASE);
 `,
   },
+  {
+    version: 7,
+    name: 'deployments',
+    up: `
+ALTER TABLE environments ADD COLUMN versioned INTEGER NOT NULL DEFAULT 0 CHECK (versioned IN (0,1));
+ALTER TABLE environments ADD COLUMN auto_rollback INTEGER NOT NULL DEFAULT 1 CHECK (auto_rollback IN (0,1));
+ALTER TABLE environments ADD COLUMN current_version TEXT;
+ALTER TABLE environments ADD COLUMN domain TEXT;
+CREATE TABLE deployments(id TEXT PRIMARY KEY, name TEXT NOT NULL,
+  environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+  host_id TEXT NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
+  repo_url TEXT, compose_project TEXT,
+  repo_path TEXT NOT NULL, default_branch TEXT NOT NULL,
+  compose_file TEXT NOT NULL DEFAULT 'docker-compose.yml',
+  deploy_tag TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0,
+  urls TEXT NOT NULL DEFAULT '[]',
+  health_status INTEGER NOT NULL DEFAULT 200 CHECK (health_status BETWEEN 100 AND 599),
+  health_timeout_sec INTEGER NOT NULL DEFAULT 60 CHECK (health_timeout_sec BETWEEN 5 AND 600),
+  db_backup INTEGER NOT NULL DEFAULT 0 CHECK (db_backup IN (0,1)), backup_dir TEXT,
+  pre_hook TEXT, post_hook TEXT,
+  build_timeout_sec INTEGER NOT NULL DEFAULT 300 CHECK (build_timeout_sec BETWEEN 10 AND 3600),
+  compose_timeout_sec INTEGER NOT NULL DEFAULT 120 CHECK (compose_timeout_sec BETWEEN 10 AND 3600),
+  use_sudo TEXT NOT NULL DEFAULT 'auto' CHECK (use_sudo IN ('auto','yes','no')),
+  become_secret_id TEXT REFERENCES secrets(id) ON DELETE SET NULL,
+  managed_env INTEGER NOT NULL DEFAULT 0 CHECK (managed_env IN (0,1)), env_template TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  CHECK (db_backup = 0 OR backup_dir IS NOT NULL),
+  CHECK (managed_env = 0 OR env_template IS NOT NULL));
+CREATE UNIQUE INDEX deployments_name ON deployments(environment_id, name COLLATE NOCASE);
+CREATE INDEX deployments_host ON deployments(host_id);
+CREATE TABLE deployment_vaults(deployment_id TEXT NOT NULL REFERENCES deployments(id) ON DELETE CASCADE,
+  vault_id TEXT NOT NULL REFERENCES vaults(id) ON DELETE CASCADE, PRIMARY KEY(deployment_id, vault_id));
+CREATE TABLE releases(id TEXT PRIMARY KEY,
+  environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('release','rollback')),
+  status TEXT NOT NULL CHECK (status IN ('preflight','ready','blocked','running','rolling_back',
+    'succeeded','failed','rolled_back','cancelled','discarded')),
+  version TEXT, previous_version TEXT,
+  version_bump TEXT NOT NULL DEFAULT 'none' CHECK (version_bump IN ('major','minor','patch','none')),
+  redeploy INTEGER NOT NULL DEFAULT 0 CHECK (redeploy IN (0,1)),
+  rollback_of TEXT REFERENCES releases(id) ON DELETE SET NULL,
+  options TEXT NOT NULL DEFAULT '{}', service_ids TEXT NOT NULL DEFAULT '[]', release_notes TEXT, error TEXT, playbook TEXT,
+  triggered_by TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT);
+CREATE INDEX releases_env ON releases(environment_id, created_at);
+CREATE TABLE deployment_runs(id TEXT PRIMARY KEY,
+  release_id TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+  deployment_id TEXT REFERENCES deployments(id) ON DELETE SET NULL,
+  deployment_name TEXT NOT NULL, host_id TEXT, host_label TEXT NOT NULL, position INTEGER NOT NULL,
+  branch TEXT NOT NULL, previous_commit TEXT, deployed_commit TEXT,
+  commits TEXT NOT NULL DEFAULT '[]', services TEXT NOT NULL DEFAULT '[]',
+  whole_checkout INTEGER NOT NULL DEFAULT 1 CHECK (whole_checkout IN (0,1)), steps TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL CHECK (status IN ('pending','running','succeeded','failed','skipped',
+    'cancelled','rolled_back','rollback_failed')),
+  rolled_back INTEGER NOT NULL DEFAULT 0 CHECK (rolled_back IN (0,1)),
+  backup_file TEXT, started_at TEXT, finished_at TEXT);
+CREATE INDEX deployment_runs_release ON deployment_runs(release_id, position);
+CREATE TABLE run_events(id TEXT PRIMARY KEY,
+  release_id TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL, at TEXT NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL,
+  UNIQUE(release_id, seq));
+CREATE TRIGGER run_events_append_only BEFORE UPDATE ON run_events
+  BEGIN SELECT RAISE(ABORT, 'run_events is append-only'); END;
+CREATE TABLE services(id TEXT PRIMARY KEY,
+  environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('service','db')),
+  position INTEGER NOT NULL DEFAULT 0, description TEXT NOT NULL DEFAULT '',
+  deployment_id TEXT REFERENCES deployments(id) ON DELETE SET NULL,
+  compose_service TEXT, url TEXT, url_check_from TEXT CHECK (url_check_from IN ('mac','host')),
+  last_deployed_commit TEXT, last_release_id TEXT REFERENCES releases(id) ON DELETE SET NULL,
+  db_engine TEXT CHECK (db_engine IN ('postgres','mysql','mongodb','redis','other')),
+  db_address TEXT, db_port INTEGER CHECK (db_port BETWEEN 1 AND 65535),
+  via_host_id TEXT REFERENCES hosts(id) ON DELETE SET NULL,
+  local_port INTEGER CHECK (local_port BETWEEN 1 AND 65535),
+  tunnel_id TEXT REFERENCES tunnels(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  CHECK (kind = 'db' OR (compose_service IS NOT NULL AND url_check_from IS NOT NULL
+    AND db_engine IS NULL AND db_address IS NULL AND db_port IS NULL AND via_host_id IS NULL
+    AND local_port IS NULL AND tunnel_id IS NULL)),
+  CHECK (kind = 'service' OR (db_engine IS NOT NULL AND db_address IS NOT NULL AND db_port IS NOT NULL
+    AND deployment_id IS NULL AND compose_service IS NULL AND url IS NULL AND url_check_from IS NULL
+    AND last_deployed_commit IS NULL AND last_release_id IS NULL)));
+CREATE UNIQUE INDEX services_name ON services(environment_id, name COLLATE NOCASE);
+CREATE UNIQUE INDEX services_compose ON services(deployment_id, compose_service) WHERE deployment_id IS NOT NULL;
+CREATE INDEX services_env ON services(environment_id, position);
+`,
+  },
+  {
+    version: 8,
+    name: 'notifications',
+    up: `
+CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE environment_integrations(
+  environment_id TEXT PRIMARY KEY REFERENCES environments(id) ON DELETE CASCADE,
+  notify_events TEXT NOT NULL DEFAULT '[]',              -- JSON NotifyEventKey[]
+  teams_webhook_secret_id TEXT REFERENCES secrets(id) ON DELETE SET NULL,
+  email_to TEXT NOT NULL DEFAULT '[]', email_cc TEXT NOT NULL DEFAULT '[]',  -- JSON string[]
+  qa_on_deploy INTEGER NOT NULL DEFAULT 0 CHECK (qa_on_deploy IN (0,1)),
+  qa_repo TEXT, qa_workflow TEXT, qa_ref TEXT,
+  qa_wait INTEGER NOT NULL DEFAULT 0 CHECK (qa_wait IN (0,1)),
+  updated_at TEXT NOT NULL,
+  CHECK ((qa_repo IS NULL) = (qa_workflow IS NULL)));
+CREATE TABLE notification_log(
+  id TEXT PRIMARY KEY,                                    -- UUIDv7
+  at TEXT NOT NULL,
+  source_type TEXT NOT NULL CHECK (source_type IN ('release','tunnel','test')),  -- release id = run stream id
+  source_id TEXT NOT NULL,
+  event TEXT NOT NULL,
+  channel TEXT NOT NULL CHECK (channel IN ('teams','email','macos','qa')),
+  status TEXT NOT NULL CHECK (status IN ('pending','sent','skipped','failed')),
+  detail TEXT,                                            -- redacted, <= 200 chars, never a URL
+  UNIQUE (source_type, source_id, event, channel));
+CREATE INDEX notification_log_at ON notification_log(at);
+`,
+  },
 ]
 
 const ENSURE_TABLE = `CREATE TABLE IF NOT EXISTS schema_migrations(

@@ -1,17 +1,34 @@
 import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
-import { X } from 'lucide-react'
+import { RotateCw, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { LOG_TAIL_DEFAULT } from '../../../../../shared/ops'
+import type { SessionError } from '../../../../../shared/ssh'
 import { api } from '../../../lib/api'
 import { clearFollow, followStore, onContainerLog } from '../../../ops/containers'
 import { OutputPane } from '../../../ops/OutputPane'
 import type { HostOutput } from '../../../ops/runs'
+import { Button } from '../../../ui/Button'
 import { attempt } from '../../../ui/common'
 import { SelectField } from '../../../ui/Field'
 import { fast, spring, useMotionSafe } from '../../../ui/motion'
 import { Switch } from '../../../ui/Switch'
+import { vaultStatusStore } from '../../../vault/status'
 
-const TAILS = [100, 200, 1000, 5000] as const
+export const TAILS = [100, 200, 1000, 5000] as const
+
+/**
+ * What the drawer shows. `follow` starts a live follow and resolves with its followId (lines arrive as
+ * `containers:logs` events). With `snapshot` the drawer opens on a tail snapshot and a Follow switch;
+ * without it the drawer is always live. `hint` is an action shown under the end of a follow.
+ */
+export interface LogsTarget {
+  /** What the drawer is following; a new id starts over. Defaults to the title. */
+  id?: string
+  title: string
+  follow: (tail: number) => Promise<string | undefined>
+  snapshot?: (tail: number) => Promise<string | undefined>
+  hint?: { label: string; run: () => void }
+}
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
 /** Keeps Tab inside the sheet. */
@@ -30,14 +47,8 @@ function trapTab(e: globalThis.KeyboardEvent, sheet: HTMLElement): void {
   }
 }
 
-/** The logs of one container in a side sheet: a tail snapshot, or a live follow that stops on close. */
-export function LogsDrawer({
-  target,
-  onClose,
-}: {
-  target: { hostId: string; environmentId: string | null; ref: string } | null
-  onClose: () => void
-}) {
+/** Logs in a side sheet: a tail snapshot, or a live follow that stops on close. */
+export function LogsDrawer({ target, onClose }: { target: LogsTarget | null; onClose: () => void }) {
   const motionSafe = useMotionSafe()
   return (
     <AnimatePresence>
@@ -56,7 +67,7 @@ export function LogsDrawer({
           <motion.aside
             key="sheet"
             role="dialog"
-            aria-label={`Logs of ${target.ref}`}
+            aria-label={target.title}
             aria-modal="true"
             initial={motionSafe ? { x: '100%' } : { opacity: 0 }}
             animate={{ x: 0, opacity: 1 }}
@@ -64,7 +75,7 @@ export function LogsDrawer({
             transition={motionSafe ? spring : fast}
             className="fixed top-0 right-0 bottom-0 z-40 flex w-[min(640px,90vw)] flex-col border-l border-line bg-surface shadow-pop"
           >
-            <LogsBody target={target} onClose={onClose} />
+            <LogsBody key={target.id ?? target.title} target={target} onClose={onClose} />
           </motion.aside>
         </>
       )}
@@ -72,13 +83,21 @@ export function LogsDrawer({
   )
 }
 
-function LogsBody({ target, onClose }: { target: { hostId: string; environmentId: string | null; ref: string }; onClose: () => void }) {
-  const { hostId, environmentId, ref } = target
+function LogsBody({ target, onClose }: { target: LogsTarget; onClose: () => void }) {
+  const { title, hint } = target
+  const live = !target.snapshot
+  // The latest callbacks; the effects below restart on the tail and the switch, not on a caller's re-render.
+  const fns = useRef(target)
+  fns.current = target
   const [tail, setTail] = useState<number>(LOG_TAIL_DEFAULT)
-  const [following, setFollowing] = useState(false)
+  const [following, setFollowing] = useState(live)
   const [text, setText] = useState<string | null>(null)
   const [followId, setFollowId] = useState<string | null>(null)
   const [endNote, setEndNote] = useState(false)
+  const [endError, setEndError] = useState<SessionError | null>(null)
+  const vault = useSyncExternalStore(vaultStatusStore.subscribe, vaultStatusStore.get)
+  // A follow the lock ended can only start again once the vault is open.
+  const waitingUnlock = endError?.code === 'locked' && vault?.unlocked === false
   // False while the sheet animates out: the follow stops at the close, not after the animation.
   const present = useIsPresent()
   const presentRef = useRef(present)
@@ -88,7 +107,7 @@ function LogsBody({ target, onClose }: { target: { hostId: string; environmentId
   const closeRef = useRef<HTMLButtonElement>(null)
   const liveId = useRef<string | null>(null)
   // Follows that ended, including one that ended before its reply named it.
-  const endedIds = useRef(new Set<string>())
+  const endedIds = useRef(new Map<string, SessionError | null>())
   // Chars ever received per follow, so the pane knows what is new once the text is trimmed at its cap.
   const totals = useRef(new Map<string, number>())
   const [, bump] = useState(0)
@@ -121,9 +140,10 @@ function LogsBody({ target, onClose }: { target: { hostId: string; environmentId
       onContainerLog((event) => {
         if ('chunk' in event) totals.current.set(event.followId, (totals.current.get(event.followId) ?? 0) + event.chunk.length)
         else {
-          endedIds.current.add(event.followId)
+          endedIds.current.set(event.followId, event.error)
           if (event.followId === liveId.current) {
             setEndNote(true)
+            setEndError(event.error)
             setFollowing(false)
           }
         }
@@ -132,18 +152,19 @@ function LogsBody({ target, onClose }: { target: { hostId: string; environmentId
     [],
   )
 
-  // A snapshot while not following.
+  // A snapshot while not following (with a snapshot to take).
   useEffect(() => {
-    if (following) return
+    const snapshot = fns.current.snapshot
+    if (following || !snapshot) return
     let stale = false
     setText(null)
-    void attempt("Couldn't load the logs", () => api.invoke('containers:logs', hostId, environmentId, ref, tail)).then((out) => {
+    void attempt("Couldn't load the logs", () => snapshot(tail)).then((out) => {
       if (!stale && out !== undefined) setText(out)
     })
     return () => {
       stale = true
     }
-  }, [following, tail, hostId, environmentId, ref])
+  }, [following, tail])
 
   // A follow lives exactly as long as the switch is on, the tail unchanged and the drawer open.
   useEffect(() => {
@@ -151,7 +172,9 @@ function LogsBody({ target, onClose }: { target: { hostId: string; environmentId
     let cancelled = false
     let id: string | null = null
     setEndNote(false)
-    void attempt("Couldn't follow the logs", () => api.invoke('containers:follow', hostId, environmentId, ref, tail)).then((got) => {
+    setEndError(null)
+    const follow = fns.current.follow
+    void attempt("Couldn't follow the logs", () => follow(tail)).then((got) => {
       if (got === undefined) {
         if (!cancelled) setFollowing(false)
         return
@@ -162,6 +185,7 @@ function LogsBody({ target, onClose }: { target: { hostId: string; environmentId
       // It ended before this reply named it.
       if (endedIds.current.has(got)) {
         setEndNote(true)
+        setEndError(endedIds.current.get(got) ?? null)
         setFollowing(false)
         return
       }
@@ -171,26 +195,28 @@ function LogsBody({ target, onClose }: { target: { hostId: string; environmentId
     return () => {
       cancelled = true
       liveId.current = null
-      // While the sheet animates out its last lines stay on screen; unmounting clears them.
+      // While the sheet animates out its last lines stay on screen; unmounting clears them. A live-only
+      // drawer also keeps the lines of a follow that ended on its own, until the next follow names its own.
       const closing = !presentRef.current
-      if (!closing) setFollowId(null)
-      if (id) void stop(id, !closing)
+      const keep = closing || (live && !!id && endedIds.current.has(id))
+      if (!keep) setFollowId(null)
+      if (id) void stop(id, !keep)
     }
-  }, [following, present, tail, hostId, environmentId, ref])
+  }, [following, present, tail, live])
 
   const output = useMemo<HostOutput | undefined>(() => {
-    if (following) {
+    if (following || live) {
       const t = followId ? followed[followId] : undefined
       return t === undefined || !followId ? undefined : { text: t, errRanges: [], total: totals.current.get(followId) ?? t.length }
     }
     return text === null ? undefined : { text, errRanges: [], total: text.length }
-  }, [following, followId, followed, text])
+  }, [following, live, followId, followed, text])
 
   return (
     <>
       <header className="flex items-center justify-between gap-3 border-b border-line px-5 py-3">
         <h2 className="min-w-0 truncate text-[15px] font-semibold text-fg">
-          Logs <span className="font-mono text-[13px] font-normal text-muted">{ref}</span>
+          {title}
         </h2>
         <button
           ref={closeRef}
@@ -212,14 +238,45 @@ function LogsBody({ target, onClose }: { target: { hostId: string; environmentId
             ))}
           </SelectField>
         </div>
-        <label className="flex h-9 items-center gap-2 text-[12.5px] text-fg/85">
-          <Switch label="Follow" checked={following} onChange={setFollowing} />
-          Follow
-        </label>
-        {endNote && <span className="pb-2.5 text-[12px] text-muted">The follow ended</span>}
+        {!live && (
+          <label className="flex h-9 items-center gap-2 text-[12.5px] text-fg/85">
+            <Switch label="Follow" checked={following} onChange={setFollowing} />
+            Follow
+          </label>
+        )}
+        {endNote && !endError && <span className="pb-2.5 text-[12px] text-muted">The follow ended</span>}
+        {live && endNote && (
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={<RotateCw aria-hidden className="size-3.5" />}
+            disabled={waitingUnlock}
+            title={waitingUnlock ? 'Unlock the vault first' : undefined}
+            onClick={() => setFollowing(true)}
+            className="mb-0.5"
+          >
+            Follow again
+          </Button>
+        )}
       </div>
+      {endError && (
+        <motion.div
+          role="status"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={fast}
+          className="mx-5 mb-3 flex items-center gap-3 rounded-lg border border-line bg-white/[0.03] px-3 py-2 text-[12.5px] text-fg/90"
+        >
+          <span className="min-w-0 flex-1">{endError.message}</span>
+          {hint && (
+            <Button size="sm" variant="ghost" onClick={hint.run}>
+              {hint.label}
+            </Button>
+          )}
+        </motion.div>
+      )}
       <div className="min-h-0 flex-1 px-5 pb-5">
-        <OutputPane key={`${following}:${followId}:${tail}`} output={output} label={ref} dimTimestamps className="h-full max-h-none" />
+        <OutputPane key={`${following}:${followId}:${tail}`} output={output} label={title} dimTimestamps className="h-full max-h-none" />
       </div>
     </>
   )

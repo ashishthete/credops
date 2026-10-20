@@ -1,0 +1,269 @@
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { describe, expect, it } from 'vitest'
+import { buildConfigExport, exportConfig, serializeConfig } from '../../src/main/config/export'
+import { createConfigHandlers } from '../../src/main/ipc/handlers/config'
+import { parseConfigFile } from '../../src/shared/config-file'
+import { DEFAULT_VAULT_ID, VAULT_LOCKED } from '../../src/shared/vault'
+import { makeConfigFixture, NOT_CONFIG, SECRET_VALUES, type ConfigFixture } from './config-helpers'
+
+const clock = () => new Date('2026-10-20T10:00:00.000Z')
+const sortedById = <T extends { id: string }>(xs: T[]): boolean => xs.every((x, i) => i === 0 || xs[i - 1].id < x.id)
+const tmpPath = () => join(mkdtempSync(join(tmpdir(), 'opsdeck-config-')), 'opsdeck-config.json')
+const exportDeps = (f: ConfigFixture, now = clock) => ({ db: f.db, vault: f.vault, audit: f.audit, now })
+
+describe('config export', () => {
+  it('exports every config kind with stable ids and sorted arrays', async () => {
+    const f = await makeConfigFixture()
+    const { file, counts } = buildConfigExport(f.db, clock)
+    expect(file.format).toBe('opsdeck-config')
+    expect(file.version).toBe(1)
+    expect(file.exportedAt).toBe('2026-10-20T10:00:00.000Z')
+    expect(Object.keys(file)).toEqual(['format', 'version', 'exportedAt', 'secretRefs', 'products', 'identities', 'hosts', 'environments', 'tunnels', 'deployments', 'services'])
+    expect(counts).toEqual({ products: 1, identities: 2, hosts: 2, environments: 2, tunnels: 1, deployments: 1, services: 2 })
+    for (const list of [file.products, file.identities, file.hosts, file.environments, file.tunnels, file.deployments, file.services] as { id: string }[][]) {
+      expect(sortedById(list)).toBe(true)
+    }
+
+    expect(file.products).toEqual([{ id: f.ids.product, name: 'Shop', color: '#3366ff', icon: 'rocket', description: 'The shop', repoUrl: 'git@example.com:shop.git' }])
+    const byId = <T extends { id: string }>(xs: T[], id: string) => xs.find((x) => x.id === id)!
+    expect(byId(file.identities, f.ids.keyIdentity)).toEqual({
+      id: f.ids.keyIdentity,
+      vault: { vaultName: 'Team' },
+      label: 'deployer',
+      username: 'deploy',
+      auth: 'key',
+      key: { vaultName: 'Team', itemName: 'deploy-key' },
+    })
+    expect(byId(file.identities, f.ids.passwordIdentity)).toEqual({
+      id: f.ids.passwordIdentity,
+      vault: { vaultName: 'Default' },
+      label: 'root-login',
+      username: 'root',
+      auth: 'password',
+      key: null,
+    })
+    expect(byId(file.hosts, f.host.id)).toEqual({
+      id: f.host.id,
+      label: 'app1',
+      address: '10.0.0.7',
+      port: null,
+      identityId: f.ids.passwordIdentity,
+      jumpHostId: f.ids.bastion,
+      tags: ['web', 'api'],
+      osIcon: 'linux',
+      notes: 'primary app box',
+      keepaliveSec: 30,
+      envVars: { LANG: 'C.UTF-8' },
+      vaults: [{ vaultName: 'Default' }, { vaultName: 'Team' }],
+    })
+    const staging = byId(file.environments, f.staging.id)
+    expect(staging).toEqual({
+      id: f.staging.id,
+      name: 'staging',
+      color: '#112233',
+      protected: false,
+      defaultIdentityId: f.ids.keyIdentity,
+      defaultPort: 2222,
+      defaultJumpHostId: null,
+      versioned: true,
+      autoRollback: false,
+      domain: 'staging.example.com',
+      productIds: [f.ids.product],
+      hosts: [{ hostId: f.host.id, role: 'app' }, { hostId: f.ids.bastion, role: 'bastion' }].sort((a, b) => (a.hostId < b.hostId ? -1 : 1)),
+    })
+    expect(byId(file.environments, f.prod.id).protected).toBe(true)
+    expect(file.tunnels).toEqual([
+      {
+        id: f.ids.tunnel,
+        label: 'pg',
+        hostId: f.host.id,
+        environmentId: f.staging.id,
+        type: 'L',
+        bindAddress: '127.0.0.1',
+        bindPort: 15432,
+        targetHost: '127.0.0.1',
+        targetPort: 5432,
+        autoStart: false,
+        autoReconnect: true,
+      },
+    ])
+    const [d] = file.deployments
+    expect(Object.keys(d)).toEqual([
+      'id', 'environmentId', 'hostId', 'name', 'repoUrl', 'repoPath', 'defaultBranch', 'composeFile', 'composeProject', 'deployTag', 'position',
+      'urls', 'healthStatus', 'healthTimeoutSec', 'dbBackup', 'backupDir', 'preHook', 'postHook', 'buildTimeoutSec', 'composeTimeoutSec',
+      'useSudo', 'becomeSecret', 'vaults', 'managedEnv', 'envTemplate',
+    ])
+    expect(d).toMatchObject({
+      id: f.ids.deployment,
+      environmentId: f.staging.id,
+      hostId: f.host.id,
+      name: 'api',
+      repoPath: '/srv/app',
+      urls: [{ url: 'https://staging.example.com/health', from: 'mac' }],
+      dbBackup: true,
+      backupDir: '/srv/backups',
+      useSudo: 'yes',
+      vaults: [{ vaultName: 'Default' }, { vaultName: 'Team' }],
+      managedEnv: true,
+    })
+    expect(byId(file.services, f.ids.appService)).toEqual({
+      id: f.ids.appService,
+      environmentId: f.staging.id,
+      name: 'web',
+      kind: 'service',
+      position: expect.any(Number),
+      description: '',
+      deploymentId: f.ids.deployment,
+      composeService: 'web',
+      url: 'https://staging.example.com',
+      urlCheckFrom: 'mac',
+    })
+    expect(byId(file.services, f.ids.dbService)).toEqual({
+      id: f.ids.dbService,
+      environmentId: f.staging.id,
+      name: 'main-db',
+      kind: 'db',
+      position: expect.any(Number),
+      description: '',
+      dbEngine: 'postgres',
+      dbAddress: '10.0.0.9',
+      dbPort: 5432,
+      viaHostId: f.host.id,
+      localPort: 15432,
+      tunnelId: f.ids.tunnel,
+    })
+    // What it writes is what the strict reader accepts.
+    expect(parseConfigFile(serializeConfig(file))).toEqual({ ok: true, file })
+  })
+
+  it('export contains no secret', async () => {
+    const f = await makeConfigFixture()
+    const text = serializeConfig(buildConfigExport(f.db, clock).file)
+    for (const value of Object.values(SECRET_VALUES)) expect(text).not.toContain(value)
+    for (const line of f.privateKey.split('\n').filter((l) => l.length > 20)) expect(text).not.toContain(line)
+    expect(text).not.toContain('PRIVATE KEY')
+    expect(text).not.toMatch(/"[A-Za-z_]*(_enc|_sealed|Enc|Sealed)"/)
+    expect(text).not.toMatch(/"(password|passphrase|privateKey|publicKey|fingerprint|value|hasPassword|hasPassphrase)":/i)
+    // No local secret id, not even inside the env template.
+    for (const id of [f.secretId, f.ids.becomeSecret, f.ids.dotenvSecret]) expect(text).not.toContain(id)
+    // Nor any sealed column's stored text.
+    const sealed = f.db
+      .prepare(
+        `SELECT value_enc AS v FROM secrets UNION ALL SELECT private_key_enc FROM ssh_keys UNION ALL SELECT passphrase_enc FROM ssh_keys
+         UNION ALL SELECT password_enc FROM identities UNION ALL SELECT script_sealed FROM snippets`,
+      )
+      .all() as { v: string | null }[]
+    for (const { v } of sealed) if (v) expect(text).not.toContain(v)
+  })
+
+  it('env template secret refs become ref-N with vault and item names', async () => {
+    const f = await makeConfigFixture()
+    const { file } = buildConfigExport(f.db, clock)
+    // Sorted by (vault name, item name): Default/envsecret, Default/sudo-pw, Team/db-pass.
+    expect(file.secretRefs).toEqual({
+      'ref-1': { vaultName: 'Default', itemName: 'envsecret' },
+      'ref-2': { vaultName: 'Default', itemName: 'sudo-pw' },
+      'ref-3': { vaultName: 'Team', itemName: 'db-pass' },
+    })
+    const [d] = file.deployments
+    expect(d.becomeSecret).toBe('ref-2')
+    expect(d.envTemplate).toBe(
+      ['# managed', 'DB_PASSWORD=${secret:ref-3}', 'APP_ENV=staging', 'API_TOKEN=${secret:ref-1}', 'DB_PASSWORD_COPY=${secret:ref-3}', ''].join('\n'),
+    )
+  })
+
+  it('a template ref to a deleted secret is exported blank, without its id', async () => {
+    const f = await makeConfigFixture()
+    const gone = '0190a1b2-c3d4-4e5f-8a6b-eeeeeeeeeeee'
+    f.db.prepare('UPDATE deployments SET env_template = ? WHERE id = ?').run(`GONE=\${secret:${gone}}\nAPP_ENV=x\n`, f.ids.deployment)
+    const { file } = buildConfigExport(f.db, clock)
+    expect(file.deployments[0].envTemplate).toBe('GONE=\nAPP_ENV=x\n')
+    expect(serializeConfig(file)).not.toContain(gone)
+    expect(parseConfigFile(serializeConfig(file)).ok).toBe(true)
+  })
+
+  it('releases, runs, audit, known_hosts, snippets, current_version and last deployed commits are not exported', async () => {
+    const f = await makeConfigFixture()
+    const text = serializeConfig(buildConfigExport(f.db, clock).file)
+    for (const marker of Object.values(NOT_CONFIG)) expect(text).not.toContain(marker)
+    expect(text).not.toContain(f.ids.snippet)
+    expect(text).not.toContain('0190a1b2-c3d4-7e5f-8a6b-aaaaaaaaaaaa')
+    expect(text).not.toMatch(/currentVersion|lastDeployed|lastRelease|releases|snippets|knownHosts|audit/i)
+    const lastAudit = f.audit.list({ limit: 1 })[0]
+    expect(text).not.toContain(lastAudit.hash)
+    // Vaults are referenced by name, never exported as objects.
+    expect(text).not.toContain(f.teamVaultId)
+    expect(text).not.toContain(DEFAULT_VAULT_ID)
+  })
+
+  it('two exports of the same data differ only in exportedAt', async () => {
+    const f = await makeConfigFixture()
+    const a = serializeConfig(buildConfigExport(f.db, () => new Date('2026-10-20T10:00:00.000Z')).file)
+    const b = serializeConfig(buildConfigExport(f.db, () => new Date('2026-10-21T11:30:00.000Z')).file)
+    expect(a).not.toBe(b)
+    expect(a.replace(/"exportedAt": "[^"]*"/, '')).toBe(b.replace(/"exportedAt": "[^"]*"/, ''))
+    expect(a.endsWith('}\n')).toBe(true)
+    expect(a).toBe(JSON.stringify(JSON.parse(a), null, 2) + '\n')
+  })
+
+  it('the file is written with mode 0600 even when it already existed', async () => {
+    const f = await makeConfigFixture()
+    const fresh = tmpPath()
+    await exportConfig(exportDeps(f), fresh)
+    expect(statSync(fresh).mode & 0o777).toBe(0o600)
+
+    const existing = tmpPath()
+    writeFileSync(existing, 'old', { mode: 0o644 })
+    const res = await exportConfig(exportDeps(f), existing)
+    expect(statSync(existing).mode & 0o777).toBe(0o600)
+    expect(res.counts.hosts).toBe(2)
+    const parsed = parseConfigFile(readFileSync(existing, 'utf8'))
+    expect(parsed.ok).toBe(true)
+  })
+
+  it('config.export audit carries counts only', async () => {
+    const f = await makeConfigFixture()
+    const path = tmpPath()
+    const h = createConfigHandlers({ ...exportDeps(f), saveDialog: async () => path })
+    const res = await h['config:export']()
+    expect(res).toEqual({ path, counts: { products: 1, identities: 2, hosts: 2, environments: 2, tunnels: 1, deployments: 1, services: 2 } })
+    const [e] = f.audit.list({ actions: ['config.export'] })
+    expect(e).toMatchObject({ outcome: 'success', targetType: 'config', targetLabel: 'config', targetId: null })
+    expect(e.details).toEqual({ counts: res!.counts })
+    const json = JSON.stringify(e)
+    for (const leak of [path, 'opsdeck-config', f.host.id, f.ids.bastion, 'app1', 'bastion', '10.0.0.7', 'staging', 'Shop', 'Team']) {
+      expect(json).not.toContain(leak)
+    }
+  })
+
+  it('a cancelled save writes nothing and audits nothing', async () => {
+    const f = await makeConfigFixture()
+    const h = createConfigHandlers({ ...exportDeps(f), saveDialog: async () => undefined })
+    expect(await h['config:export']()).toBeNull()
+    expect(f.audit.list({ actions: ['config.export'] })).toEqual([])
+  })
+
+  it('export refuses while the vault is locked', async () => {
+    const f = await makeConfigFixture()
+    f.vault.lock('manual')
+    const path = tmpPath()
+    let asked = false
+    const h = createConfigHandlers({ ...exportDeps(f), saveDialog: async () => ((asked = true), path) })
+    await expect(h['config:export']()).rejects.toThrow(VAULT_LOCKED)
+    expect(asked).toBe(false)
+    await expect(exportConfig(exportDeps(f), path)).rejects.toThrow(VAULT_LOCKED)
+    expect(() => statSync(path)).toThrow()
+  })
+
+  it('a failed write is audited as a failure without the path or the reason text', async () => {
+    const f = await makeConfigFixture()
+    const dir = mkdtempSync(join(tmpdir(), 'opsdeck-config-'))
+    const path = join(dir, 'missing-dir', 'opsdeck-config.json')
+    await expect(exportConfig(exportDeps(f), path)).rejects.toThrow("Couldn't write the config file")
+    const [e] = f.audit.list({ actions: ['config.export'] })
+    expect(e.outcome).toBe('failure')
+    expect(JSON.stringify(e)).not.toContain(dir)
+  })
+})

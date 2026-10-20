@@ -117,9 +117,10 @@ describe('shell', () => {
     expect(await screen.findByRole('heading', { name: 'Map', level: 1 })).toBeInTheDocument()
   })
 
-  it('placeholder pages name their phase', async () => {
+  it('deployments is a real page, not a placeholder', async () => {
     renderShell('/deployments')
-    expect(await screen.findByText('Coming in phase 8')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Deployments', level: 1 })).toBeInTheDocument()
+    expect(screen.queryByText('Coming in phase 8')).not.toBeInTheDocument()
   })
 
   it('sidebar shows up tunnels and a failed dot', async () => {

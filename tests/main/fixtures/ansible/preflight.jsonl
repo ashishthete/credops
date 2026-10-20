@@ -1,0 +1,65 @@
+{"event": "task_start", "name": "preflight tools dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"]}
+{"event": "ok", "host": "od-1", "task": "preflight tools dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF tools missing="}
+{"event": "task_start", "name": "preflight docker dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"]}
+{"event": "ok", "host": "od-1", "task": "preflight docker dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF docker plain=fail sudo=fail mode=sudo-password use=auto"}
+{"event": "task_start", "name": "preflight docker-become dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"]}
+{"event": "ok", "host": "od-1", "task": "preflight docker-become dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF docker become=ok"}
+{"event": "task_start", "name": "preflight repo dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"]}
+{"event": "ok", "host": "od-1", "task": "preflight repo dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF repo exists=1 git=1"}
+{"event": "task_start", "name": "preflight clean dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"]}
+{"event": "ok", "host": "od-1", "task": "preflight clean dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF clean ok=1"}
+{"event": "task_start", "name": "preflight fetch dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"]}
+{"event": "ok", "host": "od-1", "task": "preflight fetch dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF branch fetched=1 exists=1"}
+{"event": "task_start", "name": "preflight compose dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"]}
+{"event": "ok", "host": "od-1", "task": "preflight compose dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF compose exists=1 services_b64=d2ViCndvcmtlcgo="}
+{"event": "task_start", "name": "preflight disk dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"]}
+{"event": "ok", "host": "od-1", "task": "preflight disk dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF disk avail_kb=52428800"}
+{"event": "task_start", "name": "preflight tag dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"]}
+{"event": "ok", "host": "od-1", "task": "preflight tag dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF tag exists=1 commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+{"event": "task_start", "name": "preflight version-tag dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"]}
+{"event": "ok", "host": "od-1", "task": "preflight version-tag dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF version-tag exists=1"}
+{"event": "task_start", "name": "preflight commits dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"]}
+{"event": "ok", "host": "od-1", "task": "preflight commits dep1", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF commits log_b64=MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMR9BZGQgc2VhcmNoH2FuYR8yMDI2LTEwLTE4VDA5OjAwOjAwKzAwOjAwHgoyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyH1JldmVydCAiQWRkIGNhY2hlIh9ib2IfMjAyNi0xMC0xOFQwODowMDowMCswMDowMB4KMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMx9BZGQgY2FjaGUfYm9iHzIwMjYtMTAtMTdUMDg6MDA6MDArMDA6MDAeCjQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQfRml4IHR5cG8fY3kfMjAyNi0xMC0xNlQwODowMDowMCswMDowMB4K"}
+{"event": "task_start", "name": "preflight tools dep2", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"]}
+{"event": "ok", "host": "od-1", "task": "preflight tools dep2", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF tools missing="}
+{"event": "task_start", "name": "preflight docker dep2", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"]}
+{"event": "ok", "host": "od-1", "task": "preflight docker dep2", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF docker plain=fail sudo=ok mode=sudo use=auto"}
+{"event": "task_start", "name": "preflight repo dep2", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"]}
+{"event": "ok", "host": "od-1", "task": "preflight repo dep2", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF repo exists=0 git=0"}
+{"event": "task_start", "name": "preflight clean dep2", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"]}
+{"event": "ok", "host": "od-1", "task": "preflight clean dep2", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"], "no_log": false, "rc": 257, "truncated": [], "msg": "Unable to change directory before execution: [Errno 2] No such file or directory"}
+{"event": "task_start", "name": "preflight fetch dep2", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"]}
+{"event": "ok", "host": "od-1", "task": "preflight fetch dep2", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"], "no_log": false, "rc": 257, "truncated": [], "msg": "Unable to change directory before execution: [Errno 2] No such file or directory"}
+{"event": "task_start", "name": "preflight compose dep2", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"]}
+{"event": "ok", "host": "od-1", "task": "preflight compose dep2", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"], "no_log": false, "rc": 257, "truncated": [], "msg": "Unable to change directory before execution: [Errno 2] No such file or directory"}
+{"event": "task_start", "name": "preflight disk dep2", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"]}
+{"event": "ok", "host": "od-1", "task": "preflight disk dep2", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"], "no_log": false, "rc": 257, "truncated": [], "msg": "Unable to change directory before execution: [Errno 2] No such file or directory"}
+{"event": "task_start", "name": "preflight tag dep2", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"]}
+{"event": "ok", "host": "od-1", "task": "preflight tag dep2", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"], "no_log": false, "rc": 257, "truncated": [], "msg": "Unable to change directory before execution: [Errno 2] No such file or directory"}
+{"event": "task_start", "name": "preflight commits dep2", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"]}
+{"event": "ok", "host": "od-1", "task": "preflight commits dep2", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"], "no_log": false, "rc": 257, "truncated": [], "msg": "Unable to change directory before execution: [Errno 2] No such file or directory"}
+{"event": "task_start", "name": "preflight lock od-1", "tags": ["od_step=preflight", "od_run=host:host-od-1"]}
+{"event": "ok", "host": "od-1", "task": "preflight lock od-1", "tags": ["od_step=preflight", "od_run=host:host-od-1"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF lock repo=/srv/apps/alpha1 held=1 raw_b64=eyJyZWxlYXNlSWQiOiIwMTkwYTFiMi1jM2Q0LTdlNWYtOGE2Yi1hYWFhYWFhYWFhYWEiLCJ1c2VyIjoiYm9iIiwibWFjaGluZSI6InNydjkiLCJlbnZpcm9ubWVudCI6InByb2QgZWFzdCIsInZlcnNpb24iOiJ2MS4yLjMiLCJzdGFydGVkQXQiOiIyMDI2LTEwLTE5VDA3OjAwOjAwLjAwMFoifQ==\nOD-PF lock repo=/srv/apps/alpha2 held=0 raw_b64="}
+{"event": "task_start", "name": "preflight tools dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"]}
+{"event": "ok", "host": "od-2", "task": "preflight tools dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF tools missing=pg_dump"}
+{"event": "task_start", "name": "preflight docker dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"]}
+{"event": "ok", "host": "od-2", "task": "preflight docker dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF docker plain=fail sudo=fail mode=plain use=auto"}
+{"event": "task_start", "name": "preflight repo dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"]}
+{"event": "ok", "host": "od-2", "task": "preflight repo dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF repo exists=1 git=1"}
+{"event": "task_start", "name": "preflight clean dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"]}
+{"event": "ok", "host": "od-2", "task": "preflight clean dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF clean ok=0 files=3"}
+{"event": "task_start", "name": "preflight fetch dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"]}
+{"event": "ok", "host": "od-2", "task": "preflight fetch dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF branch fetched=1 exists=0"}
+{"event": "task_start", "name": "preflight compose dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"]}
+{"event": "ok", "host": "od-2", "task": "preflight compose dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF compose exists=1 services_b64=YXBpCg=="}
+{"event": "task_start", "name": "preflight disk dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"]}
+{"event": "ok", "host": "od-2", "task": "preflight disk dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF disk avail_kb=1258291"}
+{"event": "task_start", "name": "preflight tag dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"]}
+{"event": "ok", "host": "od-2", "task": "preflight tag dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF tag exists=0 commit="}
+{"event": "task_start", "name": "preflight version-tag dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"]}
+{"event": "ok", "host": "od-2", "task": "preflight version-tag dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF version-tag exists=0"}
+{"event": "task_start", "name": "preflight commits dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"]}
+{"event": "ok", "host": "od-2", "task": "preflight commits dep3", "tags": ["od_step=preflight", "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF commits log_b64=MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMR9BZGQgc2VhcmNoH2FuYR8yMDI2LTEwLTE4VDA5OjAwOjAwKzAwOjAwHgoyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyH1JldmVydCAiQWRkIGNhY2hlIh9ib2IfMjAyNi0xMC0xOFQwODowMDowMCswMDowMB4K"}
+{"event": "task_start", "name": "preflight lock od-2", "tags": ["od_step=preflight", "od_run=host:host-od-2"]}
+{"event": "ok", "host": "od-2", "task": "preflight lock od-2", "tags": ["od_step=preflight", "od_run=host:host-od-2"], "no_log": false, "rc": 0, "truncated": [], "stdout": "OD-PF lock repo=/srv/apps/alpha3 held=0 raw_b64="}
+{"event": "stats", "hosts": {"od-1": {"ok": 1, "failures": 0, "unreachable": 0, "changed": 0, "skipped": 0, "rescued": 0, "ignored": 0}}}

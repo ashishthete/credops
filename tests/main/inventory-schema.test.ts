@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { DatabaseSync } from 'node:sqlite'
 import { openDatabase } from '../../src/main/db/connection'
-import { currentVersion, migrations } from '../../src/main/db/migrations'
+import { currentVersion, migrate, migrations } from '../../src/main/db/migrations'
 import { IdentityStore } from '../../src/main/vault/identity-store'
 import { KeyStore } from '../../src/main/vault/key-store'
 import { makeVault } from './vault-helpers'
@@ -119,5 +120,185 @@ describe('inventory schema', () => {
     expect(db.prepare('SELECT environment_id FROM tunnels WHERE id = ?').get('t3')).toEqual({ environment_id: null })
     db.prepare('DELETE FROM hosts WHERE id = ?').run('h1')
     expect(db.prepare('SELECT COUNT(*) AS n FROM tunnels').get()).toEqual({ n: 0 })
+  })
+})
+
+describe('migration 7 (deployments)', () => {
+  const cols = (db: ReturnType<typeof openDatabase>, t: string): string[] =>
+    (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((r) => r.name)
+
+  function seed(db: ReturnType<typeof openDatabase>): void {
+    db.prepare('INSERT INTO hosts(id, label, address, created_at, updated_at) VALUES (?,?,?,?,?)').run('h1', 'web', '10.0.0.1', NOW, NOW)
+    db.prepare('INSERT INTO environments(id, name, color, created_at, updated_at) VALUES (?,?,?,?,?)').run('e1', 'prod', '#aabbcc', NOW, NOW)
+  }
+  const dep = (db: ReturnType<typeof openDatabase>, extra = '', vals: (string | number)[] = []): void => {
+    db.prepare(
+      `INSERT INTO deployments(id, name, environment_id, host_id, ${extra}repo_path, default_branch, deploy_tag, created_at, updated_at) VALUES (?,?,?,?,${vals.map(() => '?,').join('')}?,?,?,?,?)`,
+    ).run('d1', 'api', 'e1', 'h1', ...vals, '/srv/app', 'main', 'deploy_prod', NOW, NOW)
+  }
+
+  it('adds deployment tables, checks, cascades and the append-only trigger', () => {
+    const db = openDatabase(':memory:')
+    expect(migrations.some((m) => m.version === 7 && m.name === 'deployments')).toBe(true)
+    expect(cols(db, 'deployments')).toEqual([
+      'id', 'name', 'environment_id', 'host_id', 'repo_url', 'compose_project', 'repo_path', 'default_branch', 'compose_file', 'deploy_tag',
+      'position', 'urls', 'health_status', 'health_timeout_sec', 'db_backup', 'backup_dir', 'pre_hook', 'post_hook',
+      'build_timeout_sec', 'compose_timeout_sec', 'use_sudo', 'become_secret_id', 'managed_env', 'env_template',
+      'created_at', 'updated_at',
+    ])
+    expect(cols(db, 'releases')).toEqual([
+      'id', 'environment_id', 'kind', 'status', 'version', 'previous_version', 'version_bump', 'redeploy', 'rollback_of',
+      'options', 'service_ids', 'release_notes', 'error', 'playbook', 'triggered_by', 'created_at', 'started_at', 'finished_at',
+    ])
+    expect(cols(db, 'deployment_runs')).toEqual([
+      'id', 'release_id', 'deployment_id', 'deployment_name', 'host_id', 'host_label', 'position', 'branch',
+      'previous_commit', 'deployed_commit', 'commits', 'services', 'whole_checkout', 'steps', 'status', 'rolled_back', 'backup_file', 'started_at',
+      'finished_at',
+    ])
+    expect(cols(db, 'run_events')).toEqual(['id', 'release_id', 'seq', 'at', 'type', 'payload'])
+    expect(cols(db, 'deployment_vaults')).toEqual(['deployment_id', 'vault_id'])
+
+    seed(db)
+    expect(() => dep(db, 'db_backup, ', [1])).toThrow(/CHECK/)
+    expect(() => dep(db, 'managed_env, ', [1])).toThrow(/CHECK/)
+    dep(db, 'repo_url, compose_project, ', ['git@github.com:acme/api.git', 'api'])
+    db.prepare("INSERT INTO releases(id, environment_id, kind, status, triggered_by, created_at) VALUES ('r1','e1','release','ready','me@box',?)").run(NOW)
+    db.prepare("INSERT INTO run_events(id, release_id, seq, at, type, payload) VALUES ('ev1','r1',1,?,'log','{}')").run(NOW)
+    expect(() => db.exec("UPDATE run_events SET type = 'x'")).toThrow(/run_events is append-only/)
+
+    expect(db.prepare("SELECT service_ids FROM releases WHERE id = 'r1'").get()).toEqual({ service_ids: '[]' })
+
+    db.prepare('DELETE FROM environments WHERE id = ?').run('e1')
+    for (const t of ['deployments', 'releases']) {
+      expect(db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get()).toEqual({ n: 0 })
+    }
+  })
+
+  const svc = (db: ReturnType<typeof openDatabase>, id: string, cols: string, vals: (string | number | null)[]): void => {
+    db.prepare(
+      `INSERT INTO services(id, environment_id, name, ${cols}, created_at, updated_at) VALUES (?,?,?,${vals.map(() => '?').join(',')},?,?)`,
+    ).run(id, 'e1', id, ...vals, NOW, NOW)
+  }
+
+  it('migration 7 creates services and no apps table', () => {
+    const db = openDatabase(':memory:')
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = 'apps'").get()).toBeUndefined()
+    expect(cols(db, 'services')).toEqual([
+      'id', 'environment_id', 'name', 'kind', 'position', 'description', 'deployment_id', 'compose_service', 'url',
+      'url_check_from', 'last_deployed_commit', 'last_release_id', 'db_engine', 'db_address', 'db_port', 'via_host_id',
+      'local_port', 'tunnel_id', 'created_at', 'updated_at',
+    ])
+    const indexes = (db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name = 'services'").all() as { name: string }[]).map((r) => r.name)
+    expect(indexes).toEqual(expect.arrayContaining(['services_name', 'services_compose', 'services_env']))
+    expect(cols(db, 'deployment_runs')).toContain('whole_checkout')
+    seed(db)
+    dep(db)
+    svc(db, 'esg', 'kind, deployment_id, compose_service, url_check_from', ['service', 'd1', 'esg', 'mac'])
+    svc(db, 'pg', 'kind, db_engine, db_address, db_port', ['db', 'postgres', 'db.internal', 5432])
+    expect(() => svc(db, 'ESG', 'kind, deployment_id, compose_service, url_check_from', ['service', 'd1', 'other', 'mac'])).toThrow(/UNIQUE/)
+    expect(() => svc(db, 'bad-kind', 'kind', ['queue'])).toThrow(/CHECK/)
+    expect(() => svc(db, 'no-compose', 'kind, url_check_from', ['service', 'mac'])).toThrow(/CHECK/)
+    expect(() => svc(db, 'bad-port', 'kind, db_engine, db_address, db_port', ['db', 'redis', 'r', 70000])).toThrow(/CHECK/)
+    db.prepare('DELETE FROM environments WHERE id = ?').run('e1')
+    expect(db.prepare('SELECT COUNT(*) AS n FROM services').get()).toEqual({ n: 0 })
+  })
+
+  it('a db row with compose_service violates the kind CHECK', () => {
+    const db = openDatabase(':memory:')
+    seed(db)
+    expect(() => svc(db, 'pg', 'kind, db_engine, db_address, db_port, compose_service', ['db', 'postgres', 'db', 5432, 'pg'])).toThrow(/CHECK/)
+    expect(() => svc(db, 'esg', 'kind, compose_service, url_check_from, db_engine', ['service', 'esg', 'mac', 'redis'])).toThrow(/CHECK/)
+  })
+
+  it('compose_service is unique per checkout', () => {
+    const db = openDatabase(':memory:')
+    seed(db)
+    dep(db)
+    const app = 'kind, deployment_id, compose_service, url_check_from'
+    svc(db, 'esg', app, ['service', 'd1', 'esg', 'mac'])
+    expect(() => svc(db, 'esg2', app, ['service', 'd1', 'esg', 'host'])).toThrow(/UNIQUE/)
+    // Without a checkout the same compose service name is free.
+    svc(db, 'loose1', app, ['service', null, 'esg', 'mac'])
+    svc(db, 'loose2', app, ['service', null, 'esg', 'mac'])
+  })
+
+  it('deleting a checkout sets services.deployment_id null', () => {
+    const db = openDatabase(':memory:')
+    seed(db)
+    dep(db)
+    svc(db, 'esg', 'kind, deployment_id, compose_service, url_check_from', ['service', 'd1', 'esg', 'mac'])
+    db.prepare('DELETE FROM deployments WHERE id = ?').run('d1')
+    expect(db.prepare("SELECT deployment_id, compose_service FROM services WHERE id = 'esg'").get()).toEqual({ deployment_id: null, compose_service: 'esg' })
+  })
+
+  it('deleting a host cascades to its deployments', () => {
+    const db = openDatabase(':memory:')
+    seed(db)
+    dep(db)
+    db.prepare('DELETE FROM hosts WHERE id = ?').run('h1')
+    expect(db.prepare('SELECT COUNT(*) AS n FROM deployments').get()).toEqual({ n: 0 })
+  })
+
+  it('gives rows that existed before migration 7 the deploy defaults and a NULL domain', () => {
+    const db = new DatabaseSync(':memory:')
+    db.exec('PRAGMA foreign_keys = ON')
+    migrate(db, migrations.filter((m) => m.version < 7))
+    db.prepare('INSERT INTO environments(id, name, color, created_at, updated_at) VALUES (?,?,?,?,?)').run('e1', 'prod', '#aabbcc', NOW, NOW)
+    migrate(db)
+    expect(db.prepare('SELECT versioned, auto_rollback, current_version, domain FROM environments').get()).toEqual({
+      versioned: 0,
+      auto_rollback: 1,
+      current_version: null,
+      domain: null,
+    })
+    const d = (db.prepare('PRAGMA table_info(environments)').all() as { name: string; type: string; notnull: number; dflt_value: unknown }[]).find(
+      (c) => c.name === 'domain',
+    )
+    expect(d).toMatchObject({ type: 'TEXT', notnull: 0, dflt_value: null })
+  })
+})
+
+describe('migration 8 (notifications)', () => {
+  const cols = (db: ReturnType<typeof openDatabase>, t: string): string[] =>
+    (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((r) => r.name)
+
+  it('notifications migration adds settings, integrations and log', () => {
+    const db = openDatabase(':memory:')
+    expect(currentVersion(db)).toBeGreaterThanOrEqual(8)
+    expect(migrations.some((m) => m.version === 8 && m.name === 'notifications')).toBe(true)
+    expect(cols(db, 'settings')).toEqual(['key', 'value', 'updated_at'])
+    expect(cols(db, 'environment_integrations')).toEqual([
+      'environment_id', 'notify_events', 'teams_webhook_secret_id', 'email_to', 'email_cc', 'qa_on_deploy',
+      'qa_repo', 'qa_workflow', 'qa_ref', 'qa_wait', 'updated_at',
+    ])
+    expect(cols(db, 'notification_log')).toEqual(['id', 'at', 'source_type', 'source_id', 'event', 'channel', 'status', 'detail'])
+
+    db.prepare('INSERT INTO environments(id, name, color, created_at, updated_at) VALUES (?,?,?,?,?)').run('e1', 'prod', '#aabbcc', NOW, NOW)
+    db.prepare('INSERT INTO environments(id, name, color, created_at, updated_at) VALUES (?,?,?,?,?)').run('e2', 'uat', '#aabbcc', NOW, NOW)
+    const vault = db.prepare('SELECT id FROM vaults LIMIT 1').get() as { id: string } | undefined
+    const vaultId = vault?.id ?? 'v1'
+    if (!vault) {
+      db.prepare("INSERT INTO vaults(id, name, color, created_at, updated_at) VALUES (?, 'v', '#aabbcc', ?, ?)").run(vaultId, NOW, NOW)
+    }
+    db.prepare(
+      "INSERT INTO secrets(id, vault_id, name, kind, value_enc, created_at, updated_at) VALUES ('s1', ?, 'hook', 'webhook', 'x', ?, ?)",
+    ).run(vaultId, NOW, NOW)
+    const integ = db.prepare(
+      'INSERT INTO environment_integrations(environment_id, teams_webhook_secret_id, qa_repo, qa_workflow, updated_at) VALUES (?,?,?,?,?)',
+    )
+    integ.run('e1', 's1', null, null, NOW)
+    expect(() => integ.run('e2', null, 'acme/app', null, NOW)).toThrow(/CHECK/)
+    integ.run('e2', null, 'acme/app', 'qa.yml', NOW)
+
+    db.prepare('DELETE FROM secrets WHERE id = ?').run('s1')
+    expect(db.prepare('SELECT teams_webhook_secret_id AS s FROM environment_integrations WHERE environment_id = ?').get('e1')).toEqual({ s: null })
+    db.prepare('DELETE FROM environments WHERE id = ?').run('e1')
+    expect(db.prepare('SELECT COUNT(*) AS n FROM environment_integrations').get()).toEqual({ n: 1 })
+
+    const log = db.prepare(
+      "INSERT INTO notification_log(id, at, source_type, source_id, event, channel, status) VALUES (?, ?, 'release', 'r1', 'release.failed', 'teams', 'pending')",
+    )
+    log.run('n1', NOW)
+    expect(() => log.run('n2', NOW)).toThrow(/UNIQUE/)
   })
 })

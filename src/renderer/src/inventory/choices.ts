@@ -1,4 +1,4 @@
-import type { HostMeta, ValueSource } from '../../../shared/inventory'
+import type { AddressSource, HostMeta, ValueSource } from '../../../shared/inventory'
 import type { IdentityMeta, VaultMeta } from '../../../shared/vault'
 
 export interface IdentityChoiceGroup {
@@ -39,6 +39,10 @@ export function jumpHostChoices(hosts: HostMeta[], selfId: string | null): HostM
     return false
   }
   return hosts.filter((h) => !reachesSelf(h))
+}
+
+export function addressSourceLabel(source: AddressSource, envName?: string): string {
+  return source === 'host' ? 'From this host' : `From ${envName ?? 'environment'}'s domain`
 }
 
 export function sourceLabel(source: ValueSource | null, envName?: string): string {

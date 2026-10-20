@@ -1,6 +1,8 @@
 import { vi } from 'vitest'
 import type { AuditEvent } from '../../src/shared/audit'
+import type { DeploymentMeta, EnvDeploySettings, Tooling } from '../../src/shared/deploy'
 import type { EnvironmentMeta, HostMeta, ProductMeta } from '../../src/shared/inventory'
+import type { AppServiceMeta, DbServiceMeta } from '../../src/shared/services'
 import type { AppInfo } from '../../src/shared/ipc'
 import type { SessionMeta } from '../../src/shared/ssh'
 import type { TunnelMeta, TunnelRuntime } from '../../src/shared/tunnels'
@@ -76,6 +78,7 @@ export function environment(over: Partial<EnvironmentMeta> & { id: string; name:
     defaultIdentityId: null,
     defaultPort: null,
     defaultJumpHostId: null,
+    domain: null,
     productIds: [],
     hosts: [],
     createdAt: STAMP,
@@ -115,6 +118,8 @@ export function mockBridge(results: Record<string, unknown> = {}) {
     if (channel === 'product:list' || channel === 'env:list' || channel === 'host:list') return []
     if (channel === 'tunnel:list' || channel === 'tunnel:status') return []
     if (channel === 'runs:list' || channel === 'snippets:list') return []
+    if (channel === 'deploy:list' || channel === 'service:list') return []
+    if (channel === 'release:list' || channel === 'release:active') return []
     return null
   })
   bridgeListeners.clear()
@@ -199,6 +204,90 @@ export function identity(over: Partial<IdentityMeta> & { id: string; label: stri
     auth: 'agent',
     sshKeyId: null,
     hasPassword: false,
+    createdAt: STAMP,
+    updatedAt: STAMP,
+    ...over,
+  }
+}
+
+export function deploymentMeta(over: Partial<DeploymentMeta> & { id: string }): DeploymentMeta {
+  return {
+    name: over.id,
+    environmentId: 'e1',
+    hostId: 'h1',
+    repoUrl: null,
+    composeProject: null,
+    repoPath: '/srv/app',
+    defaultBranch: 'main',
+    composeFile: 'docker-compose.yml',
+    deployTag: 'deployed-staging',
+    position: 0,
+    urls: [],
+    healthStatus: 200,
+    healthTimeoutSec: 60,
+    dbBackup: false,
+    backupDir: null,
+    preHook: null,
+    postHook: null,
+    buildTimeoutSec: 300,
+    composeTimeoutSec: 120,
+    useSudo: 'auto',
+    becomeSecretId: null,
+    managedEnv: false,
+    envTemplate: null,
+    vaultIds: [],
+    createdAt: STAMP,
+    updatedAt: STAMP,
+    ...over,
+  }
+}
+
+export function envSettings(over: Partial<EnvDeploySettings> = {}): EnvDeploySettings {
+  return { environmentId: 'e1', versioned: true, autoRollback: false, currentVersion: 'v1.2.0', ...over }
+}
+
+export function toolingOk(over: Partial<Tooling> = {}): Tooling {
+  return {
+    ansiblePlaybook: { path: '/opt/homebrew/bin/ansible-playbook', version: '2.17.0' },
+    ansibleStatus: 'ok',
+    sshAgent: '/usr/bin/ssh-agent',
+    sshAdd: '/usr/bin/ssh-add',
+    ssh: '/usr/bin/ssh',
+    problems: [],
+    ...over,
+  }
+}
+
+export function appService(over: Partial<AppServiceMeta> & { id: string; name: string }): AppServiceMeta {
+  return {
+    kind: 'service',
+    environmentId: 'e1',
+    position: 0,
+    description: '',
+    deploymentId: 'd1',
+    composeService: over.name,
+    url: null,
+    urlCheckFrom: 'mac',
+    lastDeployedCommit: null,
+    lastReleaseId: null,
+    createdAt: STAMP,
+    updatedAt: STAMP,
+    ...over,
+  }
+}
+
+export function dbService(over: Partial<DbServiceMeta> & { id: string; name: string }): DbServiceMeta {
+  return {
+    kind: 'db',
+    environmentId: 'e1',
+    position: 0,
+    description: '',
+    dbEngine: 'postgres',
+    dbAddress: '10.0.0.5',
+    dbPort: 5432,
+    viaHostId: null,
+    localPort: null,
+    tunnelId: null,
     createdAt: STAMP,
     updatedAt: STAMP,
     ...over,

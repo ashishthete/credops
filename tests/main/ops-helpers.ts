@@ -21,7 +21,7 @@ import { TUNNEL_USER } from './tunnel-helpers'
 /** Hook targets for what a run setup doesn't build. */
 export const idleSessions = { vaultLocked() {}, closeAll() {} }
 export const idleTunnels = { vaultLocked() {}, vaultUnlocked() {}, vaultReset() {} }
-export const idleContainers = { vaultReset() {} }
+export const idleContainers = { vaultLocked() {}, vaultReset() {} }
 
 export interface ShellHost {
   /** The tmp dir every command runs in; also its `HOME`. */

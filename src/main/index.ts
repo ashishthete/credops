@@ -1,3 +1,6 @@
+import { execFile, spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { homedir, hostname, userInfo } from 'node:os'
 import {
@@ -7,6 +10,7 @@ import {
   dialog,
   ipcMain,
   Menu,
+  Notification,
   powerMonitor,
   safeStorage,
   session,
@@ -17,7 +21,37 @@ import { AuditLog } from './audit/audit-log'
 import { openDatabase, type Db } from './db/connection'
 import { createAppHandlers } from './ipc/handlers/app'
 import { createAuditHandlers } from './ipc/handlers/audit'
+import { createConfigHandlers } from './ipc/handlers/config'
+import { CONFIG_FILE_NAME } from '../shared/config-file'
 import { createIdentityHandlers } from './ipc/handlers/identities'
+import { createDeployHandlers } from './ipc/handlers/deploy'
+import { createServiceHandlers } from './ipc/handlers/services'
+import { createSettingsHandlers } from './ipc/handlers/settings'
+import { createNotifyHandlers, createQaHandlers } from './ipc/handlers/notify'
+import { createAiHandlers } from './ipc/handlers/ai'
+import { AiRequests, ClaudeClient } from './ai/claude'
+import { promptContext } from './ai/prompt-redact'
+import { ExplainMemory, type ExplainSources } from './ai/explain'
+import { releaseNotesFinalizeStep, type NotesDeps } from './ai/release-notes'
+import { MacNotifier } from './notify/macos'
+import { LocalSink } from './notify/sink'
+import { NotificationDispatcher } from './notify/dispatcher'
+import { createFinalizeSteps } from './notify/finalize'
+import { QaDispatcher, qaFinalizeStep } from './notify/qa'
+import { IntegrationStore } from './settings/integration-store'
+import { SettingsStore } from './settings/settings-store'
+import { detectTools } from './deploy/tooling'
+import { startPrivateAgent, type ChildLike } from './deploy/agent'
+import { prepareHosts } from './deploy/hostkeys'
+import { LocalRunner, nodeFs, nodeSpawn } from './deploy/local-runner'
+import { startTap } from './deploy/log-tap'
+import { localAllowAll } from './deploy/access'
+import { ReleaseService } from './deploy/release-service'
+import { DeployStore, dbSecretRefs } from './deploy/deploy-store'
+import { ServiceStore } from './deploy/service-store'
+import { ServiceTunnels } from './deploy/service-tunnel'
+import { copyServices } from './deploy/service-copy'
+import { ReleaseStore } from './deploy/release-store'
 import { createTunnelHandlers } from './ipc/handlers/tunnels'
 import { createOpsHandlers } from './ipc/handlers/ops'
 import { listen, realExecFile, whoHolds } from './tunnels/bind'
@@ -66,6 +100,18 @@ app.setName('OpsDeck')
 app.setAboutPanelOptions({ applicationName: 'OpsDeck', applicationVersion: app.getVersion() })
 
 const devServerUrl = devRendererUrl(app.isPackaged, process.env)
+
+/** A port free on 127.0.0.1 right now: bind port 0, read what the OS gave, close. */
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer()
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address()
+      server.close(() => (addr !== null && typeof addr === 'object' ? resolve(addr.port) : reject(new Error('no free port on 127.0.0.1'))))
+    })
+  })
+}
 const CLIPBOARD_QUIT_WAIT_MS = 500
 
 let mainWindow: BrowserWindow | null = null
@@ -80,9 +126,14 @@ let environments: EnvironmentStore | null = null
 let products: ProductStore | null = null
 let sessions: SessionManager | null = null
 let tunnelManager: TunnelManager | null = null
+let qaService: QaDispatcher | null = null
 let execLinks: ExecLinks | null = null
 let runManager: RunManager | null = null
 let containerService: ContainerService | null = null
+let releaseService: ReleaseService | null = null
+let quitConfirmed = false
+let quitPrompting = false
+const RELEASE_QUIT_WAIT_MS = 20_000
 let quitAudited = false
 let stopAutoLock: (() => void) | null = null
 
@@ -166,7 +217,73 @@ if (!app.requestSingleInstanceLock()) {
       environments = new EnvironmentStore(db, service, log)
       products = new ProductStore(db, service, log)
       const tunnels = new TunnelStore({ db, audit: log, vault: service })
+      const settingsStore = new SettingsStore({ db, audit: log, vault: service, secrets })
+      const integrations = new IntegrationStore({ db, audit: log, vault: service, secrets })
+      const macNotifier = new MacNotifier({
+        Notification,
+        enabled: () => settingsStore.get().macos,
+        onClick: (route) => {
+          if (!mainWindow) return
+          if (mainWindow.isMinimized()) mainWindow.restore()
+          mainWindow.show()
+          mainWindow.focus()
+          pushEvent(mainWindow, 'app:navigate', { route })
+        },
+      })
+      const notifySink = new LocalSink({
+        secrets,
+        settings: settingsStore,
+        integrations,
+        fetch: globalThis.fetch,
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        notifier: macNotifier,
+        knownSecrets,
+      })
+      const notifyDispatcher = new NotificationDispatcher({
+        db,
+        sink: notifySink,
+        integrations,
+        settings: settingsStore,
+        vault: service,
+        audit: log,
+        // The release service is built below; the dispatcher reads it only when an event arrives.
+        runs: { runMeta: (id, status) => release.runMeta(id, status) },
+        tunnels,
+        knownSecrets,
+      })
+      notifyDispatcher.onSent((record) => pushEvent(mainWindow, 'notify:sent', record))
+      service.onUnlock(() => void notifyDispatcher.flushPending())
+      const qa = new QaDispatcher({
+        secrets,
+        settings: settingsStore,
+        integrations,
+        fetch: globalThis.fetch,
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        audit: log,
+        dispatcher: notifyDispatcher,
+        runs: { runMeta: (id) => release.runMeta(id) },
+        knownSecrets,
+      })
+      qaService = qa
+      qa.onState((item) => pushEvent(mainWindow, 'qa:state', item))
+      const aiRequests = new AiRequests()
+      const claude = new ClaudeClient({ settings: settingsStore, secrets, vault: service, knownSecrets })
+      service.onLock(() => aiRequests.cancelAll())
+      const notesIdentities = identities
+      const notesHosts = hosts
+      const notesDeps: NotesDeps = {
+        claude,
+        audit: log,
+        redaction: () => promptContext({ knownSecrets, identities: notesIdentities, hosts: notesHosts }),
+        environmentName: (id) => integrations.environmentName(id),
+      }
       const snippets = new SnippetStore({ db, audit: log, vault: service })
+      const deploys = new DeployStore({ db, audit: log, vault: service, secrets: dbSecretRefs(db) })
+      deploys.onChanged = (environmentId) => pushEvent(mainWindow, 'deploy:changed', { environmentId })
+      const services = new ServiceStore({ db, audit: log, vault: service })
+      services.onChanged = (environmentId) => pushEvent(mainWindow, 'deploy:changed', { environmentId })
+      const copyDeps = { db, deploys, services, audit: log, vault: service }
+      const releaseStore = new ReleaseStore({ db })
       const importer = new SshImporter({
         db,
         vault: service,
@@ -191,6 +308,74 @@ if (!app.requestSingleInstanceLock()) {
       const isLocked = (): boolean => !service.isUnlocked()
       // One queue for session and tunnel prompts, so one answer channel serves both.
       const prompts = new PromptBroker({ emit: (event, payload) => pushEvent(mainWindow, event, payload), isLocked })
+      const toolDeps = {
+        env: process.env,
+        home: homedir(),
+        execFile: (file: string, args: string[]) =>
+          new Promise<{ stdout: string; stderr: string }>((resolve, reject) =>
+            execFile(file, args, { timeout: 10_000 }, (err, stdout, stderr) => (err ? reject(err) : resolve({ stdout: String(stdout), stderr: String(stderr) }))),
+          ),
+        exists: (path: string) => existsSync(path),
+      }
+      const localRunner = new LocalRunner({
+        tools: () => detectTools(toolDeps),
+        prepare: (plan, signal) =>
+          prepareHosts(plan, {
+            resolve: (hostId) => resolve(hostId, plan.environment.id),
+            connectChain,
+            prompts,
+            knownHosts,
+            identities: identities as IdentityStore,
+            auth: { env: process.env, home: homedir(), sshConfig },
+            signal,
+          }),
+        agent: ({ dir, tools, ttlSec }) =>
+          startPrivateAgent({
+            dir,
+            tools,
+            ttlSec,
+            spawn: (file, args, o) => spawn(file, args, { env: o.env, stdio: ['pipe', 'pipe', 'pipe'] }) as unknown as ChildLike,
+          }),
+        tap: startTap,
+        spawn: nodeSpawn({ spawn: (file, args, o) => spawn(file, args, o) as never, kill: (pid, signal) => void process.kill(pid, signal as NodeJS.Signals) }),
+        fs: nodeFs,
+        // The agent socket must fit in 103 bytes; macOS's os.tmpdir() does not.
+        tmpdir: '/tmp',
+        home: homedir(),
+        userAgentSock: process.env.SSH_AUTH_SOCK ?? null,
+        sshConfig,
+      })
+      const release = new ReleaseService({
+        db,
+        deploys,
+        services,
+        releases: releaseStore,
+        runner: localRunner,
+        access: localAllowAll,
+        finalize: createFinalizeSteps({
+          dispatcher: notifyDispatcher,
+          notes: releaseNotesFinalizeStep(notesDeps),
+          qa: qaFinalizeStep({ qa, integrations }),
+        }),
+        audit: log,
+        vault: service,
+        resolve,
+        identities,
+        secrets,
+        emit: (batch) => pushEvent(mainWindow, 'deploy:event', batch),
+        emitState: (summary) => pushEvent(mainWindow, 'release:state', summary),
+        actor,
+        now: () => new Date(),
+        clock: { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: (h) => clearTimeout(h as NodeJS.Timeout) },
+      })
+      releaseService = release
+      service.onLock(() => release.vaultLocked())
+      release.onEvent((batch) => {
+        for (const e of batch) void notifyDispatcher.onRunEvent(e)
+      })
+      // Startup recovery lives here (Task 7 must not add a second call): a release left preflight, running or
+      // rolling back by a quit can never finish, so mark it failed (and audit it) before anything reads it.
+      release.recoverInterrupted()
       sessions = new SessionManager({
         resolve,
         hostInfo: (hostId) => {
@@ -226,6 +411,7 @@ if (!app.requestSingleInstanceLock()) {
         emit: (event, payload) => pushEvent(mainWindow, event, payload),
       })
       tunnelManager = runner
+      runner.onEvent((e) => void notifyDispatcher.onTunnelEvent(e))
       const hostStore = hosts
       // Pooled exec-only links for runs and containers, apart from interactive sessions.
       const links = new ExecLinks({
@@ -260,13 +446,49 @@ if (!app.requestSingleInstanceLock()) {
         emit: (event, payload) => pushEvent(mainWindow, event, payload),
       })
       containerService = containers
+      const explainSources: ExplainSources = {
+        release,
+        sessions: manager,
+        tunnels: { get: (id) => tunnels.get(id), runtime: (id) => runner.runtime(id) },
+        host: (hostId) => {
+          try {
+            const h = hostMeta(inventoryDb, hostId)
+            return { label: h.label, os: h.osIcon }
+          } catch {
+            return null
+          }
+        },
+        environment: (id) => {
+          try {
+            const e = envStore.get(id)
+            return { name: e.name, protected: e.protected }
+          } catch {
+            return null
+          }
+        },
+        sessionAuth: (hostId, environmentId) => {
+          try {
+            const r = resolve(hostId, environmentId ?? undefined)
+            return { auth: r.identity.auth, port: r.port.value }
+          } catch {
+            return null
+          }
+        },
+      }
+      const serviceTunnels = new ServiceTunnels({
+        services,
+        tunnels,
+        manager: runner,
+        environments: () => envStore.list(),
+        deploys,
+        hostLabel: (hostId) => hostMeta(inventoryDb, hostId).label,
+        freePort,
+      })
       tunnels.onRemoved = (id) => runner.removed(id)
       tunnels.onChanged = (before, after) => runner.changed(before, after)
       // Lock, unlock and reset hooks (order and reasons in vault/hooks.ts). Quit (before-quit) stops
       // tunnels, closes sessions, cancels runs (writing their run.finish), stops container log
-      // follows, closes exec links, and only then locks the vault. Container follows have no lock
-      // listener: one already open keeps streaming through a lock (new calls are refused while
-      // locked), like a connected session. A reset does stop them.
+      // follows, closes exec links, and only then locks the vault.
       wireVaultHooks(service, { sessions: manager, tunnels: runner, runs, links, containers, prompts })
       stopAutoLock = new AutoLock({
         idleSeconds: () => powerMonitor.getSystemIdleTime(),
@@ -315,11 +537,44 @@ if (!app.requestSingleInstanceLock()) {
             products,
             resolve,
             tunnels: runner,
+            openExternal: (url) => shell.openExternal(url),
           }),
           ...createSshImportHandlers(importer),
           ...createTunnelHandlers({ store: tunnels, manager: runner }),
+          ...createDeployHandlers({ deploys, releases: release, tooling: () => detectTools(toolDeps) }),
+          ...createServiceHandlers({
+            services,
+            copy: (req) => copyServices(copyDeps, req),
+            deploys,
+            containers,
+            tunnels: serviceTunnels,
+            openExternal: (url) => shell.openExternal(url),
+          }),
+          ...createSettingsHandlers({ settings: settingsStore, integrations }),
+          ...createQaHandlers({ qa, integrations }),
+          ...createAiHandlers({
+            settings: settingsStore,
+            requests: aiRequests,
+            notes: notesDeps,
+            explain: { claude, audit: log, redaction: notesDeps.redaction, sources: explainSources, memory: new ExplainMemory() },
+            onDelta: (delta) => pushEvent(mainWindow, 'ai:delta', delta),
+          }),
+          ...createNotifyHandlers({ db, sink: notifySink, settings: settingsStore, integrations, mac: macNotifier, audit: log, actor }),
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
           ...createOpsHandlers({ snippets, runs, containers }),
+          ...createConfigHandlers({
+            db,
+            vault: service,
+            audit: log,
+            now: () => new Date(),
+            saveDialog: async () => {
+              const opts: Electron.SaveDialogOptions = { defaultPath: CONFIG_FILE_NAME, filters: [{ name: 'JSON', extensions: ['json'] }] }
+              const res = mainWindow
+                ? await dialog.showSaveDialog(mainWindow, opts)
+                : await dialog.showSaveDialog(opts)
+              return res.canceled ? undefined : res.filePath
+            },
+          }),
         },
         (url) => isTrustedSender(url, { devServerUrl, rendererFile }),
         { validators: VALIDATORS, knownSecrets },
@@ -334,8 +589,30 @@ if (!app.requestSingleInstanceLock()) {
     })
 
   app.on('before-quit', (event) => {
+    // A running release holds host locks: ask first, then cancel and wait for the unlock before quitting.
+    if (releaseService?.hasActive() && !quitConfirmed) {
+      event.preventDefault()
+      if (quitPrompting) return
+      quitPrompting = true
+      const svc = releaseService
+      const env = svc.activeEnvironments()[0]
+      void dialog
+        .showMessageBox({ type: 'warning', buttons: ['Quit and cancel', 'Keep open'], defaultId: 1, cancelId: 1, message: `A release is running on ${env}. Quit and cancel it?` })
+        .then(async ({ response }) => {
+          if (response !== 0) return
+          await Promise.race([svc.cancelAll(), new Promise((r) => setTimeout(r, RELEASE_QUIT_WAIT_MS))])
+          quitConfirmed = true
+          app.quit()
+        })
+        .catch((err: unknown) => console.error('Failed to cancel releases on quit:', err))
+        .finally(() => {
+          quitPrompting = false
+        })
+      return
+    }
     if (!audit || quitAudited) return
     quitAudited = true
+    qaService?.stop()
     try {
       tunnelManager?.stopAll('quit')
     } catch (err) {
@@ -385,6 +662,8 @@ if (!app.requestSingleInstanceLock()) {
   app.on('will-quit', () => {
     stopAutoLock?.()
     stopAutoLock = null
+    releaseService?.close()
+    releaseService = null
     vault = null
     secrets = null
     keys = null

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { AuditInput } from '../../shared/audit'
+import { REPO_PATH, type UseSudo } from '../../shared/deploy'
 import type { EnvironmentMeta } from '../../shared/inventory'
 import {
   CONTAINER_ACTIONS,
@@ -19,6 +20,7 @@ import {
 import { PROMPT_TIMEOUT_MS, type SessionError } from '../../shared/ssh'
 import { VAULT_LOCKED } from '../../shared/vault'
 import { redact } from '../security/redact'
+import { composeCommand, type ComposeTarget } from '../deploy/compose'
 import { quietly } from '../util/teardown'
 import { realTimers, type Timers } from '../tunnels/forward'
 import { ExecFailure, type ExecLinks, type Lease } from './exec-links'
@@ -41,6 +43,7 @@ const MAX_ERR_KEPT = 4096
 /** A `docker ps` line longer than this is skipped unparsed. */
 const MAX_PS_LINE = 65_536
 const QUITTING = 'OpsDeck is quitting'
+const LOCKED: SessionError = { code: 'locked', message: 'The vault was locked; follow the logs again after unlocking' }
 const EXEC_SHELL = 'command -v bash >/dev/null 2>&1 && exec bash || exec sh'
 
 /** A container exec tab's command; `SessionManager` sends it with a pty. */
@@ -108,6 +111,31 @@ export function logsError(label: string, exitCode: number | null, stderrTail: st
   if (last !== undefined && DOCKER_SOCKET_DENIED.test(last)) return `Docker needs permission on ${label} (add the user to the docker group)`
   return exitCode === null ? `docker logs was stopped by a signal on ${label}` : `docker logs exited with code ${exitCode} on ${label}`
 }
+
+/** What a checkout's compose service logs need; every value is validated before anything runs. */
+export interface ComposeLogsSpec extends ComposeTarget {
+  repoPath: string
+  composeService: string
+  useSudo: UseSudo
+}
+
+const SUDO_OF: Record<UseSudo, boolean | 'auto'> = { yes: true, no: false, auto: 'auto' }
+
+/**
+ * `cd <repo> && <docker|sudo -n docker|auto> compose -f <file> [-p <project>] logs -f --tail <n> <svc>`. The
+ * checkout's `useSudo` is the rule (there is no per-host docker setting); sudo only ever runs as `-n`, so no
+ * password is fetched or sent.
+ */
+export function composeLogsCommand(spec: ComposeLogsSpec, tail: number): string {
+  if (typeof spec.repoPath !== 'string' || !REPO_PATH.test(spec.repoPath)) throw new Error('invalid repo path')
+  if (!Object.hasOwn(SUDO_OF, spec.useSudo)) throw new Error('useSudo must be auto, yes or no')
+  checkTail(tail)
+  const logs = composeCommand(spec, ['logs', '-f', '--tail', String(tail)], [spec.composeService], { sudo: SUDO_OF[spec.useSudo] })
+  return `${shJoin(['cd', spec.repoPath])} && ${logs}`
+}
+
+/** Docker or sudo refusing the user; the checkout's sudo setting is what to change. */
+const NEEDS_SUDO = /permission denied.*docker\.sock|a password is required|a terminal is required/i
 
 /** Keeps the first (or, for logs, the last) `MAX_ERR_KEPT` chars of stderr. */
 class StderrKept {
@@ -379,17 +407,47 @@ export class ContainerService {
     return ring.snapshot().text
   }
 
-  /**
-   * Resolves with the follow's id once its lease is held; lines then arrive as `containers:logs`
-   * events, batched like run output, and one `ended` event closes it. At most `MAX_LOG_FOLLOWS` per
-   * host, so the link keeps channels for list and actions.
-   */
+  /** A container's log follow: `docker logs --follow`. See `startFollow`. */
   async follow(hostId: string, environmentId: string | null, ref: string, tail: number): Promise<string> {
     this.assertOpen()
     checkContainerRef(ref)
     checkTail(tail)
     const label = this.deps.hostLabel(hostId)
     this.assertUnlocked()
+    return this.startFollow(hostId, environmentId, label, shJoin(logsArgv(ref, tail, true)))
+  }
+
+  /**
+   * `docker compose logs -f` for one service of a checkout, in its repo dir: the same follow as `follow`
+   * (cap, lease, events), not audited. A docker or sudo refusal ends it with a hint to check the checkout's
+   * sudo setting.
+   */
+  async followCompose(hostId: string, environmentId: string, spec: ComposeLogsSpec, tail: number): Promise<string> {
+    this.assertOpen()
+    const command = composeLogsCommand(spec, tail)
+    const label = this.deps.hostLabel(hostId)
+    this.assertUnlocked()
+    return this.startFollow(hostId, environmentId, label, command, (r, stderr) => {
+      const error = exitError(label, r, stderr)
+      if (error?.code === 'unknown' && NEEDS_SUDO.test(stderr.text)) {
+        return { code: 'unknown', message: `Docker on ${label} needs sudo for logs; check the checkout's sudo setting` }
+      }
+      return error
+    })
+  }
+
+  /**
+   * Resolves with the follow's id once its lease is held; lines then arrive as `containers:logs`
+   * events, batched like run output, and one `ended` event closes it. At most `MAX_LOG_FOLLOWS` per
+   * host, so the link keeps channels for list and actions.
+   */
+  private async startFollow(
+    hostId: string,
+    environmentId: string | null,
+    label: string,
+    command: string,
+    endError: (r: ExecResult, stderr: StderrKept) => SessionError | null = (r, stderr) => exitError(label, r, stderr),
+  ): Promise<string> {
     const open = [...this.follows.values()].filter((f) => f.hostId === hostId).length
     if (open >= this.maxFollows) throw new Error(`${label} already has ${this.maxFollows} log follows open; stop one first`)
     const f: Follow = {
@@ -410,14 +468,14 @@ export class ContainerService {
       this.follows.delete(f.id)
       throw err
     }
-    void execOnce(lease.client, shJoin(logsArgv(ref, tail, true)), {
+    void execOnce(lease.client, command, {
       env: lease.envVars,
       signal: f.abort.signal,
       timers: this.timers,
       onData: (chunk, stream) => this.followData(f, chunk, stream),
     })
       .then(
-        (r) => this.endFollow(f, r.cancelled ? null : exitError(label, r, f.stderr)),
+        (r) => this.endFollow(f, r.cancelled ? null : endError(r, f.stderr)),
         (err: unknown) => this.endFollow(f, errorOf(err)),
       )
       .finally(() => lease.release())
@@ -441,9 +499,18 @@ export class ContainerService {
 
   /** The renderer reloaded or crashed: its follows have no viewer left, so each is stopped and stops counting. */
   unfollowAll(): void {
+    this.stopFollows(null)
+  }
+
+  /** Vault lock: every follow (container or compose) stops streaming and says why; new ones wait for unlock. */
+  vaultLocked(): void {
+    this.stopFollows(LOCKED)
+  }
+
+  private stopFollows(error: SessionError | null): void {
     for (const f of [...this.follows.values()]) {
       f.abort.abort()
-      this.endFollow(f, null)
+      this.endFollow(f, error)
     }
   }
 

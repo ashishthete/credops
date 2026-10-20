@@ -1,4 +1,6 @@
+import type { ExplainSubject, Explanation, ReleaseNotesRequest, ReleaseNotesResult } from './ai'
 import type { AuditEvent, AuditFilter, ChainVerification } from './audit'
+import type { ConfigCounts } from './config-file'
 import type {
   EnvironmentInput,
   EnvironmentMeta,
@@ -26,6 +28,33 @@ import type {
   SnippetInput,
   SnippetMeta,
 } from './ops'
+import type {
+  DeploymentInput,
+  DeploymentMeta,
+  Tooling,
+  DeploymentPatch,
+  EnvDeploySettings,
+  EnvDeploySettingsPatch,
+  BreakLockConfirm,
+  PreflightRequest,
+  ReleaseConfirm,
+  ReleaseDetail,
+  ReleaseListFilter,
+  ReleaseSummary,
+  RunEvent as DeployRunEvent,
+} from './deploy'
+import type { CopyServicesRequest, CopyServicesResult, ServiceInput, ServiceMeta, ServicePatch, ServiceUpdateResult } from './services'
+import type {
+  EnvironmentIntegrations,
+  EnvironmentIntegrationsPatch,
+  IntegrationSettings,
+  IntegrationSettingsPatch,
+  NotificationRecord,
+  NotifyLogFilter,
+  NotifyTestTarget,
+  QaDispatch,
+  IntegrationStatus,
+} from './settings'
 import type { TunnelEvent, TunnelInput, TunnelMeta, TunnelPatch, TunnelRuntime, TunnelStats } from './tunnels'
 import type {
   KnownHostMeta,
@@ -124,6 +153,7 @@ export interface IpcContract {
   'env:create': { args: [input: EnvironmentInput]; result: EnvironmentMeta }
   'env:update': { args: [id: string, patch: EnvironmentPatch]; result: EnvironmentMeta }
   'env:delete': { args: [id: string]; result: void }
+  'env:openDomain': { args: [id: string]; result: void }
   'env:setProducts': { args: [id: string, productIds: string[]]; result: EnvironmentMeta }
   'env:putHost': { args: [id: string, hostId: string, role: HostRole]; result: EnvironmentMeta }
   'env:removeHost': { args: [id: string, hostId: string]; result: EnvironmentMeta }
@@ -155,6 +185,60 @@ export interface IpcContract {
   'tunnel:start': { args: [id: string]; result: TunnelRuntime }
   'tunnel:stop': { args: [id: string]; result: void }
   'tunnel:status': { args: []; result: TunnelRuntime[] }
+  'deploy:list': { args: [environmentId?: string]; result: DeploymentMeta[] }
+  'deploy:create': { args: [input: DeploymentInput]; result: DeploymentMeta }
+  // The environment and host are fixed at creation: a patch that names either is rejected.
+  'deploy:update': { args: [id: string, patch: DeploymentPatch]; result: DeploymentMeta }
+  'deploy:delete': { args: [id: string]; result: void }
+  'deploy:reorder': { args: [environmentId: string, ids: string[]]; result: void }
+  'deploy:settings': { args: [environmentId: string]; result: EnvDeploySettings }
+  'deploy:updateSettings': { args: [environmentId: string, patch: EnvDeploySettingsPatch]; result: EnvDeploySettings }
+  'deploy:tooling': { args: []; result: Tooling }
+  // `release:start` resolves once the run has started; progress arrives as `deploy:event` batches.
+  'release:preflight': { args: [request: PreflightRequest]; result: { releaseId: string } }
+  'release:start': { args: [releaseId: string, confirm: ReleaseConfirm]; result: void }
+  'release:cancel': { args: [releaseId: string]; result: void }
+  'release:rollback': { args: [releaseId: string, confirm: ReleaseConfirm]; result: { releaseId: string } }
+  'release:break-lock': { args: [releaseId: string, hostId: string, confirm: BreakLockConfirm]; result: void }
+  'release:discard': { args: [releaseId: string]; result: void }
+  'release:set-notes': { args: [releaseId: string, notes: string]; result: void }
+  'release:retry-version': { args: [releaseId: string]; result: void }
+  'release:list': { args: [filter: ReleaseListFilter]; result: ReleaseSummary[] }
+  'release:get': { args: [releaseId: string]; result: ReleaseDetail }
+  'release:events': { args: [releaseId: string, afterSeq: number, limit?: number]; result: DeployRunEvent[] }
+  'release:active': { args: []; result: ReleaseSummary[] }
+  // Writes emit `deploy:changed`. `tunnelRestartNeeded` says a running db tunnel still uses the old target.
+  'service:list': { args: [environmentId?: string]; result: ServiceMeta[] }
+  'service:create': { args: [input: ServiceInput]; result: ServiceMeta }
+  'service:update': { args: [id: string, patch: ServicePatch]; result: ServiceUpdateResult }
+  'service:delete': { args: [id: string, opts: { deleteTunnel: boolean }]; result: void }
+  'service:reorder': { args: [environmentId: string, ids: string[]]; result: void }
+  // One transaction and one `services.copy` audit; name conflicts come back in `skipped`.
+  'service:copy': { args: [req: CopyServicesRequest]; result: CopyServicesResult }
+  // Integration settings hold secret ids, never values; updates need the vault unlocked.
+  'settings:get': { args: []; result: IntegrationSettings }
+  'settings:update': { args: [patch: IntegrationSettingsPatch]; result: IntegrationSettings }
+  'settings:status': { args: []; result: IntegrationStatus }
+  'integration:get': { args: [environmentId: string]; result: EnvironmentIntegrations }
+  'integration:update': { args: [environmentId: string, patch: EnvironmentIntegrationsPatch]; result: EnvironmentIntegrations }
+  // Sends a "Test from OpsDeck" card, email or alert; audited as notify.test. Errors never hold a URL or key.
+  'notify:test': { args: [target: NotifyTestTarget]; result: void }
+  'notify:log': { args: [filter: NotifyLogFilter]; result: NotificationRecord[] }
+  'qa:dispatch': { args: [environmentId: string]; result: QaDispatch }
+  'qa:list': { args: []; result: QaDispatch[] }
+  'ai:status': { args: []; result: IntegrationStatus['ai'] }
+  'ai:cancel': { args: [requestId: string]; result: void }
+  'ai:releaseNotes': { args: [requestId: string, req: ReleaseNotesRequest]; result: ReleaseNotesResult }
+  'ai:explain': { args: [requestId: string, subject: ExplainSubject]; result: Explanation }
+  'ai:command': { args: [requestId: string, index: number, mode: 'copy' | 'run']; result: void }
+  // A kind `service` with a checkout: `docker compose logs -f` streamed as `containers:logs`; stop it with `containers:unfollow`.
+  'service:logs': { args: [id: string, tail: number]; result: string }
+  // Opens the stored URL in the browser; refused when the service has none.
+  'service:open': { args: [id: string]; result: void }
+  // A db service's Phase 5 tunnel: open creates it on first use and starts it; sync applies a changed route.
+  'service:tunnelOpen': { args: [id: string]; result: TunnelRuntime }
+  'service:tunnelClose': { args: [id: string]; result: void }
+  'service:tunnelSync': { args: [id: string]; result: TunnelRuntime | null }
   'snippets:list': { args: []; result: SnippetMeta[] }
   'snippets:create': { args: [input: SnippetInput]; result: SnippetMeta }
   'snippets:update': { args: [id: string, input: SnippetInput]; result: SnippetMeta }
@@ -176,6 +260,8 @@ export interface IpcContract {
   // Returns the followId; lines arrive as containers:logs events.
   'containers:follow': { args: [hostId: string, environmentId: string | null, ref: string, tail: number]; result: string }
   'containers:unfollow': { args: [followId: string]; result: void }
+  /** Asks where to save with a dialog in main: the renderer never sends a path. */
+  'config:export': { args: []; result: { path: string; counts: ConfigCounts } | null }
 }
 
 export type Channel = keyof IpcContract
@@ -228,6 +314,7 @@ export const CHANNELS = [
   'env:create',
   'env:update',
   'env:delete',
+  'env:openDomain',
   'env:setProducts',
   'env:putHost',
   'env:removeHost',
@@ -256,6 +343,51 @@ export const CHANNELS = [
   'tunnel:start',
   'tunnel:stop',
   'tunnel:status',
+  'deploy:list',
+  'deploy:create',
+  'deploy:update',
+  'deploy:delete',
+  'deploy:reorder',
+  'deploy:settings',
+  'deploy:updateSettings',
+  'deploy:tooling',
+  'release:preflight',
+  'release:start',
+  'release:cancel',
+  'release:rollback',
+  'release:break-lock',
+  'release:discard',
+  'release:set-notes',
+  'release:retry-version',
+  'release:list',
+  'release:get',
+  'release:events',
+  'release:active',
+  'service:list',
+  'service:create',
+  'service:update',
+  'service:delete',
+  'service:reorder',
+  'service:copy',
+  'settings:get',
+  'settings:update',
+  'settings:status',
+  'integration:get',
+  'integration:update',
+  'notify:test',
+  'notify:log',
+  'qa:dispatch',
+  'qa:list',
+  'ai:status',
+  'ai:cancel',
+  'ai:releaseNotes',
+  'ai:explain',
+  'ai:command',
+  'service:logs',
+  'service:open',
+  'service:tunnelOpen',
+  'service:tunnelClose',
+  'service:tunnelSync',
   'snippets:list',
   'snippets:create',
   'snippets:update',
@@ -271,6 +403,7 @@ export const CHANNELS = [
   'containers:logs',
   'containers:follow',
   'containers:unfollow',
+  'config:export',
 ] as const satisfies readonly Channel[]
 
 // Fails typecheck if IpcContract gains a channel that CHANNELS does not list.
@@ -295,6 +428,19 @@ export interface EventContract {
   // Output chunks are run output: never logged, audited or toasted.
   'run:event': RunEvent
   'containers:logs': ContainerLogEvent
+  // Pushed after a committed deploy-config change; the payload says which environment to refetch.
+  'deploy:changed': { environmentId: string }
+  // Batched run events of a release (about every EVENT_BATCH_MS), already persisted with their seq.
+  'deploy:event': DeployRunEvent[]
+  'release:state': ReleaseSummary
+  // A clicked macOS alert: the renderer navigates to this hash route.
+  'app:navigate': { route: string }
+  // One notification reached a terminal state (sent, failed or skipped); detail never holds a URL or value.
+  'notify:sent': NotificationRecord
+  // A QA dispatch changed state (dispatched, running, passed, failed or unknown).
+  'qa:state': QaDispatch
+  // A streamed text delta of a live AI request.
+  'ai:delta': { requestId: string; text: string }
 }
 export type EventName = keyof EventContract
 export const EVENTS = [
@@ -308,6 +454,13 @@ export const EVENTS = [
   'tunnel:event',
   'run:event',
   'containers:logs',
+  'deploy:changed',
+  'deploy:event',
+  'release:state',
+  'app:navigate',
+  'notify:sent',
+  'qa:state',
+  'ai:delta',
 ] as const satisfies readonly EventName[]
 type MissingEvents = Exclude<EventName, (typeof EVENTS)[number]>
 export const eventsAreComplete: [MissingEvents] extends [never] ? true : never = true

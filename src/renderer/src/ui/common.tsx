@@ -230,8 +230,14 @@ export interface ConfirmRequest {
   typeToConfirm?: string
   /** The action can't go ahead yet; `description` says why and the confirm button stays off. */
   blocked?: boolean
+  /** Exact text the action uses (a command), shown verbatim in a mono block. */
+  code?: string
+  /** A checkbox shown above the confirm button; `run` receives its state. */
+  option?: { label: string; defaultChecked: boolean }
+  /** For a choice that isn't destructive: a plain confirm button and this cancel label, with no "can't be undone" line. */
+  gentle?: { cancelLabel: string }
   /** Resolving `{ refused }` keeps the dialog open and shows the message in it; anything else closes it. */
-  run: () => Promise<unknown>
+  run: (checked?: boolean) => Promise<unknown>
 }
 
 /** A destructive confirmation; open while `request` is non-null. */
@@ -239,6 +245,7 @@ export function ConfirmDialog({ request, onClose }: { request: ConfirmRequest | 
   const [typed, setTyped] = useState('')
   const [busy, setBusy] = useState(false)
   const [refused, setRefused] = useState<string | null>(null)
+  const [checked, setChecked] = useState(false)
   const formId = useId()
   // Keep the last request while the dialog animates out.
   const last = useRef(request)
@@ -249,6 +256,7 @@ export function ConfirmDialog({ request, onClose }: { request: ConfirmRequest | 
     if (request) {
       setTyped('')
       setRefused(null)
+      setChecked(request.option?.defaultChecked ?? false)
     }
   }, [request])
 
@@ -259,7 +267,7 @@ export function ConfirmDialog({ request, onClose }: { request: ConfirmRequest | 
     setRefused(null)
     let keepOpen = false
     try {
-      const out = await request.run()
+      const out = await (request.option ? request.run(checked) : request.run())
       if (out && typeof out === 'object' && 'refused' in out && typeof out.refused === 'string') {
         keepOpen = true
         setRefused(out.refused)
@@ -279,9 +287,9 @@ export function ConfirmDialog({ request, onClose }: { request: ConfirmRequest | 
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={busy}>
-            Cancel
+            {r?.gentle?.cancelLabel ?? 'Cancel'}
           </Button>
-          <Button variant="danger" form={formId} type="submit" disabled={!ready} loading={busy}>
+          <Button variant={r?.gentle ? 'primary' : 'danger'} form={formId} type="submit" disabled={!ready} loading={busy}>
             {r?.confirmLabel}
           </Button>
         </>
@@ -294,6 +302,11 @@ export function ConfirmDialog({ request, onClose }: { request: ConfirmRequest | 
           void confirm()
         }}
       >
+        {r?.code && (
+          <pre className="mb-3 max-h-40 overflow-auto rounded-lg border border-line bg-canvas/60 px-3 py-2 font-mono text-[12px] leading-5 break-all whitespace-pre-wrap text-fg">
+            {r.code}
+          </pre>
+        )}
         {r?.blocked ? null : r?.typeToConfirm ? (
           <TextField
             autoFocus
@@ -306,8 +319,19 @@ export function ConfirmDialog({ request, onClose }: { request: ConfirmRequest | 
             spellCheck={false}
             autoComplete="off"
           />
-        ) : (
+        ) : r?.gentle ? null : (
           <p className="text-[12.5px] text-muted">This can't be undone.</p>
+        )}
+        {r?.option && !r.blocked && (
+          <label className="mt-3 flex items-center gap-2 text-[12.5px] text-fg/90">
+            <input
+              type="checkbox"
+              checked={checked}
+              onChange={(e) => setChecked(e.target.checked)}
+              className="size-3.5 rounded accent-(--accent)"
+            />
+            {r.option.label}
+          </label>
         )}
         {refused && (
           <p role="alert" className="mt-2 text-[12.5px] text-err">

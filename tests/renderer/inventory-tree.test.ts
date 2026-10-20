@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { identityChoices, jumpHostChoices, sourceLabel } from '../../src/renderer/src/inventory/choices'
+import { addressSourceLabel, identityChoices, jumpHostChoices, sourceLabel } from '../../src/renderer/src/inventory/choices'
 import { buildTree, moveFocus, selectionFromKey } from '../../src/renderer/src/inventory/tree'
 import type { InventoryData } from '../../src/renderer/src/inventory/store'
 import type { IdentityMeta } from '../../src/shared/vault'
@@ -90,5 +90,13 @@ describe('picker choices', () => {
     expect(sourceLabel('environment')).toBe('Inherited from environment')
     expect(sourceLabel('global')).toBe('App default')
     expect(sourceLabel(null)).toBe('None')
+  })
+})
+
+describe('addressSourceLabel', () => {
+  it('names where the dialled address came from', () => {
+    expect(addressSourceLabel('domain', 'staging')).toBe("From staging's domain")
+    expect(addressSourceLabel('domain')).toBe("From environment's domain")
+    expect(addressSourceLabel('host')).toBe('From this host')
   })
 })

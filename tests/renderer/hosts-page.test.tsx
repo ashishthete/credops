@@ -110,6 +110,7 @@ const outside = (hostId: string, address: string): ResolvedHost => ({
   hostId,
   environmentId: null,
   address,
+  addressSource: 'host',
   port: { value: 22, source: 'global' },
   identity: { source: 'global', username: 'tester', auth: 'default' },
   jump: { hostId: null, source: null },

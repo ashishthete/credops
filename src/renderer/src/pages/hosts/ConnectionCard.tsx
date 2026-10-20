@@ -1,9 +1,9 @@
 import { AnimatePresence, LayoutGroup, motion } from 'framer-motion'
-import { ChevronRight, CircleAlert, KeyRound, Network, Route, Timer, TriangleAlert, UserRound, type LucideIcon } from 'lucide-react'
+import { ChevronRight, CircleAlert, Globe, KeyRound, Network, Route, Timer, TriangleAlert, UserRound, type LucideIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { DEFAULT_KEEPALIVE_SEC } from '../../../../shared/ssh'
 import type { IdentityRef, InheritConflict, ResolvedHost, ValueSource } from '../../../../shared/inventory'
-import { sourceLabel } from '../../inventory/choices'
+import { addressSourceLabel, sourceLabel } from '../../inventory/choices'
 import { useInventory, type InventoryData } from '../../inventory/store'
 import { api } from '../../lib/api'
 import { errorText } from '../../ui/common'
@@ -145,6 +145,26 @@ export function ConnectionCard({ hostId, environmentId, onContextChange }: Conne
         </div>
       ) : (
         <dl className={`divide-y divide-line/60 transition-opacity duration-150 ${stale ? 'opacity-55' : ''}`}>
+          <Row
+            icon={Globe}
+            term="Address"
+            loading={!resolved}
+            chip={
+              resolved && (
+                <SourceChip
+                  source={resolved.addressSource === 'domain' ? 'environment' : 'host'}
+                  label={addressSourceLabel(resolved.addressSource, sourceEnv?.name)}
+                  color={resolved.addressSource === 'domain' ? sourceEnv?.color : undefined}
+                />
+              )
+            }
+          >
+            {resolved && (
+              <Value id={`a:${resolved.address}`}>
+                <span className="font-mono text-fg">{resolved.address}</span>
+              </Value>
+            )}
+          </Row>
           <Row
             icon={UserRound}
             term="User"

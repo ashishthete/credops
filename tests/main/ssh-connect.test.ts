@@ -144,10 +144,11 @@ describe('hopsOf', () => {
       hostId: 't',
       environmentId: null,
       address: 'db.internal',
+      addressSource: 'host',
       port: { value: 2222, source: 'host' },
       identity: globalId,
       jump: { hostId: 'b', source: 'host' },
-      chain: [{ hostId: 'b', label: 'bastion', address: 'bastion.example', port: 22, identity: globalId }],
+      chain: [{ hostId: 'b', label: 'bastion', address: 'bastion.example', addressSource: 'host', port: 22, identity: globalId }],
       conflicts: [],
     }
     expect(hopsOf(resolved, 'db')).toEqual([

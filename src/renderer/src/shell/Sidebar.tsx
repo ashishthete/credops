@@ -8,6 +8,7 @@ import {
   ScrollText,
   Search,
   Server,
+  Settings,
   SquareTerminal,
   Wrench,
   type LucideIcon,
@@ -15,14 +16,15 @@ import {
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router'
 import type { AppInfo } from '../../../shared/ipc'
+import { releaseStore } from '../deploy/releases'
 import { api } from '../lib/api'
 import { sessionStore } from '../terminal/sessions'
 import { runningCount, runStore } from '../ops/runs'
 import { tunnelStore } from '../tunnels/store'
-import { openCommandPalette } from '../ui/commands'
+import { openCommandPalette, registerCommand } from '../ui/commands'
 import { plural } from '../ui/common'
 import { exitFast, spring, useMotionSafe } from '../ui/motion'
-import { formatShortcut } from '../ui/shortcuts'
+import { formatShortcut, useShortcut } from '../ui/shortcuts'
 import { Skeleton } from '../ui/Skeleton'
 import { SECTIONS, sectionShortcut, type SectionId } from './sections'
 import { VaultLockButton } from './VaultLockButton'
@@ -112,6 +114,7 @@ export function Sidebar() {
                   <span className="relative flex-1">{s.label}</span>
                   {s.id === 'tunnels' && <TunnelBadge />}
                   {s.id === 'ops' && <RunBadge />}
+                  {s.id === 'deployments' && <DeployBadge />}
                   <Keys
                     combo={sectionShortcut(i)}
                     className="relative opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
@@ -125,6 +128,7 @@ export function Sidebar() {
 
       <div className="mt-auto">
         <OpenSessions />
+        <SettingsButton />
         <VaultLockButton />
       </div>
 
@@ -157,6 +161,49 @@ export function Sidebar() {
         </div>
       </div>
     </aside>
+  )
+}
+
+const SETTINGS_SHORTCUT = 'mod+,'
+
+/** The Settings link above the lock button, plus its palette command and ⌘,. */
+function SettingsButton() {
+  const navigate = useNavigate()
+  useEffect(
+    () =>
+      registerCommand({
+        id: 'settings.open',
+        title: 'Settings',
+        section: 'Settings',
+        keywords: ['preferences', 'config', 'export'],
+        shortcut: SETTINGS_SHORTCUT,
+        run: () => void navigate('/settings'),
+      }),
+    [navigate],
+  )
+  useShortcut(SETTINGS_SHORTCUT, () => void navigate('/settings'))
+
+  return (
+    <div className="px-3 pb-0.5">
+      <NavLink
+        to="/settings"
+        className={({ isActive }) =>
+          `group flex h-8 items-center gap-2.5 rounded-lg px-2.5 text-[13px] font-medium transition-colors select-none ${
+            isActive ? 'bg-accent/12 text-fg' : 'text-muted hover:bg-white/[0.035] hover:text-fg'
+          }`
+        }
+      >
+        {({ isActive }) => (
+          <>
+            <span className="grid size-5 place-items-center">
+              <Settings aria-hidden className={`size-4 ${isActive ? 'text-accent' : ''}`} strokeWidth={2} />
+            </span>
+            <span className="flex-1">Settings</span>
+            <Keys combo={SETTINGS_SHORTCUT} className="opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+          </>
+        )}
+      </NavLink>
+    </div>
   )
 }
 
@@ -269,6 +316,20 @@ function RunBadge() {
     <span
       data-badge
       aria-label={`${plural(count, 'run')} running`}
+      className="absolute right-2.5 grid h-[18px] min-w-[18px] place-items-center rounded-full bg-accent/15 px-1.5 text-[10.5px] font-semibold text-accent tabular-nums transition-opacity group-hover:opacity-0 group-focus-visible:opacity-0"
+    >
+      {count}
+    </span>
+  )
+}
+
+function DeployBadge() {
+  const count = useSyncExternalStore(releaseStore.subscribe, () => releaseStore.get().active.length)
+  if (!count) return null
+  return (
+    <span
+      data-badge
+      aria-label={`${plural(count, 'release')} running`}
       className="absolute right-2.5 grid h-[18px] min-w-[18px] place-items-center rounded-full bg-accent/15 px-1.5 text-[10.5px] font-semibold text-accent tabular-nums transition-opacity group-hover:opacity-0 group-focus-visible:opacity-0"
     >
       {count}

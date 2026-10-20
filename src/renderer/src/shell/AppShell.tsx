@@ -8,14 +8,21 @@ import { AuditPage } from '../pages/AuditPage'
 import { HostsPage } from '../pages/hosts/HostsPage'
 import { MapPage } from '../pages/map/MapPage'
 import { OpsPage } from '../pages/ops/OpsPage'
-import { PlaceholderPage } from '../pages/PlaceholderPage'
+import { DeploymentsPage } from '../pages/deployments/DeploymentsPage'
+import { ReleasePage } from '../pages/deployments/ReleasePage'
 import { ProductsPage } from '../pages/products/ProductsPage'
+import { SettingsPage } from '../pages/settings/SettingsPage'
 import { KnownHostsDialog, closeKnownHosts, openKnownHosts } from '../pages/terminals/KnownHostsDialog'
 import { PromptHost } from '../pages/terminals/PromptHost'
 import { TerminalDeck } from '../pages/terminals/TerminalDeck'
 import { TunnelsPage } from '../pages/tunnels/TunnelsPage'
 import { resetVaultsCache, VaultsPage } from '../pages/vaults/VaultsPage'
+import { SETTINGS_PATH, useSettingsCommands } from '../settings/commands'
 import { resetOps, startOpsSync } from '../ops/runs'
+import { resetReleases, startReleaseSync } from '../deploy/releases'
+import { resetDeploy, startDeploySync } from '../deploy/store'
+import { useDeployCommands } from '../deploy/commands'
+import { ServiceLogsHost } from '../pages/products/services/ServiceLogs'
 import { disposeAll } from '../terminal/registry'
 import { resetSessions, startSessionSync } from '../terminal/sessions'
 import { InsertHost } from '../pages/ops/InsertHost'
@@ -26,12 +33,7 @@ import { registerCommand } from '../ui/commands'
 import { fast, useMotionSafe } from '../ui/motion'
 import { useShortcut } from '../ui/shortcuts'
 import { SECTIONS, sectionShortcut } from './sections'
-import { SECTION_ICONS, Sidebar } from './Sidebar'
-
-// Sections a later phase builds out; each renders a placeholder until then.
-const PLACEHOLDERS = [
-  { id: 'deployments', phase: 8, blurb: 'Ansible runs, streamed live' },
-] as const
+import { Sidebar } from './Sidebar'
 
 /** Sidebar plus routed pages. Needs a router above it (HashRouter in the app, MemoryRouter in tests). */
 export function AppShell() {
@@ -42,6 +44,8 @@ export function AppShell() {
   useTunnelCommands()
   useMapCommands()
   useOpsCommands()
+  useSettingsCommands()
+  useDeployCommands()
   // The shell mounts only while unlocked, so every unlock reloads (F22).
   useEffect(() => {
     void loadInventory()
@@ -61,15 +65,22 @@ export function AppShell() {
     const stop = startSessionSync()
     const stopTunnels = startTunnelSync()
     const stopOps = startOpsSync()
+    const stopReleases = startReleaseSync()
+    // The map's service chips and the palette's deploy commands need the services and checkouts.
+    const stopDeploy = startDeploySync()
     return () => {
       stop()
       stopTunnels()
       stopOps()
+      stopReleases()
+      stopDeploy()
       disposeAll()
       // Events stop while unmounted (the vault locked); the next mount's session list is the truth.
       resetSessions()
       resetTunnels()
       resetOps()
+      resetReleases()
+      resetDeploy()
       // Relies on a lock unmounting the shell; see the cache in VaultsPage.
       resetVaultsCache()
       closeKnownHosts()
@@ -94,18 +105,8 @@ export function AppShell() {
         >
           <Routes location={location}>
             <Route path="/" element={<Navigate to={SECTIONS[0].path} replace />} />
-            {PLACEHOLDERS.map((p) => {
-              const section = SECTIONS.find((s) => s.id === p.id)!
-              return (
-                <Route
-                  key={p.id}
-                  path={section.path}
-                  element={
-                    <PlaceholderPage title={section.label} icon={SECTION_ICONS[p.id]} phase={p.phase} blurb={p.blurb} />
-                  }
-                />
-              )
-            })}
+            <Route path="/deployments" element={<DeploymentsPage />} />
+            <Route path="/deployments/release/:id" element={<ReleasePage />} />
             <Route path="/products" element={<ProductsPage />} />
             {/* The deck below draws this page; it stays mounted so terminals survive navigation. */}
             <Route path="/terminals" element={null} />
@@ -117,6 +118,7 @@ export function AppShell() {
             <Route path="/ops" element={<Navigate to="/ops/run" replace />} />
             <Route path="/ops/:tab" element={<OpsPage />} />
             <Route path="/audit" element={<AuditPage />} />
+            <Route path={SETTINGS_PATH} element={<SettingsPage />} />
             <Route path="*" element={<Navigate to={SECTIONS[0].path} replace />} />
           </Routes>
         </motion.div>
@@ -124,6 +126,7 @@ export function AppShell() {
       </main>
       <PromptHost />
       <InsertHost />
+      <ServiceLogsHost />
       <KnownHostsDialog />
     </div>
   )

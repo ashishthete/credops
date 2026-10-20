@@ -4,7 +4,7 @@ import type { Edge, Node } from '@xyflow/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { inventoryStore, type InventoryData } from '../../src/renderer/src/inventory/store'
-import { GAP, HOST_H } from '../../src/renderer/src/map/layout'
+import { ATTACH_H, GAP, HOST_H } from '../../src/renderer/src/map/layout'
 import { useGraphTransition } from '../../src/renderer/src/map/useGraphTransition'
 import { pinsStore } from '../../src/renderer/src/map/viewport'
 import { AppShell } from '../../src/renderer/src/shell/AppShell'
@@ -34,7 +34,7 @@ const stage = environment({ id: 'e2', name: 'Stage', productIds: ['pA'], hosts: 
 const hosts = [host({ id: 'h1', label: 'web-1' }), host({ id: 'h2', label: 'pg' }), host({ id: 'h3', label: 'stage-1' })]
 const t1 = tunnelMeta({ id: 't1', label: 'pg-local', hostId: 'h2', environmentId: 'e1' })
 // A third Prod host wraps the group onto a second row, so Stage below it moves down by one row.
-const ROW = HOST_H + GAP
+const ROW = HOST_H + ATTACH_H + GAP
 
 const flush = () => act(async () => {})
 // A frame at a time, so React commits each frame and the next one gets requested, as in a browser.

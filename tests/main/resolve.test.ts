@@ -82,6 +82,7 @@ describe('resolveHost', () => {
     expect(r.chain[0]).toMatchObject({
       hostId: edge.id,
       address: 'edge.example',
+      addressSource: 'host',
       port: 2022,
       identity: { source: 'host', identityId: ops.id, username: 'ops' },
     })
@@ -89,6 +90,7 @@ describe('resolveHost', () => {
       hostId: bastion.id,
       label: 'bastion',
       address: 'bastion.example',
+      addressSource: 'host',
       port: 22,
       identity: { source: 'global', username: 'tester', auth: 'default' },
     })
@@ -313,5 +315,67 @@ describe('host:resolve IPC', () => {
     expect(r.port).toEqual({ value: 2222, source: 'environment' })
     const outside = (await call('host:resolve', h.id)) as { port: unknown }
     expect(outside.port).toEqual({ value: 22, source: 'global' })
+  })
+})
+
+describe('resolveHost: environment domain', () => {
+  async function withDomain(domain: string | null, address = 'db') {
+    const { f, staging, prod } = await setup()
+    f.envs.update(staging.id, { domain })
+    const h = f.hosts.create({ label: 'DB', address, environments: [{ environmentId: staging.id, role: 'db' }, { environmentId: prod.id, role: 'db' }] })
+    return { f, staging, prod, h }
+  }
+
+  it("a bare name takes the environment's domain only in its context", async () => {
+    const { f, staging, prod, h } = await withDomain('staging.example.com')
+    expect(resolve(f, h.id, staging.id)).toMatchObject({ address: 'db.staging.example.com', addressSource: 'domain' })
+    expect(resolve(f, h.id)).toMatchObject({ address: 'db', addressSource: 'host' })
+    expect(resolve(f, h.id, prod.id)).toMatchObject({ address: 'db', addressSource: 'host' })
+  })
+
+  it('a URL domain contributes its hostname', async () => {
+    const { f, staging, h } = await withDomain('https://Staging.Example.com:8443/app')
+    expect(resolve(f, h.id, staging.id).address).toBe('db.staging.example.com')
+  })
+
+  it('trailing dot and uppercase in the domain', async () => {
+    const { f, staging, h } = await withDomain('Staging.Example.COM.')
+    expect(resolve(f, h.id, staging.id).address).toBe('db.staging.example.com')
+  })
+
+  it('dotted, IP and localhost addresses are untouched', async () => {
+    for (const address of ['db.internal', '10.0.0.5', '::1', 'fe80::1%en0', 'localhost', '10']) {
+      const { f, staging, h } = await withDomain('staging.example.com', address)
+      expect(resolve(f, h.id, staging.id), address).toMatchObject({ address, addressSource: 'host' })
+    }
+  })
+
+  it('an IP-literal domain never expands', async () => {
+    for (const domain of ['https://10.0.0.5:8080', 'https://[::1]/']) {
+      const { f, staging, h } = await withDomain(domain)
+      expect(resolve(f, h.id, staging.id)).toMatchObject({ address: 'db', addressSource: 'host' })
+    }
+  })
+
+  it('hops expand only when they take the context', async () => {
+    const { f, staging } = await withDomain('staging.example.com')
+    const bastion = f.hosts.create({ label: 'bastion', address: 'bastion', environments: [{ environmentId: staging.id, role: 'bastion' }] })
+    const edge = f.hosts.create({ label: 'edge', address: 'edge' })
+    const viaBastion = f.hosts.create({ label: 'app', address: 'app', jumpHostId: bastion.id, environments: [{ environmentId: staging.id, role: 'app' }] })
+    const viaEdge = f.hosts.create({ label: 'app2', address: 'app2', jumpHostId: edge.id, environments: [{ environmentId: staging.id, role: 'app' }] })
+    expect(resolve(f, viaBastion.id, staging.id).chain[0]).toMatchObject({ address: 'bastion.staging.example.com', addressSource: 'domain' })
+    expect(resolve(f, viaEdge.id, staging.id).chain[0]).toMatchObject({ address: 'edge', addressSource: 'host' })
+  })
+
+  it('an expansion over 253 characters is refused', async () => {
+    const domain = ['a'.repeat(63), 'b'.repeat(63), 'c'.repeat(63), 'd'.repeat(11)].join('.') // 203 chars
+    const { f, staging, h } = await withDomain(domain, 'x'.repeat(63))
+    expect(() => resolve(f, h.id, staging.id)).toThrow("DB with staging's domain is longer than 253 characters")
+  })
+
+  it('a stored domain that no longer validates is ignored', async () => {
+    const { f, staging, h } = await withDomain(null)
+    f.db.prepare('UPDATE environments SET domain = ? WHERE id = ?').run('ftp://x.example.com', staging.id)
+    expect(resolve(f, h.id, staging.id)).toMatchObject({ address: 'db', addressSource: 'host' })
   })
 })
