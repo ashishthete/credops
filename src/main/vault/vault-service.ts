@@ -21,7 +21,8 @@ import {
 } from '../../shared/vault'
 import { parseEnvTemplate, stripEnvSecretRefs } from '../../shared/deploy'
 import { SETTINGS } from '../../shared/settings'
-import type { ReverifyProof } from '../../shared/sso'
+import type { ReverifyProof, SsoState } from '../../shared/sso'
+import type { SignInGate } from '../auth/sso-gate'
 import type { AuditLog } from '../audit/audit-log'
 import type { Db } from '../db/connection'
 import { inTransaction } from '../db/tx'
@@ -48,6 +49,8 @@ const PIN_AAD = 'pin:kek'
 const NEED_FACTOR = 'add Touch ID or a PIN first'
 /** Preflight F4: a PIN without the Keychain pepper would be a 6-digit guess against a db copy. */
 const PIN_NEEDS_KEYCHAIN = 'a PIN needs the Keychain'
+/** Setup refused by the sign-in gate; the unlocks return SIGNIN_REQUIRED instead. */
+const SIGN_IN_FIRST = 'sign in with Microsoft first'
 
 /** Wait required after `failures` consecutive wrong passwords. */
 export function unlockDelayMs(failures: number): number {
@@ -70,6 +73,7 @@ const CANCELLED: Failure = { ok: false, reason: 'cancelled', retryAfterMs: 0 }
 const UNAVAILABLE: Failure = { ok: false, reason: 'unavailable', retryAfterMs: 0 }
 const WRONG_PIN: Failure = { ok: false, reason: 'wrong-pin', retryAfterMs: 0 }
 const WIPED_PIN: Failure = { ok: false, reason: 'pin-wiped', retryAfterMs: 0 }
+const SIGNIN_REQUIRED: Failure = { ok: false, reason: 'signin-required', retryAfterMs: 0 }
 
 interface VaultRow {
   id: string
@@ -151,6 +155,8 @@ export class VaultService {
   private unlockedPending = false
   /** Chains password operations so the throttle check and failure count cannot interleave. */
   private queue: Promise<unknown> = Promise.resolve()
+  /** Asked before every unlock and setup; null until main fits it (and then a binding fails closed). */
+  private gate: SignInGate | null = null
 
   constructor(
     private readonly db: Db,
@@ -176,8 +182,13 @@ export class VaultService {
       pin: { enabled: s.pin_wrap !== null, attemptsLeft: Math.max(0, PIN_ATTEMPTS - s.pin_failed) },
       lastMethod: s.last_method,
       resetRequired: this.isSetUp() && !this.hasPassword() && !s.pin_wrap && !s.quick_unlock_blob,
-      sso: { required: false },
+      sso: this.ssoState(),
     }
+  }
+
+  /** Every unlock and setup asks `gate` first; see signInOk(). */
+  setSignInGate(gate: SignInGate): void {
+    this.gate = gate
   }
 
   isUnlocked(): boolean {
@@ -196,6 +207,8 @@ export class VaultService {
   setup(opts: SetupOptions): Promise<VaultStatus> {
     return this.serial(async () => {
       if (this.isSetUp()) throw new Error('already set up')
+      // Before any Touch ID prompt or scrypt.
+      this.assertSignedIn()
       const { password, pin } = opts
       const touchId = opts.touchId === true
       if (password !== undefined) checkPassword(password, true)
@@ -231,6 +244,8 @@ export class VaultService {
           if (!pinWrap) throw new Error(VAULT_LOCKED)
         }
         if (touchId) blob = this.cacheBlob(kek)
+        // The verdict may have turned while the prompt or scrypt ran.
+        this.assertSignedIn()
       } catch (err) {
         kek.fill(0)
         throw err
@@ -259,6 +274,7 @@ export class VaultService {
       this.install(kek, keys, [])
       const methods = [pwWrap && 'password', pinWrap && 'pin', blob && 'touchId'].filter(Boolean)
       this.audit.append({ action: 'vault.setup', outcome: 'success', details: { vaults: keys.size, methods } })
+      this.noteSignedInUnlock()
       return this.status()
     })
   }
@@ -267,6 +283,8 @@ export class VaultService {
     return this.serial(async () => {
       if (!this.isSetUp()) throw new Error('not set up')
       checkPassword(password, false)
+      // Before scrypt, so a refusal neither derives nor counts.
+      if (!this.signInOk()) return this.refuseUnlock('password')
       const res = await this.verify(password, this.epoch)
       if (!res.ok) {
         this.audit.append({
@@ -276,6 +294,10 @@ export class VaultService {
         })
         return res
       }
+      if (!this.signInOk()) {
+        zero(res.kek, res.keys.values())
+        return this.refuseUnlock('password')
+      }
       this.noteUnlock('password')
       this.install(res.kek, res.keys, res.corrupt)
       this.audit.append({
@@ -283,6 +305,7 @@ export class VaultService {
         outcome: 'success',
         details: { method: 'password', ...(res.corrupt.length ? { corrupt: res.corrupt } : {}) },
       })
+      this.noteSignedInUnlock()
       return { ok: true }
     })
   }
@@ -302,6 +325,8 @@ export class VaultService {
         return res
       }
       if (mode === 'off' || !blob) return UNAVAILABLE
+      // Before the Touch ID prompt and the Keychain read.
+      if (!this.signInOk()) return this.refuseUnlock(mode)
       // Possibly temporary (e.g. a closed laptop lid hides Touch ID): keep the cache.
       if (!this.modeAvailable(mode)) return fail('unavailable', UNAVAILABLE)
       const epoch = this.epoch
@@ -333,6 +358,10 @@ export class VaultService {
         if (this.hasPassword() || this.pinEnabled()) this.discardQuickUnlock()
         return fail('cache-stale', UNAVAILABLE)
       }
+      if (!this.signInOk()) {
+        zero(kek, opened.keys.values())
+        return this.refuseUnlock(mode)
+      }
       // The OS vouched for the user (Touch ID, or the login keychain), so the backoffs restart.
       // An old 'login' row is not a method the column knows: last_method is left as it was.
       this.noteUnlock(mode === 'touchId' ? 'touchId' : null)
@@ -342,6 +371,7 @@ export class VaultService {
         outcome: 'success',
         details: { method: mode, ...(opened.corrupt.length ? { corrupt: opened.corrupt } : {}) },
       })
+      this.noteSignedInUnlock()
       return { ok: true }
     })
   }
@@ -356,10 +386,16 @@ export class VaultService {
       if (!this.isSetUp()) throw new Error('not set up')
       checkPinFormat(pin)
       if (this.kek) return { ok: true }
+      // Before the pepper read and scrypt, so a refusal never counts a miss.
+      if (!this.signInOk()) return this.refuseUnlock('pin')
       const res = await this.pinAttempt(pin, this.epoch)
       if (!res.ok) {
         this.audit.append({ action: 'vault.unlock', outcome: 'failure', details: { method: 'pin', reason: res.reason } })
         return res
+      }
+      if (!this.signInOk()) {
+        zero(res.kek, res.keys.values())
+        return this.refuseUnlock('pin')
       }
       this.noteUnlock('pin')
       this.install(res.kek, res.keys, res.corrupt)
@@ -368,6 +404,7 @@ export class VaultService {
         outcome: 'success',
         details: { method: 'pin', ...(res.corrupt.length ? { corrupt: res.corrupt } : {}) },
       })
+      this.noteSignedInUnlock()
       return { ok: true }
     })
   }
@@ -411,6 +448,8 @@ export class VaultService {
   reverify(proof: ReverifyProof): Promise<boolean> {
     return this.serial(async () => {
       this.assertUnlocked()
+      // A disabled account proves nothing: refused before any prompt or derive, so no miss counts.
+      if (this.gate?.verdict() === 'blocked') return false
       const epoch = this.epoch
       if (proof.method === 'touchId') {
         if (!this.touchIdHoldsKek()) return false
@@ -630,6 +669,7 @@ export class VaultService {
       if (!this.isSetUp()) return this.status()
       for (const fn of [...this.resetListeners]) this.runListener('reset', fn)
       let counts = { vaults: 0, items: 0, deployRefs: 0, managedEnvOff: 0, integrationRefs: 0 }
+      let unbound = false
       this.tx(() => {
         const n = (sql: string): number => Number((this.db.prepare(sql).get() as { n: number }).n)
         counts.vaults = n('SELECT COUNT(*) AS n FROM vaults')
@@ -666,13 +706,15 @@ export class VaultService {
         // Identities reference keys, so they go first.
         for (const table of ['identities', 'ssh_keys', 'secrets']) this.db.prepare(`DELETE FROM ${table}`).run()
         this.db.prepare('UPDATE vaults SET wrapped_key = NULL, kdf_params = NULL, updated_at = ?').run(ts)
+        // The binding guarded these vaults; the next setup binds whoever signs in then.
+        unbound = changed('DELETE FROM sso_binding') > 0
         this.db
           .prepare(
             "UPDATE vault_state SET quick_unlock = 'off', quick_unlock_blob = NULL, failed_attempts = 0, last_failed_at = NULL, password_wrap = NULL, password_kdf = NULL, pin_wrap = NULL, pin_salt = NULL, pin_pepper_blob = NULL, pin_failed = 0, last_method = NULL WHERE id = 1",
           )
           .run()
         // In the same transaction: an erase is never left unaudited, nor an audit row unerased.
-        this.audit.appendInTx({ action: 'vault.reset', outcome: 'success', details: counts })
+        this.audit.appendInTx({ action: 'vault.reset', outcome: 'success', details: { ...counts, ...(unbound ? { ssoUnbound: true } : {}) } })
       })
       // Locked already, so nothing should be live; drop it anyway and abandon any password work in flight.
       this.epoch++
@@ -1105,6 +1147,50 @@ export class VaultService {
       ? this.touchIdHoldsKek()
       : s.quick_unlock === 'touchId' && !!s.quick_unlock_blob && this.modeAvailable('touchId')
     return touchId ? 'touchId' : 'none'
+  }
+
+  private isBound(): boolean {
+    return this.db.prepare('SELECT 1 FROM sso_binding WHERE id = 1').get() !== undefined
+  }
+
+  /**
+   * The gate lets an unlock through: not required, verified, or in grace. With no gate fitted a
+   * binding fails closed, so a vault bound to a Microsoft account never opens on a code path that
+   * forgot the gate.
+   */
+  private signInOk(): boolean {
+    if (!this.gate) return !this.isBound()
+    const v = this.gate.verdict()
+    return v === 'not-required' || v === 'verified' || v === 'grace'
+  }
+
+  private assertSignedIn(): void {
+    if (this.signInOk()) return
+    this.audit.append({ action: 'vault.setup', outcome: 'failure', details: { reason: 'signin-required' } })
+    throw new Error(SIGN_IN_FIRST)
+  }
+
+  /** An unlock the gate refused: nothing derived, prompted or counted. */
+  private refuseUnlock(method: string): Failure {
+    this.audit.append({ action: 'vault.unlock', outcome: 'failure', details: { method, reason: 'signin-required' } })
+    return SIGNIN_REQUIRED
+  }
+
+  /** Lets the gate bind or move its clock mark. The vault is open by now: a failure here must not undo that. */
+  private noteSignedInUnlock(): void {
+    try {
+      this.gate?.noteUnlocked()
+    } catch {
+      console.warn('SSO gate: noting the unlock failed')
+    }
+  }
+
+  /** The gate's state; with a binding and no gate, what the fail-closed rule enforces (preflight F28). */
+  private ssoState(): SsoState {
+    if (this.gate) return this.gate.state()
+    const b = this.db.prepare('SELECT user_upn FROM sso_binding WHERE id = 1').get() as { user_upn: string } | undefined
+    if (!b) return { required: false }
+    return { required: true, verdict: 'needs-signin', checking: false, upn: b.user_upn, hubName: '', lastVerifiedAt: null, graceEndsAt: null }
   }
 
   /** After any successful unlock: both failure counts restart, and the method is remembered. */

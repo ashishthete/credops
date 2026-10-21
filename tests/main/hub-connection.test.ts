@@ -327,6 +327,25 @@ describe('hub connection', () => {
     }
   })
 
+  it('a beforeLink refusal leaves the link and its session as they were', async () => {
+    let refuse = false
+    const seen: string[] = []
+    const conn = make({
+      beforeLink: (id) => {
+        seen.push(id)
+        if (refuse) throw new Error('Use Change Microsoft account to move to another Hub')
+      },
+    })
+    const linked = await conn.connect(hubUrl)
+    await conn.signIn()
+    expect(seen).toEqual([linked.linked ? linked.hubId : ''])
+    const links = actions().filter((a) => a === 'hub.link').length
+    refuse = true
+    await expect(conn.connect(hubUrl)).rejects.toThrow('Use Change Microsoft account to move to another Hub')
+    expect(conn.status()).toMatchObject({ linked: true, signedIn: true })
+    expect(actions().filter((a) => a === 'hub.link')).toHaveLength(links)
+  })
+
   it('new Entra and refresh tokens are redactable before they are exchanged or stored', async () => {
     const seen: { access: string[]; refresh: string[] } = { access: [], refresh: [] }
     const missing: string[] = []

@@ -44,6 +44,8 @@ interface BindingRow {
 }
 
 const GRACE_MS = OFFLINE_GRACE_HOURS * 3_600_000
+const MOVE_HUB = 'Use Change Microsoft account to move to another Hub'
+const UNLINK_BOUND = 'Disconnect from the vault settings'
 
 const ms = (s: string | null): number | null => (s === null ? null : Date.parse(s))
 
@@ -336,6 +338,17 @@ export class SsoGate implements SignInGate {
       targetId: prev.hub_id,
       ...(s.linked && s.hubId === prev.hub_id ? { targetLabel: s.hubName } : {}),
     })
+  }
+
+  /** While bound, the Hub link may change its address but never its Hub: that moves through the vault settings. */
+  assertMayLink(hubId: string): void {
+    const b = this.binding()
+    if (b && b.hub_id !== hubId) throw new Error(MOVE_HUB)
+  }
+
+  /** While bound, unlinking would strand the vaults behind a Hub nobody can sign in to. */
+  assertMayUnlink(): void {
+    if (this.isBound()) throw new Error(UNLINK_BOUND)
   }
 
   onBlocked(fn: () => void): () => void {

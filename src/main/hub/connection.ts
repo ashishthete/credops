@@ -19,6 +19,8 @@ export interface HubConnectionDeps {
   openBrowser: (url: string) => Promise<void>
   now: () => number
   emit: (status: HubStatus) => void
+  /** Asked with the Hub's id before connect() changes anything; throwing refuses the link. */
+  beforeLink?: (hubId: string) => void
 }
 
 interface LinkRow {
@@ -129,6 +131,7 @@ export class HubConnection {
   async connect(url: string): Promise<HubStatus> {
     const base = normalizeHubUrl(url)
     const meta = await this.fetchMeta(base)
+    this.d.beforeLink?.(meta.hubId)
     this.meta = meta
     const now = this.iso()
     const prev = this.row()

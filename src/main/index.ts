@@ -52,6 +52,7 @@ import { localAllowAll } from './deploy/access'
 import { HubAccess, RoutingAccess } from './hub/access'
 import { HubCatalog } from './hub/catalog'
 import { HubConnection } from './hub/connection'
+import { SsoGate } from './auth/sso-gate'
 import { hubFeedSync, LiveFeed, sleepUnlessAborted } from './hub/live'
 import { HubRunner, RoutingReleases } from './hub/runner'
 import { backoffMs } from './tunnels/backoff'
@@ -149,6 +150,7 @@ let quitPrompting = false
 const RELEASE_QUIT_WAIT_MS = 20_000
 let quitAudited = false
 let stopAutoLock: (() => void) | null = null
+let stopSsoWatch: (() => void) | null = null
 
 function createWindow(): void {
   const win = new BrowserWindow(windowOptions(join(__dirname, '../preload/index.js'), app.isPackaged))
@@ -366,8 +368,15 @@ if (!app.requestSingleInstanceLock()) {
         openBrowser: (url) => shell.openExternal(url),
         now: () => Date.now(),
         emit: (status) => pushEvent(mainWindow, 'hub:state', status),
+        // Set below, before any IPC can reach connect().
+        beforeLink: (hubId) => ssoGate.assertMayLink(hubId),
       })
       hubConnection = hub
+      // Every unlock asks the gate; a Hub that says the account is disabled locks the vaults at once.
+      const ssoGate = new SsoGate({ db, audit: log, hub, now: () => Date.now() })
+      service.setSignInGate(ssoGate)
+      ssoGate.onBlocked(() => service.lock('signin'))
+      stopSsoWatch = ssoGate.watch(() => service.isUnlocked())
       const hubCatalog = new HubCatalog({ client: () => hub.client() })
       hubCatalog.onChange(() => pushEvent(mainWindow, 'hub:catalog', {}))
       hub.onState(() => hubCatalog.onStatus(hub.status()))
@@ -458,6 +467,7 @@ if (!app.requestSingleInstanceLock()) {
       syncHubFeed()
       // A stored session survives a restart but the user does not: ask the Hub, best effort.
       void hub.restore().catch(() => undefined)
+      void ssoGate.check().catch(() => undefined)
       const releases = new RoutingReleases({
         local: release,
         hub: new HubRunner({
@@ -600,6 +610,7 @@ if (!app.requestSingleInstanceLock()) {
       powerMonitor.on('suspend', () => vault?.lock('suspend'))
       powerMonitor.on('shutdown', () => vault?.lock('quit'))
       const rendererFile = join(__dirname, '../renderer/index.html')
+      const hubHandlers = createHubHandlers({ conn: hub, vault: service, audit: log, catalog: hubCatalog, publisher: hubPublisher, onLocksChanged: () => pushEvent(mainWindow, 'hub:locks', {}) })
       registerHandlers(
         ipcMain,
         {
@@ -680,7 +691,12 @@ if (!app.requestSingleInstanceLock()) {
           ...createNotifyHandlers({ db, sink: notifySink, settings: settingsStore, integrations, mac: macNotifier, audit: log, actor }),
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
           ...createOpsHandlers({ snippets, runs, containers }),
-          ...createHubHandlers({ conn: hub, vault: service, audit: log, catalog: hubCatalog, publisher: hubPublisher, onLocksChanged: () => pushEvent(mainWindow, 'hub:locks', {}) }),
+          ...hubHandlers,
+          // Bound vaults leave their Hub through the vault settings (hub:connect is guarded by beforeLink).
+          'hub:unlink': () => {
+            ssoGate.assertMayUnlink()
+            return hubHandlers['hub:unlink']()
+          },
           ...createConfigHandlers({
             db,
             vault: service,
@@ -797,6 +813,8 @@ if (!app.requestSingleInstanceLock()) {
   app.on('will-quit', () => {
     stopAutoLock?.()
     stopAutoLock = null
+    stopSsoWatch?.()
+    stopSsoWatch = null
     releaseService?.close()
     releaseService = null
     vault = null
