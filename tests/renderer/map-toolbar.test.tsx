@@ -8,7 +8,7 @@ import { AppShell } from '../../src/renderer/src/shell/AppShell'
 import { resetSessions } from '../../src/renderer/src/terminal/sessions'
 import { resetTunnels } from '../../src/renderer/src/tunnels/store'
 import { clearToasts } from '../../src/renderer/src/ui/Toaster'
-import { environment, host, mockBridge, product } from './helpers'
+import { environment, host, mockBridge, product, REGION } from './helpers'
 
 // framer-motion caches matchMedia, so reduced motion is driven through useMotionSafe.
 const motion = vi.hoisted(() => ({ safe: true }))
@@ -81,8 +81,8 @@ function LocationProbe() {
   return null
 }
 
-async function renderMap(path = '/map') {
-  mockBridge({ 'product:list': [web, billing], 'env:list': [prod, stage, ledger], 'host:list': hosts, 'tunnel:list': [], 'tunnel:status': [] })
+async function renderMap(path = '/map', over: Record<string, unknown> = {}) {
+  mockBridge({ 'product:list': [web, billing], 'env:list': [prod, stage, ledger], 'host:list': hosts, 'tunnel:list': [], 'tunnel:status': [], ...over })
   render(
     <MemoryRouter initialEntries={[path]}>
       <AppShell />
@@ -185,6 +185,38 @@ describe('map toolbar', () => {
     expect(at.search).toBe('?product=pB&env=e3')
     await change(select('Environment'), '')
     expect(at.search).toBe('?product=pB')
+  })
+
+  it('region filter dims hosts in other regions and keeps every environment', async () => {
+    const eu = { ...REGION, id: 'region-2', code: 'eu-west-1', displayName: 'Ireland' }
+    const spread = hosts.map((h) => (h.id === 'h1' ? h : { ...h, regionId: eu.id }))
+    await renderMap('/map', { 'host:list': spread, 'region:list': [REGION, eu] })
+    expect(options('Region')).toEqual(['All regions', 'eu-west-1', 'test-1'])
+    expect(document.querySelector('[data-dimmed]')).toBeNull()
+
+    await change(select('Region'), 'eu-west-1')
+    expect(at.search).toBe('?region=eu-west-1')
+    expect(node('e:e1/h:h1')).toHaveAttribute('data-dimmed', 'true')
+    expect(node('e:e2/h:h1')).toHaveAttribute('data-dimmed', 'true')
+    expect(node('e:e1/h:h2')).not.toHaveAttribute('data-dimmed')
+    // Environments stay drawn and at full strength, even one with no host in the region.
+    expect(node('e:e2')).not.toHaveAttribute('data-dimmed')
+    expect(node('e:e3/h:h4')).not.toHaveAttribute('data-dimmed')
+    // Search narrows within the region: web-1 matches but is in another region.
+    await change(search(), 'pg')
+    expect(node('e:e1/h:h2')).not.toHaveAttribute('data-dimmed')
+    expect(node('e:e3/h:h4')).toHaveAttribute('data-dimmed', 'true')
+    await key(search(), 'Escape')
+
+    fireEvent.click(within(toolbar()).getByRole('button', { name: 'Clear filter' }))
+    await flush()
+    expect(at.search).toBe('')
+    expect(document.querySelector('[data-dimmed]')).toBeNull()
+  })
+
+  it('shows no Region filter with only one region', async () => {
+    await renderMap()
+    expect(within(toolbar()).queryByRole('combobox', { name: 'Region' })).toBeNull()
   })
 
   it('search dims non-matches and Enter zooms to the best', async () => {

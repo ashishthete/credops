@@ -298,9 +298,9 @@ describe('map edges', () => {
 
   it("a membership edge is solid in its product's color", async () => {
     await renderMap()
-    const primary = pathOf('m:p1>e:e1')
-    expect(primary).not.toHaveAttribute('stroke-dasharray')
-    expect(primary.style.stroke).toBe('rgb(91, 140, 255)')
+    const solid = pathOf('m:p1>e:e1')
+    expect(solid).not.toHaveAttribute('stroke-dasharray')
+    expect(solid.style.stroke).toBe('rgb(91, 140, 255)')
     expect(edge('m:p2>e:e1')).toBeNull()
   })
 

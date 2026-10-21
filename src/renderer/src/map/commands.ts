@@ -1,12 +1,9 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 import { useInventory, inventoryStore } from '../inventory/store'
-import { byName } from '../inventory/tree'
 import { registerCommand, registerCommands } from '../ui/commands'
 import { parseScope, scopeKey } from './graph'
 import { clearPins, pinsStore } from './viewport'
-// regions-ui: one product per environment, read as a list until the Regions UI.
-import { productIdsOf } from '../inventory/regions-stopgap'
 
 /** `/map?find=1` focuses the map's search box once; the page drops the param again. */
 export const FIND_PARAM = 'find'
@@ -60,7 +57,7 @@ export function useMapCommands(): void {
         id: `map.env.${e.id}`,
         title: `Show ${e.name} on map`,
         section: 'Map',
-        keywords: [e.name, ...productIdsOf(e).flatMap((id) => productName.get(id) ?? []).sort(byName)],
+        keywords: [e.name, productName.get(e.productId) ?? ''].filter(Boolean),
         run: go(showEnvironmentOnMapPath(e.id)),
       })),
       ...data.hosts.map((h) => ({

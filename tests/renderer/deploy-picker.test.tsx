@@ -11,7 +11,7 @@ import { PreflightChecklist } from '../../src/renderer/src/pages/deployments/rel
 import type { CommitInfo, PreflightCheck, PreflightReport, RunEvent } from '../../src/shared/deploy'
 import type { ServiceMeta } from '../../src/shared/services'
 import { events, REL, releaseDetail } from './fixtures/release-events'
-import { appService, dbService, deploymentMeta, emitBridgeEvent, envSettings, environment, host, mockBridge } from './helpers'
+import { appService, dbService, deploymentMeta, emitBridgeEvent, envSettings, environment, host, mockBridge, REGION } from './helpers'
 
 const staging = environment({ id: 'e1', name: 'staging', hosts: [{ hostId: 'h1', role: 'app' }, { hostId: 'h2', role: 'app' }] })
 const HOSTS = [host({ id: 'h1', label: 'app1' }), host({ id: 'h2', label: 'app2' })]
@@ -78,10 +78,11 @@ const PREVIEW = { playbook: PLAYBOOK, sha256: HASH }
 const calls = (invoke: ReturnType<typeof mockBridge>, channel: string) => (invoke.mock.calls as unknown[][]).filter((x) => x[0] === channel)
 
 /** `persisted` is what `release:events` replays; a test can also push live batches. */
-async function mount({ preselect = [] as string[], env = staging, persisted = [] as RunEvent[] } = {}) {
+async function mount({ preselect = [] as string[], env = staging, persisted = [] as RunEvent[], hosts = HOSTS, regions = [REGION] } = {}) {
   const invoke = mockBridge({
     'env:list': [env],
-    'host:list': HOSTS,
+    'host:list': hosts,
+    'region:list': regions,
     'deploy:list': CHECKOUTS,
     'service:list': SERVICES,
     'deploy:settings': envSettings(),
@@ -473,6 +474,31 @@ describe('stale preflight releases', () => {
     await waitFor(() => expect(get.count()).toBe(1))
     await get.fail(0, new Error('release not found'))
     expect(within(dialog).getByRole('alert')).toHaveTextContent('release not found')
+  })
+
+  it('the review names the services going out and the one region they run in, unemphasised', async () => {
+    const { user, dialog } = await mount({ preselect: ['s1', 's2'], persisted: events([{ type: 'preflight.done', report: report() }]) })
+    await preflight(user, dialog)
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Review playbook' })).toBeEnabled())
+    await user.click(within(dialog).getByRole('button', { name: 'Review playbook' }))
+    const line = within(dialog).getByLabelText('Deploys api, worker · test-1')
+    expect(within(line).getByText('test-1')).toHaveAttribute('title', 'Test')
+    expect(within(line).getByText('test-1').className).not.toContain('warn')
+    expect(within(line).queryByRole('img', { name: /regions/ })).toBeNull()
+  })
+
+  it('the review emphasises the regions when the checkouts span more than one', async () => {
+    const us = { ...REGION, id: 'region-2', code: 'us-east-1', displayName: 'US East' }
+    const hosts = [HOSTS[0], { ...HOSTS[1], regionId: us.id }]
+    const { user, dialog } = await mount({ preselect: ['s1', 's3'], hosts, regions: [REGION, us], persisted: events([{ type: 'preflight.done', report: report() }]) })
+    await preflight(user, dialog)
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Review playbook' })).toBeEnabled())
+    await user.click(within(dialog).getByRole('button', { name: 'Review playbook' }))
+    const line = within(dialog).getByLabelText('Deploys api, site · test-1, us-east-1')
+    expect(within(line).getByRole('img', { name: 'Reaches 2 regions' })).toBeInTheDocument()
+    expect(within(line).getByText('us-east-1').className).toContain('warn')
+    // The protected confirmation is unchanged; staging isn't protected, so Deploy starts straight away.
+    expect(within(dialog).getByRole('button', { name: 'Deploy' })).toBeInTheDocument()
   })
 
   it('Deploy is offered only on the review, once the playbook is shown, and starts bound to its hash', async () => {

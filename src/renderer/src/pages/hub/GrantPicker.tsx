@@ -1,7 +1,9 @@
 import { useMemo, useState } from 'react'
 import type { GrantScope, HubCatalogEnv } from '../../../../shared/hub'
 import { useHub } from '../../hub/store'
+import { useInventory } from '../../inventory/store'
 import { Button } from '../../ui/Button'
+import { byLocalProduct } from './names'
 
 const select = 'h-7 rounded-md border border-line bg-surface-2/60 px-2 text-[12.5px] text-fg'
 
@@ -30,6 +32,13 @@ export function GrantPicker({ groupName, onAdd }: { groupName: string; onAdd: (s
   const [envId, setEnvId] = useState('')
   const [depId, setDepId] = useState('')
   const env = useMemo(() => envs.find((e) => e.environment.id === envId), [envs, envId])
+  const data = useInventory()
+  const { groups, rest } = useMemo(() => byLocalProduct(envs, (e) => e.environment.id, data), [envs, data])
+  const option = (e: HubCatalogEnv) => (
+    <option key={e.environment.id} value={e.environment.id}>
+      {e.environment.name}
+    </option>
+  )
 
   const scope: GrantScope | null =
     kind === 'all' ? { kind: 'all' } : kind === 'environment' ? (envId ? { kind, environmentId: envId } : null) : envId && depId ? { kind, environmentId: envId, deploymentId: depId } : null
@@ -60,11 +69,12 @@ export function GrantPicker({ groupName, onAdd }: { groupName: string; onAdd: (s
           }}
         >
           <option value="">Choose an environment…</option>
-          {envs.map((e) => (
-            <option key={e.environment.id} value={e.environment.id}>
-              {e.environment.name}
-            </option>
+          {groups.map((g) => (
+            <optgroup key={g.id} label={g.name}>
+              {g.items.map(option)}
+            </optgroup>
           ))}
+          {rest.map(option)}
         </select>
       )}
       {kind === 'deployment' && (

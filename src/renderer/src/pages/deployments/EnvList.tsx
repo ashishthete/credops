@@ -66,7 +66,7 @@ export function rowLabel(row: EnvRow): string {
   return `${row.name}, ${last}${row.protected ? ', protected' : ''}`
 }
 
-/** Environments by product (a product's own order), then those in no product, then the team's. */
+/** Environments by product (a product's own order), then the team's. */
 export function envGroups(
   data: InventoryData,
   team: HubCatalogEnv[],
@@ -80,8 +80,6 @@ export function envGroups(
     const apps = services.filter((s) => s.kind === 'service' && s.environmentId === envId)
     return checkouts.reduce((n, d) => n + (apps.filter((s) => s.kind === 'service' && s.deploymentId === d.id).length || 1), 0)
   }
-  const byId = new Map(data.environments.map((e) => [e.id, e]))
-  const placed = new Set<string>()
   const local = (e: InventoryData['environments'][number], productName: string): EnvRow => ({
     id: e.id,
     name: e.name,
@@ -96,17 +94,16 @@ export function envGroups(
     units: units(e.id),
     last: latest[e.id],
   })
+  // Every environment has one product, so each lands in exactly one group.
   const out: EnvGroup[] = data.products.flatMap((p) => {
-    const rows = p.environmentIds.flatMap((id) => {
-      const e = byId.get(id)
-      if (!e) return []
-      placed.add(id)
-      return [local(e, p.name)]
-    })
+    const at = (id: string) => (p.environmentIds.indexOf(id) + 1 || p.environmentIds.length + 1)
+    const rows = data.environments
+      .filter((e) => e.productId === p.id)
+      .sort((a, b) => at(a.id) - at(b.id))
+      .map((e) => local(e, p.name))
     return rows.length ? [{ id: p.id, name: p.name, rows }] : []
   })
-  const loose = data.environments.filter((e) => !placed.has(e.id)).map((e) => local(e, 'No product'))
-  if (loose.length) out.push({ id: 'none', name: 'No product', rows: loose })
+  // The Hub manifest doesn't carry the product yet: once it does, team environments join their product's group by name.
   if (team.length) {
     out.push({
       id: 'hub',

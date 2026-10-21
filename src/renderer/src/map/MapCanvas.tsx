@@ -91,19 +91,6 @@ export function minimapColors(graph: MapGraph): Map<string, string> {
   return colors
 }
 
-/** Product names an environment shares, beside the one it sits under. */
-function alsoIn(graph: MapGraph): Map<string, string[]> {
-  const nameOf = new Map(graph.nodes.flatMap((n) => (n.data.kind === 'product' ? [[n.id, n.data.name] as const] : [])))
-  const primary = new Map(graph.edges.flatMap((e) => (e.data.kind === 'membership' && e.data.primary ? [[e.target, nameOf.get(e.source)] as const] : [])))
-  const out = new Map<string, string[]>()
-  for (const n of graph.nodes) {
-    if (n.data.kind !== 'environment' || n.data.productNames.length < 2) continue
-    const home = primary.get(n.id)
-    out.set(n.id, home ? n.data.productNames.filter((name) => name !== home) : n.data.productNames)
-  }
-  return out
-}
-
 /**
  * Flow edges for a graph. Tunnels and jumps draw above the group frames, memberships under them;
  * a membership takes its product's colour. A tunnel from this Mac (L, D) keeps its direction, so it
@@ -138,7 +125,6 @@ function fadeLeaving<T extends MapFlowNode | MapFlowEdge>(x: T): T {
 
 /** Flow nodes for a laid-out graph: position, size and data only; selection and styling come later. */
 function flowNodes(graph: MapGraph, layout: MapLayout): MapFlowNode[] {
-  const shared = alsoIn(graph)
   return graph.nodes.flatMap((n) => {
     const at = layout.positions[n.id]
     if (!at) return []
@@ -150,7 +136,7 @@ function flowNodes(graph: MapGraph, layout: MapLayout): MapFlowNode[] {
         width: at.width,
         height: at.height,
         ...(n.parentId ? { parentId: n.parentId, extent: 'parent' as const } : {}),
-        data: n.data.kind === 'environment' ? { ...n.data, alsoIn: shared.get(n.id) ?? [] } : { ...n.data },
+        data: { ...n.data },
       } as MapFlowNode,
     ]
   })

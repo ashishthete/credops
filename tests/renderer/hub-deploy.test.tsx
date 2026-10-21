@@ -54,7 +54,7 @@ const teamEnv = (over: Partial<HubCatalogEnv['environment']> = {}, extra: Partia
   ...extra,
 })
 
-const staging = environment({ id: 'e1', name: 'staging', hosts: [{ hostId: 'h1', role: 'app' }] })
+const staging = environment({ id: 'e1', name: 'staging', productId: 'p1', hosts: [{ hostId: 'h1', role: 'app' }] })
 const calls = (invoke: ReturnType<typeof mockBridge>, channel: string) => (invoke.mock.calls as unknown[][]).filter((c) => c[0] === channel)
 
 async function open(results: Record<string, unknown> = {}, path = '/deployments?env=hub-prod') {
