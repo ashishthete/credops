@@ -837,6 +837,27 @@ describe('EventTranslator custom steps and hosts', () => {
     expect(of(result(early, 'c_0', { no_log: true }), 'step.done')[0]).toMatchObject({ state: 'skipped' })
   })
 
+  it("a held settle is flushed only by its own host's next result", () => {
+    const plan = customPlan()
+    const held = { when: { kind: 'changed' as const }, secrets: [{ envName: 'TOKEN', secretId: 's' }] }
+    Object.assign(plan.deployments[1].steps[0].step, held)
+    plan.deployments[2].steps = [stepFixture(0, 'after_up', held, { label: 'Warm cache' })]
+    const tr = new EventTranslator({ plan, secrets: () => [], now: clock().now })
+    const on = (host: string, kind: string, run: string, over: Record<string, unknown> = {}): RunEventBody[] =>
+      tr.feed(JSON.stringify({ event: 'ok', host, task: `${kind} x`, tags: tagsOf(kind, run), rc: 0, ...over }))
+    start(tr, 'c_0', R2)
+    expect(of(on('od-1', 'c_0', R2, { no_log: true }), 'step.done')).toEqual([])
+    start(tr, 'c_0', R3)
+    expect(of(on('od-2', 'c_0', R3, { no_log: true }), 'step.done')).toEqual([])
+    // a result with no host, or from an alias the plan does not have, flushes nothing
+    expect(of(tr.feed(JSON.stringify({ event: 'ok', task: 'gather', rc: 0 })), 'step.done')).toEqual([])
+    expect(of(tr.feed(JSON.stringify({ event: 'ok', host: 'od-9', task: 'gather', rc: 0 })), 'step.done')).toEqual([])
+    // od-2's next result settles od-2's step only
+    start(tr, 'up', R3)
+    expect(of(on('od-2', 'up', R3), 'step.done').map((e) => e.stepId)).toEqual([`${R3}:c_0`, `${R3}:up`])
+    expect(of(tr.finish(0, null), 'step.done').map((e) => [e.stepId, e.state])).toEqual([[`${R2}:c_0`, 'ok']])
+  })
+
   it('markers count only in the step that prints them', () => {
     const tr = make()
     start(tr, 'c_0')

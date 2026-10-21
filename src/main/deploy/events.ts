@@ -324,7 +324,9 @@ export class EventTranslator {
     const t = this.tagsOf(e.tags)
     if (t && this.foreign(e, t.run)) return []
     // a result from a host is the point by which the tap has had a task round trip to deliver a held step's marker
-    const before = this.flush(e.host ? (this.hostByAlias.get(e.host)?.hostId ?? null) : null)
+    // (a result with no host, or from an alias the plan does not have, is no host's round trip: it flushes nothing)
+    const hostId = e.host ? this.hostByAlias.get(e.host)?.hostId : undefined
+    const before = hostId === undefined ? [] : this.flush(hostId)
     const out = [...before, ...this.stepResult(e)]
     const r = t ? this.ref(t.kind) : null
     const name = e.task ?? ''

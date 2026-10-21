@@ -7,7 +7,7 @@ import { CALLBACK_PLUGIN_SOURCE } from './callback-plugin'
 import { EventTranslator, parsePreflight, parseStreamLine } from './events'
 import { parseMarker } from './markers'
 import { withBase64Forms } from './mask'
-import { generateAnsibleCfg, generateInventory, generateKnownHosts, generatePlaybook, generateSshConfig, socketPathFits } from './generate'
+import { generateAnsibleCfg, generateInventory, generateKnownHosts, generatePlaybook, generateSshConfig, planSteps, socketPathFits } from './generate'
 import type { SshConfigOptions } from './generate'
 import type { PreparedHosts } from './hostkeys'
 import type { startTap } from './log-tap'
@@ -66,10 +66,10 @@ const MAX_PENDING_LINE = 4 * 1024 * 1024
 const cut = (s: string): string => (s.length > MAX_LOG_LINE ? `${s.slice(0, MAX_LOG_LINE - 7)} …(cut)` : s)
 const dirOf = (p: string): string => p.slice(0, Math.max(0, p.lastIndexOf('/'))) || '/'
 
-/** The agent's key lifetime: every timeout the playbook can wait for, plus 10 minutes. */
+/** The agent's key lifetime: every timeout the playbook can wait for (each custom step's own), plus 10 minutes. */
 export function totalTimeoutSec(plan: DeployPlan): number {
   const sum = plan.deployments.reduce(
-    (n, d) => n + d.buildTimeoutSec + 2 * d.composeTimeoutSec + d.healthTimeoutSec + (d.backup ? 1800 : 0) + (d.preHookB64 ? 600 : 0) + (d.postHookB64 ? 600 : 0) + 5 * 120,
+    (n, d) => n + d.buildTimeoutSec + 2 * d.composeTimeoutSec + d.healthTimeoutSec + (d.backup ? 1800 : 0) + planSteps(d).reduce((t, p) => t + p.step.timeoutSec, 0) + 5 * 120,
     0,
   )
   return sum + 600

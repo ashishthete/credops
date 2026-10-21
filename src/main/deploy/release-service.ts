@@ -3,7 +3,9 @@ import {
   BREAK_LOCK_CONFIRM_MESSAGE,
   EVENT_BATCH_MS,
   MAX_ACTIVE_RELEASES,
+  NOTHING_SELECTED_MESSAGE,
   REDEPLOY_CONFIRM_MESSAGE,
+  STEP_SECRET_UNUSED_MESSAGE,
   bumpVersion,
   parseEnvTemplate,
   renderEnvTemplate,
@@ -33,7 +35,8 @@ import {
 } from '../../shared/deploy'
 import type { AuditAction, AuditInput } from '../../shared/audit'
 import { CONFIRM_MESSAGE } from '../../shared/ops'
-import { listNames } from '../../shared/services'
+import { listNames, type ServiceMeta } from '../../shared/services'
+import { effectiveSteps, stepLabel, type Step } from '../../shared/steps'
 import { ProtectError, confirmNeeded, protectionFor } from '../ops/protect'
 import type { ResolvedHost } from '../../shared/inventory'
 import type { Db } from '../db/connection'
@@ -42,13 +45,13 @@ import { environmentMeta, hostMeta, productMeta } from '../inventory/rows'
 import { redact } from '../security/redact'
 import { DeployError, type DeployAccess, type DeployAction } from './access'
 import type { DeployStore } from './deploy-store'
-import { planFields, resolveSelection, runServicesOf, type RunSelection } from './selection'
+import { planFields, resolveSelection, runServicesOf, skipServices, type RunSelection } from './selection'
 import type { ServiceStore } from './service-store'
 import { noopFinalize, type FinalizeSteps, type ReleaseRunMeta } from './finalize'
-import { b64 } from './quote'
 import { INTERRUPTED_MESSAGE, type ReleaseStore } from './release-store'
-import type { DeployPlan, DeployRunner, PlanDeployment, PlanHop, PlanHost, PlanKind, RunOutcome, RunSecrets } from './runner'
-import { generatePlaybook } from './generate'
+import type { DeployPlan, DeployRunner, PlanDeployment, PlanHop, PlanHost, PlanKind, PlanStep, RunOutcome, RunSecrets } from './runner'
+import { generatePlaybook, stepList } from './generate'
+import { withBase64Forms } from './mask'
 import { ToolingError } from './tooling'
 
 /* The release lifecycle: preflight, start, rollback, versioning, locks. It owns the stream (run.started /
@@ -151,6 +154,8 @@ interface Holder {
   secrets: RunSecrets | null
   envKey: Map<string, string>
   becomeKey: Map<string, string>
+  /** `<runId>:<step index>:<secret index>` -> the key of a custom step's secret. */
+  stepKey: Map<string, string>
   secretIds: string[]
   refs: DeployPlan['secretRefs']
 }
@@ -164,7 +169,12 @@ interface Info {
 
 const SHA = /^[0-9a-f]{40}$/
 const EMPTY: RunSecrets = { values: {}, known: [] }
-export { PLAYBOOK_CHANGED_MESSAGE }
+export { NOTHING_SELECTED_MESSAGE, PLAYBOOK_CHANGED_MESSAGE, STEP_SECRET_UNUSED_MESSAGE }
+/** What a start skips: the unchanged services left out, and each run's selection after them (null: the whole run). */
+interface Skips {
+  skipped: { id: string; since: string | null }[]
+  sels: Map<string, RunSelection | null>
+}
 /**
  * How long a review keeps its start time. The lock a start writes carries that time (it is part of the
  * reviewed text), so an older review would make a fresh lock look old; past this it is reviewed again.
@@ -355,7 +365,7 @@ export class ReleaseService {
       if (err !== null) checks.push(this.block('ansible', err))
       else checks.push({ id: 'ansible', deploymentId: null, hostId: '', label: 'ansible', level: 'ok', message: 'ansible-playbook is available' })
       if (out?.preflight)
-        report = { releaseId: id, ...out.preflight, checks: [...checks, ...out.preflight.checks], serviceCommits: serviceCommits(infos, out.preflight.commits) }
+        report = { releaseId: id, ...out.preflight, checks: [...checks, ...out.preflight.checks], serviceCommits: serviceCommits(infos, out.preflight.commits, this.d.services.list(live.environmentId)) }
       else {
         if (err === null) checks.push(this.block('tools', 'Preflight did not finish; see the log'))
         report = { releaseId: id, checks, commits: {}, dockerModes: {}, composeServices: {}, serviceCommits: {}, locks: {}, commitsTotal: 0, blocked: true }
@@ -383,7 +393,7 @@ export class ReleaseService {
    * (the playbook holds references only) and starts no agent. The start time it generates with is kept in memory
    * so a start bound to this hash regenerates the same text.
    */
-  async previewPlaybook(releaseId: string, ctx?: CallCtx): Promise<PlaybookPreview> {
+  async previewPlaybook(releaseId: string, ctx?: CallCtx, forceServiceIds?: string[]): Promise<PlaybookPreview> {
     const actor = ctx?.actor ?? this.d.actor
     this.d.vault.assertUnlocked()
     const rel = this.d.releases.detail(releaseId)
@@ -393,12 +403,13 @@ export class ReleaseService {
     const res = await this.d.access.check(actor, 'release.start', { environmentId: env.id, deploymentIds: this.depIds(rel) })
     if (!res.allowed) throw new DeployError('DENIED', redact(res.reason ?? 'Not allowed'))
     this.assertCurrent(rel, env)
+    const skips = this.skips(rel, forceServiceIds)
     const now = this.d.now()
     const startedAt = now.toISOString()
-    const { playbook } = this.releasePlan(rel, env, actor, startedAt)
+    const { playbook } = this.releasePlan(rel, env, actor, startedAt, skips)
     for (const [k, p] of this.previews) if (now.getTime() - p.at > PREVIEW_KEEP_MS) this.previews.delete(k)
     this.previews.set(reviewKey(releaseId, actor), { releaseId, startedAt, at: now.getTime() })
-    return { playbook, sha256: sha256(playbook) }
+    return { playbook, sha256: reviewHash(playbook, skips), skippedServiceIds: skips.skipped.map((x) => x.id) }
   }
 
   /**
@@ -418,6 +429,7 @@ export class ReleaseService {
     this.assertStatus(releaseId, ['ready'])
     this.confirmProtected(actor, 'release.start', rel, env, rel.runs.map((r) => r.hostId).filter((h): h is string => h !== null), confirm.typedName)
     this.assertCurrent(rel, env)
+    const skips = this.skips(rel, confirm.forceServiceIds)
     const redeploy = (rel.preflight?.commitsTotal ?? 0) === 0
     if (redeploy && confirm.redeploy !== true) throw new DeployError('CONFIRM_REQUIRED', REDEPLOY_CONFIRM_MESSAGE)
 
@@ -426,18 +438,18 @@ export class ReleaseService {
     if (reviewed !== undefined && this.d.now().getTime() - reviewed.at > PREVIEW_TTL_MS) {
       throw new DeployError('INVALID_STATE', REVIEW_EXPIRED_MESSAGE)
     }
-    const built = this.releasePlan(rel, env, actor, reviewed?.startedAt ?? this.d.now().toISOString())
-    if (confirm.playbookSha256 !== undefined && sha256(built.playbook) !== confirm.playbookSha256) {
+    const built = this.releasePlan(rel, env, actor, reviewed?.startedAt ?? this.d.now().toISOString(), skips)
+    if (confirm.playbookSha256 !== undefined && reviewHash(built.playbook, skips) !== confirm.playbookSha256) {
       throw new DeployError('INVALID_STATE', PLAYBOOK_CHANGED_MESSAGE)
     }
     const live = this.register(releaseId, env, 'release', rel.version ?? 'release', actor)
     let run: { infos: Info[]; holder: Holder; tag: string | null; autoRollback: boolean; previousVersion: string | null; version: string | null }
     try {
       this.dropPreviews(releaseId)
-      const infos = this.infosOf(rel)
+      const infos = this.infosOf(this.applySkips(rel, skips))
       for (const i of infos) live.runIds.add(i.run.id)
       const settings = this.d.deploys.settings(env.id)
-      const holder = this.resolveSecrets(infos, { env: true })
+      const holder = this.resolveSecrets(infos, { env: true, scope: 'release' })
       live.known = holder.secrets?.known ?? []
       const { plan, playbook, version, docker } = built
       const tag = !redeploy && settings.versioned && rel.version !== null && rel.version !== settings.currentVersion ? rel.version : null
@@ -459,6 +471,7 @@ export class ReleaseService {
         hostCount: this.hostCount(infos),
         ...this.counts(infos),
         credentialIds: holder.secretIds,
+        skippedServiceIds: skips.skipped.map((x) => x.id),
       })
       live.done = this.runRelease(live, run, plan, docker, rel.options.backup).catch((e: unknown) => this.crash(live, e)).finally(() => this.unregister(live))
     } catch (e) {
@@ -496,19 +509,21 @@ export class ReleaseService {
     env: { id: string; name: string },
     actor: Actor,
     startedAt: string,
+    skips: Skips,
   ): { plan: DeployPlan; playbook: string; version: string | null; docker: Map<string, DockerMode> } {
-    const infos = this.infosFor(rel)
+    const infos = this.infosFor(rel, skips)
     const settings = this.d.deploys.settings(env.id)
     const redeploy = (rel.preflight?.commitsTotal ?? 0) === 0
     const version = redeploy ? settings.currentVersion : rel.version
     const docker = new Map<string, DockerMode>(Object.entries(rel.preflight?.dockerModes ?? {}))
-    const refs = this.resolveSecrets(infos, { env: true, values: false })
+    const refs = this.resolveSecrets(infos, { env: true, values: false, scope: 'release' })
     const plan = this.plan('release', { id: rel.id, environmentId: env.id, environmentName: env.name, actor }, infos, {
       version,
       holder: refs,
       docker,
       backup: rel.options.backup,
       startedAt,
+      tagCommits: rel.preflight?.commits,
     })
     return { plan, playbook: generatePlaybook(plan), version, docker }
   }
@@ -648,7 +663,7 @@ export class ReleaseService {
         l.finalize?.abort()
         if (l.runId !== null && l.phase !== 'unlock') this.d.runner.cancel(l.runId)
       } catch (e) {
-        console.warn(redact(`Cancelling a release for the vault reset failed: ${e instanceof Error ? e.message : String(e)}`, l.known))
+        console.warn(redact(`Cancelling a release for the vault reset failed: ${e instanceof Error ? e.message : String(e)}`, withBase64Forms(l.known)))
       }
     }
   }
@@ -732,7 +747,7 @@ export class ReleaseService {
       const infos: Info[] = eligible.map((r, i) => ({ run: rb.runs[i], dep: this.d.deploys.get(r.deploymentId as string), sel: selectionOf(rb.runs[i]) }))
       for (const i of infos) live.runIds.add(i.run.id)
       this.seedSteps(infos, 'rollback', false)
-      const holder = this.resolveSecrets(infos, { env: true })
+      const holder = this.resolveSecrets(infos, { env: true, scope: 'rollback' })
       live.known = holder.secrets?.known ?? []
       const previous = new Map(infos.map((i, n) => [i.run.id, eligible[n].previousCommit as string]))
       const docker = new Map<string, DockerMode>(Object.entries(src.preflight?.dockerModes ?? {}))
@@ -1156,6 +1171,8 @@ export class ReleaseService {
       lockRaw?: Record<string, string>
       /** The lock's start time; a reviewed release passes the review's, so the text matches. */
       startedAt?: string
+      /** Preflight's commits per checkout: a step's `when changed` base falls back to the deploy tag's commit. */
+      tagCommits?: PreflightReport['commits']
     },
   ): DeployPlan {
     const hosts = this.planHosts(live.environmentId, infos)
@@ -1172,8 +1189,9 @@ export class ReleaseService {
       healthStatus: dep.healthStatus,
       healthTimeoutSec: dep.healthTimeoutSec,
       backup: kind === 'release' && o.backup && dep.dbBackup && dep.backupDir ? { dir: dep.backupDir, label: dep.name } : null,
-      preHookB64: dep.preHook ? b64(dep.preHook) : null,
-      postHookB64: dep.postHook ? b64(dep.postHook) : null,
+      // The hooks run as the migrated steps (effectiveSteps), never as hooks.
+      preHookB64: null,
+      postHookB64: null,
       buildTimeoutSec: dep.buildTimeoutSec,
       composeTimeoutSec: dep.composeTimeoutSec,
       docker: o.docker.get(dep.id) ?? (dep.useSudo === 'yes' ? 'sudo' : 'plain'),
@@ -1182,10 +1200,7 @@ export class ReleaseService {
       previousCommit: kind === 'rollback' ? (o.previous?.get(run.id) ?? null) : null,
       useSudo: dep.useSudo,
       composeProject: dep.composeProject,
-      // Task 5 resolves saved steps; until then the generator migrates the hooks to steps itself.
-      steps: [],
-      whenBase: null,
-      ...planFields(dep, sel, metas),
+      ...this.stepFields(kind, run.id, dep, planFields(dep, sel, metas), o.holder, o.tagCommits),
     }))
     return {
       releaseId: live.id,
@@ -1199,6 +1214,29 @@ export class ReleaseService {
       lock: o.lockRaw ? { expectRaw: o.lockRaw } : {},
       startedAt: o.startedAt ?? this.d.now().toISOString(),
     }
+  }
+
+  /**
+   * A checkout's custom steps (saved, or its migrated hooks) as a release or rollback runs them, with their
+   * secrets' keys from the holder; other plans run none. A rollback keeps only `alsoOnRollback` steps, under the
+   * keys they have in a release. `whenBase` is the commit a `when changed` step diffs from: the one previous
+   * commit every entry shares, else the deploy tag's commit when no entry has one; anything else is null (the
+   * step runs).
+   */
+  private stepFields(
+    kind: PlanKind,
+    runId: string,
+    dep: DeploymentMeta,
+    f: Pick<PlanDeployment, 'services' | 'urls' | 'commitBases'>,
+    holder: Holder | null,
+    tagCommits: PreflightReport['commits'] | undefined,
+  ): Pick<PlanDeployment, 'services' | 'urls' | 'commitBases' | 'steps' | 'whenBase'> {
+    if (kind !== 'release' && kind !== 'rollback') return { ...f, steps: [], whenBase: null }
+    const steps = planStepsOf(dep, (i, n) => holder?.stepKey.get(`${runId}:${i}:${n}`) ?? '').filter((p) => kind === 'release' || p.alsoOnRollback === true)
+    const { shas, tag } = f.commitBases
+    const tagCommit = tagCommits?.[dep.id]?.tagCommit ?? null
+    const whenBase = kind === 'rollback' ? null : shas.length === 1 && !tag ? shas[0] : shas.length === 0 && tag && tagCommit !== null && SHA.test(tagCommit) ? tagCommit : null
+    return { ...f, steps, whenBase }
   }
 
   /** One alias per distinct hop path, so two hosts behind the same jump host share its hop. */
@@ -1241,9 +1279,11 @@ export class ReleaseService {
 
   /**
    * Decrypts what a plan needs, once. `env` false resolves only the sudo passwords (preflight). `values` false
-   * names the same keys and references without decrypting anything (the playbook preview).
+   * names the same keys and references without decrypting anything (the playbook preview). With `env`, the custom
+   * steps of `scope` (a release's, or the rollback's `alsoOnRollback` ones) get their secrets too, each of which
+   * must be one the environment's env templates or sudo passwords already use (S12).
    */
-  private resolveSecrets(infos: Info[], o: { env: boolean; values?: boolean }): Holder {
+  private resolveSecrets(infos: Info[], o: { env: boolean; values?: boolean; scope?: 'release' | 'rollback' }): Holder {
     const environmentId = infos[0]?.dep.environmentId
     const values: Record<string, string> = {}
     const known = new Set<string>()
@@ -1258,7 +1298,8 @@ export class ReleaseService {
       }
       return v
     }
-    const holder: Holder = { secrets: null, envKey: new Map(), becomeKey: new Map(), secretIds: [], refs: {} }
+    const holder: Holder = { secrets: null, envKey: new Map(), becomeKey: new Map(), stepKey: new Map(), secretIds: [], refs: {} }
+    const allowed = o.env ? this.usedSecrets(environmentId) : new Set<string>()
     for (const { run, dep } of infos) {
       if (dep.becomeSecretId) {
         const key = `BECOME_${run.id.replace(/-/g, '_')}`
@@ -1281,10 +1322,70 @@ export class ReleaseService {
         holder.envKey.set(run.id, key)
         holder.refs[key] = { envTemplate: { deploymentId: dep.id } }
       }
+      if (!o.env) continue
+      effectiveSteps(dep).forEach((st, i) => {
+        if ((o.scope ?? 'release') === 'rollback' && !st.alsoOnRollback) return
+        st.secrets.forEach((x, n) => {
+          if (!allowed.has(x.secretId)) throw new DeployError('VALIDATION', STEP_SECRET_UNUSED_MESSAGE)
+          const key = `STEP_${run.id.replace(/-/g, '_')}_${i}_${n}`
+          values[key] = value(x.secretId)
+          holder.stepKey.set(`${run.id}:${i}:${n}`, key)
+          holder.refs[key] = { secretId: x.secretId }
+        })
+      })
     }
     holder.secrets = { values, known: [...known] }
     holder.secretIds = [...cache.keys()]
     return holder
+  }
+
+  /** The secrets the environment already uses: every checkout's sudo password and managed env template's secrets. */
+  private usedSecrets(environmentId: string | undefined): Set<string> {
+    const out = new Set<string>()
+    if (environmentId === undefined) return out
+    for (const d of this.d.deploys.list(environmentId)) {
+      if (d.becomeSecretId) out.add(d.becomeSecretId)
+      if (d.managedEnv && d.envTemplate) for (const id of parseEnvTemplate(d.envTemplate).secretIds) out.add(id)
+    }
+    return out
+  }
+
+  /**
+   * The services a start of this release leaves out: each `skippable` one (unchanged since its last deploy) not
+   * forced, with each run's selection after them. Refuses a forced id the release does not run, and a start
+   * whose every run would be left out.
+   */
+  private skips(rel: ReleaseDetail, force: readonly string[] = []): Skips {
+    const runs = new Set(rel.serviceIds)
+    if (force.some((x) => !runs.has(x))) throw new DeployError('VALIDATION', 'forceServiceIds names a service this release does not run')
+    const forced = new Set(force)
+    const commits = rel.preflight?.serviceCommits ?? {}
+    const skip = new Set(Object.entries(commits).flatMap(([x, c]) => (c.skippable === true && !forced.has(x) ? [x] : [])))
+    const out: Skips = { skipped: [], sels: new Map() }
+    for (const run of rel.runs) {
+      const r = skipServices(selectionOf(run), skip)
+      if (r.skipped.length === 0) continue
+      out.sels.set(run.id, r.sel)
+      for (const x of r.skipped) out.skipped.push({ id: x, since: commits[x]?.since ?? null })
+    }
+    if (rel.runs.length > 0 && rel.runs.every((r) => out.sels.get(r.id) === null)) throw new DeployError('INVALID_STATE', NOTHING_SELECTED_MESSAGE)
+    return out
+  }
+
+  /** Writes a start's skips: a run left with nothing is skipped (and its steps), the others keep what is left. */
+  private applySkips(rel: ReleaseDetail, skips: Skips): ReleaseDetail {
+    if (skips.sels.size === 0) return rel
+    for (const run of rel.runs) {
+      if (!skips.sels.has(run.id)) continue
+      const sel = skips.sels.get(run.id) ?? null
+      if (sel === null) {
+        const steps = run.steps.map((x) => ({ ...x, state: 'skipped' as const }))
+        this.d.releases.updateRun(run.id, { status: 'skipped', steps })
+        this.steps.set(run.id, steps)
+      } else this.d.releases.setRunServices(run.id, sel.services, sel.whole)
+    }
+    const next = this.d.releases.detail(rel.id)
+    return { ...next, runs: next.runs.filter((r) => skips.sels.get(r.id) !== null) }
   }
 
   // ---- bookkeeping ----
@@ -1295,39 +1396,33 @@ export class ReleaseService {
     return infos
   }
 
-  /** `infosOf` without taking the runs' step lists into memory. */
-  private infosFor(rel: ReleaseDetail): Info[] {
-    return rel.runs.map((run) => {
+  /** `infosOf` without taking the runs' step lists into memory. With `skips`, as a start that skips them runs. */
+  private infosFor(rel: ReleaseDetail, skips?: Skips): Info[] {
+    return rel.runs.flatMap((run) => {
       if (run.deploymentId === null) throw new DeployError('INVALID_STATE', `${run.deploymentName} was removed since preflight; run preflight again`)
-      return { run, dep: this.d.deploys.get(run.deploymentId), sel: selectionOf(run) }
+      const sel = skips?.sels.has(run.id) ? (skips.sels.get(run.id) ?? null) : selectionOf(run)
+      return sel === null ? [] : [{ run, dep: this.d.deploys.get(run.deploymentId), sel }]
     })
   }
 
   /** The steps the playbook will run for a deployment, as pending rows (8b renders them before any event arrives). */
   private seedSteps(infos: Info[], kind: 'release' | 'rollback', backup: boolean): void {
     const metas = new Map(this.d.services.list(infos[0]?.dep.environmentId).map((s) => [s.id, s]))
-    infos.forEach(({ run, dep, sel }) => {
-      const urls = planFields(dep, sel, metas).urls
-      const kinds: (StepKind | null)[] =
-        kind === 'release'
-          ? [
-              'record',
-              backup && dep.dbBackup && dep.backupDir ? 'backup' : null,
-              'fetch',
-              'checkout',
-              dep.managedEnv && dep.envTemplate ? 'env' : null,
-              dep.preHook ? 'pre_hook' : null,
-              'build',
-              'up',
-              urls.length > 0 ? 'health' : null,
-              dep.postHook ? 'post_hook' : null,
-              'tag',
-            ]
-          : ['rb_checkout', dep.managedEnv && dep.envTemplate ? 'rb_env' : null, 'rb_build', 'rb_up', 'rb_tag']
-      const steps = kinds.flatMap((k) => (k ? [{ stepId: `${run.id}:${k}`, kind: k, state: 'pending' as const, startedAt: null, finishedAt: null }] : []))
+    const list = stepList(
+      kind,
+      infos.map(({ run, dep, sel }) => ({
+        runId: run.id,
+        backup: kind === 'release' && backup && dep.dbBackup && dep.backupDir ? {} : null,
+        envSecretKey: dep.managedEnv && dep.envTemplate ? 'env' : null,
+        urls: planFields(dep, sel, metas).urls,
+        steps: planStepsOf(dep, () => ''),
+      })),
+    )
+    for (const { run } of infos) {
+      const steps = (list.get(run.id) ?? []).map((x) => ({ stepId: `${run.id}:${x.key}`, kind: x.kind, label: x.label, key: x.key, state: 'pending' as const, startedAt: null, finishedAt: null }))
       this.d.releases.updateRun(run.id, { steps })
       this.steps.set(run.id, steps)
-    })
+    }
   }
 
   private depIds(rel: ReleaseDetail): string[] {
@@ -1551,7 +1646,7 @@ export class ReleaseService {
   }
 
   private red(live: Live, text: string): string {
-    return redact(text, live.known)
+    return redact(text, withBase64Forms(live.known))
   }
 
   private block(id: string, message: string): PreflightCheck {
@@ -1632,7 +1727,8 @@ export class ReleaseService {
         const list = this.stepsOf(body.deploymentRunId)
         const entry = { stepId: body.stepId, kind: body.kind, state: 'running' as const, startedAt: this.d.now().toISOString(), finishedAt: null }
         const i = list.findIndex((s) => s.stepId === body.stepId)
-        if (i >= 0) list[i] = entry
+        // The seeded row keeps its label and key.
+        if (i >= 0) list[i] = { ...list[i], ...entry }
         else list.push(entry)
         this.saveSteps(body.deploymentRunId)
         break
@@ -1709,18 +1805,41 @@ function selectionOf(run: Pick<DeploymentRunMeta, 'services' | 'wholeCheckout'>)
  * For each service of each run: how many of its checkout's commits (newest first) come before its last
  * deployed commit, falling back to the deploy tag's commit.
  */
-function serviceCommits(infos: Info[], commits: PreflightReport['commits']): PreflightReport['serviceCommits'] {
+function serviceCommits(infos: Info[], commits: PreflightReport['commits'], services: ServiceMeta[]): PreflightReport['serviceCommits'] {
+  const skips = new Set(services.flatMap((s) => (s.kind === 'service' && s.skipUnchanged ? [s.id] : [])))
   const out: PreflightReport['serviceCommits'] = {}
   for (const { dep, sel } of infos) {
     const entry = commits[dep.id]
     const list = entry?.commits ?? []
+    // Nothing since the tag, and the service is at the tag's commit: the range is empty and nothing was hidden.
+    const atTag = (since: string): boolean =>
+      !!entry && list.length === 0 && entry.truncated === 0 && entry.hiddenPairs === 0 && !entry.firstDeploy && since === entry.tagCommit
     for (const s of sel.services) {
       const since = shaOrNull(s.previousCommit) ?? entry?.tagCommit ?? null
-      const idx = since === null ? -1 : list.findIndex((c) => c.sha === since)
-      out[s.id] = idx >= 0 ? { since, count: idx, known: true } : { since, count: list.length, known: false }
+      const idx = since === null ? -1 : atTag(since) ? 0 : list.findIndex((c) => c.sha === since)
+      const c = idx >= 0 ? { since, count: idx, known: true } : { since, count: list.length, known: false }
+      out[s.id] = { ...c, skippable: skips.has(s.id) && c.known && c.count === 0 }
     }
   }
   return out
+}
+
+/** A checkout's effective steps as plan steps (`c_<index>`), each secret keyed by `key(step index, secret index)`. */
+function planStepsOf(dep: DeploymentMeta, key: (i: number, n: number) => string): PlanStep[] {
+  return effectiveSteps(dep).map(({ anchor, alsoOnRollback, ...step }: Step, i) => ({
+    key: `c_${i}`,
+    label: stepLabel(step),
+    step,
+    anchor,
+    alsoOnRollback,
+    secretKeys: step.secrets.map((x, n) => ({ envName: x.envName, key: key(i, n) })),
+    paramKeys: [],
+  }))
+}
+
+/** The review hash: of the playbook alone when nothing is skipped, else also of the skipped ids and their commits. */
+function reviewHash(playbook: string, skips: Skips): string {
+  return skips.skipped.length === 0 ? sha256(playbook) : sha256(`${playbook}\0${JSON.stringify(skips.skipped.map((x) => [x.id, x.since]))}`)
 }
 
 /** A review belongs to one person: the Hub user when there is one, else the OS user on the machine. */

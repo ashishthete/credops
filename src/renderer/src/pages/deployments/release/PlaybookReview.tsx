@@ -3,14 +3,27 @@ import { isHelperTask, playbookSteps, stepLabels, type PlaybookStep } from '../.
 import { Button } from '../../../ui/Button'
 
 /** The tasks as the release view names them: helpers left out, a step's several tasks numbered. */
-function Tasks({ steps }: { steps: PlaybookStep[] }) {
+function Tasks({ steps, custom }: { steps: PlaybookStep[]; custom?: Record<string, string> }) {
   const tasks = steps.filter((s) => !isHelperTask(s.name))
-  const labels = stepLabels(tasks)
+  const labels = stepLabels(tasks, custom)
   return tasks.map((s, j) => <li key={`${s.kind}:${j}`}>{labels[j]}</li>)
 }
 
-/** The playbook a release will run: its steps per deployment on the left, the full text on the right. */
-export function PlaybookReview({ playbook, autoRollback, onSave }: { playbook: string | null; autoRollback: boolean; onSave: () => void }) {
+/**
+ * The playbook a release will run: its steps per deployment on the left, the full text on the right.
+ * `customLabels`: per run id, its custom steps' labels by key (the run rows' `label`/`key`).
+ */
+export function PlaybookReview({
+  playbook,
+  autoRollback,
+  onSave,
+  customLabels = {},
+}: {
+  playbook: string | null
+  autoRollback: boolean
+  onSave: () => void
+  customLabels?: Record<string, Record<string, string>>
+}) {
   const plays = useMemo(() => (playbook === null ? [] : playbookSteps(playbook)), [playbook])
   if (playbook === null) return <p className="text-[12px] text-muted">Generating the playbook</p>
   return (
@@ -35,7 +48,7 @@ export function PlaybookReview({ playbook, autoRollback, onSave }: { playbook: s
                 <div key={d.runId ?? d.name} className="flex flex-col gap-0.5">
                   <span className="font-medium text-fg">{d.name}</span>
                   <ul className="flex flex-col gap-0.5 pl-2 text-fg/85">
-                    <Tasks steps={d.steps} />
+                    <Tasks steps={d.steps} custom={d.runId ? customLabels[d.runId] : undefined} />
                     {d.rollback && <li className="text-muted">{autoRollback ? 'Roll back if a step fails' : 'Stop if a step fails'}</li>}
                   </ul>
                 </div>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DeployError } from '../../src/main/deploy/access'
-import { planFields, resolveSelection, runServicesOf } from '../../src/main/deploy/selection'
+import { planFields, resolveSelection, runServicesOf, skipServices } from '../../src/main/deploy/selection'
 import type { DeploymentMeta } from '../../src/shared/deploy'
 import type { AppServiceMeta, DbServiceMeta, ServiceMeta } from '../../src/shared/services'
 
@@ -89,6 +89,7 @@ const services: ServiceMeta[] = [
   app('alien', 'far', 0, { environmentId: OTHER }),
 ]
 const data = { services, deployments }
+const metas = (list: ServiceMeta[]) => new Map(list.map((s) => [s.id, s]))
 const sel = (serviceIds: string[], checkoutIds: string[] = []) => resolveSelection(ENV, { serviceIds, checkoutIds }, data)
 const refusal = (serviceIds: string[], checkoutIds: string[] = []): string => {
   try {
@@ -144,7 +145,6 @@ describe('resolveSelection', () => {
 })
 
 describe('plan fields of a selection', () => {
-  const metas = (list: ServiceMeta[]) => new Map(list.map((s) => [s.id, s]))
 
   it('whole is null services, every tracked url, and the bases of every tracked service', () => {
     const list = [
@@ -195,5 +195,27 @@ describe('plan fields of a selection', () => {
     const [g] = sel([], ['bare'])
     expect(runServicesOf(g)).toEqual([])
     expect(planFields(g.deployment, { services: [], whole: true }, metas(services))).toEqual({ services: null, urls: [], commitBases: { shas: [], tag: true } })
+  })
+})
+
+describe('skipServices', () => {
+  const entries = (ids: string[], whole: boolean) => {
+    const g = sel(ids)[0]
+    return { services: runServicesOf(g), whole: whole && g.whole }
+  }
+  it('drops the skipped services; a whole checkout left with some goes partial', () => {
+    const out = skipServices(entries(['web', 'worker', 'api'], true), new Set(['worker', 'pay']))
+    expect(out.skipped).toEqual(['worker'])
+    expect(out.sel?.whole).toBe(false)
+    expect(out.sel?.services.map((e) => e.id)).toEqual(['web', 'api'])
+    expect(planFields(checkout('shop', 1), out.sel!, metas(services)).services).toEqual(['web', 'api'])
+  })
+  it('a run with every service skipped has no selection left', () => {
+    expect(skipServices(entries(['web', 'api'], false), new Set(['web', 'api']))).toEqual({ sel: null, skipped: ['web', 'api'] })
+  })
+  it('nothing to skip leaves the selection as it was, and a checkout with no services is never skipped', () => {
+    const whole = entries(['web', 'worker', 'api'], true)
+    expect(skipServices(whole, new Set(['pay']))).toEqual({ sel: whole, skipped: [] })
+    expect(skipServices({ services: [], whole: true }, new Set(['web']))).toEqual({ sel: { services: [], whole: true }, skipped: [] })
   })
 })

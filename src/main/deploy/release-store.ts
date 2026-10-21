@@ -312,8 +312,12 @@ export class ReleaseStore {
     })
   }
 
-  setRunServices(runId: string, services: RunService[]): void {
-    const res = this.db.prepare('UPDATE deployment_runs SET services = ? WHERE id = ?').run(JSON.stringify(services), runId)
+  /** `whole` also sets the run's form (a start that skips some of a whole checkout's services makes it partial). */
+  setRunServices(runId: string, services: RunService[], whole?: boolean): void {
+    const res =
+      whole === undefined
+        ? this.db.prepare('UPDATE deployment_runs SET services = ? WHERE id = ?').run(JSON.stringify(services), runId)
+        : this.db.prepare('UPDATE deployment_runs SET services = ?, whole_checkout = ? WHERE id = ?').run(JSON.stringify(services), whole ? 1 : 0, runId)
     if (res.changes === 0) throw new Error('deployment run not found')
   }
 

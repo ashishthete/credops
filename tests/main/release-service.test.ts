@@ -675,8 +675,10 @@ describe('ReleaseService', () => {
     const id = await ready(r, [d])
     const planned = r.svc.detail(id).runs[0].steps
     const runId = r.svc.detail(id).runs[0].id
-    expect(planned.map((x) => x.kind)).toEqual(['record', 'fetch', 'checkout', 'pre_hook', 'build', 'up', 'health', 'tag'])
-    expect(planned.every((x) => x.state === 'pending' && x.stepId === `${runId}:${x.kind}`)).toBe(true)
+    // the hook runs as its migrated step, c_0, in the old slot
+    expect(planned.map((x) => x.kind)).toEqual(['record', 'fetch', 'checkout', 'custom', 'build', 'up', 'health', 'tag'])
+    expect(planned[3]).toMatchObject({ key: 'c_0', label: 'pre-hook' })
+    expect(planned.every((x) => x.state === 'pending' && x.stepId === `${runId}:${x.key}`)).toBe(true)
     r.runner.on.release = (_p, _s, emit) => {
       emit({ type: 'step.started', stepId: `${runId}:record`, kind: 'record', name: 'Record api', hostId: null, deploymentRunId: runId })
       emit({ type: 'step.done', stepId: `${runId}:record`, state: 'ok', durationMs: 3 })
@@ -733,7 +735,7 @@ describe('ReleaseService', () => {
     await r.svc.whenIdle()
     const start = audits(r, 'release.start')[0]
     expect(start).toMatchObject({ targetType: 'release', targetId: id, targetLabel: 'staging v1.5.0' })
-    expect(start.details).toEqual({ kind: 'release', version: 'v1.5.0', bump: 'minor', redeploy: false, deployments: [d.id], hostCount: 1, serviceCount: 1, deploymentCount: 1, credentialIds: [r.f.secretId] })
+    expect(start.details).toEqual({ kind: 'release', version: 'v1.5.0', bump: 'minor', redeploy: false, deployments: [d.id], hostCount: 1, serviceCount: 1, deploymentCount: 1, credentialIds: [r.f.secretId], skippedServiceIds: [] })
     const fin = audits(r, 'release.finish')[0]
     expect(fin).toMatchObject({ targetType: 'release', targetId: id, targetLabel: 'staging v1.5.0' })
     expect(fin.details).toMatchObject({ status: 'succeeded', version: 'v1.5.0' })
@@ -1072,13 +1074,13 @@ describe('service selection', () => {
     })
     const id = await ready(r, [], { serviceIds: [web.id, worker.id, api.id, pay.id] })
     expect(r.svc.detail(id).preflight?.serviceCommits).toEqual({
-      [web.id]: { since: B, count: 2, known: true },
+      [web.id]: { since: B, count: 2, known: true, skippable: false },
       // no last commit: the tag's commit
-      [worker.id]: { since: A, count: 3, known: true },
+      [worker.id]: { since: A, count: 3, known: true, skippable: false },
       // not in the list: the whole list
-      [api.id]: { since: E, count: 4, known: false },
+      [api.id]: { since: E, count: 4, known: false, skippable: false },
       // first deploy, no tag: every commit
-      [pay.id]: { since: null, count: 1, known: false },
+      [pay.id]: { since: null, count: 1, known: false, skippable: false },
     })
   })
 })
@@ -1503,7 +1505,7 @@ describe('per-service record', () => {
     const r1 = await release(r, [esg.id], A, B)
     expect(r.svc.detail(r1).runs[0].services[0]).toMatchObject({ previousCommit: 'v1.2', deployedCommit: B })
     // The count falls back to the tag (none here) rather than looking for 'v1.2'.
-    expect(r.svc.detail(r1).preflight?.serviceCommits[esg.id]).toEqual({ since: null, count: 0, known: false })
+    expect(r.svc.detail(r1).preflight?.serviceCommits[esg.id]).toEqual({ since: null, count: 0, known: false, skippable: false })
     const { releaseId } = await r.svc.rollback(r1, {})
     await r.svc.whenIdle()
     expect(r.svc.detail(releaseId).runs[0].services.map((e) => [e.previousCommit, e.deployedCommit])).toEqual([[B, A]])

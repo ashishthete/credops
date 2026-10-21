@@ -79,6 +79,18 @@ export function runServicesOf(g: SelectionGroup): RunService[] {
 }
 
 /**
+ * A run's selection less the services a release skips (unchanged since their last deploy). A whole checkout that
+ * keeps only some of its services goes partial; one that keeps none has no selection left (null). A checkout with
+ * no services is never skipped.
+ */
+export function skipServices(sel: RunSelection, skip: ReadonlySet<string>): { sel: RunSelection | null; skipped: string[] } {
+  const skipped = sel.services.filter((e) => skip.has(e.id)).map((e) => e.id)
+  if (skipped.length === 0) return { sel, skipped }
+  const services = sel.services.filter((e) => !skip.has(e.id))
+  return { sel: services.length ? { services, whole: false } : null, skipped }
+}
+
+/**
  * The plan fields a run's selection decides. Urls come from the entries' services as they are now (with
  * `urlCheckFrom`), else the checkout's own; a deleted service has no url. Commit bases are the entries'
  * distinct previous commits, plus the tag when any entry has none or there are no entries.

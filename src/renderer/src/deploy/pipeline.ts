@@ -76,10 +76,11 @@ export interface PipelineState {
   result: { status: string; error?: string } | null
 }
 
-const chip = (stepId: string, kind: StepKind): ChipState => ({
+/** A custom step is named by its own label (the run's step row has it); every other step by its kind. */
+const chip = (stepId: string, kind: StepKind, label?: string): ChipState => ({
   stepId,
   kind,
-  label: STEP_LABEL[kind],
+  label: kind === 'custom' && label ? label : STEP_LABEL[kind],
   state: 'pending',
   startedAt: null,
   durationMs: null,
@@ -105,7 +106,7 @@ export function initialPipeline(detail: ReleaseDetail): PipelineState {
       services: run.wholeCheckout ? [] : run.services.map((s) => s.name),
       wholeCheckout: run.wholeCheckout,
       status: 'pending',
-      chips: run.steps.map((s) => chip(s.stepId, s.kind)),
+      chips: run.steps.map((s) => chip(s.stepId, s.kind, s.label)),
       previousCommit: null,
       deployedCommit: null,
     })

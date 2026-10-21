@@ -374,6 +374,7 @@ export const asReleaseConfirm: Check<ReleaseConfirm> = v.object({
   redeploy: v.optional(v.bool()),
   playbookSha256: v.optional(v.str({ pattern: PLAYBOOK_SHA256 })),
   editedPlaybook: v.optional(v.str({ max: MAX_EDITED_PLAYBOOK })),
+  forceServiceIds: v.optional(v.array(v.uuid(), MAX_SERVICES)),
 }) as Check<ReleaseConfirm>
 export const asBreakLockConfirm: Check<BreakLockConfirm> = v.object({ typedLabel: v.str({ max: MAX_NAME }) }) as Check<BreakLockConfirm>
 export const asReleaseListFilter: Check<ReleaseListFilter> = v.object({

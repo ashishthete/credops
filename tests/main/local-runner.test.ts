@@ -2,11 +2,11 @@ import { mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { LocalRunner, nodeFs, nodeSpawn, type LocalRunnerDeps, type RunChild, type RunSpawn } from '../../src/main/deploy/local-runner'
-import type { RunSecrets } from '../../src/main/deploy/runner'
+import { LocalRunner, nodeFs, nodeSpawn, totalTimeoutSec, type LocalRunnerDeps, type RunChild, type RunSpawn } from '../../src/main/deploy/local-runner'
+import type { PlanDeployment, RunSecrets } from '../../src/main/deploy/runner'
 import { ToolingError } from '../../src/main/deploy/tooling'
 import { CANCEL_GRACE_MS, KILL_GRACE_MS, type RunEventBody } from '../../src/shared/deploy'
-import { FakeAnsible, TOOLS_OK, fakeAgent, fakePrepare, fakeTap, fixtureLines, memFs, planFixture } from './deploy-helpers'
+import { FakeAnsible, TOOLS_OK, fakeAgent, fakePrepare, fakeTap, fixtureLines, memFs, planFixture, depFixture, stepFixture } from './deploy-helpers'
 
 const R2 = '0190a1b2-c3d4-7e5f-8a6b-000000000002'
 const SECRETS: RunSecrets = { values: { env_1: 'sekret-AAA-1', become_1: 'pw-BBB-2' }, known: ['sekret-AAA-1', 'pw-BBB-2'] }
@@ -387,5 +387,15 @@ describe('LocalRunner', () => {
     const spawn = nodeSpawn({ spawn: () => inner, kill: () => { throw new Error('ESRCH') } })
     spawn('a', [], { cwd: '/', env: {} }).kill('SIGTERM')
     expect(inner.kill).toHaveBeenCalledWith('SIGTERM')
+  })
+})
+
+describe('totalTimeoutSec', () => {
+  const base = (d: PlanDeployment) => d.buildTimeoutSec + 2 * d.composeTimeoutSec + d.healthTimeoutSec + 5 * 120
+  it('adds every custom step timeout, and a migrated hook its 600s', () => {
+    const steps = planFixture({ deployments: [depFixture(1, 'h-1', { steps: [stepFixture(0, 'before_build', { timeoutSec: 45 }), stepFixture(1, 'after_up', { timeoutSec: 30 })] })] })
+    expect(totalTimeoutSec(steps)).toBe(base(steps.deployments[0]) + 75 + 600)
+    const hooks = planFixture({ deployments: [depFixture(1, 'h-1', { preHookB64: Buffer.from('echo hi').toString('base64') })] })
+    expect(totalTimeoutSec(hooks)).toBe(base(hooks.deployments[0]) + 600 + 600)
   })
 })

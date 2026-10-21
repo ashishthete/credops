@@ -423,9 +423,10 @@ export interface PreflightReport {
   /**
    * Per service in the selection: `since` is its last deployed commit, else the deploy tag's commit; `count` is
    * how many commits of its checkout's list (newest first) come before `since`. `known` is false when `since`
-   * is not in the list, and then `count` is the list length.
+   * is not in the list, and then `count` is the list length; an empty list with `since` at the tag's commit is a
+   * known zero. `skippable` (the service's skipUnchanged with a known zero) is what start skips unless forced.
    */
-  serviceCommits: Record<string, { since: string | null; count: number; known: boolean }>
+  serviceCommits: Record<string, { since: string | null; count: number; known: boolean; skippable?: boolean }>
   locks: Record<string, { holder: LockHolder; stale: boolean; raw: string } | null>
   commitsTotal: number
   blocked: boolean
@@ -589,12 +590,21 @@ export interface ReleaseConfirm {
   playbookSha256?: string
   /** The reviewed playbook, edited by the user; main re-validates it and runs it in place of the generated one. */
   editedPlaybook?: string
+  /** Services whose unchanged-skip is overridden for this release; the preview and the start must name the same ones. */
+  forceServiceIds?: string[]
 }
 /** The playbook a start would run, for review before Deploy. */
 export interface PlaybookPreview {
   playbook: string
+  /** Of the playbook and, when any service is skipped, the skipped ids and their commits: a start must skip the same. */
   sha256: string
+  /** The services this start leaves out as unchanged since their last deploy (`skippable` and not forced). */
+  skippedServiceIds?: string[]
 }
+/** Start and its preview refuse a release whose every service would be skipped as unchanged. */
+export const NOTHING_SELECTED_MESSAGE = 'Every selected service has no changes; select one to deploy it anyway'
+/** A step's secret must be one the environment's env templates or sudo passwords already use (no value is named). */
+export const STEP_SECRET_UNUSED_MESSAGE = 'This step uses a secret the environment does not already use'
 export const PLAYBOOK_SHA256 = /^[0-9a-f]{64}$/
 /** A release from before playbooks were stored (or one that never started). */
 export const PLAYBOOK_NOT_STORED_MESSAGE = 'Playbook not stored for this release'
