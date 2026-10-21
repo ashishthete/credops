@@ -205,6 +205,24 @@ describe('config export', () => {
     expect(parseConfigFile(text).ok).toBe(true)
   })
 
+  it('legacy repo URLs the rules would now refuse are omitted, others are stripped', async () => {
+    const f = await makeConfigFixture()
+    // Rows saved under the old pattern, seeded in SQL. Fake values only.
+    f.db.prepare('UPDATE products SET repo_url = ? WHERE id = ?').run('git@https://tok:pw@github.com/a', f.ids.product)
+    f.db.prepare('UPDATE deployments SET repo_url = ? WHERE id = ?').run('https:///tok:pw@host/r', f.ids.deployment)
+    const { file, omitted } = buildConfigExport(f.db, clock)
+    const text = serializeConfig(file)
+    expect(text).not.toMatch(/tok|pw@/)
+    expect(file.products[0].repoUrl).toBeNull()
+    expect(file.deployments[0].repoUrl).toBeNull()
+    expect(omitted).toBe(2)
+    expect(parseConfigFile(text).ok).toBe(true)
+    f.db.prepare('UPDATE products SET repo_url = ? WHERE id = ?').run('ssh://u%3Apw@host/r', f.ids.product)
+    const again = buildConfigExport(f.db, clock)
+    expect(serializeConfig(again.file)).not.toContain('%3Apw')
+    expect(again.file.products[0].repoUrl).toBe('ssh://u@host/r')
+  })
+
   it('env template secret refs become ref-N with vault and item names', async () => {
     const f = await makeConfigFixture()
     const { file } = buildConfigExport(f.db, clock)

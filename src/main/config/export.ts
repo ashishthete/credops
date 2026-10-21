@@ -18,7 +18,7 @@ import {
   type ItemRef,
   type VaultRef,
 } from '../../shared/config-file'
-import { stripRepoCredentials } from '../../shared/inventory'
+import { REPO_URL, isParsableRepoUrl, stripRepoCredentials } from '../../shared/inventory'
 import type { DbEngine } from '../../shared/services'
 import type { AuditLog } from '../audit/audit-log'
 import type { Db } from '../db/connection'
@@ -65,6 +65,11 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: numbe
   const repoUrl = (v: unknown): string | null => {
     const url = optStr(v)
     if (url === null) return null
+    // A legacy row the rules would now refuse could still hold a token in a shape the strip can't read: leave it out.
+    if (!REPO_URL.test(url) || !isParsableRepoUrl(url)) {
+      omitted++
+      return null
+    }
     const clean = stripRepoCredentials(url)
     if (clean !== url) omitted++
     return blankUrlParams(clean)

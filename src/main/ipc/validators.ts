@@ -20,6 +20,7 @@ import {
   REPO_URL,
   REPO_URL_CREDENTIALS_MSG,
   hasRepoCredentials,
+  isParsableRepoUrl,
   TAG,
   type EnvironmentInput,
   type EnvironmentPatch,
@@ -254,6 +255,7 @@ export const asHostPatch: Check<HostPatch> = v.object({
 /** A repo URL with a username or password is refused before any store sees it; the message never carries the value. */
 const noRepoCredentials = (check: Check<string>): Check<string> => (value, path) => {
   const s = check(value, path)
+  if (s.trim() !== '' && REPO_URL.test(s.trim()) && !isParsableRepoUrl(s.trim())) throw new InvalidArgs(path, 'has an invalid format')
   if (hasRepoCredentials(s.trim())) throw new InvalidArgs(path, REPO_URL_CREDENTIALS_MSG)
   return s
 }

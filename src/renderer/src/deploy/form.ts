@@ -14,7 +14,7 @@ import {
   type HealthUrl,
   type UseSudo,
 } from '../../../shared/deploy'
-import { MAX_NAME, REPO_URL, REPO_URL_CREDENTIALS_MSG, hasRepoCredentials } from '../../../shared/inventory'
+import { MAX_NAME, REPO_URL, REPO_URL_CREDENTIALS_MSG, hasRepoCredentials, maskRepoUrl } from '../../../shared/inventory'
 import { DEFAULT_VAULT_ID } from '../../../shared/vault'
 
 export interface DeploymentForm {
@@ -71,11 +71,18 @@ export function blankForm(hostId = ''): DeploymentForm {
   }
 }
 
+/** A stored repo URL as the form shows it: credentials removed, and a value nothing can be made of left blank. */
+function formRepoUrl(stored: string | null): string {
+  if (stored === null) return ''
+  const masked = maskRepoUrl(stored)
+  return REPO_URL.test(masked) ? masked : ''
+}
+
 export function formFrom(d: DeploymentMeta): DeploymentForm {
   return {
     name: d.name,
     hostId: d.hostId,
-    repoUrl: d.repoUrl ?? '',
+    repoUrl: formRepoUrl(d.repoUrl),
     composeProject: d.composeProject ?? '',
     repoPath: d.repoPath,
     defaultBranch: d.defaultBranch,
@@ -202,6 +209,8 @@ export function toPatch(f: DeploymentForm, original: DeploymentMeta): Partial<De
   const patch: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(next)) {
     if (k === 'environmentId') continue
+    // The form shows a legacy URL masked: leaving it as shown keeps the stored value.
+    if (k === 'repoUrl' && f.repoUrl.trim() === formRepoUrl(original.repoUrl)) continue
     if (JSON.stringify(v) !== JSON.stringify(original[k as keyof DeploymentMeta])) patch[k] = v
   }
   return patch as Partial<DeploymentInput>

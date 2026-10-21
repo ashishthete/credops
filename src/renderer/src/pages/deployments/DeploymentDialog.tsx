@@ -1,6 +1,7 @@
 import { Plus, X } from 'lucide-react'
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { MAX_URLS } from '../../../../shared/deploy'
+import { REPO_URL_LEGACY_WARNING, isLegacyRepoUrl } from '../../../../shared/inventory'
 import type { SecretMeta } from '../../../../shared/vault'
 import { blankForm, checkForm, formFrom, toInput, toPatch, type DeploymentForm, type FormField } from '../../deploy/form'
 import { createDeployment, deployStore, updateDeployment } from '../../deploy/store'
@@ -201,6 +202,7 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
             className="font-mono"
             spellCheck={false}
             error={err('repoUrl')}
+            hint={original?.repoUrl && isLegacyRepoUrl(original.repoUrl) && form.repoUrl.trim() === formFrom(original).repoUrl ? REPO_URL_LEGACY_WARNING : undefined}
           />
           <div className="grid grid-cols-3 gap-3">
             <TextField label="Branch" value={form.defaultBranch} onChange={(e) => set({ defaultBranch: e.target.value })} className="font-mono" spellCheck={false} error={err('defaultBranch')} />

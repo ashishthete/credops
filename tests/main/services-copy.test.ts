@@ -58,6 +58,13 @@ const auditCount = (f: { db: { prepare(s: string): { get(): unknown } } }): numb
   (f.db.prepare('SELECT COUNT(*) AS n FROM audit_events').get() as { n: number }).n
 
 describe('copyServices', () => {
+  it('copies a legacy repoUrl unchanged', async () => {
+    const f = await setup()
+    f.db.prepare('UPDATE deployments SET repo_url = ? WHERE id = ?').run('https://tok:pw@host/r', f.worker.id)
+    f.copy(f.request())
+    expect(f.deploys.list(f.prod.id).find((d) => d.name === 'worker')!.repoUrl).toBe('https://tok:pw@host/r')
+  })
+
   it('copies checkouts with the given branch, path, host and tag, and services under them', async () => {
     const f = await setup()
     const result = f.copy(f.request())

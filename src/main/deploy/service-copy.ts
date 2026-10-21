@@ -90,7 +90,7 @@ export function copyServices(deps: CopyDeps, req: CopyServicesRequest): CopyServ
         useSudo: d.useSudo,
         managedEnv: false,
         envTemplate: d.envTemplate === null ? null : stripSecretRefs(d.envTemplate),
-      })
+      }, d.repoUrl)
       newCheckout.set(d.id, id)
       takenCheckouts.add(d.name.toLowerCase())
     }
