@@ -25,7 +25,7 @@ import {
   type HealthUrl,
   type UseSudo,
 } from '../../shared/deploy'
-import { MAX_NAME, REPO_URL } from '../../shared/inventory'
+import { MAX_NAME, REPO_URL, REPO_URL_CREDENTIALS_MSG, hasRepoCredentials } from '../../shared/inventory'
 import type { AuditLog } from '../audit/audit-log'
 import type { Db } from '../db/connection'
 import { inTransaction } from '../db/tx'
@@ -473,6 +473,7 @@ export class DeployStore {
     if (typeof f.defaultBranch !== 'string' || !GIT_REF.test(f.defaultBranch)) throw new Error("branch isn't a valid git branch name")
     if (typeof f.deployTag !== 'string' || !GIT_REF.test(f.deployTag)) throw new Error("deploy tag isn't a valid git tag name")
     if (typeof f.composeFile !== 'string' || !COMPOSE_FILE.test(f.composeFile)) throw new Error('compose file must be a relative path inside the repo')
+    if (typeof f.repoUrl === 'string' && REPO_URL.test(f.repoUrl.trim()) && hasRepoCredentials(f.repoUrl.trim())) throw new Error(REPO_URL_CREDENTIALS_MSG)
     const repoUrl = this.checkBlankable(
       f.repoUrl,
       'repository URL must be an http(s), ssh:// or git@ URL without spaces',

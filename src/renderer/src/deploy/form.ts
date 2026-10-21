@@ -14,7 +14,7 @@ import {
   type HealthUrl,
   type UseSudo,
 } from '../../../shared/deploy'
-import { MAX_NAME, REPO_URL } from '../../../shared/inventory'
+import { MAX_NAME, REPO_URL, REPO_URL_CREDENTIALS_MSG, hasRepoCredentials } from '../../../shared/inventory'
 import { DEFAULT_VAULT_ID } from '../../../shared/vault'
 
 export interface DeploymentForm {
@@ -133,6 +133,7 @@ export function checkForm(f: DeploymentForm): { errors: Partial<Record<FormField
   if (!COMPOSE_FILE.test(f.composeFile)) errors.composeFile = 'Use a relative path (letters, digits and . _ / -), with no ".."'
   const repoUrl = f.repoUrl.trim()
   if (repoUrl && (repoUrl.length > MAX_URL || !REPO_URL.test(repoUrl))) errors.repoUrl = 'Use an http(s), ssh:// or git@ URL, with no spaces'
+  else if (repoUrl && hasRepoCredentials(repoUrl)) errors.repoUrl = REPO_URL_CREDENTIALS_MSG
   const project = f.composeProject.trim()
   if (project && !COMPOSE_PROJECT.test(project)) errors.composeProject = 'A compose project uses letters, digits and . _ -, and starts with a letter or digit'
   if (f.dbBackup && !BACKUP_DIR.test(f.backupDir)) errors.backupDir = 'Use an absolute path for backups (letters, digits and . _ @ + / -), with no ".." or "//"'

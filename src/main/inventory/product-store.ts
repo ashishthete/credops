@@ -5,6 +5,8 @@ import {
   MAX_URL,
   PRODUCT_ICONS,
   REPO_URL,
+  REPO_URL_CREDENTIALS_MSG,
+  hasRepoCredentials,
   type ProductIcon,
   type ProductInput,
   type ProductMeta,
@@ -134,6 +136,7 @@ export class ProductStore {
   private checkRepoUrl(raw: string | null): string | null {
     if (raw === null) return null
     if (typeof raw !== 'string' || raw.length > MAX_URL || !REPO_URL.test(raw)) throw new Error('repository URL is invalid')
+    if (hasRepoCredentials(raw)) throw new Error(REPO_URL_CREDENTIALS_MSG)
     return raw
   }
 }

@@ -22,6 +22,9 @@ export const MAX_URL = 2048
 /** The authority can't start with a slash or backslash (WHATWG skips them), and the scp form needs a host and a path that isn't `//…`. */
 export const REPO_URL = /^(?:(?:https?|ssh):\/\/[^\/\\\s]\S*|git@[a-z0-9][a-z0-9.-]*:(?![\/\\]{2})\S+)$/i
 
+/** Shown wherever a repo URL with a username or password is refused; it never carries the URL. */
+export const REPO_URL_CREDENTIALS_MSG = 'Repository URL must not contain a username or password. Use a deploy key or an SSH identity instead.'
+
 /** Scheme, userinfo and the rest of an http(s) or ssh:// URL that has userinfo; the userinfo ends at the authority's last @. */
 function splitUserinfo(url: string): { scheme: string; userinfo: string; rest: string } | null {
   const m = /^(https?:|ssh:)[/\\]*([^/\\?#]*)/i.exec(url)
