@@ -10,6 +10,7 @@ import {
   type HubSecretList,
 } from '../../shared/hub'
 import { hasRepoCredentials, type ResolvedHost } from '../../shared/inventory'
+import type { EnvironmentIntegrations } from '../../shared/settings'
 import type { SecretMeta } from '../../shared/vault'
 import type { Db } from '../db/connection'
 import { passwordMessage } from '../deploy/hostkeys'
@@ -64,6 +65,11 @@ function secretUsage(environmentId: string, deps: Pick<ManifestDeps, 'deploys' |
 }
 
 /** Everything a Hub needs to run the environment's deployments, and no secret value: only secret ids and names. */
+/** What a Hub run needs of an environment's Phase 9 settings: never the Teams webhook secret id (the Hub keeps its own) or timestamps. */
+export function toHubIntegrations(i: EnvironmentIntegrations): HubIntegrations {
+  return { notifyEvents: [...i.notifyEvents], emailTo: [...i.emailTo], emailCc: [...i.emailCc], qaOnDeploy: i.qaOnDeploy, qa: i.qa === null ? null : { ...i.qa }, qaWait: i.qaWait }
+}
+
 export async function buildManifest(environmentId: string, deps: ManifestDeps): Promise<HubEnvManifest> {
   const env = deps.envs.get(environmentId)
   const settings = deps.deploys.settings(environmentId)

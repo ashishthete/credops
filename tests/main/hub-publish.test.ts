@@ -2,7 +2,8 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
-import { HubPublisher, buildManifest } from '../../src/main/hub/publish'
+import type { EnvironmentIntegrations } from '../../src/shared/settings'
+import { HubPublisher, buildManifest, toHubIntegrations } from '../../src/main/hub/publish'
 import { resolveHost } from '../../src/main/inventory/resolve'
 import { KnownHostStore } from '../../src/main/ssh/known-hosts'
 import type { HubEnvManifest } from '../../src/shared/hub'
@@ -199,5 +200,28 @@ describe('HubPublisher', () => {
     await expect(pub.publish(f.prod.id)).rejects.toThrow('boom')
     expect(f.db.prepare('SELECT COUNT(*) AS n FROM hub_env_links').get()).toEqual({ n: 0 })
     expect(auditRows(f.db)).not.toContain('hub.publish')
+  })
+})
+
+describe('toHubIntegrations', () => {
+  it('a published manifest carries the local notify events and recipients, no secret id and no value', async () => {
+    const { f, deps, trust } = await setup()
+    trust('203.0.113.9', 2222)
+    trust('10.0.0.7', 22)
+    const local = {
+      environmentId: f.prod.id,
+      notifyEvents: ['release.failed'],
+      teamsWebhookSecretId: 'secret-id-of-the-teams-webhook',
+      emailTo: ['ops@example.com'],
+      emailCc: ['lead@example.com'],
+      qaOnDeploy: true,
+      qa: { repo: 'acme/web', workflow: 'qa.yml', ref: 'main' },
+      qaWait: true,
+      updatedAt: '2026-10-01T00:00:00.000Z',
+    } as unknown as EnvironmentIntegrations
+    const m = await buildManifest(f.prod.id, { ...deps, integrations: () => toHubIntegrations(local) })
+    expect(m.integrations).toEqual({ notifyEvents: ['release.failed'], emailTo: ['ops@example.com'], emailCc: ['lead@example.com'], qaOnDeploy: true, qa: { repo: 'acme/web', workflow: 'qa.yml', ref: 'main' }, qaWait: true })
+    expect(JSON.stringify(m)).not.toContain('secret-id-of-the-teams-webhook')
+    expect(JSON.stringify(m)).not.toContain('updatedAt')
   })
 })

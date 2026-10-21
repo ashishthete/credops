@@ -53,7 +53,7 @@ import { HubConnection } from './hub/connection'
 import { LiveFeed, sleepUnlessAborted } from './hub/live'
 import { HubRunner, RoutingReleases } from './hub/runner'
 import { backoffMs } from './tunnels/backoff'
-import { HubPublisher } from './hub/publish'
+import { HubPublisher, toHubIntegrations } from './hub/publish'
 import { createHubHandlers } from './ipc/handlers/hub'
 import { ReleaseService } from './deploy/release-service'
 import { DeployStore, dbSecretRefs } from './deploy/deploy-store'
@@ -386,6 +386,7 @@ if (!app.requestSingleInstanceLock()) {
           if (!s.linked) throw new Error('Link a Hub first')
           return s.hubId
         },
+        integrations: (id) => toHubIntegrations(integrations.forEnvironment(id)),
         onChanged: () => hubCatalog.refresh().catch(() => undefined),
       })
       const hubEnvLink = db.prepare('SELECT 1 AS x FROM hub_env_links WHERE environment_id = ?')
