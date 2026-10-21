@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { validateParamValues, type Runbook } from '../../../../shared/runbooks'
 import type { AppServiceMeta } from '../../../../shared/services'
 import type { PlaybookPreview } from '../../../../shared/deploy'
@@ -41,6 +41,8 @@ export function RunRunbookDialog({ runbook, onClose }: { runbook: Runbook; onClo
     closeRelease(id)
     void api.invoke('release:discard', id).catch(() => {})
   }
+  // Gone without starting (the parent unmounts it): the ready release goes too.
+  useEffect(() => drop, [])
   const close = () => {
     if (busy) return
     if (step !== 'started') drop()
@@ -105,13 +107,15 @@ export function RunRunbookDialog({ runbook, onClose }: { runbook: Runbook; onClo
   }
 
   const run = () => {
-    if (!env?.protected) return void start()
+    // An environment this window can't look up is treated as protected: the typed name is the safe default.
+    if (env && !env.protected) return void start()
+    const name = env?.name ?? runbook.environmentId
     setConfirm({
-      title: `Run ${runbook.name} in ${env.name}?`,
-      description: `${env.name} is protected.`,
+      title: `Run ${runbook.name} in ${name}?`,
+      description: env ? `${name} is protected.` : `${name} could not be checked, so it is treated as protected.`,
       confirmLabel: 'Run',
-      typeToConfirm: env.name,
-      run: () => start(env.name),
+      typeToConfirm: name,
+      run: () => start(name),
     })
   }
 

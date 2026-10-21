@@ -11,6 +11,7 @@ import {
   type Runbook,
   type RunbookInput,
   type RunbookItem,
+  runbookInput,
   type RunbookParam,
 } from '../../../../shared/runbooks'
 import type { AppServiceMeta } from '../../../../shared/services'
@@ -55,7 +56,7 @@ export function RunbookDialog({
 function Body({ environmentId, runbook, onClose, onSaved }: { environmentId: string; runbook: Runbook | null; onClose: () => void; onSaved: () => void }) {
   const formId = useId()
   const apps = useServices(environmentId).filter((s): s is AppServiceMeta => s.kind === 'service')
-  const [draft, setDraft] = useState<RunbookInput>(() => (runbook ? { ...runbook } : { ...BLANK, environmentId }))
+  const [draft, setDraft] = useState<RunbookInput>(() => (runbook ? runbookInput(runbook) : { ...BLANK, environmentId }))
   const [add, setAdd] = useState<BuiltinKind>('restart')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -69,6 +70,8 @@ function Body({ environmentId, runbook, onClose, onSaved }: { environmentId: str
     set({ items: [...draft.items, add === 'logs' ? { type: 'builtin', builtin: add, tail: LOG_TAIL_DEFAULT } : { type: 'builtin', builtin: add }] })
   }
   const setParam = (i: number, patch: Partial<RunbookParam>) => set({ params: draft.params.map((p, j) => (j === i ? { ...p, ...patch } : p)) })
+  // A choice has no pattern to match and a text param has no choices; the one that no longer applies is reset.
+  const setKind = (i: number, type: RunbookParam['type']) => setParam(i, type === 'choice' ? { type, pattern: 'identifier' } : { type, choices: [] })
 
   const submit = async () => {
     setBusy(true)
@@ -157,7 +160,7 @@ function Body({ environmentId, runbook, onClose, onSaved }: { environmentId: str
             <div key={i} className="flex items-end gap-2">
               <TextField label={`Param ${i + 1} name`} value={p.name} spellCheck={false} onChange={(e) => setParam(i, { name: e.target.value })} />
               <TextField label={`Param ${i + 1} label`} value={p.label} onChange={(e) => setParam(i, { label: e.target.value })} />
-              <SelectField label={`Param ${i + 1} type`} value={p.type} onChange={(e) => setParam(i, { type: e.target.value as RunbookParam['type'] })}>
+              <SelectField label={`Param ${i + 1} type`} value={p.type} onChange={(e) => setKind(i, e.target.value as RunbookParam['type'])}>
                 <option value="text">Text</option>
                 <option value="choice">Choice</option>
               </SelectField>

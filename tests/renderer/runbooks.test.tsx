@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { resetReleases } from '../../src/renderer/src/deploy/releases'
 import { loadDeploy, resetDeploy } from '../../src/renderer/src/deploy/store'
 import { inventoryStore, loadInventory } from '../../src/renderer/src/inventory/store'
+import { RunbookDialog } from '../../src/renderer/src/pages/products/RunbookDialog'
 import { RunbooksSection } from '../../src/renderer/src/pages/products/RunbooksSection'
 import type { Runbook } from '../../src/shared/runbooks'
 import { releaseDetail } from './fixtures/release-events'
@@ -30,9 +31,9 @@ const TAIL: Runbook = {
   updatedAt: STAMP,
 }
 
-async function mount({ protectedEnv = false, runbooks = [] as Runbook[] } = {}) {
+async function mount({ protectedEnv = false, noEnv = false, runbooks = [] as Runbook[] } = {}) {
   const invoke = mockBridge({
-    'env:list': [environment({ id: 'e1', name: 'staging', protected: protectedEnv, hosts: [{ hostId: 'h1', role: 'app' }] })],
+    'env:list': noEnv ? [] : [environment({ id: 'e1', name: 'staging', protected: protectedEnv, hosts: [{ hostId: 'h1', role: 'app' }] })],
     'host:list': [host({ id: 'h1', label: 'app1' })],
     'deploy:list': [deploymentMeta({ id: 'dep-r1', name: 'core', hostId: 'h1' })],
     'service:list': [appService({ id: 's1', name: 'api', deploymentId: 'dep-r1' }), appService({ id: 's2', name: 'worker', deploymentId: 'dep-r1', position: 1 })],
@@ -113,5 +114,108 @@ describe('runbooks section', () => {
     await user.click(within(confirm).getByRole('button', { name: 'Run' }))
     await waitFor(() => expect(calls(invoke, 'release:start')).toHaveLength(1))
     expect(calls(invoke, 'release:start')[0].slice(1)).toEqual(['rel-op', { typedName: 'staging', playbookSha256: SHA }])
+  })
+})
+
+describe('run dialog lifecycle', () => {
+  const discards = (invoke: ReturnType<typeof mockBridge>) => calls(invoke, 'release:discard').map((c) => c[1])
+  const toReview = async (user: ReturnType<typeof userEvent.setup>) => {
+    await user.click(screen.getByRole('button', { name: 'Run Tail the api' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Run Tail the api' })
+    await user.type(within(dialog).getByLabelText('Line count'), '5')
+    await user.click(within(dialog).getByRole('button', { name: 'Review' }))
+    await flush()
+    await within(dialog).findByRole('button', { name: 'Run' })
+    return dialog
+  }
+
+  it('an environment it cannot look up still asks for the typed name', async () => {
+    const { invoke, user } = await mount({ noEnv: true, runbooks: [{ ...TAIL, params: [] }] })
+    await user.click(screen.getByRole('button', { name: 'Run Tail the api' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Run Tail the api' })
+    await user.click(within(dialog).getByRole('button', { name: 'Review' }))
+    await flush()
+    await user.click(await within(dialog).findByRole('button', { name: 'Run' }))
+    const confirm = await screen.findByRole('dialog', { name: 'Run Tail the api in e1?' })
+    expect(calls(invoke, 'release:start')).toHaveLength(0)
+    expect(within(confirm).getByRole('button', { name: 'Run' })).toBeDisabled()
+  })
+
+  it('Back discards the ready release', async () => {
+    const { invoke, user } = await mount({ runbooks: [TAIL] })
+    const dialog = await toReview(user)
+    await user.click(within(dialog).getByRole('button', { name: 'Back' }))
+    await flush()
+    expect(discards(invoke)).toEqual(['rel-op'])
+  })
+
+  it('closing the review discards it', async () => {
+    const { invoke, user } = await mount({ runbooks: [TAIL] })
+    await toReview(user)
+    await user.keyboard('{Escape}')
+    await flush()
+    expect(discards(invoke)).toEqual(['rel-op'])
+  })
+
+  it('the section going away discards it', async () => {
+    const { invoke, user } = await mount({ runbooks: [TAIL] })
+    await toReview(user)
+    cleanup()
+    await flush()
+    expect(discards(invoke)).toEqual(['rel-op'])
+  })
+
+  it('a started run is not discarded when the dialog goes', async () => {
+    const { invoke, user } = await mount({ runbooks: [TAIL] })
+    const dialog = await toReview(user)
+    await user.click(within(dialog).getByRole('button', { name: 'Run' }))
+    await flush()
+    cleanup()
+    await flush()
+    expect(discards(invoke)).toEqual([])
+  })
+
+  it('deselecting a service discards the first release and preflights the new set', async () => {
+    const { invoke, user } = await mount({ runbooks: [{ ...TAIL, targetServiceIds: ['s1', 's2'] }] })
+    const dialog = await toReview(user)
+    await user.click(within(dialog).getByRole('button', { name: 'Back' }))
+    await user.click(within(dialog).getByRole('checkbox', { name: 'worker' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Review' }))
+    await flush()
+    const sent = calls(invoke, 'release:preflightOperation').map((c) => (c[1] as { serviceIds: string[] }).serviceIds)
+    expect(sent).toEqual([['s1', 's2'], ['s1']])
+    expect(discards(invoke)).toEqual(['rel-op'])
+  })
+})
+
+describe('runbook dialog', () => {
+  const E = '11111111-1111-4111-8111-111111111111'
+  const S = '22222222-2222-4222-8222-222222222222'
+  const SAVED: Runbook = { ...TAIL, id: '33333333-3333-4333-8333-333333333333', environmentId: E, targetServiceIds: [S], params: [] }
+
+  const open = async (runbook: Runbook | null) => {
+    const invoke = mockBridge({ 'runbook:save': SAVED })
+    render(<RunbookDialog environmentId={E} runbook={runbook} open onClose={() => {}} onSaved={() => {}} />)
+    await flush()
+    return { invoke, user: userEvent.setup() }
+  }
+
+  it('saving an edit sends exactly what the IPC validator accepts', async () => {
+    const { invoke, user } = await open(SAVED)
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await flush()
+    const [[, payload]] = calls(invoke, 'runbook:save') as [[string, Record<string, unknown>]]
+    expect(Object.keys(payload).sort()).toEqual(['description', 'environmentId', 'id', 'items', 'lock', 'name', 'notify', 'params', 'targetServiceIds'])
+  })
+
+  it('a param changed to a choice drops its text pattern and back drops the choices', async () => {
+    const { invoke, user } = await open({ ...SAVED, params: [{ name: 'mode', label: 'Mode', type: 'text', pattern: 'path', choices: [] }] })
+    await user.selectOptions(screen.getByLabelText('Param 1 type'), 'choice')
+    await user.type(screen.getByLabelText('Param 1 choices'), 'a, b')
+    await user.selectOptions(screen.getByLabelText('Param 1 type'), 'text')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await flush()
+    const [[, payload]] = calls(invoke, 'runbook:save') as [[string, { params: unknown[] }]]
+    expect(payload.params).toEqual([{ name: 'mode', label: 'Mode', type: 'text', pattern: 'identifier', choices: [] }])
   })
 })
