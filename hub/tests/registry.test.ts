@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { MAX_MANIFEST_BYTES, type HubEnvManifest } from '../../src/shared/hub'
 import { testHub, type TestHub } from './helpers'
-import { DEP_API, DEP_WEB, ENV_ID, deployment, manifest, SECRET_DB } from './manifest'
+import { DEP_API, DEP_WEB, ENV_ID, HOST_ID, deployment, manifest, SECRET_DB } from './manifest'
 
 let hub: TestHub
 afterEach(async () => hub.close())
@@ -229,6 +229,23 @@ describe('environment registry', () => {
     expect((await call(bob, 'GET', '/api/v1/admin/environments')).statusCode).toBe(403)
     const list = (await call(admin, 'GET', '/api/v1/admin/environments')).json() as { environment: { name: string } }[]
     expect(list.map((e) => e.environment.name).sort()).toEqual(['prod', 'staging'])
+  })
+
+  it('a partial viewer never gets a db via-host that no visible checkout uses', async () => {
+    const { admin, bob } = await setup()
+    const VIA = 'a4444444-4444-4444-8444-444444444444'
+    const m = manifest()
+    m.hosts = [...m.hosts, { ...m.hosts[0], id: VIA, label: 'db-box', address: '10.9.9.9', hops: [{ ...m.hosts[0].hops[1], hostId: VIA, label: 'db-box', address: '10.9.9.9' }] }]
+    m.services = [{ id: '75555555-5555-4555-8555-555555555555', name: 'pg', kind: 'db', composeService: null, deploymentId: null, hostId: null, viaHostId: VIA }]
+    expect((await put(admin, m)).statusCode).toBe(200)
+    const g = await bobInGroup(admin)
+    await call(admin, 'POST', `/api/v1/admin/groups/${g}/grants`, { scope: { kind: 'deployment', environmentId: ENV_ID, deploymentId: DEP_API } })
+    const r = await call(bob, 'GET', '/api/v1/catalog')
+    const cat = r.json() as { hosts: { id: string }[]; services: unknown[] }[]
+    expect(cat[0].hosts.map((h) => h.id)).toEqual([HOST_ID])
+    expect(cat[0].services).toEqual([])
+    expect(r.body).not.toContain('db-box')
+    expect(r.body).not.toContain('10.9.9.9')
   })
 
   it('unpublish drops grants that reference the environment', async () => {

@@ -124,18 +124,21 @@ sudo systemctl enable --now opsdeck-hub
 sudo systemctl status opsdeck-hub
 ```
 
-The first person to sign in whose UPN (or object id) matches `firstAdmin` becomes an admin. In OpsDeck,
-add the Hub under Settings, sign in, and the Hub Admin page opens. Create groups, add people, and grant
-groups access to environments. Remove or change `firstAdmin` afterwards only if you need to recover
-admin access; a person in it always signs in as admin.
+The first person to sign in whose object id (or UPN) matches `firstAdmin` becomes an admin. Prefer
+`firstAdmin.oid`: a UPN can be renamed or reassigned, an object id cannot. A matching person is promoted
+again only when the Hub has no enabled admin, so remove or change `firstAdmin` afterwards if you do not
+want that recovery path. In OpsDeck, open **Hub** in the sidebar, enter the Hub URL and sign in. The Hub
+section then shows the tabs Overview, People, Groups, Environments, Secrets and Audit. Create groups, add
+people, and grant groups access to environments.
 
 ## 8. Publish an environment and install deploy keys
 
-1. In OpsDeck, open the environment and choose **Publish to Hub**. This sends the environment, its hosts
+1. In OpsDeck, open **Hub**, then the **Environments** tab, and choose **Publish to Hub** on the
+   environment. This sends the environment, its hosts
    and deployments (no secrets) and lists the secrets it needs.
-2. Under the Hub's environment page, set each required secret once. Everyone with access to the
+2. In the **Secrets** tab, set each required secret once. Everyone with access to the
    environment then deploys with the same values.
-3. Generate the environment's **deploy key** on the Hub page. The Hub shows only the public key and its
+3. Generate the environment's **deploy key** in the **Environments** tab. The Hub shows only the public key and its
    fingerprint. Add that public key to `authorized_keys` of the deploy user on each host. The Hub never
    uses anyone's personal SSH key, and this step stays manual on purpose.
 
