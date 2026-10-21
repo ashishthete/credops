@@ -575,7 +575,8 @@ describe('hubFeedSync', () => {
     const noUser = { ...(on('h1', 'o1') as object), user: null } as HubStatus
     let st: HubStatus = noUser
     const ids = new Set<string>([REL])
-    const sync = hubFeedSync({ status: () => st, feed: { start: vi.fn(), stop: vi.fn() }, ids })
+    const feed = { start: vi.fn(), stop: vi.fn() }
+    const sync = hubFeedSync({ status: () => st, feed, ids })
     sync()
     st = on('h1', 'o1')
     sync()
@@ -585,8 +586,32 @@ describe('hubFeedSync', () => {
     st = on('h1', 'o1')
     sync()
     expect([...ids]).toEqual([REL])
+    expect(feed.stop).not.toHaveBeenCalled()
     st = on('h1', 'o2')
     sync()
     expect(ids.size).toBe(0)
+  })
+
+  it('restarts the feed on a different person or Hub, so the stream reopens with the new session', () => {
+    let st: HubStatus = on('h1', 'o1')
+    const feed = { start: vi.fn(), stop: vi.fn() }
+    const sync = hubFeedSync({ status: () => st, feed, ids: new Set<string>() })
+    sync()
+    expect(feed.stop).not.toHaveBeenCalled()
+
+    st = on('h1', 'o2')
+    sync()
+    expect(feed.stop).toHaveBeenCalledTimes(1)
+    expect(feed.start).toHaveBeenCalledTimes(2)
+    expect(feed.stop.mock.invocationCallOrder[0]).toBeLessThan(feed.start.mock.invocationCallOrder[1])
+
+    st = on('h2', 'o2')
+    sync()
+    expect(feed.stop).toHaveBeenCalledTimes(2)
+    expect(feed.start).toHaveBeenCalledTimes(3)
+    expect(feed.stop.mock.invocationCallOrder[1]).toBeLessThan(feed.start.mock.invocationCallOrder[2])
+
+    sync()
+    expect(feed.stop).toHaveBeenCalledTimes(2)
   })
 })

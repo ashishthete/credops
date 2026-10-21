@@ -377,7 +377,8 @@ export class LiveFeed {
 
 /**
  * Keeps the live feed running while a Hub is linked and signed in. The ids of releases the Hub told us about
- * route release calls to it, so they are forgotten on sign-out, unlink, or a different Hub or person.
+ * route release calls to it, so they are forgotten on sign-out, unlink, or a different Hub or person. A different
+ * Hub or person also restarts the feed: its stream was opened with the old session's token.
  */
 export function hubFeedSync(d: { status: () => HubStatus; feed: Pick<LiveFeed, 'start' | 'stop'>; ids: Set<string> }): () => void {
   let hubId: string | null = null
@@ -395,6 +396,7 @@ export function hubFeedSync(d: { status: () => HubStatus; feed: Pick<LiveFeed, '
     if ((hubId !== null && hubId !== st.hubId) || (oid !== null && user !== null && oid !== user)) {
       d.ids.clear()
       oid = null
+      d.feed.stop()
     }
     hubId = st.hubId
     oid = user ?? oid
