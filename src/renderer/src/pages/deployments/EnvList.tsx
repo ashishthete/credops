@@ -1,5 +1,5 @@
 import { Check, Cloud, Lock, Plus, Rocket, Search, X } from 'lucide-react'
-import type { KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { DeploymentMeta, EnvLastRelease } from '../../../../shared/deploy'
 import type { HubCatalogEnv } from '../../../../shared/hub'
 import type { ServiceMeta } from '../../../../shared/services'
@@ -55,8 +55,11 @@ const short = (sha: string | null) => sha?.slice(0, 7) ?? null
 /** The row's accessible name: the environment, its status and its last release. */
 export function rowLabel(row: EnvRow): string {
   const state = stateOf(row.last)
+  // A team environment's releases may have run elsewhere: with none seen here it is not known to have none.
   const last = !row.last
-    ? 'no releases yet'
+    ? row.hub
+      ? 'last release unknown'
+      : 'no releases yet'
     : state === 'running'
       ? `running, started ${relativeTime(row.last.startedAt ?? row.last.createdAt)}`
       : `last release ${WORD[state as keyof typeof WORD]} ${relativeTime(when(row.last))}${row.last.version ? `, ${row.last.version}` : ''}`
@@ -150,6 +153,8 @@ export interface EnvListProps {
   onOpen: (envId: string) => void
   onDeploy: (envId: string) => void
   onAddService: (envId: string) => void
+  /** The environment just left: its row takes focus when the list comes back. */
+  focusEnvId?: string | null
 }
 
 export function EnvListFilters({ products, query, productId, onQuery, onProduct }: Pick<EnvListProps, 'products' | 'query' | 'productId' | 'onQuery' | 'onProduct'>) {
@@ -189,8 +194,23 @@ export function EnvListFilters({ products, query, productId, onQuery, onProduct 
   )
 }
 
+/** How often the rows' relative times are brought up to date. */
+const TICK_MS = 30_000
+
 /** The landing view: one compact row per environment, grouped by product. */
-export function EnvList({ groups, query, productId, onQuery, onProduct, onOpen, onDeploy, onAddService }: EnvListProps) {
+export function EnvList({ groups, query, productId, onQuery, onProduct, onOpen, onDeploy, onAddService, focusEnvId }: Omit<EnvListProps, 'products'>) {
+  const root = useRef<HTMLDivElement>(null)
+  // Re-renders the rows so "5 minutes ago" keeps moving.
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const t = setInterval(() => setTick((n) => n + 1), TICK_MS)
+    return () => clearInterval(t)
+  }, [])
+  useEffect(() => {
+    if (focusEnvId) root.current?.querySelector<HTMLElement>(`[data-env="${CSS.escape(focusEnvId)}"] [data-row-open]`)?.focus()
+    // Only as the list appears.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   if (!groups.length) {
     return (
       <div className="flex flex-col items-center gap-2 pt-16 text-center text-[12.5px] text-muted">
@@ -211,17 +231,18 @@ export function EnvList({ groups, query, productId, onQuery, onProduct, onOpen, 
       </div>
     )
   }
-  // Up and Down move between the rows, across products; Tab still reaches each row's buttons.
+  // Up and Down move between the rows, across products, and Home and End to the first and last; Tab still reaches each row's buttons.
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return
     const rows = [...e.currentTarget.querySelectorAll<HTMLElement>('[data-row-open]')]
     const at = rows.indexOf(document.activeElement as HTMLElement)
     if (at < 0) return
     e.preventDefault()
-    rows[Math.min(Math.max(at + (e.key === 'ArrowDown' ? 1 : -1), 0), rows.length - 1)].focus()
+    const to = e.key === 'Home' ? 0 : e.key === 'End' ? rows.length - 1 : Math.min(Math.max(at + (e.key === 'ArrowDown' ? 1 : -1), 0), rows.length - 1)
+    rows[to].focus()
   }
   return (
-    <div className="flex flex-col gap-6" onKeyDown={onKeyDown}>
+    <div ref={root} className="flex flex-col gap-6" onKeyDown={onKeyDown}>
       {groups.map((g) => (
         <section key={g.id} role="group" aria-label={g.name}>
           <div className="mb-2 flex items-center gap-2.5">

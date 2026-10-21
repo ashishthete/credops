@@ -127,7 +127,10 @@ export async function loadHub(): Promise<void> {
   const started = generation
   try {
     const status = await api.invoke('hub:status')
-    if (started === generation && status) setStatus(status)
+    if (started !== generation) return
+    // No answer still settles it: nothing waits on a status that will not come.
+    if (status) setStatus(status)
+    else patch({ statusLoaded: true })
   } catch (err) {
     if (started === generation) patch({ statusLoaded: true })
     fail("Couldn't load the Hub", err)

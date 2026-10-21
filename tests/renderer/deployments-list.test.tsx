@@ -1,11 +1,12 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation, useNavigate } from 'react-router'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetLatest } from '../../src/renderer/src/deploy/latest'
 import { resetDeploy } from '../../src/renderer/src/deploy/store'
 import { inventoryStore, loadInventory } from '../../src/renderer/src/inventory/store'
 import { DeploymentsPage } from '../../src/renderer/src/pages/deployments/DeploymentsPage'
+import { rowLabel } from '../../src/renderer/src/pages/deployments/EnvList'
 import { Toaster, clearToasts } from '../../src/renderer/src/ui/Toaster'
 import type { EnvLastRelease, ReleaseStatus } from '../../src/shared/deploy'
 import { appService, deploymentMeta, emitBridgeEvent, envSettings, environment, host, mockBridge, product, toolingOk } from './helpers'
@@ -269,7 +270,7 @@ describe('deployments environment list', () => {
     await open('/deployments?env=p0-dev')
     const card = await screen.findByRole('listitem', { name: 'api' })
     expect(card).toHaveTextContent('api')
-    expect(card).toHaveTextContent('main → deployed')
+    expect(card).toHaveTextContent('main → to deployed')
     expect(card).toHaveTextContent('sudo auto')
     expect(card).toHaveTextContent('1 URL')
     expect(within(card).getByText('api')).toHaveAttribute('title', '/srv/api')
@@ -315,5 +316,89 @@ describe('deployments environment list', () => {
     await waitFor(() => expect(screen.getByRole('region', { name: 'Settings' })).not.toHaveAttribute('aria-busy'))
     expect(toggle()).toHaveAttribute('aria-expanded', 'false')
     expect(toggle()).not.toHaveAttribute('aria-controls')
+  })
+
+  it('Deploy on a checkout with no services ticks the whole checkout', async () => {
+    world({ 'deploy:list': [...deployments, deploymentMeta({ id: 'd-bare', name: 'static-site', environmentId: 'p2-dev', hostId: 'h20' })] })
+    const user = await open()
+    const row = await screen.findByRole('listitem', { name: 'search-dev' })
+    await user.click(within(row).getByRole('button', { name: 'Deploy to search-dev' }))
+    const wizard = await screen.findByRole('dialog', { name: 'Deploy to search-dev' })
+    expect(within(within(wizard).getByRole('group', { name: 'static-site' })).getByRole('checkbox', { name: 'Whole checkout' })).toBeChecked()
+    expect(within(wizard).getByRole('button', { name: 'Run preflight' })).toBeEnabled()
+  })
+
+  it('a link to an environment that has not arrived yet waits for it instead of showing the list', async () => {
+    world()
+    render(
+      <MemoryRouter initialEntries={['/deployments?env=p0-qa']}>
+        <DeploymentsPage />
+        <Where />
+      </MemoryRouter>,
+    )
+    expect(screen.getByTestId('environment-loading')).toBeInTheDocument()
+    expect(screen.queryByTestId('deployments-loading')).not.toBeInTheDocument()
+    await act(async () => {
+      await loadInventory()
+    })
+    expect(await screen.findByRole('navigation', { name: 'Breadcrumb' })).toHaveTextContent('Deployments›Shop›shop-qa')
+    expect(screen.getByTestId('where')).toHaveTextContent('/deployments?env=p0-qa')
+  })
+
+  it('a link to an environment that is gone goes to the list, replacing the link', async () => {
+    world()
+    await open('/deployments?env=gone')
+    expect(await screen.findByRole('group', { name: 'Shop' })).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent(/^\/deployments$/))
+  })
+
+  it('opening an environment focuses its name; going back focuses its row', async () => {
+    world()
+    const user = await open()
+    await user.click(within(await screen.findByRole('listitem', { name: 'billing-qa' })).getByRole('button', { name: /^billing-qa,/ }))
+    await waitFor(() => expect(screen.getByRole('heading', { level: 1, name: 'billing-qa' })).toHaveFocus())
+    await user.click(within(screen.getByRole('navigation', { name: 'Breadcrumb' })).getByRole('button', { name: 'Deployments' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /^billing-qa,/ })).toHaveFocus())
+  })
+
+  it('Home and End move to the first and last row', async () => {
+    world()
+    const user = await open()
+    const row = await screen.findByRole('button', { name: /^billing-qa,/ })
+    row.focus()
+    await user.keyboard('{End}')
+    expect(screen.getAllByRole('button', { name: /^search-/ }).at(-1)).toHaveFocus()
+    await user.keyboard('{Home}')
+    expect(screen.getAllByRole('button', { name: /^shop-/ })[0]).toHaveFocus()
+  })
+
+  it('a deployment card reads its branch to tag and describes itself with its repo path', async () => {
+    world({ 'deploy:list': [deploymentMeta({ id: 'd1', name: 'api', environmentId: 'p0-dev', hostId: 'h00', repoPath: '/srv/api' })] })
+    await open('/deployments?env=p0-dev')
+    const card = await screen.findByRole('listitem', { name: 'api' })
+    expect(card).toHaveAccessibleDescription(/\/srv\/api/)
+    expect(within(card).getByText('to')).toHaveClass('sr-only')
+  })
+
+  it('a Hub environment with no events reads last release unknown; a local one no releases yet', () => {
+    const row = { id: 'e', name: 'prod-eu', protected: false, productName: 'Team', hosts: [], units: 1 }
+    expect(rowLabel({ ...row, hub: true })).toBe('prod-eu, last release unknown')
+    expect(rowLabel({ ...row, hub: false })).toBe('prod-eu, no releases yet')
+  })
+
+  it('relative times on the rows keep moving', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: Date.parse(STAMP) + 10_000 })
+    try {
+      world()
+      await open()
+      const row = await screen.findByRole('button', { name: /^billing-qa,/ })
+      expect(row).toHaveAccessibleName('billing-qa, last release succeeded just now')
+      await act(async () => {
+        vi.advanceTimersByTime(90_000)
+      })
+      expect(row).toHaveAccessibleName('billing-qa, last release succeeded 1 minute ago')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

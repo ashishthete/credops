@@ -1,13 +1,13 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { ArrowLeft, Cloud, Copy, ExternalLink, GripVertical, Pencil, Plus, Rocket, TriangleAlert, Trash2 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState, type DragEvent, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type DragEvent, type KeyboardEvent } from 'react'
 import { useSearchParams } from 'react-router'
 import type { DeploymentMeta } from '../../../../shared/deploy'
 import { startLatestSync, useLatestReleases } from '../../deploy/latest'
 import { pickerGroups } from '../../deploy/picker'
 import { deleteDeployment, loadSettings, reorderDeployments, startDeploySync, useDeploy, useDeployments } from '../../deploy/store'
 import { PendingNotice } from '../hub/shared'
-import { startHubSync, useHub } from '../../hub/store'
+import { isHubActive, startHubSync, useHub } from '../../hub/store'
 import { useInventory } from '../../inventory/store'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
@@ -71,6 +71,21 @@ export function DeploymentsPage() {
   const env = useMemo(() => (hubEnv ? undefined : environments?.find((e) => e.id === wanted)), [environments, wanted, hubEnv])
   // No environment in the URL (or one that is gone): the list.
   const envId = env?.id ?? hubEnv?.environment.id ?? null
+  // An environment in the URL that may still arrive, with the inventory or the team's catalog.
+  const hubPending = !hub.statusLoaded || (isHubActive(hub.status) && !hub.catalogLoaded)
+  const resolving = !!wanted && !envId && (!inventory || hubPending)
+  const gone = !!wanted && !envId && !resolving
+  useEffect(() => {
+    if (gone) setParams({}, { replace: true })
+  }, [gone, setParams])
+  // The environment last open: its row takes focus when the list comes back.
+  const [cameFrom, setCameFrom] = useState<string | null>(null)
+  const title = useRef<HTMLHeadingElement>(null)
+  useEffect(() => {
+    if (!envId) return
+    setCameFrom(envId)
+    title.current?.focus()
+  }, [envId])
   const publishedLocal = !!env && hub.catalog.some((c) => c.environment.id === env.id)
   const envName = env?.name ?? hubEnv?.environment.name ?? ''
   const envProtected = env?.protected ?? hubEnv?.environment.protected ?? false
@@ -188,6 +203,7 @@ export function DeploymentsPage() {
     <div className="flex h-full flex-col">
       <header className="app-drag flex h-16 shrink-0 items-end justify-between gap-4 px-8 pb-3">
         {envId ? (
+          <div className="flex min-w-0 items-baseline gap-3">
           <nav aria-label="Breadcrumb" className="flex min-w-0 items-baseline gap-1.5 text-[13px]">
             <button
               type="button"
@@ -204,11 +220,14 @@ export function DeploymentsPage() {
             <span aria-hidden className="text-muted/60">
               ›
             </span>
-            <h1 aria-current="page" className="truncate text-[19px] font-semibold tracking-tight text-fg">
+            <h1 ref={title} tabIndex={-1} aria-current="page" className="truncate text-[19px] font-semibold tracking-tight text-fg focus:outline-none">
               {envName}
             </h1>
-            {loaded && deployments.length > 0 && <p className="ml-2 truncate text-[12.5px] text-muted tabular-nums">{plural(deployments.length, 'deployment')}</p>}
           </nav>
+            {loaded && deployments.length > 0 && <p className="shrink-0 text-[12.5px] text-muted tabular-nums">{plural(deployments.length, 'deployment')}</p>}
+          </div>
+        ) : resolving ? (
+          <Skeleton className="h-6 w-56 rounded-md" />
         ) : (
           <div className="flex min-w-0 items-baseline gap-3">
             <h1 className="text-[19px] font-semibold tracking-tight text-fg">Deployments</h1>
@@ -228,6 +247,7 @@ export function DeploymentsPage() {
             )}
           </div>
         ) : (
+          !resolving &&
           envCount > 0 && (
             <div className="flex items-center gap-2">
               <EnvListFilters products={envGroupsAll} query={query} productId={productId} onQuery={setQuery} onProduct={setProductId} />
@@ -241,7 +261,13 @@ export function DeploymentsPage() {
         {tooling && tooling.ansibleStatus !== 'ok' && <ToolingBanner problems={tooling.problems} missing={tooling.ansibleStatus === 'missing'} />}
         {pending && <PendingNotice />}
 
-        {!envId ? (
+        {!envId && resolving ? (
+          <div data-testid="environment-loading" aria-busy className="flex flex-col gap-2 pt-2">
+            {Array.from({ length: 3 }, (_, i) => (
+              <Skeleton key={i} className="h-11 rounded-[12px]" />
+            ))}
+          </div>
+        ) : !envId ? (
           listLoading ? (
             <div data-testid="deployments-loading" className="flex flex-col gap-2 pt-2">
               {Array.from({ length: 4 }, (_, i) => (
@@ -253,7 +279,6 @@ export function DeploymentsPage() {
           ) : (
             <EnvList
               groups={shownGroups}
-              products={envGroupsAll}
               query={query}
               productId={productId}
               onQuery={setQuery}
@@ -261,6 +286,7 @@ export function DeploymentsPage() {
               onOpen={(id) => openEnv(id)}
               onDeploy={(id) => setDeploying({ envId: id, all: true })}
               onAddService={(id) => newDeployment(id)}
+              focusEnvId={cameFrom}
             />
           )
         ) : (
@@ -401,6 +427,7 @@ const DRAG_TYPE = 'application/x-opsdeck-deployment'
 function DeploymentCard({ deployment: d, index, first, last, onMove, onEdit, onDelete, readOnly }: CardProps) {
   const motionSafe = useMotionSafe()
   const [over, setOver] = useState(false)
+  const pathId = useId()
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (!e.altKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return
@@ -423,6 +450,7 @@ function DeploymentCard({ deployment: d, index, first, last, onMove, onEdit, onD
   return (
     <motion.li
       aria-label={d.name}
+      aria-describedby={pathId}
       layout={motionSafe ? 'position' : false}
       initial={motionSafe ? { opacity: 0, y: 4 } : { opacity: 0 }}
       animate={motionSafe ? { opacity: 1, y: 0 } : { opacity: 1 }}
@@ -458,12 +486,16 @@ function DeploymentCard({ deployment: d, index, first, last, onMove, onEdit, onD
           <GripVertical aria-hidden className="size-4" />
         </button>
         <div className="flex min-w-0 flex-1 items-center gap-2 text-[12px] text-muted">
-          <h3 title={d.repoPath} className="shrink-0 truncate text-[13px] font-semibold text-fg">
+          <h3 title={d.repoPath} className="max-w-[40%] min-w-0 truncate text-[13px] font-semibold text-fg">
             {d.name}
           </h3>
+          <span id={pathId} className="sr-only">
+            {d.repoPath}
+          </span>
           <span aria-hidden>·</span>
           <span className="truncate font-mono text-fg/80">
-            {d.defaultBranch} → {d.deployTag}
+            {d.defaultBranch} <span aria-hidden>→</span>{' '}
+            <span className="sr-only">to</span> {d.deployTag}
           </span>
           <span aria-hidden>·</span>
           <span className="shrink-0">sudo {d.useSudo}</span>
