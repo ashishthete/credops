@@ -97,7 +97,8 @@ describe('config import', () => {
     const f = await makeConfigFixture()
     // Values the export leaves out stay as they are: a sensitive env var and repo URL credentials.
     f.hosts.update(f.host.id, { envVars: { LANG: 'C.UTF-8', DB_PASSWORD: 'local-db-secret' } })
-    f.products.update(f.ids.product, { repoUrl: 'https://deployer:tok3n@example.com/shop.git' })
+    // A legacy row: the stores now refuse credentials, so seed it the way an old DB holds it.
+    f.db.prepare('UPDATE products SET repo_url = ? WHERE id = ?').run('https://deployer:tok3n@example.com/shop.git', f.ids.product)
     const file = buildConfigExport(f.db, clock).file
     const before = snapshot(f.db)
     const plan = planImport(f.db, file)

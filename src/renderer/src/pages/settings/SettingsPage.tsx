@@ -70,8 +70,8 @@ function ConfigSection() {
           </h2>
           <p className="mt-1 text-[12.5px] leading-relaxed text-muted">
             Exports products, environments, hosts, identities, tunnels, checkouts and services. Secrets are never exported;
-            references to vault items are kept by name. Free-text notes and hooks are exported as written. Importing adds
-            and updates by id or name and never deletes.
+            references to vault items are kept by name. Free-text fields (notes, hooks, descriptions, env values and URLs) are exported as written, so check them for anything sensitive.
+            Importing adds and updates by id or name and never deletes.
           </p>
         </div>
       </div>

@@ -5,6 +5,9 @@ import {
   MAX_URL,
   PRODUCT_ICONS,
   REPO_URL,
+  REPO_URL_CREDENTIALS_MSG,
+  hasRepoCredentials,
+  isParsableRepoUrl,
   type ProductIcon,
   type ProductInput,
   type ProductMeta,
@@ -84,7 +87,8 @@ export class ProductStore {
     const color = patch.color === undefined ? before.color : checkColor(patch.color, 'product')
     const icon = patch.icon === undefined ? before.icon : this.checkIcon(patch.icon)
     const description = patch.description === undefined ? before.description : this.checkDescription(patch.description)
-    const repoUrl = patch.repoUrl === undefined ? before.repoUrl : this.checkRepoUrl(patch.repoUrl)
+    // A value left as stored is not re-checked: a row saved before the rules stays editable.
+    const repoUrl = patch.repoUrl === undefined || patch.repoUrl === before.repoUrl ? before.repoUrl : this.checkRepoUrl(patch.repoUrl)
     const fields = [
       name !== before.name && 'name',
       color !== before.color && 'color',
@@ -136,7 +140,8 @@ export class ProductStore {
 
   private checkRepoUrl(raw: string | null): string | null {
     if (raw === null) return null
-    if (typeof raw !== 'string' || raw.length > MAX_URL || !REPO_URL.test(raw)) throw new Error('repository URL is invalid')
+    if (typeof raw !== 'string' || raw.length > MAX_URL || !REPO_URL.test(raw) || !isParsableRepoUrl(raw)) throw new Error('repository URL is invalid')
+    if (hasRepoCredentials(raw)) throw new Error(REPO_URL_CREDENTIALS_MSG)
     return raw
   }
 }

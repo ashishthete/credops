@@ -46,6 +46,7 @@ import {
   TAG,
   UNSAFE_SSH_CHAR,
   hasRepoCredentials,
+  isParsableRepoUrl,
   parseEnvDomain,
   type HostRole,
   type OsIcon,
@@ -346,6 +347,7 @@ const color = str({ max: 7, pattern: VAULT_COLOR })
 const repoUrl: Check<string | null> = nullable((value, path, errs) => {
   const s = str({ max: MAX_URL, pattern: REPO_URL })(value, path, errs)
   if (s === BAD) return BAD
+  if (!isParsableRepoUrl(s)) return fail(errs, path, 'must be a valid URL')
   return hasRepoCredentials(s) ? fail(errs, path, 'must not carry credentials') : s
 })
 const vaultRef = object({ vaultName: text(MAX_VAULT_NAME) })

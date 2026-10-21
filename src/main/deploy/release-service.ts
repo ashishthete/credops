@@ -84,6 +84,8 @@ interface Live {
   phase: Phase
   runId: string | null
   cancelRequested: boolean
+  /** Set by a vault reset: no playbook but the deploy-lock release runs again. */
+  vaultReset: boolean
   done: Promise<void>
   runStatus: Map<string, DeploymentRunStatus>
   checkedOut: Set<string>
@@ -117,6 +119,7 @@ interface Info {
 
 const SHA = /^[0-9a-f]{40}$/
 const EMPTY: RunSecrets = { values: {}, known: [] }
+export const RESET_CUT_ROLLBACK = 'Cancelled by a vault reset; the rollback did not finish'
 const TAG_FAILED = 'Deployed, but tagging'
 const STALE_TEXT = (minutes: number, who: string): string => `The lock is only ${minutes} minutes old; wait or ask ${who}`
 
@@ -382,7 +385,10 @@ export class ReleaseService {
         if (targets.length > 0) {
           const rb = await this.autoRollback(live, c, targets, docker, backup)
           status = rb.ok ? 'rolled_back' : 'failed'
-          if (!rb.ok) error = `${error}; the rollback also failed: ${rb.reason}`
+          if (live.vaultReset && !rb.ok) {
+            status = 'cancelled'
+            error = RESET_CUT_ROLLBACK
+          } else if (!rb.ok) error = `${error}; the rollback also failed: ${rb.reason}`
         }
       } else {
         status = 'succeeded'
@@ -409,6 +415,7 @@ export class ReleaseService {
       status = 'failed'
       error = this.red(live, e instanceof Error ? e.message : String(e))
     } finally {
+      this.dropForReset(live, c.holder)
       await this.safeUnlock(live, c.infos, c.holder)
       this.finish(live, status, error, notes, c.holder)
     }
@@ -467,6 +474,38 @@ export class ReleaseService {
   /** A vault lock stops finalize's slow work; the steps fall back (commit-list notes) and the run still succeeds. */
   vaultLocked(): void {
     for (const l of this.live.values()) l.finalize?.abort()
+  }
+
+  /**
+   * A vault reset cancels every run, past the point of no return too: a rollback holds secrets the
+   * old password guarded. Only the deploy-lock release (it holds none) still runs, so the hosts
+   * aren't left locked; each release ends cancelled and lets go of its secrets as it finishes.
+   */
+  vaultReset(): void {
+    const all = [...this.live.values()]
+    // Flags first (they can't throw), so a failing cancel below never leaves a release unmarked.
+    for (const l of all) {
+      l.vaultReset = true
+      l.cancelRequested = true
+    }
+    for (const l of all) {
+      try {
+        l.finalize?.abort()
+        if (l.runId !== null && l.phase !== 'unlock') this.d.runner.cancel(l.runId)
+      } catch (e) {
+        console.warn(redact(`Cancelling a release for the vault reset failed: ${e instanceof Error ? e.message : String(e)}`, l.known))
+      }
+    }
+  }
+
+  /**
+   * After a vault reset the decrypted values go before the (slow, best-effort) unlock playbook runs.
+   * `known` is kept, copied, until finish, so late output is still redacted.
+   */
+  private dropForReset(live: Live, holder: Holder | null): void {
+    if (!live.vaultReset) return
+    live.known = [...live.known]
+    this.drop(holder)
   }
 
   private abort(live: Live): void {
@@ -583,6 +622,7 @@ export class ReleaseService {
       status = 'failed'
       error = this.red(live, e instanceof Error ? e.message : String(e))
     } finally {
+      this.dropForReset(live, holder)
       await this.safeUnlock(live, infos, holder)
       this.finish(live, status, error, null, holder)
     }
@@ -840,7 +880,7 @@ export class ReleaseService {
 
   private async exec(live: Live, plan: DeployPlan, secrets: RunSecrets): Promise<{ out: RunOutcome | null; err: string | null }> {
     live.failure = null
-    if (live.cancelRequested && (plan.kind === 'release' || plan.kind === 'version' || plan.kind === 'preflight')) {
+    if (live.cancelRequested && (plan.kind === 'release' || plan.kind === 'version' || plan.kind === 'preflight' || (live.vaultReset && plan.kind !== 'unlock'))) {
       return { out: { exitCode: null, signal: null, cancelled: true, failedDeploymentRunIds: [], reachedCheckout: [], commits: {} }, err: null }
     }
     try {
@@ -1127,6 +1167,7 @@ export class ReleaseService {
       phase,
       runId: null,
       cancelRequested: false,
+      vaultReset: false,
       done: Promise.resolve(),
       runStatus: new Map(),
       checkedOut: new Set(),
