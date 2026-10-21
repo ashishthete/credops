@@ -60,6 +60,7 @@ import type { RunbookStore } from './runbook-store'
 import { generateInventory } from './ssh-files'
 import { withBase64Forms } from './mask'
 import { ToolingError } from './tooling'
+import { type EditError, validateEditedPlaybook } from './playbook-validate'
 
 /* The release lifecycle: preflight, start, rollback, versioning, locks. It owns the stream (run.started /
    run.finished / preflight.done), the access and confirmation boundaries and the secrets' lifetime; the runner
@@ -503,6 +504,27 @@ export class ReleaseService {
     for (const [k, p] of this.previews) if (now.getTime() - p.at > PREVIEW_KEEP_MS) this.previews.delete(k)
     this.previews.set(reviewKey(releaseId, actor), { releaseId, startedAt, at: now.getTime() })
     return { playbook, sha256: reviewHash(playbook, skips, inventory), skippedServiceIds: skips.skipped.map((x) => x.id) }
+  }
+
+  /**
+   * Checks an edited playbook against the one the preview shows (same start time, same plan). Static only:
+   * nothing is written, no secret is decrypted and no agent or shell runs. The sha256 is of the canonical text,
+   * which is what a start bound to this edit must carry.
+   */
+  async validateEdit(releaseId: string, text: string, ctx?: CallCtx): Promise<{ ok: true; canonical: string; sha256: string } | { ok: false; errors: EditError[] }> {
+    const actor = ctx?.actor ?? this.d.actor
+    this.d.vault.assertUnlocked()
+    const rel = this.d.releases.detail(releaseId)
+    this.assertStartable(rel)
+    const env = this.inv.environment(rel.environmentId)
+    // The same check as the preview: the errors say whether generated text matches, so they are not for everyone.
+    const allowed = await this.d.access.check(actor, 'release.start', { environmentId: env.id, deploymentIds: this.depIds(rel) })
+    if (!allowed.allowed) throw new DeployError('DENIED', redact(allowed.reason ?? 'Not allowed'))
+    this.assertCurrent(rel, env)
+    const reviewed = this.previews.get(reviewKey(releaseId, actor))
+    const { playbook } = this.releasePlan(rel, env, actor, reviewed?.startedAt ?? this.d.now().toISOString())
+    const res = validateEditedPlaybook(text, playbook)
+    return res.ok ? { ok: true, canonical: res.canonical, sha256: sha256(res.canonical) } : res
   }
 
   /**
