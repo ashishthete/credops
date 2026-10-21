@@ -77,7 +77,9 @@ export async function buildManifest(environmentId: string, deps: ManifestDeps): 
   const hostOf = new Map(deployments.map((d) => [d.id, d.hostId]))
   const labelOf = deps.db.prepare('SELECT label FROM hosts WHERE id = ?')
 
-  const hostIds = [...new Set(deployments.map((d) => d.hostId))]
+  const services = deps.services.list(environmentId)
+  // A db's via-host is published too, so the Hub can reach it even when no checkout runs there.
+  const hostIds = [...new Set([...deployments.map((d) => d.hostId), ...services.flatMap((s) => (s.kind === 'db' && s.viaHostId ? [s.viaHostId] : []))])]
   const hosts: HubEnvManifest['hosts'] = []
   for (const hostId of hostIds) {
     const label = (labelOf.get(hostId) as { label: string } | undefined)?.label ?? 'host'
@@ -117,7 +119,7 @@ export async function buildManifest(environmentId: string, deps: ManifestDeps): 
       currentVersion: settings.currentVersion,
     },
     hosts,
-    services: deps.services.list(environmentId).map((s): HubEnvManifest['services'][number] =>
+    services: services.map((s): HubEnvManifest['services'][number] =>
       s.kind === 'service'
         ? { id: s.id, name: s.name, kind: 'service', composeService: s.composeService, deploymentId: s.deploymentId, hostId: s.deploymentId ? (hostOf.get(s.deploymentId) ?? null) : null, viaHostId: null }
         : { id: s.id, name: s.name, kind: 'db', composeService: null, deploymentId: null, hostId: null, viaHostId: s.viaHostId },

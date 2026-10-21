@@ -94,6 +94,11 @@ describe('environment registry', () => {
     expect(hub.db.prepare('SELECT COUNT(*) AS n FROM environments').get()).toEqual({ n: 0 })
     const dump = JSON.stringify([hub.db.prepare('SELECT * FROM audit').all(), hub.db.prepare('SELECT * FROM deployments').all()])
     expect(dump).not.toContain('ghp_secrettoken123')
+    for (const bad of ['ssh://user:pw-fake-1@github.com/acme/web.git', 'HTTPS://tok-fake-2@github.com/acme/web.git', 'https://user:pw-fake-3@github.com/acme/web.git']) {
+      const r2 = await put(admin, manifest({ deployments: [deployment(DEP_WEB, 'web', { repoUrl: bad })], requiredSecrets: [] }))
+      expect(r2.statusCode, bad).toBe(400)
+      expect(r2.body).not.toMatch(/fake-\d/)
+    }
     const ok = await put(admin, manifest({ deployments: [deployment(DEP_WEB, 'web', { repoUrl: 'git@github.com:acme/web.git', composeProject: 'web' })], requiredSecrets: [] }))
     expect(ok.statusCode).toBe(200)
   })
@@ -105,6 +110,7 @@ describe('environment registry', () => {
     const SVC = 'c1111111-1111-4111-8111-111111111111'
     const DB = 'c2222222-2222-4222-8222-222222222222'
     const svc = (over: object) => ({ id: SVC, name: 'web', kind: 'service', composeService: 'web', deploymentId: DEP_API, hostId: host, viaHostId: null, ...over })
+    const LOOSE = 'c3333333-3333-4333-8333-333333333333'
     const dbs = { id: DB, name: 'main-db', kind: 'db', composeService: null, deploymentId: null, hostId: null, viaHostId: host }
     const withServices = (services: unknown[]) => ({ ...base, services }) as HubEnvManifest
     for (const bad of [
@@ -114,17 +120,23 @@ describe('environment registry', () => {
       [svc({ viaHostId: host })],
       [svc({}), svc({})],
       [{ ...dbs, deploymentId: DEP_API }],
+      [{ ...dbs, viaHostId: 'a9999999-9999-4999-8999-999999999999' }],
     ]) {
       expect((await put(admin, withServices(bad))).statusCode).toBe(400)
     }
-    expect((await put(admin, withServices([svc({}), dbs]))).statusCode).toBe(200)
+    const unknownDep = await put(admin, withServices([svc({ deploymentId: 'd9999999-9999-4999-8999-999999999999' })]))
+    expect(unknownDep.json().message).toContain('not one of the manifest deployments')
+    const unknownVia = await put(admin, withServices([{ ...dbs, viaHostId: 'a9999999-9999-4999-8999-999999999999' }]))
+    expect(unknownVia.json().message).toContain('viaHostId is not one of the manifest hosts')
+    const loose = svc({ id: LOOSE, name: 'loose', deploymentId: null, hostId: null })
+    expect((await put(admin, withServices([svc({}), loose, dbs]))).statusCode).toBe(200)
 
     const g = await bobInGroup(admin)
     await call(admin, 'POST', `/api/v1/admin/groups/${g}/grants`, { scope: { kind: 'deployment', environmentId: ENV_ID, deploymentId: DEP_API } })
     const cat = (await call(bob, 'GET', '/api/v1/catalog')).json() as { services: { id: string }[] }[]
     expect(cat[0].services.map((x) => x.id)).toEqual([SVC])
     const full = (await call(admin, 'GET', '/api/v1/catalog')).json() as { services: { id: string }[] }[]
-    expect(full[0].services.map((x) => x.id).sort()).toEqual([SVC, DB])
+    expect(full[0].services.map((x) => x.id).sort()).toEqual([SVC, DB, LOOSE].sort())
   })
 
   it('rejects an env template ref not in requiredSecrets', async () => {

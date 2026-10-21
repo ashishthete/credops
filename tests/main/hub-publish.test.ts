@@ -103,6 +103,19 @@ describe('buildManifest', () => {
     expect(m.deployments[0]).toHaveProperty('repoUrl')
   })
 
+  it('publishes a db via-host that runs no checkout', async () => {
+    const { f, deps, trust } = await setup()
+    trust('203.0.113.9', 2222)
+    trust('10.0.0.7', 22)
+    trust('10.0.0.50', 22)
+    const via = f.hosts.create({ label: 'jump2', address: '10.0.0.50', port: 22 })
+    f.envs.putHost(f.prod.id, via.id, 'db')
+    f.services.create({ kind: 'db', environmentId: f.prod.id, name: 'main-db', dbEngine: 'postgres', dbAddress: '10.0.0.9', viaHostId: via.id })
+    const m = await buildManifest(f.prod.id, deps)
+    expect(m.hosts.map((h) => h.id)).toContain(via.id)
+    expect(m.services[0].viaHostId).toBe(via.id)
+  })
+
   it('a repository URL with credentials is never published or echoed', async () => {
     const { f, deps, trust } = await setup()
     trust('203.0.113.9', 2222)
@@ -122,6 +135,12 @@ describe('buildManifest', () => {
     await expect(pub.publish(f.prod.id)).rejects.toThrow(/embedded credentials/)
     expect(put).not.toHaveBeenCalled()
     expect(JSON.stringify(auditRows(f.db))).not.toContain('ghp_secrettoken123')
+    for (const bad of ['ssh://user:pw-fake-1@github.com/acme/web.git', 'HTTPS://tok-fake-2@github.com/acme/web.git']) {
+      f.db.prepare('UPDATE deployments SET repo_url = ? WHERE id = ?').run(bad, dep.id)
+      const e2 = await buildManifest(f.prod.id, deps).then(() => null, (e: Error) => e)
+      expect(e2?.message, bad).toContain('embedded credentials')
+      expect(e2?.message).not.toMatch(/fake-\d/)
+    }
     // A plain URL, and an ssh user without a password, publish and ride in the manifest.
     f.db.prepare('UPDATE deployments SET repo_url = ? WHERE id = ?').run('git@github.com:acme/web.git', dep.id)
     expect((await buildManifest(f.prod.id, deps)).deployments[0].repoUrl).toBe('git@github.com:acme/web.git')

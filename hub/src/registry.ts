@@ -245,15 +245,16 @@ export function readManifest(input: unknown): HubEnvManifest {
     const viaHostId = nullable(s.viaHostId, (x) => uuid(x, `${p}/viaHostId`))
     const composeService = nullable(s.composeService, (x) => match(x, `${p}/composeService`, COMPOSE_SERVICE, 'a compose service name'))
     const name = str(s.name, `${p}/name`)
+    if (viaHostId !== null && !hostIds.has(viaHostId)) bad(`invalid manifest: ${p}/viaHostId is not one of the manifest hosts`)
     if (kind === 'db') {
       if (composeService !== null || deploymentId !== null || hostId !== null) bad(`invalid manifest: ${p} is a db and has no compose service, checkout or host`)
       return { id, name, kind, composeService, deploymentId, hostId, viaHostId }
     }
     if (viaHostId !== null) bad(`invalid manifest: ${p}/viaHostId is only for a db`)
+    if (deploymentId !== null && !depIds.has(deploymentId)) bad(`invalid manifest: ${p}/deploymentId is not one of the manifest deployments`)
     if (deploymentId === null ? hostId !== null : hostId !== depHost.get(deploymentId)) {
       bad(`invalid manifest: ${p}/hostId must be its checkout's host (and null without a checkout)`)
     }
-    if (deploymentId !== null && !depIds.has(deploymentId)) bad(`invalid manifest: ${p}/deploymentId is not one of the manifest deployments`)
     return { id, name, kind, composeService, deploymentId, hostId, viaHostId }
   })
 
@@ -593,7 +594,7 @@ export class Registry {
       }
       const hostIds = new Set(visible.map((d) => d.hostId))
       const depIds = new Set(visible.map((d) => d.id))
-      // A service is visible when its checkout is; db services and services without a checkout need the whole environment.
+      // A service is visible when its checkout is; db services and services without a checkout need every checkout of the environment. Via-hosts are not in hostIds, so a partial viewer never gets them.
       out.push(this.entry(r, m, { hosts: m.hosts.filter((h) => hostIds.has(h.id)), services: m.services.filter((s) => s.deploymentId !== null && depIds.has(s.deploymentId)), deployments: visible }))
     }
     return out

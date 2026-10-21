@@ -237,7 +237,7 @@ export const EMPTY_HUB_INTEGRATIONS: HubIntegrations = {
   qaWait: false,
 }
 
-/** What an admin publishes: addresses, jump chains and pinned public host keys. Never a secret value. */
+/** A service or db of the environment, by reference to the manifest's checkouts and hosts. */
 export interface HubManifestService {
   id: string
   name: string
@@ -252,6 +252,7 @@ export interface HubManifestService {
   viaHostId: string | null
 }
 
+/** What an admin publishes: addresses, jump chains and pinned public host keys. Never a secret value. */
 export interface HubEnvManifest {
   environment: {
     id: string
