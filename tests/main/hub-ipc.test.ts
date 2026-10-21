@@ -140,6 +140,20 @@ describe('hub handlers', () => {
     expect(ops).toEqual(['deploykey.create', 'secret.delete'])
   })
 
+  it('hub:secrets projects to the known fields, so extra Hub fields never reach the renderer', async () => {
+    const wire = {
+      secrets: [{ id: UUID, environmentId: UUID, name: 'DB', kind: 'env', updatedBy: 'a@b', updatedAt: 't', value: 'hunter2-VALUE', length: 12, hash: 'abc', ciphertext: 'zzz' }],
+      missing: { [UUID]: [{ secretId: UUID, name: 'API', value: 'also-VALUE', hint: 'x' }] },
+    }
+    const t = setup({ get: vi.fn(async () => wire) })
+    const got = await t.call('hub:secrets', UUID)
+    expect(got).toEqual({
+      secrets: [{ id: UUID, environmentId: UUID, name: 'DB', kind: 'env', updatedBy: 'a@b', updatedAt: 't' }],
+      missing: { [UUID]: [{ secretId: UUID, name: 'API' }] },
+    })
+    expect(JSON.stringify(got)).not.toMatch(/VALUE|hunter2|ciphertext|hash/)
+  })
+
   it('lock channels validate input, send the freeze to the Hub and announce the change', async () => {
     expect(VALIDATORS['hub:freeze']([UUID, 'migration', null])).toEqual([UUID, 'migration', null])
     expect(VALIDATORS['hub:freeze']([UUID, 'migration', 6])).toEqual([UUID, 'migration', 6])

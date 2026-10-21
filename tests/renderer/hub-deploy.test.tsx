@@ -2,7 +2,7 @@ import { act, cleanup, render, screen, waitFor, within } from '@testing-library/
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { resetDeploy } from '../../src/renderer/src/deploy/store'
+import { deployStore, resetDeploy } from '../../src/renderer/src/deploy/store'
 import { resetHub } from '../../src/renderer/src/hub/store'
 import { inventoryStore, loadInventory } from '../../src/renderer/src/inventory/store'
 import { DeploymentsPage } from '../../src/renderer/src/pages/deployments/DeploymentsPage'
@@ -142,6 +142,22 @@ describe('team deployments', () => {
     await user.click(await screen.findByRole('button', { name: 'prod-eu' }))
     expect(await screen.findByRole('region', { name: 'eu-app1' })).toBeInTheDocument()
     expect(screen.queryByText(/No deployments in/)).not.toBeInTheDocument()
+  })
+
+  it('Hub sign-out removes the team environments from the deploy store', async () => {
+    const invoke = await open()
+    expect(await screen.findByRole('region', { name: 'eu-app1' })).toBeInTheDocument()
+    expect(deployStore.get().deployments.some((d) => d.environmentId === 'hub-prod')).toBe(true)
+    // Main empties the catalog on sign-out and announces it; deploy:list then lists no Hub deployments.
+    invoke.mockImplementation(async (channel: string) => {
+      if (channel === 'hub:status') return { ...status(), signedIn: false, user: null }
+      if (channel === 'deploy:list' || channel === 'hub:catalog' || channel === 'hub:locks') return []
+      return null
+    })
+    await act(async () => emitBridgeEvent('hub:state', { ...status(), signedIn: false, user: null }))
+    await act(async () => emitBridgeEvent('hub:catalog', undefined))
+    await waitFor(() => expect(deployStore.get().deployments.some((d) => d.environmentId === 'hub-prod')).toBe(false))
+    expect(screen.queryByRole('group', { name: 'Team (Hub)' })).not.toBeInTheDocument()
   })
 
   it('a pending user sees the pending empty state in place of team environments', async () => {
