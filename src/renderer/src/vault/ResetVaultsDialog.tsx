@@ -10,9 +10,8 @@ import { vaultStatusStore } from './status'
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
 const POINTS = [
-  "The master password can't be recovered.",
   'Resetting permanently erases every secret in every vault: passwords, private keys, passphrases and other secret items.',
-  'It also turns off Touch ID quick unlock.',
+  'It also removes your PIN, Touch ID and the Microsoft link on this Mac. You set up again after signing in.',
   'Running deploys and rollbacks are cancelled first, and open terminals and tunnels are closed.',
   'A host whose deploy is cancelled may stay deploy-locked; break the lock from its release.',
   'Deployment secret links are cleared: become passwords and .env template secrets (a managed .env is turned off until you link them again), plus the Teams, AI, SendGrid and GitHub keys.',
@@ -45,7 +44,7 @@ export function ResetVaultsDialog({ open, onClose }: { open: boolean; onClose: (
       const status = await api.invoke('vault:reset', typed)
       onClose()
       vaultStatusStore.set(status)
-      toast({ title: 'Vaults reset', description: 'Choose a new master password.', tone: 'info' })
+      toast({ title: 'Vaults reset', description: 'Set up again to continue.', tone: 'info' })
     } catch (err) {
       setError(errorText(err))
     } finally {

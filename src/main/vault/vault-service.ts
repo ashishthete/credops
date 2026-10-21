@@ -133,6 +133,8 @@ function zero(...bufs: (Buffer | Iterable<Buffer>)[]): void {
   }
 }
 
+const TOUCH_ID_UNREADABLE_KEY = 'vault.touchIdUnreadable'
+
 export class VaultService {
   private readonly kdf: Omit<KdfParams, 'salt'>
   private readonly now: () => Date
@@ -157,8 +159,23 @@ export class VaultService {
   private queue: Promise<unknown> = Promise.resolve()
   /** Asked before every unlock and setup; null until main fits it (and then a binding fails closed). */
   private gate: SignInGate | null = null
-  /** The Touch ID cache failed to read at the last Touch ID unlock; cleared once it reads or is rewritten. */
-  private touchIdUnreadable = false
+  /**
+   * The Touch ID cache failed to read at the last Touch ID unlock; cleared once it reads, is rewritten
+   * or is turned off. Kept in the settings table (a flag, not a secret) so it survives a restart.
+   */
+  private get touchIdUnreadable(): boolean {
+    return this.db.prepare('SELECT 1 FROM settings WHERE key = ?').get(TOUCH_ID_UNREADABLE_KEY) !== undefined
+  }
+
+  private set touchIdUnreadable(on: boolean) {
+    if (on) {
+      this.db
+        .prepare('INSERT INTO settings(key, value, updated_at) VALUES(?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')
+        .run(TOUCH_ID_UNREADABLE_KEY, '1', this.now().toISOString())
+    } else {
+      this.db.prepare('DELETE FROM settings WHERE key = ?').run(TOUCH_ID_UNREADABLE_KEY)
+    }
+  }
 
   constructor(
     private readonly db: Db,

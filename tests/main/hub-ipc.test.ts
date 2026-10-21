@@ -58,7 +58,7 @@ describe('hub handlers', () => {
     const secrets = extra.secrets ?? []
     const audit = { append: vi.fn() }
     const vault = { assertUnlocked: vi.fn(), status: vi.fn(() => ({ setUp: true })) }
-    const gate = { assertMayUnlink: vi.fn() }
+    const gate = { assertMayUnlink: vi.fn(), check: vi.fn(async () => 'verified') }
     const conn = {
       client: () => client,
       status: vi.fn(),
@@ -77,9 +77,25 @@ describe('hub handlers', () => {
     return { audit, vault, gate, conn, call: (c: string, ...a: unknown[]) => registered.get(c)!(frame, ...a) as Promise<unknown> }
   }
 
+  it('re-checks the sign-in gate after hub:signIn, and still returns the status if the check fails', async () => {
+    const t = setup({})
+    t.conn.signIn.mockResolvedValue({ state: 'connected' })
+    await expect(t.call('hub:signIn')).resolves.toEqual({ state: 'connected' })
+    expect(t.gate.check).toHaveBeenCalledWith({ force: true })
+    t.gate.check.mockRejectedValueOnce(new Error('offline'))
+    await expect(t.call('hub:signIn')).resolves.toEqual({ state: 'connected' })
+  })
+
+  it('does not re-check the gate when hub:signIn fails', async () => {
+    const t = setup({})
+    t.conn.signIn.mockRejectedValue(new Error('cancelled'))
+    await expect(t.call('hub:signIn')).rejects.toThrow()
+    expect(t.gate.check).not.toHaveBeenCalled()
+  })
+
   it('leaves hub:signOut to the auth handlers, so the sign-in gate always hears of it', () => {
     const { conn } = setup({})
-    const handlers = createHubHandlers({ conn: conn as never, vault: { assertUnlocked: vi.fn(), status: () => ({ setUp: true }) }, gate: { assertMayUnlink: vi.fn() }, audit: { append: vi.fn() }, catalog: { refresh: vi.fn(async () => []) }, publisher: {} as never })
+    const handlers = createHubHandlers({ conn: conn as never, vault: { assertUnlocked: vi.fn(), status: () => ({ setUp: true }) }, gate: { assertMayUnlink: vi.fn(), check: vi.fn(async () => 'verified') }, audit: { append: vi.fn() }, catalog: { refresh: vi.fn(async () => []) }, publisher: {} as never })
     expect('hub:signOut' in handlers).toBe(false)
   })
 

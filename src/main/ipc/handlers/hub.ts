@@ -52,7 +52,7 @@ export function createHubHandlers(deps: {
   conn: Pick<HubConnection, 'client' | 'status' | 'connect' | 'signIn' | 'cancelSignIn' | 'unlink' | 'me'>
   vault: LinkVault
   /** While bound, the vaults may not leave their Hub (they leave through the vault settings). */
-  gate: { assertMayUnlink(): void }
+  gate: { assertMayUnlink(): void; check(opts?: { force?: boolean }): Promise<unknown> }
   audit: { append(input: AuditInput): unknown }
   catalog: Pick<HubCatalog, 'refresh'>
   publisher: Pick<HubPublisher, 'publish' | 'unpublish' | 'uploadSecrets' | 'setIntegrationSecret'>
@@ -87,9 +87,12 @@ export function createHubHandlers(deps: {
       assertMayChangeHubLink(vault)
       return conn.connect(url)
     },
-    'hub:signIn': () => {
+    'hub:signIn': async () => {
       vault.assertUnlocked()
-      return conn.signIn()
+      const status = await conn.signIn()
+      // Re-judge at once, so the banner and verdict follow and a different account is flagged now.
+      await gate.check({ force: true }).catch(() => console.warn('SSO recheck failed'))
+      return status
     },
     'hub:cancelSignIn': () => conn.cancelSignIn(),
     'hub:unlink': () => {

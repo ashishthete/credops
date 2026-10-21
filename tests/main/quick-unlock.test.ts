@@ -167,6 +167,32 @@ describe('quick unlock', () => {
     expect(f.vault.status().touchIdNeedsReenable).toBe(false)
   })
 
+  it('the re-enable flag survives a restart, and clears on re-enable, turn off and reset', async () => {
+    const f = await ready()
+    f.vault.setQuickUnlock('touchId')
+    f.vault.lock('manual')
+    f.quick.keychain.decrypt.mockImplementationOnce(() => {
+      throw new Error('keychain reset')
+    })
+    await f.vault.unlockQuick()
+    const fresh = () => makeVault({ db: f.db, quick: f.quick }).vault
+    expect(fresh().status().touchIdNeedsReenable).toBe(true)
+    // Re-enabling clears it for a later instance too.
+    expect(await f.vault.unlock(PW)).toEqual({ ok: true })
+    f.vault.setQuickUnlock('touchId')
+    expect(fresh().status().touchIdNeedsReenable).toBe(false)
+    // Turning Touch ID off clears it.
+    f.vault.lock('manual')
+    f.quick.keychain.decrypt.mockImplementationOnce(() => {
+      throw new Error('keychain reset')
+    })
+    await f.vault.unlockQuick()
+    expect(fresh().status().touchIdNeedsReenable).toBe(true)
+    expect(await f.vault.unlock(PW)).toEqual({ ok: true })
+    f.vault.setQuickUnlock('off')
+    expect(fresh().status().touchIdNeedsReenable).toBe(false)
+  })
+
   it('a stale cache falls back to the password without counting a failure', async () => {
     const f = await ready()
     seedLogin(f)
