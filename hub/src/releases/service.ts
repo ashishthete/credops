@@ -360,6 +360,15 @@ export class HubReleases {
     return s as OpsApi
   }
 
+  /** Only a service of this release can be forced, and never more of them than it has. Shared by preview and start. */
+  private forcedOf(releaseId: string, ids: string[] | undefined): string[] | undefined {
+    if (ids === undefined) return undefined
+    const forced = [...new Set(ids)]
+    const own = new Set(this.store.get(releaseId).serviceIds)
+    if (forced.length > own.size || forced.some((id) => !own.has(id))) throw new HubHttpError(400, 'bad_request', 'forceServiceIds names a service this release does not run')
+    return forced
+  }
+
   /** The access action a release is started under: a runbook run is `ops.run`, a deploy `release.start`. */
   private startAction(releaseId: string): HubAction {
     return this.store.get(releaseId).operation ? 'ops.run' : 'release.start'
@@ -453,12 +462,7 @@ export class HubReleases {
     // A release the caller cannot view is unknown to them; one they view only part of is refused below.
     this.viewOf(user, releaseId)
     const deploymentIds = this.deploymentsOf(releaseId)
-    // Only a service of this release can be forced, and never more of them than it has.
-    const forced = forceServiceIds === undefined ? undefined : [...new Set(forceServiceIds)]
-    if (forced) {
-      const own = new Set(this.store.get(releaseId).serviceIds)
-      if (forced.length > own.size || forced.some((id) => !own.has(id))) throw new HubHttpError(400, 'bad_request', 'forceServiceIds names a service this release does not run')
-    }
+    const forced = this.forcedOf(releaseId, forceServiceIds)
     const decision = decide(user, this.d.directory.listGroups(), this.startAction(releaseId), { environmentId, ...(deploymentIds.length ? { deploymentIds } : {}) })
     if (!decision.allowed) throw new HubHttpError(403, 'forbidden', refusal(decision, deploymentIds))
     try {
@@ -475,11 +479,12 @@ export class HubReleases {
     const action = this.startAction(releaseId)
     this.allow(user, action, environmentId, this.deploymentsOf(releaseId), action, releaseId)
     if (confirm.editedPlaybook !== undefined) this.editGuard(user, environmentId, 'playbook.edit', releaseId)
+    const forced = this.forcedOf(releaseId, confirm.forceServiceIds)
     this.confirm(user, environmentId, confirm.typedName, 'release.start', releaseId)
     // A read-only runbook takes no environment lock, so there is none to hold.
     if (!operation || operation.lock) this.holdsLock(environmentId, releaseId)
     try {
-      await this.service.start(releaseId, confirm, { actor: this.actorOf(user) })
+      await this.service.start(releaseId, forced === undefined ? confirm : { ...confirm, forceServiceIds: forced }, { actor: this.actorOf(user) })
     } catch (err) {
       this.fail(err)
     }

@@ -36,6 +36,21 @@ const withSteps = (steps: unknown[]) => {
   return m
 }
 
+const ENV2 = 'e2222222-2222-4222-8222-222222222222'
+const HOST2 = 'a3333333-3333-4333-8333-333333333333'
+const DEP2 = 'd3333333-3333-4333-8333-333333333333'
+const SVC2 = '74444444-4444-4444-8444-444444444444'
+/** A second published environment, whose service the first one's releases must never accept. */
+function stageManifest(): HubEnvManifest {
+  const m2 = manifest()
+  m2.environment = { id: ENV2, name: 'stage', protected: false, versioned: true, autoRollback: false, currentVersion: 'v1.0.0' }
+  m2.hosts = [{ ...m2.hosts[0], id: HOST2, label: 'web-2', address: '10.0.1.5', hops: [{ hostId: HOST2, label: 'web-2', address: '10.0.1.5', port: 22, username: 'deploy' }] }]
+  m2.deployments = [deployment(DEP2, 'web2', { environmentId: ENV2, hostId: HOST2 })]
+  m2.services = [{ id: SVC2, name: 'web2-svc', kind: 'service', composeService: 'web', deploymentId: DEP2, hostId: HOST2, viaHostId: null }]
+  m2.requiredSecrets = []
+  return m2
+}
+
 describe('migration 11', () => {
   it('a v9 hub migrates to the latest and a release keeps operation null', () => {
     const db = new DatabaseSync(':memory:')
@@ -211,6 +226,7 @@ describe('preview forceServiceIds', () => {
       redeploy: true, rollbackOf: null, options: OPTIONS, triggeredBy: 'x', serviceIds: [SVC_WEB, SVC_API],
     })
     store.createRuns(rel.id, [{ deploymentId: DEP_WEB, deploymentName: 'web', hostId: manifest().hosts[0].id, hostLabel: 'web-1', position: 0, branch: 'main', steps: [], services: [], wholeCheckout: true } as never])
+    expect((await r.call(r.admin, 'PUT', `/api/v1/admin/environments/${ENV2}`, stageManifest())).statusCode).toBe(200)
     const seen: unknown[] = []
     ;(r.hub.app.releases as any).service.previewPlaybook = async (_id: string, _ctx: unknown, force: unknown) => {
       seen.push(force)
@@ -222,7 +238,7 @@ describe('preview forceServiceIds', () => {
     expect((await r.call(r.admin, 'GET', `${url}?forceServiceIds=${SVC_API}`)).statusCode).toBe(200)
     expect(seen).toEqual([undefined, [SVC_WEB, SVC_API], [SVC_API]])
     expect((await r.call(r.admin, 'GET', `${url}?forceServiceIds=not-an-id`)).statusCode).toBe(400)
-    expect((await r.call(r.admin, 'GET', `${url}?forceServiceIds=73333333-3333-4333-8333-333333333333`)).statusCode).toBe(400)
+    expect((await r.call(r.admin, 'GET', `${url}?forceServiceIds=${SVC2}`)).statusCode).toBe(400)
     expect(seen).toHaveLength(3)
   })
 })
@@ -231,10 +247,6 @@ describe('operations: preflight and start', () => {
   const RB_LOCK = 'b1111111-1111-4111-8111-111111111111'
   const RB_READ = 'b2222222-2222-4222-8222-222222222222'
   const RB_OTHER = 'b3333333-3333-4333-8333-333333333333'
-  const ENV2 = 'e2222222-2222-4222-8222-222222222222'
-  const HOST2 = 'a3333333-3333-4333-8333-333333333333'
-  const DEP2 = 'd3333333-3333-4333-8333-333333333333'
-  const SVC2 = '74444444-4444-4444-8444-444444444444'
   const runbook = (id: string, name: string, svc: string, builtin: 'restart' | 'status') => ({
     id, name, description: '', targetServiceIds: [svc], items: [{ type: 'builtin' as const, builtin }], params: [], lock: true, notify: false,
   })
@@ -256,12 +268,7 @@ describe('operations: preflight and start', () => {
     const m = envManifest()
     m.runbooks = [runbook(RB_LOCK, 'restart', SVC_WEB, 'restart'), { ...runbook(RB_READ, 'status', SVC_WEB, 'status'), lock: false }]
     expect((await r.call(r.admin, 'PUT', `/api/v1/admin/environments/${ENV_ID}`, m)).statusCode).toBe(200)
-    const m2 = manifest()
-    m2.environment = { id: ENV2, name: 'stage', protected: false, versioned: true, autoRollback: false, currentVersion: 'v1.0.0' }
-    m2.hosts = [{ ...m2.hosts[0], id: HOST2, label: 'web-2', address: '10.0.1.5', hops: [{ hostId: HOST2, label: 'web-2', address: '10.0.1.5', port: 22, username: 'deploy' }] }]
-    m2.deployments = [deployment(DEP2, 'web2', { environmentId: ENV2, hostId: HOST2 })]
-    m2.services = [{ id: SVC2, name: 'web2-svc', kind: 'service', composeService: 'web', deploymentId: DEP2, hostId: HOST2, viaHostId: null }]
-    m2.requiredSecrets = []
+    const m2 = stageManifest()
     m2.runbooks = [runbook(RB_OTHER, 'other', SVC2, 'restart')]
     expect((await r.call(r.admin, 'PUT', `/api/v1/admin/environments/${ENV2}`, m2)).statusCode).toBe(200)
     return (r.hub.app.releases as any).service as Record<string, unknown>
@@ -325,6 +332,16 @@ describe('operations: preflight and start', () => {
     const locked = seedOp(true)
     const no = await r!.call(r!.admin, 'POST', `/api/v1/releases/${locked}/start`, {})
     expect(no.statusCode).toBe(409)
+  })
+
+  it('start refuses a forceServiceIds naming a real service of another environment', async () => {
+    const svc = await setup()
+    let started = false
+    svc.start = async () => void (started = true)
+    const rel = seedOp(false)
+    const res = await r!.call(r!.admin, 'POST', `/api/v1/releases/${rel}/start`, { forceServiceIds: [SVC2] })
+    expect(res.statusCode, res.body).toBe(400)
+    expect(started).toBe(false)
   })
 
   it('refuses start with an editedPlaybook while edits are off, before the service runs', async () => {

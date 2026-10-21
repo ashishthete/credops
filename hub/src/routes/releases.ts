@@ -172,7 +172,7 @@ export function registerReleases(app: FastifyInstance, deps: { releases: HubRele
       onRequest,
       schema: {
         params: idParams,
-        // Repeated (?forceServiceIds=a&forceServiceIds=b) or comma-separated; ids only.
+        // Repeated (?forceServiceIds=a&forceServiceIds=b); ids only. Comma lists are not split.
         querystring: {
           type: 'object',
           additionalProperties: false,
