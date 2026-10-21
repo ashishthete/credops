@@ -288,6 +288,11 @@ compose service, its last deployed commit, and these actions:
   local `127.0.0.1:<port>` once it is up, plus a copy button for that address.
   Db rows show engine, address and port, and have no Deploy.
 
+The environment header shows the regions of its hosts as chips (**Regions:
+eu-west-1 · us-east-1**), worked out from the hosts and never stored. Host and
+service rows get a region chip only when the environment spans more than one
+region (regions spec §7.3).
+
 Add, edit, reorder and **Copy to…** live in the section's menu. Status chips and
 row transitions use the existing fast motion; nothing waits on an animation.
 
@@ -340,7 +345,9 @@ This is the central flow.
 4. **Preflight and confirm.** The wizard then shows: preflight checklist, commits since each selected
    service's last deployed commit, version bump and options. This is the
    8b wizard's content, built around the selection from the start
-   (controller's call, §6 Sequencing). A protected
+   (controller's call, §6 Sequencing). The confirm step also names the regions
+   of the checkouts it touches ("Deploys orders-api, web · eu-west-1,
+   us-east-1"), emphasised when there is more than one (regions spec §7.4). A protected
    environment needs its name typed. Main enforces this; the renderer only
    mirrors it.
 5. **Run.** Confirming generates one playbook covering exactly the affected
@@ -483,10 +490,16 @@ controller's call. The plan builds it in Tasks 12 and 13.
    - JSON round-trips exactly and is easy to validate strictly.
    - The file is `opsdeck-config.json`, pretty-printed with 2 spaces.
    - Top level:
-     `{ format: "opsdeck-config", version: 1, exportedAt, products, environments, hosts, identities, tunnels, services, deployments (checkouts), with environment deploy settings }`.
+     `{ format: "opsdeck-config", version: 2, exportedAt, products, regions, environments, hosts, identities, tunnels, services, deployments (checkouts), with environment deploy settings }`.
      Groups and tags go in too, where present; today they are host tags
      only.
-   - References between objects use the stable ids.
+   - References between objects use the stable ids. Each host carries
+     `regionId`, and each environment carries one `productId`.
+   - **Version 2** (regions spec §5) added `regions[]`, `ConfigHost.regionId`,
+     and `ConfigEnvironment.productId` in place of `productIds`. Import accepts
+     versions 1 and 2. A version 1 file has no regions, so the preview asks
+     which region new hosts go in, and its product links map to one product
+     each (the first by name, case-insensitive), with the mapping shown.
 2. **Secrets are never exported.**
    - Vault items appear only as references `{ vaultName, itemName }`, and
      only where config points at them.

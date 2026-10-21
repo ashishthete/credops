@@ -90,7 +90,7 @@ What the ERD had that this spec does **not** adopt:
 
 ## 5. Data model and upgrade (desktop)
 
-Migration 10 (`regions`), SQL only, in one transaction like every migration.
+Migration 12 (`regions`), SQL only, in one transaction like every migration.
 
 | Table | Change |
 |---|---|
@@ -366,7 +366,7 @@ These edits keep the older specs true. They land with the build, not before.
   first.
 - The roadmap says "earlier migrations are never edited", but the services
   spec §12.1 says it amended Migration 7 in place. The roadmap should say which
-  rule holds. This spec assumes Migration 10 is new and nothing earlier is
+  rule holds. This spec assumes Migration 12 is new and nothing earlier is
   touched.
 
 ## 9. Later
@@ -391,8 +391,7 @@ These edits keep the older specs true. They land with the build, not before.
 ## 11. Calls made when writing this spec
 
 - The `Default` region is created on upgrade only when hosts exist.
-- Migration 10 on this branch; renumbered at merge if another branch has
-  taken 10 by then.
+- Migration 12 (`regions`); Migrations 10 and 11 were already taken on master.
 
 - Leave out every ERD-only field.
 - Regions are managed from the Hosts page, not a new sidebar section.

@@ -14,7 +14,8 @@ infrastructure:
 
 What makes it different from Termius is a **Product → Environment → Host → Vault**
 hierarchy (user, 2026-10-16: "products have environments, environments have hosts,
-hosts have vaults"; there are 2 products today). Inside a product sits an
+hosts have vaults"; there are 2 products today). Each host is in one region.
+Inside a product sits an
 **Environment** layer. An environment
 (e.g. `prod`, `staging`, `analytics-db`) groups machines and the apps running on
 them. Some environments are only DB machines, used just for SSH or tunnels.
@@ -50,13 +51,14 @@ SSH config, hosts inheriting from a parent), not code or branding.
 **Core (the three jobs)**
 - G1. Vaults, keys, identities and hosts are created **separately**, then **linked**.
 - G1a. **Products** are the top level (2 today). Each environment belongs to
-  one or more products (an environment can be shared between products, user
-  2026-10-16), and a host can be shared between environments. The sidebar and map browse Product → Environment → Host.
+  exactly one product (user 2026-10-21); a host can be shared between
+  environments and products. The sidebar and map browse Product → Environment → Host.
   Hosts **link** to one or more vaults; the linked vaults supply the keys,
   identities and secrets offered for that host. Vaults are still created on
   their own (§8.1) and linked afterwards.
 - G2. Environments hold hosts (machines) and apps. A host can belong to more than
-  one environment (e.g. a shared DB box).
+  one environment (e.g. a shared DB box). Every host belongs to one region;
+  environments show the regions of their hosts.
 - G3. Default authentication is SSH public-key: use the user's ssh-agent and
   `~/.ssh/id_ed25519` / `id_rsa` without any setup.
 - G4. Interactive SSH terminal in tabs, including through jump hosts.
@@ -185,10 +187,10 @@ All entities: `id (uuid), created_at, updated_at`.
 | **Secret** | vault_id, name, kind (`password`/`token`/`env`/`webhook`/`api_key`), value_enc | Generic key/value secrets, e.g. for `.env`. |
 | **SshKey** | vault_id, label, private_key_enc, public_key, passphrase_enc, source (`file`/`imported`/`generated`), file_path? | `file` keys reference `~/.ssh/...` without copying. |
 | **Identity** | vault_id, label, username, auth (`agent`/`key`/`password`), ssh_key_id?, password_enc? | |
-| **Host** | label, address, port?, identity_id?, jump_host_id?, tags[], os_icon, keepalive, env_vars, startup_snippet_id?, notes | `null` fields inherit (see resolution). |
+| **Region** | code (unique, e.g. `eu-west-1`), provider, display_name | Every host is in one. |
+| **Host** | region_id, label, address, port?, identity_id?, jump_host_id?, tags[], os_icon, keepalive, env_vars, startup_snippet_id?, notes | `null` fields inherit (see resolution). |
 | **Product** | name, color, icon, description, repo_url? | Top level; owns environments. |
-| **ProductEnvironment** | product_id, environment_id | Many-to-many: environments are shared across products. |
-| **Environment** | name, color, protected (bool), versioned (bool), auto_rollback (bool, default true), qa_on_deploy (bool), current_version, qa_workflow (repo, workflow, ref), email_to/cc, default_identity_id?, default_port?, default_jump_host_id?, notify_events[], teams_webhook_secret_id? | |
+| **Environment** | product_id, name, color, protected (bool), versioned (bool), auto_rollback (bool, default true), qa_on_deploy (bool), current_version, qa_workflow (repo, workflow, ref), email_to/cc, default_identity_id?, default_port?, default_jump_host_id?, notify_events[], teams_webhook_secret_id? | |
 | **HostVault** | host_id, vault_id | Many-to-many: the vaults a host draws credentials from. |
 | **EnvironmentHost** | environment_id, host_id, role (`app`/`db`/`bastion`/`other`) | Many-to-many. |
 | **App** | environment_id, host_id, name, compose_project, description | "What runs where"; shown on the map. |
@@ -208,6 +210,8 @@ first, then all unlocked vaults.)
 2. If opened from an environment: that environment's default.
 3. Global default: ssh-agent first, then `~/.ssh/id_ed25519`, then `~/.ssh/id_rsa`;
    the username defaults to the local user.
+
+Region never takes part in resolution.
 
 When a host is opened outside any environment, step 2 is skipped. If the host
 belongs to several environments with conflicting defaults, the host must set the
@@ -340,6 +344,7 @@ Other rules:
 - **Map view** per environment: hosts as nodes (role icon, reachability dot),
   apps attached to their host, tunnels as animated dashed edges flowing in the
   direction of traffic (green when up, amber while retrying, red when failed).
+- Host cards show the host's region, and the map has a region filter.
 - **Deploy pipeline view:** per host, a row of step chips that animate as each
   step starts, finishes or fails.
 - Respect "reduce motion".
@@ -376,6 +381,13 @@ centralizes deployments only:
 - Keeps environment locks, live run status, and one team-wide deploy history and
   audit trail.
 - Sends Teams/email notifications and generates AI release notes.
+
+The published manifest carries the environment's product and each host's
+region; the Hub groups environments by product name, ignoring case, under
+"Team (Hub)" when there is none. Both fields are optional, so an older Hub drops
+them and the publish still succeeds. A host shared by several environments
+publishes in every one of them, each with its own row (Hub migrations 9
+`shared_hosts` and 10 `product_region`).
 
 The desktop app connects as a client. Deployments of a Hub-linked environment go
 through `HubRunner`, and everyone sees live runs. SSH, tunnels, vault SSH keys
@@ -435,7 +447,7 @@ Each phase ends usable and demoable.
    Audit), audit trail writer.
 2. **Vaults and keys:** master password, unlock, Keychain cache, secrets, SSH
    keys (pick from `~/.ssh`, import, generate ed25519), identities.
-3. **Products, hosts and environments:** product CRUD, host ↔ vault links, CRUD, many-to-many linking, roles, defaults and
+3. **Products, hosts and environments:** product CRUD, host ↔ vault links, CRUD, one product per environment; environment ↔ host linking, roles, defaults and
    resolution, `~/.ssh/config` import.
 4. **SSH terminal:** sessions, jump hosts, known-hosts / TOFU, local shell tab.
 5. **Tunnels:** L/R/D, auto-reconnect, status, auto-start.
