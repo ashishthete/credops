@@ -1,4 +1,5 @@
 import type { SshConfigMatch, SshConfigTarget } from '../inventory/ssh-config'
+import { hostBecome, hostOd, hostVarsInInventory } from './host-vars'
 import { ALIAS, B64, need } from './quote'
 import type { DeployPlan, PlanHop } from './runner'
 
@@ -13,12 +14,29 @@ const KH_TOKEN = /^(?:\[[A-Za-z0-9.:_-]+\]:\d{1,5}|[A-Za-z0-9][A-Za-z0-9.:_-]*)$
 
 // ---------------------------------------------------------------- inventory
 
+/**
+ * One line per host. When plays span hosts (a release flow), each host also carries its `od` and become password
+ * reference (host-vars.ts) as INI values: `od` is compact JSON in single quotes, which the INI parser reads back as
+ * a dict; neither can hold a quote, a brace pair Jinja would read, or a secret value.
+ */
 export function generateInventory(plan: DeployPlan): string {
   const lines = plan.hosts.map((h) => {
     need(ALIAS.test(h.alias), 'host alias')
-    return `${h.alias} ansible_python_interpreter=auto_silent`
+    const line = `${h.alias} ansible_python_interpreter=auto_silent`
+    const deps = plan.deployments.filter((d) => d.hostId === h.hostId)
+    if (!hostVarsInInventory(plan) || deps.length === 0) return line
+    const vars = [`od=${iniValue(JSON.stringify(hostOd(plan, h, deps)))}`]
+    const become = hostBecome(deps)
+    if (become !== undefined) vars.push(`ansible_become_password=${iniValue(become)}`)
+    return `${line} ${vars.join(' ')}`
   })
   return `[deploy]\n${lines.join('\n')}\n`
+}
+
+/** A single-quoted INI value: no quote, backslash, line break or comment can end or bend it. */
+function iniValue(v: string): string {
+  need(/^[\x20-\x7e]+$/.test(v) && !/['\\]/.test(v) && !/\{[%#]/.test(v), 'inventory value')
+  return `'${v}'`
 }
 
 // ---------------------------------------------------------------- ssh_config

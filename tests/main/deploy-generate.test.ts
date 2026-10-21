@@ -1,12 +1,13 @@
 import { spawnSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 import { matchSshConfig } from '../../src/main/inventory/ssh-config'
-import { generateAnsibleCfg, generateInventory, generateKnownHosts, generatePlaybook, generateSshConfig, knownHostsToken, socketPathFits } from '../../src/main/deploy/generate'
+import { generateAnsibleCfg, generateInventory, generateKnownHosts, generatePlaybook, generateSshConfig, knownHostsToken, socketPathFits, stepList } from '../../src/main/deploy/generate'
 import { b64, lockJson, sanitizeIdent } from '../../src/main/deploy/quote'
-import type { DeployPlan, PlanKind } from '../../src/main/deploy/runner'
-import { COMPOSE_AUTO, COMPOSE_FILE } from '../../src/shared/deploy'
+import type { DeployPlan, PlanDeployment, PlanFlow, PlanKind, PlanStep } from '../../src/main/deploy/runner'
+import { COMPOSE_AUTO, COMPOSE_FILE, ORIGIN_MOVED_MESSAGE } from '../../src/shared/deploy'
 import { MAX_SERVICES } from '../../src/shared/services'
-import { FIX, planFixture, shellWords } from './deploy-helpers'
+import { ENV_NAME, deniedEnvName, type StepAnchor } from '../../src/shared/steps'
+import { FIX, planFixture, shellWords, stepFixture } from './deploy-helpers'
 
 type Task = Record<string, unknown> & { block?: Task[]; rescue?: Task[]; tags?: string[]; no_log?: boolean }
 type Play = Record<string, unknown> & { hosts: string; tasks: Task[]; vars: Record<string, unknown> }
@@ -44,7 +45,7 @@ describe('release playbook', () => {
     expect(ps[0].strategy).toBe('linear')
     expect(steps(ps[0])).toEqual([
       'lock', 'lock',
-      'record', 'backup', 'fetch', 'checkout', 'env', 'pre_hook', 'build', 'up', 'health', 'post_hook', 'tag',
+      'record', 'backup', 'fetch', 'checkout', 'env', 'c_0', 'build', 'up', 'health', 'c_1', 'tag',
       'record', 'fetch', 'checkout', 'build', 'up', 'health', 'tag',
     ])
     expect(steps(ps[1])).toEqual(['lock', 'lock', 'record', 'fetch', 'checkout', 'build', 'up', 'tag'])
@@ -91,14 +92,14 @@ describe('release playbook', () => {
     expect(by('up')).toBe(120)
     expect(by('fetch')).toBe(120)
     expect(by('backup')).toBe(1800)
-    expect(by('pre_hook')).toBe(600)
+    expect(by('c_0')).toBe(600)
   })
 
   it('takes become per docker mode', () => {
     const ps = plays(planFixture())
     const t = (i: number, k: string) => flat(ps[0].tasks).filter((x) => step(x) === k)[i]
     expect(t(0, 'build').become).toBe(true)
-    expect(t(0, 'pre_hook').become).toBe(true)
+    expect(t(0, 'c_0').become).toBe(true)
     expect(t(1, 'up').become).toBe(true)
     expect(flat(ps[1].tasks).find((x) => step(x) === 'build')!.become).toBeUndefined()
     expect(t(0, 'fetch').become).toBeUndefined()
@@ -116,8 +117,10 @@ describe('release playbook', () => {
     expect(build).toContain('tail -n 40')
     const up = cmdOf(flat(ps[0].tasks).find((t) => step(t) === 'up')!)
     expect(dockerWords(up)).toEqual(['docker', 'compose', '-f', FIX.compose, 'up', '-d'])
-    const pre = cmdOf(flat(ps[0].tasks).find((t) => step(t) === 'pre_hook')!)
-    expect(pre).toContain('| base64 -d | bash -e')
+    const pre = cmdOf(flat(ps[0].tasks).find((t) => step(t) === 'c_0')!)
+    expect(pre).toContain('od_p="{{ d.run }}:c_0"')
+    expect(pre).toContain('od_s=$(echo {{ d.steps.c_0.script_b64 | quote }} | base64 -d && printf .) || exit 2')
+    expect(pre).toContain('bash -e -c "$od_s"')
     const backup = cmdOf(flat(ps[0].tasks).find((t) => step(t) === 'backup')!)
     expect(backup).not.toContain('. ./.env')
     expect(backup).not.toContain('set -a')
@@ -226,6 +229,54 @@ describe('shell syntax', () => {
         expect(r.stderr, `${kind}: ${cmd}`).toBe('')
         expect(r.status).toBe(0)
       }
+  })
+})
+
+describe('origin check (skipped services)', () => {
+  const H = 'c'.repeat(40)
+  const withHead = (head: string | null | undefined, kind: PlanKind = 'release'): DeployPlan => {
+    const p = planFixture({ kind })
+    return { ...p, deployments: p.deployments.map((d, i) => (i === 0 ? { ...d, expectOriginHead: head } : d)) }
+  }
+
+  it('runs only for a checkout with skips, after the fetch and before the checkout, as part of the fetch step', () => {
+    const [p] = plays(withHead(H))
+    const [blk] = p.tasks.filter((t) => t.block)
+    const names = flat(blk.block!).map((t) => t.name as string)
+    const at = names.findIndex((n) => n.startsWith('origin check '))
+    expect(at).toBeGreaterThan(names.findIndex((n) => n.startsWith('fetch ')))
+    expect(at).toBeLessThan(names.findIndex((n) => n.startsWith('checkout ')))
+    const t = flat(blk.block!)[at]
+    expect(step(t)).toBe('fetch')
+    expect(cmdOf(t)).toBe(
+      [
+        'B={{ d.branch | quote }}',
+        'E={{ d.origin_head | quote }}',
+        'h=$(git rev-parse -q --verify "refs/remotes/origin/$B^{commit}" 2>/dev/null)',
+        `if [ "$h" != "$E" ]; then echo '${ORIGIN_MOVED_MESSAGE}' >&2; exit 1; fi`,
+      ].join('\n'),
+    )
+    expect(ORIGIN_MOVED_MESSAGE).toBe('origin moved since preview, preview again')
+    // the head is a var, never shell text
+    expect((blk.vars as { d: Record<string, unknown> }).d.origin_head).toBe(H)
+    expect(cmdOf(t)).not.toContain(H)
+    const r = spawnSync('/bin/bash', ['-n'], { input: cmdOf(t).replace(/\{\{[^}]*\}\}/g, 'x'), encoding: 'utf8' })
+    expect(r.status).toBe(0)
+    // the other checkout has no skips: no check, no var
+    const other = p.tasks.filter((x) => x.block)[1]
+    expect(flat(other?.block ?? []).some((x) => (x.name as string).startsWith('origin check'))).toBe(false)
+  })
+
+  it('a release without skips is byte-identical to one that never heard of the check', () => {
+    expect(generatePlaybook(withHead(null))).toBe(generatePlaybook(planFixture()))
+    expect(generatePlaybook(withHead(undefined))).toBe(generatePlaybook(planFixture()))
+    expect(generatePlaybook(withHead(null))).not.toContain('origin_head')
+  })
+
+  it('refuses a head that is not a sha, or one on a plan that is not a release', () => {
+    expect(() => generatePlaybook(withHead('main'))).toThrow()
+    expect(() => generatePlaybook(withHead(`${H}; rm -rf /`))).toThrow()
+    expect(() => generatePlaybook(withHead(H, 'rollback'))).toThrow()
   })
 })
 
@@ -592,6 +643,10 @@ describe('fix round 1', () => {
     const pf = every(plays(planFixture({ kind: 'preflight' }))[0].tasks).map(({ t }) => cmdOf(t)).join('\n')
     expect(pf).toContain('OD-PF commits unknown')
     expect(pf).toContain('if [ "$ok" = 0 ]; then echo "OD-PF commits unknown"; else')
+    // origin's head, read-only, next to the list: the one fact a skip of an unchanged service trusts
+    // the remote-tracking ref in full: a fetched tag named origin/<branch> must not shadow it
+    expect(pf).toContain('o=$(git rev-parse -q --verify "refs/remotes/origin/$B^{commit}" 2>/dev/null)')
+    expect(pf).toContain('echo "OD-PF commits log_b64=$out origin_head=$o"')
   })
 
   it('ls-remote failure is reported as unknown, not as no tag', () => {
@@ -637,7 +692,7 @@ describe('fix round 1', () => {
   it('no_log only where a secret value flows; become tasks stay visible', () => {
     const plan = planFixture()
     const p = plays(plan)[0]
-    for (const k of ['build', 'up', 'pre_hook', 'post_hook']) for (const t of flat(p.tasks).filter((x) => step(x) === k)) expect(t.no_log, k).toBeUndefined()
+    for (const k of ['build', 'up', 'c_0', 'c_1']) for (const t of flat(p.tasks).filter((x) => step(x) === k)) expect(t.no_log, k).toBeUndefined()
     expect(flat(p.tasks).find((t) => step(t) === 'env')!.no_log).toBe(true)
     expect(p.vars.ansible_become_password).toContain('s.become_1')
     const pfs = every(plays({ ...plan, kind: 'preflight' })[0].tasks).map(({ t }) => t)
@@ -877,5 +932,402 @@ describe('compose file auto (row 11)', () => {
     expect(COMPOSE_FILE.test(COMPOSE_AUTO)).toBe(true)
     expect(COMPOSE_AUTO).toBe('')
     for (const bad of ['-f', '/etc/x', '../x', 'a b', '{{x}}']) expect(COMPOSE_FILE.test(bad), bad).toBe(false)
+  })
+})
+
+describe('custom steps', () => {
+  const ANCHORS: StepAnchor[] = ['before_fetch', 'after_checkout', 'before_build', 'after_build', 'after_up', 'after_health', 'after_tag']
+  /** dep1 (backup, env, health, sudo-password docker) without hooks, with the given steps. */
+  const withSteps = (steps: PlanStep[], over: Partial<DeployPlan> = {}, dep: Partial<PlanDeployment> = {}): DeployPlan => {
+    const plan = planFixture(over)
+    plan.deployments[0] = { ...plan.deployments[0], preHookB64: null, postHookB64: null, steps, ...dep }
+    return plan
+  }
+  const dep1 = (plan: DeployPlan): Task & { vars: { d: Record<string, any> } } =>
+    plays(plan)[0].tasks.find((t) => t.name === 'deployment dep1') as never
+  const task = (plan: DeployPlan, key: string): Task => flat(dep1(plan).block!).find((t) => step(t) === key)!
+  const shellOf = (t: Task) => t['ansible.builtin.shell'] as { cmd: string; chdir?: string; stdin?: string; stdin_add_newline?: boolean }
+
+  it('puts a step at each anchor in its slot, in the order the step list gives', () => {
+    const plan = withSteps(ANCHORS.map((a, i) => stepFixture(i, a)))
+    expect(flat(dep1(plan).block!).map(step)).toEqual([
+      'record', 'backup', 'c_0', 'fetch', 'checkout', 'c_1', 'env', 'c_2', 'build', 'c_3', 'up', 'c_4', 'health', 'c_5', 'tag', 'c_6',
+    ])
+    const list = stepList('release', plan.deployments).get(plan.deployments[0].runId)!
+    expect(list.map((s) => s.key)).toEqual(flat(dep1(plan).block!).map(step))
+    expect(list.find((s) => s.key === 'c_2')).toEqual({ key: 'c_2', kind: 'custom', label: 'step2' })
+    expect(list[0]).toEqual({ key: 'record', kind: 'record', label: 'Record' })
+    // health is one entry however many URLs the playbook checks
+    const two = withSteps([], {}, { urls: [{ url: 'https://a.example.com/h', from: 'mac' }, { url: 'https://b.example.com/h', from: 'mac' }] })
+    expect(stepList('release', two.deployments).get(two.deployments[0].runId)!.filter((s) => s.kind === 'health')).toHaveLength(1)
+  })
+
+  it('a rollback runs only the steps marked alsoOnRollback, at their anchors', () => {
+    const steps = ANCHORS.map((a, i) => stepFixture(i, a, {}, { alsoOnRollback: i % 2 === 0 }))
+    const plan = withSteps(steps, { kind: 'rollback' })
+    expect(flat(dep1(plan).block!).map(step)).toEqual(['c_0', 'rb_checkout', 'rb_env', 'c_2', 'rb_build', 'rb_up', 'c_4', 'rb_tag', 'c_6'])
+    expect(Object.keys(dep1(plan).vars.d.steps)).toEqual(['c_0', 'c_2', 'c_4', 'c_6'])
+    expect(stepList('rollback', plan.deployments).get(plan.deployments[0].runId)!.map((s) => s.key)).toEqual(flat(dep1(plan).block!).map(step))
+    // preflight and version run no step, so they carry none
+    for (const kind of ['preflight', 'version'] as const) expect(generatePlaybook(withSteps(steps, { kind }))).not.toContain('script_b64')
+  })
+
+  it('names a step task by its key, streams it as c_<n>, and takes timeout, chdir and sudo from the step', () => {
+    const plan = withSteps([
+      stepFixture(0, 'after_up', { sudo: 'docker', timeoutSec: 42, cwd: '/srv/apps/alpha1/tools' }),
+      stepFixture(1, 'after_up', { sudo: 'yes' }),
+      stepFixture(2, 'after_up', { sudo: 'no' }),
+    ])
+    const t0 = task(plan, 'c_0')
+    expect(t0.name).toBe('c_0 dep1')
+    expect(t0.timeout).toBe(42)
+    expect(t0.when).toBe('not (od_failed | default(false))')
+    expect(shellOf(t0).chdir).toBe('/srv/apps/alpha1/tools')
+    expect(shellOf(t0).cmd).toContain('od_p="{{ d.run }}:c_0"')
+    expect(t0.become).toBe(true)
+    expect(task(plan, 'c_1').become).toBe(true)
+    expect(task(plan, 'c_2').become).toBeUndefined()
+    expect(shellOf(task(plan, 'c_2')).chdir).toBe('{{ d.repo }}')
+    // docker sudo follows the deployment's docker mode
+    const plain = plays(withSteps([stepFixture(0, 'after_up')], {}, { docker: 'plain' }))[0]
+    expect(flat(plain.tasks).find((t) => step(t) === 'c_0')!.become).toBeUndefined()
+  })
+
+  it('a step that continues on failure never fails the host and reports OD-STEP; so does any after_tag step', () => {
+    const plan = withSteps([stepFixture(0, 'after_up', { onFailure: 'continue' }), stepFixture(1, 'after_up'), stepFixture(2, 'after_tag')])
+    const c0 = task(plan, 'c_0')
+    expect(c0.failed_when).toBe(false)
+    // on stdout, and as a stream line the log tap reads even under no_log: only the marker and rc
+    expect(shellOf(c0).cmd).toContain(`if [ "$rc" -ne 0 ]; then echo "OD-STEP rc=$rc"; printf '%s\\t%s\\n' "$od_p" "OD-STEP rc=$rc" >> "$od_l"; fi`)
+    expect(task(plan, 'c_1').failed_when).toBeUndefined()
+    expect(shellOf(task(plan, 'c_1')).cmd).not.toContain('OD-STEP')
+    expect(task(plan, 'c_2').failed_when).toBe(false)
+  })
+
+  it('when changed and when paths skip with OD-SKIP when nothing changed since the base, globs carried as base64', () => {
+    const base = 'f'.repeat(40)
+    const plan = withSteps(
+      [stepFixture(0, 'before_build', { when: { kind: 'changed' } }), stepFixture(1, 'before_build', { when: { kind: 'paths', paths: ['db/migrations/*', 'package.json'] } }), stepFixture(2, 'before_build')],
+      {},
+      { whenBase: base },
+    )
+    const d = dep1(plan).vars.d.steps
+    expect(d.c_0).toEqual({ script_b64: b64('echo step 0'), base })
+    expect(d.c_1).toEqual({ script_b64: b64('echo step 1'), base, paths_b64: b64('db/migrations/*\npackage.json') })
+    expect(d.c_2).toEqual({ script_b64: b64('echo step 2') })
+    const changed = shellOf(task(plan, 'c_0')).cmd
+    expect(changed).toContain('od_b={{ d.steps.c_0.base | quote }}')
+    expect(changed).toContain('rev-parse HEAD')
+    expect(changed).toContain(`echo "OD-SKIP"; printf '%s\\t%s\\n' "$od_p" "OD-SKIP" >> "$od_l"; exit 0`)
+    // a check git cannot make says so, and the step runs
+    expect(changed).toContain(`printf '%s\\t%s\\n' "$od_p" "when check unavailable, running step" >> "$od_l"`)
+    // dep1 runs docker under sudo, where git needs the repo marked safe
+    expect(changed).toContain('git -c safe.directory={{ d.repo | quote }} -C {{ d.repo | quote }} rev-parse HEAD')
+    const paths = shellOf(task(plan, 'c_1')).cmd
+    expect(paths).toContain('echo {{ d.steps.c_1.paths_b64 | quote }} | base64 -d')
+    expect(paths).toContain('od_a+=(":(glob)$od_g")')
+    expect(paths).toContain('diff --quiet "$od_b" HEAD -- "${od_a[@]}"; then echo "OD-SKIP";')
+    // the skip check runs once the log is set up and before the body, outside the streamed subshell
+    expect(paths.indexOf('od_l=')).toBeLessThan(paths.indexOf('OD-SKIP'))
+    expect(paths.indexOf('OD-SKIP')).toBeLessThan(paths.indexOf('\n(\n'))
+    expect(JSON.stringify(dep1(plan))).not.toContain('db/migrations')
+    expect(shellOf(task(plan, 'c_2')).cmd).not.toContain('OD-SKIP')
+    // no base: the step always counts as changed
+    expect(dep1(withSteps([stepFixture(0, 'before_build', { when: { kind: 'changed' } })])).vars.d.steps.c_0.base).toBe('')
+  })
+
+  const secretPlan = () => {
+    const p = withSteps([
+      stepFixture(0, 'after_up', { script: `curl -H "x: $API_TOKEN" '{{ 9*9 }}' $(whoami)`, secrets: [{ envName: 'API_TOKEN', secretId: 'sec-9' }] }, {
+        secretKeys: [{ envName: 'API_TOKEN', key: 'step_1_0' }],
+        paramKeys: [{ envName: 'OD_PARAM_REGION', valueB64: b64('eu-west-1;rm -rf /') }],
+      }),
+      stepFixture(1, 'after_up', { run: 'compose-exec', service: 'api', script: 'php artisan migrate', secrets: [{ envName: 'DB_PASSWORD', secretId: 'sec-8' }] }, {
+        secretKeys: [{ envName: 'DB_PASSWORD', key: 'step_1_1' }],
+      }),
+      stepFixture(2, 'after_up', {}, { paramKeys: [{ envName: 'OD_PARAM_N', valueB64: b64('7') }] }),
+    ])
+    p.secretRefs = { ...p.secretRefs, step_1_0: { secretId: 'sec-9' }, step_1_1: { secretId: 'sec-8' } }
+    return p
+  }
+
+  it('hands secrets and params to a step on stdin by reference, never in environment or argv', () => {
+    const plan = secretPlan()
+    const raw = generatePlaybook(plan)
+    expect(raw).not.toContain('{{ 9*9 }}')
+    expect(raw).not.toContain('$(whoami)')
+    expect(raw).not.toContain('php artisan')
+    expect(raw).not.toContain('eu-west-1')
+    expect(raw).not.toContain('sec-9')
+    expect(raw).not.toMatch(/"environment"/)
+    const c0 = task(plan, 'c_0')
+    expect(shellOf(c0).stdin).toBe('API_TOKEN={{ s.step_1_0 }}\nOD_PARAM_REGION={{ d.steps.c_0.params[0] }}\n')
+    expect(shellOf(c0).stdin_add_newline).toBe(false)
+    expect(c0.no_log).toBe(true)
+    expect(dep1(plan).vars.d.steps.c_0.params).toEqual([b64('eu-west-1;rm -rf /')])
+    // a step name or env name appears only in its stdin line
+    for (const name of ['API_TOKEN', 'DB_PASSWORD', 'OD_PARAM_REGION']) expect(raw.split(name).length - 1, name).toBe(1)
+    const c1 = shellOf(task(plan, 'c_1')).cmd
+    expect(dockerWords(c1.slice(c1.lastIndexOf('docker compose')))).toEqual(['docker', 'compose', '-f', FIX.compose, 'exec', '-T', '${od_e[@]}', 'api', 'sh', '-c', '$od_s'])
+    expect(c1).not.toMatch(/\| *docker/)
+    // a step with params only is not hidden from the log: no secret flows through it
+    expect(task(plan, 'c_2').no_log).toBeUndefined()
+    expect(shellOf(task(plan, 'c_2')).cmd).toContain('export "$od_k=${od_x%.}"')
+  })
+
+  it('every step body parses with bash -n (parse only, nothing runs)', () => {
+    const plan = secretPlan()
+    plan.deployments[0].steps.push(
+      stepFixture(3, 'after_build', { onFailure: 'continue', when: { kind: 'changed' } }),
+      stepFixture(4, 'after_checkout', { when: { kind: 'paths', paths: ['a/**', 'b.txt'] } }),
+    )
+    plan.deployments[0].whenBase = 'a'.repeat(40)
+    for (const kind of ['release', 'rollback'] as PlanKind[]) {
+      const p = { ...plan, kind, deployments: plan.deployments.map((d) => ({ ...d, steps: d.steps.map((s) => ({ ...s, alsoOnRollback: true })) })) }
+      const bodies = flat(plays(p)[0].tasks).filter((t) => /^c_\d+$/.test(step(t)))
+      expect(bodies).toHaveLength(5)
+      for (const t of bodies) {
+        const cmd = cmdOf(t).replace(/\{\{[^}]*\}\}/g, 'x')
+        const r = spawnSync('/bin/bash', ['-n'], { input: cmd, encoding: 'utf8' })
+        expect(r.stderr, cmd).toBe('')
+        expect(r.status).toBe(0)
+      }
+      expect(generatePlaybook(p).replace(/\{\{[^}]*\}\}/g, '')).not.toMatch(/\{[%#]/)
+    }
+  })
+
+  it('no variable the generator sets in a step body can be a step env name (a secret named E or S stays out of argv)', () => {
+    const plan = secretPlan()
+    plan.deployments[0].steps[1].secretKeys = [{ envName: 'E', key: 'step_1_1' }, { envName: 'S', key: 'step_1_0' }]
+    plan.deployments[0].steps[1].step.secrets = [{ envName: 'E', secretId: 'sec-8' }, { envName: 'S', secretId: 'sec-9' }]
+    plan.deployments[0].steps.push(stepFixture(3, 'after_build', { onFailure: 'continue', when: { kind: 'paths', paths: ['a/*'] } }), stepFixture(4, 'after_checkout', { when: { kind: 'changed' } }))
+    plan.deployments[0].whenBase = 'a'.repeat(40)
+    const bodies = flat(plays(plan)[0].tasks).filter((t) => /^c_\d+$/.test(step(t))).map(cmdOf)
+    expect(bodies).toHaveLength(5)
+    for (const cmd of bodies) {
+      // assignments (`x=`, `x+=`, `IFS= read`), read targets and export targets other than the reader's own "$od_k"
+      const assigned = new Set([
+        ...[...cmd.matchAll(/(?:^|[\s;(])([A-Za-z_][A-Za-z0-9_]*)\+?=/gm)].map((m) => m[1]),
+        ...[...cmd.matchAll(/\bread -r ([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]),
+      ])
+      expect(assigned.size).toBeGreaterThan(3)
+      for (const v of assigned) expect(ENV_NAME.test(v) && !deniedEnvName(v), `${v} in ${cmd}`).toBe(false)
+    }
+    const c1 = shellOf(task(plan, 'c_1'))
+    expect(c1.stdin).toBe('E={{ s.step_1_1 }}\nS={{ s.step_1_0 }}\n')
+    expect(c1.cmd).toContain('"${od_e[@]}" api sh -c "$od_s"')
+    expect(c1.cmd).not.toMatch(/\$\{?[ES]\b/)
+  })
+
+  it('a no_log step still reports OD-SKIP and OD-STEP as stream lines, with no value in them', () => {
+    const plan = secretPlan()
+    plan.deployments[0].steps[0].step.onFailure = 'continue'
+    plan.deployments[0].steps[0].step.when = { kind: 'changed' }
+    plan.deployments[0].whenBase = 'a'.repeat(40)
+    const t = task(plan, 'c_0')
+    expect(t.no_log).toBe(true)
+    const lines = cmdOf(t).split('\n').filter((l) => l.includes('>> "$od_l"') && !l.includes('PIPESTATUS'))
+    expect(lines.length).toBe(3)
+    for (const l of lines) {
+      const printed = [...l.matchAll(/printf '%s\\t%s\\n' "\$od_p" "([^"]*)" >> "\$od_l"/g)].map((m) => m[1])
+      expect(printed.length).toBe(1)
+      expect(['OD-SKIP', 'OD-STEP rc=$rc', 'when check unavailable, running step']).toContain(printed[0])
+    }
+  })
+
+  it('rejects a when other than always at before_fetch, where the new commit is not fetched yet', () => {
+    const plan = withSteps([stepFixture(0, 'before_fetch', { when: { kind: 'changed' } })], {}, { whenBase: 'a'.repeat(40) })
+    expect(() => generatePlaybook(plan)).toThrow(/before_fetch/)
+    expect(() => generatePlaybook(withSteps([stepFixture(0, 'before_fetch')]))).not.toThrow()
+  })
+
+  it('rejects step data the playbook could not carry safely', () => {
+    const bad = (mut: (p: DeployPlan) => void) => {
+      const p = secretPlan()
+      mut(p)
+      expect(() => generatePlaybook(p)).toThrow()
+    }
+    const s0 = (p: DeployPlan) => p.deployments[0].steps[0]
+    bad((p) => { p.deployments[0].preHookB64 = b64('echo hi') })
+    bad((p) => { s0(p).key = 'c_x' })
+    bad((p) => { p.deployments[0].steps[1].key = 'c_0' })
+    bad((p) => { s0(p).anchor = null })
+    bad((p) => { s0(p).anchor = 'after_lunch' as StepAnchor })
+    bad((p) => { s0(p).secretKeys[0].envName = 'LD_PRELOAD' })
+    bad((p) => { s0(p).secretKeys[0].envName = 'api token' })
+    bad((p) => { s0(p).secretKeys[0].key = 'step_9' })
+    bad((p) => { s0(p).secretKeys[0].key = 'a.b' })
+    bad((p) => { s0(p).paramKeys[0].envName = 'REGION' })
+    bad((p) => { s0(p).paramKeys[0].envName = 'API_TOKEN' })
+    bad((p) => { s0(p).paramKeys[0].valueB64 = '$(id)' })
+    bad((p) => { s0(p).step.timeoutSec = 5 })
+    bad((p) => { s0(p).step.cwd = '/srv/a b' })
+    bad((p) => { s0(p).step.name = 'a b' })
+    bad((p) => { s0(p).step.when = { kind: 'paths', paths: ['$(id)'] } })
+    bad((p) => { p.deployments[0].steps[1].step.service = 'api;id' })
+    bad((p) => { p.deployments[0].whenBase = 'HEAD' })
+    bad((p) => { p.deployments[0].steps = Array.from({ length: 21 }, (_, i) => stepFixture(i, 'after_up')) })
+  })
+})
+
+describe('release flow stages', () => {
+  // backend (dep1, od-1) -> migrate (a step on backend's checkout) -> frontend (dep3, od-2) || fastapi (dep2, od-1)
+  const flowPlan = (over: Partial<PlanFlow> = {}): DeployPlan => {
+    const base = planFixture()
+    const [d1, d2, d3] = base.deployments
+    d1.preHookB64 = null
+    d1.postHookB64 = null
+    d1.services = ['backend']
+    d2.services = ['fastapi']
+    d3.services = ['frontend']
+    const migrate = stepFixture(21, 'after_up', { name: 'migrate', script: 'echo migrate', secrets: [{ envName: 'DB_PASS', secretId: 'sec-db' }] }, {
+      anchor: null,
+      secretKeys: [{ envName: 'DB_PASS', key: 'FLOW_1_0' }],
+    })
+    return {
+      ...base,
+      secretRefs: { ...base.secretRefs, FLOW_1_0: { secretId: 'sec-db' } },
+      flow: {
+        stages: [
+          { kind: 'services', parts: [{ runId: d1.runId, services: ['backend'], urls: [0] }] },
+          { kind: 'step', runId: d1.runId, step: migrate },
+          { kind: 'services', parts: [{ runId: d3.runId, services: ['frontend'], urls: [] }, { runId: d2.runId, services: ['fastapi'], urls: [0] }] },
+        ],
+        onFailure: 'stop-all',
+        ...over,
+      },
+    }
+  }
+  /** od_step tags of a play's leaf tasks; untagged tasks (the gate, the stage marker) show their name. */
+  const tagsOf = (p: Play): string[] => flat(p.tasks).map((t) => (t.tags ?? []).find((x) => x.startsWith('od_step='))?.slice(8) ?? `<${String(t.name)}>`)
+  const blocks = (p: Play): Task[] => p.tasks.filter((t) => t.block)
+
+  it('no flow: the release playbook is the per-host one, linear and without host vars in the inventory', () => {
+    const ps = plays(planFixture())
+    expect(ps.map((p) => p.strategy)).toEqual(['linear', 'linear'])
+    expect(generateInventory(planFixture())).not.toContain(' od=')
+  })
+
+  it('gives a prepare play, one play per stage in flow order over its hosts, and a tag play', () => {
+    const ps = plays(flowPlan())
+    expect(ps.map((p) => p.name)).toEqual(['release prepare', 'release stage 0', 'release stage 1', 'release stage 2', 'release tag'])
+    expect(ps.map((p) => p.hosts)).toEqual(['od-1:od-2', 'od-1', 'od-1', 'od-1:od-2', 'od-1:od-2'])
+    for (const p of ps) {
+      expect(p.gather_facts).toBe(false)
+      expect(Object.keys(p.vars)).toEqual(['s'])
+    }
+    // prepare: prep and lock (both tagged lock) per host, then every checkout's prepare; no up, no tag
+    expect(ps[0].tasks.filter((t) => (t.tags ?? []).includes('od_step=lock')).map((t) => t.when)).toEqual([
+      "inventory_hostname == 'od-1'",
+      "inventory_hostname == 'od-1'",
+      "inventory_hostname == 'od-2'",
+      "inventory_hostname == 'od-2'",
+    ])
+    const t0 = tagsOf(ps[0])
+    expect(t0.filter((x) => x === 'checkout')).toHaveLength(3)
+    expect(t0.filter((x) => x === 'build')).toHaveLength(3)
+    expect(t0.some((x) => x === 'up' || x === 'health' || x === 'tag')).toBe(false)
+    expect(t0.at(-1)).toBe('<flow play 0 done>')
+    // stage 0: backend's up and health only
+    expect(tagsOf(ps[1])).toEqual(['<flow gate 1>', 'up', 'health', '<flow play 1 done>'])
+    // stage 1: the step alone, on backend's host
+    expect(tagsOf(ps[2])).toEqual(['<flow gate 2>', 'c_21', '<flow play 2 done>'])
+    expect(blocks(ps[2]).map((b) => b.when)).toEqual(["inventory_hostname == 'od-1'"])
+    // stage 2: frontend on od-2 and fastapi on od-1, each bound to its host
+    const b3 = blocks(ps[3])
+    expect(b3.map((b) => b.name)).toEqual(['deployment dep3', 'deployment dep2'])
+    expect(b3.map((b) => b.when)).toEqual(["inventory_hostname == 'od-2'", "inventory_hostname == 'od-1'"])
+    expect(tagsOf(ps[3]).filter((x) => x === 'up')).toHaveLength(2)
+    expect(tagsOf(ps[3]).some((x) => x === 'tag')).toBe(false)
+    // tag: behind a gate, every checkout's tag, no marker after it
+    expect(tagsOf(ps[4])).toEqual(['<flow gate 4>', 'tag', 'tag', 'tag'])
+    expect(blocks(ps[4]).map((b) => b.name)).toEqual(['deployment dep1', 'deployment dep2', 'deployment dep3'])
+    // every block and per-host task names its host
+    for (const p of ps) for (const t of p.tasks) if (!String(t.name).startsWith('flow ')) expect(t.when).toMatch(/^inventory_hostname == 'od-\d+'$/)
+  })
+
+  it('ups only the stage\'s services and checks only its urls', () => {
+    const ps = plays(flowPlan())
+    const ups = ps.flatMap((p) => flat(p.tasks).filter((t) => (t.tags ?? []).includes('od_step=up')))
+    expect(ups.map((t) => dockerWords(cmdOf(t)).slice(-2))).toEqual([['--no-deps', 'backend'], ['--no-deps', 'frontend'], ['--no-deps', 'fastapi']])
+    const health = (p: Play) => flat(p.tasks).filter((t) => (t.tags ?? []).includes('od_step=health'))
+    expect(ps.map((p) => health(p).length)).toEqual([0, 1, 0, 1, 0])
+  })
+
+  it('the gate stops a play when a host did not finish the one it was last in', () => {
+    const ps = plays(flowPlan())
+    const clause = (a: string, k: number) => `(hostvars['${a}'].od_stage | default(-1)) != ${k} or (hostvars['${a}'].od_failed | default(false))`
+    expect(ps[1].tasks[0]).toEqual({
+      name: 'flow gate 1',
+      'ansible.builtin.fail': { msg: 'OpsDeck flow stopped: a host did not finish an earlier stage' },
+      when: `${clause('od-1', 0)} or ${clause('od-2', 0)}`,
+    })
+    // od-2 sat stages 0 and 1 out: it is still held to the prepare play
+    expect(ps[3].tasks[0].when).toBe(`${clause('od-1', 2)} or ${clause('od-2', 0)}`)
+    expect(ps[4].tasks[0].when).toBe(`${clause('od-1', 3)} or ${clause('od-2', 3)}`)
+    for (const p of ps.slice(1)) expect(p.tasks[0].tags).toBeUndefined()
+  })
+
+  it('stop-all runs each play linear with any_errors_fatal; continue-other-hosts runs it free without', () => {
+    const stop = plays(flowPlan())
+    expect(stop.every((p) => p.strategy === 'linear' && p.any_errors_fatal === true)).toBe(true)
+    const cont = plays(flowPlan({ onFailure: 'continue-other-hosts' }))
+    expect(cont.every((p) => p.strategy === 'free' && !('any_errors_fatal' in p))).toBe(true)
+  })
+
+  it('the playbook parses and every command passes bash -n (parse only, nothing runs)', () => {
+    for (const onFailure of ['stop-all', 'continue-other-hosts'] as const)
+      for (const p of plays(flowPlan({ onFailure })))
+        for (const { t } of every(p.tasks)) {
+          const cmd = cmdOf(t).replace(/\{\{[^}]*\}\}/g, 'x')
+          if (!cmd) continue
+          const r = spawnSync('/bin/bash', ['-n'], { input: cmd, encoding: 'utf8' })
+          expect(r.stderr, cmd).toBe('')
+          expect(r.status).toBe(0)
+        }
+  })
+
+  it('the flow step reads its secret from OPSDECK_SECRETS, never inline', () => {
+    const text = generatePlaybook(flowPlan())
+    expect(text).toContain('FLOW_1_0')
+    expect(text).not.toContain('sec-db')
+    const p1 = plays(flowPlan())[2]
+    const b = blocks(p1)[0] as Task & { vars: { d: { steps: Record<string, unknown> } } }
+    expect(Object.keys(b.vars.d.steps)).toContain('c_21')
+    for (const { t } of every(p1.tasks)) expect(t.environment ?? {}).not.toHaveProperty('DB_PASS')
+  })
+
+  it('the inventory carries od and become per host, as references only', () => {
+    const plan = flowPlan()
+    const inv = generateInventory(plan)
+    const line = (alias: string) => inv.split('\n').find((l) => l.startsWith(`${alias} `))!
+    const od = (alias: string) => JSON.parse(/ od='([^']*)'/.exec(line(alias))![1]) as Record<string, unknown>
+    expect(od('od-1')).toEqual({ rel: FIX.releaseId, env: 'prod_east', lock_repos: [`${FIX.repo}1`, `${FIX.repo}2`], lock_b64: b64(lockJson(plan)), version: 'v1.2.3' })
+    expect(od('od-2').lock_repos).toEqual([`${FIX.repo}3`])
+    expect(line('od-1')).toContain("ansible_become_password='{{ (s.become_1 | b64decode) if s.become_1 is defined else omit }}'")
+    expect(line('od-2')).not.toContain('ansible_become_password')
+    // every templated value is a {{ }} reference; nothing else templated, no secret id or value
+    for (const m of inv.matchAll(/\{[{%#]/g)) expect(m[0]).toBe('{{')
+    expect(inv).not.toContain('sec-1')
+    expect(inv).not.toContain('sec-db')
+  })
+
+  it('rejects a flow that does not partition each run, or names an unknown run', () => {
+    const bad = (f: (p: DeployPlan) => void) => {
+      const p = flowPlan()
+      f(p)
+      expect(() => generatePlaybook(p)).toThrow()
+    }
+    bad((p) => { p.flow!.stages.splice(2, 1) }) // dep2 and dep3 never up
+    bad((p) => { (p.flow!.stages[0] as { parts: { urls: number[] }[] }).parts[0].urls = [] }) // dep1's url unchecked
+    bad((p) => { (p.flow!.stages[0] as { parts: { runId: string }[] }).parts[0].runId = 'nope' })
+    bad((p) => { (p.flow!.stages[1] as { step: PlanStep }).step.key = 'c_1;id' })
+    bad((p) => { p.kind = 'rollback' })
+  })
+
+  it('the step list follows the flow: prepare, then stage by stage, the tag last', () => {
+    const plan = flowPlan()
+    const list = stepList('release', plan.deployments, plan.flow)
+    expect(list.get(plan.deployments[0].runId)!.map((x) => x.key)).toEqual(['record', 'backup', 'fetch', 'checkout', 'env', 'build', 'up', 'health', 'c_21', 'tag'])
   })
 })

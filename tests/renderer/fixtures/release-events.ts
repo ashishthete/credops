@@ -150,7 +150,7 @@ export function playbookOf(detail: ReleaseDetail, health: Record<string, number>
             block: r.steps.flatMap((s) =>
               s.kind === 'health'
                 ? Array.from({ length: health[r.id] ?? 1 }, (_, n) => ({ name: `health ${r.deploymentName} ${n}`, tags: tags('health', r.id) }))
-                : [{ name: `${s.kind} ${r.deploymentName}`, tags: tags(s.kind, r.id) }],
+                : [{ name: `${s.key ?? s.kind} ${r.deploymentName}`, tags: tags(s.key ?? s.kind, r.id) }],
             ),
             rescue: [{ name: `mark failed ${r.deploymentName}`, 'ansible.builtin.set_fact': { od_failed: true } }],
           })),

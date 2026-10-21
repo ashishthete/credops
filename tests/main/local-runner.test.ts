@@ -2,11 +2,11 @@ import { mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { LocalRunner, nodeFs, nodeSpawn, type LocalRunnerDeps, type RunChild, type RunSpawn } from '../../src/main/deploy/local-runner'
-import type { RunSecrets } from '../../src/main/deploy/runner'
+import { LocalRunner, nodeFs, nodeSpawn, totalTimeoutSec, type LocalRunnerDeps, type RunChild, type RunSpawn } from '../../src/main/deploy/local-runner'
+import type { PlanDeployment, RunSecrets } from '../../src/main/deploy/runner'
 import { ToolingError } from '../../src/main/deploy/tooling'
 import { CANCEL_GRACE_MS, KILL_GRACE_MS, type RunEventBody } from '../../src/shared/deploy'
-import { FakeAnsible, TOOLS_OK, fakeAgent, fakePrepare, fakeTap, fixtureLines, memFs, planFixture } from './deploy-helpers'
+import { FakeAnsible, TOOLS_OK, fakeAgent, fakePrepare, fakeTap, fixtureLines, memFs, planFixture, depFixture, stepFixture } from './deploy-helpers'
 
 const R2 = '0190a1b2-c3d4-7e5f-8a6b-000000000002'
 const SECRETS: RunSecrets = { values: { env_1: 'sekret-AAA-1', become_1: 'pw-BBB-2' }, known: ['sekret-AAA-1', 'pw-BBB-2'] }
@@ -82,7 +82,7 @@ describe('LocalRunner', () => {
     const t = setup()
     t.ansible.stdout = fixtureLines('release-ok.jsonl')
     const out = await t.runner.start(planFixture(), SECRETS).done
-    expect(out).toMatchObject({ exitCode: 0, signal: null, cancelled: false, failedDeploymentRunIds: [], reachedCheckout: [R2] })
+    expect(out).toMatchObject({ exitCode: 0, signal: null, cancelled: false, failedDeploymentRunIds: [], reachedCheckout: [R2], reachedUp: [R2] })
     expect(out.commits[R2]).toEqual({ previous: 'b'.repeat(40), deployed: 'd'.repeat(40) })
     const started = t.events.filter((e) => e.type === 'step.started').map((e) => (e as { stepId: string }).stepId)
     expect(started[0]).toBe('host:host-od-1:lock')
@@ -221,6 +221,42 @@ describe('LocalRunner', () => {
     expect(t.tap.taps.every((x) => x.stopped)).toBe(true)
   })
 
+  it('masks every base64 form of a secret on the tap, in ansible lines, in checks and in errors', async () => {
+    const secret = 'tok-Q7x9!zK'
+    const forms = [secret, Buffer.from(secret).toString('base64'), Buffer.from(`${secret}\n`).toString('base64'), Buffer.from(secret).subarray(0, 9).toString('base64')]
+    const secrets: RunSecrets = { values: { env_1: secret }, known: [secret] }
+    const t = setup()
+    t.ansible.hang = true
+    t.ansible.stderr = forms.map((f) => `ansible says ${f}`)
+    vi.useFakeTimers()
+    const h = t.runner.start(planFixture(), secrets)
+    await until(() => t.tap.taps.length === 2 && t.ansible.calls.length === 1)
+    for (const f of forms) t.tap.taps[0].onLine(`${R2}:c_0\tvalue ${f} end`)
+    t.runner.cancel(h.runId)
+    await h.done
+    const tapped = t.events.filter((e): e is Extract<RunEventBody, { type: 'log' }> => e.type === 'log' && e.stepId === `${R2}:c_0`)
+    expect(tapped).toHaveLength(forms.length)
+    for (const f of forms) expect(JSON.stringify(t.events), f).not.toContain(f)
+
+    const bad = setup({}, fakePrepare({ throws: new Error(`dial failed with ${forms.join(' ')}`) }))
+    const err = await bad.runner.start(planFixture(), secrets).done.catch((e: Error) => e)
+    for (const f of forms) expect(String((err as Error).message), f).not.toContain(f)
+  })
+
+  it('a custom step status marker on the tap settles the step and is not shown as a log line', async () => {
+    const t = setup()
+    t.ansible.hang = true
+    vi.useFakeTimers()
+    const h = t.runner.start(planFixture(), SECRETS)
+    await until(() => t.tap.taps.length === 2 && t.ansible.calls.length === 1)
+    t.tap.taps[0].onLine(`${R2}:c_0\tOD-SKIP`)
+    t.tap.taps[0].onLine(`${R2}:c_0\tOD-STEP rc=3`)
+    t.tap.taps[0].onLine(`${R2}:c_0\tmigrating`)
+    expect(t.events.filter((e) => e.type === 'log').map((e) => (e as { line: string }).line)).toEqual(['migrating'])
+    t.runner.cancel(h.runId)
+    await h.done
+  })
+
   const down = (hostId: string) => ({ hostId, id: 'reachable', level: 'block' as const, message: 'Cannot reach host' }) as never
 
   it('a release is refused when one host fails prepare', async () => {
@@ -351,5 +387,15 @@ describe('LocalRunner', () => {
     const spawn = nodeSpawn({ spawn: () => inner, kill: () => { throw new Error('ESRCH') } })
     spawn('a', [], { cwd: '/', env: {} }).kill('SIGTERM')
     expect(inner.kill).toHaveBeenCalledWith('SIGTERM')
+  })
+})
+
+describe('totalTimeoutSec', () => {
+  const base = (d: PlanDeployment) => d.buildTimeoutSec + 2 * d.composeTimeoutSec + d.healthTimeoutSec + 5 * 120
+  it('adds every custom step timeout, and a migrated hook its 600s', () => {
+    const steps = planFixture({ deployments: [depFixture(1, 'h-1', { steps: [stepFixture(0, 'before_build', { timeoutSec: 45 }), stepFixture(1, 'after_up', { timeoutSec: 30 })] })] })
+    expect(totalTimeoutSec(steps)).toBe(base(steps.deployments[0]) + 75 + 600)
+    const hooks = planFixture({ deployments: [depFixture(1, 'h-1', { preHookB64: Buffer.from('echo hi').toString('base64') })] })
+    expect(totalTimeoutSec(hooks)).toBe(base(hooks.deployments[0]) + 600 + 600)
   })
 })

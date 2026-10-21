@@ -59,9 +59,10 @@ interface Spec {
 
 const fromStep = (s: PlaybookStep): Spec | null => (s.stepId ? { stepId: s.stepId, kind: s.kind as StepKind, label: s.label, name: s.name } : null)
 const fromChip = (c: ChipState): Spec => ({ stepId: c.stepId, kind: c.kind, label: c.label, name: '' })
-function specs(steps: PlaybookStep[]): Spec[] {
+/** `custom`: a run's custom step labels by key (`c_<n>`); keys repeat across runs, so it is per run. */
+function specs(steps: PlaybookStep[], custom: Record<string, string> = {}): Spec[] {
   const tasks = steps.filter((s) => !isHelperTask(s.name))
-  const labels = stepLabels(tasks)
+  const labels = stepLabels(tasks, custom)
   return tasks.flatMap((s, i) => {
     const x = fromStep(s)
     return x ? [{ ...x, label: labels[i] }] : []
@@ -93,7 +94,8 @@ export function taskRows(s: Pick<PipelineState, 'lanes' | 'release' | 'tasks'>, 
       before: play ? specs(play.steps) : lane.lock ? [fromChip(lane.lock)] : [],
       runs: lane.runs.map((run) => {
         const dep = play?.deployments.find((d) => d.runId === run.runId)
-        const listed = dep ? specs(dep.steps) : []
+        const custom = Object.fromEntries(run.chips.filter((c) => c.kind === 'custom').map((c) => [c.stepId.slice(c.stepId.indexOf(':') + 1), c.label]))
+        const listed = dep ? specs(dep.steps, custom) : []
         const rest = run.chips.filter((c) => !listed.some((x) => x.stepId === c.stepId)).map(fromChip)
         return { runId: run.runId, title: dep?.name || run.name, detail: runServices(run), specs: [...listed, ...rest] }
       }),

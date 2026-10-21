@@ -34,6 +34,10 @@ export const COMPOSE_PROJECT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/
 export const COMPOSE_SERVICE = COMPOSE_PROJECT
 export const MAX_URL = 2048
 export const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
+/** A name, run id or label the playbook generator accepts as is. */
+export const SAFE_IDENT = /^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$/
+/** Anything outside [A-Za-z0-9._@-] becomes `_`; at most 64 characters. */
+export const sanitizeIdent = (s: string): string => s.replace(/[^A-Za-z0-9._@-]/g, '_').slice(0, 64)
 
 /** Errors cross IPC as messages only, so the renderer matches on this text. */
 export const BREAK_LOCK_CONFIRM_MESSAGE = 'Type the host label to confirm'
@@ -404,8 +408,11 @@ export interface PreflightReport {
   checks: PreflightCheck[]
   commits: Record<
     string,
-    /** `tagCommit`: the deploy tag's commit on origin, null on a first deploy. */
-    { commits: CommitInfo[]; hiddenPairs: number; truncated: number; firstDeploy: boolean; head: string | null; tagCommit: string | null }
+    /**
+     * `tagCommit`: the deploy tag's commit on origin, null on a first deploy. `originHead`: `origin/<branch>`'s
+     * commit as the host resolved it; null when it is unknown, or when hosts disagree.
+     */
+    { commits: CommitInfo[]; hiddenPairs: number; truncated: number; firstDeploy: boolean; head: string | null; tagCommit: string | null; originHead?: string | null }
   >
   dockerModes: Record<string, DockerMode>
   /** Per deployment: the compose file's services (`docker compose config --services`), null when unknown. */
@@ -419,9 +426,11 @@ export interface PreflightReport {
   /**
    * Per service in the selection: `since` is its last deployed commit, else the deploy tag's commit; `count` is
    * how many commits of its checkout's list (newest first) come before `since`. `known` is false when `since`
-   * is not in the list, and then `count` is the list length.
+   * is not in the list, and then `count` is the list length. A known zero is `since` at origin's head (the
+   * list's order is by date, so a first place in it is not one). `skippable` (skipUnchanged, a known zero, nothing
+   * hidden or cut, not a first deploy) is what start skips unless forced.
    */
-  serviceCommits: Record<string, { since: string | null; count: number; known: boolean }>
+  serviceCommits: Record<string, { since: string | null; count: number; known: boolean; skippable?: boolean }>
   locks: Record<string, { holder: LockHolder; stale: boolean; raw: string } | null>
   commitsTotal: number
   blocked: boolean
@@ -585,15 +594,26 @@ export interface ReleaseConfirm {
   playbookSha256?: string
   /** The reviewed playbook, edited by the user; main re-validates it and runs it in place of the generated one. */
   editedPlaybook?: string
+  /** Services whose unchanged-skip is overridden for this release; the preview and the start must name the same ones. */
+  forceServiceIds?: string[]
 }
 /** The playbook a start would run, for review before Deploy. */
 export interface PlaybookPreview {
   playbook: string
+  /** Of the playbook and, when any service is skipped, the skipped ids and their commits: a start must skip the same. */
   sha256: string
+  /** The services this start leaves out as unchanged since their last deploy (`skippable` and not forced). */
+  skippedServiceIds?: string[]
 }
+/** Start and its preview refuse a release whose every service would be skipped as unchanged. */
+export const NOTHING_SELECTED_MESSAGE = 'Every selected service has no changes; select one to deploy it anyway'
+/** A step's secret must be one the environment's env templates or sudo passwords already use (no value is named). */
+export const STEP_SECRET_UNUSED_MESSAGE = 'This step uses a secret the environment does not already use'
 export const PLAYBOOK_SHA256 = /^[0-9a-f]{64}$/
 /** A release from before playbooks were stored (or one that never started). */
 export const PLAYBOOK_NOT_STORED_MESSAGE = 'Playbook not stored for this release'
+/** A release with skipped services fails before any change when origin's head is not the one its preflight saw. */
+export const ORIGIN_MOVED_MESSAGE = 'origin moved since preview, preview again'
 export const PLAYBOOK_CHANGED_MESSAGE = 'The playbook changed since you reviewed it. Review it again.'
 /** How long a reviewed playbook can be started from (main's `PREVIEW_TTL_MS`). */
 export const REVIEW_TTL_MS = 30 * 60_000

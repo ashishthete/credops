@@ -1,10 +1,9 @@
 import type { DeployPlan } from './runner'
-import type { LockHolder } from '../../shared/deploy'
+import { sanitizeIdent, type LockHolder } from '../../shared/deploy'
 
 export const b64 = (text: string): string => Buffer.from(text, 'utf8').toString('base64')
 
-/** Anything outside [A-Za-z0-9._@-] becomes `_`; at most 64 characters. */
-export const sanitizeIdent = (s: string): string => s.replace(/[^A-Za-z0-9._@-]/g, '_').slice(0, 64)
+export { sanitizeIdent }
 
 /** The lock file's content. Key order is fixed: the shell checks `"releaseId":"<id>"` by substring. */
 export function lockJson(plan: DeployPlan): string {
@@ -21,6 +20,8 @@ export function lockJson(plan: DeployPlan): string {
 
 export const ALIAS = /^od-\d{1,4}$/
 export const B64 = /^[A-Za-z0-9+/]*={0,2}$/
+/** A key into OPSDECK_SECRETS, as `s.<key>` names it. */
+export const SECRET_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
 
 export function need(ok: boolean, what: string): void {
   if (!ok) throw new Error(`deploy plan: invalid ${what}`)

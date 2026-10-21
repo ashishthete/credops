@@ -5,7 +5,9 @@ import { redact } from '../security/redact'
 import type { PrivateAgent } from './agent'
 import { CALLBACK_PLUGIN_SOURCE } from './callback-plugin'
 import { EventTranslator, parsePreflight, parseStreamLine } from './events'
-import { generateAnsibleCfg, generateInventory, generateKnownHosts, generatePlaybook, generateSshConfig, socketPathFits } from './generate'
+import { parseMarker } from './markers'
+import { withBase64Forms } from './mask'
+import { generateAnsibleCfg, generateInventory, generateKnownHosts, generatePlaybook, generateSshConfig, planSteps, socketPathFits } from './generate'
 import type { SshConfigOptions } from './generate'
 import type { PreparedHosts } from './hostkeys'
 import type { startTap } from './log-tap'
@@ -64,10 +66,10 @@ const MAX_PENDING_LINE = 4 * 1024 * 1024
 const cut = (s: string): string => (s.length > MAX_LOG_LINE ? `${s.slice(0, MAX_LOG_LINE - 7)} …(cut)` : s)
 const dirOf = (p: string): string => p.slice(0, Math.max(0, p.lastIndexOf('/'))) || '/'
 
-/** The agent's key lifetime: every timeout the playbook can wait for, plus 10 minutes. */
+/** The agent's key lifetime: every timeout the playbook can wait for (each custom step's own), plus 10 minutes. */
 export function totalTimeoutSec(plan: DeployPlan): number {
   const sum = plan.deployments.reduce(
-    (n, d) => n + d.buildTimeoutSec + 2 * d.composeTimeoutSec + d.healthTimeoutSec + (d.backup ? 1800 : 0) + (d.preHookB64 ? 600 : 0) + (d.postHookB64 ? 600 : 0) + 5 * 120,
+    (n, d) => n + d.buildTimeoutSec + 2 * d.composeTimeoutSec + d.healthTimeoutSec + (d.backup ? 1800 : 0) + planSteps(d).reduce((t, p) => t + p.step.timeoutSec, 0) + 5 * 120,
     0,
   )
   return sum + 600
@@ -163,10 +165,13 @@ export class LocalRunner implements DeployRunner {
     const ansible = tools.ansiblePlaybook!.path
 
     const local = o.connectionOverride === 'local'
-    const known = [...secrets.known, ...Object.values(secrets.values), ...Object.values(secrets.values).map((v) => Buffer.from(v, 'utf8').toString('base64'))].filter((s) => s !== '')
+    // Every mask site below uses `known`: each secret with its base64 forms. The translator adds the forms itself, so it gets `raw`.
+    const raw = [...new Set([...secrets.known, ...Object.values(secrets.values)].filter((s) => s !== ''))]
+    const known = [...new Set(withBase64Forms(raw))]
     const red = (s: string): string => redact(s, known)
 
-    const outcome: RunOutcome = { exitCode: null, signal: null, cancelled: false, failedDeploymentRunIds: [], reachedCheckout: [], commits: {} }
+    const outcome: RunOutcome = { exitCode: null, signal: null, cancelled: false, failedDeploymentRunIds: [], reachedCheckout: [], reachedUp: [], commits: {} }
+    const reachedUp: string[] = outcome.reachedUp!
     const send = (body: RunEventBody): void => {
       if (body.type === 'deployment.updated') {
         if (body.status === 'failed' && !outcome.failedDeploymentRunIds.includes(body.deploymentRunId)) outcome.failedDeploymentRunIds.push(body.deploymentRunId)
@@ -177,6 +182,7 @@ export class LocalRunner implements DeployRunner {
         }
       }
       if (body.type === 'step.started' && body.kind === 'checkout' && body.deploymentRunId && !outcome.reachedCheckout.includes(body.deploymentRunId)) outcome.reachedCheckout.push(body.deploymentRunId)
+      if (body.type === 'step.started' && body.kind === 'up' && body.deploymentRunId && !reachedUp.includes(body.deploymentRunId)) reachedUp.push(body.deploymentRunId)
       this.emit(plan.releaseId, body)
     }
 
@@ -231,7 +237,7 @@ export class LocalRunner implements DeployRunner {
       await write('ssh_config', generateSshConfig(effective, { privateAgent: agent?.sock ?? join(rundir, 'a'), userAgent: prepared?.userAgentNeeded ? o.userAgentSock : null }, rundir, { sshConfig: o.sshConfig }))
       await write('ansible.cfg', generateAnsibleCfg(effective, rundir))
 
-      const translator = new EventTranslator({ plan: effective, secrets: () => known, now })
+      const translator = new EventTranslator({ plan: effective, secrets: () => raw, now })
 
       // 5. live log taps
       if (prepared) {
@@ -243,7 +249,10 @@ export class LocalRunner implements DeployRunner {
               link,
               plan.releaseId,
               (line) => {
+                translator.observeStreamLine(line)
                 const s = parseStreamLine(line)
+                // a custom step's own status markers settle the step; they are not log text
+                if (s && /^c_\d{1,3}$/.test(s.kind) && ['OD-STEP', 'OD-SKIP'].includes(parseMarker(s.text)?.mark ?? '')) return
                 const dep = s ? plan.deployments.find((d) => d.runId === s.runId) : undefined
                 send({
                   type: 'log',

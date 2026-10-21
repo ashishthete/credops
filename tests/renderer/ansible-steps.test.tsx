@@ -95,6 +95,18 @@ describe('taskRows', () => {
     expect(brief(release)).toEqual(['Version tag||pending'])
   })
 
+  it("names each run's custom steps by their own labels, though two runs share a key", () => {
+    const d = releaseDetail()
+    const custom = (run: string, label: string) => ({ stepId: `${run}:c_0`, kind: 'custom' as const, key: 'c_0', label, state: 'pending' as const, startedAt: null, finishedAt: null })
+    const runs = d.runs.map((r) => ({ ...r, steps: [...r.steps.slice(0, 3), custom(r.id, r.id === 'r1' ? 'migrate' : 'warm cache'), ...r.steps.slice(3)] }))
+    const detail = { ...d, runs, playbook: playbookOf({ ...d, runs }) }
+    const { hosts } = rowsOf([], detail)
+    expect(brief(hosts[0].runs[0].rows)[3]).toBe('migrate|c_0 core|pending')
+    expect(brief(hosts[1].runs[0].rows)[3]).toBe('warm cache|c_0 site|pending')
+    // before the release has a playbook, the chips carry the label too
+    expect(brief(rowsOf([], { ...detail, playbook: null }).hosts[0].runs[0].rows)[3]).toBe('migrate||pending')
+  })
+
   it('while a step runs, its next task without a result is running and the rest wait', () => {
     const all = failingRun()
     const { hosts } = rowsOf(all.slice(0, all.findIndex((e) => e.type === 'log' && e.task === 'health site 1')))

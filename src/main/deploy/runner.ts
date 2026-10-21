@@ -1,4 +1,5 @@
-import type { Actor, DockerMode, HealthUrl, PreflightReport, RunEventBody, UseSudo } from '../../shared/deploy'
+import type { Actor, DockerMode, HealthUrl, PreflightReport, ReleaseFlow, RunEventBody, UseSudo } from '../../shared/deploy'
+import type { StepAnchor, StepBody } from '../../shared/steps'
 
 /** One SSH hop. `hostId` is null for a hop that isn't an inventory host. */
 export interface PlanHop {
@@ -20,6 +21,24 @@ export interface PlanHost {
   hops: PlanHop[]
 }
 
+/**
+ * A custom step as the playbook runs it. Secrets and params are references and base64 only: `secretKeys` name
+ * OPSDECK_SECRETS keys, and each env name passes ENV_NAME and the deny-list (params are `OD_PARAM_<NAME>`).
+ */
+export interface PlanStep {
+  /** `c_<n>`: n is the step's index in its checkout's effective steps; the log and tag kind. */
+  key: string
+  /** stepLabel(step), snapshotted for the step list. */
+  label: string
+  step: StepBody
+  /** Null for a step outside a release (a runbook or a flow stage). */
+  anchor: StepAnchor | null
+  /** A rollback runs only the steps that set this. */
+  alsoOnRollback?: boolean
+  secretKeys: { envName: string; key: string }[]
+  paramKeys: { envName: string; valueB64: string }[]
+}
+
 export interface PlanDeployment {
   /** deployment_runs.id */
   runId: string
@@ -34,8 +53,13 @@ export interface PlanDeployment {
   healthStatus: number
   healthTimeoutSec: number
   backup: { dir: string; label: string } | null
+  /** Legacy hooks: null whenever `steps` is used. A plan that still carries them gets them as steps (effectiveSteps). */
   preHookB64: string | null
   postHookB64: string | null
+  /** In anchor order within each anchor; empty when the checkout has none. */
+  steps: PlanStep[]
+  /** The previous commit `when` compares against (SHA-checked); null counts as changed. */
+  whenBase: string | null
   buildTimeoutSec: number
   composeTimeoutSec: number
   docker: DockerMode
@@ -55,6 +79,26 @@ export interface PlanDeployment {
    * the deploy tag's commit when `tag`) to origin/<branch>. No shas: the tag range alone.
    */
   commitBases: { shas: string[]; tag: boolean }
+  /**
+   * Release only, set when some of this checkout's services are skipped as unchanged: the origin head preflight
+   * saw (SHA-checked). After the fetch the run fails unless origin is still there, so a skip never outlives it.
+   */
+  expectOriginHead?: string | null
+}
+
+/**
+ * One stage of a release flow (see flowStages). A services stage ups each part's compose services (null: the whole
+ * checkout) and checks the health URLs at `urls` (indices into the run's `urls`); a step stage runs one step on its
+ * checkout's host.
+ */
+export type PlanStage =
+  | { kind: 'services'; parts: { runId: string; services: string[] | null; urls: number[] }[] }
+  | { kind: 'step'; runId: string; step: PlanStep }
+
+/** A release's flow: its stages in order, each one play. */
+export interface PlanFlow {
+  stages: PlanStage[]
+  onFailure: ReleaseFlow['onFailure']
 }
 
 export type PlanKind = 'preflight' | 'release' | 'rollback' | 'version' | 'unlock' | 'break-lock'
@@ -76,6 +120,8 @@ export interface DeployPlan {
   /** For `break-lock`: the raw lock content preflight saw, per host. */
   lock: { expectRaw?: Record<string, string> }
   startedAt: string
+  /** Release only: the stages the deploy phase runs in, one play each. Null: one play per host. */
+  flow: PlanFlow | null
 }
 
 // ---- The runner boundary (Phase 10's HubRunner implements the same interface) ----
@@ -96,6 +142,8 @@ export interface RunOutcome {
   failedDeploymentRunIds: string[]
   /** Deployment runs whose checkout step started, so a rollback has something to undo. */
   reachedCheckout: string[]
+  /** Deployment runs whose `up` step started, so a rollback knows what may be running new code. */
+  reachedUp?: string[]
   commits: Record<string, { previous?: string; deployed?: string }>
 }
 

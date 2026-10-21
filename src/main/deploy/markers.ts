@@ -13,6 +13,10 @@ export const MARK = {
   ENV: 'OD-ENV',
   TAG: 'OD-TAG',
   PF: 'OD-PF',
+  /** A custom step set to continue failed: `OD-STEP rc=<n>` (shows as warn). */
+  STEP: 'OD-STEP',
+  /** A custom step's `when` found nothing changed. */
+  SKIP: 'OD-SKIP',
 } as const
 export type MarkName = (typeof MARK)[keyof typeof MARK]
 
@@ -53,7 +57,7 @@ export function parsePrev(rest: string): PrevValue | null {
   return /^[0-9a-f]{40}$/.test(v) ? { kind: 'sha', sha: v } : null
 }
 
-const STREAM = /^([A-Za-z0-9_-]{1,64}):([a-z_]{1,32})\t([\s\S]*)$/
+const STREAM = /^([A-Za-z0-9_-]{1,64}):([a-z0-9_]{1,32})\t([\s\S]*)$/
 
 /** A line the streamed steps write to stream.log (and print the tail of on failure): `<runId>:<kind>\t<text>`. */
 export function parseStreamLine(line: string): { runId: string; kind: string; text: string } | null {

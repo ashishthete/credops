@@ -26,6 +26,8 @@ export interface Rig {
   timers: (() => void)[]
   tick(): void
   valueCalls: string[]
+  /** While set, decrypting a secret fails (a deleted secret, a locked vault). */
+  failValue: { on: boolean }
   setup: { access: DeployAccess; finalize: FinalizeSteps }
 }
 
@@ -39,6 +41,7 @@ export async function rig(
   const clipboard = { async writeText(): Promise<void> {}, async readText(): Promise<string> { return '' } }
   const store = new SecretStore(f.db, f.vault, f.audit, { clipboard })
   const valueCalls: string[] = []
+  const failValue = { on: false }
   const batches: RunEvent[][] = []
   const states: string[] = []
   const timers: (() => void)[] = []
@@ -57,6 +60,7 @@ export async function rig(
     secrets: {
       value: (id: string) => {
         valueCalls.push(id)
+        if (failValue.on) throw new Error('secret unavailable')
         return store.value(id)
       },
     },
@@ -66,7 +70,7 @@ export async function rig(
     now: over.now ?? (() => new Date(NOW)),
     clock: { setTimeout: (fn) => timers.push(fn) as unknown, clearTimeout: () => undefined },
   })
-  return { f, svc, runner, batches, states, timers, tick: () => timers.splice(0).forEach((t) => t()), valueCalls, setup }
+  return { f, svc, runner, batches, states, timers, tick: () => timers.splice(0).forEach((t) => t()), valueCalls, failValue, setup }
 }
 
 export const dep = (r: Rig, name: string, over: Record<string, unknown> = {}) =>

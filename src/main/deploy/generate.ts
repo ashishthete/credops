@@ -1,8 +1,11 @@
-import { BACKUP_DIR, COMPOSE_AUTO, COMPOSE_FILE, COMPOSE_PROJECT, GIT_REF, MAX_URL, REPO_PATH, RUNS_SUBDIR, VERSION } from '../../shared/deploy'
+import { BACKUP_DIR, COMPOSE_AUTO, COMPOSE_FILE, COMPOSE_PROJECT, GIT_REF, MAX_URL, ORIGIN_MOVED_MESSAGE, REPO_PATH, RUNS_SUBDIR, SAFE_IDENT, STEP_LABEL, type StepKind } from '../../shared/deploy'
 import { MAX_SERVICES } from '../../shared/services'
+import { ENV_NAME, MAX_FLOW_STAGES, MAX_STEPS_PER_CHECKOUT, STEP_ANCHORS, deniedEnvName, effectiveSteps, stepLabel, validateStep, type StepAnchor } from '../../shared/steps'
+import { shJoin } from '../ops/quote'
 import { checkComposeServices, composeCommand } from './compose'
-import { ALIAS, B64, b64, lockJson, need, sanitizeIdent } from './quote'
-import type { DeployPlan, PlanDeployment, PlanHost } from './runner'
+import { hostBecome, hostOd } from './host-vars'
+import { ALIAS, B64, SECRET_KEY, b64, need, sanitizeIdent } from './quote'
+import type { DeployPlan, PlanDeployment, PlanFlow, PlanHost, PlanStep } from './runner'
 
 export { generateAnsibleCfg, generateInventory, generateKnownHosts, generateSshConfig, knownHostsToken, socketPathFits } from './ssh-files'
 export type { SshConfigOptions } from './ssh-files'
@@ -12,17 +15,16 @@ export type { SshConfigOptions } from './ssh-files'
  * references only, and the playbook reads values from OPSDECK_SECRETS on the controller at run time.
  *
  * Injection rules. Every user-derived value is either (a) rejected here unless it matches the shared
- * validators, or (b) carried as base64 (hooks, lock content). Shell commands then read values only
+ * validators, or (b) carried as base64 (step scripts, when paths, params, lock content). Shell commands then read values only
  * through `{{ d.<field> | quote }}`, except compose command lines and commit bases, which are built here
  * from validated values: compose lines shJoin-quoted (none can hold a brace), commit bases SHA-checked hex
- * inserted unquoted. Task names never carry user text.
+ * inserted unquoted. Task names never carry user text. Step secrets and params reach the host only as
+ * `NAME=<base64>` lines on stdin; the env name (ENV_NAME, not deny-listed) is the only step value in plain text.
  */
 
 type Task = Record<string, unknown>
 type Play = Record<string, unknown>
 
-const SAFE_IDENT = /^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$/
-const SECRET_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
 const SHA = /^[0-9a-f]{40}$/
 const RELEASE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const URL_SAFE = /^https?:\/\/[A-Za-z0-9._~:/?#[\]@!$&()*+,;=%-]+$/
@@ -34,7 +36,6 @@ const SECRETS_VAR = "{{ lookup('env','OPSDECK_SECRETS') | default('{}', true) | 
 // Timeouts (seconds)
 const T_SHORT = 120
 const T_BACKUP = 1800
-const T_HOOK = 600
 const T_PREFLIGHT = 60
 
 const clampSec = (n: number, what: string): number => {
@@ -56,6 +57,9 @@ function dVars(d: PlanDeployment, kind: DeployPlan['kind']): Record<string, unkn
   need(Number.isInteger(d.healthStatus) && d.healthStatus >= 100 && d.healthStatus <= 599, 'health status')
   need(d.preHookB64 === null || (B64.test(d.preHookB64) && d.preHookB64.length > 0), 'pre-hook')
   need(d.postHookB64 === null || (B64.test(d.postHookB64) && d.postHookB64.length > 0), 'post-hook')
+  need(d.whenBase === null || SHA.test(d.whenBase), 'when base')
+  const head = d.expectOriginHead ?? null
+  need(head === null || (kind === 'release' && SHA.test(head)), 'expected origin head')
   if (d.backup) {
     need(BACKUP_DIR.test(d.backup.dir), 'backup directory')
     need(SAFE_IDENT.test(d.backup.label), 'backup label')
@@ -75,7 +79,7 @@ function dVars(d: PlanDeployment, kind: DeployPlan['kind']): Record<string, unkn
     typeof bases?.tag === 'boolean' && Array.isArray(bases.shas) && bases.shas.length <= MAX_SERVICES && bases.shas.every((x) => typeof x === 'string' && SHA.test(x)),
     'commit bases',
   )
-  return {
+  const out: Record<string, unknown> = {
     run: d.runId,
     name: sanitizeIdent(d.name) || 'deployment',
     repo: d.repoPath,
@@ -87,10 +91,171 @@ function dVars(d: PlanDeployment, kind: DeployPlan['kind']): Record<string, unkn
     health_timeout: clampSec(d.healthTimeoutSec, 'health timeout'),
     backup_dir: d.backup?.dir ?? '',
     backup_label: d.backup?.label ?? '',
-    pre_hook: d.preHookB64 ?? '',
-    post_hook: d.postHookB64 ?? '',
+    // Hooks run as steps now; the empty keys stay so a playbook keeps its shape (G3).
+    pre_hook: '',
+    post_hook: '',
     urls: d.urls.map((u) => ({ url: u.url, from: u.from })),
   }
+  // Only the steps this playbook runs, and only when there are any: a step-free block is unchanged.
+  const run = kind === 'release' || kind === 'rollback' ? stepsRun(kind, d) : []
+  if (run.length > 0) out.steps = Object.fromEntries(run.map((p) => [p.key, stepVars(p, d.whenBase)]))
+  // Only with skips: a block without them is unchanged.
+  if (head !== null) out.origin_head = head
+  return out
+}
+
+// ---------------------------------------------------------------- custom steps
+
+const STEP_KEY = /^c_\d{1,2}$/
+const PARAM_ENV = /^OD_PARAM_[A-Z0-9_]{1,55}$/
+
+/** A checkout's steps: the plan's, or its legacy hooks migrated by effectiveSteps (so a hook is never dropped). */
+export function planSteps(d: PlanDeployment): PlanStep[] {
+  if (d.steps.length > 0) {
+    need(d.preHookB64 === null && d.postHookB64 === null, 'hooks next to steps')
+    return d.steps
+  }
+  const text = (x: string | null): string | null => (x === null ? null : Buffer.from(x, 'base64').toString('utf8'))
+  return effectiveSteps({ steps: [], preHook: text(d.preHookB64), postHook: text(d.postHookB64) }).map(({ anchor, alsoOnRollback, ...step }, i) => ({
+    key: `c_${i}`,
+    label: stepLabel(step),
+    step,
+    anchor,
+    alsoOnRollback,
+    secretKeys: [],
+    paramKeys: [],
+  }))
+}
+
+/** Every step a release or rollback of this checkout runs. Throws on any value the playbook could not carry safely. */
+function stepsRun(kind: 'release' | 'rollback', d: PlanDeployment): PlanStep[] {
+  const all = planSteps(d)
+  need(all.length <= MAX_STEPS_PER_CHECKOUT, 'step count')
+  const keys = new Set<string>()
+  for (const p of all) {
+    need(STEP_KEY.test(p.key) && !keys.has(p.key), 'step key')
+    keys.add(p.key)
+    need(p.anchor !== null && STEP_ANCHORS.includes(p.anchor), 'step anchor')
+    need(p.anchor !== 'before_fetch' || p.step.when.kind === 'always', 'when at before_fetch')
+    checkStep(p)
+  }
+  return kind === 'rollback' ? all.filter((p) => p.alsoOnRollback === true) : all
+}
+
+/** A step's body, env names and keys: what the playbook could not carry safely throws. */
+function checkStep(p: PlanStep): void {
+  // The editor's rules. The secret ids and service passed here are the step's own, so those two checks are no-ops:
+  // the real guards are checkPlan (secretRefs) and checkComposeServices.
+  validateStep(p.step, { allowedSecretIds: new Set(p.step.secrets.map((x) => x.secretId)), serviceNames: p.step.service === null ? [] : [p.step.service], body: true })
+  if (p.step.run === 'compose-exec') checkComposeServices([p.step.service ?? ''])
+  const names = new Set<string>()
+  for (const e of [...p.secretKeys.map((x) => x.envName), ...p.paramKeys.map((x) => x.envName)]) {
+    need(typeof e === 'string' && !names.has(e), 'step env name')
+    names.add(e)
+  }
+  for (const x of p.secretKeys) need(ENV_NAME.test(x.envName) && !deniedEnvName(x.envName) && SECRET_KEY.test(x.key), 'step secret')
+  for (const x of p.paramKeys) need(PARAM_ENV.test(x.envName) && typeof x.valueB64 === 'string' && B64.test(x.valueB64), 'step param')
+}
+
+function stepVars(p: PlanStep, base: string | null): Record<string, unknown> {
+  const v: Record<string, unknown> = { script_b64: b64(p.step.script) }
+  if (p.step.when.kind !== 'always') v.base = base ?? ''
+  if (p.step.when.kind === 'paths') v.paths_b64 = b64(p.step.when.paths.join('\n'))
+  if (p.paramKeys.length > 0) v.params = p.paramKeys.map((x) => x.valueB64)
+  return v
+}
+
+/** The order a release or rollback runs: built-in steps, with each anchor's custom steps at its place. */
+const RELEASE_SLOTS = ['record', 'backup', 'before_fetch', 'fetch', 'checkout', 'after_checkout', 'env', 'before_build', 'build', 'after_build', 'up', 'after_up', 'health', 'after_health', 'tag', 'after_tag'] as const
+const ROLLBACK_SLOTS = ['before_fetch', 'rb_checkout', 'after_checkout', 'rb_env', 'before_build', 'rb_build', 'after_build', 'rb_up', 'after_up', 'after_health', 'rb_tag', 'after_tag'] as const
+type Builtin = Exclude<(typeof RELEASE_SLOTS)[number] | (typeof ROLLBACK_SLOTS)[number], StepAnchor>
+const isAnchor = (x: string): x is StepAnchor => (STEP_ANCHORS as readonly string[]).includes(x)
+
+/** What the step order needs to know of a checkout: a PlanDeployment, or the same facts before a plan exists. */
+export interface StepListDeployment {
+  runId: string
+  backup: object | null
+  envSecretKey: string | null
+  urls: readonly unknown[]
+  steps: readonly Pick<PlanStep, 'key' | 'label' | 'anchor' | 'alsoOnRollback'>[]
+}
+
+type Slot<S> = { builtin: Builtin } | { step: S }
+
+/** The one ordering both the playbook and the step list follow. A rollback runs only `alsoOnRollback` steps. */
+function sequence<S extends StepListDeployment['steps'][number]>(kind: 'release' | 'rollback', d: Omit<StepListDeployment, 'steps'>, steps: readonly S[]): Slot<S>[] {
+  const run = kind === 'rollback' ? steps.filter((s) => s.alsoOnRollback === true) : steps
+  const has = (b: Builtin): boolean => (b === 'backup' ? d.backup !== null : b === 'env' || b === 'rb_env' ? d.envSecretKey !== null : b === 'health' ? d.urls.length > 0 : true)
+  const out: Slot<S>[] = []
+  for (const slot of kind === 'release' ? RELEASE_SLOTS : ROLLBACK_SLOTS) {
+    if (isAnchor(slot)) for (const s of run) if (s.anchor === slot) out.push({ step: s })
+    if (!isAnchor(slot) && has(slot)) out.push({ builtin: slot })
+  }
+  return out
+}
+
+type StepRef = StepListDeployment['steps'][number]
+/** A flow's slots besides Slot: one services part's up (null: the whole checkout) and health URLs (indices). */
+type FlowSlot<S> = Slot<S> | { up: string[] | null } | { health: number[] }
+
+/**
+ * A run's place in a release flow, as (stage, slot) pairs. Stage -1 is the prepare phase, everything before up, which
+ * the first play runs for every checkout. Then, per stage the run is in: a services part ups its services and checks
+ * its URLs, the run's last part adding the after_up and after_health steps; a step stage runs its step. The tag and
+ * after_tag steps come after every stage (stage `flow.stages.length`), so no checkout is tagged before the whole
+ * flow ran.
+ */
+function flowSequence<S extends StepRef>(d: Omit<StepListDeployment, 'steps'>, steps: readonly S[], flow: PlanFlow): { stage: number; slot: FlowSlot<S | PlanStep> }[] {
+  const seq = sequence('release', d, steps)
+  const at = seq.findIndex((x) => 'builtin' in x && x.builtin === 'up')
+  const mine = flow.stages.flatMap((st, i) => (st.kind === 'services' && st.parts.some((p) => p.runId === d.runId) ? [i] : []))
+  need(at >= 0 && mine.length > 0, 'flow parts')
+  const lastPart = mine[mine.length - 1]
+  const out: { stage: number; slot: FlowSlot<S | PlanStep> }[] = seq.slice(0, at).map((slot) => ({ stage: -1, slot }))
+  const anchored = (stage: number, a: StepAnchor) => steps.filter((s) => s.anchor === a).map((step) => ({ stage, slot: { step } }))
+  flow.stages.forEach((st, i) => {
+    if (st.kind === 'step') {
+      if (st.runId === d.runId) out.push({ stage: i, slot: { step: st.step } })
+      return
+    }
+    const parts = st.parts.filter((p) => p.runId === d.runId)
+    need(parts.length <= 1, 'flow parts')
+    for (const p of parts) {
+      out.push({ stage: i, slot: { up: p.services } })
+      if (i === lastPart) out.push(...anchored(i, 'after_up'))
+      if (p.urls.length > 0) out.push({ stage: i, slot: { health: p.urls } })
+      if (i === lastPart) out.push(...anchored(i, 'after_health'))
+    }
+  })
+  const end = flow.stages.length
+  out.push({ stage: end, slot: { builtin: 'tag' } }, ...anchored(end, 'after_tag'))
+  return out
+}
+
+/**
+ * Per run id, the steps a release or rollback playbook runs, in order (health once, however many URLs). With a
+ * flow (a release only), in the flow's order: up and health once each however many parts, then each step stage.
+ */
+export function stepList(
+  kind: 'release' | 'rollback',
+  deps: readonly StepListDeployment[],
+  flow: PlanFlow | null = null,
+): Map<string, { key: string; kind: StepKind; label: string }[]> {
+  const entry = (x: FlowSlot<StepRef>): { key: string; kind: StepKind; label: string } =>
+    'builtin' in x
+      ? { key: x.builtin, kind: x.builtin, label: STEP_LABEL[x.builtin] }
+      : 'step' in x
+        ? { key: x.step.key, kind: 'custom', label: x.step.label }
+        : 'up' in x
+          ? { key: 'up', kind: 'up', label: STEP_LABEL.up }
+          : { key: 'health', kind: 'health', label: STEP_LABEL.health }
+  return new Map(
+    deps.map((d) => {
+      const slots = kind === 'release' && flow !== null ? flowSequence(d, d.steps, flow).map((x) => x.slot) : sequence(kind, d, d.steps)
+      const list = slots.map(entry)
+      return [d.runId, list.filter((x, i) => list.findIndex((y) => y.key === x.key) === i)]
+    }),
+  )
 }
 
 function checkPlan(plan: DeployPlan): void {
@@ -99,11 +264,10 @@ function checkPlan(plan: DeployPlan): void {
     need(ALIAS.test(h.alias), 'host alias')
     need(SAFE_IDENT.test(h.hostId), 'host id')
   }
-  for (const d of plan.deployments) {
-    for (const k of [d.envSecretKey, d.becomeSecretKey]) {
-      if (k === null) continue
-      need(SECRET_KEY.test(k) && k in plan.secretRefs, 'secret reference')
-    }
+  const flowKeys = (plan.flow?.stages ?? []).flatMap((st) => (st.kind === 'step' ? st.step.secretKeys.map((x) => x.key) : []))
+  for (const k of [...plan.deployments.flatMap((d) => [d.envSecretKey, d.becomeSecretKey, ...d.steps.flatMap((p) => p.secretKeys.map((x) => x.key))]), ...flowKeys]) {
+    if (k === null) continue
+    need(SECRET_KEY.test(k) && k in plan.secretRefs, 'secret reference')
   }
 }
 
@@ -222,6 +386,18 @@ const FETCH = 'git fetch --force --tags origin "refs/heads/$B:refs/remotes/origi
 const taskFetch = (d: PlanDeployment): Task =>
   sh(nm('fetch', d), 'fetch', runOf(d), ['B={{ d.branch | quote }}', FETCH].join('\n'), { timeout: T_SHORT, chdir: IN_REPO, guarded: true })
 
+/**
+ * With skipped services only, right after the fetch: origin must still be at the head preflight saw, else the
+ * skips were decided on code that is no longer what gets checked out. Part of the fetch step.
+ */
+const taskOriginCheck = (d: PlanDeployment): Task =>
+  sh(nm('origin check', d), 'fetch', runOf(d), [
+    'B={{ d.branch | quote }}',
+    'E={{ d.origin_head | quote }}',
+    'h=$(git rev-parse -q --verify "refs/remotes/origin/$B^{commit}" 2>/dev/null)',
+    `if [ "$h" != "$E" ]; then echo '${ORIGIN_MOVED_MESSAGE}' >&2; exit 1; fi`,
+  ].join('\n'), { timeout: T_SHORT, chdir: IN_REPO, guarded: true })
+
 const taskCheckout = (d: PlanDeployment): Task =>
   sh(nm('checkout', d), 'checkout', runOf(d), [
     'B={{ d.branch | quote }}',
@@ -260,17 +436,115 @@ function envTask(kind: 'env' | 'rb_env', d: PlanDeployment): Task {
 }
 const taskEnv = (d: PlanDeployment): Task => envTask('env', d)
 
-function hookTask(kind: 'pre_hook' | 'post_hook', d: PlanDeployment): Task {
-  const field = kind === 'pre_hook' ? 'pre_hook' : 'post_hook'
-  return sh(nm(kind, d), kind, runOf(d), streamed(kind, `echo {{ d.${field} | quote }} | base64 -d | bash -e`), {
-    timeout: T_HOOK,
-    chdir: IN_REPO,
-    become: becomes(d),
+const composeOf = (d: PlanDeployment) => ({ composeFile: d.composeFile, composeProject: d.composeProject })
+
+/*
+ * Custom step text. Every shell variable the generator sets here is lowercase (`od_*`, `rc`): a step's env names
+ * pass ENV_NAME, which is uppercase only, so a secret named `E` or `P` can never overwrite one of them.
+ */
+
+/** Appends one line to the step's own stream lines, which the log tap reads whatever no_log is (markers only, never a value). */
+const streamLine = (text: string): string => `printf '%s\\t%s\\n' "$od_p" "${text}" >> "$od_l"`
+
+/**
+ * Reads the step's `NAME=<base64>` stdin lines into its environment (and `-e NAME` for compose exec, so the
+ * value never reaches an argv). The names were checked at generate time; the shell checks them again.
+ */
+const STEP_ENV = [
+  'od_e=()',
+  'while IFS= read -r od_l1 || [ -n "$od_l1" ]; do',
+  '  od_k="${od_l1%%=*}"',
+  '  case "$od_k" in [A-Z]*) ;; *) exit 2;; esac',
+  '  case "$od_k" in *[!A-Z0-9_]*) exit 2;; esac',
+  '  od_x=$(printf \'%s\' "${od_l1#*=}" | base64 -d && printf .) || exit 2',
+  '  export "$od_k=${od_x%.}"',
+  '  od_e+=(-e "$od_k")',
+  'done',
+  'unset od_l1 od_k od_x',
+].join('\n')
+
+/**
+ * Prints OD-SKIP (to stdout and to the stream lines, so a no_log step still shows it) and ends the task when `when`
+ * finds nothing changed since the base commit. No base counts as changed; a check git cannot make says so and runs.
+ * No `${#...}` here: `{#` opens a Jinja comment.
+ */
+function whenCheck(p: PlanStep, become: boolean): string | undefined {
+  const w = p.step.when
+  if (w.kind === 'always') return undefined
+  const ref = `d.steps.${p.key}`
+  // under sudo, git refuses a repo another user owns unless told it is safe
+  const g = `git ${become ? '-c safe.directory={{ d.repo | quote }} ' : ''}-C {{ d.repo | quote }}`
+  const skip = `echo "OD-SKIP"; ${streamLine('OD-SKIP')}; exit 0`
+  const test =
+    w.kind === 'changed'
+      ? [`    if [ "$od_h" = "$od_b" ]; then ${skip}; fi`]
+      : [
+          '    od_a=()',
+          `    while IFS= read -r od_g; do [ -n "$od_g" ] && od_a+=(":(glob)$od_g"); done < <(echo {{ ${ref}.paths_b64 | quote }} | base64 -d)`,
+          `    if [ -n "\${od_a[*]}" ] && ${g} diff --quiet "$od_b" HEAD -- "\${od_a[@]}"; then ${skip}; fi`,
+        ]
+  return [
+    `od_b={{ ${ref}.base | quote }}`,
+    'if [ -n "$od_b" ]; then',
+    `  if ${g} cat-file -e "$od_b^{commit}" 2>/dev/null && od_h=$(${g} rev-parse HEAD 2>/dev/null); then`,
+    ...test,
+    '  else',
+    `    echo "when check unavailable, running step"; ${streamLine('when check unavailable, running step')}`,
+    '  fi',
+    'fi',
+  ].join('\n')
+}
+
+/**
+ * streamed() for a custom step, with lowercase names: output goes to stream.log as `<run>:c_<n>\t` lines. The
+ * `when` check runs after the log is set up and before the body. A `continue` failure reports OD-STEP on stdout
+ * and as a stream line.
+ */
+function stepStreamed(key: string, body: string, o: { pre?: string; cont: boolean }): string {
+  return [
+    'od_u="${SUDO_USER:-}"',
+    'if [ -n "$od_u" ]; then od_hm=$(awk -F: -v u="$od_u" \'$1==u {print $6; exit}\' /etc/passwd 2>/dev/null); fi',
+    'od_hm="${od_hm:-$HOME}"',
+    `od_l="$od_hm/${RUNS_SUBDIR}/{{ od.rel }}/stream.log"`,
+    'umask 022',
+    `od_p="{{ d.run }}:${key}"`,
+    ...(o.pre ? [o.pre] : []),
+    '(',
+    body,
+    `) 2>&1 | while IFS= read -r od_l1 || [ -n "$od_l1" ]; do printf '%s\\t%s\\n' "$od_p" "$od_l1"; done >> "$od_l"; rc=\${PIPESTATUS[0]}`,
+    `if [ "$rc" -ne 0 ]; then grep -F "$od_p"$'\\t' "$od_l" | tail -n 40; fi`,
+    ...(o.cont ? [`if [ "$rc" -ne 0 ]; then echo "OD-STEP rc=$rc"; ${streamLine('OD-STEP rc=$rc')}; fi`] : []),
+    'exit "$rc"',
+  ].join('\n')
+}
+
+/** A custom step, with its own kind `c_<n>`. `continue` never fails the host and reports OD-STEP. A flow step has no anchor. */
+function stepTask(d: PlanDeployment, p: PlanStep, anchor: StepAnchor | null): Task {
+  const s = p.step
+  const env = p.secretKeys.length + p.paramKeys.length > 0
+  const become = s.sudo === 'docker' ? becomes(d) : s.sudo === 'yes'
+  const script = `od_s=$(echo {{ d.steps.${p.key}.script_b64 | quote }} | base64 -d && printf .) || exit 2\nod_s="\${od_s%.}"`
+  const run =
+    s.run === 'compose-exec'
+      ? `${composeCommand(composeOf(d), ['exec', '-T'])}${env ? ' "${od_e[@]}"' : ''} ${shJoin(checkComposeServices([s.service ?? '']))} sh -c "$od_s"`
+      : 'bash -e -c "$od_s"'
+  const body = [...(env ? [STEP_ENV] : []), script, run].join('\n')
+  // An after_tag step cannot fail the release: the tag is already pushed (validateStep forces this for a saved step too).
+  const cont = s.onFailure === 'continue' || anchor === 'after_tag'
+  const stdin = [
+    ...p.secretKeys.map((x) => `${x.envName}={{ s.${x.key} }}`),
+    ...p.paramKeys.map((x, i) => `${x.envName}={{ d.steps.${p.key}.params[${i}] }}`),
+  ]
+  return sh(`${p.key} ${sanitizeIdent(d.name)}`, p.key, runOf(d), stepStreamed(p.key, body, { pre: whenCheck(p, become), cont }), {
+    timeout: s.timeoutSec,
+    chdir: s.cwd ?? IN_REPO,
+    become,
+    ...(env && { stdin: `${stdin.join('\n')}\n` }),
+    noLog: p.secretKeys.length > 0,
+    failedWhen: cont ? false : undefined,
     guarded: true,
   })
 }
-
-const composeOf = (d: PlanDeployment) => ({ composeFile: d.composeFile, composeProject: d.composeProject })
 
 /**
  * Build and up, for the whole checkout or for its selected services; a rollback uses the same form as the
@@ -496,7 +770,9 @@ function commitsCmd(d: PlanDeployment): string {
   const { shas, tag } = d.commitBases
   const LOG = [
     '  out=$(git log --no-merges --max-count=501 --pretty=tformat:%H%x1f%s%x1f%an%x1f%aI%x1e "$R" 2>/dev/null | base64 | tr -d \'\\n\')',
-    '  echo "OD-PF commits log_b64=$out"',
+    // origin's head (read-only): a service at it has nothing new, whatever order the log lists commits in
+    '  o=$(git rev-parse -q --verify "refs/remotes/origin/$B^{commit}" 2>/dev/null)',
+    '  echo "OD-PF commits log_b64=$out origin_head=$o"',
   ]
   const TAG_RANGE = '  if [ -n "$c" ] && git cat-file -e "$c^{commit}" 2>/dev/null; then R="$c..origin/$B"; X="$c"; else R="origin/$B"; X=""; fi'
   // shas are SHA-validated in dVars: plain hex words, safe unquoted.
@@ -552,67 +828,41 @@ const rescueRollback = (d: PlanDeployment): Task[] => [
   { name: `rollback failed ${sanitizeIdent(d.name)}`, 'ansible.builtin.set_fact': { rollback_failed: true } },
 ]
 
-function releaseTasks(d: PlanDeployment): Task[] {
-  const steps: (Task | null)[] = [
-    taskRecord(d),
-    d.backup ? taskBackup(d) : null,
-    taskFetch(d),
-    taskCheckout(d),
-    d.envSecretKey ? taskEnv(d) : null,
-    d.preHookB64 ? hookTask('pre_hook', d) : null,
-    taskBuild(d),
-    taskUp(d),
-    ...d.urls.map((_, i) => taskHealth(d, i)),
-    d.postHookB64 ? hookTask('post_hook', d) : null,
-    taskTag(d),
-  ]
-  return steps.filter((t): t is Task => t !== null)
+const BUILTIN: Record<Builtin, (d: PlanDeployment) => Task[]> = {
+  record: (d) => [taskRecord(d)],
+  backup: (d) => [taskBackup(d)],
+  fetch: (d) => [taskFetch(d), ...(d.expectOriginHead ? [taskOriginCheck(d)] : [])],
+  checkout: (d) => [taskCheckout(d)],
+  env: (d) => [taskEnv(d)],
+  build: (d) => [taskBuild(d)],
+  up: (d) => [taskUp(d)],
+  health: (d) => d.urls.map((_, i) => taskHealth(d, i)),
+  tag: (d) => [taskTag(d)],
+  rb_checkout: (d) => [taskRbCheckout(d)],
+  rb_env: (d) => [taskRbEnv(d)],
+  rb_build: (d) => [composeTask('rb_build', d)],
+  rb_up: (d) => [composeTask('rb_up', d)],
+  rb_tag: (d) => [taskRbTag(d)],
 }
 
-function rollbackTasks(d: PlanDeployment): Task[] {
-  const steps: (Task | null)[] = [
-    taskRbCheckout(d),
-    d.envSecretKey ? taskRbEnv(d) : null,
-    composeTask('rb_build', d),
-    composeTask('rb_up', d),
-    taskRbTag(d),
-  ]
-  return steps.filter((t): t is Task => t !== null)
+function deploymentTasks(kind: 'release' | 'rollback', d: PlanDeployment): Task[] {
+  return sequence(kind, d, stepsRun(kind, d)).flatMap((x) => ('builtin' in x ? BUILTIN[x.builtin](d) : [stepTask(d, x.step, x.step.anchor)]))
 }
 
 function playFor(plan: DeployPlan, h: PlanHost, deps: PlanDeployment[]): Play {
-  const od: Record<string, unknown> = {
-    rel: plan.releaseId,
-    env: sanitizeIdent(plan.environment.name) || 'env',
-    // Every repo the plan touches on this host, sorted: lock, unlock and the lock check all walk this list.
-    lock_repos: [...new Set(deps.map((d) => d.repoPath))].sort(),
-    lock_b64: b64(lockJson(plan)),
-  }
-  for (const r of od.lock_repos as string[]) need(REPO_PATH.test(r), 'repo path')
-  if (plan.version !== null) {
-    need(VERSION.test(plan.version), 'version')
-    od.version = plan.version
-  }
-  if (plan.kind === 'break-lock') {
-    const raw = plan.lock.expectRaw?.[h.hostId]
-    need(typeof raw === 'string', 'expected lock content')
-    od.expect_b64 = b64(raw as string)
-  }
-  const vars: Record<string, unknown> = { od, s: SECRETS_VAR }
-  // One become password per host: differing keys on one host cannot both apply.
-  const keys = new Set(deps.map((d) => d.becomeSecretKey).filter((k): k is string => k !== null))
-  need(keys.size <= 1, 'become secrets (one per host)')
-  for (const k of keys) vars.ansible_become_password = `{{ (s.${k} | b64decode) if s.${k} is defined else omit }}`
+  const vars: Record<string, unknown> = { od: hostOd(plan, h, deps), s: SECRETS_VAR }
+  const become = hostBecome(deps)
+  if (become !== undefined) vars.ansible_become_password = become
 
   const tasks: Task[] = []
   switch (plan.kind) {
     case 'release':
       tasks.push(taskPrep(h), taskLock(h))
-      for (const d of deps) tasks.push(block(d, plan.kind, releaseTasks(d), rescueRelease(d)))
+      for (const d of deps) tasks.push(block(d, plan.kind, deploymentTasks('release', d), rescueRelease(d)))
       break
     case 'rollback':
       tasks.push(taskPrep(h), taskLock(h))
-      for (const d of deps) tasks.push(block(d, plan.kind, rollbackTasks(d), rescueRollback(d)))
+      for (const d of deps) tasks.push(block(d, plan.kind, deploymentTasks('rollback', d), rescueRollback(d)))
       break
     case 'preflight':
       tasks.push(taskPreflightLock(h))
@@ -641,6 +891,8 @@ const depsOf = (plan: DeployPlan, h: PlanHost): PlanDeployment[] => plan.deploym
 
 export function generatePlaybook(plan: DeployPlan): string {
   checkPlan(plan)
+  const flow = plan.flow ?? null
+  if (flow !== null) return JSON.stringify(flowPlays(plan, flow), null, 2)
   const plays: Play[] = []
   for (const h of plan.hosts) {
     const deps = depsOf(plan, h)
@@ -650,3 +902,142 @@ export function generatePlaybook(plan: DeployPlan): string {
   return JSON.stringify(plays, null, 2)
 }
 
+// ---------------------------------------------------------------- release flow
+
+const onHost = (h: PlanHost): string => `inventory_hostname == '${h.alias}'`
+const FLOW_STOPPED = 'OpsDeck flow stopped: a host did not finish an earlier stage'
+
+function checkFlow(plan: DeployPlan, flow: PlanFlow): void {
+  need(plan.kind === 'release', 'flow outside a release')
+  need(flow.onFailure === 'stop-all' || flow.onFailure === 'continue-other-hosts', 'flow on failure')
+  // the flow's own stages, plus one for the checkouts it never names
+  need(Array.isArray(flow.stages) && flow.stages.length >= 1 && flow.stages.length <= MAX_FLOW_STAGES + 1, 'flow stages')
+  const runs = new Map(plan.deployments.map((d) => [d.runId, d]))
+  const urls = new Map<string, number[]>()
+  for (const st of flow.stages) {
+    if (st.kind === 'step') {
+      need(runs.has(st.runId), 'flow step run')
+      continue
+    }
+    need(st.kind === 'services' && Array.isArray(st.parts) && st.parts.length >= 1, 'flow stage')
+    const seen = new Set<string>()
+    for (const p of st.parts) {
+      const d = runs.get(p.runId)
+      need(d !== undefined && !seen.has(p.runId), 'flow part')
+      seen.add(p.runId)
+      if (p.services !== null) {
+        need(Array.isArray(p.services) && p.services.length >= 1 && p.services.length <= MAX_SERVICES, 'flow part services')
+        checkComposeServices(p.services)
+      }
+      need(Array.isArray(p.urls) && p.urls.every((n) => Number.isInteger(n) && n >= 0 && n < (d as PlanDeployment).urls.length), 'flow health url')
+      urls.set(p.runId, [...(urls.get(p.runId) ?? []), ...p.urls])
+    }
+  }
+  // each health URL is checked exactly once
+  for (const d of plan.deployments) {
+    const u = (urls.get(d.runId) ?? []).sort((a, b) => a - b)
+    need(u.length === d.urls.length && u.every((n, i) => n === i), 'flow health urls')
+  }
+}
+
+/** The flow's step stages of one run, checked like its own steps; their keys never clash with the run's. */
+function flowStepsOf(flow: PlanFlow, d: PlanDeployment, own: readonly PlanStep[]): PlanStep[] {
+  const keys = new Set(own.map((p) => p.key))
+  const out: PlanStep[] = []
+  for (const st of flow.stages) {
+    if (st.kind !== 'step' || st.runId !== d.runId) continue
+    const p = st.step
+    need(STEP_KEY.test(p.key) && !keys.has(p.key) && p.anchor === null, 'flow step key')
+    keys.add(p.key)
+    checkStep(p)
+    out.push(p)
+  }
+  return out
+}
+
+function flowSlotTasks(d: PlanDeployment, x: FlowSlot<PlanStep>): Task[] {
+  if ('builtin' in x) return BUILTIN[x.builtin](d)
+  if ('step' in x) return [stepTask(d, x.step, x.step.anchor)]
+  if ('up' in x) return [composeTask('up', { ...d, services: x.up })]
+  return x.health.map((i) => taskHealth(d, i))
+}
+
+/**
+ * Fails every host of a later play unless each host that was in an earlier play finished the last one it was in
+ * (`od_stage`, set as a play's last task) without a failed deployment. Ansible leaves a failed or unreachable host
+ * out of later plays on its own; this stops the hosts that are left, which `free` (continue-other-hosts) needs and
+ * `linear` with any_errors_fatal (stop-all) gets as a second guard. The condition names aliases (ALIAS-checked) and
+ * play indexes only.
+ */
+function flowGate(i: number, lastPlay: ReadonlyMap<string, number>): Task {
+  const when = [...lastPlay]
+    .map(([a, k]) => `(hostvars['${a}'].od_stage | default(-1)) != ${k} or (hostvars['${a}'].od_failed | default(false))`)
+    .join(' or ')
+  return { name: `flow gate ${i}`, 'ansible.builtin.fail': { msg: FLOW_STOPPED }, when }
+}
+
+/**
+ * A release in flow order, one play per phase, each play bound to the hosts it touches and every block to its host
+ * by `when`:
+ * - `release prepare` (every host): each host's lock, then each checkout's prepare phase (everything before up);
+ * - `release stage <i>` per flow stage: its parts' up and health, or its one step, on those runs' hosts;
+ * - `release tag` (every host): each checkout's tag and after_tag steps.
+ * Every play after the first opens with a gate (flowGate), so no service goes up unless every host prepared, and no
+ * checkout is tagged unless every stage finished. stop-all runs each play `linear` with any_errors_fatal, so a
+ * failure also stops the other hosts mid-play; continue-other-hosts runs it `free`, letting them finish the play
+ * before the next gate stops them. `od` and become are inventory host vars here (generateInventory), so play vars
+ * hold the secrets lookup only.
+ */
+function flowPlays(plan: DeployPlan, flow: PlanFlow): Play[] {
+  checkFlow(plan, flow)
+  const hostOf = new Map(plan.hosts.map((h) => [h.hostId, h]))
+  const hosts = plan.hosts.filter((h) => depsOf(plan, h).length > 0)
+  for (const h of hosts) {
+    hostOd(plan, h, depsOf(plan, h))
+    hostBecome(depsOf(plan, h))
+  }
+  const runs = new Map(
+    plan.deployments.map((d) => {
+      const own = stepsRun('release', d)
+      const extra = flowStepsOf(flow, d, own)
+      const vars = dVars(d, 'release')
+      if (extra.length > 0) vars.steps = { ...((vars.steps as Record<string, unknown> | undefined) ?? {}), ...Object.fromEntries(extra.map((p) => [p.key, stepVars(p, d.whenBase)])) }
+      const host = hostOf.get(d.hostId)
+      need(host !== undefined, 'deployment host')
+      return [d.runId, { d, host: host as PlanHost, vars, slots: flowSequence(d, own, flow) }]
+    }),
+  )
+  const blockAt = (runId: string, stage: number): Task[] => {
+    const r = runs.get(runId)
+    if (!r) return []
+    const tasks = r.slots.filter((x) => x.stage === stage).flatMap((x) => flowSlotTasks(r.d, x.slot as FlowSlot<PlanStep>))
+    if (tasks.length === 0) return []
+    return [{ name: `deployment ${sanitizeIdent(r.d.name)}`, when: onHost(r.host), vars: { d: r.vars }, block: tasks, rescue: rescueRelease(r.d) }]
+  }
+  const all = plan.deployments.map((d) => d.runId)
+  // [name, the flow stage its blocks come from (-1 prepare, stages.length tag), its runs in block order]
+  const phases: [string, number, string[]][] = [
+    ['release prepare', -1, all],
+    ...flow.stages.map((st, i): [string, number, string[]] => [`release stage ${i}`, i, st.kind === 'step' ? [st.runId] : st.parts.map((x) => x.runId)]),
+    ['release tag', flow.stages.length, all],
+  ]
+  const lastPlay = new Map<string, number>()
+  return phases.map(([name, stage, ids], p) => {
+    const here = hosts.filter((h) => ids.some((id) => runs.get(id)?.host === h))
+    const tasks: Task[] = []
+    if (p > 0) tasks.push(flowGate(p, lastPlay))
+    if (p === 0) for (const h of here) tasks.push({ ...taskPrep(h), when: onHost(h) }, { ...taskLock(h), when: onHost(h) })
+    for (const id of ids) tasks.push(...blockAt(id, stage))
+    if (p < phases.length - 1) tasks.push({ name: `flow play ${p} done`, 'ansible.builtin.set_fact': { od_stage: p } })
+    for (const h of here) lastPlay.set(h.alias, p)
+    return {
+      name,
+      hosts: here.map((h) => h.alias).join(':'),
+      gather_facts: false,
+      strategy: flow.onFailure === 'stop-all' ? 'linear' : 'free',
+      ...(flow.onFailure === 'stop-all' ? { any_errors_fatal: true } : {}),
+      vars: { s: SECRETS_VAR },
+      tasks,
+    }
+  })
+}

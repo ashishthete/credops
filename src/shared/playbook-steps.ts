@@ -21,31 +21,40 @@ export interface PlaybookDeployment {
 }
 
 export interface PlaybookPlay {
-  /** The play's host alias (`od-1`). */
-  host: string
+  /** The play's host aliases (`od-1`); several when one play runs a stage on parallel hosts. */
+  hosts: string[]
+  /** The play's position in the playbook (0 is the first). */
+  stage: number
+  /** The first host: kept until the renderer reads `hosts` (Task 14). */
+  readonly host: string
   /** Host-wide tasks before the deployments: the lock. */
   steps: PlaybookStep[]
   deployments: PlaybookDeployment[]
 }
 
-/** The lock's mkdir/touch helper: part of the lock step, not a step of its own (events and views skip it). */
-export const isHelperTask = (name: string): boolean => name.startsWith('lock prep ')
+/** The lock's mkdir/touch helper, a build's launch task and a stage gate: parts of other steps, not steps of their own (events and views skip them). */
+export const isHelperTask = (name: string): boolean => HELPER_PREFIXES.some((p) => name.startsWith(p))
+const HELPER_PREFIXES = ['lock prep ', 'build launch ', 'od gate']
 
 /**
  * What the review and the release view call each task: its step's label, numbered when the step has several
  * tasks (`Health 1`, `Health 2`, one per URL). Helper tasks are left out before this.
  */
-export function stepLabels(steps: Pick<PlaybookStep, 'stepId' | 'label'>[]): string[] {
+export function stepLabels(steps: Pick<PlaybookStep, 'stepId' | 'label' | 'kind'>[], custom: Record<string, string> = {}): string[] {
   const total = new Map<string, number>()
   for (const s of steps) if (s.stepId) total.set(s.stepId, (total.get(s.stepId) ?? 0) + 1)
   const seen = new Map<string, number>()
   return steps.map((s) => {
+    // a custom step's own name, by its `c_<n>` key
+    if (CUSTOM_KEY.test(s.kind)) return custom[s.kind] ?? s.label
     if (!s.stepId || (total.get(s.stepId) ?? 0) < 2) return s.label
     const n = (seen.get(s.stepId) ?? 0) + 1
     seen.set(s.stepId, n)
     return `${s.label} ${n}`
   })
 }
+
+const CUSTOM_KEY = /^c_\d{1,3}$/
 
 type Obj = Record<string, unknown>
 const isObj = (x: unknown): x is Obj => typeof x === 'object' && x !== null && !Array.isArray(x)
@@ -67,6 +76,12 @@ function stepOf(t: Obj): PlaybookStep {
   }
 }
 
+/** `od-1`, `od-1:od-2`, `od-1,od-2` or a list of them, as aliases. */
+function hostsOf(x: unknown): string[] {
+  const parts = Array.isArray(x) ? x : typeof x === 'string' ? [x] : []
+  return parts.flatMap((p) => (typeof p === 'string' ? p.split(/[:,]/).map((h) => h.trim()) : [])).filter(Boolean)
+}
+
 /**
  * The steps of a generated playbook, in the order Ansible runs them: per play (host), its lock, then one block
  * per deployment named by the deployment, then that block's tasks. Reads the text the generator wrote (JSON,
@@ -80,8 +95,15 @@ export function playbookSteps(playbook: string): PlaybookPlay[] {
     return []
   }
   if (!Array.isArray(plays)) return []
-  return plays.filter(isObj).map((play) => {
-    const out: PlaybookPlay = { host: typeof play.hosts === 'string' ? play.hosts : '', steps: [], deployments: [] }
+  return plays.filter(isObj).map((play, stage) => {
+    const out: PlaybookPlay = {
+      hosts: hostsOf(play.hosts),
+      stage,
+      steps: [],
+      deployments: [],
+    } as unknown as PlaybookPlay
+    // not enumerable, so a play still serialises and compares as `hosts` alone
+    Object.defineProperty(out, 'host', { get: () => out.hosts[0] ?? '' })
     for (const t of Array.isArray(play.tasks) ? play.tasks : []) {
       if (!isObj(t)) continue
       if (!('block' in t)) {

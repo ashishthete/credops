@@ -37,6 +37,19 @@ describe('masking release text in main', () => {
     expect(out.playbook).toBe('[{"name": "‹redacted›"}]')
     expect(maskDetail({ ...d, playbook: null, error: null, preflight: null }, [SECRET])).toMatchObject({ playbook: null, error: null, preflight: null })
   })
+  it('masks a secret a step echoes as base64, with or without a newline, at the start of a line or inside it', () => {
+    const b = (x: string) => Buffer.from(x).toString('base64')
+    const lines = [`${SECRET} ${b(SECRET)}`, b(`${SECRET}\n`), `token=${b(SECRET)}`]
+    const raw = at(lines.map((line) => ({ type: 'log' as const, stepId: 'r1:c_0', hostId: 'h1', stream: 'out' as const, line })))
+    const out = maskEvents(raw, [SECRET]).map((e) => (e as { line: string }).line)
+    expect(out).toEqual(['‹redacted› ‹redacted›', '‹redacted›', 'token=‹redacted›'])
+    for (const l of out) expect(l).not.toContain(b(SECRET).slice(0, 8))
+    // a 5-byte secret still has its full encodings masked (8 characters), though its prefix is too short
+    expect(maskEvents(at([{ type: 'log', stepId: 'r1:c_0', hostId: 'h1', stream: 'out', line: `x ${b('k3y99')} ${b('k3y99\n')}` }]), ['k3y99']).map((e) => (e as { line: string }).line)).toEqual(['x ‹redacted› ‹redacted›'])
+    // a short secret has no base64 form worth masking, and plain text stays as it was
+    expect(maskEvents(at([{ type: 'log', stepId: 'r1:c_0', hostId: 'h1', stream: 'out', line: `x ${b('pin')}` }]), ['pin']).map((e) => (e as { line: string }).line)).toEqual([`x ${b('pin')}`])
+  })
+
   it('masks a secret with quotes or backslashes as it appears in the stored JSON playbook', () => {
     const odd = 'p@ss"w\\rd9-long'
     const playbook = JSON.stringify([{ name: 'health', vars: { url: `https://x/?t=${odd}` } }], null, 2)

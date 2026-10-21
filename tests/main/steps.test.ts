@@ -106,6 +106,14 @@ describe('validateStep', () => {
     expect(validateStep(step({ run: 'compose-exec', service: 'web' }), opts)).toMatchObject({ run: 'compose-exec', service: 'web' })
   })
 
+  it('rejects when other than always at before_fetch, and accepts it at after_checkout', () => {
+    for (const when of [{ kind: 'changed' }, { kind: 'paths', paths: ['src/*'] }]) {
+      expect(() => validateStep(step({ anchor: 'before_fetch', when }), opts)).toThrow(/before_fetch/)
+      expect(validateStep(step({ anchor: 'after_checkout', when }), opts).when).toEqual(when)
+    }
+    expect(validateStep(step({ anchor: 'before_fetch' }), opts).anchor).toBe('before_fetch')
+  })
+
   it('forces an after_tag stop step to continue', () => {
     expect(validateStep(step({ anchor: 'after_tag', onFailure: 'stop' }), opts).onFailure).toBe('continue')
     expect(validateStep(step({ anchor: 'after_up', onFailure: 'stop' }), opts).onFailure).toBe('stop')
@@ -118,10 +126,12 @@ describe('validateStep', () => {
   })
 
   it('denies the listed env names', () => {
-    for (const n of ['LD_PRELOAD', 'BASH_ENV', 'PATH', 'IFS', 'ENV', 'PS4', 'SHELLOPTS', 'GIT_DIR', 'DOCKER_HOST', 'COMPOSE_FILE', 'OPSDECK_X', 'SUDO_ASKPASS', 'OD_X']) {
+    for (const n of ['LD_PRELOAD', 'BASH_ENV', 'PATH', 'IFS', 'ENV', 'PS4', 'SHELLOPTS', 'GIT_DIR', 'DOCKER_HOST', 'COMPOSE_FILE', 'OPSDECK_X', 'SUDO_ASKPASS', 'OD_X', 'BASHOPTS', 'PROMPT_COMMAND', 'HOME', 'CDPATH', 'GLOBIGNORE', 'LD_LIBRARY_PATH', 'DYLD_INSERT_LIBRARIES']) {
       expect(deniedEnvName(n), n).toBe(true)
     }
-    for (const n of ['API_TOKEN', 'PATHS', 'ENVIRONMENT', 'MY_LD_X']) expect(deniedEnvName(n), n).toBe(false)
+    for (const n of ['API_TOKEN', 'PATHS', 'ENVIRONMENT', 'MY_LD_X', 'HOMEPAGE', 'MY_DYLD']) expect(deniedEnvName(n), n).toBe(false)
+    // the reserved names are rejected by validateStep, which the store and IPC paths use
+    for (const n of ['HOME', 'PROMPT_COMMAND', 'BASHOPTS', 'DYLD_X', 'CDPATH', 'GLOBIGNORE']) expect(() => validateStep(step({ secrets: [{ envName: n, secretId: SECRET }] }), opts), n).toThrow()
   })
 
   it('sanitizes the label', () => {

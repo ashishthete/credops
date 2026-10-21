@@ -22,6 +22,7 @@ describe('release:* validators', () => {
     expect(() => check('release:start', [ID, { typedName: 'prod', redeploy: true }])).not.toThrow()
     expect(() => check('release:start', [ID, { playbookSha256: HASH }])).not.toThrow()
     expect(() => check('deploy:previewPlaybook', [ID])).not.toThrow()
+    expect(() => check('release:start', [ID, { playbookSha256: HASH, forceServiceIds: [ID] }])).not.toThrow()
     expect(() => check('deploy:savePlaybook', [ID, HASH])).not.toThrow()
     expect(() => check('release:savePlaybook', [ID])).not.toThrow()
     expect(() => check('release:break-lock', [ID, ID, { typedLabel: 'app1' }])).not.toThrow()
@@ -48,6 +49,7 @@ describe('release:* validators', () => {
     ['release:start', [ID, { playbookSha256: 'A'.repeat(64) }], /playbookSha256/],
     ['release:start', [ID, { playbookSha256: 'a'.repeat(63) }], /playbookSha256/],
     ['deploy:previewPlaybook', ['x'], /./],
+    ['release:start', [ID, { forceServiceIds: ['x'] }], /forceServiceIds/],
     ['deploy:savePlaybook', [ID, 'nope'], /./],
     ['deploy:savePlaybook', [ID], /./],
     ['release:savePlaybook', ['x'], /./],
