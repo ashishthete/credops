@@ -130,6 +130,21 @@ CREATE TABLE service_deploy_state(service_id TEXT PRIMARY KEY, environment_id TE
   last_deployed_commit TEXT, last_release_id TEXT);
 `
 
+// Phase 9's idempotency table, as the desktop keeps it: one row per (source, event, channel).
+const NOTIFY = `
+CREATE TABLE notification_log(
+  id TEXT PRIMARY KEY,
+  at TEXT NOT NULL,
+  source_type TEXT NOT NULL CHECK (source_type IN ('release','tunnel','test')),
+  source_id TEXT NOT NULL,
+  event TEXT NOT NULL,
+  channel TEXT NOT NULL CHECK (channel IN ('teams','email','macos','qa')),
+  status TEXT NOT NULL CHECK (status IN ('pending','sent','skipped','failed')),
+  detail TEXT,
+  UNIQUE (source_type, source_id, event, channel));
+CREATE INDEX notification_log_at ON notification_log(at);
+`
+
 export const HUB_MIGRATIONS: Migration[] = [
   { version: 1, name: 'core', up: CORE },
   { version: 2, name: 'registry', up: REGISTRY },
@@ -137,6 +152,7 @@ export const HUB_MIGRATIONS: Migration[] = [
   { version: 4, name: 'locks', up: LOCKS },
   { version: 5, name: 'services', up: SERVICES },
   { version: 6, name: 'releases', up: RELEASES },
+  { version: 7, name: 'notify', up: NOTIFY },
 ]
 
 export function openHubDb(file: string): HubDb {

@@ -1,6 +1,7 @@
 import { readFileSync, mkdirSync, statSync } from 'node:fs'
 import { isIP } from 'node:net'
 import { SESSION_TTL_HOURS } from '../../src/shared/hub'
+import { EMAIL } from '../../src/shared/settings'
 
 export interface HubConfig {
   name: string
@@ -15,6 +16,8 @@ export interface HubConfig {
   masterKeyFile?: string
   /** ansible-playbook to run releases with; found on PATH when not set. */
   ansibleBin?: string
+  /** The From address on release emails; without it (or a SendGrid key) email is skipped. */
+  sendgridFrom?: string
   /** Where release run dirs live (mode 0700); defaults to <dataDir>/runs. */
   runRoot?: string
 }
@@ -117,6 +120,9 @@ export function loadConfig(file: string): HubConfig {
   const runRoot = root.runRoot === undefined ? undefined : str(root.runRoot, 'runRoot')
   if (runRoot !== undefined && !runRoot.startsWith('/')) bad('runRoot', 'must be an absolute path')
 
+  const sendgridFrom = root.sendgridFrom === undefined ? undefined : str(root.sendgridFrom, 'sendgridFrom')
+  if (sendgridFrom !== undefined && !EMAIL.test(sendgridFrom)) bad('sendgridFrom', 'must be an email address')
+
   return {
     name,
     listen: { host, port: port as number },
@@ -129,6 +135,7 @@ export function loadConfig(file: string): HubConfig {
     ...(masterKeyFile ? { masterKeyFile } : {}),
     ...(ansibleBin ? { ansibleBin } : {}),
     ...(runRoot ? { runRoot } : {}),
+    ...(sendgridFrom ? { sendgridFrom } : {}),
   }
 }
 

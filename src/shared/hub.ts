@@ -84,6 +84,9 @@ export const HUB_AUDIT_ACTIONS = [
   'deploy.lock_break',
   'notify.sent',
   'notify.failed',
+  'ai.release_notes',
+  'qa.dispatch',
+  'qa.finished',
   'access.denied',
 ] as const
 export type HubAuditAction = (typeof HUB_AUDIT_ACTIONS)[number]

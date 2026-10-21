@@ -16,6 +16,9 @@ import { Registry } from './registry'
 import { registerLocks } from './routes/locks'
 import { registerReleases } from './routes/releases'
 import { HubReleases } from './releases/service'
+import { createHubNotify } from './notify/finalize'
+import type { AnthropicLike, ClientFactoryOptions } from '../../src/main/ai/claude'
+import type { Fetch } from '../../src/main/notify/http'
 import type { DeployRunner } from '../../src/main/deploy/runner'
 import { registerRegistry } from './routes/registry'
 import { registerSecrets } from './routes/secrets'
@@ -40,6 +43,8 @@ export interface HubDeps {
   liveKnownSecrets?: () => readonly string[]
   /** Tests inject a scripted runner; production runs ansible through Phase 8's LocalRunner. */
   runner?: DeployRunner
+  /** Tests stub the network and the Anthropic client; production uses fetch, timers and the SDK. */
+  notify?: { fetch?: Fetch; sleep?: (ms: number) => Promise<void>; claudeFactory?: (o: ClientFactoryOptions) => AnthropicLike }
   /** pino destination; defaults to stdout */
   log?: { write(msg: string): void }
 }
@@ -115,7 +120,24 @@ export function buildApp(deps: HubDeps): FastifyInstance {
   registerRegistry(app, { registry, directory, auth })
   registerLocks(app, { locks, directory, audit: deps.audit, auth })
   registerSecrets(app, { secrets, deployKeys, registry, locks, directory, audit: deps.audit, auth })
-  releases = new HubReleases({ config: deps.config, db: deps.db, audit: deps.audit, directory, registry, locks, secrets, deployKeys, live, now: deps.now, ids: deps.ids, ...(deps.runner ? { runner: deps.runner } : {}) })
+  const notify = createHubNotify({
+    db: deps.db,
+    secrets,
+    registry,
+    audit: deps.audit,
+    runMeta: (id, status) => (releases as HubReleases).service.runMeta(id, status),
+    fetch: deps.notify?.fetch ?? globalThis.fetch,
+    sleep: deps.notify?.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
+    ...(deps.config.sendgridFrom ? { sendgridFrom: deps.config.sendgridFrom } : {}),
+    ...(deps.notify?.claudeFactory ? { claudeFactory: deps.notify.claudeFactory } : {}),
+    knownSecrets: () => releases?.runKnownSecrets() ?? [],
+    now: deps.now,
+  })
+  releases = new HubReleases({ config: deps.config, db: deps.db, audit: deps.audit, directory, registry, locks, secrets, deployKeys, live, now: deps.now, ids: deps.ids, finalize: notify.finalize, heldSecrets: notify.held, ...(deps.runner ? { runner: deps.runner } : {}) })
+  // Started, failed and rolled-back notices ride the run's own events; success goes out from finalize, with notes.
+  releases.service.onEvent((batch) => {
+    for (const e of batch) void notify.dispatcher.onRunEvent(e)
+  })
   app.decorate('releases', releases)
   app.addHook('onClose', async () => releases?.close())
   registerReleases(app, { releases, auth })

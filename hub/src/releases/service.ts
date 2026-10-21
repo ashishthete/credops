@@ -6,7 +6,7 @@ import type { Actor, PreflightRequest, ReleaseConfirm, ReleaseDetail, ReleaseLis
 import type { HubAction, HubEnvManifest, HubUser } from '../../../src/shared/hub'
 import { startPrivateAgent, type ChildLike } from '../../../src/main/deploy/agent'
 import { DeployError } from '../../../src/main/deploy/access'
-import { noopFinalize } from '../../../src/main/deploy/finalize'
+import { noopFinalize, type FinalizeSteps } from '../../../src/main/deploy/finalize'
 import { prepareHosts } from '../../../src/main/deploy/hostkeys'
 import { LocalRunner, nodeFs, nodeSpawn } from '../../../src/main/deploy/local-runner'
 import { startTap } from '../../../src/main/deploy/log-tap'
@@ -48,6 +48,10 @@ export interface HubReleasesDeps {
   ids: () => string
   /** Tests inject a scripted runner; the Hub runs ansible through Phase 8's LocalRunner. */
   runner?: DeployRunner
+  /** Phase 9's notes, notify and QA steps on Hub secrets; none when omitted. */
+  finalize?: FinalizeSteps
+  /** Integration secrets in use right now (see HubNotify.held); masked in the live stream and error bodies. */
+  heldSecrets?: () => string[]
 }
 
 export const runRootOf = (config: HubConfig): string => config.runRoot ?? join(config.dataDir, 'runs')
@@ -147,7 +151,7 @@ export class HubReleases {
       releases: this.store,
       runner,
       access,
-      finalize: noopFinalize,
+      finalize: d.finalize ?? noopFinalize,
       audit: hubAudit({ audit: d.audit, directory: d.directory, access, envOfTarget }),
       vault: { assertUnlocked: () => undefined },
       resolve,
@@ -164,6 +168,11 @@ export class HubReleases {
 
   /** Values the live stream and error bodies must mask while releases run. */
   knownSecrets(): string[] {
+    return [...this.runKnownSecrets(), ...(this.d.heldSecrets?.() ?? [])]
+  }
+
+  /** The run secrets and deploy keys alone. */
+  runKnownSecrets(): string[] {
     return [...[...this.runSecrets.values()].flat(), ...this.pems.values()]
   }
 
