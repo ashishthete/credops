@@ -142,7 +142,7 @@ describe('ReleaseService.validateEdit', () => {
     const r = await rig()
     const id = await ready(r)
     const p = await r.svc.previewPlaybook(id)
-    const res = r.svc.validateEdit(id, p.playbook)
+    const res = await r.svc.validateEdit(id, p.playbook)
     expect(res).toEqual({ ok: true, canonical: p.playbook, sha256: p.sha256 })
   })
 
@@ -152,7 +152,7 @@ describe('ReleaseService.validateEdit', () => {
     const id = await ready(r)
     const p = await r.svc.previewPlaybook(id)
     now += 60_000
-    expect(r.svc.validateEdit(id, p.playbook).ok).toBe(true)
+    expect((await r.svc.validateEdit(id, p.playbook)).ok).toBe(true)
   })
 
   it('rejects a secret reference without writing anything', async () => {
@@ -162,8 +162,20 @@ describe('ReleaseService.validateEdit', () => {
     const plays = JSON.parse(p.playbook) as Record<string, any>[]
     plays[0].tasks.push({ name: 'leak', 'ansible.builtin.debug': { msg: '{{ s }}' } })
     const before = snapshot(r, id)
-    const res = r.svc.validateEdit(id, JSON.stringify(plays, null, 2))
+    const res = await r.svc.validateEdit(id, JSON.stringify(plays, null, 2))
     expect(res.ok).toBe(false)
     expect(snapshot(r, id)).toEqual(before)
+  })
+
+  it('refuses a denied actor without echoing generated content', async () => {
+    let deny = false
+    const r = await rig({ access: { check: async () => (deny ? { allowed: false, reason: 'not allowed here' } : { allowed: true }) } })
+    const id = await ready(r)
+    const p = await r.svc.previewPlaybook(id)
+    deny = true
+    const err = await r.svc.validateEdit(id, p.playbook).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(DeployError)
+    expect((err as DeployError).code).toBe('DENIED')
+    expect((err as Error).message).not.toContain('lock')
   })
 })

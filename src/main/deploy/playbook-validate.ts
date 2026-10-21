@@ -32,10 +32,12 @@ export const EDIT_RULE = {
   moduleParam: (m: string, k: string): string => `"${k}" is not allowed for ${m}`,
   moduleShape: (m: string): string => `${m} has the wrong shape`,
   protectedTask: 'This task is generated (host lock, delegated or secret-reading) and must be exactly as generated',
+  protectedMoved: (n: string): string => `The generated task "${n}" must stay in its generated place, outside any block or rescue you added`,
+  lockOrder: (n: string): string => `The generated task "${n}" is out of order: locks come first and unlock last, as generated`,
   lockRemoved: (n: string): string => `The generated task "${n}" was removed or changed; lock tasks must stay exactly as generated`,
   timeout: `A timeout must be a whole number of seconds from 1 to ${STEP_TIMEOUT_RANGE[1]}`,
   jinjaStatement: 'Jinja statements and comments ({% %}, {# #}) are not allowed',
-  jinjaExpr: 'Only {{ name.path | filter }} is allowed, with the filters quote, b64decode, default, from_json, bool and int',
+  jinjaExpr: 'Only {{ name.path | filter }} is allowed, with the filters quote, b64decode, default, from_json, bool and int; to use literal braces, move the script into a step',
   jinjaUnterminated: 'A {{ is not closed',
   secretRef: 'Secrets, hostvars and the become password can be read only by generated tasks',
   lookup: 'lookup() and query() are not allowed',
@@ -255,6 +257,39 @@ function isLockTask(t: Obj): boolean {
   return tags.includes('od_step=lock') || tags.includes('od_step=unlock') || (typeof t.name === 'string' && t.name.startsWith('preflight lock '))
 }
 
+const isUnlock = (t: Obj): boolean => Array.isArray(t.tags) && t.tags.includes('od_step=unlock')
+const isSecretStdin = (t: Obj): boolean => {
+  for (const k of Object.keys(t)) {
+    const m = moduleOf(k)
+    const v = t[k]
+    if ((m === 'shell' || m === 'command') && isObj(v) && typeof v.stdin === 'string' && v.stdin.includes('{{ s.')) return true
+  }
+  return false
+}
+/** Tasks the generator owns by place: locks, delegated tasks and every task that reads a secret. */
+const isProtected = (t: Obj): boolean => isLockTask(t) || 'delegate_to' in t || 'connection' in t || isSecretStdin(t)
+
+/**
+ * Where a task sits: 'top' (a play's own task list), `<list>:<block identity>` for a direct child of an
+ * untouched top-level block, or 'other' (under anything the user added or changed). A protected task is
+ * valid only in the place it was generated.
+ */
+type Place = string
+const blockPlace = (b: Obj, list: string): Place => `${list}:${stable({ name: b.name, vars: b.vars })}`
+const BLOCK_PLAIN = new Set(['name', 'vars', 'block', 'rescue'])
+
+function placesOf(tasks: unknown, place: Place, out: Map<string, Set<Place>>): void {
+  if (!Array.isArray(tasks)) return
+  for (const t of tasks) {
+    if (!isObj(t)) continue
+    if (isProtected(t)) {
+      const k = stable(t)
+      out.set(k, (out.get(k) ?? new Set()).add(place))
+    }
+    if (place === 'top') for (const l of ['block', 'rescue']) placesOf(t[l], blockPlace(t, l), out)
+  }
+}
+
 // ---------------------------------------------------------------- validator
 
 class Checker {
@@ -263,6 +298,7 @@ class Checker {
   private readonly genTasks = new Set<string>()
   private readonly genVars = new Set<string>()
   private readonly genConds = new Set<string>()
+  private readonly genPlaces = new Map<string, Set<Place>>()
 
   constructor(
     private readonly text: string,
@@ -271,10 +307,11 @@ class Checker {
   ) {
     const all: Obj[] = []
     for (const p of gen) collect(p.tasks, all)
+    for (const p of gen) placesOf(p.tasks, 'top', this.genPlaces)
     for (const t of all) {
       this.genTasks.add(stable(t))
       if (isObj(t.vars)) this.genVars.add(stable(t.vars))
-      for (const k of ['when', 'failed_when', 'until']) if (typeof t[k] === 'string') this.genConds.add(t[k] as string)
+      for (const k of ['when', 'failed_when', 'changed_when', 'until']) if (typeof t[k] === 'string') this.genConds.add(t[k] as string)
     }
   }
 
@@ -294,36 +331,62 @@ class Checker {
       for (const k of Object.keys(play)) if (!PLAY_KEYS.has(k)) this.err(`${base}/${k}`, EDIT_RULE.playKey(k.slice(0, 40)))
       for (const k of PLAY_OWNED) if (stable(play[k]) !== stable(this.gen[i][k])) this.err(`${base}/${k}`, EDIT_RULE.playOwned(k))
       if (!Array.isArray(play.tasks)) return this.err(`${base}/tasks`, EDIT_RULE.topLevel)
-      this.list(play.tasks, `${base}/tasks`, 0)
-      const have = new Map<string, number>()
-      const flat: Obj[] = []
-      collect(play.tasks, flat)
-      for (const t of flat) have.set(stable(t), (have.get(stable(t)) ?? 0) + 1)
-      const want: Obj[] = []
-      collect(this.gen[i].tasks, want)
-      for (const t of want.filter(isLockTask)) {
-        const key = stable(t)
-        const n = have.get(key) ?? 0
-        if (n === 0) this.err(`${base}/tasks`, EDIT_RULE.lockRemoved(String(t.name).slice(0, 60)))
-        else have.set(key, n - 1)
-      }
+      this.list(play.tasks, `${base}/tasks`, 0, 'top')
+      this.locks(play.tasks, this.gen[i].tasks as Obj[], `${base}/tasks`)
     })
   }
 
-  private list(v: unknown, path: string, depth: number): void {
-    if (!Array.isArray(v)) return this.err(path, EDIT_RULE.blockShape)
-    if (depth > MAX_DEPTH) return this.err(path, EDIT_RULE.tooDeep)
-    v.forEach((t, i) => this.task(t, `${path}/${i}`, depth))
+  /** Locks stay at the top of the play's own list in generated order, unlock at the end; none may go missing. */
+  private locks(edited: unknown[], want: Obj[], path: string): void {
+    const top = edited.filter(isObj)
+    let missing = false
+    const flat: Obj[] = []
+    collect(edited, flat)
+    const have = new Map<string, number>()
+    for (const t of flat) have.set(stable(t), (have.get(stable(t)) ?? 0) + 1)
+    const all: Obj[] = []
+    collect(want, all)
+    for (const t of all.filter(isLockTask)) {
+      const key = stable(t)
+      const n = have.get(key) ?? 0
+      if (n === 0) {
+        missing = true
+        this.err(path, EDIT_RULE.lockRemoved(String(t.name).slice(0, 60)))
+      } else have.set(key, n - 1)
+    }
+    if (missing) return
+    let h = 0
+    while (h < want.length && isLockTask(want[h]) && !isUnlock(want[h])) h++
+    let e = want.length
+    while (e > h && isUnlock(want[e - 1])) e--
+    want.slice(0, h).forEach((t, j) => {
+      if (stable(top[j]) !== stable(t)) this.err(path, EDIT_RULE.lockOrder(String(t.name).slice(0, 60)))
+    })
+    want.slice(e).forEach((t, j) => {
+      if (stable(top[top.length - (want.length - e) + j]) !== stable(t)) this.err(path, EDIT_RULE.lockOrder(String(t.name).slice(0, 60)))
+    })
+    for (const t of want.slice(h, e).filter(isLockTask)) {
+      if (!top.some((x) => stable(x) === stable(t))) this.err(path, EDIT_RULE.lockOrder(String(t.name).slice(0, 60)))
+    }
   }
 
-  private task(t: unknown, path: string, depth: number): void {
+  private list(v: unknown, path: string, depth: number, place: Place): void {
+    if (!Array.isArray(v)) return this.err(path, EDIT_RULE.blockShape)
+    if (depth > MAX_DEPTH) return this.err(path, EDIT_RULE.tooDeep)
+    v.forEach((t, i) => this.task(t, `${path}/${i}`, depth, place))
+  }
+
+  private task(t: unknown, path: string, depth: number, place: Place): void {
     if (++this.tasks > MAX_TASKS) {
       if (this.tasks === MAX_TASKS + 1) this.err(path, EDIT_RULE.tooMany)
       return
     }
     if (!isObj(t)) return this.err(path, EDIT_RULE.taskObject)
     // Byte-identical to a generated task (key order aside): nothing further to check.
-    if (this.genTasks.has(stable(t))) return
+    if (this.genTasks.has(stable(t))) {
+      if (isProtected(t) && !this.genPlaces.get(stable(t))?.has(place)) this.err(path, EDIT_RULE.protectedMoved(String(t.name).slice(0, 60)))
+      return
+    }
 
     if ('delegate_to' in t || 'connection' in t || isLockTask(t)) this.err(path, EDIT_RULE.protectedTask)
     const mods: string[] = []
@@ -335,7 +398,8 @@ class Checker {
     const isBlock = 'block' in t || 'rescue' in t || 'always' in t
     if (isBlock) {
       if (mods.length > 0 || !Array.isArray(t.block)) this.err(path, EDIT_RULE.blockShape)
-      for (const k of ['block', 'rescue', 'always']) if (k in t) this.list(t[k], `${path}/${k}`, depth + 1)
+      const plain = place === 'top' && Object.keys(t).every((k) => BLOCK_PLAIN.has(k))
+      for (const k of ['block', 'rescue', 'always']) if (k in t) this.list(t[k], `${path}/${k}`, depth + 1, plain && k !== 'always' ? blockPlace(t, k) : 'other')
     } else if (mods.length !== 1) this.err(path, EDIT_RULE.oneModule)
     for (const m of mods) this.module(moduleOf(m) as Mod, t[m], `${path}/${m}`)
 
@@ -399,7 +463,12 @@ class Checker {
     if (typeof v === 'string') return this.jinja(v, path)
     if (depth > 6) return this.err(path, EDIT_RULE.tooDeep)
     if (Array.isArray(v)) v.forEach((x, i) => this.strings(x, `${path}/${i}`, depth + 1))
-    else if (isObj(v)) for (const [k, x] of Object.entries(v)) this.strings(x, `${path}/${k}`, depth + 1)
+    else if (isObj(v)) {
+      for (const [k, x] of Object.entries(v)) {
+        this.jinja(k, `${path}/${k}`)
+        this.strings(x, `${path}/${k}`, depth + 1)
+      }
+    }
   }
 
   private jinja(s: string, path: string): void {

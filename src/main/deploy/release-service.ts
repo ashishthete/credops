@@ -407,12 +407,15 @@ export class ReleaseService {
    * nothing is written, no secret is decrypted and no agent or shell runs. The sha256 is of the canonical text,
    * which is what a start bound to this edit must carry.
    */
-  validateEdit(releaseId: string, text: string, ctx?: CallCtx): { ok: true; canonical: string; sha256: string } | { ok: false; errors: EditError[] } {
+  async validateEdit(releaseId: string, text: string, ctx?: CallCtx): Promise<{ ok: true; canonical: string; sha256: string } | { ok: false; errors: EditError[] }> {
     const actor = ctx?.actor ?? this.d.actor
     this.d.vault.assertUnlocked()
     const rel = this.d.releases.detail(releaseId)
     this.assertStartable(rel)
     const env = this.inv.environment(rel.environmentId)
+    // The same check as the preview: the errors say whether generated text matches, so they are not for everyone.
+    const allowed = await this.d.access.check(actor, 'release.start', { environmentId: env.id, deploymentIds: this.depIds(rel) })
+    if (!allowed.allowed) throw new DeployError('DENIED', redact(allowed.reason ?? 'Not allowed'))
     this.assertCurrent(rel, env)
     const reviewed = this.previews.get(reviewKey(releaseId, actor))
     const { playbook } = this.releasePlan(rel, env, actor, reviewed?.startedAt ?? this.d.now().toISOString())
