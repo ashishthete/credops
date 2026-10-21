@@ -37,6 +37,8 @@ export async function rig(
   const f = await makeDeployFixture({ maxEvents: over.maxEvents })
   // The fixture shares app1 with protected prod; most tests want an unprotected staging, so unshare it here.
   f.db.prepare('DELETE FROM environment_hosts WHERE environment_id = ?').run(f.prod.id)
+  // Parallel prepare (on by default) is tested on its own: the rig keeps the in-order release its tests were written for.
+  for (const env of [f.staging, f.prod]) f.deploys.updateSettings(env.id, { parallelPrepare: false })
   const runner = new FakeRunner()
   const clipboard = { async writeText(): Promise<void> {}, async readText(): Promise<string> { return '' } }
   const store = new SecretStore(f.db, f.vault, f.audit, { clipboard })

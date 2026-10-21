@@ -16,6 +16,7 @@ import {
   type DeploymentRunStatus,
   type DockerMode,
   PLAYBOOK_CHANGED_MESSAGE,
+  PREPARE_FAILED_MESSAGE,
   REVIEW_EXPIRED_MESSAGE,
   REVIEW_TTL_MS,
   type PlaybookPreview,
@@ -139,6 +140,10 @@ interface Live {
   done: Promise<void>
   runStatus: Map<string, DeploymentRunStatus>
   checkedOut: Set<string>
+  /** Runs whose up step started (a parallel prepare rolls back only these). */
+  upped: Set<string>
+  /** The builds this release's parallel prepare launched: the unlock stops any still running. */
+  killBuilds: { runId: string; repoPath: string }[]
   runIds: Set<string>
   failure: string | null
   versionError: string | null
@@ -363,7 +368,7 @@ export class ReleaseService {
         this.finish(live, 'cancelled', 'Cancelled', null)
         return
       }
-      const checks: PreflightCheck[] = []
+      const checks: PreflightCheck[] = this.sharedRepoChecks(live.environmentId, infos)
       if (err !== null) checks.push(this.block('ansible', err))
       else checks.push({ id: 'ansible', deploymentId: null, hostId: '', label: 'ansible', level: 'ok', message: 'ansible-playbook is available' })
       if (out?.preflight)
@@ -538,9 +543,10 @@ export class ReleaseService {
       startedAt,
       tagCommits: rel.preflight?.commits,
       originHeads: originHeads(rel, skips),
+      prepare: settings.parallelPrepare ? { cap: settings.prepareCap } : null,
     })
-    // With a flow, `od` and become are inventory host vars: the review covers them as it covers play vars.
-    return { plan, playbook: generatePlaybook(plan), inventory: plan.flow === null ? null : generateInventory(plan), version, docker }
+    // With a flow or a parallel prepare, `od` and become are inventory host vars: the review covers them as it covers play vars.
+    return { plan, playbook: generatePlaybook(plan), inventory: plan.flow === null && plan.prepare === null ? null : generateInventory(plan), version, docker }
   }
 
   private async runRelease(
@@ -557,6 +563,8 @@ export class ReleaseService {
     try {
       this.push(id, { type: 'run.started', kind: 'release', version: c.version })
       live.phase = 'release'
+      // Set before the run: a cancel mid-build still has its unlock stop the builds.
+      if (plan.prepare !== null) live.killBuilds = plan.deployments.map((d) => ({ runId: d.runId, repoPath: d.repoPath }))
       const res = await this.exec(live, plan, c.holder.secrets ?? EMPTY)
       // Whatever else happens next (rollback, tag, finalize), the runs that succeeded now run this code.
       this.recordDeployedRuns(live, res.out)
@@ -564,9 +572,9 @@ export class ReleaseService {
         status = 'cancelled'
         error = 'Cancelled'
       } else if (res.err !== null || !res.out || this.failed(res.out)) {
-        error = this.reason(live, res.out, res.err, 'Release')
+        error = this.prepareFailed(live, c.infos, plan, res.out) ?? this.reason(live, res.out, res.err, 'Release')
         status = 'failed'
-        const targets = c.autoRollback && live.busyText === null ? this.rollbackTargets(live, c.infos, res.out) : []
+        const targets = c.autoRollback && live.busyText === null ? this.rollbackTargets(live, c.infos, res.out, plan.prepare !== null) : []
         if (targets.length > 0) {
           const rb = await this.autoRollback(live, c, targets, docker, backup)
           status = rb.ok ? 'rolled_back' : 'failed'
@@ -1114,7 +1122,7 @@ export class ReleaseService {
     void holder
     live.phase = 'unlock'
     if (infos.length === 0) return
-    const res = await this.exec(live, this.plan('unlock', live, infos, { version: null, holder: null, docker: new Map() }), EMPTY)
+    const res = await this.exec(live, this.plan('unlock', live, infos, { version: null, holder: null, docker: new Map(), killBuilds: live.killBuilds }), EMPTY)
     if (res.err !== null || !res.out || this.failed(res.out)) {
       this.push(live.id, { type: 'log', stepId: null, hostId: null, stream: 'err', line: this.red(live, `Could not release the deploy lock: ${res.err ?? 'see the log'}`) })
     }
@@ -1129,8 +1137,22 @@ export class ReleaseService {
     return this.red(live, msg)
   }
 
-  private rollbackTargets(live: Live, infos: Info[], out: RunOutcome | null): { info: Info; commit: string }[] {
-    const reached = new Set([...(out?.reachedCheckout ?? []), ...live.checkedOut])
+  /**
+   * A parallel prepare that failed before any service went up: which checkout failed, and that nothing was restarted.
+   * Null when something went up, or no checkout's step failed (a lock refusal, an unreachable host).
+   */
+  private prepareFailed(live: Live, infos: Info[], plan: DeployPlan, out: RunOutcome | null): string | null {
+    if (plan.prepare === null || live.busyText !== null || live.upped.size > 0 || (out?.reachedUp ?? []).length > 0) return null
+    const run = live.failedStep?.split(':')[0]
+    const info = infos.find((i) => i.run.id === run)
+    if (!info) return null
+    const names = info.sel.services.map((x) => x.name)
+    return PREPARE_FAILED_MESSAGE(names.length > 0 ? names.join(', ') : info.dep.name)
+  }
+
+  /** The runs a rollback undoes: those that reached checkout, or with a parallel prepare only those that reached up. */
+  private rollbackTargets(live: Live, infos: Info[], out: RunOutcome | null, prepared = false): { info: Info; commit: string }[] {
+    const reached = prepared ? new Set([...(out?.reachedUp ?? []), ...live.upped]) : new Set([...(out?.reachedCheckout ?? []), ...live.checkedOut])
     const rows = new Map(this.d.releases.detail(live.id).runs.map((r) => [r.id, r]))
     const targets: { info: Info; commit: string }[] = []
     for (const info of infos) {
@@ -1198,6 +1220,10 @@ export class ReleaseService {
       originHeads?: Map<string, string>
       /** Release only: the environment's flow as this release's stages (flowOf). */
       flow?: PlanFlow | null
+      /** Release only: the parallel prepare, from the environment's settings. */
+      prepare?: { cap: number } | null
+      /** Unlock only: the builds a parallel prepare launched. */
+      killBuilds?: { runId: string; repoPath: string }[]
     },
   ): DeployPlan {
     const hosts = this.planHosts(live.environmentId, infos)
@@ -1240,6 +1266,8 @@ export class ReleaseService {
       lock: o.lockRaw ? { expectRaw: o.lockRaw } : {},
       startedAt: o.startedAt ?? this.d.now().toISOString(),
       flow: kind === 'release' ? (o.flow ?? null) : null,
+      prepare: kind === 'release' ? (o.prepare ?? null) : null,
+      ...(kind === 'unlock' && o.killBuilds && o.killBuilds.length > 0 ? { killBuilds: o.killBuilds } : {}),
     }
   }
 
@@ -1516,6 +1544,8 @@ export class ReleaseService {
       done: Promise.resolve(),
       runStatus: new Map(),
       checkedOut: new Set(),
+      upped: new Set(),
+      killBuilds: [],
       runIds: new Set(),
       failure: null,
       versionError: null,
@@ -1715,6 +1745,34 @@ export class ReleaseService {
     return redact(text, withBase64Forms(live.known))
   }
 
+  /**
+   * With parallel prepare on, two selected checkouts in one repo on one host must deploy the same branch: their
+   * prepares run one after the other there, so the second checkout would replace the tree the first one built.
+   */
+  private sharedRepoChecks(environmentId: string, infos: Info[]): PreflightCheck[] {
+    if (!this.d.deploys.settings(environmentId).parallelPrepare) return []
+    const first = new Map<string, Info>()
+    const out: PreflightCheck[] = []
+    for (const i of infos) {
+      const key = `${i.dep.hostId}\0${i.dep.repoPath}`
+      const a = first.get(key)
+      if (!a) {
+        first.set(key, i)
+        continue
+      }
+      if (a.dep.defaultBranch === i.dep.defaultBranch) continue
+      out.push({
+        id: 'shared-repo',
+        deploymentId: i.dep.id,
+        hostId: i.dep.hostId,
+        label: 'shared repo',
+        level: 'block',
+        message: `${a.dep.name} and ${i.dep.name} share ${i.dep.repoPath} on this host but deploy different branches; deploy them in separate releases, or turn off parallel prepare`,
+      })
+    }
+    return out
+  }
+
   private block(id: string, message: string): PreflightCheck {
     return { id, deploymentId: null, hostId: '', label: id === 'ansible' ? 'ansible' : 'preflight', level: 'block', message }
   }
@@ -1789,6 +1847,7 @@ export class ReleaseService {
         break
       case 'step.started': {
         if (live && body.kind === 'checkout' && body.deploymentRunId) live.checkedOut.add(body.deploymentRunId)
+        if (live && body.kind === 'up' && body.deploymentRunId) live.upped.add(body.deploymentRunId)
         if (!body.deploymentRunId) break
         const list = this.stepsOf(body.deploymentRunId)
         const entry = { stepId: body.stepId, kind: body.kind, state: 'running' as const, startedAt: this.d.now().toISOString(), finishedAt: null }

@@ -236,6 +236,9 @@ export class LocalRunner implements DeployRunner {
       await write('known_hosts', generateKnownHosts(prepared?.knownHosts ?? []))
       await write('ssh_config', generateSshConfig(effective, { privateAgent: agent?.sock ?? join(rundir, 'a'), userAgent: prepared?.userAgentNeeded ? o.userAgentSock : null }, rundir, { sshConfig: o.sshConfig }))
       await write('ansible.cfg', generateAnsibleCfg(effective, rundir))
+      // A parallel prepare's builds run detached from ansible: what it launches, by run (ids and paths only).
+      if (effective.kind === 'release' && (effective.prepare ?? null) !== null)
+        await write('async.json', JSON.stringify(effective.deployments.map((d) => ({ runId: d.runId, hostId: d.hostId, repoPath: d.repoPath }))))
 
       const translator = new EventTranslator({ plan: effective, secrets: () => raw, now })
 

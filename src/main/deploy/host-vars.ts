@@ -1,4 +1,4 @@
-import { REPO_PATH, VERSION } from '../../shared/deploy'
+import { REPO_PATH, SAFE_IDENT, VERSION } from '../../shared/deploy'
 import { SECRET_KEY, b64, lockJson, need, sanitizeIdent } from './quote'
 import type { DeployPlan, PlanDeployment, PlanHost } from './runner'
 
@@ -8,8 +8,11 @@ import type { DeployPlan, PlanDeployment, PlanHost } from './runner'
  * them per host instead, from the same values. Neither holds a secret value: become is a `{{ s.<key> }}` reference.
  */
 
-/** True when plays span hosts, so `od` and become live in the inventory, not in play vars. */
-export const hostVarsInInventory = (plan: DeployPlan): boolean => (plan.flow ?? null) !== null
+/** True when plays span hosts (a flow, or a parallel prepare), so `od` and become live in the inventory, not in play vars. */
+export const hostVarsInInventory = (plan: DeployPlan): boolean => (plan.flow ?? null) !== null || (plan.kind === 'release' && (plan.prepare ?? null) !== null)
+
+/** The pid file a parallel prepare's build records its process group in (repo path and run id checked by the caller). */
+export const buildPidFile = (repoPath: string, runId: string): string => `${repoPath}/.git/opsdeck-build-${runId}.pid`
 
 export function hostOd(plan: DeployPlan, h: PlanHost, deps: PlanDeployment[]): Record<string, unknown> {
   const od: Record<string, unknown> = {
@@ -23,6 +26,13 @@ export function hostOd(plan: DeployPlan, h: PlanHost, deps: PlanDeployment[]): R
   if (plan.version !== null) {
     need(VERSION.test(plan.version), 'version')
     od.version = plan.version
+  }
+  if (plan.kind === 'unlock') {
+    // Only with builds to stop: an unlock without them keeps its shape.
+    const mine = new Set(deps.map((d) => d.runId))
+    const kill = (plan.killBuilds ?? []).filter((k) => mine.has(k.runId))
+    for (const k of kill) need(REPO_PATH.test(k.repoPath) && SAFE_IDENT.test(k.runId), 'build to stop')
+    if (kill.length > 0) od.kill_pids = kill.map((k) => buildPidFile(k.repoPath, k.runId))
   }
   if (plan.kind === 'break-lock') {
     const raw = plan.lock.expectRaw?.[h.hostId]

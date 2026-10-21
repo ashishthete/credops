@@ -315,7 +315,8 @@ export class EventTranslator {
     const d = this.describe(r, t.run)
     this.currentStep.set(d.hostId ?? '', d.stepId)
     this.lastStep = d.stepId
-    if (this.internal(name)) return []
+    // A build's async launch starts the build step (its time counts) but never settles it: its async_status poll does.
+    if (this.internal(name) && !name.startsWith('build launch ')) return []
     const out: RunEventBody[] = []
     this.begin(d, out)
     return out

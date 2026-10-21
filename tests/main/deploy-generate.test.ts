@@ -1,13 +1,13 @@
 import { spawnSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 import { matchSshConfig } from '../../src/main/inventory/ssh-config'
-import { generateAnsibleCfg, generateInventory, generateKnownHosts, generatePlaybook, generateSshConfig, knownHostsToken, socketPathFits, stepList } from '../../src/main/deploy/generate'
+import { generateAnsibleCfg, generateInventory, generateKnownHosts, generatePlaybook, generateSshConfig, knownHostsToken, prepareSchedule, socketPathFits, stepList } from '../../src/main/deploy/generate'
 import { b64, lockJson, sanitizeIdent } from '../../src/main/deploy/quote'
 import type { DeployPlan, PlanDeployment, PlanFlow, PlanKind, PlanStep } from '../../src/main/deploy/runner'
 import { COMPOSE_AUTO, COMPOSE_FILE, ORIGIN_MOVED_MESSAGE } from '../../src/shared/deploy'
 import { MAX_SERVICES } from '../../src/shared/services'
 import { ENV_NAME, deniedEnvName, type StepAnchor } from '../../src/shared/steps'
-import { FIX, planFixture, shellWords, stepFixture } from './deploy-helpers'
+import { FIX, depFixture, planFixture, shellWords, stepFixture } from './deploy-helpers'
 
 type Task = Record<string, unknown> & { block?: Task[]; rescue?: Task[]; tags?: string[]; no_log?: boolean }
 type Play = Record<string, unknown> & { hosts: string; tasks: Task[]; vars: Record<string, unknown> }
@@ -1329,5 +1329,175 @@ describe('release flow stages', () => {
     const plan = flowPlan()
     const list = stepList('release', plan.deployments, plan.flow)
     expect(list.get(plan.deployments[0].runId)!.map((x) => x.key)).toEqual(['record', 'backup', 'fetch', 'checkout', 'env', 'build', 'up', 'health', 'c_21', 'tag'])
+  })
+})
+
+describe('parallel prepare', () => {
+  /** Three checkouts on od-1 (dep1 with every feature), one on od-2 when `four`. */
+  const prepPlan = (cap = 2, four = false): DeployPlan => {
+    const base = planFixture({ prepare: { cap } })
+    const [d1, d2, d3] = base.deployments
+    d3.hostId = d1.hostId
+    return { ...base, deployments: [d1, d2, d3, ...(four ? [depFixture(4, base.hosts[1].hostId)] : [])] }
+  }
+  const ids = (plan: DeployPlan): string[] => plan.deployments.map((d) => d.runId)
+  /** Leaf task names of a play, rescues excluded. */
+  const names = (p: Play): string[] => flat(p.tasks).map((t) => String(t.name))
+  const tagOf = (t: Task, k: string): string | undefined => (t.tags ?? []).find((x) => x.startsWith(`${k}=`))?.slice(k.length + 1)
+  const passesBashN = (p: Play): void => {
+    for (const { t } of every(p.tasks)) {
+      const cmd = cmdOf(t).replace(/\{\{[^}]*\}\}/g, 'x')
+      if (!cmd) continue
+      const r = spawnSync('/bin/bash', ['-n'], { input: cmd, encoding: 'utf8' })
+      expect(r.stderr, cmd).toBe('')
+      expect(r.status).toBe(0)
+    }
+  }
+
+  it('schedules waves of at most cap per host, every host in each wave', () => {
+    const plan = prepPlan(2)
+    const [r1, r2, r3] = ids(plan)
+    expect(prepareSchedule(plan.deployments, 2)).toEqual([[r1, r2], [r3]])
+    expect(prepareSchedule(plan.deployments, 2).map((w) => w.length)).toEqual([2, 1])
+    const four = prepPlan(1, true)
+    const [, , , r4] = ids(four)
+    expect(prepareSchedule(four.deployments, 1)).toEqual([[r1, r4], [r2], [r3]])
+    expect(prepareSchedule(four.deployments, 8)).toEqual([[r1, r2, r3, r4]])
+    expect(() => prepareSchedule(plan.deployments, 0)).toThrow()
+    expect(() => prepareSchedule(plan.deployments, 9)).toThrow()
+  })
+
+  it('chains checkouts that share a repo path on one host into successive waves', () => {
+    const plan = prepPlan(3)
+    plan.deployments[2].repoPath = plan.deployments[0].repoPath
+    const [r1, r2, r3] = ids(plan)
+    expect(prepareSchedule(plan.deployments, 3)).toEqual([[r1, r2], [r3]])
+    // the same path on another host is another repo
+    const other = prepPlan(3, true)
+    other.deployments[3].repoPath = other.deployments[0].repoPath
+    expect(prepareSchedule(other.deployments, 3)).toEqual([ids(other)])
+    // in the playbook: the second checkout's fetch comes after the first one's build poll
+    const ps = plays(plan)
+    const leaf = flat(ps[0].tasks)
+    const at = (name: string): number => leaf.findIndex((t) => t.name === name)
+    expect(at('build dep1')).toBeLessThan(at('fetch dep3'))
+  })
+
+  it('launches each wave\'s builds before polling them, async, and polls with async_status', () => {
+    const plan = prepPlan(2)
+    const ps = plays(plan)
+    expect(ps.map((p) => p.name)).toEqual(['release prepare', 'release od-1'])
+    const builds = names(ps[0]).filter((n) => n.startsWith('build '))
+    expect(builds).toEqual(['build launch dep1', 'build launch dep2', 'build dep1', 'build dep2', 'build launch dep3', 'build dep3'])
+    const leaf = flat(ps[0].tasks)
+    const launch = leaf.find((t) => t.name === 'build launch dep2')!
+    expect(launch.async).toBe(300)
+    expect(launch.poll).toBe(0)
+    expect(launch.register).toBe('od_bj_1')
+    expect(cmdOf(launch)).toContain('.git/opsdeck-build-{{ d.run }}.pid')
+    const poll = leaf.find((t) => t.name === 'build dep2')!
+    expect(poll['ansible.builtin.async_status']).toEqual({ jid: '{{ od_bj_1.ansible_job_id }}' })
+    expect(tagOf(poll, 'od_step')).toBe('build')
+    expect(tagOf(poll, 'od_run')).toBe(plan.deployments[1].runId)
+    expect(poll.until).toBe('od_bs_1.finished')
+    expect(poll.retries).toBe(60)
+    expect(poll.delay).toBe(5)
+    // the job's status is read as the user that launched it
+    expect(poll.become).toBe(true)
+    expect(leaf.find((t) => t.name === 'build dep3')!.become).toBeUndefined()
+    // a poll block runs only where its launch did
+    const pollBlock = ps[0].tasks.find((t) => t.block?.[0]?.name === 'build dep2')!
+    expect(pollBlock.when).toBe("inventory_hostname == 'od-1' and (od_bj_1 | default({})).ansible_job_id is defined")
+  })
+
+  it('runs no up, health or tag in the prepare play, and every checkout\'s rest after it', () => {
+    const plan = prepPlan(2, true)
+    const ps = plays(plan)
+    expect(ps.map((p) => p.hosts)).toEqual(['od-1:od-2', 'od-1', 'od-2'])
+    const t0 = flat(ps[0].tasks).map((t) => tagOf(t, 'od_step') ?? `<${String(t.name)}>`)
+    expect(t0.some((x) => x === 'up' || x === 'health' || x === 'tag')).toBe(false)
+    expect(t0.filter((x) => x === 'checkout')).toHaveLength(4)
+    expect(t0.filter((x) => x === 'build')).toHaveLength(8)
+    expect(steps(ps[1])).toEqual(['up', 'health', 'c_1', 'tag', 'up', 'health', 'tag', 'up', 'tag'])
+    expect(steps(ps[2])).toEqual(['up', 'tag'])
+    expect(ps[0].strategy).toBe('linear')
+    expect(ps[0].any_errors_fatal).toBe(true)
+    for (const p of ps) expect(Object.keys(p.vars)).toEqual(['s'])
+    // od and become are host vars, as with a flow
+    expect(generateInventory(plan)).toContain(' od=')
+  })
+
+  it('ends the prepare play with a marker and a gate that fails every host when any did not prepare', () => {
+    const ps = plays(prepPlan(2, true))
+    const clause = (a: string) => `not (hostvars['${a}'].od_prepared | default(false)) or (hostvars['${a}'].od_prep_failed | default(false))`
+    expect(ps[0].tasks.slice(-2)).toEqual([
+      { name: 'od prepared', 'ansible.builtin.set_fact': { od_prepared: true } },
+      { name: 'od gate', 'ansible.builtin.fail': { msg: 'OpsDeck prepare stopped: a checkout did not prepare' }, when: `${clause('od-1')} or ${clause('od-2')}` },
+    ])
+    // a prepare failure marks the host and lets the other checkouts go on
+    for (const b of ps[0].tasks.filter((t) => t.block)) expect(b.rescue).toEqual([{ name: `mark prepare failed ${String(b.name).slice(11)}`, 'ansible.builtin.set_fact': { od_prep_failed: true } }])
+    // the deploy plays keep the release rescue
+    expect(ps[1].tasks[0].rescue![0]).toEqual({ name: 'mark failed dep1', 'ansible.builtin.set_fact': { od_failed: true } })
+  })
+
+  it('with a flow, replaces the flow\'s prepare play and keeps its stages', () => {
+    const base = prepPlan(2, true)
+    const [d1, d2, d3, d4] = base.deployments
+    for (const onFailure of ['stop-all', 'continue-other-hosts'] as const) {
+      const plan: DeployPlan = {
+        ...base,
+        flow: { stages: [{ kind: 'services', parts: [{ runId: d1.runId, services: null, urls: [0] }, { runId: d4.runId, services: null, urls: [] }] }, { kind: 'services', parts: [d2, d3].map((d) => ({ runId: d.runId, services: null, urls: d.urls.map((_, i) => i) })) }], onFailure },
+      }
+      const ps = plays(plan)
+      expect(ps.map((p) => p.name)).toEqual(['release prepare', 'release stage 0', 'release stage 1', 'release tag'])
+      expect(ps[0].strategy).toBe('linear')
+      expect(ps[0].any_errors_fatal).toBe(true)
+      expect(names(ps[0]).slice(-3)).toEqual(['od prepared', 'od gate', 'flow play 0 done'])
+      expect(names(ps[0]).filter((n) => n.startsWith('build launch '))).toHaveLength(4)
+      expect(flat(ps[0].tasks).some((t) => tagOf(t, 'od_step') === 'up')).toBe(false)
+      expect(ps[1].tasks[0].name).toBe('flow gate 1')
+      for (const p of ps) passesBashN(p)
+    }
+  })
+
+  it('parses, and every command passes bash -n (parse only, nothing runs)', () => {
+    for (const plan of [prepPlan(2), prepPlan(1, true), prepPlan(8, true)]) {
+      const text = generatePlaybook(plan)
+      expect(() => JSON.parse(text)).not.toThrow()
+      for (const p of JSON.parse(text) as Play[]) passesBashN(p)
+    }
+  })
+
+  it('changes nothing without a prepare, or outside a release', () => {
+    const plan = planFixture()
+    expect(plan.prepare).toBeNull()
+    expect(generatePlaybook(plan)).toBe(generatePlaybook({ ...plan, prepare: null }))
+    expect(plays(plan).map((p) => p.name)).toEqual(['release od-1', 'release od-2'])
+    for (const kind of ['rollback', 'preflight', 'version', 'unlock'] as PlanKind[]) {
+      const k = planFixture({ kind })
+      expect(generatePlaybook({ ...k, prepare: { cap: 2 } }), kind).toBe(generatePlaybook(k))
+      expect(generateInventory({ ...k, prepare: { cap: 2 } }), kind).toBe(generateInventory(k))
+    }
+  })
+
+  it('the unlock plan stops recorded builds before it removes the lock', () => {
+    const base = planFixture({ kind: 'unlock' })
+    const [d1, , d3] = base.deployments
+    const plan: DeployPlan = { ...base, killBuilds: [{ runId: d1.runId, repoPath: d1.repoPath }, { runId: d3.runId, repoPath: d3.repoPath }] }
+    const ps = plays(plan)
+    expect((ps[0].vars.od as { kill_pids: string[] }).kill_pids).toEqual([`${d1.repoPath}/.git/opsdeck-build-${d1.runId}.pid`])
+    expect((ps[1].vars.od as { kill_pids: string[] }).kill_pids).toEqual([`${d3.repoPath}/.git/opsdeck-build-${d3.runId}.pid`])
+    const cmd = cmdOf(ps[0].tasks[0])
+    const kill = cmd.indexOf('kill -TERM -- "-$g"')
+    expect(kill).toBeGreaterThan(-1)
+    expect(kill).toBeLessThan(cmd.indexOf('rm -f "$p"'))
+    expect(cmd.indexOf('rm -f "$p"')).toBeLessThan(cmd.indexOf('rm -f "$f"'))
+    expect(cmd).toContain("for p in {{ od.kill_pids | map('quote') | join(' ') }}; do")
+    for (const p of ps) passesBashN(p)
+    // without builds to stop the unlock is unchanged
+    expect(generatePlaybook({ ...base, killBuilds: [] })).toBe(generatePlaybook(base))
+    expect(generatePlaybook(base)).not.toContain('kill_pids')
+    // a path the generator cannot carry is refused
+    expect(() => generatePlaybook({ ...base, killBuilds: [{ runId: d1.runId, repoPath: '/srv/$(id)' }] })).toThrow()
   })
 })

@@ -269,6 +269,22 @@ describe('LocalRunner', () => {
     expect(t.fs.dirs.size).toBe(0)
   })
 
+  it('a parallel prepare release also writes async.json: each planned build, by run, host and repo, nothing secret', async () => {
+    const t = setup()
+    let files = new Map<string, string>()
+    t.ansible.onSpawn = () => void (files = new Map([...t.fs.files].map(([f, v]) => [f.replace(/^\/tmp\/od-t\d+\//, ''), String(v)])))
+    t.ansible.stdout = fixtureLines('release-ok.jsonl')
+    const plan = planFixture({ prepare: { cap: 2 } })
+    await t.runner.start(plan, SECRETS).done
+    expect(JSON.parse(files.get('async.json')!)).toEqual(plan.deployments.map((d) => ({ runId: d.runId, hostId: d.hostId, repoPath: d.repoPath })))
+    for (const v of Object.values(SECRETS.values)) expect(files.get('async.json')).not.toContain(v)
+    // not for another kind, nor without a prepare
+    for (const p of [planFixture({ kind: 'unlock', prepare: { cap: 2 } }), planFixture()]) {
+      await t.runner.start(p, SECRETS).done
+      expect(files.has('async.json')).toBe(false)
+    }
+  })
+
   it.each(['rollback', 'unlock'] as const)('%s still runs on the reachable host and reports the unreachable one failed', async (kind) => {
     const t = setup({}, fakePrepare({ checks: [down('host-od-2')] }))
     let inv = ''

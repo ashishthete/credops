@@ -7,7 +7,7 @@ import { REDACTED } from '../../src/main/security/redact'
 import type { DeployPlan } from '../../src/main/deploy/runner'
 import { ToolingError } from '../../src/main/deploy/tooling'
 import { CONFIRM_MESSAGE } from '../../src/shared/ops'
-import { BREAK_LOCK_CONFIRM_MESSAGE, DEFAULT_RELEASE_OPTIONS, type CommitInfo, type DeploymentMeta, type PreflightCheck, type RunEvent } from '../../src/shared/deploy'
+import { BREAK_LOCK_CONFIRM_MESSAGE, DEFAULT_RELEASE_OPTIONS, PREPARE_FAILED_MESSAGE, type CommitInfo, type DeploymentMeta, type PreflightCheck, type RunEvent } from '../../src/shared/deploy'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import type { AppServiceMeta } from '../../src/shared/services'
 import { A, B, C, NOW, SECRET, dep, ready, rig, tracked, type Rig } from './release-rig'
@@ -1594,5 +1594,104 @@ describe('per-service record', () => {
     // Without a ctx the constructor's actor is still used.
     const id2 = await ready(r, [dep(r, 'web')])
     expect(r.svc.list().find((x) => x.id === id2)?.triggeredBy).toBe('tester@box')
+  })
+})
+
+describe('parallel prepare', () => {
+  const on = (r: Rig) => r.f.deploys.updateSettings(r.f.staging.id, { parallelPrepare: true })
+
+  it('the release plan carries the prepare cap, and other plans none', async () => {
+    const r = await rig()
+    on(r)
+    r.f.deploys.updateSettings(r.f.staging.id, { prepareCap: 5 })
+    const id = await ready(r, [dep(r, 'one'), dep(r, 'two')])
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).status).toBe('succeeded')
+    expect(r.runner.call('release').prepare).toEqual({ cap: 5 })
+    expect(r.runner.call('preflight').prepare).toBeNull()
+    expect(r.runner.call('unlock').prepare).toBeNull()
+
+    const off = await rig()
+    const oid = await ready(off)
+    await off.svc.start(oid, {})
+    await off.svc.whenIdle()
+    expect(off.runner.call('release').prepare).toBeNull()
+    expect(off.runner.call('unlock').killBuilds).toBeUndefined()
+  })
+
+  it('a build that fails in prepare restarts nothing, rolls back nothing and says so', async () => {
+    const r = await rig()
+    on(r)
+    const deps = [dep(r, 'one'), dep(r, 'two')]
+    const id = await ready(r, deps)
+    r.runner.on.release = (plan, _s, emit) => {
+      const [r1, r2] = runIds(plan)
+      emit({ type: 'step.started', stepId: `${r2}:build`, kind: 'build', name: 'Build two', hostId: r.f.host.id, deploymentRunId: r2 })
+      emit({ type: 'step.failed', stepId: `${r2}:build`, error: 'compose build failed', durationMs: 1 })
+      return { exitCode: 2, failedDeploymentRunIds: [r2], reachedCheckout: [r1, r2], reachedUp: [], commits: { [r1]: { previous: A }, [r2]: { previous: B } } }
+    }
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    expect(r.runner.kinds).toEqual(['preflight', 'release', 'unlock'])
+    const d = r.svc.detail(id)
+    expect(d.status).toBe('failed')
+    expect(d.error).toBe(PREPARE_FAILED_MESSAGE(tracked(r, deps[1]).map((s) => s.name).join(', ')))
+    // every launched build is stopped by the unlock
+    const plan = r.runner.call('release')
+    expect(r.runner.call('unlock').killBuilds).toEqual(plan.deployments.map((x) => ({ runId: x.runId, repoPath: x.repoPath })))
+  })
+
+  it('after a service went up, a failure rolls back only the runs that went up', async () => {
+    const r = await rig()
+    on(r)
+    const id = await ready(r, [dep(r, 'one'), dep(r, 'two')])
+    r.runner.on.release = (plan) => {
+      const [r1, r2] = runIds(plan)
+      return { exitCode: 2, failedDeploymentRunIds: [r2], reachedCheckout: [r1, r2], reachedUp: [r1], commits: { [r1]: { previous: A }, [r2]: { previous: B } } }
+    }
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    const [r1] = runIds(r.runner.call('release'))
+    expect(runIds(r.runner.call('rollback'))).toEqual([r1])
+    expect(r.svc.detail(id).status).toBe('rolled_back')
+  })
+
+  it('a cancel mid-build stops the launched builds before the lock goes', async () => {
+    const r = await rig()
+    on(r)
+    const g = gate()
+    r.runner.onCancel = g.open
+    r.runner.on.release = async () => {
+      await g.p
+      return { cancelled: true, exitCode: null }
+    }
+    const id = await ready(r, [dep(r, 'one'), dep(r, 'two')])
+    await r.svc.start(id, {})
+    await r.svc.cancel(id)
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).status).toBe('cancelled')
+    const plan = r.runner.call('release')
+    expect(r.runner.call('unlock').killBuilds).toEqual(plan.deployments.map((x) => ({ runId: x.runId, repoPath: x.repoPath })))
+  })
+
+  it('preflight blocks two checkouts sharing a repo on a host on different branches', async () => {
+    const r = await rig()
+    on(r)
+    const one = dep(r, 'one')
+    const two = dep(r, 'two', { repoPath: '/srv/one', defaultBranch: 'next' })
+    const id = await ready(r, [one, two])
+    const d = r.svc.detail(id)
+    expect(d.status).toBe('blocked')
+    expect(d.preflight?.checks.find((c) => c.id === 'shared-repo')).toMatchObject({ level: 'block', label: 'shared repo', hostId: r.f.host.id })
+    expect(d.preflight?.checks.find((c) => c.id === 'shared-repo')!.message).toContain('turn off parallel prepare')
+    // the same branch shares the checkout and is fine; with parallel prepare off nothing is checked
+    const same = await rig()
+    on(same)
+    const sid = await ready(same, [dep(same, 'one'), dep(same, 'two', { repoPath: '/srv/one' })])
+    expect(same.svc.detail(sid).preflight?.checks.some((c) => c.id === 'shared-repo')).toBe(false)
+    const off = await rig()
+    const oid = await ready(off, [dep(off, 'one'), dep(off, 'two', { repoPath: '/srv/one', defaultBranch: 'next' })])
+    expect(off.svc.detail(oid).preflight?.checks.some((c) => c.id === 'shared-repo')).toBe(false)
   })
 })

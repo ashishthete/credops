@@ -122,6 +122,13 @@ export interface DeployPlan {
   startedAt: string
   /** Release only: the stages the deploy phase runs in, one play each. Null: one play per host. */
   flow: PlanFlow | null
+  /**
+   * Release only: prepare every checkout first, in one play over all hosts, with builds launched async (at most
+   * `cap` per host at once); no service goes up unless every checkout prepared. Null: each checkout runs in order.
+   */
+  prepare: { cap: number } | null
+  /** Unlock only: the builds a parallel prepare launched, whose recorded process groups are stopped before the lock goes. */
+  killBuilds?: { runId: string; repoPath: string }[]
 }
 
 // ---- The runner boundary (Phase 10's HubRunner implements the same interface) ----
