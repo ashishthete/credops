@@ -109,5 +109,10 @@ describe('unpublish keeps release history', () => {
     other.services = []
     const res = await r.call(r.admin, 'PUT', `/api/v1/admin/environments/${other.environment.id}`, other)
     expect(res.statusCode, res.body).toBe(200)
+
+    // The original then cannot be published again under that name, and the refusal says why.
+    const again = await r.call(r.admin, 'PUT', `/api/v1/admin/environments/${ENV_ID}`, envManifest())
+    expect(again.statusCode).toBe(409)
+    expect(again.json().message).toBe('Another published environment now uses the name "prod". Rename one of them to publish this one again.')
   })
 })

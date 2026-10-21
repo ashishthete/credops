@@ -410,9 +410,13 @@ export class Registry {
     const hash = hashManifest(manifest)
     const now = this.opts.now().toISOString()
     const result = inTransaction(this.db, () => {
-      const existing = this.db.prepare('SELECT name FROM environments WHERE id = ?').get(env.id) as { name: string } | undefined
+      const existing = this.db.prepare('SELECT name, unpublished_at FROM environments WHERE id = ?').get(env.id) as { name: string; unpublished_at: string | null } | undefined
       if (existing) this.assertNoRelease(env.id, existing.name)
       const dup = this.db.prepare(`SELECT id FROM environments WHERE name = ? COLLATE NOCASE AND id <> ? AND ${PUBLISHED}`).get(env.name, env.id)
+      // An unpublished environment gives up its name; one published since may have taken it.
+      if (dup && existing?.unpublished_at) {
+        throw new HubHttpError(409, 'conflict', `Another published environment now uses the name "${env.name}". Rename one of them to publish this one again.`)
+      }
       if (dup) throw new HubHttpError(409, 'conflict', 'An environment with that name is already published')
 
       this.db
