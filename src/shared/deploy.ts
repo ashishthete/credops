@@ -485,6 +485,12 @@ export interface ReleaseSummary {
   error: string | null
 }
 
+/** An environment's newest release that ran (or is running), with the commits of its first run. */
+export interface EnvLastRelease extends ReleaseSummary {
+  previousCommit: string | null
+  deployedCommit: string | null
+}
+
 export interface DeploymentRunMeta {
   id: string
   releaseId: string

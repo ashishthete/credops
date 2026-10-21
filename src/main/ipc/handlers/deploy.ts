@@ -3,6 +3,7 @@ import {
   PLAYBOOK_CHANGED_MESSAGE,
   type DeploymentMeta,
   type EnvDeploySettings,
+  type EnvLastRelease,
   type PlaybookPreview,
   type Tooling,
 } from '../../../shared/deploy'
@@ -38,6 +39,7 @@ type DeployChannel =
   | 'release:get'
   | 'release:events'
   | 'release:active'
+  | 'release:latest'
 
 export function createDeployHandlers(deps: {
   deploys: DeployStore
@@ -49,8 +51,10 @@ export function createDeployHandlers(deps: {
   published?: (environmentId: string) => boolean
   /** "Save as .yml…": a save dialog shown by main (undefined when cancelled), and the write of the reviewed text. */
   playbookFile?: { saveDialog: (releaseId: string) => Promise<string | undefined>; write: (path: string, text: string) => Promise<void> }
+  /** Each local environment's newest release that ran (`release:latest`). */
+  lastReleases?: () => EnvLastRelease[]
 }): Pick<Handlers, DeployChannel> {
-  const { deploys, releases, tooling, catalog, published, playbookFile } = deps
+  const { deploys, releases, tooling, catalog, published, playbookFile, lastReleases } = deps
   // The last playbook reviewed per release. Saving writes this text, so the renderer sends only its hash, never a path or text.
   const reviewed = new Map<string, PlaybookPreview>()
   return {
@@ -110,6 +114,7 @@ export function createDeployHandlers(deps: {
     // The validator caps `limit`; the clamp keeps a direct caller honest too.
     'release:events': (id, afterSeq, limit) => releases.events(id, afterSeq, Math.min(limit ?? 1000, MAX_EVENTS_PAGE)),
     'release:active': () => releases.listActive(),
+    'release:latest': () => lastReleases?.() ?? [],
   }
 }
 

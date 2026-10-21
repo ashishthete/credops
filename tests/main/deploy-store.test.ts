@@ -320,6 +320,20 @@ describe('DeployStore', () => {
     expect(() => f.deploys.applyBatch(f.staging.id, { deployments: [] })).toThrow(/locked/i)
   })
 
+  it('applyBatch: never turns versioned off on a protected or prod environment; turning it on is fine', async () => {
+    const f = await makeDeployFixture()
+    const live = f.envs.create({ name: 'Prod', color: '#aa0000' })
+    for (const id of [f.prod.id, live.id]) {
+      f.deploys.updateSettings(id, { versioned: true })
+      expect(() => f.deploys.applyBatch(id, { settings: { versioned: false }, deployments: [] })).toThrow(
+        'versioned releases stay on for a protected or prod environment',
+      )
+      expect(f.deploys.settings(id).versioned).toBe(true)
+    }
+    f.deploys.updateSettings(f.prod.id, { versioned: false })
+    expect(f.deploys.applyBatch(f.prod.id, { settings: { versioned: true }, deployments: [] }).settings.versioned).toBe(true)
+  })
+
   it('composeSnippet is always null', async () => {
     const f = await makeDeployFixture()
     expect(f.deploys.composeSnippet('x')).toBeNull()

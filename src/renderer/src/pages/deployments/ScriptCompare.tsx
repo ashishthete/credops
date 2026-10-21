@@ -1,16 +1,15 @@
 import { ChevronRight } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { COMPOSE_AUTO, type DeployBatch, type DeploymentMeta, type EnvDeploySettings } from '../../../../shared/deploy'
 import type { EnvironmentMeta } from '../../../../shared/inventory'
-import { checkAgainstScript, scriptPreset, type ScriptCheckLevel, type ScriptDeploymentPatch, type ScriptPreset } from '../../../../shared/script-parity'
-import type { QaWorkflow } from '../../../../shared/settings'
-import { applyDeployBatch } from '../../deploy/store'
+import { scriptPreset, type ScriptCheckLevel, type ScriptDeploymentPatch, type ScriptPreset } from '../../../../shared/script-parity'
+import { applyDeployBatch, deployStore } from '../../deploy/store'
 import { environmentKey } from '../../inventory/tree'
-import { api } from '../../lib/api'
 import { Button } from '../../ui/Button'
 import { ConfirmDialog, type ConfirmRequest } from '../../ui/common'
 import { toast } from '../../ui/Toaster'
+import type { ScriptChecks } from './useScriptChecks'
 
 const TITLE = 'Compared with unified_release.sh'
 const DOT: Record<ScriptCheckLevel, string> = { ok: 'bg-ok', differs: 'bg-warn', risk: 'bg-err' }
@@ -56,37 +55,44 @@ function undoOf(batch: DeployBatch, settings: EnvDeploySettings, deployments: De
   }
 }
 
+/** The undo, less every field changed again since `batch` was saved: those keep their newer value. */
+function stillApplied(envId: string, batch: DeployBatch, undo: DeployBatch): DeployBatch {
+  const now = deployStore.get()
+  const byId = new Map(now.deployments.map((d) => [d.id, d]))
+  const keepSettings = !!undo.settings && now.settings[envId]?.versioned === batch.settings?.versioned
+  return {
+    ...(keepSettings && { settings: undo.settings }),
+    deployments: undo.deployments.flatMap(({ id, patch }) => {
+      const applied = batch.deployments.find((b) => b.id === id)!.patch
+      const d = byId.get(id)
+      const kept = Object.entries(patch).filter(([k]) => d && d[k as keyof ScriptDeploymentPatch] === applied[k as keyof ScriptDeploymentPatch])
+      return kept.length ? [{ id, patch: Object.fromEntries(kept) }] : []
+    }),
+  }
+}
+
 /**
  * Checks this environment's deploy config against what deployment/unified_release.sh does, and saves every
  * script-compatible setting in one go. QA settings live in the environment's Notifications; rows about them link there.
  */
-export function ScriptCompare({ environment, settings, deployments }: { environment: EnvironmentMeta; settings: EnvDeploySettings; deployments: DeploymentMeta[] }) {
+export function ScriptCompare({
+  environment,
+  settings,
+  deployments,
+  script,
+}: {
+  environment: EnvironmentMeta
+  settings: EnvDeploySettings
+  deployments: DeploymentMeta[]
+  /** The comparison, from useScriptChecks: Settings reads the same one to decide whether to open. */
+  script: ScriptChecks
+}) {
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
-  // undefined while loading; null when it couldn't be read (the QA rows are left out rather than guessed).
-  const [qa, setQa] = useState<{ value: QaWorkflow | null } | null | undefined>(undefined)
-
-  useEffect(() => {
-    let live = true
-    setQa(undefined)
-    api.invoke('integration:get', environment.id).then(
-      (s) => live && setQa(s ? { value: s.qa } : null),
-      () => live && setQa(null),
-    )
-    return () => {
-      live = false
-    }
-  }, [environment.id])
-
-  const env = useMemo(
-    () => ({ name: environment.name, protected: environment.protected, versioned: settings.versioned, qa: qa?.value ?? null }),
-    [environment.name, environment.protected, settings.versioned, qa],
-  )
-  const checks = useMemo(() => checkAgainstScript(env, deployments).filter((c) => qa || !c.id.startsWith('qa-')), [env, deployments, qa])
+  const { env, checks, flagged } = script
   const preset = useMemo(() => scriptPreset(env, deployments), [env, deployments])
   const lines = useMemo(() => describe(preset, settings, deployments), [preset, settings, deployments])
-  const flagged = checks.filter((c) => c.level !== 'ok').length
 
   const apply = () => {
     const batch = toBatch(preset, deployments)
@@ -102,7 +108,14 @@ export function ScriptCompare({ environment, settings, deployments }: { environm
         toast({
           title: 'Script-compatible settings saved',
           tone: 'success',
-          action: { label: 'Undo', run: () => void applyDeployBatch(environment.id, undo) },
+          action: {
+            label: 'Undo',
+            run: () => {
+              const left = stillApplied(environment.id, batch, undo)
+              if (!left.settings && !left.deployments.length) toast({ title: 'Nothing to undo', description: 'Those settings were changed again since.' })
+              else void applyDeployBatch(environment.id, left)
+            },
+          },
         })
       },
     })
@@ -130,7 +143,7 @@ export function ScriptCompare({ environment, settings, deployments }: { environm
                 </div>
                 {c.fix?.open === 'notifications' && (
                   <Button size="sm" variant="ghost" className="shrink-0 self-start" onClick={() => navigate(`/products?${new URLSearchParams({ node: environmentKey(environment) })}`)}>
-                    Open notification settings
+                    Go to notification settings
                   </Button>
                 )}
               </li>

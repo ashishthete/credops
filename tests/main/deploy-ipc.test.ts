@@ -24,6 +24,7 @@ describe('release:* validators', () => {
     expect(() => check('release:list', [{ environmentId: ID, limit: 10 }])).not.toThrow()
     expect(() => check('release:events', [ID, 0, 5000])).not.toThrow()
     expect(() => check('release:active', [])).not.toThrow()
+    expect(() => check('release:latest', [])).not.toThrow()
   })
 
   const bad: [string, unknown[], RegExp][] = [
@@ -77,6 +78,14 @@ describe('release handlers', () => {
       [ID, 3, 1000],
     ])
     expect(MAX_EVENTS_PAGE).toBe(5000)
+  })
+
+  it('release:latest answers from the local releases, and with none when nothing provides them', async () => {
+    const row = { id: ID, environmentId: ID, previousCommit: 'a', deployedCommit: 'b' }
+    const base = { deploys: {} as never, releases: {} as unknown as ReleaseService, tooling: async () => ({}) as never }
+    const h = (x: ReturnType<typeof createDeployHandlers>) => (x as Record<string, unknown>)['release:latest'] as () => unknown
+    expect(await h(createDeployHandlers({ ...base, lastReleases: () => [row as never] }))()).toEqual([row])
+    expect(await h(createDeployHandlers(base))()).toEqual([])
   })
 })
 

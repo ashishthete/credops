@@ -23,6 +23,7 @@ import { resetVaultsCache, VaultsPage } from '../pages/vaults/VaultsPage'
 import { SETTINGS_PATH, useSettingsCommands } from '../settings/commands'
 import { resetOps, startOpsSync } from '../ops/runs'
 import { resetReleases, startReleaseSync } from '../deploy/releases'
+import { resetLatest } from '../deploy/latest'
 import { resetDeploy, startDeploySync } from '../deploy/store'
 import { useDeployCommands } from '../deploy/commands'
 import { ServiceLogsHost } from '../pages/products/services/ServiceLogs'
@@ -88,6 +89,7 @@ export function AppShell() {
       resetHub()
       resetReleases()
       resetDeploy()
+      resetLatest()
       // Relies on a lock unmounting the shell; see the cache in VaultsPage.
       resetVaultsCache()
       closeKnownHosts()

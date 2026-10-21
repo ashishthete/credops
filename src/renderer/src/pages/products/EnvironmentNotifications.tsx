@@ -182,7 +182,10 @@ export function EnvironmentNotifications({ environment }: { environment: Environ
     waitValue !== undefined && (!Number.isInteger(waitValue) || waitValue < QA_WAIT_RANGE[0] || waitValue > QA_WAIT_RANGE[1])
       ? `Whole minutes, ${QA_WAIT_RANGE[0]} to ${QA_WAIT_RANGE[1]}.`
       : undefined
-  const valid = !!saved && to.valid && cc.valid && !repoError && !workflowError && !refError && !waitError
+  // A disabled field has no effect: its bad value neither blocks Save nor gets saved.
+  const waitDisabled = !saved || !qaWait || qaBlank
+  const waitSaved = waitError ? (waitDisabled ? undefined : waitValue) : waitValue
+  const valid = !!saved && to.valid && cc.valid && !repoError && !workflowError && !refError && !(waitError && !waitDisabled)
 
   const toggle = (k: NotifyEventKey) => setEvents((ev) => (ev.includes(k) ? ev.filter((x) => x !== k) : [...ev, k]))
 
@@ -194,7 +197,7 @@ export function EnvironmentNotifications({ environment }: { environment: Environ
       teamsWebhookSecretId: webhook,
       emailTo: to.value,
       emailCc: cc.value,
-      qa: qaBlank ? null : { repo: repo.trim(), workflow: workflow.trim(), ref: ref.trim(), ...(waitValue !== undefined ? { waitMinutes: waitValue } : {}) },
+      qa: qaBlank ? null : { repo: repo.trim(), workflow: workflow.trim(), ref: ref.trim(), ...(waitSaved !== undefined ? { waitMinutes: waitSaved } : {}) },
       qaOnDeploy,
       qaWait,
     }
@@ -266,7 +269,7 @@ export function EnvironmentNotifications({ environment }: { environment: Environ
         placeholder={String(QA_WAIT_DEFAULT_MIN)}
         value={waitMinutes}
         error={waitError}
-        disabled={!saved || !qaWait || qaBlank}
+        disabled={waitDisabled}
         inputMode="numeric"
         spellCheck={false}
         onChange={(e) => setWaitMinutes(e.target.value)}

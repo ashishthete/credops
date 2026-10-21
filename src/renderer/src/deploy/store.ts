@@ -13,6 +13,7 @@ import { api } from '../lib/api'
 import { loadTunnels } from '../tunnels/store'
 import { attempt, fail } from '../ui/common'
 import { createStore } from '../ui/store'
+import { resetSettingsOpen } from './settings-open'
 
 export interface DeployState {
   deployments: DeploymentMeta[]
@@ -39,6 +40,7 @@ const SYNC_DEBOUNCE_MS = 100
 export function resetDeploy(): void {
   generation++
   deployStore.set(EMPTY)
+  resetSettingsOpen()
 }
 
 /**

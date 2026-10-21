@@ -24,6 +24,7 @@ import {
   type ReleaseListFilter,
   type ReleaseStatus,
   type ReleaseSummary,
+  type EnvLastRelease,
   type RunEvent,
   type RunEventBody,
   type RunService,
@@ -218,6 +219,11 @@ export class ReleaseService {
   events(releaseId: string, afterSeq: number, limit = 1000): RunEvent[] {
     this.flush()
     return this.d.releases.events(releaseId, afterSeq, limit)
+  }
+
+  /** Each environment's newest release that ran; its error is redacted as in `detail`. */
+  latestPerEnvironment(): EnvLastRelease[] {
+    return this.d.releases.latestPerEnvironment().map((r) => (r.error === null ? r : { ...r, error: redact(r.error) }))
   }
 
   listActive(): ReleaseSummary[] {

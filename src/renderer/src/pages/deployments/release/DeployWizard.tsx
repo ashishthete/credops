@@ -51,7 +51,19 @@ const PHASE_9 = 'Available with notifications (Phase 9)'
 type Step = 'pick' | 'preflight' | 'review' | 'started'
 
 /** Pick services, run preflight, review the playbook and start the release, on one surface. */
-export function DeployWizard({ environmentId, preselect, onClose }: { environmentId: string; preselect: string[]; onClose: () => void }) {
+export function DeployWizard({
+  environmentId,
+  preselect,
+  preselectCheckouts = [],
+  onClose,
+}: {
+  environmentId: string
+  /** Services ticked at the start. */
+  preselect: string[]
+  /** Checkouts with no services ticked whole at the start. */
+  preselectCheckouts?: string[]
+  onClose: () => void
+}) {
   const data = useInventory()
   const { catalog } = useHub()
   // A Hub environment this machine doesn't hold comes from the team catalog, with the same protected rule.
@@ -64,7 +76,7 @@ export function DeployWizard({ environmentId, preselect, onClose }: { environmen
 
   // The selection starts from `preselect` every time; it is not remembered.
   const [selected, setSelected] = useState(() => new Set(preselect))
-  const [wholes, setWholes] = useState(() => new Set<string>())
+  const [wholes, setWholes] = useState(() => new Set(preselectCheckouts))
   const [bump, setBump] = useState<VersionBump>('minor')
   const [backup, setBackup] = useState(true)
   const [notes, setNotes] = useState('')

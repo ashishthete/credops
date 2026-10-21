@@ -6,19 +6,23 @@ import { Button } from '../../ui/Button'
 import { TextField } from '../../ui/Field'
 import { Switch } from '../../ui/Switch'
 import { ScriptCompare } from './ScriptCompare'
+import type { ScriptChecks } from './useScriptChecks'
 
 /**
  * One environment's release settings: versioned tags, auto-rollback, and the current version. With `environment`
- * (a local one: a Hub environment's settings are not edited here), also the comparison with unified_release.sh.
+ * (a local one: a Hub environment's settings are not edited here) and `script`, also the comparison with unified_release.sh.
  */
 export function EnvDeploySettings({
   settings,
   environment,
   deployments = [],
+  script,
 }: {
   settings: Settings | undefined
   environment?: EnvironmentMeta
   deployments?: DeploymentMeta[]
+  /** The comparison with unified_release.sh, from useScriptChecks; shown with `environment`. */
+  script?: ScriptChecks | null
 }) {
   const [busy, setBusy] = useState<'versioned' | 'autoRollback' | 'version' | null>(null)
   const [editing, setEditing] = useState(false)
@@ -98,7 +102,7 @@ export function EnvDeploySettings({
           )}
         </div>
       </section>
-      {environment && <ScriptCompare environment={environment} settings={settings} deployments={deployments} />}
+      {environment && script && <ScriptCompare environment={environment} settings={settings} deployments={deployments} script={script} />}
     </div>
   )
 }

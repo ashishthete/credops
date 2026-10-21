@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { COMPOSE_AUTO } from '../../src/shared/deploy'
-import { checkAgainstScript, scriptPreset, type ScriptDeployment, type ScriptEnv } from '../../src/shared/script-parity'
+import { checkAgainstScript, isFlagged, scriptPreset, type ScriptDeployment, type ScriptEnv } from '../../src/shared/script-parity'
 
 const env = (over: Partial<ScriptEnv> = {}): ScriptEnv => ({
   name: 'alpha',
   versioned: false,
   protected: false,
   qa: { repo: 'acme/qa', workflow: 'playwright.yml', ref: 'main' },
+  qaOnDeploy: true,
+  qaWait: true,
   ...over,
 })
 const dep = (over: Partial<ScriptDeployment> & { id: string }): ScriptDeployment => ({
@@ -68,23 +70,63 @@ describe('checkAgainstScript', () => {
     expect(c.fix?.deployments).toEqual({ a: { composeFile: COMPOSE_AUTO } })
   })
 
-  it('qa-env-name: shows the environment name the workflow gets', () => {
-    const c = checkAgainstScript(env(), []).find((x) => x.id === 'qa-env-name')!
+  const check = (e: ScriptEnv, id: string) => checkAgainstScript(e, []).find((x) => x.id === id)!
+
+  it('qa-env-name: ok when the workflow is set and starts on deploy, with the environment name it gets', () => {
+    const c = check(env(), 'qa-env-name')
     expect(c.level).toBe('ok')
     expect(c.opsdeck).toContain('"alpha"')
-    // No QA workflow set: the script would dispatch one, so it differs, and the fix is in the Notifications settings.
-    const none = checkAgainstScript(env({ qa: null }), []).find((x) => x.id === 'qa-env-name')!
-    expect(none.level).toBe('differs')
-    expect(none.fix).toMatchObject({ open: 'notifications' })
+    expect(c.fix).toBeUndefined()
+  })
+
+  it('qa-env-name: differs with the Notifications link when no workflow is set', () => {
+    const c = check(env({ qa: null }), 'qa-env-name')
+    expect(c).toMatchObject({ level: 'differs', fix: { open: 'notifications' } })
+    expect(c.opsdeck).toBe('No QA workflow is set for this environment.')
+  })
+
+  it('qa-env-name: differs with the link when the workflow is set but does not start on deploy', () => {
+    const c = check(env({ qaOnDeploy: false }), 'qa-env-name')
+    expect(c).toMatchObject({ level: 'differs', fix: { open: 'notifications' } })
+    expect(c.opsdeck).not.toMatch(/^Starts/)
+    expect(c.opsdeck).toContain('not started after a deploy')
+  })
+
+  it('qa-env-name on prod: ok when nothing is started, differs when a workflow starts on deploy', () => {
+    for (const quiet of [env({ name: 'prod', qa: null }), env({ name: 'prod', qaOnDeploy: false })]) {
+      const c = check(quiet, 'qa-env-name')
+      expect(c.level).toBe('ok')
+      expect(c.fix).toBeUndefined()
+    }
+    const c = check(env({ name: 'prod' }), 'qa-env-name')
+    expect(c).toMatchObject({ level: 'differs', fix: { open: 'notifications' } })
+    expect(c.script).toBe('The script never starts QA on prod.')
   })
 
   it('qa-wait: differs below 45 minutes; unset means 45', () => {
     expect(level(env(), [], 'qa-wait')).toBe('ok')
     expect(level(env({ qa: { repo: 'a/b', workflow: 'q.yml', ref: 'main', waitMinutes: 45 } }), [], 'qa-wait')).toBe('ok')
-    const c = checkAgainstScript(env({ qa: { repo: 'a/b', workflow: 'q.yml', ref: 'main', waitMinutes: 30 } }), []).find((x) => x.id === 'qa-wait')!
+    const c = check(env({ qa: { repo: 'a/b', workflow: 'q.yml', ref: 'main', waitMinutes: 30 } }), 'qa-wait')
     expect(c.level).toBe('differs')
     expect(c.fix).toMatchObject({ open: 'notifications' })
     expect(c.fix?.env).toBeUndefined()
+  })
+
+  it('qa-wait: differs with the link when OpsDeck does not wait', () => {
+    const c = check(env({ qaWait: false }), 'qa-wait')
+    expect(c).toMatchObject({ level: 'differs', opsdeck: 'OpsDeck does not wait for the QA result.', fix: { open: 'notifications' } })
+  })
+
+  it('qa-wait: not applicable when QA is not started (no workflow or off on deploy) or on prod', () => {
+    for (const e of [env({ qa: null }), env({ qaOnDeploy: false }), env({ name: 'prod', qaOnDeploy: false })]) {
+      const c = check(e, 'qa-wait')
+      expect(c).toMatchObject({ level: 'ok', opsdeck: 'Not applicable: QA is not started.' })
+      expect(c.fix).toBeUndefined()
+    }
+    // Prod with QA on: the difference is reported once, on the QA workflow row.
+    for (const e of [env({ name: 'prod' }), env({ name: 'prod', qaWait: false })]) {
+      expect(check(e, 'qa-wait')).toMatchObject({ level: 'ok', opsdeck: 'Not applicable: the script never starts QA on prod.' })
+    }
   })
 
   it('strict-build always differs with no fix; rollback is always ok', () => {
@@ -118,7 +160,24 @@ describe('scriptPreset', () => {
     expect(scriptPreset(env({ name: 'PROD', versioned: true }), []).env).toEqual({})
   })
 
+  it('says prod versioning is on without claiming it matches the script', () => {
+    expect(checkAgainstScript(env({ name: 'prod', versioned: true }), []).find((c) => c.id === 'versioned')!.opsdeck).toBe(
+      'Versioned releases are on for prod; the script also tags prod only.',
+    )
+  })
+
   it('is a no-op on an already compatible environment', () => {
     expect(scriptPreset(env(), [dep({ id: 'a' }), dep({ id: 'b' })])).toEqual({ env: {}, deployments: {} })
+  })
+
+  it('isFlagged: a risk always counts, a difference only with a fix; failed builds is a note', () => {
+    const flagged = (e: ScriptEnv, ds: ScriptDeployment[]) => checkAgainstScript(e, ds).filter(isFlagged).map((c) => c.id)
+    expect(flagged(env(), [dep({ id: 'd1' })])).toEqual([])
+    // Protected and versioned off prod: a risk with no fix (change it yourself) still counts.
+    const guarded = checkAgainstScript(env({ protected: true, versioned: true }), [dep({ id: 'd1' })]).find((c) => c.id === 'versioned')!
+    expect(guarded).toMatchObject({ level: 'risk' })
+    expect(guarded.fix).toBeUndefined()
+    expect(flagged(env({ protected: true, versioned: true }), [dep({ id: 'd1' })])).toEqual(['versioned'])
+    expect(flagged(env(), [dep({ id: 'd1', useSudo: 'auto' })])).toEqual(['sudo'])
   })
 })

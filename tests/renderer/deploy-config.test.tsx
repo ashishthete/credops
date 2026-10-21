@@ -72,7 +72,7 @@ describe('deployments page', () => {
     expect(screen.queryByText('prod-api')).not.toBeInTheDocument()
     expect(within(app1).getByText('Backup')).toBeInTheDocument()
     expect(within(app1).getByText('1 URL')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'staging', pressed: true })).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'Breadcrumb' })).toHaveTextContent('Deployments›Shop›staging')
     expect(screen.getByTestId('current-version')).toHaveTextContent('v1.2.0')
   })
 
@@ -296,14 +296,15 @@ describe('deployments page', () => {
     await waitFor(() => expect(calls(invoke, 'deploy:delete')).toHaveLength(1))
   })
 
-  it('picking an environment updates the URL selection and the list', async () => {
+  it('going back to the list and opening another environment swaps the list', async () => {
     const user = userEvent.setup()
     world({
       'deploy:list': [deploymentMeta({ id: 'd1', name: 'api' }), deploymentMeta({ id: 'd4', name: 'prod-api', environmentId: 'e2' })],
     })
     await open()
     await screen.findByRole('listitem', { name: 'api' })
-    await user.click(screen.getByRole('button', { name: 'prod' }))
+    await user.click(within(screen.getByRole('navigation', { name: 'Breadcrumb' })).getByRole('button', { name: 'Deployments' }))
+    await user.click(within(await screen.findByRole('listitem', { name: 'prod' })).getByRole('button', { name: /^prod,/ }))
     expect(await screen.findByRole('listitem', { name: 'prod-api' })).toBeInTheDocument()
     expect(screen.queryByRole('listitem', { name: 'api' })).not.toBeInTheDocument()
   })

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { uuidv7Time } from '../../src/main/deploy/uuidv7'
 import { DEFAULT_RELEASE_OPTIONS, type PreflightReport, type RunEventBody, type RunService } from '../../src/shared/deploy'
 import { makeDeployFixture } from './deploy-helpers'
@@ -162,6 +162,51 @@ describe('ReleaseStore', () => {
     f.releases.setStatus(a.id, 'running')
     f.releases.setStatus(b.id, 'rolling_back')
     expect(f.releases.active().map((r) => r.id).sort()).toEqual([a.id, b.id].sort())
+  })
+
+  it('latestPerEnvironment gives each environment its newest release that ran, with its first run\'s commits, in one query', async () => {
+    const f = await makeDeployFixture()
+    const d = f.deploys.create(f.input())
+    const mk = (environmentId: string, status: 'ready' | 'running' | 'failed' | 'succeeded' | 'discarded') => {
+      const r = f.releases.createRelease({
+        environmentId, kind: 'release', status: 'ready', version: null, previousVersion: null,
+        versionBump: 'none', redeploy: false, rollbackOf: null, options: DEFAULT_RELEASE_OPTIONS, triggeredBy: 'u@m', serviceIds: [],
+      })
+      if (status !== 'ready') f.releases.setStatus(r.id, status, { version: status === 'succeeded' ? 'v1.4.0' : undefined })
+      return r
+    }
+    const plan = (releaseId: string, position: number) =>
+      f.releases.createRuns(releaseId, [
+        { deploymentId: d.id, deploymentName: 'api', hostId: d.hostId, hostLabel: 'app1', position, branch: 'main', steps: [], services: [], wholeCheckout: true },
+      ])[0]
+    mk(f.staging.id, 'failed')
+    const ok = mk(f.staging.id, 'succeeded')
+    f.releases.updateRun(plan(ok.id, 1).id, { previousCommit: 'bbbbbbb', deployedCommit: 'ccccccc' })
+    f.releases.updateRun(plan(ok.id, 0).id, { previousCommit: 'aaaaaaa', deployedCommit: 'ddddddd' })
+    // A preflight that never started, or one thrown away, is not the last release.
+    mk(f.staging.id, 'ready')
+    mk(f.staging.id, 'discarded')
+    const failed = mk(f.prod.id, 'failed')
+
+    const spy = vi.spyOn(f.db, 'prepare')
+    const out = f.releases.latestPerEnvironment()
+    expect(spy).toHaveBeenCalledTimes(1)
+    spy.mockRestore()
+    const byEnv = new Map(out.map((r) => [r.environmentId, r]))
+    expect(out).toHaveLength(2)
+    expect(byEnv.get(f.staging.id)).toMatchObject({ id: ok.id, status: 'succeeded', version: 'v1.4.0', previousCommit: 'aaaaaaa', deployedCommit: 'ddddddd' })
+    expect(byEnv.get(f.prod.id)).toMatchObject({ id: failed.id, status: 'failed', previousCommit: null, deployedCommit: null })
+  })
+
+  it('latestPerEnvironment looks each environment up in the release index rather than scanning every release', async () => {
+    const f = await makeDeployFixture()
+    const spy = vi.spyOn(f.db, 'prepare')
+    f.releases.latestPerEnvironment()
+    const sql = spy.mock.calls[0][0] as string
+    spy.mockRestore()
+    const plan = (f.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as { detail: string }[]).map((r) => r.detail)
+    expect(plan.some((d) => /SEARCH r2 USING INDEX releases_env/.test(d))).toBe(true)
+    expect(plan.some((d) => /SCAN (releases|r2)\b/.test(d))).toBe(false)
   })
 
   it('failInterrupted marks running and rolling_back as failed', async () => {

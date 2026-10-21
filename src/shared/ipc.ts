@@ -63,6 +63,7 @@ import type {
   ReleaseDetail,
   ReleaseListFilter,
   ReleaseSummary,
+  EnvLastRelease,
   RunEvent as DeployRunEvent,
 } from './deploy'
 import type { CopyServicesRequest, CopyServicesResult, ServiceInput, ServiceMeta, ServicePatch, ServiceUpdateResult } from './services'
@@ -235,6 +236,8 @@ export interface IpcContract {
   'release:get': { args: [releaseId: string]; result: ReleaseDetail }
   'release:events': { args: [releaseId: string, afterSeq: number, limit?: number]; result: DeployRunEvent[] }
   'release:active': { args: []; result: ReleaseSummary[] }
+  /** Each local environment's newest release that ran, for the Deployments list. Hub environments are not included. */
+  'release:latest': { args: []; result: EnvLastRelease[] }
   // Hub (Phase 10). Results carry no token; `hub:state` pushes the same token-free HubStatus.
   'hub:status': { args: []; result: HubStatus }
   'hub:connect': { args: [url: string]; result: HubStatus }
@@ -436,6 +439,7 @@ export const CHANNELS = [
   'release:get',
   'release:events',
   'release:active',
+  'release:latest',
   'hub:status',
   'hub:connect',
   'hub:signIn',
