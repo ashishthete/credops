@@ -2,7 +2,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Fingerprint, X } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import type { ReverifyProof } from '../../../shared/sso'
-import { MAX_MASTER_PASSWORD, MAX_PIN, VERIFICATION_FAILED, type VaultStatus } from '../../../shared/vault'
+import { MAX_MASTER_PASSWORD, MAX_PIN, MIN_PIN, PIN_INPUT_MAX, VERIFICATION_FAILED, type VaultStatus } from '../../../shared/vault'
 import { api } from '../lib/api'
 import { Button } from '../ui/Button'
 import { SecretField } from '../ui/Field'
@@ -349,6 +349,9 @@ function useSignInCheck(status: VaultStatus | null): boolean {
 
 type ProofMethod = 'password' | 'pin'
 
+const PIN_SHAPE = new RegExp(`^\\d{${MIN_PIN},${MAX_PIN}}$`)
+const PIN_LENGTH = `PIN must be ${MIN_PIN}-${MAX_PIN} digits`
+
 /**
  * Touch ID is on but its Keychain copy could not be read (status.touchIdNeedsReenable): offer to
  * write it again. Turning a factor on needs a reverify proof (the T7 contract); the secret stays in
@@ -371,6 +374,8 @@ function ReenableStep({ status, onWrong, onContinue }: { status: VaultStatus; on
     e.preventDefault()
     const input = inputRef.current
     if (!input || !method || busy || !input.value) return
+    // A malformed PIN never goes to main, where it would cost one of the tries.
+    if (method === 'pin' && !PIN_SHAPE.test(input.value)) return setError(PIN_LENGTH)
     const proof: ReverifyProof = method === 'pin' ? { method, pin: input.value } : { method, password: input.value }
     input.value = ''
     setHasInput(false)
@@ -428,7 +433,7 @@ function ReenableStep({ status, onWrong, onContinue }: { status: VaultStatus; on
         autoFocus
         readOnly={busy}
         inputMode={method === 'pin' ? 'numeric' : undefined}
-        maxLength={method === 'pin' ? MAX_PIN : MAX_MASTER_PASSWORD}
+        maxLength={method === 'pin' ? PIN_INPUT_MAX : MAX_MASTER_PASSWORD}
         onInput={(e) => setHasInput(e.currentTarget.value.length > 0)}
         error={error ?? undefined}
       />

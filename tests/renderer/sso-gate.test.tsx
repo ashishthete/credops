@@ -410,6 +410,25 @@ describe('Touch ID needs turning on again', () => {
     expect(document.body.textContent).not.toContain('000000')
   })
 
+  it('a pasted 13-digit PIN gets the length error, not a try', async () => {
+    const user = userEvent.setup()
+    const { calls } = fakeVault(
+      { quickUnlock: 'touchId', lastMethod: 'password', pin: { enabled: true, attemptsLeft: 5 }, touchIdNeedsReenable: true },
+      { 'vault:unlock': [{ ok: true }] },
+    )
+    renderApp()
+    await user.type(await screen.findByLabelText('Master password'), 'correct horse{Enter}')
+    const card = await gate('Turn Touch ID on again')
+    await user.click(within(card).getByRole('button', { name: 'Use your PIN instead' }))
+    const field = within(card).getByLabelText('PIN')
+    await user.click(field)
+    await user.paste('1234567890123')
+    expect(field).toHaveValue('1234567890123')
+    await user.click(within(card).getByRole('button', { name: 'Turn on Touch ID' }))
+    expect(await within(card).findByText('PIN must be 6-12 digits')).toBeInTheDocument()
+    expect(calls('vault:setQuickUnlock')).toHaveLength(0)
+  })
+
   it('a wiped PIN with the vaults still open switches to the password', async () => {
     const user = userEvent.setup()
     const open = vaultStatus({ unlocked: true, quickUnlock: 'touchId', pin: { enabled: false, attemptsLeft: 0 }, touchIdNeedsReenable: true })

@@ -12,6 +12,11 @@ export const MIN_MASTER_PASSWORD = 8
 export const MAX_MASTER_PASSWORD = 1024
 export const MIN_PIN = 6
 export const MAX_PIN = 12
+/**
+ * Cap on a PIN field and the IPC validator: well over MAX_PIN (preflight F31), so a pasted 13 digits
+ * reaches the length check ('PIN must be 6-12 digits') instead of being cut into a real attempt.
+ */
+export const PIN_INPUT_MAX = 64
 export const PIN_ATTEMPTS = 5
 export const MAX_SECRET_VALUE = 65536
 export const MAX_SECRET_NAME = 120

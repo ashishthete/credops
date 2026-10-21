@@ -85,6 +85,7 @@ import {
   MAX_KEY_PATH,
   MAX_LABEL,
   MAX_MASTER_PASSWORD,
+  PIN_INPUT_MAX,
   MAX_PASSPHRASE,
   MAX_SECRET_NAME,
   MAX_SECRET_VALUE,
@@ -138,8 +139,8 @@ export const asFilter: Check<AuditFilter> = v.object({
 
 // Length rules (minimum, strength) are the service's: its messages are the ones the user sees.
 const asPassword = v.str({ min: 1, max: MAX_MASTER_PASSWORD })
-// Well over MAX_PIN (preflight F31): a pasted 13 digits gets the vault's 'PIN must be 6-12 digits'.
-const asPin = v.str({ min: 1, max: 64 })
+// PIN_INPUT_MAX: a pasted 13 digits gets the vault's 'PIN must be 6-12 digits'.
+const asPin = v.str({ min: 1, max: PIN_INPUT_MAX })
 export const asSetupOptions: Check<SetupOptions> = v.object({
   password: v.optional(asPassword),
   pin: v.optional(asPin),
