@@ -196,7 +196,7 @@ describe('operation playbook', () => {
 
   it('prune-images runs once per host, on the first target', () => {
     const tasks = flat(parse(opPlan([bi('prune-images', { untilHours: 6 }), bi('status')]))[0].tasks)
-    expect(tasks.filter((t) => kindOf(t) === 'op_prune_images').map((t) => t.name)).toEqual(['prune_images dep1'])
+    expect(tasks.filter((t) => kindOf(t) === 'op_prune_images').map((t) => t.name)).toEqual(['prune-images dep1'])
     expect(tasks.filter((t) => kindOf(t) === 'op_status').length).toBe(2)
   })
 
