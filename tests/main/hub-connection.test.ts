@@ -211,6 +211,32 @@ describe('hub connection', () => {
     expect(rejected.status()).toMatchObject({ signedIn: false, user: null })
   })
 
+  it('a restore that failed offline runs again once the Hub answers, and only once for quick answers', async () => {
+    await make().connect(hubUrl)
+    await make().signIn()
+    let up = false
+    let mes = 0
+    const flaky: typeof fetch = async (input, init) => {
+      if (!up) throw new TypeError('fetch failed')
+      if (String(input).endsWith('/api/v1/me')) mes++
+      return fetch(input, init)
+    }
+    const c = make({ fetch: flaky })
+    await c.restore()
+    expect(c.status()).toMatchObject({ signedIn: true, online: false, user: null })
+    const before = states.length
+    up = true
+    // Two requests answer at about the same time.
+    await Promise.all([c.client().get('/api/v1/catalog'), c.client().get('/api/v1/catalog')])
+    await vi.waitFor(() => expect(c.status()).toMatchObject({ user: { oid: ADMIN.oid } }))
+    expect(mes).toBe(1)
+    expect(states.length).toBeGreaterThan(before)
+    expect(states.at(-1)).toMatchObject({ user: { oid: ADMIN.oid } })
+    // Known now: further answers do not ask again.
+    await c.client().get('/api/v1/catalog')
+    expect(mes).toBe(1)
+  })
+
   it('a 503 during renew reports unavailable and keeps the session', async () => {
     const conn = make()
     await conn.connect(hubUrl)

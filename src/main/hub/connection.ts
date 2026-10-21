@@ -57,6 +57,8 @@ export class HubConnection {
   private abort: AbortController | null = null
   private meta: HubMeta | null = null
   private renewing: Promise<boolean> | null = null
+  private restoring: Promise<void> | null = null
+  private restorePending = false
   // Entra tokens between being received and being traded or stored: redactable, never kept.
   private readonly transient = new Set<string>()
   private readonly listeners: (() => void)[] = []
@@ -105,7 +107,11 @@ export class HubConnection {
       token: () => null,
       renew: async () => false,
       knownSecrets: () => this.knownValues(),
-      onReach: (o) => (this.online = o),
+      onReach: (o) => {
+        this.online = o
+        // The Hub answered again: a start-up restore that failed gets another go.
+        if (o && this.restorePending) void this.restore()
+      },
       ...over,
     })
   }
@@ -216,11 +222,13 @@ export class HubConnection {
       )
     this.held = { session: session.token, refresh }
     this.user = session.user
+    this.restorePending = false
   }
 
   private dropSession(): void {
     this.held = null
     this.user = null
+    this.restorePending = false
     if (!this.row()) return
     this.d.db
       .prepare(
@@ -337,12 +345,23 @@ export class HubConnection {
    * publish, as sign-in does. Best effort: offline or failing keeps the session for a later renew; a session the
    * Hub rejects ends the sign-in.
    */
-  async restore(): Promise<void> {
-    if (this.row()?.session_enc == null) return
+  restore(): Promise<void> {
+    this.restoring ??= this.doRestore().finally(() => (this.restoring = null))
+    return this.restoring
+  }
+
+  private async doRestore(): Promise<void> {
+    if (this.row()?.session_enc == null || this.user !== null) return
     try {
       await this.me()
+      this.restorePending = false
     } catch (err) {
-      if (err instanceof HubError && err.status === 403) this.signedOut()
+      if (err instanceof HubError && (err.status === 403 || err.code === 'unauthenticated')) {
+        this.restorePending = false
+        if (err.status === 403) this.signedOut()
+        return
+      }
+      this.restorePending = true
     }
   }
 
