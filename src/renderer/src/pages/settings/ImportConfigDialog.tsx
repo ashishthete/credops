@@ -179,11 +179,18 @@ function NeedsSecret({ entries }: { entries: ImportNeedsSecret[] }) {
         {entries.map((e, i) => (
           <li key={i} className="flex min-w-0 items-baseline gap-2 text-[12.5px] leading-5">
             <span className="w-[84px] shrink-0 text-muted">{KIND_LABEL[e.kind]}</span>
-            <span className="truncate text-fg">{e.name}</span>
-            <span className="truncate text-muted">
-              {FIELD_LABEL[e.field] ?? e.field}
-              {e.reason ? `: ${e.reason}` : ''}
-            </span>
+            {e.field === 'envVars' ? (
+              // "<host>: <KEY> left blank; set it in the host editor"
+              <span className="truncate text-fg">{`${e.name}: ${e.reason ?? ''}`}</span>
+            ) : (
+              <>
+                <span className="truncate text-fg">{e.name}</span>
+                <span className="truncate text-muted">
+                  {FIELD_LABEL[e.field] ?? e.field}
+                  {e.reason ? `: ${e.reason}` : ''}
+                </span>
+              </>
+            )}
           </li>
         ))}
       </ul>

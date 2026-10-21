@@ -143,6 +143,24 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
   // Changed, but not by the import writing to the environment: no typed confirmation.
   const reloaded = new Set<string>()
   const touchOnly = (envId: string) => reloaded.add(envId)
+  /**
+   * A host now reaches another machine or logs in as someone else: every environment that uses it needs confirming,
+   * directly, as its default jump host, or through hosts that jump through it.
+   */
+  const guardHost = (hostId: string, seen = new Set<string>()) => {
+    if (seen.has(hostId)) return
+    seen.add(hostId)
+    for (const e of ids('SELECT environment_id AS id FROM environment_hosts WHERE host_id = ?', hostId)) touch(e)
+    for (const e of ids('SELECT id FROM environments WHERE default_jump_host_id = ?', hostId)) touch(e)
+    for (const h of ids('SELECT id FROM hosts WHERE jump_host_id = ?', hostId)) guardHost(h, seen)
+  }
+  const guardIdentity = (identityId: string) => {
+    for (const h of ids('SELECT id FROM hosts WHERE identity_id = ?', identityId)) guardHost(h)
+    for (const e of ids('SELECT id FROM environments WHERE default_identity_id = ?', identityId)) touch(e)
+  }
+  const HOST_REACH = ['address', 'port', 'identityId', 'jumpHostId']
+  const IDENTITY_REACH = ['username', 'auth', 'sshKeyId']
+  const reaches = (fields: string[], which: string[]) => fields.some((f) => which.includes(f))
 
   // ---- identities ----
   for (const x of file.identities) {
@@ -161,6 +179,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
     if (local !== null) {
       // An existing identity keeps its own auth, key and password: only what the file can say for sure changes.
       const next = s.identities.updateInTx(local, { label: x.label, username: x.username })
+      if (next && reaches(next.fields, IDENTITY_REACH)) guardIdentity(local)
       map.identities.set(x.id, local)
       done('identities', local, x.label, false, next?.fields ?? [])
       continue
@@ -220,6 +239,19 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
     const identityId = ref(map.identities, x.identityId)
     if (identityId === undefined) need('hosts', x.label, 'identityId')
     const vaultIdsHere = vaults('hosts', x.label, x.vaults)
+    // A sensitive value is exported blank, and one written into the file by hand is never imported: the local value
+    // stands for it, or it stays blank. The value itself is never repeated.
+    const localVars =
+      local === null
+        ? {}
+        : (JSON.parse((db.prepare('SELECT env_vars FROM hosts WHERE id = ?').get(local) as { env_vars: string }).env_vars) as Record<string, string>)
+    const envVars = Object.fromEntries(
+      Object.entries(x.envVars).map(([k, v]) => {
+        if (!SENSITIVE_KEY.test(k)) return [k, v]
+        if (v !== '') need('hosts', x.label, 'envVars', `${k} left blank; set it in the host editor`)
+        return [k, localVars[k] ?? '']
+      }),
+    )
     if (local === null) {
       s.hosts.insertInTx(
         {
@@ -232,7 +264,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
           osIcon: x.osIcon,
           notes: x.notes,
           keepaliveSec: x.keepaliveSec,
-          envVars: x.envVars,
+          envVars,
           vaultIds: vaultIdsHere,
         },
         x.id,
@@ -241,11 +273,6 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
       hostRows.push({ x, local: x.id, added: true, fields: [] })
       continue
     }
-    // A sensitive value is exported blank: the local value stands for it.
-    const localVars = JSON.parse((db.prepare('SELECT env_vars FROM hosts WHERE id = ?').get(local) as { env_vars: string }).env_vars) as Record<string, string>
-    const envVars = Object.fromEntries(
-      Object.entries(x.envVars).map(([k, v]) => [k, v === '' && SENSITIVE_KEY.test(k) && localVars[k] ? localVars[k] : v]),
-    )
     const next = s.hosts.updateInTx(local, {
       label: x.label,
       address: x.address,
@@ -258,6 +285,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
       envVars,
     })
     const fields = next?.fields ?? []
+    if (reaches(fields, HOST_REACH)) guardHost(local)
     if (s.hosts.addVaultsInTx(local, vaultIdsHere).length > 0) fields.push('vaults')
     map.hosts.set(x.id, local)
     hostRows.push({ x, local, added: false, fields })
@@ -267,7 +295,10 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
     const jumpHostId = ref(map.hosts, h.x.jumpHostId) ?? null
     if (h.added && jumpHostId === null) continue
     const next = s.hosts.updateInTx(h.local, { jumpHostId })
-    if (!h.added && next) h.fields.push(...next.fields)
+    if (!h.added && next) {
+      h.fields.push(...next.fields)
+      guardHost(h.local)
+    }
   }
   for (const h of hostRows) done('hosts', h.local, h.x.label, h.added, h.fields)
 
@@ -408,7 +439,8 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
       if ('id' in found) becomeSecretId = found.id
       else {
         becomeSecretId = before ? undefined : null
-        need('deployments', x.name, 'becomeSecret', found.reason)
+        const reason = [found.reason, before && 'kept the local become secret'].filter(Boolean).join('; ')
+        need('deployments', x.name, 'becomeSecret', reason || undefined)
       }
     }
     let envTemplate: string | null | undefined = x.envTemplate
@@ -426,7 +458,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
         )
         .join('\n')
       if (lost.size > 0) {
-        need('deployments', x.name, 'envTemplate', [...lost].join(', '))
+        need('deployments', x.name, 'envTemplate', [...lost].join(', ') + (before ? '; kept the local template' : ''))
         if (before) envTemplate = undefined
       }
     }
@@ -538,12 +570,14 @@ export function planImport(db: Db, file: ConfigFile): Omit<ImportPreview, 'token
 }
 
 function dryRun(db: Db, file: ConfigFile): Plan {
+  if (db.isTransaction) throw new Error('nested transactions are not supported')
   // BEGIN IMMEDIATE: nothing else can write between the plan's reads and its writes.
   db.exec('BEGIN IMMEDIATE')
   try {
     return run(db, file)
   } finally {
-    db.exec('ROLLBACK')
+    // SQLite may already have rolled back after an I/O or full-disk error: don't hide that error behind a second one.
+    if (db.isTransaction) db.exec('ROLLBACK')
   }
 }
 

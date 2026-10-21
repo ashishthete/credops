@@ -763,6 +763,6 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'containers:unfollow': args(v.uuid()),
   'config:export': args(),
   'config:importOpen': args(),
-  'config:importApply': args(importToken, v.object({ typedNames: v.array(v.str({ max: MAX_NAME }), MAX_TYPED_NAMES) })),
+  'config:importApply': args(importToken, v.object({ typedNames: v.array(v.str({ max: MAX_NAME, pattern: NO_NUL }), MAX_TYPED_NAMES) })),
   'config:importDiscard': args(importToken),
 }

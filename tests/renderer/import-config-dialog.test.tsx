@@ -62,6 +62,16 @@ describe('import config dialog', () => {
     expect(within(needs).getByText('api')).toBeInTheDocument()
   })
 
+  it('a sensitive host env var left blank reads as host: KEY left blank', () => {
+    mockBridge()
+    renderDialog({
+      ...preview,
+      needsSecret: [{ kind: 'hosts', name: 'app1', field: 'envVars', reason: 'DB_PASSWORD left blank; set it in the host editor' }],
+    })
+    const needs = screen.getByRole('region', { name: 'Needs a secret' })
+    expect(within(needs).getByText('app1: DB_PASSWORD left blank; set it in the host editor')).toBeInTheDocument()
+  })
+
   it('Import stays disabled until every protected environment name is typed', async () => {
     const invoke = mockBridge({ 'config:importApply': { counts: preview.counts, needsSecret: preview.needsSecret } })
     const onClose = renderDialog()

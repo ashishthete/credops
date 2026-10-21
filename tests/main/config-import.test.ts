@@ -42,6 +42,8 @@ function importFile(t: { db: Db; audit: ConfigFixture['audit']; vault: ConfigFix
   return applyImport(deps(t), file, { typedNames, expected: plan.counts })
 }
 
+const hostRow = (db: Db, id: string) => db.prepare('SELECT * FROM hosts WHERE id = ?').get(id) as Record<string, unknown>
+
 const itemOf = (plan: ReturnType<typeof planImport>, kind: string, name: string) => plan.items.find((i) => i.kind === kind && i.name === name)!
 
 /** The config fixture without its password identity, exported: every ref in it can resolve elsewhere. */
@@ -312,6 +314,95 @@ describe('config import', () => {
     const added = planImport(t.db, withCheckout)
     expect(itemOf(added, 'environments', 'prod').action).toBe('add')
     expect(added.protectedEnvironments).toEqual([])
+  })
+
+  it('a host behind a protected environment that would reach another machine needs its typed name', async () => {
+    const f = await makeConfigFixture()
+    const file = copy(buildConfigExport(f.db, clock).file)
+    file.hosts.find((h) => h.label === 'app1')!.address = '6.6.6.6'
+    const plan = planImport(f.db, file)
+    expect(itemOf(plan, 'hosts', 'app1')).toMatchObject({ action: 'update', fields: ['address'] })
+    expect(plan.protectedEnvironments).toEqual(['prod'])
+    expect(() => applyImport(deps(f), file, { typedNames: [], expected: plan.counts })).toThrow('Type prod to update this protected environment')
+    expect(hostRow(f.db, f.host.id).address).not.toBe('6.6.6.6')
+    applyImport(deps(f), file, { typedNames: ['prod'], expected: plan.counts })
+    expect(hostRow(f.db, f.host.id).address).toBe('6.6.6.6')
+  })
+
+  it('a changed jump host, or a host dropping its jump, guards the protected environments behind it', async () => {
+    const f = await makeConfigFixture()
+    const exported = buildConfigExport(f.db, clock).file
+    // bastion is only in staging, but app1 in prod jumps through it.
+    const moved = copy(exported)
+    moved.hosts.find((h) => h.label === 'bastion')!.address = 'evil.example.com'
+    const plan = planImport(f.db, moved)
+    expect(plan.protectedEnvironments).toEqual(['prod'])
+    expect(() => applyImport(deps(f), moved, { typedNames: [], expected: plan.counts })).toThrow('Type prod to update this protected environment')
+
+    const direct = copy(exported)
+    direct.hosts.find((h) => h.label === 'app1')!.jumpHostId = null
+    const plan2 = planImport(f.db, direct)
+    expect(itemOf(plan2, 'hosts', 'app1')).toMatchObject({ action: 'update', fields: ['jumpHostId'] })
+    expect(plan2.protectedEnvironments).toEqual(['prod'])
+    applyImport(deps(f), direct, { typedNames: ['prod'], expected: plan2.counts })
+    expect(hostRow(f.db, f.host.id).jump_host_id).toBeNull()
+  })
+
+  it('an identity login change guards the protected environments of the hosts using it', async () => {
+    const f = await makeConfigFixture()
+    const file = copy(buildConfigExport(f.db, clock).file)
+    // root-login is app1's identity; app1 is in prod.
+    file.identities.find((i) => i.label === 'root-login')!.username = 'admin'
+    const plan = planImport(f.db, file)
+    expect(itemOf(plan, 'identities', 'root-login')).toMatchObject({ action: 'update', fields: ['username'] })
+    expect(plan.protectedEnvironments).toEqual(['prod'])
+    expect(() => applyImport(deps(f), file, { typedNames: [], expected: plan.counts })).toThrow('Type prod to update this protected environment')
+    applyImport(deps(f), file, { typedNames: ['prod'], expected: plan.counts })
+    expect((f.db.prepare('SELECT username FROM identities WHERE id = ?').get(f.ids.passwordIdentity) as { username: string }).username).toBe('admin')
+
+    // A label or tag change reaches nothing: no typed name.
+    const harmless = copy(buildConfigExport(f.db, clock).file)
+    harmless.hosts.find((h) => h.label === 'app1')!.tags = ['web']
+    expect(planImport(f.db, harmless).protectedEnvironments).toEqual([])
+  })
+
+  it('a sensitive host env var written into the file is left blank, never imported', async () => {
+    const f = await makeConfigFixture()
+    const file = copy(buildConfigExport(f.db, clock).file)
+    file.hosts.find((h) => h.label === 'app1')!.envVars = { LANG: 'C.UTF-8', DB_PASSWORD: 'hunter2-plain' }
+    const plan = planImport(f.db, file)
+    expect(plan.needsSecret).toContainEqual({ kind: 'hosts', name: 'app1', field: 'envVars', reason: 'DB_PASSWORD left blank; set it in the host editor' })
+    expect(JSON.stringify(plan)).not.toContain('hunter2-plain')
+    importFile(f, file, ['prod'])
+    expect(JSON.parse(hostRow(f.db, f.host.id).env_vars as string)).toEqual({ LANG: 'C.UTF-8', DB_PASSWORD: '' })
+    expect(JSON.stringify(f.db.prepare('SELECT * FROM hosts').all())).not.toContain('hunter2-plain')
+
+    const t = await makeTarget(f)
+    importFile(t, file)
+    expect(JSON.stringify(t.db.prepare('SELECT * FROM hosts').all())).not.toContain('hunter2-plain')
+  })
+
+  it('an unresolved ref on an update keeps the local value and says so', async () => {
+    const f = await makeConfigFixture()
+    const file = copy(buildConfigExport(f.db, clock).file)
+    file.secretRefs = Object.fromEntries(Object.entries(file.secretRefs).map(([k, r]) => [k, { ...r, itemName: `${r.itemName}-gone` }]))
+    const plan = planImport(f.db, file)
+    expect(plan.needsSecret).toContainEqual({ kind: 'deployments', name: 'api', field: 'becomeSecret', reason: 'kept the local become secret' })
+    expect(plan.needsSecret).toContainEqual(
+      expect.objectContaining({ kind: 'deployments', name: 'api', field: 'envTemplate', reason: expect.stringMatching(/; kept the local template$/) }),
+    )
+  })
+
+  it('the preview refuses to run inside an open transaction', async () => {
+    const f = await makeConfigFixture()
+    const file = buildConfigExport(f.db, clock).file
+    f.db.exec('BEGIN')
+    try {
+      expect(() => planImport(f.db, file)).toThrow('nested transactions are not supported')
+      expect(f.db.isTransaction).toBe(true)
+    } finally {
+      f.db.exec('ROLLBACK')
+    }
   })
 
   it('apply refuses when the DB changed since the preview', async () => {
