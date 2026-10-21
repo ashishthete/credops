@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -140,7 +140,22 @@ describe('config export', () => {
 
   it('export contains no secret', async () => {
     const f = await makeConfigFixture()
-    const text = serializeConfig(buildConfigExport(f.db, clock).file)
+    // Secrets that live in plain config columns: a token env var and credentials inside repo URLs.
+    f.db
+      .prepare('UPDATE hosts SET env_vars = ? WHERE id = ?')
+      .run(JSON.stringify({ LANG: 'C.UTF-8', GITHUB_TOKEN: 'ghp-SECRETVAL-env', db_password: '' }), f.host.id)
+    f.db.prepare('UPDATE products SET repo_url = ? WHERE id = ?').run('https://u:SECRETVAL@host/x.git', f.ids.product)
+    f.db.prepare('UPDATE deployments SET repo_url = ? WHERE id = ?').run('ssh://git:SECRETVAL2@host/x.git', f.ids.deployment)
+    const { file, omitted } = buildConfigExport(f.db, clock)
+    const text = serializeConfig(file)
+    expect(text).not.toContain('SECRETVAL')
+    expect(file.hosts.find((h) => h.id === f.host.id)!.envVars).toEqual({ LANG: 'C.UTF-8', GITHUB_TOKEN: '', db_password: '' })
+    expect(file.products[0].repoUrl).toBe('https://host/x.git')
+    // An ssh user is not a secret: only the password goes.
+    expect(file.deployments[0].repoUrl).toBe('ssh://git@host/x.git')
+    // The token and the two URL passwords; an already blank value is not counted.
+    expect(omitted).toBe(3)
+    expect(parseConfigFile(text).ok).toBe(true)
     for (const value of Object.values(SECRET_VALUES)) expect(text).not.toContain(value)
     for (const line of f.privateKey.split('\n').filter((l) => l.length > 20)) expect(text).not.toContain(line)
     expect(text).not.toContain('PRIVATE KEY')
@@ -179,6 +194,8 @@ describe('config export', () => {
     const gone = '0190a1b2-c3d4-4e5f-8a6b-eeeeeeeeeeee'
     f.db.prepare('UPDATE deployments SET env_template = ? WHERE id = ?').run(`GONE=\${secret:${gone}}\nAPP_ENV=x\n`, f.ids.deployment)
     const { file } = buildConfigExport(f.db, clock)
+    const { omitted } = buildConfigExport(f.db, clock)
+    expect(omitted).toBe(1)
     expect(file.deployments[0].envTemplate).toBe('GONE=\nAPP_ENV=x\n')
     expect(serializeConfig(file)).not.toContain(gone)
     expect(parseConfigFile(serializeConfig(file)).ok).toBe(true)
@@ -228,10 +245,10 @@ describe('config export', () => {
     const path = tmpPath()
     const h = createConfigHandlers({ ...exportDeps(f), saveDialog: async () => path })
     const res = await h['config:export']()
-    expect(res).toEqual({ path, counts: { products: 1, identities: 2, hosts: 2, environments: 2, tunnels: 1, deployments: 1, services: 2 } })
+    expect(res).toEqual({ path, counts: { products: 1, identities: 2, hosts: 2, environments: 2, tunnels: 1, deployments: 1, services: 2 }, omitted: 0 })
     const [e] = f.audit.list({ actions: ['config.export'] })
     expect(e).toMatchObject({ outcome: 'success', targetType: 'config', targetLabel: 'config', targetId: null })
-    expect(e.details).toEqual({ counts: res!.counts })
+    expect(e.details).toEqual({ counts: res!.counts, omitted: 0 })
     const json = JSON.stringify(e)
     for (const leak of [path, 'opsdeck-config', f.host.id, f.ids.bastion, 'app1', 'bastion', '10.0.0.7', 'staging', 'Shop', 'Team']) {
       expect(json).not.toContain(leak)
@@ -265,5 +282,37 @@ describe('config export', () => {
     const [e] = f.audit.list({ actions: ['config.export'] })
     expect(e.outcome).toBe('failure')
     expect(JSON.stringify(e)).not.toContain(dir)
+  })
+
+  it('the write is atomic: a failed rename leaves the target and no temp file behind', async () => {
+    const f = await makeConfigFixture()
+    const dir = mkdtempSync(join(tmpdir(), 'opsdeck-config-'))
+    // A non-empty directory at the target path: the temp file is written, the rename over it fails.
+    const path = join(dir, 'opsdeck-config.json')
+    mkdirSync(path)
+    writeFileSync(join(path, 'keep'), 'x')
+    await expect(exportConfig(exportDeps(f), path)).rejects.toThrow("Couldn't write the config file")
+    expect(readdirSync(dir)).toEqual(['opsdeck-config.json'])
+    expect(readdirSync(path)).toEqual(['keep'])
+
+    // Success leaves only the target, and an old file is replaced whole.
+    const ok = join(dir, 'out.json')
+    writeFileSync(ok, 'old contents that are longer than nothing', { mode: 0o644 })
+    await exportConfig(exportDeps(f), ok)
+    expect(readdirSync(dir).sort()).toEqual(['opsdeck-config.json', 'out.json'])
+    expect(parseConfigFile(readFileSync(ok, 'utf8')).ok).toBe(true)
+  })
+
+  it('a config that cannot be read fails with a generic message and no parser text', async () => {
+    const f = await makeConfigFixture()
+    f.db.prepare('UPDATE hosts SET tags = ? WHERE id = ?').run('{not json SECRETVAL', f.host.id)
+    const path = tmpPath()
+    const err = await exportConfig(exportDeps(f), path).catch((e: Error) => e)
+    expect(err).toBeInstanceOf(Error)
+    expect((err as Error).message).toBe("Couldn't read the config")
+    expect(JSON.stringify(err, Object.getOwnPropertyNames(err))).not.toMatch(/SECRETVAL|JSON|position/)
+    expect(() => statSync(path)).toThrow()
+    const [e] = f.audit.list({ actions: ['config.export'] })
+    expect(e.outcome).toBe('failure')
   })
 })

@@ -31,7 +31,12 @@ function ConfigSection() {
     try {
       // null: the save dialog was closed, which needs no comment.
       const res = await attempt("Couldn't export the config", () => api.invoke('config:export'))
-      if (res) toast({ title: `Exported ${plural(total(res.counts), 'item')} to ${basename(res.path)}`, tone: 'success' })
+      if (res)
+        toast({
+          title: `Exported ${plural(total(res.counts), 'item')} to ${basename(res.path)}`,
+          ...(res.omitted ? { description: `${plural(res.omitted, 'secret value')} ${res.omitted === 1 ? 'was' : 'were'} left out` } : {}),
+          tone: 'success',
+        })
     } finally {
       setExporting(false)
     }
@@ -49,7 +54,7 @@ function ConfigSection() {
           </h2>
           <p className="mt-1 text-[12.5px] leading-relaxed text-muted">
             Exports products, environments, hosts, identities, tunnels, checkouts and services. Secrets are never exported;
-            references to vault items are kept by name.
+            references to vault items are kept by name. Free-text notes and hooks are exported as written.
           </p>
         </div>
       </div>

@@ -47,9 +47,17 @@ import {
   MAX_DEPLOYMENTS,
   MAX_ENV_TEMPLATE,
   MAX_EVENTS_PAGE,
+  HEALTH_STATUS_RANGE,
+  HEALTH_TIMEOUT_RANGE,
+  MAX_COMPOSE_FILE_INPUT,
+  MAX_COMPOSE_NAME,
+  MAX_GIT_REF_INPUT,
   MAX_HOOK,
+  MAX_POSITION,
   MAX_RELEASE_NOTES,
+  MAX_REPO_PATH,
   MAX_URL as MAX_HEALTH_URL,
+  STEP_TIMEOUT_RANGE,
   MAX_URLS,
   VERSION,
   type DeploymentInput,
@@ -229,25 +237,26 @@ export const asHostPatch: Check<HostPatch> = v.object({
 
 // Deploy config. Shapes and ranges only: the store owns the content rules (paths, refs, memberships).
 const deployName = v.str({ min: 1, max: MAX_NAME, trim: true })
-const deployPath = v.str({ min: 1, max: 1024 })
+const deployPath = v.str({ min: 1, max: MAX_REPO_PATH })
+const range = ([min, max]: readonly [number, number]) => v.int({ min, max })
 const healthUrl = v.object({ url: v.str({ min: 1, max: MAX_HEALTH_URL }), from: v.oneOf(['host', 'mac'] as const) })
 const deployFields = {
   repoUrl: v.nullable(v.str({ max: MAX_URL })),
-  composeProject: v.nullable(v.str({ max: 63 })),
+  composeProject: v.nullable(v.str({ max: MAX_COMPOSE_NAME })),
   repoPath: deployPath,
-  defaultBranch: v.str({ min: 1, max: 255 }),
-  deployTag: v.str({ min: 1, max: 255 }),
-  composeFile: v.str({ min: 1, max: 255 }),
-  position: v.int({ min: 0, max: 1_000_000 }),
+  defaultBranch: v.str({ min: 1, max: MAX_GIT_REF_INPUT }),
+  deployTag: v.str({ min: 1, max: MAX_GIT_REF_INPUT }),
+  composeFile: v.str({ min: 1, max: MAX_COMPOSE_FILE_INPUT }),
+  position: v.int({ min: 0, max: MAX_POSITION }),
   urls: v.array(healthUrl, MAX_URLS),
-  healthStatus: v.int({ min: 100, max: 599 }),
-  healthTimeoutSec: v.int({ min: 5, max: 600 }),
+  healthStatus: range(HEALTH_STATUS_RANGE),
+  healthTimeoutSec: range(HEALTH_TIMEOUT_RANGE),
   dbBackup: v.bool(),
   backupDir: v.nullable(deployPath),
   preHook: v.nullable(v.str({ max: MAX_HOOK })),
   postHook: v.nullable(v.str({ max: MAX_HOOK })),
-  buildTimeoutSec: v.int({ min: 10, max: 3600 }),
-  composeTimeoutSec: v.int({ min: 10, max: 3600 }),
+  buildTimeoutSec: range(STEP_TIMEOUT_RANGE),
+  composeTimeoutSec: range(STEP_TIMEOUT_RANGE),
   useSudo: v.oneOf(['auto', 'yes', 'no'] as const),
   becomeSecretId: nullableId,
   managedEnv: v.bool(),
@@ -304,7 +313,7 @@ const serviceCommon = {
 const servicePort = v.int({ min: 1, max: 65535 })
 const appServiceFields = {
   deploymentId: nullableId,
-  composeService: v.str({ min: 1, max: 63 }),
+  composeService: v.str({ min: 1, max: MAX_COMPOSE_NAME }),
   url: v.nullable(v.str({ max: MAX_URL })),
   urlCheckFrom: v.oneOf(['mac', 'host'] as const),
 }

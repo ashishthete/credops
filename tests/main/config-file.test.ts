@@ -81,6 +81,14 @@ describe('parseConfigFile', () => {
     expect(deploy).toEqual(['$.deployments[0].repoPath has an invalid format'])
     expect(errorsOf(edit(file, (r) => (r.deployments[0].defaultBranch = '--upload-pack=x')))).toEqual(['$.deployments[0].defaultBranch has an invalid format'])
     expect(errorsOf(edit(file, (r) => (r.deployments[0].urls[0].url = 'ftp://x.example')))).toEqual(['$.deployments[0].urls[0].url must be an http(s) URL without credentials'])
+    // Credentials in a repo URL: refused, and the message carries the path only.
+    const cred = errorsOf(edit(file, (r) => (r.products[0].repoUrl = 'https://u:SECRETVAL@host/x.git')))
+    expect(cred).toEqual(['$.products[0].repoUrl must not carry credentials'])
+    expect(errorsOf(edit(file, (r) => (r.deployments[0].repoUrl = 'ssh://git:SECRETVAL@host/x.git')))).toEqual(['$.deployments[0].repoUrl must not carry credentials'])
+    expect(errorsOf(edit(file, (r) => (r.deployments[0].repoUrl = 'https://tok@host/x.git')))).toEqual(['$.deployments[0].repoUrl must not carry credentials'])
+    // An ssh user is fine.
+    expect(parseConfigFile(edit(file, (r) => (r.deployments[0].repoUrl = 'ssh://git@host/x.git'))).ok).toBe(true)
+    expect(parseConfigFile(edit(file, (r) => (r.deployments[0].repoUrl = 'git@host:x.git'))).ok).toBe(true)
 
     const dangling = '0190a1b2-c3d4-4e5f-8a6b-999999999999'
     expect(errorsOf(edit(file, (r) => (r.hosts[host].jumpHostId = dangling)))).toEqual([`$.hosts[${host}].jumpHostId is not a host in this file`])

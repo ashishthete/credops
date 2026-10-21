@@ -5,12 +5,21 @@ import {
   COMPOSE_PROJECT,
   COMPOSE_SERVICE,
   GIT_REF,
+  HEALTH_STATUS_RANGE,
+  HEALTH_TIMEOUT_RANGE,
+  MAX_COMPOSE_FILE_INPUT,
+  MAX_COMPOSE_NAME,
   MAX_DEPLOYMENTS,
+  MAX_GIT_REF_INPUT,
+  MAX_POSITION,
+  MAX_REPO_PATH,
   MAX_ENV_TEMPLATE,
   MAX_HOOK,
   MAX_URL as MAX_HEALTH_URL,
   MAX_URLS,
   REPO_PATH,
+  STEP_TIMEOUT_RANGE,
+  isHttpUrl,
   parseEnvTemplate,
   type HealthFrom,
   type HealthUrl,
@@ -36,6 +45,7 @@ import {
   REPO_URL,
   TAG,
   UNSAFE_SSH_CHAR,
+  hasRepoCredentials,
   parseEnvDomain,
   type HostRole,
   type OsIcon,
@@ -333,21 +343,15 @@ const nullableId = nullable(uuid)
 const port = int(1, 65535)
 const address = str({ min: 1, max: MAX_ADDRESS, pattern: HOST_ADDRESS })
 const color = str({ max: 7, pattern: VAULT_COLOR })
-const repoUrl = nullable(str({ max: MAX_URL, pattern: REPO_URL }))
+const repoUrl: Check<string | null> = nullable((value, path, errs) => {
+  const s = str({ max: MAX_URL, pattern: REPO_URL })(value, path, errs)
+  if (s === BAD) return BAD
+  return hasRepoCredentials(s) ? fail(errs, path, 'must not carry credentials') : s
+})
 const vaultRef = object({ vaultName: text(MAX_VAULT_NAME) })
 const itemRef = object({ vaultName: text(MAX_VAULT_NAME), itemName: text(Math.max(MAX_LABEL, MAX_SECRET_NAME)) })
 const vaultRefs = array(vaultRef, MAX_LINKS)
 
-/** http(s) only, no credentials, no spaces or braces: the deploy and service stores' URL rule. */
-function isHttpUrl(url: string): boolean {
-  if (url.length === 0 || /[{}\s\u0000-\u001f]/.test(url)) return false
-  try {
-    const parsed = new URL(url)
-    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.username === '' && parsed.password === ''
-  } catch {
-    return false
-  }
-}
 const httpUrl = (max: number) => str({ max, ok: isHttpUrl, rule: 'must be an http(s) URL without credentials' })
 
 const envVars = record(
@@ -444,21 +448,21 @@ const deployment = object(
     hostId: uuid,
     name: text(MAX_NAME),
     repoUrl,
-    repoPath: str({ max: 1024, pattern: REPO_PATH }),
-    defaultBranch: str({ max: 255, pattern: GIT_REF }),
-    composeFile: str({ max: 255, pattern: COMPOSE_FILE }),
-    composeProject: nullable(str({ max: 63, pattern: COMPOSE_PROJECT })),
-    deployTag: str({ max: 255, pattern: GIT_REF }),
-    position: int(0, 1_000_000),
+    repoPath: str({ max: MAX_REPO_PATH, pattern: REPO_PATH }),
+    defaultBranch: str({ max: MAX_GIT_REF_INPUT, pattern: GIT_REF }),
+    composeFile: str({ max: MAX_COMPOSE_FILE_INPUT, pattern: COMPOSE_FILE }),
+    composeProject: nullable(str({ max: MAX_COMPOSE_NAME, pattern: COMPOSE_PROJECT })),
+    deployTag: str({ max: MAX_GIT_REF_INPUT, pattern: GIT_REF }),
+    position: int(0, MAX_POSITION),
     urls: array(object({ url: httpUrl(MAX_HEALTH_URL), from: oneOf(['host', 'mac'] as const) }), MAX_URLS),
-    healthStatus: int(100, 599),
-    healthTimeoutSec: int(5, 600),
+    healthStatus: int(...HEALTH_STATUS_RANGE),
+    healthTimeoutSec: int(...HEALTH_TIMEOUT_RANGE),
     dbBackup: bool,
-    backupDir: nullable(str({ max: 1024, pattern: BACKUP_DIR })),
+    backupDir: nullable(str({ max: MAX_REPO_PATH, pattern: BACKUP_DIR })),
     preHook: nullable(str({ max: MAX_HOOK })),
     postHook: nullable(str({ max: MAX_HOOK })),
-    buildTimeoutSec: int(10, 3600),
-    composeTimeoutSec: int(10, 3600),
+    buildTimeoutSec: int(...STEP_TIMEOUT_RANGE),
+    composeTimeoutSec: int(...STEP_TIMEOUT_RANGE),
     useSudo: oneOf(['auto', 'yes', 'no'] as const),
     becomeSecret: nullable(str({ max: 16, pattern: SECRET_REF_KEY })),
     vaults: vaultRefs,
@@ -477,14 +481,14 @@ const serviceCommon = {
   id,
   environmentId: uuid,
   name: text(MAX_NAME),
-  position: int(0, 1_000_000),
+  position: int(0, MAX_POSITION),
   description: str({ max: MAX_DESCRIPTION }),
 }
 const appService = object({
   ...serviceCommon,
   kind: oneOf(['service'] as const),
   deploymentId: nullableId,
-  composeService: str({ min: 1, max: 63, pattern: COMPOSE_SERVICE }),
+  composeService: str({ min: 1, max: MAX_COMPOSE_NAME, pattern: COMPOSE_SERVICE }),
   url: nullable(httpUrl(MAX_URL)),
   urlCheckFrom: oneOf(['mac', 'host'] as const),
 }) as Check<ConfigAppService>
