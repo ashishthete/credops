@@ -1,4 +1,4 @@
-import { BACKUP_DIR, COMPOSE_AUTO, COMPOSE_FILE, COMPOSE_PROJECT, GIT_REF, MAX_URL, REPO_PATH, RUNS_SUBDIR, SAFE_IDENT, STEP_LABEL, VERSION, type StepKind } from '../../shared/deploy'
+import { BACKUP_DIR, COMPOSE_AUTO, COMPOSE_FILE, COMPOSE_PROJECT, GIT_REF, MAX_URL, ORIGIN_MOVED_MESSAGE, REPO_PATH, RUNS_SUBDIR, SAFE_IDENT, STEP_LABEL, VERSION, type StepKind } from '../../shared/deploy'
 import { MAX_SERVICES } from '../../shared/services'
 import { ENV_NAME, MAX_STEPS_PER_CHECKOUT, STEP_ANCHORS, deniedEnvName, effectiveSteps, stepLabel, validateStep, type StepAnchor } from '../../shared/steps'
 import { shJoin } from '../ops/quote'
@@ -58,6 +58,8 @@ function dVars(d: PlanDeployment, kind: DeployPlan['kind']): Record<string, unkn
   need(d.preHookB64 === null || (B64.test(d.preHookB64) && d.preHookB64.length > 0), 'pre-hook')
   need(d.postHookB64 === null || (B64.test(d.postHookB64) && d.postHookB64.length > 0), 'post-hook')
   need(d.whenBase === null || SHA.test(d.whenBase), 'when base')
+  const head = d.expectOriginHead ?? null
+  need(head === null || (kind === 'release' && SHA.test(head)), 'expected origin head')
   if (d.backup) {
     need(BACKUP_DIR.test(d.backup.dir), 'backup directory')
     need(SAFE_IDENT.test(d.backup.label), 'backup label')
@@ -97,6 +99,8 @@ function dVars(d: PlanDeployment, kind: DeployPlan['kind']): Record<string, unkn
   // Only the steps this playbook runs, and only when there are any: a step-free block is unchanged.
   const run = kind === 'release' || kind === 'rollback' ? stepsRun(kind, d) : []
   if (run.length > 0) out.steps = Object.fromEntries(run.map((p) => [p.key, stepVars(p, d.whenBase)]))
+  // Only with skips: a block without them is unchanged.
+  if (head !== null) out.origin_head = head
   return out
 }
 
@@ -323,6 +327,18 @@ const taskBackup = (d: PlanDeployment): Task => {
 const FETCH = 'git fetch --force --tags origin "refs/heads/$B:refs/remotes/origin/$B"'
 const taskFetch = (d: PlanDeployment): Task =>
   sh(nm('fetch', d), 'fetch', runOf(d), ['B={{ d.branch | quote }}', FETCH].join('\n'), { timeout: T_SHORT, chdir: IN_REPO, guarded: true })
+
+/**
+ * With skipped services only, right after the fetch: origin must still be at the head preflight saw, else the
+ * skips were decided on code that is no longer what gets checked out. Part of the fetch step.
+ */
+const taskOriginCheck = (d: PlanDeployment): Task =>
+  sh(nm('origin check', d), 'fetch', runOf(d), [
+    'B={{ d.branch | quote }}',
+    'E={{ d.origin_head | quote }}',
+    'h=$(git rev-parse -q --verify "refs/remotes/origin/$B^{commit}" 2>/dev/null)',
+    `if [ "$h" != "$E" ]; then echo '${ORIGIN_MOVED_MESSAGE}' >&2; exit 1; fi`,
+  ].join('\n'), { timeout: T_SHORT, chdir: IN_REPO, guarded: true })
 
 const taskCheckout = (d: PlanDeployment): Task =>
   sh(nm('checkout', d), 'checkout', runOf(d), [
@@ -697,7 +713,7 @@ function commitsCmd(d: PlanDeployment): string {
   const LOG = [
     '  out=$(git log --no-merges --max-count=501 --pretty=tformat:%H%x1f%s%x1f%an%x1f%aI%x1e "$R" 2>/dev/null | base64 | tr -d \'\\n\')',
     // origin's head (read-only): a service at it has nothing new, whatever order the log lists commits in
-    '  o=$(git rev-parse -q --verify "origin/$B^{commit}" 2>/dev/null)',
+    '  o=$(git rev-parse -q --verify "refs/remotes/origin/$B^{commit}" 2>/dev/null)',
     '  echo "OD-PF commits log_b64=$out origin_head=$o"',
   ]
   const TAG_RANGE = '  if [ -n "$c" ] && git cat-file -e "$c^{commit}" 2>/dev/null; then R="$c..origin/$B"; X="$c"; else R="origin/$B"; X=""; fi'
@@ -757,7 +773,7 @@ const rescueRollback = (d: PlanDeployment): Task[] => [
 const BUILTIN: Record<Builtin, (d: PlanDeployment) => Task[]> = {
   record: (d) => [taskRecord(d)],
   backup: (d) => [taskBackup(d)],
-  fetch: (d) => [taskFetch(d)],
+  fetch: (d) => [taskFetch(d), ...(d.expectOriginHead ? [taskOriginCheck(d)] : [])],
   checkout: (d) => [taskCheckout(d)],
   env: (d) => [taskEnv(d)],
   build: (d) => [taskBuild(d)],

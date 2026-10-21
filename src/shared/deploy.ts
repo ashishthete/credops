@@ -612,6 +612,8 @@ export const STEP_SECRET_UNUSED_MESSAGE = 'This step uses a secret the environme
 export const PLAYBOOK_SHA256 = /^[0-9a-f]{64}$/
 /** A release from before playbooks were stored (or one that never started). */
 export const PLAYBOOK_NOT_STORED_MESSAGE = 'Playbook not stored for this release'
+/** A release with skipped services fails before any change when origin's head is not the one its preflight saw. */
+export const ORIGIN_MOVED_MESSAGE = 'origin moved since preview, preview again'
 export const PLAYBOOK_CHANGED_MESSAGE = 'The playbook changed since you reviewed it. Review it again.'
 /** How long a reviewed playbook can be started from (main's `PREVIEW_TTL_MS`). */
 export const REVIEW_TTL_MS = 30 * 60_000

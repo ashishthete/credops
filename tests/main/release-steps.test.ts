@@ -277,6 +277,19 @@ describe('skip unchanged', () => {
     expect(r.svc.detail(id).status).toBe('succeeded')
   })
 
+  it("a checkout with skips is held to the origin head its preflight saw; one without skips is not", async () => {
+    const { r, worker, id } = await shop({ skip: true })
+    const p = await r.svc.previewPlaybook(id)
+    expect(p.playbook).toContain('origin check ')
+    expect(p.playbook).toContain(`"origin_head": "${C}"`)
+    const forced = await r.svc.previewPlaybook(id, undefined, [worker.id])
+    expect(forced.playbook).not.toContain('origin check ')
+    expect(forced.playbook).not.toContain('origin_head')
+    await r.svc.start(id, { playbookSha256: p.sha256 })
+    await r.svc.whenIdle()
+    expect(r.runner.call('release').deployments[0].expectOriginHead).toBe(C)
+  })
+
   it('a forced service deploys with its checkout', async () => {
     const { r, worker, id } = await shop({ skip: true })
     const p = await r.svc.previewPlaybook(id, undefined, [worker.id])

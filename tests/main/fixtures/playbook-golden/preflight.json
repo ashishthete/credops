@@ -199,7 +199,7 @@
           {
             "name": "preflight commits dep1",
             "ansible.builtin.shell": {
-              "cmd": "T={{ d.tag | quote }}\nB={{ d.branch | quote }}\nif o=$(git ls-remote origin \"refs/tags/$T\" \"refs/tags/$T^{}\" 2>/dev/null); then ok=1; c=$(echo \"$o\" | awk 'END {print $1}'); else ok=0; c=\"\"; fi\nif [ \"$ok\" = 0 ]; then echo \"OD-PF commits unknown\"; else\n  if [ -n \"$c\" ] && git cat-file -e \"$c^{commit}\" 2>/dev/null; then R=\"$c..origin/$B\"; X=\"$c\"; else R=\"origin/$B\"; X=\"\"; fi\n  out=$(git log --no-merges --max-count=501 --pretty=tformat:%H%x1f%s%x1f%an%x1f%aI%x1e \"$R\" 2>/dev/null | base64 | tr -d '\\n')\n  o=$(git rev-parse -q --verify \"origin/$B^{commit}\" 2>/dev/null)\n  echo \"OD-PF commits log_b64=$out origin_head=$o\"\nfi",
+              "cmd": "T={{ d.tag | quote }}\nB={{ d.branch | quote }}\nif o=$(git ls-remote origin \"refs/tags/$T\" \"refs/tags/$T^{}\" 2>/dev/null); then ok=1; c=$(echo \"$o\" | awk 'END {print $1}'); else ok=0; c=\"\"; fi\nif [ \"$ok\" = 0 ]; then echo \"OD-PF commits unknown\"; else\n  if [ -n \"$c\" ] && git cat-file -e \"$c^{commit}\" 2>/dev/null; then R=\"$c..origin/$B\"; X=\"$c\"; else R=\"origin/$B\"; X=\"\"; fi\n  out=$(git log --no-merges --max-count=501 --pretty=tformat:%H%x1f%s%x1f%an%x1f%aI%x1e \"$R\" 2>/dev/null | base64 | tr -d '\\n')\n  o=$(git rev-parse -q --verify \"refs/remotes/origin/$B^{commit}\" 2>/dev/null)\n  echo \"OD-PF commits log_b64=$out origin_head=$o\"\nfi",
               "executable": "/bin/bash",
               "chdir": "{{ d.repo }}"
             },
@@ -365,7 +365,7 @@
           {
             "name": "preflight commits dep2",
             "ansible.builtin.shell": {
-              "cmd": "T={{ d.tag | quote }}\nB={{ d.branch | quote }}\nif o=$(git ls-remote origin \"refs/tags/$T\" \"refs/tags/$T^{}\" 2>/dev/null); then ok=1; c=$(echo \"$o\" | awk 'END {print $1}'); else ok=0; c=\"\"; fi\nif [ \"$ok\" = 0 ]; then echo \"OD-PF commits unknown\"; else\n  if [ -n \"$c\" ] && git cat-file -e \"$c^{commit}\" 2>/dev/null; then R=\"$c..origin/$B\"; X=\"$c\"; else R=\"origin/$B\"; X=\"\"; fi\n  out=$(git log --no-merges --max-count=501 --pretty=tformat:%H%x1f%s%x1f%an%x1f%aI%x1e \"$R\" 2>/dev/null | base64 | tr -d '\\n')\n  o=$(git rev-parse -q --verify \"origin/$B^{commit}\" 2>/dev/null)\n  echo \"OD-PF commits log_b64=$out origin_head=$o\"\nfi",
+              "cmd": "T={{ d.tag | quote }}\nB={{ d.branch | quote }}\nif o=$(git ls-remote origin \"refs/tags/$T\" \"refs/tags/$T^{}\" 2>/dev/null); then ok=1; c=$(echo \"$o\" | awk 'END {print $1}'); else ok=0; c=\"\"; fi\nif [ \"$ok\" = 0 ]; then echo \"OD-PF commits unknown\"; else\n  if [ -n \"$c\" ] && git cat-file -e \"$c^{commit}\" 2>/dev/null; then R=\"$c..origin/$B\"; X=\"$c\"; else R=\"origin/$B\"; X=\"\"; fi\n  out=$(git log --no-merges --max-count=501 --pretty=tformat:%H%x1f%s%x1f%an%x1f%aI%x1e \"$R\" 2>/dev/null | base64 | tr -d '\\n')\n  o=$(git rev-parse -q --verify \"refs/remotes/origin/$B^{commit}\" 2>/dev/null)\n  echo \"OD-PF commits log_b64=$out origin_head=$o\"\nfi",
               "executable": "/bin/bash",
               "chdir": "{{ d.repo }}"
             },
@@ -560,7 +560,7 @@
           {
             "name": "preflight commits dep3",
             "ansible.builtin.shell": {
-              "cmd": "T={{ d.tag | quote }}\nB={{ d.branch | quote }}\nif o=$(git ls-remote origin \"refs/tags/$T\" \"refs/tags/$T^{}\" 2>/dev/null); then ok=1; c=$(echo \"$o\" | awk 'END {print $1}'); else ok=0; c=\"\"; fi\nif [ \"$ok\" = 0 ]; then echo \"OD-PF commits unknown\"; else\n  if [ -n \"$c\" ] && git cat-file -e \"$c^{commit}\" 2>/dev/null; then R=\"$c..origin/$B\"; X=\"$c\"; else R=\"origin/$B\"; X=\"\"; fi\n  out=$(git log --no-merges --max-count=501 --pretty=tformat:%H%x1f%s%x1f%an%x1f%aI%x1e \"$R\" 2>/dev/null | base64 | tr -d '\\n')\n  o=$(git rev-parse -q --verify \"origin/$B^{commit}\" 2>/dev/null)\n  echo \"OD-PF commits log_b64=$out origin_head=$o\"\nfi",
+              "cmd": "T={{ d.tag | quote }}\nB={{ d.branch | quote }}\nif o=$(git ls-remote origin \"refs/tags/$T\" \"refs/tags/$T^{}\" 2>/dev/null); then ok=1; c=$(echo \"$o\" | awk 'END {print $1}'); else ok=0; c=\"\"; fi\nif [ \"$ok\" = 0 ]; then echo \"OD-PF commits unknown\"; else\n  if [ -n \"$c\" ] && git cat-file -e \"$c^{commit}\" 2>/dev/null; then R=\"$c..origin/$B\"; X=\"$c\"; else R=\"origin/$B\"; X=\"\"; fi\n  out=$(git log --no-merges --max-count=501 --pretty=tformat:%H%x1f%s%x1f%an%x1f%aI%x1e \"$R\" 2>/dev/null | base64 | tr -d '\\n')\n  o=$(git rev-parse -q --verify \"refs/remotes/origin/$B^{commit}\" 2>/dev/null)\n  echo \"OD-PF commits log_b64=$out origin_head=$o\"\nfi",
               "executable": "/bin/bash",
               "chdir": "{{ d.repo }}"
             },

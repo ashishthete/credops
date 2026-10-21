@@ -875,7 +875,9 @@ export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, str
       }
       commitsTotal += list.length
       const tagCommit = tag?.exists === '1' && tag.commit && /^[0-9a-f]{40}$/.test(tag.commit) ? tag.commit : null
-      const reported = cm && typeof cm.origin_head === 'string' && /^[0-9a-f]{40}$/.test(cm.origin_head) ? cm.origin_head : null
+      // Only a head this preflight fetched: after a failed fetch it is the last fetched copy, which may be stale.
+      const fetched = get('branch')?.fetched === '1'
+      const reported = fetched && cm && typeof cm.origin_head === 'string' && /^[0-9a-f]{40}$/.test(cm.origin_head) ? cm.origin_head : null
       // A checkout reported twice (two hosts) has a head only when both agree.
       const prev = commits[d.deploymentId]
       const originHead = prev === undefined || prev.originHead === reported ? reported : null

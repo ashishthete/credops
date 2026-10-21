@@ -79,6 +79,11 @@ export interface PlanDeployment {
    * the deploy tag's commit when `tag`) to origin/<branch>. No shas: the tag range alone.
    */
   commitBases: { shas: string[]; tag: boolean }
+  /**
+   * Release only, set when some of this checkout's services are skipped as unchanged: the origin head preflight
+   * saw (SHA-checked). After the fetch the run fails unless origin is still there, so a skip never outlives it.
+   */
+  expectOriginHead?: string | null
 }
 
 export type PlanKind = 'preflight' | 'release' | 'rollback' | 'version' | 'unlock' | 'break-lock'

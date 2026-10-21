@@ -379,6 +379,9 @@ describe('preflight parsing', () => {
     expect([c['dep-1'].originHead, c['dep-2'].originHead, c['dep-3'].originHead]).toEqual([H, null, null])
     // an older host script without the field
     expect(parse({ [runs[0]]: `${head}\nOD-PF commits log_b64=` })['dep-1'].originHead).toBeNull()
+    // a failed fetch leaves the last fetched copy: its head may be stale, so it is not one
+    const stale = `${head.replace('branch fetched=1 exists=1', 'branch fetched=0 exists=1')}\nOD-PF commits log_b64= origin_head=${H}`
+    expect(parse({ [runs[0]]: stale })['dep-1'].originHead).toBeNull()
     // one checkout reported by two hosts that disagree: no head
     const twice = planFixture({ kind: 'preflight' })
     twice.deployments = [twice.deployments[0], { ...twice.deployments[2], deploymentId: 'dep-1' }]

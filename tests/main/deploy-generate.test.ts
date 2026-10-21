@@ -4,7 +4,7 @@ import { matchSshConfig } from '../../src/main/inventory/ssh-config'
 import { generateAnsibleCfg, generateInventory, generateKnownHosts, generatePlaybook, generateSshConfig, knownHostsToken, socketPathFits, stepList } from '../../src/main/deploy/generate'
 import { b64, lockJson, sanitizeIdent } from '../../src/main/deploy/quote'
 import type { DeployPlan, PlanDeployment, PlanKind, PlanStep } from '../../src/main/deploy/runner'
-import { COMPOSE_AUTO, COMPOSE_FILE } from '../../src/shared/deploy'
+import { COMPOSE_AUTO, COMPOSE_FILE, ORIGIN_MOVED_MESSAGE } from '../../src/shared/deploy'
 import { MAX_SERVICES } from '../../src/shared/services'
 import { ENV_NAME, deniedEnvName, type StepAnchor } from '../../src/shared/steps'
 import { FIX, planFixture, shellWords, stepFixture } from './deploy-helpers'
@@ -229,6 +229,54 @@ describe('shell syntax', () => {
         expect(r.stderr, `${kind}: ${cmd}`).toBe('')
         expect(r.status).toBe(0)
       }
+  })
+})
+
+describe('origin check (skipped services)', () => {
+  const H = 'c'.repeat(40)
+  const withHead = (head: string | null | undefined, kind: PlanKind = 'release'): DeployPlan => {
+    const p = planFixture({ kind })
+    return { ...p, deployments: p.deployments.map((d, i) => (i === 0 ? { ...d, expectOriginHead: head } : d)) }
+  }
+
+  it('runs only for a checkout with skips, after the fetch and before the checkout, as part of the fetch step', () => {
+    const [p] = plays(withHead(H))
+    const [blk] = p.tasks.filter((t) => t.block)
+    const names = flat(blk.block!).map((t) => t.name as string)
+    const at = names.findIndex((n) => n.startsWith('origin check '))
+    expect(at).toBeGreaterThan(names.findIndex((n) => n.startsWith('fetch ')))
+    expect(at).toBeLessThan(names.findIndex((n) => n.startsWith('checkout ')))
+    const t = flat(blk.block!)[at]
+    expect(step(t)).toBe('fetch')
+    expect(cmdOf(t)).toBe(
+      [
+        'B={{ d.branch | quote }}',
+        'E={{ d.origin_head | quote }}',
+        'h=$(git rev-parse -q --verify "refs/remotes/origin/$B^{commit}" 2>/dev/null)',
+        `if [ "$h" != "$E" ]; then echo '${ORIGIN_MOVED_MESSAGE}' >&2; exit 1; fi`,
+      ].join('\n'),
+    )
+    expect(ORIGIN_MOVED_MESSAGE).toBe('origin moved since preview, preview again')
+    // the head is a var, never shell text
+    expect((blk.vars as { d: Record<string, unknown> }).d.origin_head).toBe(H)
+    expect(cmdOf(t)).not.toContain(H)
+    const r = spawnSync('/bin/bash', ['-n'], { input: cmdOf(t).replace(/\{\{[^}]*\}\}/g, 'x'), encoding: 'utf8' })
+    expect(r.status).toBe(0)
+    // the other checkout has no skips: no check, no var
+    const other = p.tasks.filter((x) => x.block)[1]
+    expect(flat(other?.block ?? []).some((x) => (x.name as string).startsWith('origin check'))).toBe(false)
+  })
+
+  it('a release without skips is byte-identical to one that never heard of the check', () => {
+    expect(generatePlaybook(withHead(null))).toBe(generatePlaybook(planFixture()))
+    expect(generatePlaybook(withHead(undefined))).toBe(generatePlaybook(planFixture()))
+    expect(generatePlaybook(withHead(null))).not.toContain('origin_head')
+  })
+
+  it('refuses a head that is not a sha, or one on a plan that is not a release', () => {
+    expect(() => generatePlaybook(withHead('main'))).toThrow()
+    expect(() => generatePlaybook(withHead(`${H}; rm -rf /`))).toThrow()
+    expect(() => generatePlaybook(withHead(H, 'rollback'))).toThrow()
   })
 })
 
@@ -596,7 +644,8 @@ describe('fix round 1', () => {
     expect(pf).toContain('OD-PF commits unknown')
     expect(pf).toContain('if [ "$ok" = 0 ]; then echo "OD-PF commits unknown"; else')
     // origin's head, read-only, next to the list: the one fact a skip of an unchanged service trusts
-    expect(pf).toContain('o=$(git rev-parse -q --verify "origin/$B^{commit}" 2>/dev/null)')
+    // the remote-tracking ref in full: a fetched tag named origin/<branch> must not shadow it
+    expect(pf).toContain('o=$(git rev-parse -q --verify "refs/remotes/origin/$B^{commit}" 2>/dev/null)')
     expect(pf).toContain('echo "OD-PF commits log_b64=$out origin_head=$o"')
   })
 

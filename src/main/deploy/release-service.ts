@@ -453,8 +453,8 @@ export class ReleaseService {
       live.known = holder.secrets?.known ?? []
       const { plan, playbook, version, docker } = built
       const tag = !redeploy && settings.versioned && rel.version !== null && rel.version !== settings.currentVersion ? rel.version : null
-      this.d.releases.transaction(() => {
-        this.applySkips(rel, skips)
+      const skippedSteps = this.d.releases.transaction(() => {
+        const out = this.applySkips(rel, skips)
         this.d.releases.setStatus(releaseId, 'running', {
           startedAt: this.d.now().toISOString(),
           redeploy,
@@ -462,7 +462,10 @@ export class ReleaseService {
           ...(redeploy ? { versionBump: 'none' as const } : {}),
           playbook,
         })
+        return out
       })
+      // In memory only once the rows are written.
+      for (const [runId, steps] of skippedSteps) this.steps.set(runId, steps)
       for (const { run } of infos) if (!this.steps.has(run.id)) this.steps.set(run.id, run.steps.map((x) => ({ ...x })))
       for (const i of infos) live.runIds.add(i.run.id)
       run = { infos, holder, tag, autoRollback: settings.autoRollback, previousVersion: settings.currentVersion, version }
@@ -529,6 +532,7 @@ export class ReleaseService {
       backup: rel.options.backup,
       startedAt,
       tagCommits: rel.preflight?.commits,
+      originHeads: originHeads(rel, skips),
     })
     return { plan, playbook: generatePlaybook(plan), version, docker }
   }
@@ -1184,6 +1188,8 @@ export class ReleaseService {
       startedAt?: string
       /** Preflight's commits per checkout: a step's `when changed` base falls back to the deploy tag's commit. */
       tagCommits?: PreflightReport['commits']
+      /** Release only: per run with skipped services, the origin head its preflight saw (see expectOriginHead). */
+      originHeads?: Map<string, string>
     },
   ): DeployPlan {
     const hosts = this.planHosts(live.environmentId, infos)
@@ -1212,6 +1218,7 @@ export class ReleaseService {
       useSudo: dep.useSudo,
       composeProject: dep.composeProject,
       ...this.stepFields(kind, run.id, dep, planFields(dep, sel, metas), o.holder, o.tagCommits),
+      ...(o.originHeads?.has(run.id) ? { expectOriginHead: o.originHeads.get(run.id) } : {}),
     }))
     return {
       releaseId: live.id,
@@ -1383,17 +1390,22 @@ export class ReleaseService {
     return out
   }
 
-  /** Writes a start's skips: a run left with nothing is skipped (and its steps), the others keep what is left. */
-  private applySkips(rel: ReleaseDetail, skips: Skips): void {
+  /**
+   * Writes a start's skips: a run left with nothing is skipped (and its steps), the others keep what is left.
+   * Returns the skipped runs' steps for the caller to hold once the transaction has committed.
+   */
+  private applySkips(rel: ReleaseDetail, skips: Skips): Map<string, DeploymentRunMeta['steps']> {
+    const out = new Map<string, DeploymentRunMeta['steps']>()
     for (const run of rel.runs) {
       if (!skips.sels.has(run.id)) continue
       const sel = skips.sels.get(run.id) ?? null
       if (sel === null) {
         const steps = run.steps.map((x) => ({ ...x, state: 'skipped' as const }))
         this.d.releases.updateRun(run.id, { status: 'skipped', steps })
-        this.steps.set(run.id, steps)
+        out.set(run.id, steps)
       } else this.d.releases.setRunServices(run.id, sel.services, sel.whole)
     }
+    return out
   }
 
   // ---- bookkeeping ----
@@ -1851,6 +1863,19 @@ function planStepsOf(dep: DeploymentMeta, key: (i: number, n: number) => string)
 }
 
 /** The review hash: of the playbook alone when nothing is skipped, else also of the skipped ids and their commits. */
+/** Each run left with some services after its skips: the origin head the skips were decided against. */
+function originHeads(rel: ReleaseDetail, skips: Skips): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const run of rel.runs) {
+    if (!skips.sels.get(run.id)) continue
+    const head = rel.preflight?.commits[run.deploymentId as string]?.originHead ?? null
+    // A skip is only ever decided at a known head; without one there is nothing to hold the run to.
+    if (head === null || !SHA.test(head)) throw new DeployError('INVALID_STATE', 'Preflight again: origin head unknown')
+    out.set(run.id, head)
+  }
+  return out
+}
+
 function reviewHash(playbook: string, skips: Skips): string {
   return skips.skipped.length === 0 ? sha256(playbook) : sha256(`${playbook}\0${JSON.stringify(skips.skipped.map((x) => [x.id, x.since]))}`)
 }
