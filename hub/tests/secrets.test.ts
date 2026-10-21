@@ -66,7 +66,7 @@ describe('shared secrets', () => {
       return r
     }
     expect((await keep(putSecret(admin, SECRET_DB, { environmentId: ENV_ID, name: 'DB_PASSWORD', kind: 'env', value: SENTINEL }))).statusCode).toBe(204)
-    expect((await keep(putSecret(admin, '53333333-3333-4333-8333-333333333333', { environmentId: ENV_ID, name: 'teams_webhook', kind: 'teams_webhook', value: SENTINEL }))).statusCode).toBe(204)
+    expect((await keep(putSecret(admin, '53333333-3333-4333-8333-333333333333', { environmentId: ENV_ID, name: 'teams_webhook', kind: 'teams_webhook', value: `https://hooks.example.com/${SENTINEL}` }))).statusCode).toBe(204)
     const key = await keep(call(admin, 'POST', `/api/v1/admin/environments/${ENV_ID}/deploy-key`))
     expect(key.statusCode).toBe(200)
     await keep(call(admin, 'GET', `/api/v1/admin/environments/${ENV_ID}/deploy-key`))

@@ -1,4 +1,4 @@
-import type { AuditLog } from '../../../src/main/audit/audit-log'
+import type { AuditAppender } from '../../../src/main/audit/audit-log'
 import { AI_MESSAGES, ClaudeClient, type AnthropicLike, type ClientFactoryOptions } from '../../../src/main/ai/claude'
 import { promptContext } from '../../../src/main/ai/prompt-redact'
 import { releaseNotesFinalizeStep } from '../../../src/main/ai/release-notes'
@@ -73,20 +73,30 @@ export function createHubNotify(d: HubFinalizeDeps): HubNotify {
   const heldCounts = new Map<string, number>()
   const held = (): string[] => [...heldCounts.keys()]
   const known = (): readonly string[] => [...(d.knownSecrets?.() ?? []), ...held()]
+  /** Masks a secret until the returned function is called (once). */
+  const hold = (value: string): (() => void) => {
+    heldCounts.set(value, (heldCounts.get(value) ?? 0) + 1)
+    let done = false
+    return () => {
+      if (done) return
+      done = true
+      const n = (heldCounts.get(value) ?? 1) - 1
+      if (n <= 0) heldCounts.delete(value)
+      else heldCounts.set(value, n)
+    }
+  }
   /** Reads one integration secret; it is masked everywhere while `run` is in flight. */
   async function using<T>(environmentId: string | null, kind: HubSecretKind, run: (value: string) => Promise<T>, missing: () => Error): Promise<T> {
     const value = d.secrets.integration(environmentId, kind)
     if (value === null) throw missing()
-    heldCounts.set(value, (heldCounts.get(value) ?? 0) + 1)
+    const release = hold(value)
     try {
       return await run(value)
     } catch (e) {
       if (e instanceof IntegrationError || e instanceof AiFailure) throw e
       throw new Error(redact(e instanceof Error ? e.message : String(e), [...known(), value]))
     } finally {
-      const n = (heldCounts.get(value) ?? 1) - 1
-      if (n <= 0) heldCounts.delete(value)
-      else heldCounts.set(value, n)
+      release()
     }
   }
   const has = (kind: HubSecretKind): boolean => d.secrets.integration(null, kind) !== null
@@ -148,7 +158,7 @@ export function createHubNotify(d: HubFinalizeDeps): HubNotify {
     }),
   }
 
-  const audit: Pick<AuditLog, 'append'> = {
+  const audit: AuditAppender = {
     append(input: AuditInput): void {
       let action: string = input.action
       let details = input.details ?? {}
@@ -193,7 +203,7 @@ export function createHubNotify(d: HubFinalizeDeps): HubNotify {
     },
     environment: (id, fallback) => {
       const name = d.registry.nameOf(id)
-      return { name: name ?? fallback ?? 'Unknown environment', color: '', protected: name !== null && d.registry.get(id).protected }
+      return { name: name ?? fallback ?? 'Unknown environment', color: '', protected: name !== null && d.registry.get(id).environment.protected }
     },
     knownSecrets: known,
     ...(d.now ? { now: d.now } : {}),
@@ -232,6 +242,26 @@ export function createHubNotify(d: HubFinalizeDeps): HubNotify {
     },
   }
 
+  // The GitHub token is read inside QaDispatcher on every call; it is masked while a dispatch runs and while its
+  // background wait can still poll (2 min to find the run, then 30 min), so errors and the live feed never carry it.
+  const QA_WAIT_MS = 33 * 60_000
+  const heldQa: Pick<QaDispatcher, 'dispatch' | 'watch'> = {
+    async dispatch(environmentId, o) {
+      const token = d.secrets.integration(null, 'github_token')
+      const release = token === null ? () => undefined : hold(token)
+      try {
+        return await qa.dispatch(environmentId, o)
+      } finally {
+        release()
+      }
+    },
+    watch(item) {
+      const token = d.secrets.integration(null, 'github_token')
+      if (token !== null) setTimeout(hold(token), QA_WAIT_MS).unref()
+      qa.watch(item)
+    },
+  }
+
   const finalize = createFinalizeSteps({
     dispatcher,
     notes: releaseNotesFinalizeStep({
@@ -248,7 +278,7 @@ export function createHubNotify(d: HubFinalizeDeps): HubNotify {
       },
       environmentName: integrations.environmentName,
     }),
-    qa: qaFinalizeStep({ qa, integrations }),
+    qa: qaFinalizeStep({ qa: heldQa, integrations }),
   })
   return { finalize, dispatcher, qa, held }
 }
