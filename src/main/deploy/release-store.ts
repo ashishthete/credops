@@ -79,6 +79,8 @@ export interface RunPatch {
 
 export const INTERRUPTED_MESSAGE = 'interrupted: OpsDeck quit during the run'
 const MAX_PAGE = 5000
+/** previousRelease follows at most this many rollbacks back. */
+const MAX_ROLLBACK_CHAIN = 1000
 
 interface ReleaseRow {
   id: string
@@ -322,11 +324,16 @@ export class ReleaseStore {
 
   /**
    * The release (never a rollback) the service was on before `beforeReleaseId`: a rollback found on the way stands for
-   * the release it restored, the one before the release it undid.
+   * the release it restored, the one before the release it undid. A malformed chain (a rollback not newer than the
+   * release it undid) gives null rather than looping.
    */
   previousRelease(serviceId: string, beforeReleaseId: string): string | null {
     let hit = this.previousTouching(serviceId, beforeReleaseId)
-    while (hit !== null && hit.rollbackOf !== null) hit = this.previousTouching(serviceId, hit.rollbackOf)
+    for (let steps = 0; hit !== null && hit.rollbackOf !== null; steps++) {
+      const next = this.previousTouching(serviceId, hit.rollbackOf)
+      if (steps >= MAX_ROLLBACK_CHAIN || (next !== null && next.releaseId >= hit.releaseId)) return null
+      hit = next
+    }
     return hit?.releaseId ?? null
   }
 

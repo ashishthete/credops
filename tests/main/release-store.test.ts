@@ -369,5 +369,16 @@ describe('ReleaseStore', () => {
       expect(f.releases.previousRelease('s1', r1.id)).toBeNull()
       expect(f.releases.previousRelease('s2', r4.id)).toBeNull()
     })
+
+    it('previousRelease gives null on a rollback that claims to undo a newer release', { timeout: 2000 }, async () => {
+      const { f, d } = await release()
+      rel(f, d, [entry('s1', { deployedCommit: SA })], { runStatus: 'succeeded' })
+      const rb = rel(f, d, [entry('s1', { deployedCommit: SA })], { kind: 'rollback', runStatus: 'rolled_back' })
+      const r3 = rel(f, d, [entry('s1')], { runStatus: 'succeeded' })
+      // Only a corrupt row (or a clock gone backwards) can do this; the app never writes it. rb is the newest deploy
+      // before r3, so following its rollback_of finds rb again.
+      f.db.prepare('UPDATE releases SET rollback_of = ? WHERE id = ?').run(r3.id, rb.id)
+      expect(f.releases.previousRelease('s1', r3.id)).toBeNull()
+    })
   })
 })
