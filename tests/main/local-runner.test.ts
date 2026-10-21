@@ -221,6 +221,42 @@ describe('LocalRunner', () => {
     expect(t.tap.taps.every((x) => x.stopped)).toBe(true)
   })
 
+  it('masks every base64 form of a secret on the tap, in ansible lines, in checks and in errors', async () => {
+    const secret = 'tok-Q7x9!zK'
+    const forms = [secret, Buffer.from(secret).toString('base64'), Buffer.from(`${secret}\n`).toString('base64'), Buffer.from(secret).subarray(0, 9).toString('base64')]
+    const secrets: RunSecrets = { values: { env_1: secret }, known: [secret] }
+    const t = setup()
+    t.ansible.hang = true
+    t.ansible.stderr = forms.map((f) => `ansible says ${f}`)
+    vi.useFakeTimers()
+    const h = t.runner.start(planFixture(), secrets)
+    await until(() => t.tap.taps.length === 2 && t.ansible.calls.length === 1)
+    for (const f of forms) t.tap.taps[0].onLine(`${R2}:c_0\tvalue ${f} end`)
+    t.runner.cancel(h.runId)
+    await h.done
+    const tapped = t.events.filter((e): e is Extract<RunEventBody, { type: 'log' }> => e.type === 'log' && e.stepId === `${R2}:c_0`)
+    expect(tapped).toHaveLength(forms.length)
+    for (const f of forms) expect(JSON.stringify(t.events), f).not.toContain(f)
+
+    const bad = setup({}, fakePrepare({ throws: new Error(`dial failed with ${forms.join(' ')}`) }))
+    const err = await bad.runner.start(planFixture(), secrets).done.catch((e: Error) => e)
+    for (const f of forms) expect(String((err as Error).message), f).not.toContain(f)
+  })
+
+  it('a custom step status marker on the tap settles the step and is not shown as a log line', async () => {
+    const t = setup()
+    t.ansible.hang = true
+    vi.useFakeTimers()
+    const h = t.runner.start(planFixture(), SECRETS)
+    await until(() => t.tap.taps.length === 2 && t.ansible.calls.length === 1)
+    t.tap.taps[0].onLine(`${R2}:c_0\tOD-SKIP`)
+    t.tap.taps[0].onLine(`${R2}:c_0\tOD-STEP rc=3`)
+    t.tap.taps[0].onLine(`${R2}:c_0\tmigrating`)
+    expect(t.events.filter((e) => e.type === 'log').map((e) => (e as { line: string }).line)).toEqual(['migrating'])
+    t.runner.cancel(h.runId)
+    await h.done
+  })
+
   const down = (hostId: string) => ({ hostId, id: 'reachable', level: 'block' as const, message: 'Cannot reach host' }) as never
 
   it('a release is refused when one host fails prepare', async () => {

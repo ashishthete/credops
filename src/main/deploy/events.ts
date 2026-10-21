@@ -90,6 +90,10 @@ export class EventTranslator {
   /** OD-TAG failures and custom step markers, by `${hostId}|${stepId}`. */
   private readonly tagNotes = new Map<string, string>()
   private readonly stepNotes = new Map<string, StepNote>()
+  /** `${run}:c_<n>` of the custom steps that have a `when`. */
+  private readonly hasWhen = new Set<string>()
+  /** No_log custom steps with a `when` that returned ok with no marker yet, waiting for a late OD-SKIP. */
+  private readonly pending: Active[] = []
   /** `${run}:c_<n>` -> the PlanStep label. */
   private readonly customLabel = new Map<string, string>()
   /** Run id -> the key of the last step of its block. */
@@ -115,7 +119,10 @@ export class EventTranslator {
       } catch {
         continue
       }
-      for (const p of steps) this.customLabel.set(`${d.runId}:${p.key}`, p.label)
+      for (const p of steps) {
+        this.customLabel.set(`${d.runId}:${p.key}`, p.label)
+        if (p.step.when.kind !== 'always') this.hasWhen.add(`${d.runId}:${p.key}`)
+      }
       if (plan.kind !== 'release' && plan.kind !== 'rollback') continue
       const list = stepList(plan.kind, [{ ...d, steps }]).get(d.runId) ?? []
       const last = list.at(-1)
@@ -144,14 +151,14 @@ export class EventTranslator {
   /** Every secret, plus its base64 forms (mask.ts's), so an event is stored without either. */
   private forms(): string[] {
     const known = this.o.secrets()
-    const sig = known.join('\0')
-    if (this.formsFor !== sig) {
-      this.formsFor = sig
+    // the caller hands over the same array for the whole run, so the forms are built once
+    if (this.formsFor !== known) {
+      this.formsFor = known
       this.formsCache = withBase64Forms(known.filter((x) => x !== ''))
     }
     return this.formsCache
   }
-  private formsFor: string | null = null
+  private formsFor: string[] | null = null
   private formsCache: string[] = []
 
   private red(s: string): string {
@@ -195,7 +202,7 @@ export class EventTranslator {
 
   /** Called when ansible exits: closes steps that never finished. */
   finish(exitCode: number | null, signal: string | null, cancelled = false): RunEventBody[] {
-    const out: RunEventBody[] = []
+    const out: RunEventBody[] = this.flush(null)
     if (cancelled) {
       // a cancel is not a failure: running steps and their deployments close as cancelled
       const runs = new Set<string>()
@@ -316,7 +323,9 @@ export class EventTranslator {
   private result(e: ResultEvent): RunEventBody[] {
     const t = this.tagsOf(e.tags)
     if (t && this.foreign(e, t.run)) return []
-    const out = this.stepResult(e)
+    // a result from a host is the point by which the tap has had a task round trip to deliver a held step's marker
+    const before = this.flush(e.host ? (this.hostByAlias.get(e.host)?.hostId ?? null) : null)
+    const out = [...before, ...this.stepResult(e)]
     const r = t ? this.ref(t.kind) : null
     const name = e.task ?? ''
     if (!t || !r || this.internal(name)) return out
@@ -409,7 +418,24 @@ export class EventTranslator {
         return out
       }
     }
+    if (kind === 'custom' && a && hidden && e.event === 'ok' && rc === 0 && this.hasWhen.has(`${t.run}:${r.key}`) && !a.done) {
+      // under no_log the OD-SKIP of a `when` that found nothing changed may still be on its way through the tap
+      this.pending.push(a)
+      return out
+    }
     if (a) this.settle(a, { state: 'ok', message: this.prevNote(kind, t.run) }, out)
+    return out
+  }
+
+  /** Settles the held steps of a host (or of every host when null) with whatever marker has arrived by now. */
+  private flush(hostId: string | null): RunEventBody[] {
+    const out: RunEventBody[] = []
+    for (const a of [...this.pending]) {
+      if (hostId !== null && a.hostId !== hostId) continue
+      this.pending.splice(this.pending.indexOf(a), 1)
+      const note = this.stepNotes.get(`${a.hostId ?? ''}|${a.stepId}`)
+      this.settle(a, note?.state === 'skipped' ? { state: 'skipped' } : { state: 'ok' }, out)
+    }
     return out
   }
 

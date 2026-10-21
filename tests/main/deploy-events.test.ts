@@ -807,6 +807,34 @@ describe('EventTranslator custom steps and hosts', () => {
     tr.observeStreamLine(`${R2}:build\tOD-SKIP`)
     start(tr, 'c_1')
     expect(of(result(tr, 'c_1'), 'step.done')[0]).toMatchObject({ state: 'ok' })
+    // c_0 stayed settled as ok: nothing re-settled it
+    expect(tr.finish(0, null)).toEqual([])
+  })
+
+  it('a no_log step with a when holds its settle for a late OD-SKIP', () => {
+    const plan = customPlan()
+    plan.deployments[1].steps[0].step.when = { kind: 'changed' }
+    plan.deployments[1].steps[0].step.secrets = [{ envName: 'TOKEN', secretId: 's' }]
+    const mk = () => new EventTranslator({ plan, secrets: () => [], now: clock().now })
+    // the marker lands after the result and before the host's next result
+    const tr = mk()
+    start(tr, 'c_0')
+    const held = result(tr, 'c_0', { no_log: true })
+    expect(of(held, 'step.done')).toEqual([])
+    tr.observeStreamLine(`${R2}:c_0\tOD-SKIP`)
+    start(tr, 'c_1')
+    const next = result(tr, 'c_1', { stdout: 'x' })
+    expect(of(next, 'step.done').map((e) => [e.stepId, e.state])).toEqual([[`${R2}:c_0`, 'skipped'], [`${R2}:c_1`, 'ok']])
+    // no marker by finish(): the step settles ok
+    const quiet = mk()
+    start(quiet, 'c_0')
+    result(quiet, 'c_0', { no_log: true })
+    expect(of(quiet.finish(0, null), 'step.done')).toMatchObject([{ stepId: `${R2}:c_0`, state: 'ok' }])
+    // a marker before the result needs no hold
+    const early = mk()
+    start(early, 'c_0')
+    early.observeStreamLine(`${R2}:c_0\tOD-SKIP`)
+    expect(of(result(early, 'c_0', { no_log: true }), 'step.done')[0]).toMatchObject({ state: 'skipped' })
   })
 
   it('markers count only in the step that prints them', () => {
