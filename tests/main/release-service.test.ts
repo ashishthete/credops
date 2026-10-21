@@ -265,6 +265,52 @@ describe('ReleaseService', () => {
     expect(audits(r, 'release.cancel')).toHaveLength(1)
   })
 
+  it('a vault reset cancels a running release, and still releases the deploy lock', async () => {
+    const r = await rig()
+    const g = gate()
+    r.runner.onCancel = g.open
+    r.runner.on.release = async () => {
+      await g.p
+      return { cancelled: true, exitCode: null }
+    }
+    const id = await ready(r)
+    await r.svc.start(id, {})
+    r.svc.vaultReset()
+    await r.svc.whenIdle()
+    expect(r.runner.cancels).toHaveLength(1)
+    expect(r.runner.kinds).toEqual(['preflight', 'release', 'unlock'])
+    expect(r.svc.detail(id).status).toBe('cancelled')
+    expect(r.svc.hasActive()).toBe(false)
+  })
+
+  it('a vault reset cancels a rollback too, which a plain cancel lets finish', async () => {
+    const r = await rig()
+    const id = await ready(r, [dep(r, 'one')])
+    r.runner.on.release = (plan) => {
+      const [r1] = runIds(plan)
+      return { exitCode: 2, failedDeploymentRunIds: [r1], reachedCheckout: [r1], commits: { [r1]: { previous: A } } }
+    }
+    const g = gate()
+    const rolling = gate()
+    r.runner.onCancel = g.open
+    r.runner.on.rollback = async () => {
+      rolling.open()
+      await g.p
+      return { cancelled: true, exitCode: null }
+    }
+    await r.svc.start(id, {})
+    await rolling.p
+    const cancelled = r.svc.cancel(id)
+    await vi.waitFor(() => expect(audits(r, 'release.cancel')).toHaveLength(1))
+    expect(r.runner.cancels).toEqual([])
+    r.svc.vaultReset()
+    await cancelled
+    await r.svc.whenIdle()
+    expect(r.runner.cancels).toHaveLength(1)
+    expect(r.runner.kinds).toEqual(['preflight', 'release', 'rollback', 'unlock'])
+    expect(r.svc.hasActive()).toBe(false)
+  })
+
   it('a thrown runner error is redacted and never carries a secret', async () => {
     const r = await rig()
     const d = dep(r, 'api', { managedEnv: true, vaultIds: [DEFAULT_VAULT_ID], envTemplate: `TOKEN=\${secret:${r.f.secretId}}` })

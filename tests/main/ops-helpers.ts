@@ -22,6 +22,7 @@ import { TUNNEL_USER } from './tunnel-helpers'
 export const idleSessions = { vaultLocked() {}, closeAll() {} }
 export const idleTunnels = { vaultLocked() {}, vaultUnlocked() {}, vaultReset() {} }
 export const idleContainers = { vaultLocked() {}, vaultReset() {} }
+export const idleReleases = { vaultReset() {} }
 
 export interface ShellHost {
   /** The tmp dir every command runs in; also its `HOME`. */
@@ -191,8 +192,8 @@ export async function makeRunSetup(deps: Partial<RunManagerDeps> = {}) {
     emit: (_event, payload) => void events.push(payload),
     ...deps,
   })
-  // The app's own wiring: runs, then links, then the broker on lock; runs, then links on reset.
-  wireVaultHooks(f.vault, { sessions: idleSessions, tunnels: idleTunnels, runs, links, containers: idleContainers, prompts: broker })
+  // The app's own wiring: runs, then links, then the broker on lock; runs, then links before a reset's erase.
+  wireVaultHooks(f.vault, { sessions: idleSessions, tunnels: idleTunnels, runs, links, containers: idleContainers, releases: idleReleases, prompts: broker })
   onTestFinished(() => {
     runs.closeAll()
     links.closeAll()

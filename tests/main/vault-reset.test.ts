@@ -6,6 +6,8 @@ import { openDatabase } from '../../src/main/db/connection'
 import { SecretStore } from '../../src/main/vault/secret-store'
 import type { QuickUnlockDeps } from '../../src/main/vault/vault-service'
 import { DEFAULT_VAULT_ID, VAULT_RESET_CONFIRM } from '../../src/shared/vault'
+import { SETTINGS } from '../../src/shared/settings'
+import { makeDeployFixture } from './deploy-helpers'
 import { makeInventory, type InventoryFixture } from './inventory-helpers'
 import { auditRows, makeVault } from './vault-helpers'
 
@@ -93,6 +95,49 @@ const resetRows = (f: InventoryFixture) =>
     .map((e) => ({ outcome: e.outcome, details: e.details }))
 
 describe('VaultService.reset', () => {
+  it('clears every deploy and integration reference to a secret, so none dangles', async () => {
+    const f = await makeDeployFixture()
+    const ref = `\${secret:${f.secretId}}`
+    const template = `# api\nTOKEN=${ref}\r\nDB_PASSWORD=${ref}\nPORT=8080\nNOTE=keep \${secret:x} inline\n`
+    const withRefs = f.deploys.create(
+      f.input({ becomeSecretId: f.secretId, managedEnv: true, vaultIds: [DEFAULT_VAULT_ID], envTemplate: template }),
+    )
+    const plain = f.deploys.create(f.input({ name: 'web', managedEnv: true, vaultIds: [DEFAULT_VAULT_ID], envTemplate: 'PORT=80\n' }))
+    const ts = new Date().toISOString()
+    f.db
+      .prepare('INSERT INTO environment_integrations(environment_id, teams_webhook_secret_id, updated_at) VALUES (?, ?, ?)')
+      .run(f.staging.id, f.secretId, ts)
+    const put = f.db.prepare('INSERT INTO settings(key, value, updated_at) VALUES (?, ?, ?)')
+    for (const key of [SETTINGS.aiApiKeySecretId, SETTINGS.sendgridApiKeySecretId, SETTINGS.githubTokenSecretId])
+      put.run(key, JSON.stringify(f.secretId), ts)
+    put.run(SETTINGS.sendgridFrom, JSON.stringify('ops@example.com'), ts)
+    f.vault.lock('manual')
+
+    await f.vault.reset(VAULT_RESET_CONFIRM)
+
+    const row = (id: string) =>
+      f.db.prepare('SELECT become_secret_id, managed_env, env_template FROM deployments WHERE id = ?').get(id) as {
+        become_secret_id: string | null
+        managed_env: number
+        env_template: string
+      }
+    expect(row(withRefs.id)).toEqual({
+      become_secret_id: null,
+      managed_env: 0,
+      env_template: '# api\nTOKEN=\r\nDB_PASSWORD=\nPORT=8080\nNOTE=keep \${secret:x} inline\n',
+    })
+    // A template with no secret in it keeps its managed .env.
+    expect(row(plain.id)).toEqual({ become_secret_id: null, managed_env: 1, env_template: 'PORT=80\n' })
+    // Vault links stay, as a host's do: the vaults outlive a reset.
+    expect(count(f, 'deployment_vaults')).toBe(2)
+    expect(f.db.prepare('SELECT teams_webhook_secret_id FROM environment_integrations').all()).toEqual([{ teams_webhook_secret_id: null }])
+    expect(f.db.prepare('SELECT key FROM settings ORDER BY key').all()).toEqual([{ key: SETTINGS.sendgridFrom }])
+    expect(f.db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+    const dump = JSON.stringify(['deployments', 'environment_integrations', 'settings'].map((t) => f.db.prepare(`SELECT * FROM ${t}`).all()))
+    expect(dump).not.toContain(f.secretId)
+    expect(dump).not.toContain('sekret-value-1')
+  })
+
   it('while locked erases every secret, keeps the inventory and clears its references', async () => {
     const { f, hostId, plainHostId, envId, productId, otherVaultId } = await seeded()
     const { quick_unlock_blob: blob } = f.db.prepare('SELECT quick_unlock_blob FROM vault_state WHERE id = 1').get() as {

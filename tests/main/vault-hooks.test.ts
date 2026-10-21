@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { wireVaultHooks, type VaultHookTargets } from '../../src/main/vault/hooks'
+import { SecretStore } from '../../src/main/vault/secret-store'
+import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import { makeVault } from './vault-helpers'
 
 /** Targets that record each call, in order, across all of them. */
@@ -12,6 +14,7 @@ function recording() {
     runs: { vaultLocked: rec('runs.vaultLocked'), vaultReset: rec('runs.vaultReset') },
     links: { vaultLocked: rec('links.vaultLocked'), closeForReset: rec('links.closeForReset') },
     containers: { vaultLocked: rec('containers.vaultLocked'), vaultReset: rec('containers.vaultReset') },
+    releases: { vaultReset: rec('releases.vaultReset') },
     prompts: { cancelAll: rec('prompts.cancelAll') },
   }
   return { calls, targets }
@@ -35,7 +38,32 @@ describe('wireVaultHooks', () => {
       'prompts.cancelAll',
     ])
     await vault.reset('RESET')
-    expect(calls.splice(0)).toEqual(['sessions.closeAll(reset)', 'tunnels.vaultReset', 'runs.vaultReset', 'containers.vaultReset', 'links.closeForReset'])
+    expect(calls.splice(0)).toEqual([
+      'releases.vaultReset',
+      'sessions.closeAll(reset)',
+      'tunnels.vaultReset',
+      'runs.vaultReset',
+      'containers.vaultReset',
+      'links.closeForReset',
+    ])
+  })
+
+  it('stops everything before the erase, while the secrets are still there', async () => {
+    const { vault, db, audit } = makeVault()
+    const { calls, targets } = recording()
+    const secrets = (): number => Number((db.prepare('SELECT COUNT(*) AS n FROM secrets').get() as { n: number }).n)
+    const seen: string[] = []
+    targets.releases.vaultReset = () => void seen.push(`releases with ${secrets()} secret`)
+    targets.links.closeForReset = () => void seen.push(`links with ${secrets()} secret`)
+    wireVaultHooks(vault, targets)
+    await vault.setup('correct horse')
+    const clipboard = { async writeText() {}, async readText() { return '' } }
+    new SecretStore(db, vault, audit, { clipboard }).create({ vaultId: DEFAULT_VAULT_ID, name: 'db', kind: 'password', value: 'pw-1' })
+    vault.lock('manual')
+    await vault.reset('RESET')
+    expect(seen).toEqual(['releases with 1 secret', 'links with 1 secret'])
+    expect(calls.splice(0)).toContain('runs.vaultReset')
+    expect(secrets()).toBe(0)
   })
 
   it('a throwing hook never skips the ones after it', async () => {

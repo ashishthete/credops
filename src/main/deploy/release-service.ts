@@ -82,6 +82,8 @@ interface Live {
   phase: Phase
   runId: string | null
   cancelRequested: boolean
+  /** Set by a vault reset: no playbook but the deploy-lock release runs again. */
+  vaultReset: boolean
   done: Promise<void>
   runStatus: Map<string, DeploymentRunStatus>
   checkedOut: Set<string>
@@ -463,6 +465,20 @@ export class ReleaseService {
     for (const l of this.live.values()) l.finalize?.abort()
   }
 
+  /**
+   * A vault reset cancels every run, past the point of no return too: a rollback holds secrets the
+   * old password guarded. Only the deploy-lock release (it holds none) still runs, so the hosts
+   * aren't left locked; each release ends cancelled and lets go of its secrets as it finishes.
+   */
+  vaultReset(): void {
+    for (const l of this.live.values()) {
+      l.vaultReset = true
+      l.cancelRequested = true
+      l.finalize?.abort()
+      if (l.runId !== null && l.phase !== 'unlock') this.d.runner.cancel(l.runId)
+    }
+  }
+
   private abort(live: Live): void {
     live.cancelRequested = true
     live.finalize?.abort()
@@ -834,7 +850,7 @@ export class ReleaseService {
 
   private async exec(live: Live, plan: DeployPlan, secrets: RunSecrets): Promise<{ out: RunOutcome | null; err: string | null }> {
     live.failure = null
-    if (live.cancelRequested && (plan.kind === 'release' || plan.kind === 'version' || plan.kind === 'preflight')) {
+    if (live.cancelRequested && (plan.kind === 'release' || plan.kind === 'version' || plan.kind === 'preflight' || (live.vaultReset && plan.kind !== 'unlock'))) {
       return { out: { exitCode: null, signal: null, cancelled: true, failedDeploymentRunIds: [], reachedCheckout: [], commits: {} }, err: null }
     }
     try {
@@ -1121,6 +1137,7 @@ export class ReleaseService {
       phase,
       runId: null,
       cancelRequested: false,
+      vaultReset: false,
       done: Promise.resolve(),
       runStatus: new Map(),
       checkedOut: new Set(),

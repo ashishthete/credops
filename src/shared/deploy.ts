@@ -206,6 +206,11 @@ export function parseEnvTemplate(text: string): { lines: EnvLine[]; secretIds: s
   return { lines, secretIds, errors }
 }
 
+/** The template with every `${secret:…}` value emptied (`KEY=`), each line and line ending kept. */
+export function stripEnvSecretRefs(text: string): string {
+  return text.replace(/^([^=\r\n]+)=\$\{secret:[^}\r\n]*\}(?=\r?$)/gm, '$1=')
+}
+
 const shq = (v: string): string => `'${v.replace(/'/g, `'\\''`)}'`
 
 /** Main only. Quotes each value for a POSIX .env; `values` maps secret id to its resolved value. */

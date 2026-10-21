@@ -489,7 +489,7 @@ if (!app.requestSingleInstanceLock()) {
       // Lock, unlock and reset hooks (order and reasons in vault/hooks.ts). Quit (before-quit) stops
       // tunnels, closes sessions, cancels runs (writing their run.finish), stops container log
       // follows, closes exec links, and only then locks the vault.
-      wireVaultHooks(service, { sessions: manager, tunnels: runner, runs, links, containers, prompts })
+      wireVaultHooks(service, { sessions: manager, tunnels: runner, runs, links, containers, releases: release, prompts })
       stopAutoLock = new AutoLock({
         idleSeconds: () => powerMonitor.getSystemIdleTime(),
         minutes: () => service.autoLockMinutes(),
