@@ -1,3 +1,4 @@
+import { REPO_URL, isParsableRepoUrl, stripRepoCredentials } from '../../shared/inventory'
 import type { CopyServicesRequest, CopyServicesResult, ServiceMeta } from '../../shared/services'
 import { stripSecretRefs } from '../../shared/services'
 import type { AuditLog } from '../audit/audit-log'
@@ -29,6 +30,12 @@ const members = (db: Db, environmentId: string): Set<string> =>
  * `services.copy` audit and no per-row audits. Name conflicts are skipped and listed. Secrets, vault links, URLs,
  * backups, tunnels and deploy history are not copied; nothing runs, so a protected target needs no confirmation.
  */
+function copiedRepoUrl(url: string | null): string | null {
+  if (url === null) return null
+  const clean = stripRepoCredentials(url)
+  return REPO_URL.test(clean) && isParsableRepoUrl(clean) ? clean : null
+}
+
 export function copyServices(deps: CopyDeps, req: CopyServicesRequest): CopyServicesResult {
   const { db, deploys, services, audit } = deps
   deps.vault.assertUnlocked()
@@ -74,7 +81,8 @@ export function copyServices(deps: CopyDeps, req: CopyServicesRequest): CopyServ
         name: d.name,
         environmentId: req.targetEnvironmentId,
         hostId: row.hostId,
-        repoUrl: d.repoUrl,
+        // A legacy URL carrying credentials is copied without them (or not at all): a copy is a new write.
+        repoUrl: copiedRepoUrl(d.repoUrl),
         composeProject: d.composeProject,
         repoPath: row.repoPath,
         defaultBranch: row.branch,
@@ -90,7 +98,7 @@ export function copyServices(deps: CopyDeps, req: CopyServicesRequest): CopyServ
         useSudo: d.useSudo,
         managedEnv: false,
         envTemplate: d.envTemplate === null ? null : stripSecretRefs(d.envTemplate),
-      }, d.repoUrl)
+      })
       newCheckout.set(d.id, id)
       takenCheckouts.add(d.name.toLowerCase())
     }

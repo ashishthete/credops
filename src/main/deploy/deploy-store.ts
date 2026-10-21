@@ -178,9 +178,8 @@ export class DeployStore {
   /**
    * Validates and writes a deployment, adding its host to the environment when needed; no transaction, no audit
    * and no `onChanged`, so a caller (copy to another environment) can batch several inside its own `inTransaction`.
-   * `legacyRepoUrl` is a stored value carried over unchanged: it skips the repo URL rules that came after it was saved.
    */
-  insertInTx(input: DeploymentInput, legacyRepoUrl: string | null = null): string {
+  insertInTx(input: DeploymentInput): string {
     const f = this.validate(
       {
         name: input.name,
@@ -209,7 +208,6 @@ export class DeployStore {
         vaultIds: input.vaultIds ?? [],
       },
       null,
-      legacyRepoUrl,
     )
     const n = (this.db.prepare('SELECT COUNT(*) AS n FROM deployments').get() as { n: number }).n
     if (n >= MAX_DEPLOYMENTS) throw new Error(`too many deployments (${MAX_DEPLOYMENTS})`)

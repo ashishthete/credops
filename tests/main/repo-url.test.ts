@@ -36,7 +36,7 @@ describe('repo URL credentials', () => {
   })
 
   it('refuses the extra-slash and scp bypass forms at the pattern', () => {
-    for (const u of ['https:///a@h/r', 'ssh:///u:p@h/r', 'https:\\\\a@h/r', 'git@:repo', 'git@https://tok:pw@h/a']) expect(REPO_URL.test(u), u).toBe(false)
+    for (const u of ['httpſ://tok:pw@host/r', 'ſſh://u:p@h/r', 'git@\u212Aost:r', 'https:///a@h/r', 'ssh:///u:p@h/r', 'https:\\\\a@h/r', 'git@:repo', 'git@https://tok:pw@h/a']) expect(REPO_URL.test(u), u).toBe(false)
   })
 
   it('keeps an ssh user when stripping its password', () => {

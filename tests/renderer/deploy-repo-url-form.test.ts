@@ -19,6 +19,13 @@ describe('deploy form and a legacy repo URL', () => {
     expect(toPatch(form, d)).toEqual({})
   })
 
+  it('the remove action sends repoUrl null, whether or not the value is readable', () => {
+    for (const repoUrl of ['https://tok:pw@host/r', 'git@https://tok:pw@host/a']) {
+      const d = deploymentMeta({ id: 'd1', repoUrl })
+      expect(toPatch(formFrom(d), d, { removeRepoUrl: true })).toEqual({ repoUrl: null })
+    }
+  })
+
   it('typing a credentialed URL is refused, and a replacement is sent', () => {
     const d = deploymentMeta({ id: 'd1', repoUrl: 'https://tok:pw@host/r' })
     const form = formFrom(d)

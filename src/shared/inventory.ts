@@ -22,9 +22,10 @@ export const MAX_URL = 2048
 /**
  * The authority can't start with a slash or backslash (WHATWG skips them); the scp form needs a host (an ssh-config
  * alias with `_` or a bracketed IPv6 address included) and a path that isn't `//…`; no control or format characters.
+ * Cases are spelled out: with both `i` and `u`, U+017F and U+212A fold to `s` and `k`, and the other checks (no `u`) wouldn't see them.
  */
 export const REPO_URL =
-  /^(?!.*[\p{Cc}\p{Cf}])(?:(?:https?|ssh):\/\/[^\/\\\s]\S*|git@(?:[a-z0-9_][a-z0-9_.-]*|\[[0-9a-f:.]+\]):(?![\/\\]{2})\S+)$/iu
+  /^(?!.*[\p{Cc}\p{Cf}])(?:(?:[Hh][Tt][Tt][Pp][Ss]?|[Ss][Ss][Hh]):\/\/[^\/\\\s]\S*|[Gg][Ii][Tt]@(?:[A-Za-z0-9_][A-Za-z0-9_.-]*|\[[0-9A-Fa-f:.]+\]):(?![\/\\]{2})\S+)$/u
 
 /** http(s) values must also parse as WHATWG URLs, so the credential check below can't silently drop out. */
 export function isParsableRepoUrl(url: string): boolean {

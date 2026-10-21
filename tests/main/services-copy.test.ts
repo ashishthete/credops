@@ -58,11 +58,17 @@ const auditCount = (f: { db: { prepare(s: string): { get(): unknown } } }): numb
   (f.db.prepare('SELECT COUNT(*) AS n FROM audit_events').get() as { n: number }).n
 
 describe('copyServices', () => {
-  it('copies a legacy repoUrl unchanged', async () => {
+  it('copies a legacy repoUrl without its credentials, or as null when nothing can be kept', async () => {
     const f = await setup()
     f.db.prepare('UPDATE deployments SET repo_url = ? WHERE id = ?').run('https://tok:pw@host/r', f.worker.id)
+    f.db.prepare('UPDATE deployments SET repo_url = ? WHERE id = ?').run('git@https://tok:pw@host/a', f.webapp.id)
     f.copy(f.request())
-    expect(f.deploys.list(f.prod.id).find((d) => d.name === 'worker')!.repoUrl).toBe('https://tok:pw@host/r')
+    const copied = f.deploys.list(f.prod.id)
+    expect(copied.find((d) => d.name === 'worker')!.repoUrl).toBe('https://host/r')
+    expect(copied.find((d) => d.name === 'webapp')!.repoUrl).toBeNull()
+    // The source rows are untouched.
+    expect(f.deploys.get(f.worker.id).repoUrl).toBe('https://tok:pw@host/r')
+    expect(f.deploys.get(f.webapp.id).repoUrl).toBe('git@https://tok:pw@host/a')
   })
 
   it('copies checkouts with the given branch, path, host and tag, and services under them', async () => {

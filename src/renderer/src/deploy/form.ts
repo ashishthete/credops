@@ -204,7 +204,7 @@ export function toInput(f: DeploymentForm, environmentId: string, position?: num
 }
 
 /** Only the fields that differ from the saved deployment. */
-export function toPatch(f: DeploymentForm, original: DeploymentMeta): Partial<DeploymentInput> {
+export function toPatch(f: DeploymentForm, original: DeploymentMeta, opts: { removeRepoUrl?: boolean } = {}): Partial<DeploymentInput> {
   const next = toInput(f, original.environmentId)
   const patch: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(next)) {
@@ -213,6 +213,7 @@ export function toPatch(f: DeploymentForm, original: DeploymentMeta): Partial<De
     if (k === 'repoUrl' && f.repoUrl.trim() === formRepoUrl(original.repoUrl)) continue
     if (JSON.stringify(v) !== JSON.stringify(original[k as keyof DeploymentMeta])) patch[k] = v
   }
+  if (opts.removeRepoUrl && original.repoUrl !== null) patch.repoUrl = null
   return patch as Partial<DeploymentInput>
 }
 

@@ -52,6 +52,7 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
   const [touched, setTouched] = useState<Set<FormField>>(new Set())
   const [serverError, setServerError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [removeRepoUrl, setRemoveRepoUrl] = useState(false)
   const [shake, setShake] = useState(0)
   const [secrets, setSecrets] = useState<SecretMeta[]>([])
 
@@ -62,6 +63,7 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
     setForm(saved ? formFrom(saved) : blankForm())
     setTouched(new Set())
     setServerError(null)
+    setRemoveRepoUrl(false)
     setBusy(false)
     // Secret names only (never values), fetched alongside the open.
     let live = true
@@ -92,6 +94,7 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
   }, [r?.kind, form.hostId, hosts])
 
   const set = (patch: Partial<DeploymentForm>) => {
+    if (patch.repoUrl !== undefined) setRemoveRepoUrl(false)
     setForm((f) => ({ ...f, ...patch }))
     setTouched((t) => new Set([...t, ...(Object.keys(patch) as FormField[])]))
     setServerError(null)
@@ -102,7 +105,9 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
   // An empty untouched field says nothing yet; the Create button stays off until it is right.
   const err = (f: FormField) => (touched.has(f) ? result.errors[f] : undefined)
 
-  const patch = original && valid ? toPatch(form, original) : null
+  // A stored URL with credentials: warned about, and removable (the field itself never shows them).
+  const legacyRepo = !!original?.repoUrl && isLegacyRepoUrl(original.repoUrl) && form.repoUrl.trim() === formFrom(original).repoUrl
+  const patch = original && valid ? toPatch(form, original, { removeRepoUrl }) : null
   const unchanged = !!patch && Object.keys(patch).length === 0
 
   const submit = async (e: FormEvent) => {
@@ -202,8 +207,24 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
             className="font-mono"
             spellCheck={false}
             error={err('repoUrl')}
-            hint={original?.repoUrl && isLegacyRepoUrl(original.repoUrl) && form.repoUrl.trim() === formFrom(original).repoUrl ? REPO_URL_LEGACY_WARNING : undefined}
+            hint={legacyRepo && !removeRepoUrl ? REPO_URL_LEGACY_WARNING : undefined}
           />
+          {legacyRepo && (
+            <div className="-mt-2 flex items-center gap-2 text-[12px] text-muted">
+              {removeRepoUrl ? (
+                <>
+                  <span>The repository URL will be removed when you save.</span>
+                  <Button type="button" size="sm" variant="ghost" onClick={() => setRemoveRepoUrl(false)}>
+                    Keep it
+                  </Button>
+                </>
+              ) : (
+                <Button type="button" size="sm" variant="ghost" onClick={() => setRemoveRepoUrl(true)}>
+                  Remove repository URL
+                </Button>
+              )}
+            </div>
+          )}
           <div className="grid grid-cols-3 gap-3">
             <TextField label="Branch" value={form.defaultBranch} onChange={(e) => set({ defaultBranch: e.target.value })} className="font-mono" spellCheck={false} error={err('defaultBranch')} />
             <TextField label="Compose file" value={form.composeFile} onChange={(e) => set({ composeFile: e.target.value })} className="font-mono" spellCheck={false} error={err('composeFile')} />
