@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType } from 'react'
-import { bumpVersion, BREAK_LOCK_CONFIRM_MESSAGE, NOTHING_SELECTED_MESSAGE, ORIGIN_MOVED_MESSAGE, PLAYBOOK_CHANGED_MESSAGE, REVIEW_EXPIRED_MESSAGE, type PlaybookPreview, type VersionBump } from '../../../../../shared/deploy'
+import { bumpVersion, stepBound, BREAK_LOCK_CONFIRM_MESSAGE, NOTHING_SELECTED_MESSAGE, ORIGIN_MOVED_MESSAGE, PLAYBOOK_CHANGED_MESSAGE, REVIEW_EXPIRED_MESSAGE, type PlaybookPreview, type VersionBump } from '../../../../../shared/deploy'
 import { pickerGroups, selectionRequest, type PickerGroup } from '../../../deploy/picker'
 import { originMoved } from '../../../deploy/pipeline'
 import { closeRelease, openRelease, startReleaseSync, usePipeline, usePreflight } from '../../../deploy/releases'
@@ -281,6 +281,12 @@ export function DeployWizard({
     await begin()
   }
 
+  // The started release failed and can't be previewed again: stop watching it and preflight a new one.
+  const previewAgain = () => {
+    if (releaseId) closeRelease(releaseId)
+    void runPreflight()
+  }
+
   const breakLock = (hostId: string) => {
     if (!releaseId) return
     const label = hostLabel(hostId)
@@ -300,7 +306,9 @@ export function DeployWizard({
   const ready = !!report && !report.blocked
   const nothingNew = !!report && report.commitsTotal === 0
   const nameOf = (id: string) => services.find((s) => s.id === id)?.name ?? 'unknown service'
-  const skippable = request.serviceIds.filter((id) => report?.serviceCommits[id]?.skippable)
+  // Preflight never calls a step-bound service skippable; a flow saved since it ran is held to the same rule as start.
+  const bound = stepBound(settings?.flow ?? null)
+  const skippable = request.serviceIds.filter((id) => report?.serviceCommits[id]?.skippable && !bound.has(id))
   const skipped = skippable.filter((id) => !force.has(id)).map((id) => ({ id, name: nameOf(id) }))
   // Every selected service would be skipped: there is nothing to deploy until one is forced.
   const allSkipped = !!report && !redeploy && !request.checkoutIds.length && request.serviceIds.length > 0 && skipped.length === request.serviceIds.length
@@ -480,7 +488,7 @@ export function DeployWizard({
           {moved && (
             <div role="alert" className="flex items-center gap-3 rounded-lg border border-err/30 bg-err/[0.06] px-3 py-2 text-[12.5px] text-err">
               <span className="flex-1">The release stopped: {ORIGIN_MOVED_MESSAGE}.</span>
-              <Button size="sm" variant="ghost" onClick={() => void runPreflight()}>
+              <Button size="sm" variant="ghost" onClick={previewAgain}>
                 Preview again
               </Button>
             </div>

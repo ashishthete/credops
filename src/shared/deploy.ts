@@ -144,6 +144,11 @@ export interface ReleaseFlow {
   onFailure: 'stop-all' | 'continue-other-hosts'
 }
 
+/** The services a flow's step stages are bound to: they always deploy, so preflight and start never skip them. */
+export function stepBound(flow: ReleaseFlow | null): Set<string> {
+  return new Set((flow?.stages ?? []).flatMap((st) => (st.kind === 'step' ? [st.serviceId] : [])))
+}
+
 export interface EnvDeploySettings {
   environmentId: string
   versioned: boolean

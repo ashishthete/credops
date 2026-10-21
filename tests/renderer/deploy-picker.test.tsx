@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { checkoutNotice, pickerGroups, selectionRequest } from '../../src/renderer/src/deploy/picker'
-import { resetReleases } from '../../src/renderer/src/deploy/releases'
+import { releaseStore, resetReleases } from '../../src/renderer/src/deploy/releases'
 import { loadDeploy, resetDeploy } from '../../src/renderer/src/deploy/store'
 import { inventoryStore, loadInventory } from '../../src/renderer/src/inventory/store'
 import { DeployWizard } from '../../src/renderer/src/pages/deployments/release/DeployWizard'
@@ -78,13 +78,13 @@ const PREVIEW = { playbook: PLAYBOOK, sha256: HASH }
 const calls = (invoke: ReturnType<typeof mockBridge>, channel: string) => (invoke.mock.calls as unknown[][]).filter((x) => x[0] === channel)
 
 /** `persisted` is what `release:events` replays; a test can also push live batches. */
-async function mount({ preselect = [] as string[], env = staging, persisted = [] as RunEvent[], detail = releaseDetail({ status: 'preflight', runs: [] }), preview = PREVIEW as PlaybookPreview } = {}) {
+async function mount({ preselect = [] as string[], env = staging, persisted = [] as RunEvent[], detail = releaseDetail({ status: 'preflight', runs: [] }), preview = PREVIEW as PlaybookPreview, settings = envSettings() } = {}) {
   const invoke = mockBridge({
     'env:list': [env],
     'host:list': HOSTS,
     'deploy:list': CHECKOUTS,
     'service:list': SERVICES,
-    'deploy:settings': envSettings(),
+    'deploy:settings': settings,
     'release:preflight': { releaseId: REL },
     'deploy:previewPlaybook': preview,
     'release:get': detail,
@@ -590,14 +590,34 @@ describe('skipped services', () => {
     expect(inv).toHaveTextContent('v1.4.0')
   })
 
-  it('a release refused because origin moved says so and offers to preview again', async () => {
-    const persisted = events([{ type: 'preflight.done', report: report() }])
-    const { user, dialog, invoke } = await mount({ preselect: ['s1'], persisted, detail: releaseDetail({ status: 'preflight' }) })
+  it('a service a flow step stage is bound to is never shown skipped, even by a preflight from before the flow', async () => {
+    const step = { id: 'migrate', name: 'migrate', run: 'shell' as const, service: null, script: 'make migrate', cwd: null, sudo: 'docker' as const, timeoutSec: 600, onFailure: 'stop' as const, when: { kind: 'always' as const }, secrets: [] }
+    const flow = { onFailure: 'stop-all' as const, stages: [{ kind: 'step' as const, serviceId: 's1', step }] }
+    const stale = report({ serviceCommits: { s1: skip }, commitsTotal: 1 })
+    const { user, dialog } = await mount({ preselect: ['s1'], persisted: events([{ type: 'preflight.done', report: stale }]), settings: envSettings({ flow }) })
     await preflight(user, dialog)
     await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Review playbook' })).toBeEnabled())
+    expect(within(dialog).queryByText('skipped: no changes')).toBeNull()
+    expect(within(dialog).queryByText(NOTHING_SELECTED_MESSAGE)).toBeNull()
+  })
+
+  it('a release refused because origin moved says so; Preview again starts over on a new release, nothing forced or reviewed carried', async () => {
+    const REL2 = 'rel-2'
+    const NEW = 'd'.repeat(64)
+    const { user, dialog, invoke } = await reviewable({ detail: releaseDetail({ status: 'preflight' }) })
+    const base = invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
+    let preflights = 0
+    invoke.mockImplementation((ch: string, ...args: unknown[]) => {
+      if (ch === 'release:preflight') return Promise.resolve({ releaseId: ++preflights === 1 ? REL2 : 'rel-3' })
+      if (ch === 'deploy:previewPlaybook' && args[0] === REL2) return Promise.resolve({ playbook: PLAYBOOK, sha256: NEW })
+      if (ch === 'release:get' && args[0] === REL2) return Promise.resolve(releaseDetail({ id: REL2, status: 'preflight' }))
+      return base(ch, ...args)
+    })
+    await user.click(within(within(dialog).getByRole('listitem', { name: 'api' })).getByRole('button', { name: 'Deploy anyway' }))
     await user.click(within(dialog).getByRole('button', { name: 'Review playbook' }))
     await user.click(await within(dialog).findByRole('button', { name: 'Deploy' }))
     await within(dialog).findByRole('button', { name: 'Close' })
+    expect(calls(invoke, 'release:start').map((c) => c.slice(1))).toEqual([[REL, { redeploy: false, playbookSha256: HASH, forceServiceIds: ['s1'] }]])
     act(() =>
       emitBridgeEvent(
         'deploy:event',
@@ -613,6 +633,17 @@ describe('skipped services', () => {
     const alert = await within(dialog).findByRole('alert')
     expect(alert).toHaveTextContent(ORIGIN_MOVED_MESSAGE)
     await user.click(within(alert).getByRole('button', { name: 'Preview again' }))
+    // the failed release is no longer watched
+    expect(releaseStore.get().pipelines[REL]).toBeUndefined()
     await waitFor(() => expect(calls(invoke, 'release:preflight')).toHaveLength(2))
+    // nothing forced carries over: api is skipped again until deployed anyway
+    expect(await within(dialog).findByText('skipped: no changes')).toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: 'Deploy' })).toBeNull()
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Review playbook' })).toBeEnabled())
+    await user.click(within(dialog).getByRole('button', { name: 'Review playbook' }))
+    await user.click(await within(dialog).findByRole('button', { name: 'Deploy' }))
+    expect(calls(invoke, 'deploy:previewPlaybook').map((c) => c.slice(1))).toEqual([[REL, ['s1']], [REL2]])
+    // the new review's hash, bound to the new release
+    await waitFor(() => expect(calls(invoke, 'release:start').map((c) => c.slice(1))[1]).toEqual([REL2, { redeploy: false, playbookSha256: NEW }]))
   })
 })

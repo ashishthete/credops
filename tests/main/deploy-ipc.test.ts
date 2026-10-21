@@ -53,6 +53,7 @@ describe('release:* validators', () => {
     ['deploy:previewPlaybook', [ID, ['x']], /./],
     ['deploy:previewPlaybook', [ID, []], /./],
     ['release:start', [ID, { forceServiceIds: ['x'] }], /forceServiceIds/],
+    ['release:start', [ID, { forceServiceIds: [] }], /forceServiceIds/],
     ['deploy:savePlaybook', [ID, 'nope'], /./],
     ['deploy:savePlaybook', [ID], /./],
     ['release:savePlaybook', ['x'], /./],

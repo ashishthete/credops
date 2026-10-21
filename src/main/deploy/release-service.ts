@@ -18,13 +18,13 @@ import {
   PLAYBOOK_CHANGED_MESSAGE,
   REVIEW_EXPIRED_MESSAGE,
   REVIEW_TTL_MS,
+  stepBound,
   type PlaybookPreview,
   type PreflightCheck,
   type PreflightReport,
   type PreflightRequest,
   type ReleaseConfirm,
   type ReleaseDetail,
-  type ReleaseFlow,
   type ReleaseListFilter,
   type ReleaseStatus,
   type ReleaseSummary,
@@ -1928,11 +1928,6 @@ function originHeads(rel: ReleaseDetail, skips: Skips): Map<string, string> {
 function reviewHash(playbook: string, skips: Skips, inventory: string | null): string {
   const text = inventory === null ? playbook : `${playbook}\0${inventory}`
   return skips.skipped.length === 0 ? sha256(text) : sha256(`${text}\0${JSON.stringify(skips.skipped.map((x) => [x.id, x.since]))}`)
-}
-
-/** The services a flow's step stages are bound to. */
-function stepBound(flow: ReleaseFlow | null): Set<string> {
-  return new Set((flow?.stages ?? []).flatMap((st) => (st.kind === 'step' ? [st.serviceId] : [])))
 }
 
 /** A review belongs to one person: the Hub user when there is one, else the OS user on the machine. */

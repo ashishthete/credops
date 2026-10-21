@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { DeployError } from '../../src/main/deploy/access'
 import { NOTHING_SELECTED_MESSAGE, PLAYBOOK_CHANGED_MESSAGE, STEP_SECRET_UNUSED_MESSAGE } from '../../src/main/deploy/release-service'
-import { REDEPLOY_CONFIRM_MESSAGE } from '../../src/shared/deploy'
+import { REDEPLOY_CONFIRM_MESSAGE, stepBound } from '../../src/shared/deploy'
 import { stepList } from '../../src/main/deploy/generate'
 import type { DeployPlan } from '../../src/main/deploy/runner'
 import type { CommitInfo, DeploymentMeta } from '../../src/shared/deploy'
@@ -480,6 +480,19 @@ describe('release flow', () => {
         }
     }
   }
+
+  it('preflight never calls a service a flow step stage is bound to skippable, as start never skips it', async () => {
+    const { r, web, worker, id } = await shopFlow((web, worker) => ({
+      onFailure: 'stop-all',
+      stages: [
+        { kind: 'services', serviceIds: [web.id] },
+        { kind: 'step', serviceId: worker.id, step: { ...migrateBody, id: 'migrate' } },
+      ],
+    }))
+    expect(stepBound(r.f.deploys.settings(r.svc.detail(id).environmentId).flow)).toEqual(new Set([worker.id]))
+    expect(r.svc.detail(id).preflight?.serviceCommits[worker.id]).toMatchObject({ known: true, count: 0, skippable: false })
+    expect(r.svc.detail(id).preflight?.serviceCommits[web.id]?.skippable).not.toBe(true)
+  })
 
   it('a when:always step bound to an unchanged service still runs: that service is never skipped', async () => {
     for (const after of [false, true]) {

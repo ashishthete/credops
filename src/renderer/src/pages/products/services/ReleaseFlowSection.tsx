@@ -80,6 +80,8 @@ export function ReleaseFlowSection({
   const names = useMemo(() => Object.fromEntries(services.map((s) => [s.id, s.name])), [services])
   const [draft, setDraft] = useState<ReleaseFlow | null>(null)
   const [busy, setBusy] = useState(false)
+  // Removing drops every step stage's script with no undo, so it is asked inline first.
+  const [removing, setRemoving] = useState(false)
   const [secrets, setSecrets] = useState<{ id: string; name: string }[]>([])
 
   // Secret names only (never values), for a step's secrets, while editing.
@@ -100,7 +102,10 @@ export function ReleaseFlowSection({
     setBusy(true)
     try {
       const ok = await onSave(next)
-      if (ok !== false) setDraft(null)
+      if (ok !== false) {
+        setDraft(null)
+        setRemoving(false)
+      }
     } finally {
       setBusy(false)
     }
@@ -118,10 +123,13 @@ export function ReleaseFlowSection({
           <div className="ml-auto flex gap-1.5">
             {flow ? (
               <>
-                <Button size="sm" variant="ghost" onClick={() => setDraft(structuredClone(flow))}>
+                <Button size="sm" variant="ghost" onClick={() => {
+                    setRemoving(false)
+                    setDraft(structuredClone(flow))
+                  }}>
                   Edit flow
                 </Button>
-                <Button size="sm" variant="ghost" loading={busy} onClick={() => void save(null)}>
+                <Button size="sm" variant="ghost" disabled={removing} onClick={() => setRemoving(true)}>
                   Remove flow
                 </Button>
               </>
@@ -138,6 +146,21 @@ export function ReleaseFlowSection({
           </div>
         )}
       </div>
+      {removing && !editing && (
+        <div
+          role="group"
+          aria-label="Remove the release flow?"
+          className="flex items-center gap-3 rounded-lg border border-err/30 bg-err/[0.06] px-3 py-2 text-[12.5px] text-fg/90"
+        >
+          <span className="flex-1">Remove the release flow? Its step stages and their scripts go with it, and each host releases in turn again.</span>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => setRemoving(false)}>
+            Keep flow
+          </Button>
+          <Button size="sm" variant="danger" loading={busy} onClick={() => void save(null)}>
+            Remove
+          </Button>
+        </div>
+      )}
       {shown ? (
         <p className="text-[12.5px] text-fg/90">
           <span data-testid="flow-preview" className="font-mono">
