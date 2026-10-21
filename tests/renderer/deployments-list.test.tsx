@@ -287,4 +287,33 @@ describe('deployments environment list', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /^Settings/ })).toHaveAttribute('aria-expanded', 'true'))
     expect(screen.getByRole('region', { name: 'Compared with unified_release.sh' })).toBeInTheDocument()
   })
+
+  it('Settings opens by itself for a risk with no fix: a protected environment with versioned releases off prod', async () => {
+    const invoke = world({
+      'deploy:settings': envSettings({ environmentId: 'p0-staging', versioned: true }),
+      'env:list': envs.map((e) => (e.id === 'p0-staging' ? { ...e, protected: true } : e)),
+    })
+    await open('/deployments?env=p0-staging')
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Settings/ })).toHaveAttribute('aria-expanded', 'true'))
+    expect(await screen.findByRole('button', { name: /^Compared with unified_release\.sh/ })).toHaveTextContent('1 difference')
+    // Settings and the comparison share one read of the QA settings.
+    expect((invoke.mock.calls as unknown[][]).filter((c) => c[0] === 'integration:get')).toHaveLength(1)
+  })
+
+  it('Settings remembers what it was for each environment this session', async () => {
+    world({ 'deploy:list': [deploymentMeta({ id: 'd1', name: 'api', environmentId: 'p0-dev', hostId: 'h00' })] })
+    const user = await open('/deployments?env=p0-dev')
+    const toggle = () => screen.getByRole('button', { name: /^Settings/ })
+    await waitFor(() => expect(toggle()).toHaveAttribute('aria-expanded', 'true'))
+    await user.click(toggle())
+    expect(toggle()).toHaveAttribute('aria-expanded', 'false')
+    await user.click(within(screen.getByRole('navigation', { name: 'Breadcrumb' })).getByRole('button', { name: 'Deployments' }))
+    await user.click(within(await screen.findByRole('listitem', { name: 'shop-dev' })).getByRole('button', { name: /^shop-dev,/ }))
+    await screen.findByRole('navigation', { name: 'Breadcrumb' })
+    expect(toggle()).toHaveAttribute('aria-expanded', 'false')
+    // Still collapsed once the comparison has been read again.
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Settings' })).not.toHaveAttribute('aria-busy'))
+    expect(toggle()).toHaveAttribute('aria-expanded', 'false')
+    expect(toggle()).not.toHaveAttribute('aria-controls')
+  })
 })

@@ -56,6 +56,9 @@ const byId = <T>(ds: ScriptDeployment[], patch: (d: ScriptDeployment) => T | nul
     return p ? [[d.id, p]] : []
   }))
 
+/** Counts as a difference: any risk, and a difference there is something to change for. Failed builds (no fix) is a note. */
+export const isFlagged = (c: ScriptCheck): boolean => c.level === 'risk' || (c.level === 'differs' && !!c.fix)
+
 export function checkAgainstScript(env: ScriptEnv, deployments: ScriptDeployment[]): ScriptCheck[] {
   const checks: ScriptCheck[] = []
 

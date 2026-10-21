@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { COMPOSE_AUTO } from '../../src/shared/deploy'
-import { checkAgainstScript, scriptPreset, type ScriptDeployment, type ScriptEnv } from '../../src/shared/script-parity'
+import { checkAgainstScript, isFlagged, scriptPreset, type ScriptDeployment, type ScriptEnv } from '../../src/shared/script-parity'
 
 const env = (over: Partial<ScriptEnv> = {}): ScriptEnv => ({
   name: 'alpha',
@@ -168,5 +168,16 @@ describe('scriptPreset', () => {
 
   it('is a no-op on an already compatible environment', () => {
     expect(scriptPreset(env(), [dep({ id: 'a' }), dep({ id: 'b' })])).toEqual({ env: {}, deployments: {} })
+  })
+
+  it('isFlagged: a risk always counts, a difference only with a fix; failed builds is a note', () => {
+    const flagged = (e: ScriptEnv, ds: ScriptDeployment[]) => checkAgainstScript(e, ds).filter(isFlagged).map((c) => c.id)
+    expect(flagged(env(), [dep({ id: 'd1' })])).toEqual([])
+    // Protected and versioned off prod: a risk with no fix (change it yourself) still counts.
+    const guarded = checkAgainstScript(env({ protected: true, versioned: true }), [dep({ id: 'd1' })]).find((c) => c.id === 'versioned')!
+    expect(guarded).toMatchObject({ level: 'risk' })
+    expect(guarded.fix).toBeUndefined()
+    expect(flagged(env({ protected: true, versioned: true }), [dep({ id: 'd1' })])).toEqual(['versioned'])
+    expect(flagged(env(), [dep({ id: 'd1', useSudo: 'auto' })])).toEqual(['sudo'])
   })
 })

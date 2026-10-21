@@ -44,8 +44,8 @@ function Where() {
   return <p data-testid="where">{l.pathname + l.search}</p>
 }
 
-/** `expand` opens Settings first: it opens by itself only when there is a difference to fix. */
-async function open(envId = 'e1', { expand = false } = {}) {
+/** Opens the comparison, expanding Settings first when it settled collapsed (it opens by itself only when something is flagged). */
+async function open(envId = 'e1') {
   await loadInventory()
   render(
     <MemoryRouter initialEntries={[`/deployments?env=${envId}`]}>
@@ -57,7 +57,10 @@ async function open(envId = 'e1', { expand = false } = {}) {
     </MemoryRouter>,
   )
   const user = userEvent.setup()
-  if (expand) await user.click(await screen.findByRole('button', { name: /^Settings/ }))
+  const settings = await screen.findByRole('region', { name: 'Settings' })
+  await waitFor(() => expect(settings).not.toHaveAttribute('aria-busy'))
+  const toggle = within(settings).getByRole('button', { name: /^Settings/ })
+  if (toggle.getAttribute('aria-expanded') === 'false') await user.click(toggle)
   await user.click(await screen.findByRole('button', { name: /Compared with unified_release\.sh/ }))
   return { user, panel: screen.getByRole('region', { name: 'Compared with unified_release.sh' }) }
 }
@@ -146,7 +149,7 @@ describe('Compared with unified_release.sh', () => {
 
   it('nothing to apply on a compatible environment', async () => {
     world({ deployments: [compatible({ id: 'd1', name: 'backend' })] })
-    const { panel } = await open('e1', { expand: true })
+    const { panel } = await open()
     expect(within(panel).getByRole('button', { name: 'Apply script-compatible settings' })).toBeDisabled()
   })
 

@@ -1,50 +1,58 @@
 import { ChevronRight } from 'lucide-react'
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import type { DeploymentMeta, EnvDeploySettings as Settings } from '../../../../shared/deploy'
 import type { EnvironmentMeta } from '../../../../shared/inventory'
-import type { QaWorkflow } from '../../../../shared/settings'
-import { checkAgainstScript } from '../../../../shared/script-parity'
-import { api } from '../../lib/api'
+import { rememberSettingsOpen, settingsOpen } from '../../deploy/settings-open'
 import { EnvDeploySettings } from './EnvDeploySettings'
+import { useScriptChecks } from './useScriptChecks'
 
 /**
- * The environment's release settings and its comparison with unified_release.sh, folded away. It opens by itself,
- * once, when the comparison first finds a difference to fix; after the user toggles it, it is theirs.
+ * The environment's release settings and its comparison with unified_release.sh, folded away. The first time an
+ * environment is shown this session, it opens by itself when the comparison flags something; after that it keeps
+ * what it was, or what the user made it.
  */
 export function EnvSettingsSection({
+  envId,
   settings,
   environment,
   deployments,
   loaded,
 }: {
+  envId: string
   settings: Settings | undefined
+  /** A local environment; a Hub one has no comparison here. */
   environment?: EnvironmentMeta
   deployments: DeploymentMeta[]
   /** The deployments have been read: before that an empty list would compare as no differences. */
   loaded: boolean
 }) {
-  const [open, setOpen] = useState(false)
-  const decided = useRef(false)
+  const remembered = settingsOpen(envId)
+  const [open, setOpen] = useState(remembered ?? false)
   const bodyId = useId()
-  const differs = useDiffers(settings, environment, deployments, loaded)
+  const script = useScriptChecks(environment, settings, deployments)
+  // Whether the comparison can be trusted yet: a Hub environment has none, so it is settled at once.
+  const settled = remembered !== undefined || !environment || (!!script?.ready && loaded)
 
   useEffect(() => {
-    if (decided.current || differs === undefined) return
-    decided.current = true
-    if (differs) setOpen(true)
-  }, [differs])
+    if (!settled || settingsOpen(envId) !== undefined) return
+    const flagged = (script?.flagged ?? 0) > 0
+    rememberSettingsOpen(envId, flagged)
+    if (flagged) setOpen(true)
+  }, [settled, envId, script])
+
+  const toggle = () => {
+    rememberSettingsOpen(envId, !open)
+    setOpen(!open)
+  }
 
   const summary = settings ? [settings.versioned ? 'Versioned' : 'Not versioned', settings.autoRollback ? 'auto-rollback' : null, settings.currentVersion].filter(Boolean).join(' · ') : ''
   return (
-    <section aria-label="Settings" className="flex flex-col gap-3">
+    <section aria-label="Settings" aria-busy={!settled || undefined} className="flex flex-col gap-3">
       <button
         type="button"
         aria-expanded={open}
-        aria-controls={bodyId}
-        onClick={() => {
-          decided.current = true
-          setOpen((v) => !v)
-        }}
+        aria-controls={open ? bodyId : undefined}
+        onClick={toggle}
         className="flex items-center gap-1.5 self-start rounded-md text-left text-[12.5px] font-semibold text-fg/90 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
       >
         <ChevronRight aria-hidden className={`size-3.5 transition-transform ${open ? 'rotate-90' : ''}`} />
@@ -53,36 +61,9 @@ export function EnvSettingsSection({
       </button>
       {open && (
         <div id={bodyId}>
-          <EnvDeploySettings settings={settings} environment={environment} deployments={deployments} />
+          <EnvDeploySettings settings={settings} environment={environment} deployments={deployments} script={script} />
         </div>
       )}
     </section>
   )
-}
-
-/** Whether the comparison with unified_release.sh finds a difference to fix; undefined until it can tell. Mirrors ScriptCompare. */
-function useDiffers(settings: Settings | undefined, environment: EnvironmentMeta | undefined, deployments: DeploymentMeta[], loaded: boolean): boolean | undefined {
-  // undefined while loading; null when it couldn't be read (the QA checks are left out, as ScriptCompare does).
-  const [qa, setQa] = useState<{ value: QaWorkflow | null } | null | undefined>(undefined)
-  const envId = environment?.id
-  useEffect(() => {
-    if (!envId) return
-    let live = true
-    setQa(undefined)
-    api.invoke('integration:get', envId).then(
-      (s) => live && setQa(s ? { value: s.qa } : null),
-      () => live && setQa(null),
-    )
-    return () => {
-      live = false
-    }
-  }, [envId])
-  return useMemo(() => {
-    // A Hub environment has no comparison here.
-    if (!environment) return settings ? false : undefined
-    if (!settings || !loaded || qa === undefined) return undefined
-    const env = { name: environment.name, protected: environment.protected, versioned: settings.versioned, qa: qa?.value ?? null }
-    // Only differences the user can act on: some (OpsDeck's stricter failed builds) are always there and have no fix.
-    return checkAgainstScript(env, deployments).some((c) => c.level !== 'ok' && !!c.fix && (qa || !c.id.startsWith('qa-')))
-  }, [environment, settings, qa, deployments, loaded])
 }

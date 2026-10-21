@@ -324,7 +324,7 @@ export function DeploymentsPage() {
               </div>
             )}
 
-            <EnvSettingsSection key={`settings-${envId}`} settings={currentSettings} environment={env} deployments={deployments} loaded={loaded} />
+            <EnvSettingsSection key={`settings-${envId}`} envId={envId} settings={currentSettings} environment={env} deployments={deployments} loaded={loaded} />
           </>
         )}
       </div>

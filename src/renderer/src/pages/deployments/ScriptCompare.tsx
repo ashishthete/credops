@@ -1,16 +1,15 @@
 import { ChevronRight } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { COMPOSE_AUTO, type DeployBatch, type DeploymentMeta, type EnvDeploySettings } from '../../../../shared/deploy'
 import type { EnvironmentMeta } from '../../../../shared/inventory'
-import { checkAgainstScript, scriptPreset, type ScriptCheckLevel, type ScriptDeploymentPatch, type ScriptPreset } from '../../../../shared/script-parity'
-import type { EnvironmentIntegrations } from '../../../../shared/settings'
+import { scriptPreset, type ScriptCheckLevel, type ScriptDeploymentPatch, type ScriptPreset } from '../../../../shared/script-parity'
 import { applyDeployBatch, deployStore } from '../../deploy/store'
 import { environmentKey } from '../../inventory/tree'
-import { api } from '../../lib/api'
 import { Button } from '../../ui/Button'
 import { ConfirmDialog, type ConfirmRequest } from '../../ui/common'
 import { toast } from '../../ui/Toaster'
+import type { ScriptChecks } from './useScriptChecks'
 
 const TITLE = 'Compared with unified_release.sh'
 const DOT: Record<ScriptCheckLevel, string> = { ok: 'bg-ok', differs: 'bg-warn', risk: 'bg-err' }
@@ -76,34 +75,24 @@ function stillApplied(envId: string, batch: DeployBatch, undo: DeployBatch): Dep
  * Checks this environment's deploy config against what deployment/unified_release.sh does, and saves every
  * script-compatible setting in one go. QA settings live in the environment's Notifications; rows about them link there.
  */
-export function ScriptCompare({ environment, settings, deployments }: { environment: EnvironmentMeta; settings: EnvDeploySettings; deployments: DeploymentMeta[] }) {
+export function ScriptCompare({
+  environment,
+  settings,
+  deployments,
+  script,
+}: {
+  environment: EnvironmentMeta
+  settings: EnvDeploySettings
+  deployments: DeploymentMeta[]
+  /** The comparison, from useScriptChecks: Settings reads the same one to decide whether to open. */
+  script: ScriptChecks
+}) {
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
-  // undefined while loading; null when it couldn't be read (the QA rows are left out rather than guessed).
-  const [qa, setQa] = useState<Pick<EnvironmentIntegrations, 'qa' | 'qaOnDeploy' | 'qaWait'> | null | undefined>(undefined)
-
-  useEffect(() => {
-    let live = true
-    setQa(undefined)
-    api.invoke('integration:get', environment.id).then(
-      (s) => live && setQa(s ? { qa: s.qa, qaOnDeploy: s.qaOnDeploy, qaWait: s.qaWait } : null),
-      () => live && setQa(null),
-    )
-    return () => {
-      live = false
-    }
-  }, [environment.id])
-
-  const env = useMemo(
-    () => ({ name: environment.name, protected: environment.protected, versioned: settings.versioned, ...(qa ?? { qa: null }) }),
-    [environment.name, environment.protected, settings.versioned, qa],
-  )
-  const checks = useMemo(() => checkAgainstScript(env, deployments).filter((c) => qa || !c.id.startsWith('qa-')), [env, deployments, qa])
+  const { env, checks, flagged } = script
   const preset = useMemo(() => scriptPreset(env, deployments), [env, deployments])
   const lines = useMemo(() => describe(preset, settings, deployments), [preset, settings, deployments])
-  // A difference with nothing to change (failed builds) is a note, not a difference.
-  const flagged = checks.filter((c) => c.level === 'risk' || (c.level === 'differs' && c.fix)).length
 
   const apply = () => {
     const batch = toBatch(preset, deployments)
