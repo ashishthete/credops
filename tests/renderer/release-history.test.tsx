@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { afterEach, describe, expect, it } from 'vitest'
 import { HISTORY_PAGE, resetReleases } from '../../src/renderer/src/deploy/releases'
 import { loadDeploy, resetDeploy } from '../../src/renderer/src/deploy/store'
+import { hubStore, resetHub } from '../../src/renderer/src/hub/store'
 import { inventoryStore, loadInventory } from '../../src/renderer/src/inventory/store'
 import { ReleaseHistory } from '../../src/renderer/src/pages/deployments/release/ReleaseHistory'
 import { ReleaseView } from '../../src/renderer/src/pages/deployments/release/ReleaseView'
@@ -56,9 +57,9 @@ function Where() {
   return <p data-testid="where">{l.pathname}</p>
 }
 
-async function mount({ protectedEnv = false, pages = [[R3, R2, R1]] as ReleaseSummary[][], detail = R2_DETAIL } = {}) {
+async function mount({ protectedEnv = false, hubOnly = false, pages = [[R3, R2, R1]] as ReleaseSummary[][], detail = R2_DETAIL }: { protectedEnv?: boolean; hubOnly?: boolean; pages?: ReleaseSummary[][]; detail?: ReleaseDetail } = {}) {
   const invoke = mockBridge({
-    'env:list': [environment({ id: 'e1', name: 'staging', protected: protectedEnv, hosts: [{ hostId: 'h1', role: 'app' }, { hostId: 'h2', role: 'app' }] })],
+    'env:list': hubOnly ? [] : [environment({ id: 'e1', name: 'staging', protected: protectedEnv, hosts: [{ hostId: 'h1', role: 'app' }, { hostId: 'h2', role: 'app' }] })],
     'host:list': HOSTS,
     'deploy:list': CHECKOUTS,
     'service:list': SERVICES,
@@ -77,6 +78,10 @@ async function mount({ protectedEnv = false, pages = [[R3, R2, R1]] as ReleaseSu
     await loadInventory()
     await loadDeploy(['e1'])
   })
+  if (hubOnly) {
+    // A team environment this machine doesn't hold: only the Hub catalog knows its name and protection.
+    hubStore.set({ ...hubStore.get(), catalog: [{ environment: { id: 'e1', name: 'staging', protected: true, versioned: false, autoRollback: false, currentVersion: null } } as never] })
+  }
   render(
     <MemoryRouter initialEntries={['/deployments']}>
       <Routes>
@@ -96,6 +101,7 @@ afterEach(() => {
   cleanup()
   resetReleases()
   resetDeploy()
+  resetHub()
   inventoryStore.set(null)
 })
 
@@ -168,6 +174,18 @@ describe('release history', () => {
     expect(confirm).toBeDisabled()
     await user.type(within(dialog).getByLabelText('Type staging to confirm'), 'g')
     expect(confirm).toBeEnabled()
+    await user.click(confirm)
+    await flush()
+    expect(calls(invoke, 'release:rollback')).toEqual([['release:rollback', 'rel-2', { typedName: 'staging' }]])
+  })
+
+  it('a protected Hub-only environment asks for the typed name from the catalog', async () => {
+    const { invoke, user } = await mount({ hubOnly: true })
+    await user.click(within(row('rel-2')).getByRole('button', { name: 'Rollback' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Roll back v1.5.0 in staging?' })
+    const confirm = within(dialog).getByRole('button', { name: 'Roll back' })
+    expect(confirm).toBeDisabled()
+    await user.type(within(dialog).getByLabelText('Type staging to confirm'), 'staging')
     await user.click(confirm)
     await flush()
     expect(calls(invoke, 'release:rollback')).toEqual([['release:rollback', 'rel-2', { typedName: 'staging' }]])

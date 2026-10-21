@@ -301,7 +301,7 @@ export class HubReleases {
     const row = this.d.db.prepare('SELECT name, protected FROM environments WHERE id = ?').get(environmentId) as { name: string; protected: number }
     if (row.protected === 1 && typedName !== row.name) {
       this.deny(user, attempted, environmentId, 'confirm_required', releaseId)
-      throw new HubHttpError(400, 'confirm_required', `Type the environment name "${row.name}" to deploy to a protected environment`)
+      throw new HubHttpError(400, 'confirm_required', `Type the environment name "${row.name}" to ${attempted === 'release.rollback' ? 'roll back in' : 'deploy to'} a protected environment`)
     }
   }
 

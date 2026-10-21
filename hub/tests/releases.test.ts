@@ -143,6 +143,16 @@ describe('hub releases', () => {
     expect((await detail(bob, id)).status).toBe('ready')
   })
 
+  it('a protected rollback without the name says roll back', async () => {
+    const { bob } = await setup()
+    const id = await ready(bob)
+    expect((await call(bob, 'POST', `/api/v1/releases/${id}/start`, { typedName: 'prod' })).statusCode).toBe(204)
+    await hub.app.releases.whenIdle()
+    const res = await call(bob, 'POST', `/api/v1/releases/${id}/rollback`, {})
+    expect(res.statusCode).toBe(400)
+    expect(res.json().message).toBe('Type the environment name "prod" to roll back in a protected environment')
+  })
+
   it('an unprotected environment starts without a typed name', async () => {
     const { bob } = await setup({ protectedEnv: false })
     const id = await ready(bob)

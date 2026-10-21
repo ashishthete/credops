@@ -4,6 +4,7 @@ import type { ReleaseStatus, ReleaseSummary } from '../../../../../shared/deploy
 import { listNames } from '../../../../../shared/services'
 import { loadHistory, releaseStore, startReleaseSync } from '../../../deploy/releases'
 import { deployStore } from '../../../deploy/store'
+import { useHub } from '../../../hub/store'
 import { inventoryStore } from '../../../inventory/store'
 import { api } from '../../../lib/api'
 import { Badge } from '../../../ui/Badge'
@@ -60,11 +61,13 @@ export function canRollback(r: ReleaseSummary, history: ReleaseSummary[]): boole
 /** Builds the rollback confirm from the release's runs, and navigates to the rollback release once started. */
 export function useRollback(): { request: ConfirmRequest | null; begin: (r: ReleaseSummary) => Promise<void>; close: () => void } {
   const navigate = useNavigate()
+  const { catalog } = useHub()
   const [request, setRequest] = useState<ConfirmRequest | null>(null)
   const begin = async (r: ReleaseSummary) => {
     const detail = await attempt("Couldn't read the release", () => api.invoke('release:get', r.id))
     if (!detail) return
-    const env = inventoryStore.get()?.environments.find((e) => e.id === r.environmentId)
+    // A Hub environment this machine doesn't hold comes from the team catalog, with the same protected rule.
+    const env = inventoryStore.get()?.environments.find((e) => e.id === r.environmentId) ?? catalog.find((c) => c.environment.id === r.environmentId)?.environment
     const history = releaseStore.get().history[r.environmentId]?.releases ?? []
     const newer = history.slice(0, Math.max(0, history.findIndex((x) => x.id === r.id))).filter((x) => x.startedAt !== null)
     const tracked = deployStore.get().services
