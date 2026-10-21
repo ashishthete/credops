@@ -10,7 +10,7 @@ import { Padlock } from '../ui/Padlock'
 import { Segmented } from '../ui/Segmented'
 import { toneColor } from '../ui/tone'
 import { PinField } from './PinField'
-import { refreshVaultStatus } from './status'
+import { refreshVaultStatus, vaultStatusStore } from './status'
 
 /** Whole seconds until `deadline` (epoch ms), ticking while it is in the future. */
 export function useSecondsLeft(deadline: number): number {
@@ -82,6 +82,17 @@ export function pinWipeFallback(status: VaultStatus | null): 'password' | 'touch
 /** Set up, but nothing left opens the vaults (status.resetRequired, say after a restart). */
 const NOTHING_LEFT = 'Your vaults stay locked until you erase them.'
 
+/**
+ * Sends the user back to the gate's sign-in step: the verdict flipped while they were unlocking.
+ * A fresh `auth:check` status is enough, the gate re-renders on it.
+ */
+function forceSignInCheck() {
+  api
+    .invoke('auth:check')
+    .then((fresh) => vaultStatusStore.set(fresh))
+    .catch(() => refreshVaultStatus().catch(() => undefined))
+}
+
 const WIPED_COPY = {
   password: 'Too many wrong PINs. Use your master password.',
   touchId: 'Too many wrong PINs. Use Touch ID.',
@@ -99,6 +110,7 @@ export function UnlockCard({
   onUnlocked,
   onWrong,
   onForgot,
+  onSigninRequired = forceSignInCheck,
 }: {
   status: VaultStatus | null
   /** False after the user's own lock: they are walking away, so don't pop a Touch ID prompt. */
@@ -107,6 +119,8 @@ export function UnlockCard({
   onWrong: () => void
   /** Shows the "Forgot password?" link, which offers the reset. */
   onForgot?: () => void
+  /** Main refused the unlock until the user signs in again; by default forces an auth:check. */
+  onSigninRequired?: () => void
 }) {
   const [quickGone, setQuickGone] = useState(false)
   const [pinWiped, setPinWiped] = useState(false)
@@ -195,6 +209,7 @@ export function UnlockCard({
             onThrottled={setDeadline}
             notice={noticeFor('touchId') ?? (touchIdAvailable ? null : TOUCH_ID_UNAVAILABLE)}
             onUnlocked={onUnlocked}
+            onSigninRequired={onSigninRequired}
             onGone={onQuickGone}
           />
         )}
@@ -204,6 +219,7 @@ export function UnlockCard({
             notice={noticeFor('pin')}
             onUnlocked={onUnlocked}
             onWrong={onWrong}
+            onSigninRequired={onSigninRequired}
             onWiped={onPinWiped}
           />
         )}
@@ -214,6 +230,7 @@ export function UnlockCard({
             notice={noticeFor('password')}
             onUnlocked={onUnlocked}
             onWrong={onWrong}
+            onSigninRequired={onSigninRequired}
             onForgot={onForgot}
           />
         )}
@@ -241,6 +258,7 @@ function TouchIdTab({
   onThrottled,
   notice,
   onUnlocked,
+  onSigninRequired,
   onGone,
 }: {
   autoPrompt: { current: boolean }
@@ -248,6 +266,7 @@ function TouchIdTab({
   onThrottled: (deadline: number) => void
   notice: string | null
   onUnlocked: () => void
+  onSigninRequired: () => void
   onGone: () => void
 }) {
   const buttonRef = useRef<HTMLButtonElement>(null)
@@ -259,6 +278,7 @@ function TouchIdTab({
     try {
       const res = await api.invoke('vault:unlockQuick')
       if (res.ok) return onUnlocked()
+      if (res.reason === 'signin-required') return onSigninRequired()
       if (res.reason === 'unavailable') return onGone()
       if (res.reason === 'throttled') onThrottled(Date.now() + res.retryAfterMs)
       // 'cancelled': the user closed the prompt; the button is right there to try again.
@@ -305,12 +325,14 @@ function PinTab({
   notice,
   onUnlocked,
   onWrong,
+  onSigninRequired,
   onWiped,
 }: {
   attemptsLeft: number
   notice: string | null
   onUnlocked: () => void
   onWrong: () => void
+  onSigninRequired: () => void
   onWiped: () => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
@@ -327,6 +349,8 @@ function PinTab({
     try {
       const res = await api.invoke('vault:unlockPin', pin)
       if (res.ok) return onUnlocked()
+      // Not a try: no error, no count. PinField has already cleared the input.
+      if (res.reason === 'signin-required') return onSigninRequired()
       if (res.reason === 'pin-wiped') return onWiped()
       if (res.reason === 'wrong-pin') {
         setError('Wrong PIN')
@@ -369,6 +393,7 @@ function PasswordTab({
   notice,
   onUnlocked,
   onWrong,
+  onSigninRequired,
   onForgot,
 }: {
   deadline: number
@@ -376,6 +401,7 @@ function PasswordTab({
   notice: string | null
   onUnlocked: () => void
   onWrong: () => void
+  onSigninRequired: () => void
   onForgot?: () => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
@@ -399,6 +425,8 @@ function PasswordTab({
     try {
       const res = await api.invoke('vault:unlock', password)
       if (res.ok) return onUnlocked()
+      // Not a try: no error. The input was cleared before the call.
+      if (res.reason === 'signin-required') return onSigninRequired()
       if (res.reason === 'wrong-password') {
         setError('Wrong password')
         onWrong()

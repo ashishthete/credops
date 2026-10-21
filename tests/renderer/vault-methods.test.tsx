@@ -14,6 +14,7 @@ const PIN_ONLY = 'After 5 wrong PINs your vaults stay locked until you erase the
 const ADD_PASSWORD = 'Add a master password (recommended for recovery)'
 const WRONG_PIN: UnlockResult = { ok: false, reason: 'wrong-pin', retryAfterMs: 0 }
 const WIPED: UnlockResult = { ok: false, reason: 'pin-wiped', retryAfterMs: 0 }
+const SIGNIN: UnlockResult = { ok: false, reason: 'signin-required', retryAfterMs: 0 }
 
 /**
  * A main process that only knows vault:status and the channels queued in `results` (one answer
@@ -25,7 +26,7 @@ function fakeVault(start: Partial<VaultStatus> = {}, results: Record<string, unk
   const invoke = mockBridge()
   const fallback = invoke.getMockImplementation()!
   invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
-    if (channel === 'vault:status') return { ...state }
+    if (channel === 'vault:status' || channel === 'auth:check') return { ...state }
     if (channel in results) {
       const queue = results[channel]
       const res = queue.length > 1 ? queue.shift() : queue[0]
@@ -301,6 +302,36 @@ describe('method chooser', () => {
       expect(onForgot).toHaveBeenCalledOnce()
     }
     if (tab !== null) expect(screen.queryByRole('button', { name: 'Erase vaults' })).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['PIN', 'vault:unlockPin', { lastMethod: 'pin' }],
+    ['password', 'vault:unlock', { lastMethod: 'password' }],
+    ['Touch ID', 'vault:unlockQuick', { lastMethod: 'touchId' }],
+  ] as const)('signin-required on the %s tab goes back to sign-in, not counted as a try', async (_, channel, start) => {
+    const user = userEvent.setup()
+    const onSigninRequired = vi.fn()
+    const fake = fakeVault({ ...ALL_METHODS, ...start }, { [channel]: [SIGNIN] })
+    const onWrong = vi.fn()
+    render(<UnlockCard status={fake.state} onUnlocked={vi.fn()} onWrong={onWrong} onSigninRequired={onSigninRequired} />)
+    if (channel === 'vault:unlockPin') await user.type(screen.getByLabelText('PIN'), '246810{Enter}')
+    if (channel === 'vault:unlock') await user.type(screen.getByLabelText('Master password'), 'correct horse{Enter}')
+    await waitFor(() => expect(onSigninRequired).toHaveBeenCalledOnce())
+    expect(fake.invoke).toHaveBeenCalledWith(channel, ...(channel === 'vault:unlockQuick' ? [] : [expect.any(String)]))
+    expect(onWrong).not.toHaveBeenCalled()
+    expect(screen.queryByText(/Wrong|tries left|try left/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    for (const input of document.querySelectorAll('input')) expect(input).toHaveValue('')
+  })
+
+  it('signin-required with no callback forces auth:check and publishes its status', async () => {
+    const user = userEvent.setup()
+    const { invoke, state } = renderUnlock({ ...ALL_METHODS, lastMethod: 'pin' }, { 'vault:unlockPin': [SIGNIN] })
+    state.sso = { ...state.sso, required: true, verdict: 'needs-signin' } as VaultStatus['sso']
+    await user.type(screen.getByLabelText('PIN'), '246810{Enter}')
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('auth:check'))
+    await waitFor(() => expect(vaultStatusStore.get()?.sso).toEqual(state.sso))
+    expect(screen.queryByText(/tries left/)).not.toBeInTheDocument()
   })
 
   it("offers the erase only when main's status says the reset is due", () => {
