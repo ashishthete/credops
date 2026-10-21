@@ -360,6 +360,8 @@ if (!app.requestSingleInstanceLock()) {
         userAgentSock: process.env.SSH_AUTH_SOCK ?? null,
         sshConfig,
       })
+      // Built right after the Hub it asks; beforeLink fails closed until then.
+      let ssoGateRef: SsoGate | null = null
       const hub = new HubConnection({
         db,
         audit: log,
@@ -368,15 +370,22 @@ if (!app.requestSingleInstanceLock()) {
         openBrowser: (url) => shell.openExternal(url),
         now: () => Date.now(),
         emit: (status) => pushEvent(mainWindow, 'hub:state', status),
-        // Set below, before any IPC can reach connect().
-        beforeLink: (hubId) => ssoGate.assertMayLink(hubId),
+        beforeLink: (hubId) => {
+          if (!ssoGateRef) throw new Error('OpsDeck is still starting')
+          ssoGateRef.assertMayLink(hubId)
+        },
       })
       hubConnection = hub
       // Every unlock asks the gate; a Hub that says the account is disabled locks the vaults at once.
       const ssoGate = new SsoGate({ db, audit: log, hub, now: () => Date.now() })
+      ssoGateRef = ssoGate
       service.setSignInGate(ssoGate)
       ssoGate.onBlocked(() => service.lock('signin'))
-      stopSsoWatch = ssoGate.watch(() => service.isUnlocked())
+      const stopWatch = ssoGate.watch(() => service.isUnlocked())
+      stopSsoWatch = () => {
+        stopWatch()
+        ssoGate.close()
+      }
       const hubCatalog = new HubCatalog({ client: () => hub.client() })
       hubCatalog.onChange(() => pushEvent(mainWindow, 'hub:catalog', {}))
       hub.onState(() => hubCatalog.onStatus(hub.status()))
@@ -694,6 +703,7 @@ if (!app.requestSingleInstanceLock()) {
           ...hubHandlers,
           // Bound vaults leave their Hub through the vault settings (hub:connect is guarded by beforeLink).
           'hub:unlink': () => {
+            service.assertUnlocked()
             ssoGate.assertMayUnlink()
             return hubHandlers['hub:unlink']()
           },

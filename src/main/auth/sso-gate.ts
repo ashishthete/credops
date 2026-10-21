@@ -63,6 +63,8 @@ export class SsoGate implements SignInGate {
   // Bumped by a sign-out or an interactive sign-in, so a check already in flight can't settle over it.
   private generation = 0
   private readonly blocked = new Set<() => void>()
+  // Set by close() at quit: a check still in flight must not touch the db once it is closed.
+  private closed = false
 
   constructor(private readonly d: SsoGateDeps) {}
 
@@ -151,6 +153,7 @@ export class SsoGate implements SignInGate {
   }
 
   check(opts: { force?: boolean } = {}): Promise<SsoVerdict> {
+    if (this.closed) return Promise.resolve('needs-signin')
     if (!this.required()) return Promise.resolve('not-required')
     if (this.inflight) return this.inflight
     if (!opts.force && (this.result === null || this.result === 'verified') && this.fresh()) {
@@ -170,6 +173,7 @@ export class SsoGate implements SignInGate {
       // Unknown failures fail closed, and never start grace.
       r = { kind: 'expired' }
     }
+    if (this.closed) return 'needs-signin'
     if (gen !== this.generation) return this.verdict()
     this.raiseHighWater()
     switch (r.kind) {
@@ -354,6 +358,11 @@ export class SsoGate implements SignInGate {
   onBlocked(fn: () => void): () => void {
     this.blocked.add(fn)
     return () => this.blocked.delete(fn)
+  }
+
+  /** At quit, before the db closes: later checks, and any still in flight, settle without touching it. */
+  close(): void {
+    this.closed = true
   }
 
   watch(isUnlocked: () => boolean): () => void {

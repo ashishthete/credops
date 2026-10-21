@@ -338,6 +338,8 @@ export class VaultService {
         }
         // A lock during the prompt must not reach the keychain (nor discard a good cache).
         if (epoch !== this.epoch) return fail('cancelled', CANCELLED)
+        // Nor a verdict that turned meanwhile without a lock (a sign-out): refused before the Keychain read.
+        if (!this.signInOk()) return this.refuseUnlock(mode)
       }
       let kek: Buffer
       try {

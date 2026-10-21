@@ -1,9 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SsoGate, type SignInGate, type SsoHub } from '../../src/main/auth/sso-gate'
+import { deriveKek } from '../../src/main/vault/crypto'
 import type { HubStatus, HubUser } from '../../src/shared/hub'
 import { SSO_WATCH_MS, type SessionCheck, type SsoState, type SsoVerdict } from '../../src/shared/sso'
 import type { LockReason } from '../../src/shared/vault'
 import { auditRows, fakeQuick, makeVault, type FakeQuick, type VaultFixture } from './vault-helpers'
+
+vi.mock('../../src/main/vault/crypto', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('../../src/main/vault/crypto')>()
+  return { ...mod, deriveKek: vi.fn(mod.deriveKek) }
+})
 
 const PW = 'correct horse'
 const PIN = '204816'
@@ -105,9 +111,12 @@ describe('vault sign-in gate', () => {
     expect(f.vault.isUnlocked()).toBe(true)
   })
 
-  it('a verdict that turns during the derive refuses the unlock', async () => {
+  it.each([false, true])('a verdict that turns during the Touch ID prompt refuses before the Keychain read (stale cache: %s)', async (stale) => {
     const f = await ready()
     f.gate.v = 'verified'
+    // A cache that would read but no longer hold the KEK: the refusal must not discard it either.
+    if (stale) f.db.prepare('UPDATE vault_state SET quick_unlock_blob = ? WHERE id = 1').run(Buffer.from(`kc:${'A'.repeat(44)}`).toString('base64'))
+    const blob = f.db.prepare('SELECT quick_unlock_blob FROM vault_state').get()
     let release!: () => void
     f.quick.touchId.prompt.mockImplementationOnce(() => new Promise<void>((r) => (release = r)))
     const pending = f.vault.unlockQuick()
@@ -115,9 +124,48 @@ describe('vault sign-in gate', () => {
     f.gate.v = 'needs-signin'
     release()
     expect(await pending).toEqual(SIGNIN)
+    expect(f.quick.keychain.decrypt).not.toHaveBeenCalled()
     expect(f.vault.isUnlocked()).toBe(false)
     expect(f.gate.noted).toBe(0)
     expect(f.vault.status().quickUnlock).toBe('touchId')
+    expect(f.db.prepare('SELECT quick_unlock_blob FROM vault_state').get()).toEqual(blob)
+  })
+
+  it.each(['password', 'pin', 'setup'] as const)('a verdict that turns during the %s scrypt refuses', async (path) => {
+    const quick = fakeQuick()
+    const f = makeVault({ quick, now: { t: T0 } })
+    const gate = new FakeGate()
+    f.vault.setSignInGate(gate)
+    gate.v = 'verified'
+    if (path !== 'setup') {
+      await f.vault.setup({ password: PW, pin: PIN })
+      f.vault.lock('manual')
+    }
+    vi.mocked(deriveKek).mockClear()
+    const real = (await vi.importActual<typeof import('../../src/main/vault/crypto')>('../../src/main/vault/crypto')).deriveKek
+    let release!: () => void
+    let held: Buffer | null = null
+    vi.mocked(deriveKek).mockImplementationOnce(async (secret, params) => {
+      await new Promise<void>((r) => (release = r))
+      held = await real(secret, params)
+      return held
+    })
+    const pending =
+      path === 'password' ? f.vault.unlock(PW) : path === 'pin' ? f.vault.unlockPin(PIN) : f.vault.setup({ password: PW, pin: PIN })
+    await vi.waitFor(() => expect(deriveKek).toHaveBeenCalled())
+    gate.v = 'needs-signin'
+    release()
+    if (path === 'setup') {
+      await expect(pending).rejects.toThrow('sign in with Microsoft first')
+      expect(f.vault.status().setUp).toBe(false)
+    } else {
+      expect(await pending).toEqual(SIGNIN)
+    }
+    expect(f.vault.isUnlocked()).toBe(false)
+    expect(gate.noted).toBe(path === 'setup' ? 0 : 1)
+    expect(counters(f)).toEqual({ failed_attempts: 0, last_failed_at: null, pin_failed: 0 })
+    // The derived key itself is zeroed once used (it is the only buffer a test can reach).
+    expect(held!.every((b: number) => b === 0)).toBe(true)
   })
 
   it('fails closed when bound and no gate is set', async () => {
@@ -306,6 +354,20 @@ describe('vault with the real SsoGate', () => {
     // A second blocked verdict while locked is a no-op lock.
     f.vault.lock('signin')
     expect(reasons).toEqual(['signin'])
+  })
+
+  it('a check in flight at close() settles without touching the db', async () => {
+    const f = makeVault({ now: { t: T0 } })
+    const hub = new FakeHub()
+    let answer!: (c: SessionCheck) => void
+    hub.checkSession = () => new Promise<SessionCheck>((r) => (answer = r))
+    const gate = new SsoGate({ db: f.db, audit: f.audit, hub, now: () => f.now.t })
+    const pending = gate.check()
+    gate.close()
+    f.db.close()
+    answer({ kind: 'disabled' })
+    expect(await pending).toBe('needs-signin')
+    expect(await gate.check()).toBe('needs-signin')
   })
 
   it('refuses another Hub while bound, and unlinking', async () => {
