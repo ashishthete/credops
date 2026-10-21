@@ -3,6 +3,7 @@ import { DeployError, type DeployAccess } from '../../src/main/deploy/access'
 import type { FinalizeSteps } from '../../src/main/deploy/finalize'
 import { INTERRUPTED_MESSAGE } from '../../src/main/deploy/release-store'
 import { RESET_CUT_ROLLBACK } from '../../src/main/deploy/release-service'
+import { REDACTED } from '../../src/main/security/redact'
 import type { DeployPlan } from '../../src/main/deploy/runner'
 import { ToolingError } from '../../src/main/deploy/tooling'
 import { CONFIRM_MESSAGE } from '../../src/shared/ops'
@@ -303,7 +304,8 @@ describe('ReleaseService', () => {
     let atUnlock: Record<string, string> | null = null
     r.runner.on.unlock = () => {
       atUnlock = { ...r.runner.calls.find((c) => c.plan.kind === 'rollback')!.secrets.values }
-      return undefined
+      // Late output after the drop still goes through the release's redaction.
+      throw new Error(`ssh: permission denied near ${SECRET}`)
     }
     await r.svc.start(id, {})
     await rolling.p
@@ -319,6 +321,9 @@ describe('ReleaseService', () => {
     expect(atUnlock).toEqual({})
     expect(r.svc.detail(id)).toMatchObject({ status: 'cancelled', error: RESET_CUT_ROLLBACK })
     expect(r.svc.hasActive()).toBe(false)
+    const lines = r.svc.events(id, 0).flatMap((e) => (e.type === 'log' ? [e.line] : []))
+    expect(lines).toContain(`Could not release the deploy lock: ssh: permission denied near ${REDACTED}`)
+    expect(JSON.stringify({ events: r.svc.events(id, 0), detail: r.svc.detail(id) })).not.toContain(SECRET)
   })
 
   it('a vault reset flags every release before cancelling, so one failing cancel never skips the rest', async () => {
