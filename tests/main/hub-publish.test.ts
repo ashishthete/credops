@@ -12,7 +12,7 @@ import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import { makeDeployFixture, type DeployFixture } from './deploy-helpers'
 import { auditRows } from './vault-helpers'
 import { generateKey } from './ssh-server'
-import { REGION } from './inventory-helpers'
+import { PRODUCT, REGION } from './inventory-helpers'
 
 const SUDO_PW = 'sudo-pw-plaintext-9'
 
@@ -71,6 +71,18 @@ describe('buildManifest', () => {
     expect(h.knownHosts.some((l) => l.startsWith('10.0.0.7 ssh-ed25519 '))).toBe(true)
     expect(m.deployments).toHaveLength(1)
     expect(m.requiredSecrets.map((s) => s.name).sort()).toEqual(['envsecret', 'sudo'])
+  })
+
+  it("carries the environment's product and each host's region", async () => {
+    const { f, deps, trust } = await setup()
+    trust('203.0.113.9', 2222)
+    trust('10.0.0.7', 22)
+    const eu = f.regions.create({ code: 'eu-west', displayName: 'EU West' })
+    f.hosts.update(f.host.id, { regionId: eu.id })
+    f.products.update(PRODUCT, { name: 'Shop' })
+    const m = await buildManifest(f.prod.id, deps)
+    expect(m.environment.product).toEqual({ id: PRODUCT, name: 'Shop' })
+    expect(m.hosts.map((h) => h.region)).toEqual([{ code: 'eu-west', displayName: 'EU West' }])
   })
 
   it('refuses a hop with no pinned key', async () => {
