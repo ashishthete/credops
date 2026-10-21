@@ -142,16 +142,16 @@ const SELECT = `SELECT r.*, e.name AS environment_name,
   FROM releases r JOIN environments e ON e.id = r.environment_id`
 
 /**
- * Releases, their per-deployment runs and the append-only event stream. Holds no secrets: events are
- * redacted by the engine before they get here. `transaction()` lets a caller group run updates with events.
- */
-/**
  * A run (`d`) of release `r` that left its services deployed: a release run that succeeded and was not rolled back, in a
  * release that was not rolled back, or a rollback run that succeeded (rollback runs end `rolled_back`).
  */
 const DEPLOYED = `((r.kind = 'release' AND r.status <> 'rolled_back' AND d.status = 'succeeded' AND d.rolled_back = 0)
   OR (r.kind = 'rollback' AND d.status = 'rolled_back'))`
 
+/**
+ * Releases, their per-deployment runs and the append-only event stream. Holds no secrets: events are
+ * redacted by the engine before they get here. `transaction()` lets a caller group run updates with events.
+ */
 export class ReleaseStore {
   private readonly db: Db
   private readonly now: () => Date
