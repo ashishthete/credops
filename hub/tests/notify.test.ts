@@ -121,6 +121,9 @@ describe('hub notifications', () => {
     expect(sent[0]!.body).toContain('prod')
     expect(sent[0]!.body).toContain('Bob Builder@')
     expect(sent[0]!.body).not.toContain('bob@example.com')
+    // Only the card changes: the stored triggeredBy stays upn@hub, which clients match on.
+    const row = hub.db.prepare('SELECT triggered_by FROM releases WHERE id = ?').get(id) as { triggered_by: string }
+    expect(row.triggered_by).toMatch(/^bob@example\.com@/)
     const log = hub.db.prepare("SELECT * FROM notification_log WHERE source_id = ? AND channel = 'teams'").all(id) as { status: string }[]
     expect(log.map((r) => r.status)).toEqual(['sent'])
     const sentAudit = hub.audit.list({ limit: 1000 }).filter((e) => e.action === 'notify.sent')

@@ -442,7 +442,7 @@ if (!app.requestSingleInstanceLock()) {
         },
         isMine: (s) => {
           const st = hub.status()
-          return st.linked && st.user !== null && s.triggeredBy === `${st.user.name || st.user.upn}@${st.hubName}`
+          return st.linked && st.user !== null && s.triggeredBy === `${st.user.upn}@${st.hubName}`
         },
         notifier: macNotifier,
         track: (id) => void hubReleaseIds.add(id),

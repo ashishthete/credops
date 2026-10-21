@@ -2,7 +2,7 @@ import type { AuditAppender } from '../../../src/main/audit/audit-log'
 import { AI_MESSAGES, ClaudeClient, type AnthropicLike, type ClientFactoryOptions } from '../../../src/main/ai/claude'
 import { promptContext } from '../../../src/main/ai/prompt-redact'
 import { releaseNotesFinalizeStep } from '../../../src/main/ai/release-notes'
-import type { FinalizeSteps, ReleaseRunMeta } from '../../../src/main/deploy/finalize'
+import type { FinalizeContext, FinalizeSteps, ReleaseRunMeta } from '../../../src/main/deploy/finalize'
 import { NotificationDispatcher } from '../../../src/main/notify/dispatcher'
 import { buildReleaseEmail, sendEmail, type SendGridBody } from '../../../src/main/notify/email'
 import { createFinalizeSteps } from '../../../src/main/notify/finalize'
@@ -37,6 +37,8 @@ export interface HubFinalizeDeps {
   audit: Pick<HubAudit, 'append'>
   /** The Hub's own ReleaseService (late-bound: it is built with these steps). */
   runMeta: (releaseId: string, status?: ReleaseStatus) => ReleaseRunMeta
+  /** The name people read on cards for a upn. The stored triggeredBy stays upn@hub: clients match on it. */
+  displayName?: (upn: string) => string | undefined
   fetch: Fetch
   sleep: (ms: number) => Promise<void>
   /** The From address on release emails (`sendgridFrom` in the Hub config). */
@@ -280,7 +282,13 @@ export function createHubNotify(d: HubFinalizeDeps): HubNotify {
     }),
     qa: qaFinalizeStep({ qa: heldQa, integrations }),
   })
-  return { finalize, dispatcher, qa, held }
+  // Only the card's "By" changes; the run the service stored is untouched.
+  const named = (ctx: FinalizeContext): FinalizeContext => {
+    const name = d.displayName?.(ctx.run.actor.osUser)
+    return name ? { ...ctx, run: { ...ctx.run, actor: { ...ctx.run.actor, osUser: name } } } : ctx
+  }
+  const steps: FinalizeSteps = { ...finalize, notify: (ctx) => finalize.notify(named(ctx)) }
+  return { finalize: steps, dispatcher, qa, held }
 }
 
 /** Phase 9's finalize steps on Hub-backed dependencies. */

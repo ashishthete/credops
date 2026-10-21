@@ -131,7 +131,7 @@ describe('hub end to end', () => {
       push: { events: (b) => void pushed.events.push(...b), state: (s) => void pushed.states.push(s), locks: () => undefined, catalog: () => void bob.catalog.refresh() },
       isMine: (s) => {
         const st = bob.conn.status()
-        return st.linked && st.user !== null && s.triggeredBy === `${st.user.name || st.user.upn}@${st.hubName}`
+        return st.linked && st.user !== null && s.triggeredBy === `${st.user.upn}@${st.hubName}`
       },
       notifier: { show: (facts, route) => void shown.push({ facts, route }) },
       track: (id) => void hubReleaseIds.add(id),

@@ -127,6 +127,7 @@ export function buildApp(deps: HubDeps): FastifyInstance {
     registry,
     audit: deps.audit,
     runMeta: (id, status) => (releases as HubReleases).service.runMeta(id, status),
+    displayName: (upn) => directory.list().find((u) => u.upn === upn)?.name,
     fetch: deps.notify?.fetch ?? globalThis.fetch,
     sleep: deps.notify?.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
     ...(deps.config.sendgridFrom ? { sendgridFrom: deps.config.sendgridFrom } : {}),
