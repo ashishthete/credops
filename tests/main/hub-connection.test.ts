@@ -184,6 +184,33 @@ describe('hub connection', () => {
     expect({ ...(row as object) }).toEqual({ session_enc: null, refresh_enc: null, session_expires_at: null })
   })
 
+  it('a restart with a stored session restores the signed-in user from the Hub', async () => {
+    await make().connect(hubUrl)
+    const first = make()
+    await first.signIn()
+    // A new connection over the same database, as after an app restart: nothing in memory yet.
+    const again = make()
+    expect(again.status()).toMatchObject({ signedIn: true, user: null })
+    await again.restore()
+    expect(again.status()).toMatchObject({ signedIn: true, user: { oid: ADMIN.oid, role: 'admin', status: 'active' } })
+    expect(states.at(-1)).toMatchObject({ user: { oid: ADMIN.oid } })
+  })
+
+  it('a restore while the Hub is unreachable keeps the session; a rejected session signs out', async () => {
+    await make().connect(hubUrl)
+    await make().signIn()
+    const down: typeof fetch = async () => {
+      throw new TypeError('fetch failed')
+    }
+    const offline = make({ fetch: down })
+    await offline.restore()
+    expect(offline.status()).toMatchObject({ signedIn: true, user: null })
+    const forbidden: typeof fetch = async () => new Response(JSON.stringify({ error: 'forbidden', message: 'no' }), { status: 403, headers: { 'content-type': 'application/json' } })
+    const rejected = make({ fetch: forbidden })
+    await rejected.restore()
+    expect(rejected.status()).toMatchObject({ signedIn: false, user: null })
+  })
+
   it('a 503 during renew reports unavailable and keeps the session', async () => {
     const conn = make()
     await conn.connect(hubUrl)

@@ -332,6 +332,20 @@ export class HubConnection {
     return user
   }
 
+  /**
+   * After a restart the stored session is still valid but the user is not in memory: ask the Hub who it is and
+   * publish, as sign-in does. Best effort: offline or failing keeps the session for a later renew; a session the
+   * Hub rejects ends the sign-in.
+   */
+  async restore(): Promise<void> {
+    if (this.row()?.session_enc == null) return
+    try {
+      await this.me()
+    } catch (err) {
+      if (err instanceof HubError && err.status === 403) this.signedOut()
+    }
+  }
+
   /** The decrypted tokens while held, for redaction. Never leaves the main process. */
   knownValues(): string[] {
     const h = this.load()

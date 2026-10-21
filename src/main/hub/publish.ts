@@ -64,12 +64,12 @@ function secretUsage(environmentId: string, deps: Pick<ManifestDeps, 'deploys' |
   return [...used].map(([secretId, u]) => ({ secretId, name: names.get(secretId) as string, usedBy: [...u.by].sort(), kind: u.become ? 'become' : 'env' }))
 }
 
-/** Everything a Hub needs to run the environment's deployments, and no secret value: only secret ids and names. */
 /** What a Hub run needs of an environment's Phase 9 settings: never the Teams webhook secret id (the Hub keeps its own) or timestamps. */
 export function toHubIntegrations(i: EnvironmentIntegrations): HubIntegrations {
-  return { notifyEvents: [...i.notifyEvents], emailTo: [...i.emailTo], emailCc: [...i.emailCc], qaOnDeploy: i.qaOnDeploy, qa: i.qa === null ? null : { ...i.qa }, qaWait: i.qaWait }
+  return { notifyEvents: [...i.notifyEvents], emailTo: [...i.emailTo], emailCc: [...i.emailCc], qaOnDeploy: i.qaOnDeploy, qa: i.qa === null ? null : { repo: i.qa.repo, workflow: i.qa.workflow, ref: i.qa.ref }, qaWait: i.qaWait }
 }
 
+/** Everything a Hub needs to run the environment's deployments, and no secret value: only secret ids and names. */
 export async function buildManifest(environmentId: string, deps: ManifestDeps): Promise<HubEnvManifest> {
   const env = deps.envs.get(environmentId)
   const settings = deps.deploys.settings(environmentId)

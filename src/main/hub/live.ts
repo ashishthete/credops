@@ -380,15 +380,25 @@ export class LiveFeed {
  * route release calls to it, so they are forgotten on sign-out, unlink, or a different Hub or person.
  */
 export function hubFeedSync(d: { status: () => HubStatus; feed: Pick<LiveFeed, 'start' | 'stop'>; ids: Set<string> }): () => void {
-  let who: string | null = null
+  let hubId: string | null = null
+  let oid: string | null = null
   return () => {
     const st = d.status()
-    const active = st.linked && st.signedIn
-    const now = active ? `${st.hubId}|${st.user?.oid ?? ''}` : null
-    if (now === null || (who !== null && who !== now)) d.ids.clear()
-    who = now
-    if (active) d.feed.start()
-    else d.feed.stop()
+    if (!st.linked || !st.signedIn) {
+      d.ids.clear()
+      hubId = oid = null
+      d.feed.stop()
+      return
+    }
+    // The person is unknown until the Hub says who they are: learning it within a session is not a change.
+    const user = st.user?.oid ?? null
+    if ((hubId !== null && hubId !== st.hubId) || (oid !== null && user !== null && oid !== user)) {
+      d.ids.clear()
+      oid = null
+    }
+    hubId = st.hubId
+    oid = user ?? oid
+    d.feed.start()
   }
 }
 

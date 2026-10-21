@@ -570,4 +570,23 @@ describe('hubFeedSync', () => {
     sync()
     expect(ids.size).toBe(0)
   })
+
+  it('learning who the user is within a session keeps the ids; a different person clears them', () => {
+    const noUser = { ...(on('h1', 'o1') as object), user: null } as HubStatus
+    let st: HubStatus = noUser
+    const ids = new Set<string>([REL])
+    const sync = hubFeedSync({ status: () => st, feed: { start: vi.fn(), stop: vi.fn() }, ids })
+    sync()
+    st = on('h1', 'o1')
+    sync()
+    expect([...ids]).toEqual([REL])
+    st = noUser
+    sync()
+    st = on('h1', 'o1')
+    sync()
+    expect([...ids]).toEqual([REL])
+    st = on('h1', 'o2')
+    sync()
+    expect(ids.size).toBe(0)
+  })
 })

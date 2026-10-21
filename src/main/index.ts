@@ -453,6 +453,8 @@ if (!app.requestSingleInstanceLock()) {
       hub.onState(syncHubFeed)
       hubFeedStop = () => hubFeed.stop()
       syncHubFeed()
+      // A stored session survives a restart but the user does not: ask the Hub, best effort.
+      void hub.restore().catch(() => undefined)
       const releases = new RoutingReleases({
         local: release,
         hub: new HubRunner({
