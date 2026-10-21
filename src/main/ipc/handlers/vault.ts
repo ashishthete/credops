@@ -31,12 +31,14 @@ type VaultChannel =
 export async function withProof(
   vault: Pick<VaultService, 'reverify' | 'status'>,
   proof: ReverifyProof | undefined,
+  /** Named in the Touch ID prompt ("OpsDeck is trying to …"), so the user sees what they approve. */
+  action: string,
   change: () => unknown,
 ): Promise<ProvenResult> {
   if (!proof) throw new Error(VERIFICATION_FAILED)
   let proven: boolean
   try {
-    proven = await vault.reverify(proof)
+    proven = await vault.reverify(proof, action)
   } catch (err) {
     if (err instanceof Error && err.message === PIN_WIPED) return { ok: false, reason: 'pin-wiped', status: vault.status() }
     throw err
@@ -63,12 +65,14 @@ export function createVaultHandlers(vault: VaultService): Pick<Handlers, VaultCh
     'vault:setQuickUnlock': async (mode, proof) =>
       mode === 'off'
         ? { ok: true, status: vault.setQuickUnlock('off') }
-        : withProof(vault, proof, () => vault.setQuickUnlock(mode)),
+        : withProof(vault, proof, mode === 'touchId' ? 'turn on Touch ID' : 'turn on quick unlock', () =>
+            vault.setQuickUnlock(mode),
+          ),
     'vault:setAutoLock': (minutes) => vault.setAutoLock(minutes),
     'vault:reset': (confirm) => vault.reset(confirm),
-    'vault:setPin': (pin, proof) => withProof(vault, proof, () => vault.setPin(pin)),
+    'vault:setPin': (pin, proof) => withProof(vault, proof, 'set a PIN', () => vault.setPin(pin)),
     'vault:clearPin': () => vault.clearPin(),
-    'vault:setPassword': (next, proof) => withProof(vault, proof, () => vault.setPassword(next)),
+    'vault:setPassword': (next, proof) => withProof(vault, proof, 'set a master password', () => vault.setPassword(next)),
     'vault:removePassword': (current) => vault.removePassword(current),
   }
 }

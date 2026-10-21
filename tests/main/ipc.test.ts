@@ -157,6 +157,9 @@ describe('sign-in and factor contract', () => {
       'vault:setup': leak,
       'auth:changeAccount': leak,
       'auth:disconnect': leak,
+      'vault:setQuickUnlock': leak,
+      'vault:changePassword': leak,
+      'vault:unlock': leak,
     })
     const calls: [string, unknown[], string[]][] = [
       ['vault:unlockPin', [PIN], [PIN]],
@@ -166,6 +169,9 @@ describe('sign-in and factor contract', () => {
       ['vault:setup', [{ password: 'new horse battery', pin: PIN }], ['new horse battery', PIN]],
       ['auth:changeAccount', [{ method: 'pin', pin: PIN }], [PIN]],
       ['auth:disconnect', [{ method: 'password', password: 'old horse battery' }], ['old horse battery']],
+      ['vault:setQuickUnlock', ['touchId', { method: 'pin', pin: PIN }], [PIN]],
+      ['vault:changePassword', ['old horse battery', 'new horse battery'], ['old horse battery', 'new horse battery']],
+      ['vault:unlock', ['old horse battery'], ['old horse battery']],
     ]
     for (const [channel, args, secrets] of calls) {
       const err = await (get(channel)(ev, ...args) as Promise<unknown>).catch((e: Error) => e)

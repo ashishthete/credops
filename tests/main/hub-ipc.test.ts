@@ -64,7 +64,6 @@ describe('hub handlers', () => {
       connect: vi.fn(),
       signIn: vi.fn(),
       cancelSignIn: vi.fn(),
-      signOut: vi.fn(),
       unlink: vi.fn(),
       me: vi.fn(),
     }
@@ -76,6 +75,12 @@ describe('hub handlers', () => {
     })
     return { audit, vault, conn, call: (c: string, ...a: unknown[]) => registered.get(c)!(frame, ...a) as Promise<unknown> }
   }
+
+  it('leaves hub:signOut to the auth handlers, so the sign-in gate always hears of it', () => {
+    const { conn } = setup({})
+    const handlers = createHubHandlers({ conn: conn as never, vault: { assertUnlocked: vi.fn() }, audit: { append: vi.fn() }, catalog: { refresh: vi.fn(async () => []) }, publisher: {} as never })
+    expect('hub:signOut' in handlers).toBe(false)
+  })
 
   it('mutations assert the vault is unlocked and audit hub.admin without values', async () => {
     const group = { id: UUID, name: 'Ops' }

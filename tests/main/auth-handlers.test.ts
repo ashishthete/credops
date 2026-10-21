@@ -4,7 +4,7 @@ import { createAuthHandlers } from '../../src/main/ipc/handlers/auth'
 import type { HubStatus, HubUser } from '../../src/shared/hub'
 import type { SessionCheck } from '../../src/shared/sso'
 import { VERIFICATION_FAILED } from '../../src/shared/vault'
-import { makeVault } from './vault-helpers'
+import { fakeQuick, makeVault } from './vault-helpers'
 
 const PW = 'correct horse'
 const PIN = '204816'
@@ -50,9 +50,9 @@ class FakeHub implements SsoHub {
 }
 
 /** Set up with a password and a PIN, unlocked, bound to Alice on hub-1. */
-async function ready() {
+async function ready(quick = fakeQuick()) {
   const now = { t: T0 }
-  const f = makeVault({ now })
+  const f = makeVault({ now, quick })
   await f.vault.setup({ password: PW, pin: PIN, touchId: true })
   const hub = new FakeHub()
   const gate = new SsoGate({ db: f.db, audit: f.audit, hub, now: () => now.t })
@@ -112,6 +112,24 @@ describe('createAuthHandlers', () => {
     )
     expect(r.binding()).toBeDefined()
     expect(r.hub.unlink).not.toHaveBeenCalled()
+  })
+
+  it('auth:disconnect that fails to unlink fails closed: unbound, still linked, still gated', async () => {
+    // Unbind runs first; a linked Hub keeps sign-in required (and rebinds at the next unlock), so the
+    // half-done state gates exactly as before and the user retries.
+    const r = await ready()
+    r.hub.unlink.mockRejectedValueOnce(new Error('hub down'))
+    await expect(r.h['auth:disconnect']({ method: 'pin', pin: PIN })).rejects.toThrow('hub down')
+    expect(r.binding()).toBeUndefined()
+    expect(r.hub.status()).toMatchObject({ linked: true, signedIn: true })
+    expect(r.vault.status()).toMatchObject({ unlocked: true, sso: { required: true } })
+  })
+
+  it('the Touch ID prompt names the account change', async () => {
+    const quick = fakeQuick()
+    const r = await ready(quick)
+    await r.h['auth:changeAccount']({ method: 'touchId' })
+    expect(quick.touchId.prompt).toHaveBeenLastCalledWith('change the Microsoft account in OpsDeck')
   })
 
   it("auth:signOut signs out, forgets the verification and locks with reason 'manual'", async () => {

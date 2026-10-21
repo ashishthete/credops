@@ -452,8 +452,9 @@ export class VaultService {
    * A method that is not set up, or a lock meanwhile, gives false. A miss that wipes the PIN throws
    * PIN_WIPED; if that left nothing stored to unlock with, the vault locks first, so whoever was
    * guessing cannot keep it open to add a factor of their own (the spec's "locked until reset").
+   * `action` names the change in the Touch ID prompt; without it the prompt is a generic one.
    */
-  reverify(proof: ReverifyProof): Promise<boolean> {
+  reverify(proof: ReverifyProof, action?: string): Promise<boolean> {
     return this.serial(async () => {
       this.assertUnlocked()
       // A disabled account proves nothing: refused before any prompt or derive, so no miss counts.
@@ -462,7 +463,7 @@ export class VaultService {
       if (proof.method === 'touchId') {
         if (!this.touchIdHoldsKek()) return false
         try {
-          await this.quick!.touchId.prompt(REVERIFY_REASON)
+          await this.quick!.touchId.prompt(action ? `${action} in OpsDeck` : REVERIFY_REASON)
         } catch {
           return false
         }

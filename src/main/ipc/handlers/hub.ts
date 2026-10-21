@@ -18,13 +18,15 @@ import type { HubCatalog } from '../../hub/catalog'
 import type { HubPublisher } from '../../hub/publish'
 import type { HubConnection } from '../../hub/connection'
 
-type HubChannel = Extract<keyof Handlers, `hub:${string}`>
+// hub:signOut is the auth handlers' (createAuthHandlers): it must also drop the sign-in gate's
+// verification, and leaving it out here makes that the only handler, whatever the spread order.
+type HubChannel = Exclude<Extract<keyof Handlers, `hub:${string}`>, 'hub:signOut'>
 
 const ADMIN = '/api/v1/admin'
 
 /** Admin calls go through the Hub; each mutation is audited locally as `hub.admin { op, target }` (never the values). */
 export function createHubHandlers(deps: {
-  conn: Pick<HubConnection, 'client' | 'status' | 'connect' | 'signIn' | 'cancelSignIn' | 'signOut' | 'unlink' | 'me'>
+  conn: Pick<HubConnection, 'client' | 'status' | 'connect' | 'signIn' | 'cancelSignIn' | 'unlink' | 'me'>
   vault: { assertUnlocked(): void }
   audit: { append(input: AuditInput): unknown }
   catalog: Pick<HubCatalog, 'refresh'>
@@ -65,10 +67,6 @@ export function createHubHandlers(deps: {
       return conn.signIn()
     },
     'hub:cancelSignIn': () => conn.cancelSignIn(),
-    'hub:signOut': () => {
-      vault.assertUnlocked()
-      return conn.signOut()
-    },
     'hub:unlink': () => {
       vault.assertUnlocked()
       return conn.unlink()

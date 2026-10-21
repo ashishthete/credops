@@ -3,7 +3,7 @@ import { createVaultHandlers } from '../../src/main/ipc/handlers/vault'
 import type { VaultService } from '../../src/main/vault/vault-service'
 import type { ReverifyProof } from '../../src/shared/sso'
 import { DEFAULT_VAULT_ID, PIN_ATTEMPTS, PIN_WIPED, VERIFICATION_FAILED, type VaultStatus } from '../../src/shared/vault'
-import { makeVault } from './vault-helpers'
+import { fakeQuick, makeVault } from './vault-helpers'
 
 const status: VaultStatus = {
   setUp: true,
@@ -84,7 +84,7 @@ describe('createVaultHandlers', () => {
     const h = createVaultHandlers(vault as unknown as VaultService)
     const proof: ReverifyProof = { method: 'password', password: PW }
     expect(await h['vault:setPin'](PIN, proof)).toEqual({ ok: true, status })
-    expect(vault.reverify).toHaveBeenLastCalledWith(proof)
+    expect(vault.reverify).toHaveBeenLastCalledWith(proof, 'set a PIN')
     expect(vault.setPin).toHaveBeenCalledWith(PIN)
     expect(await h['vault:setPassword'](PW, { method: 'pin', pin: PIN })).toEqual({ ok: true, status })
     expect(vault.setPassword).toHaveBeenCalledWith(PW)
@@ -98,6 +98,17 @@ describe('createVaultHandlers', () => {
     expect(vault.setPin).toHaveBeenCalledTimes(1)
     expect(vault.setPassword).toHaveBeenCalledTimes(1)
     expect(vault.setQuickUnlock).toHaveBeenCalledTimes(1)
+  })
+
+  it('the Touch ID prompt names the change being approved', async () => {
+    const quick = fakeQuick()
+    const f = makeVault({ quick })
+    await f.vault.setup({ pin: PIN, touchId: true })
+    const h = createVaultHandlers(f.vault)
+    expect(await h['vault:setPassword'](PW, { method: 'touchId' })).toMatchObject({ ok: true })
+    expect(quick.touchId.prompt).toHaveBeenLastCalledWith('set a master password in OpsDeck')
+    expect(await h['vault:setPin']('482913', { method: 'touchId' })).toMatchObject({ ok: true })
+    expect(quick.touchId.prompt).toHaveBeenLastCalledWith('set a PIN in OpsDeck')
   })
 
   it('never enables Touch ID without a proof', async () => {

@@ -7,7 +7,7 @@ import { withProof } from './vault'
 type AuthChannel = 'auth:check' | 'auth:signIn' | 'auth:changeAccount' | 'auth:disconnect' | 'auth:signOut' | 'hub:signOut'
 
 /**
- * Microsoft sign-in for the vault gate. Spread after the Hub handlers: it replaces `hub:signOut`, so
+ * Microsoft sign-in for the vault gate. Owns `hub:signOut` too (the Hub handlers leave it out), so
  * every sign-out, from either button, makes the gate forget its verification.
  */
 export function createAuthHandlers(d: {
@@ -25,9 +25,11 @@ export function createAuthHandlers(d: {
       await gate.signIn()
       return vault.status()
     },
-    'auth:changeAccount': (proof) => withProof(vault, proof, () => gate.rebind()),
+    'auth:changeAccount': (proof) => withProof(vault, proof, 'change the Microsoft account', () => gate.rebind()),
     'auth:disconnect': (proof) =>
-      withProof(vault, proof, async () => {
+      withProof(vault, proof, 'disconnect Microsoft sign-in', async () => {
+        // Unbind first: if the unlink then throws, the vault is unbound but still linked, and a linked
+        // Hub keeps sign-in required (it rebinds at the next unlock), so it fails closed; retry it.
         gate.unbind()
         await hub.unlink()
       }),

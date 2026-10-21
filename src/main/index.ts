@@ -703,7 +703,7 @@ if (!app.requestSingleInstanceLock()) {
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
           ...createOpsHandlers({ snippets, runs, containers }),
           ...hubHandlers,
-          // After the Hub handlers: replaces hub:signOut so the gate forgets the verification too.
+          // Owns hub:signOut, so the gate forgets the verification too.
           ...createAuthHandlers({ vault: service, gate: ssoGate, hub }),
           // Bound vaults leave their Hub through the vault settings (hub:connect is guarded by beforeLink).
           'hub:unlink': () => {
