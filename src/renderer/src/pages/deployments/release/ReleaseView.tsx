@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router'
 import { BREAK_LOCK_CONFIRM_MESSAGE, type ReleaseStatus, type StepKind } from '../../../../../shared/deploy'
 import { playbookSteps, type PlaybookPlay } from '../../../../../shared/playbook-steps'
 import { etaMs, type ChipState, type PipelineState } from '../../../deploy/pipeline'
-import { loadHistory, releaseStore, retainRelease, startReleaseSync, usePipeline } from '../../../deploy/releases'
+import { loadHistory, markCancelling, releaseStore, retainRelease, startReleaseSync, useCancelling, usePipeline } from '../../../deploy/releases'
 import { allRows, taskProgress, taskRows, type HostRows, type TaskRow } from '../../../deploy/task-rows'
 import { api } from '../../../lib/api'
 import { Badge } from '../../../ui/Badge'
@@ -117,15 +117,19 @@ function rowWhere(row: TaskRow, hosts: HostRows[]): string {
   return `${row.label}${host ? ` on ${host.hostLabel}` : ''}`
 }
 
-/** Tasks finished out of all of them, and the ones running now. */
-function Progress({ rows, hosts }: { rows: TaskRow[]; hosts: HostRows[] }) {
+/** Tasks finished out of all of them, and the ones running now (none named while a cancel is under way). */
+function Progress({ rows, hosts, cancelling }: { rows: TaskRow[]; hosts: HostRows[]; cancelling: boolean }) {
   const { done, total, current } = taskProgress(rows)
   if (!total) return null
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-baseline gap-3 text-[12px]">
         <span className="text-fg/90 tabular-nums">{`${done} of ${total} tasks done`}</span>
-        {current.length > 0 && <span className="truncate text-accent">{`Now: ${current.map((r) => rowWhere(r, hosts)).join(', ')}`}</span>}
+        {cancelling ? (
+          <span className="text-warn">Cancelling</span>
+        ) : (
+          current.length > 0 && <span className="truncate text-accent">{`Now: ${current.map((r) => rowWhere(r, hosts)).join(', ')}`}</span>
+        )}
       </div>
       <div role="progressbar" aria-label="Tasks done" aria-valuemin={0} aria-valuemax={total} aria-valuenow={done} className="h-1.5 overflow-hidden rounded-full bg-surface-2">
         <div className="h-full rounded-full bg-accent transition-[width] duration-300 motion-reduce:transition-none" style={{ width: `${(done / total) * 100}%` }} />
@@ -144,7 +148,7 @@ export function ReleaseView({ releaseId }: { releaseId: string }) {
   const state = usePipeline(releaseId)
   const [selected, setSelected] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
-  const [cancelling, setCancelling] = useState(false)
+  const cancelling = useCancelling(releaseId)
   const rollback = useRollback()
   const sawRunning = useRef(false)
 
@@ -161,8 +165,8 @@ export function ReleaseView({ releaseId }: { releaseId: string }) {
     if (envId && finished && !releaseStore.get().history[envId]) void loadHistory(envId)
   }, [envId, finished])
   useEffect(() => {
-    if (state?.result) setCancelling(false)
-  }, [state?.result])
+    if (state?.result) markCancelling(releaseId, false)
+  }, [state?.result, releaseId])
 
   const now = useNow(running)
   const steps = useStepHistory(envId, releaseId, running)
@@ -195,7 +199,7 @@ export function ReleaseView({ releaseId }: { releaseId: string }) {
           await api.invoke('release:cancel', releaseId)
           return true
         })
-        if (ok) setCancelling(true)
+        if (ok) markCancelling(releaseId, true)
       },
     })
 
@@ -248,7 +252,7 @@ export function ReleaseView({ releaseId }: { releaseId: string }) {
         </span>
       </header>
 
-      {rows && <Progress rows={allRows(rows)} hosts={rows.hosts} />}
+      {rows && <Progress rows={allRows(rows)} hosts={rows.hosts} cancelling={cancelling && running} />}
 
       {state.lockBusy.map((b) => (
         <div key={b.hostId} role="status" className="flex items-center gap-3 rounded-lg border border-warn/40 bg-warn/8 px-3 py-2">

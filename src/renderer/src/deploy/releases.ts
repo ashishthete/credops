@@ -60,6 +60,8 @@ const holds = new Map<string, number>()
 const buffers = new Map<string, LogBuffer>()
 /** Per open release, bumped by each batch of log lines, so a view of the buffer re-renders. */
 const logVersions = createStore<Record<string, number>>({})
+/** Releases this window asked to cancel: both release pages show them as cancelling while they still run. */
+const cancels = createStore<Record<string, true>>({})
 let syncUsers = 0
 let stopSync: (() => void) | null = null
 
@@ -74,6 +76,7 @@ export function resetReleases(): void {
   holds.clear()
   buffers.clear()
   logVersions.set({})
+  cancels.set({})
   releaseStore.set(EMPTY)
 }
 
@@ -338,6 +341,16 @@ export function startReleaseSync(): () => void {
       stopSync = null
     }
   }
+}
+
+/** A cancel of the release was sent from this window (`release:cancel` succeeded); cleared when it finishes. */
+export function markCancelling(id: string, on: boolean): void {
+  const { [id]: _was, ...rest } = cancels.get()
+  cancels.set(on ? { ...rest, [id]: true } : rest)
+}
+
+export function useCancelling(id: string): boolean {
+  return useSyncExternalStore(cancels.subscribe, () => cancels.get()[id] === true)
 }
 
 export function usePipeline(id: string | null): PipelineState | undefined {

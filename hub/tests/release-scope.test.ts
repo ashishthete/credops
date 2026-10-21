@@ -101,6 +101,7 @@ describe('deployment-scoped access to releases', () => {
     expect(Object.keys(d.preflight!.serviceCommits)).toEqual([SVC_API])
     // The playbook covers both checkouts, so she does not get it.
     expect(d.playbook).toBeNull()
+    expect(d.playbookHidden).toBe(true)
 
     const evs = await get<RunEvent[]>(r.carol, `/api/v1/releases/${both}/events`)
     expect(lines(evs)).toEqual(['host lock line', 'pulled api', 'release line'])
@@ -123,6 +124,7 @@ describe('deployment-scoped access to releases', () => {
     for (const t of [r.bob, r.admin]) {
       const all = await get<ReleaseDetail>(t, `/api/v1/releases/${both}`)
       expect(all.runs).toHaveLength(2)
+      expect(all.playbookHidden).toBeUndefined()
       expect(all.playbook).not.toBeNull()
       // Theirs include the finish-up notices, which carry no step or host and so are never in a scoped view.
       expect(lines(await get<RunEvent[]>(t, `/api/v1/releases/${both}/events`)).slice(0, 7)).toEqual(['host lock line', 'pulled web', 'pulled api', 'release line', 'version line', 'host raw line', 'unattributed line'])

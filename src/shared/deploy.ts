@@ -522,6 +522,8 @@ export interface ReleaseDetail extends ReleaseSummary {
   releaseNotes: string | null
   /** The generated, secret-free release playbook JSON (redacted again on read). */
   playbook: string | null
+  /** Hub only: the playbook is left out (null) because it covers deployments this viewer can't see. */
+  playbookHidden?: boolean
   runs: DeploymentRunMeta[]
   preflight: PreflightReport | null
   lastSeq: number
