@@ -4,7 +4,7 @@ import { ENV_NAME, MAX_FLOW_STAGES, MAX_STEPS_PER_CHECKOUT, STEP_ANCHORS, denied
 import { shJoin } from '../ops/quote'
 import { checkComposeServices, composeCommand } from './compose'
 import { hostBecome, hostOd } from './host-vars'
-import { ALIAS, B64, b64, need, sanitizeIdent } from './quote'
+import { ALIAS, B64, SECRET_KEY, b64, need, sanitizeIdent } from './quote'
 import type { DeployPlan, PlanDeployment, PlanFlow, PlanHost, PlanStep } from './runner'
 
 export { generateAnsibleCfg, generateInventory, generateKnownHosts, generateSshConfig, knownHostsToken, socketPathFits } from './ssh-files'
@@ -25,7 +25,6 @@ export type { SshConfigOptions } from './ssh-files'
 type Task = Record<string, unknown>
 type Play = Record<string, unknown>
 
-const SECRET_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
 const SHA = /^[0-9a-f]{40}$/
 const RELEASE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const URL_SAFE = /^https?:\/\/[A-Za-z0-9._~:/?#[\]@!$&()*+,;=%-]+$/
@@ -203,7 +202,8 @@ type FlowSlot<S> = Slot<S> | { up: string[] | null } | { health: number[] }
  * A run's place in a release flow, as (stage, slot) pairs. Stage -1 is the prepare phase, everything before up, which
  * the first play runs for every checkout. Then, per stage the run is in: a services part ups its services and checks
  * its URLs, the run's last part adding the after_up and after_health steps; a step stage runs its step. The tag and
- * after_tag steps close the flow's last stage, so no checkout is tagged before the whole flow ran.
+ * after_tag steps come after every stage (stage `flow.stages.length`), so no checkout is tagged before the whole
+ * flow ran.
  */
 function flowSequence<S extends StepRef>(d: Omit<StepListDeployment, 'steps'>, steps: readonly S[], flow: PlanFlow): { stage: number; slot: FlowSlot<S | PlanStep> }[] {
   const seq = sequence('release', d, steps)
@@ -227,7 +227,7 @@ function flowSequence<S extends StepRef>(d: Omit<StepListDeployment, 'steps'>, s
       if (i === lastPart) out.push(...anchored(i, 'after_health'))
     }
   })
-  const end = flow.stages.length - 1
+  const end = flow.stages.length
   out.push({ stage: end, slot: { builtin: 'tag' } }, ...anchored(end, 'after_tag'))
   return out
 }
@@ -965,8 +965,9 @@ function flowSlotTasks(d: PlanDeployment, x: FlowSlot<PlanStep>): Task[] {
 /**
  * Fails every host of a later play unless each host that was in an earlier play finished the last one it was in
  * (`od_stage`, set as a play's last task) without a failed deployment. Ansible leaves a failed or unreachable host
- * out of later plays on its own; this stops the hosts that are left, whatever the strategy does with
- * any_errors_fatal. The condition names aliases (ALIAS-checked) and play indexes only.
+ * out of later plays on its own; this stops the hosts that are left, which `free` (continue-other-hosts) needs and
+ * `linear` with any_errors_fatal (stop-all) gets as a second guard. The condition names aliases (ALIAS-checked) and
+ * play indexes only.
  */
 function flowGate(i: number, lastPlay: ReadonlyMap<string, number>): Task {
   const when = [...lastPlay]
@@ -976,11 +977,16 @@ function flowGate(i: number, lastPlay: ReadonlyMap<string, number>): Task {
 }
 
 /**
- * A release in flow order: one play per stage, over that stage's hosts, with `strategy: free` (each host runs its
- * own blocks, in the order the stage lists them) and every block bound to its host by `when`. The first play also
- * takes every host's lock and runs each checkout's prepare phase; the last also tags every checkout, so both span
- * every host. `od` and become are inventory host vars here
- * (generateInventory), so play vars hold the secrets lookup only.
+ * A release in flow order, one play per phase, each play bound to the hosts it touches and every block to its host
+ * by `when`:
+ * - `release prepare` (every host): each host's lock, then each checkout's prepare phase (everything before up);
+ * - `release stage <i>` per flow stage: its parts' up and health, or its one step, on those runs' hosts;
+ * - `release tag` (every host): each checkout's tag and after_tag steps.
+ * Every play after the first opens with a gate (flowGate), so no service goes up unless every host prepared, and no
+ * checkout is tagged unless every stage finished. stop-all runs each play `linear` with any_errors_fatal, so a
+ * failure also stops the other hosts mid-play; continue-other-hosts runs it `free`, letting them finish the play
+ * before the next gate stops them. `od` and become are inventory host vars here (generateInventory), so play vars
+ * hold the secrets lookup only.
  */
 function flowPlays(plan: DeployPlan, flow: PlanFlow): Play[] {
   checkFlow(plan, flow)
@@ -1008,27 +1014,27 @@ function flowPlays(plan: DeployPlan, flow: PlanFlow): Play[] {
     if (tasks.length === 0) return []
     return [{ name: `deployment ${sanitizeIdent(r.d.name)}`, when: onHost(r.host), vars: { d: r.vars }, block: tasks, rescue: rescueRelease(r.d) }]
   }
+  const all = plan.deployments.map((d) => d.runId)
+  // [name, the flow stage its blocks come from (-1 prepare, stages.length tag), its runs in block order]
+  const phases: [string, number, string[]][] = [
+    ['release prepare', -1, all],
+    ...flow.stages.map((st, i): [string, number, string[]] => [`release stage ${i}`, i, st.kind === 'step' ? [st.runId] : st.parts.map((x) => x.runId)]),
+    ['release tag', flow.stages.length, all],
+  ]
   const lastPlay = new Map<string, number>()
-  const end = flow.stages.length - 1
-  return flow.stages.map((st, i) => {
-    const named = st.kind === 'step' ? [st.runId] : st.parts.map((p) => p.runId)
-    // the last stage's own runs first, then every other run's tag
-    const ids = i === end ? [...named, ...plan.deployments.map((d) => d.runId).filter((id) => !named.includes(id))] : named
-    const here = i === 0 || i === end ? hosts : hosts.filter((h) => ids.some((id) => runs.get(id)?.host === h))
+  return phases.map(([name, stage, ids], p) => {
+    const here = hosts.filter((h) => ids.some((id) => runs.get(id)?.host === h))
     const tasks: Task[] = []
-    if (i > 0) tasks.push(flowGate(i, lastPlay))
-    if (i === 0) {
-      for (const h of hosts) tasks.push({ ...taskPrep(h), when: onHost(h) }, { ...taskLock(h), when: onHost(h) })
-      for (const d of plan.deployments) tasks.push(...blockAt(d.runId, -1))
-    }
-    for (const id of ids) tasks.push(...blockAt(id, i))
-    if (i < flow.stages.length - 1) tasks.push({ name: `flow stage ${i} done`, 'ansible.builtin.set_fact': { od_stage: i } })
-    for (const h of here) lastPlay.set(h.alias, i)
+    if (p > 0) tasks.push(flowGate(p, lastPlay))
+    if (p === 0) for (const h of here) tasks.push({ ...taskPrep(h), when: onHost(h) }, { ...taskLock(h), when: onHost(h) })
+    for (const id of ids) tasks.push(...blockAt(id, stage))
+    if (p < phases.length - 1) tasks.push({ name: `flow play ${p} done`, 'ansible.builtin.set_fact': { od_stage: p } })
+    for (const h of here) lastPlay.set(h.alias, p)
     return {
-      name: `release stage ${i}`,
+      name,
       hosts: here.map((h) => h.alias).join(':'),
       gather_facts: false,
-      strategy: 'free',
+      strategy: flow.onFailure === 'stop-all' ? 'linear' : 'free',
       ...(flow.onFailure === 'stop-all' ? { any_errors_fatal: true } : {}),
       vars: { s: SECRETS_VAR },
       tasks,

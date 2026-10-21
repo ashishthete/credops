@@ -20,6 +20,8 @@ export function lockJson(plan: DeployPlan): string {
 
 export const ALIAS = /^od-\d{1,4}$/
 export const B64 = /^[A-Za-z0-9+/]*={0,2}$/
+/** A key into OPSDECK_SECRETS, as `s.<key>` names it. */
+export const SECRET_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
 
 export function need(ok: boolean, what: string): void {
   if (!ok) throw new Error(`deploy plan: invalid ${what}`)

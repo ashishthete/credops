@@ -24,6 +24,7 @@ import {
   type PreflightRequest,
   type ReleaseConfirm,
   type ReleaseDetail,
+  type ReleaseFlow,
   type ReleaseListFilter,
   type ReleaseStatus,
   type ReleaseSummary,
@@ -51,6 +52,7 @@ import { noopFinalize, type FinalizeSteps, type ReleaseRunMeta } from './finaliz
 import { INTERRUPTED_MESSAGE, type ReleaseStore } from './release-store'
 import type { DeployPlan, DeployRunner, PlanDeployment, PlanFlow, PlanHop, PlanHost, PlanKind, PlanStep, RunOutcome, RunSecrets } from './runner'
 import { generatePlaybook, stepList } from './generate'
+import { generateInventory } from './ssh-files'
 import { withBase64Forms } from './mask'
 import { ToolingError } from './tooling'
 
@@ -365,7 +367,7 @@ export class ReleaseService {
       if (err !== null) checks.push(this.block('ansible', err))
       else checks.push({ id: 'ansible', deploymentId: null, hostId: '', label: 'ansible', level: 'ok', message: 'ansible-playbook is available' })
       if (out?.preflight)
-        report = { releaseId: id, ...out.preflight, checks: [...checks, ...out.preflight.checks], serviceCommits: serviceCommits(infos, out.preflight.commits, this.d.services.list(live.environmentId)) }
+        report = { releaseId: id, ...out.preflight, checks: [...checks, ...out.preflight.checks], serviceCommits: serviceCommits(infos, out.preflight.commits, this.d.services.list(live.environmentId), stepBound(this.d.deploys.settings(live.environmentId).flow)) }
       else {
         if (err === null) checks.push(this.block('tools', 'Preflight did not finish; see the log'))
         report = { releaseId: id, checks, commits: {}, dockerModes: {}, composeServices: {}, serviceCommits: {}, locks: {}, commitsTotal: 0, blocked: true }
@@ -406,10 +408,10 @@ export class ReleaseService {
     const skips = this.skips(rel, forceServiceIds)
     const now = this.d.now()
     const startedAt = now.toISOString()
-    const { playbook } = this.releasePlan(rel, env, actor, startedAt, skips)
+    const { playbook, inventory } = this.releasePlan(rel, env, actor, startedAt, skips)
     for (const [k, p] of this.previews) if (now.getTime() - p.at > PREVIEW_KEEP_MS) this.previews.delete(k)
     this.previews.set(reviewKey(releaseId, actor), { releaseId, startedAt, at: now.getTime() })
-    return { playbook, sha256: reviewHash(playbook, skips), skippedServiceIds: skips.skipped.map((x) => x.id) }
+    return { playbook, sha256: reviewHash(playbook, skips, inventory), skippedServiceIds: skips.skipped.map((x) => x.id) }
   }
 
   /**
@@ -439,7 +441,7 @@ export class ReleaseService {
       throw new DeployError('INVALID_STATE', REVIEW_EXPIRED_MESSAGE)
     }
     const built = this.releasePlan(rel, env, actor, reviewed?.startedAt ?? this.d.now().toISOString(), skips)
-    if (confirm.playbookSha256 !== undefined && reviewHash(built.playbook, skips) !== confirm.playbookSha256) {
+    if (confirm.playbookSha256 !== undefined && reviewHash(built.playbook, skips, built.inventory) !== confirm.playbookSha256) {
       throw new DeployError('INVALID_STATE', PLAYBOOK_CHANGED_MESSAGE)
     }
     const live = this.register(releaseId, env, 'release', rel.version ?? 'release', actor)
@@ -455,6 +457,7 @@ export class ReleaseService {
       const tag = !redeploy && settings.versioned && rel.version !== null && rel.version !== settings.currentVersion ? rel.version : null
       const skippedSteps = this.d.releases.transaction(() => {
         const out = this.applySkips(rel, skips)
+        for (const [runId, steps] of this.reseed(rel, plan)) out.set(runId, steps)
         this.d.releases.setStatus(releaseId, 'running', {
           startedAt: this.d.now().toISOString(),
           redeploy,
@@ -518,7 +521,7 @@ export class ReleaseService {
     actor: Actor,
     startedAt: string,
     skips: Skips,
-  ): { plan: DeployPlan; playbook: string; version: string | null; docker: Map<string, DockerMode> } {
+  ): { plan: DeployPlan; playbook: string; inventory: string | null; version: string | null; docker: Map<string, DockerMode> } {
     const infos = this.infosFor(rel, skips)
     const settings = this.d.deploys.settings(env.id)
     const redeploy = (rel.preflight?.commitsTotal ?? 0) === 0
@@ -536,7 +539,8 @@ export class ReleaseService {
       tagCommits: rel.preflight?.commits,
       originHeads: originHeads(rel, skips),
     })
-    return { plan, playbook: generatePlaybook(plan), version, docker }
+    // With a flow, `od` and become are inventory host vars: the review covers them as it covers play vars.
+    return { plan, playbook: generatePlaybook(plan), inventory: plan.flow === null ? null : generateInventory(plan), version, docker }
   }
 
   private async runRelease(
@@ -1400,7 +1404,9 @@ export class ReleaseService {
     if (force.some((x) => !runs.has(x))) throw new DeployError('VALIDATION', 'forceServiceIds names a service this release does not run')
     const forced = new Set(force)
     const commits = rel.preflight?.serviceCommits ?? {}
-    const skip = new Set(Object.entries(commits).flatMap(([x, c]) => (c.skippable === true && !forced.has(x) ? [x] : [])))
+    // A service a flow step stage is bound to always deploys, so its step runs (and its row is never left pending).
+    const bound = stepBound(this.d.deploys.settings(rel.environmentId).flow)
+    const skip = new Set(Object.entries(commits).flatMap(([x, c]) => (c.skippable === true && !forced.has(x) && !bound.has(x) ? [x] : [])))
     const out: Skips = { skipped: [], sels: new Map() }
     for (const run of rel.runs) {
       const r = skipServices(selectionOf(run), skip)
@@ -1426,6 +1432,23 @@ export class ReleaseService {
         this.d.releases.updateRun(run.id, { status: 'skipped', steps })
         out.set(run.id, steps)
       } else this.d.releases.setRunServices(run.id, sel.services, sel.whole)
+    }
+    return out
+  }
+
+  /**
+   * Rewrites, as pending, the step rows of each run whose rows no longer match what the plan runs (a partial skip,
+   * or a flow edited since preflight), so a finished run never keeps a row for a step it did not have. Returns them.
+   */
+  private reseed(rel: ReleaseDetail, plan: DeployPlan): Map<string, DeploymentRunMeta['steps']> {
+    const out = new Map<string, DeploymentRunMeta['steps']>()
+    const list = stepList('release', plan.deployments, plan.flow)
+    for (const run of rel.runs) {
+      const want = list.get(run.id)
+      if (want === undefined || want.map((x) => x.key).join() === run.steps.map((x) => x.key).join()) continue
+      const steps = want.map((x) => ({ stepId: `${run.id}:${x.key}`, kind: x.kind, label: x.label, key: x.key, state: 'pending' as const, startedAt: null, finishedAt: null }))
+      this.d.releases.updateRun(run.id, { steps })
+      out.set(run.id, steps)
     }
     return out
   }
@@ -1849,8 +1872,8 @@ function selectionOf(run: Pick<DeploymentRunMeta, 'services' | 'wholeCheckout'>)
  * deployed commit, falling back to the deploy tag's commit. Zero is known only when that commit is origin's head
  * as the host resolved it; only then, with nothing hidden or cut and not a first deploy, is it skippable.
  */
-function serviceCommits(infos: Info[], commits: PreflightReport['commits'], services: ServiceMeta[]): PreflightReport['serviceCommits'] {
-  const skips = new Set(services.flatMap((s) => (s.kind === 'service' && s.skipUnchanged ? [s.id] : [])))
+function serviceCommits(infos: Info[], commits: PreflightReport['commits'], services: ServiceMeta[], bound: ReadonlySet<string>): PreflightReport['serviceCommits'] {
+  const skips = new Set(services.flatMap((s) => (s.kind === 'service' && s.skipUnchanged && !bound.has(s.id) ? [s.id] : [])))
   const out: PreflightReport['serviceCommits'] = {}
   for (const { dep, sel } of infos) {
     const entry = commits[dep.id]
@@ -1885,7 +1908,6 @@ function planStepsOf(dep: DeploymentMeta, key: (i: number, n: number) => string)
   }))
 }
 
-/** The review hash: of the playbook alone when nothing is skipped, else also of the skipped ids and their commits. */
 /** Each run left with some services after its skips: the origin head the skips were decided against. */
 function originHeads(rel: ReleaseDetail, skips: Skips): Map<string, string> {
   const out = new Map<string, string>()
@@ -1899,8 +1921,18 @@ function originHeads(rel: ReleaseDetail, skips: Skips): Map<string, string> {
   return out
 }
 
-function reviewHash(playbook: string, skips: Skips): string {
-  return skips.skipped.length === 0 ? sha256(playbook) : sha256(`${playbook}\0${JSON.stringify(skips.skipped.map((x) => [x.id, x.since]))}`)
+/**
+ * The review hash: of the playbook alone when nothing is skipped and there is no flow; with a flow, also of the
+ * inventory (it holds `od` and become then); with skips, also of the skipped ids and their commits.
+ */
+function reviewHash(playbook: string, skips: Skips, inventory: string | null): string {
+  const text = inventory === null ? playbook : `${playbook}\0${inventory}`
+  return skips.skipped.length === 0 ? sha256(text) : sha256(`${text}\0${JSON.stringify(skips.skipped.map((x) => [x.id, x.since]))}`)
+}
+
+/** The services a flow's step stages are bound to. */
+function stepBound(flow: ReleaseFlow | null): Set<string> {
+  return new Set((flow?.stages ?? []).flatMap((st) => (st.kind === 'step' ? [st.serviceId] : [])))
 }
 
 /** A review belongs to one person: the Hub user when there is one, else the OS user on the machine. */

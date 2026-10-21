@@ -1007,6 +1007,15 @@ describe('EventTranslator release flow', () => {
     expect(of(two, 'step.done').map((e) => e.stepId)).toEqual([`${R2}:up`])
   })
 
+  it('under a flow a run settles on its last step in flow order: its after_tag step, not the flow step or tag', () => {
+    const plan = flowPlan()
+    Object.assign(plan.deployments[0], { preHookB64: null, postHookB64: null, steps: [stepFixture(0, 'after_tag')] })
+    const tr = new EventTranslator({ plan, secrets: () => [], now: clock().now })
+    const settled = (out: RunEventBody[]) => of(out, 'deployment.updated').filter((e) => e.status === 'succeeded').map((e) => e.deploymentRunId)
+    for (const k of ['c_21', 'tag']) expect(settled([...feed(tr, k, R1, 'task_start'), ...feed(tr, k, R1, 'ok')]), k).toEqual([])
+    expect(settled([...feed(tr, 'c_0', R1, 'task_start'), ...feed(tr, 'c_0', R1, 'ok')])).toEqual([R1])
+  })
+
   it('a flow step settles under its label', () => {
     const tr = new EventTranslator({ plan: flowPlan(), secrets: () => [], now: clock().now })
     const began = feed(tr, 'c_21', R1, 'task_start')

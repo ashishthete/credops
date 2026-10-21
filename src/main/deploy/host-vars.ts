@@ -1,5 +1,5 @@
 import { REPO_PATH, VERSION } from '../../shared/deploy'
-import { b64, lockJson, need, sanitizeIdent } from './quote'
+import { SECRET_KEY, b64, lockJson, need, sanitizeIdent } from './quote'
 import type { DeployPlan, PlanDeployment, PlanHost } from './runner'
 
 /*
@@ -38,6 +38,6 @@ export function hostBecome(deps: PlanDeployment[]): string | undefined {
   const keys = new Set(deps.map((d) => d.becomeSecretKey).filter((k): k is string => k !== null))
   need(keys.size <= 1, 'become secrets (one per host)')
   const [k] = keys
-  need(k === undefined || /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(k), 'secret reference')
+  need(k === undefined || SECRET_KEY.test(k), 'secret reference')
   return k === undefined ? undefined : `{{ (s.${k} | b64decode) if s.${k} is defined else omit }}`
 }

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { DeployError } from '../../src/main/deploy/access'
 import { NOTHING_SELECTED_MESSAGE, PLAYBOOK_CHANGED_MESSAGE, STEP_SECRET_UNUSED_MESSAGE } from '../../src/main/deploy/release-service'
 import { REDEPLOY_CONFIRM_MESSAGE } from '../../src/shared/deploy'
+import { stepList } from '../../src/main/deploy/generate'
 import type { DeployPlan } from '../../src/main/deploy/runner'
 import type { CommitInfo, DeploymentMeta } from '../../src/shared/deploy'
 import type { AppServiceMeta } from '../../src/shared/services'
@@ -396,9 +397,10 @@ describe('skip unchanged', () => {
 
 describe('release flow', () => {
   // backend -> migrate (a step on backend's checkout) -> frontend || fastapi
-  const flowRig = async () => {
+  const flowRig = async (o: { redeploy?: boolean } = {}) => {
     const r = await rig()
     const [be, fe, fa] = ['backend', 'frontend', 'fastapi'].map((n) => dep(r, n))
+    if (o.redeploy) commits(r, {})
     const [sb, sf, sa] = [svcIn(r, be, 'backend'), svcIn(r, fe, 'frontend'), svcIn(r, fa, 'fastapi')]
     const { id: _id, anchor: _a, alsoOnRollback: _r, ...migrate } = step()
     const set = (stages: 'flow' | 'swapped') =>
@@ -429,7 +431,7 @@ describe('release flow', () => {
     const b = await r.svc.previewPlaybook(id)
     expect(b.sha256).toBe(a.sha256)
     const names = (JSON.parse(a.playbook) as { name: string }[]).map((p) => p.name)
-    expect(names).toEqual(['release stage 0', 'release stage 1', 'release stage 2'])
+    expect(names).toEqual(['release prepare', 'release stage 0', 'release stage 1', 'release stage 2', 'release tag'])
 
     await r.svc.start(id, { playbookSha256: a.sha256 })
     await r.svc.whenIdle()
@@ -446,6 +448,95 @@ describe('release flow', () => {
     const b = await r.svc.previewPlaybook(id)
     expect(b.sha256).not.toBe(a.sha256)
     expect((await fail(r.svc.start(id, { playbookSha256: a.sha256 }))).message).toBe(PLAYBOOK_CHANGED_MESSAGE)
+  })
+
+  /** shop: web changed since A; worker (skipUnchanged, with a health url) unchanged at origin's head C. */
+  const shopFlow = async (stages: (web: AppServiceMeta, worker: AppServiceMeta) => Parameters<Rig['f']['deploys']['updateSettings']>[1]['flow'], o: { after?: boolean } = {}) => {
+    const r = await rig()
+    const d = dep(r, 'shop')
+    const web = svcIn(r, d, 'web')
+    const worker = r.f.services.create({ kind: 'service', environmentId: d.environmentId, name: 'worker', deploymentId: d.id, skipUnchanged: true, url: 'https://worker.example.com/up' } as never) as AppServiceMeta
+    r.f.services.recordDeployed([
+      { serviceId: web.id, commit: A, releaseId: null },
+      { serviceId: worker.id, commit: C, releaseId: null },
+    ])
+    commits(r, { [d.id]: { list: [C, B], head: C } })
+    const set = () => r.f.deploys.updateSettings(r.f.staging.id, { flow: stages(web, worker) })
+    if (!o.after) set()
+    const id = await ready(r, [d])
+    if (o.after) set()
+    return { r, d, web, worker, id }
+  }
+  const { id: _sid, anchor: _sa, alsoOnRollback: _sr, ...migrateBody } = step()
+  /** The runner reports every step the plan runs as ok. */
+  const okEverything = (r: Rig) => {
+    r.runner.on.release = (plan, _s, emit) => {
+      for (const [runId, list] of stepList('release', plan.deployments, plan.flow))
+        for (const x of list) {
+          emit({ type: 'step.started', stepId: `${runId}:${x.key}`, kind: x.kind, name: x.label, hostId: null, deploymentRunId: runId })
+          emit({ type: 'step.done', stepId: `${runId}:${x.key}`, state: 'ok', durationMs: 1 })
+        }
+    }
+  }
+
+  it('a when:always step bound to an unchanged service still runs: that service is never skipped', async () => {
+    for (const after of [false, true]) {
+      // after: the flow is set once preflight already called the service skippable
+      const { r, worker, id } = await shopFlow((web, worker) => ({
+        onFailure: 'stop-all',
+        stages: [
+          { kind: 'services', serviceIds: [web.id] },
+          { kind: 'step', serviceId: worker.id, step: { ...migrateBody, id: 'migrate' } },
+        ],
+      }), { after })
+      expect(r.svc.detail(id).preflight?.serviceCommits[worker.id]).toMatchObject({ known: true, count: 0, skippable: after })
+      const p = await r.svc.previewPlaybook(id)
+      expect(p.skippedServiceIds).toEqual([])
+      okEverything(r)
+      await r.svc.start(id, { playbookSha256: p.sha256 })
+      await r.svc.whenIdle()
+      expect(r.svc.detail(id).status).toBe('succeeded')
+      const plan = r.runner.call('release')
+      expect(plan.flow?.stages.find((x) => x.kind === 'step')).toMatchObject({ kind: 'step', step: { key: 'c_21', step: { when: { kind: 'always' } } } })
+      expect(r.svc.detail(id).runs[0].steps.find((x) => x.key === 'c_21')).toMatchObject({ state: 'ok' })
+    }
+  })
+
+  it('a succeeded run never leaves a pending row: a partial skip reseeds the run as the plan runs it', async () => {
+    // worker is skipped: its stage and its health url go, the step bound to web stays
+    const { r, worker, id } = await shopFlow((web, worker) => ({
+      onFailure: 'continue-other-hosts',
+      stages: [
+        { kind: 'services', serviceIds: [web.id] },
+        { kind: 'step', serviceId: web.id, step: { ...migrateBody, id: 'migrate' } },
+        { kind: 'services', serviceIds: [worker.id] },
+      ],
+    }))
+    expect(r.svc.detail(id).runs[0].steps.map((x) => x.key)).toContain('health')
+    const p = await r.svc.previewPlaybook(id)
+    expect(p.skippedServiceIds).toEqual([worker.id])
+    okEverything(r)
+    await r.svc.start(id, { playbookSha256: p.sha256 })
+    await r.svc.whenIdle()
+    const rel = r.svc.detail(id)
+    expect(rel.status).toBe('succeeded')
+    expect(rel.runs[0].steps.map((x) => x.key)).toEqual(['record', 'fetch', 'checkout', 'build', 'up', 'c_21', 'tag'])
+    expect(rel.runs[0].steps.filter((x) => x.state === 'pending')).toEqual([])
+  })
+
+  it('the review hash covers the inventory host vars: a version change between preview and start is caught', async () => {
+    const { r, id } = await flowRig({ redeploy: true })
+    expect(r.f.deploys.settings(r.f.staging.id).versioned).toBe(false)
+    const a = await r.svc.previewPlaybook(id)
+    r.f.deploys.updateSettings(r.f.staging.id, { currentVersion: 'v9.9.9' })
+    const b = await r.svc.previewPlaybook(id)
+    // the version lives in the inventory's od, not the playbook text
+    expect(b.playbook).toBe(a.playbook)
+    expect(b.sha256).not.toBe(a.sha256)
+    expect((await fail(r.svc.start(id, { playbookSha256: a.sha256, redeploy: true }))).message).toBe(PLAYBOOK_CHANGED_MESSAGE)
+    await r.svc.start(id, { playbookSha256: b.sha256, redeploy: true })
+    await r.svc.whenIdle()
+    expect(r.runner.call('release').version).toBe('v9.9.9')
   })
 
   it('a rollback runs without the flow', async () => {

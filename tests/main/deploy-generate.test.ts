@@ -1208,38 +1208,40 @@ describe('release flow stages', () => {
     expect(generateInventory(planFixture())).not.toContain(' od=')
   })
 
-  it('gives one play per stage, in flow order, over each stage\'s hosts', () => {
+  it('gives a prepare play, one play per stage in flow order over its hosts, and a tag play', () => {
     const ps = plays(flowPlan())
-    expect(ps.map((p) => p.name)).toEqual(['release stage 0', 'release stage 1', 'release stage 2'])
-    expect(ps.map((p) => p.hosts)).toEqual(['od-1:od-2', 'od-1', 'od-1:od-2'])
+    expect(ps.map((p) => p.name)).toEqual(['release prepare', 'release stage 0', 'release stage 1', 'release stage 2', 'release tag'])
+    expect(ps.map((p) => p.hosts)).toEqual(['od-1:od-2', 'od-1', 'od-1', 'od-1:od-2', 'od-1:od-2'])
     for (const p of ps) {
-      expect(p.strategy).toBe('free')
       expect(p.gather_facts).toBe(false)
       expect(Object.keys(p.vars)).toEqual(['s'])
     }
-    // stage 0: every host's lock, every checkout's prepare, then backend's up and health
-    const t0 = tagsOf(ps[0])
-    // prep and lock, both tagged lock, once per host
+    // prepare: prep and lock (both tagged lock) per host, then every checkout's prepare; no up, no tag
     expect(ps[0].tasks.filter((t) => (t.tags ?? []).includes('od_step=lock')).map((t) => t.when)).toEqual([
       "inventory_hostname == 'od-1'",
       "inventory_hostname == 'od-1'",
       "inventory_hostname == 'od-2'",
       "inventory_hostname == 'od-2'",
     ])
+    const t0 = tagsOf(ps[0])
     expect(t0.filter((x) => x === 'checkout')).toHaveLength(3)
-    expect(t0.filter((x) => x === 'up')).toHaveLength(1)
-    expect(t0.at(-1)).toBe('<flow stage 0 done>')
-    // stage 1: the gate, the step alone, the marker
-    expect(tagsOf(ps[1])).toEqual(['<flow gate 1>', 'c_21', '<flow stage 1 done>'])
-    expect(blocks(ps[1]).map((b) => b.when)).toEqual(["inventory_hostname == 'od-1'"])
-    // stage 2: frontend on od-2 and fastapi on od-1, each bound to its host; then every checkout's tag
-    const b2 = blocks(ps[2])
-    expect(b2.map((b) => b.when)).toEqual(["inventory_hostname == 'od-2'", "inventory_hostname == 'od-1'", "inventory_hostname == 'od-1'"])
-    expect(b2.map((b) => b.name)).toEqual(['deployment dep3', 'deployment dep2', 'deployment dep1'])
-    expect(tagsOf(ps[2])[0]).toBe('<flow gate 2>')
-    expect(tagsOf(ps[2]).filter((x) => x === 'up')).toHaveLength(2)
-    expect(tagsOf(ps[2]).filter((x) => x === 'tag')).toHaveLength(3)
-    expect(tagsOf(ps[2])).not.toContain('<flow stage 2 done>')
+    expect(t0.filter((x) => x === 'build')).toHaveLength(3)
+    expect(t0.some((x) => x === 'up' || x === 'health' || x === 'tag')).toBe(false)
+    expect(t0.at(-1)).toBe('<flow play 0 done>')
+    // stage 0: backend's up and health only
+    expect(tagsOf(ps[1])).toEqual(['<flow gate 1>', 'up', 'health', '<flow play 1 done>'])
+    // stage 1: the step alone, on backend's host
+    expect(tagsOf(ps[2])).toEqual(['<flow gate 2>', 'c_21', '<flow play 2 done>'])
+    expect(blocks(ps[2]).map((b) => b.when)).toEqual(["inventory_hostname == 'od-1'"])
+    // stage 2: frontend on od-2 and fastapi on od-1, each bound to its host
+    const b3 = blocks(ps[3])
+    expect(b3.map((b) => b.name)).toEqual(['deployment dep3', 'deployment dep2'])
+    expect(b3.map((b) => b.when)).toEqual(["inventory_hostname == 'od-2'", "inventory_hostname == 'od-1'"])
+    expect(tagsOf(ps[3]).filter((x) => x === 'up')).toHaveLength(2)
+    expect(tagsOf(ps[3]).some((x) => x === 'tag')).toBe(false)
+    // tag: behind a gate, every checkout's tag, no marker after it
+    expect(tagsOf(ps[4])).toEqual(['<flow gate 4>', 'tag', 'tag', 'tag'])
+    expect(blocks(ps[4]).map((b) => b.name)).toEqual(['deployment dep1', 'deployment dep2', 'deployment dep3'])
     // every block and per-host task names its host
     for (const p of ps) for (const t of p.tasks) if (!String(t.name).startsWith('flow ')) expect(t.when).toMatch(/^inventory_hostname == 'od-\d+'$/)
   })
@@ -1249,25 +1251,28 @@ describe('release flow stages', () => {
     const ups = ps.flatMap((p) => flat(p.tasks).filter((t) => (t.tags ?? []).includes('od_step=up')))
     expect(ups.map((t) => dockerWords(cmdOf(t)).slice(-2))).toEqual([['--no-deps', 'backend'], ['--no-deps', 'frontend'], ['--no-deps', 'fastapi']])
     const health = (p: Play) => flat(p.tasks).filter((t) => (t.tags ?? []).includes('od_step=health'))
-    expect(health(ps[0])).toHaveLength(1)
-    expect(health(ps[1])).toHaveLength(0)
-    expect(health(ps[2])).toHaveLength(1)
+    expect(ps.map((p) => health(p).length)).toEqual([0, 1, 0, 1, 0])
   })
 
-  it('the gate stops a stage when a host did not finish the one before', () => {
-    const [, p1, p2] = plays(flowPlan())
-    expect(p1.tasks[0]).toEqual({
+  it('the gate stops a play when a host did not finish the one it was last in', () => {
+    const ps = plays(flowPlan())
+    const clause = (a: string, k: number) => `(hostvars['${a}'].od_stage | default(-1)) != ${k} or (hostvars['${a}'].od_failed | default(false))`
+    expect(ps[1].tasks[0]).toEqual({
       name: 'flow gate 1',
       'ansible.builtin.fail': { msg: 'OpsDeck flow stopped: a host did not finish an earlier stage' },
-      when: "(hostvars['od-1'].od_stage | default(-1)) != 0 or (hostvars['od-1'].od_failed | default(false)) or (hostvars['od-2'].od_stage | default(-1)) != 0 or (hostvars['od-2'].od_failed | default(false))",
+      when: `${clause('od-1', 0)} or ${clause('od-2', 0)}`,
     })
-    // od-2 sat stage 1 out: it is still held to stage 0
-    expect(p2.tasks[0].when).toBe("(hostvars['od-1'].od_stage | default(-1)) != 1 or (hostvars['od-1'].od_failed | default(false)) or (hostvars['od-2'].od_stage | default(-1)) != 0 or (hostvars['od-2'].od_failed | default(false))")
+    // od-2 sat stages 0 and 1 out: it is still held to the prepare play
+    expect(ps[3].tasks[0].when).toBe(`${clause('od-1', 2)} or ${clause('od-2', 0)}`)
+    expect(ps[4].tasks[0].when).toBe(`${clause('od-1', 3)} or ${clause('od-2', 3)}`)
+    for (const p of ps.slice(1)) expect(p.tasks[0].tags).toBeUndefined()
   })
 
-  it('stop-all sets any_errors_fatal on every play; continue-other-hosts leaves it out', () => {
-    expect(plays(flowPlan()).every((p) => p.any_errors_fatal === true)).toBe(true)
-    expect(plays(flowPlan({ onFailure: 'continue-other-hosts' })).some((p) => 'any_errors_fatal' in p)).toBe(false)
+  it('stop-all runs each play linear with any_errors_fatal; continue-other-hosts runs it free without', () => {
+    const stop = plays(flowPlan())
+    expect(stop.every((p) => p.strategy === 'linear' && p.any_errors_fatal === true)).toBe(true)
+    const cont = plays(flowPlan({ onFailure: 'continue-other-hosts' }))
+    expect(cont.every((p) => p.strategy === 'free' && !('any_errors_fatal' in p))).toBe(true)
   })
 
   it('the playbook parses and every command passes bash -n (parse only, nothing runs)', () => {
@@ -1286,7 +1291,7 @@ describe('release flow stages', () => {
     const text = generatePlaybook(flowPlan())
     expect(text).toContain('FLOW_1_0')
     expect(text).not.toContain('sec-db')
-    const [, p1] = plays(flowPlan())
+    const p1 = plays(flowPlan())[2]
     const b = blocks(p1)[0] as Task & { vars: { d: { steps: Record<string, unknown> } } }
     expect(Object.keys(b.vars.d.steps)).toContain('c_21')
     for (const { t } of every(p1.tasks)) expect(t.environment ?? {}).not.toHaveProperty('DB_PASS')
