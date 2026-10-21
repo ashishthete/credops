@@ -333,7 +333,7 @@ describe('hub connection', () => {
     const conn = make({
       beforeLink: (id) => {
         seen.push(id)
-        if (refuse) throw new Error('Use Change Microsoft account to move to another Hub')
+        if (refuse) throw new Error('Disconnect from the vault settings first')
       },
     })
     const linked = await conn.connect(hubUrl)
@@ -341,7 +341,7 @@ describe('hub connection', () => {
     expect(seen).toEqual([linked.linked ? linked.hubId : ''])
     const links = actions().filter((a) => a === 'hub.link').length
     refuse = true
-    await expect(conn.connect(hubUrl)).rejects.toThrow('Use Change Microsoft account to move to another Hub')
+    await expect(conn.connect(hubUrl)).rejects.toThrow('Disconnect from the vault settings first')
     expect(conn.status()).toMatchObject({ linked: true, signedIn: true })
     expect(actions().filter((a) => a === 'hub.link')).toHaveLength(links)
   })

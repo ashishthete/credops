@@ -1,10 +1,14 @@
 import { LogIn, LogOut, Unplug } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
-import { cancelSignIn, connectHub, signInHub, signOutHub, unlinkHub, useHub } from '../../hub/store'
+import { cancelSignIn, connectHub, loadHub, signInHub, signOutHub, unlinkHub, useHub } from '../../hub/store'
+import { api } from '../../lib/api'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
 import { ConfirmDialog, plural, type ConfirmRequest } from '../../ui/common'
 import { TextField } from '../../ui/Field'
+import { toast } from '../../ui/Toaster'
+import { useVaultStatus } from '../../vault/status'
+import { ReverifyDialog } from '../../vault/VaultSettingsDialog'
 import { PendingNotice, roleLabel } from './shared'
 import { useHubGroupNames } from './names'
 
@@ -14,36 +18,54 @@ export function ConnectCard() {
   const [url, setUrl] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
+  const [reverify, setReverify] = useState(false)
   const groupNames = useHubGroupNames()
+  const vault = useVaultStatus()
+  // Once the vaults are bound to this Hub's Microsoft account, leaving it takes a reverify.
+  const bound = !!vault?.sso.required
 
   const submit = (e: FormEvent) => {
     e.preventDefault()
     setError(null)
-    if (url.trim()) void connectHub(url.trim(), setError)
+    const target = url.trim()
+    if (!target) return
+    // Connecting binds the vaults to the signed-in account, so say so first.
+    setConfirm({
+      title: 'Connect to this Hub?',
+      description: 'From now on, OpsDeck opens only after you sign in with this Microsoft account.',
+      confirmLabel: 'Connect',
+      gentle: { cancelLabel: 'Cancel' },
+      run: async () => {
+        await connectHub(target, setError)
+      },
+    })
   }
 
   if (!status.linked) {
     return (
-      <form onSubmit={submit} className="flex max-w-xl flex-col gap-3">
-        <p className="text-[13px] leading-5 text-muted">
-          Connect to your team's Hub to sign in with Microsoft and share deployments. Everything else in OpsDeck keeps working
-          without it.
-        </p>
-        <TextField
-          label="Hub URL"
-          placeholder="https://hub.example.com"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          error={error ?? undefined}
-          autoFocus
-          spellCheck={false}
-        />
-        <div>
-          <Button type="submit" loading={busy} disabled={!url.trim()}>
-            Connect
-          </Button>
-        </div>
-      </form>
+      <>
+        <form onSubmit={submit} className="flex max-w-xl flex-col gap-3">
+          <p className="text-[13px] leading-5 text-muted">
+            Connect to your team's Hub to sign in with Microsoft and share deployments. Everything else in OpsDeck keeps working
+            without it.
+          </p>
+          <TextField
+            label="Hub URL"
+            placeholder="https://hub.example.com"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            error={error ?? undefined}
+            autoFocus
+            spellCheck={false}
+          />
+          <div>
+            <Button type="submit" loading={busy} disabled={!url.trim()}>
+              Connect
+            </Button>
+          </div>
+        </form>
+        <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
+      </>
     )
   }
 
@@ -53,14 +75,16 @@ export function ConnectCard() {
       size="sm"
       icon={<Unplug aria-hidden className="size-3.5" />}
       onClick={() =>
-        setConfirm({
-          title: `Disconnect from ${status.hubName}?`,
-          description: 'You will be signed out and OpsDeck will stop using this Hub. You can connect again later.',
-          confirmLabel: 'Disconnect',
-          run: async () => {
-            await unlinkHub()
-          },
-        })
+        bound
+          ? setReverify(true)
+          : setConfirm({
+              title: `Disconnect from ${status.hubName}?`,
+              description: 'You will be signed out and OpsDeck will stop using this Hub. You can connect again later.',
+              confirmLabel: 'Disconnect',
+              run: async () => {
+                await unlinkHub()
+              },
+            })
       }
     >
       Disconnect
@@ -136,6 +160,19 @@ export function ConnectCard() {
       </div>
       {body}
       <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
+      <ReverifyDialog
+        open={reverify}
+        status={vault}
+        title={`Disconnect from ${status.hubName}?`}
+        description="OpsDeck will stop using this Hub and open without a Microsoft sign-in. Confirm it is you first."
+        submitLabel="Disconnect"
+        onProof={(proof) => api.invoke('auth:disconnect', proof)}
+        onProven={() => {
+          toast({ title: 'Disconnected from the Hub', tone: 'success' })
+          void loadHub()
+        }}
+        onClose={() => setReverify(false)}
+      />
     </section>
   )
 }

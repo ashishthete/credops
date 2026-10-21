@@ -44,7 +44,7 @@ interface BindingRow {
 }
 
 const GRACE_MS = OFFLINE_GRACE_HOURS * 3_600_000
-const MOVE_HUB = 'Use Change Microsoft account to move to another Hub'
+const MOVE_HUB = 'Disconnect from the vault settings first'
 const UNLINK_BOUND = 'Disconnect from the vault settings'
 
 const ms = (s: string | null): number | null => (s === null ? null : Date.parse(s))

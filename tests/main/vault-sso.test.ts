@@ -377,7 +377,7 @@ describe('vault with the real SsoGate', () => {
     expect(() => gate.assertMayUnlink()).not.toThrow()
     bindRow(f)
     expect(() => gate.assertMayLink('hub-1')).not.toThrow()
-    expect(() => gate.assertMayLink('hub-2')).toThrow('Use Change Microsoft account to move to another Hub')
+    expect(() => gate.assertMayLink('hub-2')).toThrow('Disconnect from the vault settings first')
     expect(() => gate.assertMayUnlink()).toThrow('Disconnect from the vault settings')
   })
 })
