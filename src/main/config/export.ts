@@ -34,7 +34,7 @@ type Row = Record<string, unknown>
 // files keep validating). They err toward blanking too much: a blanked value is easy to re-enter, a leaked one is not.
 const EXPORT_SECRET_NAME = /PASS|PWD|TOKEN|SECRET|KEY|CREDENTIAL|PRIVATE|AUTH|DSN|SALT|COOKIE|SESSION|WEBHOOK|CERT|SIGNATURE/i
 /** A URL with a password in its userinfo, or any http(s) userinfo (a bare token), wherever it sits in the value. */
-const URL_USERINFO_VALUE = /https?:\/\/[^\s/@]*@|[a-z][a-z0-9+.-]*:\/\/[^\s/@]*:[^\s/@]*@/i
+const URL_USERINFO_VALUE = /https?:[\s\/\\]*[^\s\/\\@?#]*@|[a-z][a-z0-9+.-]*:[\s\/\\]*[^\s\/\\@]*:[^\s\/\\@]*@/i
 /** A value that is exactly one secret ref: the only form the store reads as a ref. */
 const WHOLE_SECRET_REF = /^\$\{secret:[^}]*\}$/
 /** Query or fragment parameters, with the delimiter kept. */
@@ -207,7 +207,7 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: numbe
       .split('\n')
       .map((line) => {
         // A commented-out assignment (`# KEY=value`) is checked like a live one.
-        const comment = /^(\s*#\s*)([A-Za-z_][A-Za-z0-9_]*)=(.+)$/.exec(line.replace(/\r$/, ''))
+        const comment = /^(\s*#+\s*(?:export\s+)?)([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/.exec(line.replace(/\r$/, ''))
         const eq = line.indexOf('=')
         if (!comment && (eq <= 0 || line.trimStart().startsWith('#'))) return line
         const [prefix, key, value] = comment ? [comment[1], comment[2], comment[3]] : ['', line.slice(0, eq), line.slice(eq + 1).replace(/\r$/, '')]

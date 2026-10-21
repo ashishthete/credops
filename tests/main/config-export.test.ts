@@ -229,7 +229,7 @@ describe('config export', () => {
     f.db
       .prepare('UPDATE deployments SET env_template = ?, urls = ?, repo_url = ? WHERE id = ?')
       .run(
-        ['DB_PASS=fakepw1' + ref, '# DB_PASS=fakepw2', '# note: plain words', 'GIT_REMOTE=https://faketok3@github.com/x', 'APP_ENV=staging', ''].join('\n'),
+        ['DB_PASS=fakepw1' + ref, '# DB_PASS=fakepw2', '# note: plain words', '# export DB_PASS=fakepw7', '## DB_PASS=fakepw8', '# DB_PASS = fakepw9', 'R1=https:///faketok@github.com/x', 'R2=https:\\\\faketok@h/x', 'R3=https:/\\faketok@h/x', 'R4=https://\tfaketok@h', 'GIT_REMOTE=https://faketok3@github.com/x', 'APP_ENV=staging', ''].join('\n'),
         JSON.stringify([{ url: 'https://app.example/h?a=1?token=faketok4', from: 'mac' }]),
         null,
         f.ids.deployment,
@@ -237,9 +237,9 @@ describe('config export', () => {
     const { file, omitted } = buildConfigExport(f.db, clock)
     const [d] = file.deployments
     // The deleted ref inside DB_PASS goes with its whole line; the comment note stays.
-    expect(d.envTemplate).toBe(['DB_PASS=', '# DB_PASS=', '# note: plain words', 'GIT_REMOTE=', 'APP_ENV=staging', ''].join('\n'))
+    expect(d.envTemplate).toBe(['DB_PASS=', '# DB_PASS=', '# note: plain words', '# export DB_PASS=', '## DB_PASS=', '# DB_PASS=', 'R1=', 'R2=', 'R3=', 'R4=', 'GIT_REMOTE=', 'APP_ENV=staging', ''].join('\n'))
     expect(d.urls[0].url).toBe('https://app.example/h?a=1?token=')
-    expect(omitted).toBe(4)
+    expect(omitted).toBe(11)
     expect(serializeConfig(file)).not.toMatch(/fakepw|faketok/)
     expect(parseConfigFile(serializeConfig(file)).ok).toBe(true)
   })
