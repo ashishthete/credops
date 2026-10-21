@@ -25,6 +25,7 @@ import type { SessionError } from '../../shared/ssh'
 import { VAULT_LOCKED } from '../../shared/vault'
 import { redact } from '../security/redact'
 import { realTimers, type Timers } from '../tunnels/forward'
+import { quietly } from '../util/teardown'
 import { ExecFailure, type ExecLinks } from './exec-links'
 import { execOnce, type ExecResult } from './exec'
 import { OutputRing } from './output-ring'
@@ -303,16 +304,67 @@ export class RunManager {
    */
   closeAll(): void {
     this.closed = true
-    for (const run of this.runs.values()) {
-      if (run.state !== 'running') continue
-      for (const h of run.hosts) {
-        if (isFinal(h)) continue
-        const running = h.meta.state === 'running'
-        h.abort.abort()
-        this.endHost(run, h, 'cancelled', { error: running ? { code: 'closed', message: CANCELLED_RUNNING } : { ...CANCELLED } })
+    for (const run of this.runs.values()) this.endNow(run)
+  }
+
+  /**
+   * Vault reset: every unfinished run ends as on quit, then every run, finished ones too, is
+   * forgotten with its output, so nothing from before the reset can be read after it. Unlike
+   * `closeAll`, runs start again once the vault is set up. One run failing never skips the rest.
+   */
+  vaultReset(): void {
+    for (const run of [...this.runs.values()]) {
+      try {
+        this.endNow(run)
+      } catch (err) {
+        console.warn('Run cancel failed:', redact(err instanceof Error ? err.message : String(err)))
+        this.salvage(run)
       }
-      this.maybeFinish(run)
+      try {
+        this.drop(run)
+      } catch (err) {
+        console.warn('Run drop failed:', redact(err instanceof Error ? err.message : String(err)))
+        this.runs.delete(run.id)
+      }
     }
+  }
+
+  /**
+   * `endNow` threw, and the run is dropped next, out of quit's reach: every host's dial or command
+   * still gets aborted, and the run is finished quietly, so its hosts ending later emit nothing and
+   * write no `run.finish`, and a `cancel` waiting on it returns.
+   */
+  private salvage(run: Run): void {
+    for (const h of run.hosts) quietly(() => h.abort.abort())
+    quietly(() => {
+      if (run.flushTimer !== null) this.timers.clearTimeout(run.flushTimer)
+    })
+    run.flushTimer = null
+    const endedAt = this.now().toISOString()
+    for (const h of run.hosts) {
+      h.pending.length = 0
+      h.pendingChars = 0
+      if (isFinal(h)) continue
+      h.meta.state = 'cancelled'
+      h.meta.endedAt = endedAt
+    }
+    if (run.state === 'running') {
+      run.state = 'cancelled'
+      run.endedAt = endedAt
+    }
+    quietly(() => run.resolveFinished())
+  }
+
+  /** Every unfinished host ends `cancelled` now and its command gets its `INT`; the run finishes. */
+  private endNow(run: Run): void {
+    if (run.state !== 'running') return
+    for (const h of run.hosts) {
+      if (isFinal(h)) continue
+      const running = h.meta.state === 'running'
+      h.abort.abort()
+      this.endHost(run, h, 'cancelled', { error: running ? { code: 'closed', message: CANCELLED_RUNNING } : { ...CANCELLED } })
+    }
+    this.maybeFinish(run)
   }
 
   private run(runId: string): Run {

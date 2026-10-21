@@ -18,6 +18,7 @@ type DeployChannel =
   | 'release:rollback'
   | 'release:break-lock'
   | 'release:discard'
+  | 'release:set-notes'
   | 'release:retry-version'
   | 'release:list'
   | 'release:get'
@@ -45,6 +46,7 @@ export function createDeployHandlers(deps: {
     'release:rollback': (id, confirm) => releases.rollback(id, confirm),
     'release:break-lock': (id, hostId, confirm) => releases.breakLock(id, hostId, confirm),
     'release:discard': (id) => releases.discard(id),
+    'release:set-notes': (id, notes) => releases.setNotes(id, notes),
     'release:retry-version': (id) => releases.retryVersion(id),
     'release:list': (filter) => releases.list(filter),
     'release:get': (id) => releases.detail(id),

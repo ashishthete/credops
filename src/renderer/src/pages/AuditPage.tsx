@@ -23,7 +23,7 @@ import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { registerCommand } from '../ui/commands'
 import { EmptyState } from '../ui/EmptyState'
-import { fast, spring, useMotionSafe } from '../ui/motion'
+import { exitFast, fast, spring, staggerDelay, useMotionSafe } from '../ui/motion'
 import { Skeleton } from '../ui/Skeleton'
 import { toast } from '../ui/Toaster'
 import type { Tone } from '../ui/tone'
@@ -316,7 +316,7 @@ export function AuditPage() {
             <motion.div
               initial={motionSafe ? { opacity: 0, scale: 0.9 } : { opacity: 0 }}
               animate={motionSafe ? { opacity: 1, scale: 1 } : { opacity: 1 }}
-              exit={motionSafe ? { opacity: 0, scale: 0.9 } : { opacity: 0 }}
+              exit={motionSafe ? { opacity: 0, scale: 0.9, transition: exitFast } : { opacity: 0, transition: exitFast }}
               transition={fast}
             >
               <Button variant="ghost" size="sm" icon={<FilterX aria-hidden className="size-3.5" />} onClick={() => setFilters(NO_FILTERS)}>
@@ -405,13 +405,13 @@ const formatTime = (iso: string) => {
 function ChainStatus({ check }: { check: ChainVerification | null }) {
   const motionSafe = useMotionSafe()
   return (
-    <AnimatePresence mode="wait">
+    <AnimatePresence mode="popLayout">
       {check && (
         <motion.span
           key={String(check.ok)}
           initial={motionSafe ? { opacity: 0, x: -4 } : { opacity: 0 }}
           animate={motionSafe ? { opacity: 1, x: 0 } : { opacity: 1 }}
-          exit={{ opacity: 0 }}
+          exit={{ opacity: 0, transition: exitFast }}
           transition={fast}
         >
           <Badge tone={check.ok ? 'success' : 'error'} dot>
@@ -460,7 +460,7 @@ function EventRow({ event: ev, index, stagger, selected, onOpen }: EventRowProps
     <motion.tr
       initial={animate ? { opacity: 0, y: 6 } : false}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ ...spring, delay: animate ? index * 0.025 : 0 }}
+      transition={{ ...spring, delay: animate ? staggerDelay(index) : 0 }}
       onClick={onOpen}
       className={`group cursor-default border-b border-line/60 transition-colors last:border-0 ${
         selected ? 'bg-accent/10' : 'hover:bg-white/[0.025]'
@@ -547,7 +547,7 @@ function DetailsDrawer({ event, onClose }: { event: AuditEvent | null; onClose: 
           className="absolute inset-y-0 right-0 z-30 flex w-[420px] max-w-[90%] flex-col border-l border-line bg-surface/95 shadow-pop backdrop-blur-xl focus:outline-none"
           initial={motionSafe ? { x: 48, opacity: 0 } : { opacity: 0 }}
           animate={motionSafe ? { x: 0, opacity: 1 } : { opacity: 1 }}
-          exit={motionSafe ? { x: 48, opacity: 0, transition: fast } : { opacity: 0, transition: fast }}
+          exit={motionSafe ? { x: 48, opacity: 0, transition: exitFast } : { opacity: 0, transition: exitFast }}
           transition={motionSafe ? spring : fast}
         >
           <EventDetails event={event} onClose={close} />

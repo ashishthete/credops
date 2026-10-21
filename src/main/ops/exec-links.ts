@@ -9,6 +9,7 @@ import type { ConnectDeps, HopTarget, connectChain } from '../ssh/connect'
 import type { KnownHostStore } from '../ssh/known-hosts'
 import { verifyWithStore, type PromptBody, type PromptBroker } from '../ssh/prompts'
 import { realTimers, type Timers } from '../tunnels/forward'
+import { quietly } from '../util/teardown'
 
 export interface ExecLinksDeps {
   resolve(hostId: string, environmentId?: string): ResolvedHost
@@ -127,11 +128,43 @@ export class ExecLinks {
     }
   }
 
-  /** Quit: ends every dial and connection, and fails everything waiting. */
+  /** Quit: ends every dial and connection, and fails everything waiting. No lease is served afterwards. */
   closeAll(): void {
     this.closed = true
-    for (const turn of this.slotQueue.splice(0)) turn(new ExecFailure(CANCELLED))
-    for (const link of [...this.links.values()]) this.closeLink(link)
+    this.closeEverything()
+  }
+
+  /**
+   * Vault reset: the same teardown as quit, leased links included, but undoable: leases are served
+   * again once the vault is set up and unlocked.
+   */
+  closeForReset(): void {
+    this.closeEverything()
+  }
+
+  /** One link or waiter failing never leaves the rest open; a link that throws is still unpooled. */
+  private closeEverything(): void {
+    for (const turn of this.slotQueue.splice(0)) {
+      try {
+        turn(new ExecFailure(CANCELLED))
+      } catch (err) {
+        console.warn('Exec link waiter failed:', redact(messageOf(err)))
+      }
+    }
+    for (const link of [...this.links.values()]) {
+      try {
+        this.closeLink(link)
+      } catch (err) {
+        console.warn('Exec link close failed:', redact(messageOf(err)))
+        // Unpooled, it is out of quit's reach: each close step still gets its own try.
+        link.state = 'down'
+        if (this.links.get(link.key) === link) this.links.delete(link.key)
+        quietly(() => this.deps.prompts.cancel(link.prompts))
+        quietly(() => link.abort.abort())
+        quietly(() => link.close?.())
+        for (const turn of link.channelQueue.splice(0)) quietly(() => turn())
+      }
+    }
   }
 
   private async join(link: Link, signal: AbortSignal): Promise<Lease> {

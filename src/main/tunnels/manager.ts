@@ -27,6 +27,7 @@ import { describeError, hopsOf } from '../ssh/connect'
 import type { ConnectDeps, HopTarget, connectChain } from '../ssh/connect'
 import type { KnownHostStore } from '../ssh/known-hosts'
 import { verifyWithStore, type PromptBody, type PromptBroker } from '../ssh/prompts'
+import { quietly } from '../util/teardown'
 import { backoffMs, isRetryable } from './backoff'
 import { BindError } from './bind'
 import {
@@ -249,7 +250,17 @@ export class TunnelManager {
   }
 
   stopAll(reason: TunnelStopReason): void {
-    for (const id of [...this.runs.keys()]) this.stop(id, reason)
+    for (const [id, run] of [...this.runs]) {
+      // One tunnel failing to stop never leaves the rest running, and it is dropped regardless.
+      try {
+        this.stop(id, reason)
+      } catch (err) {
+        this.warn('Tunnel stop failed', err)
+        // Dropped, it is out of quit's reach: its forward still gets closed.
+        this.salvage(run)
+        this.runs.delete(id)
+      }
+    }
     this.last.clear()
   }
 
@@ -292,6 +303,12 @@ export class TunnelManager {
         if (err instanceof TunnelLimitError) break
       }
     }
+  }
+
+  /** On a vault reset: stops every tunnel, paused ones included, and lets the next unlock auto-start afresh. */
+  vaultReset(): void {
+    this.stopAll('reset')
+    this.autoStarted = false
   }
 
   /** Store delete hook. It runs inside the store's write path, so it never throws. */
@@ -597,6 +614,17 @@ export class TunnelManager {
     this.unsubscribe(run)
   }
 
+  /** `release` again step by step, each in its own try; every step is a no-op once done. */
+  private salvage(run: Run): void {
+    run.released = true
+    run.gen++
+    quietly(() => this.clearTimers(run))
+    const handle = run.handle
+    run.handle = null
+    if (handle) quietly(() => void handle.close().catch(() => {}))
+    quietly(() => this.unsubscribe(run))
+  }
+
   private clearTimers(run: Run): void {
     this.clearTimer(run, 'retryTimer')
     this.clearTimer(run, 'stableTimer')
@@ -627,9 +655,13 @@ export class TunnelManager {
     if (link.subscribers.size > 0) return
     link.state = 'down'
     if (this.links.get(link.key) === link) this.links.delete(link.key)
-    this.deps.prompts.cancel(link.prompts)
-    link.abort.abort()
-    link.close?.()
+    try {
+      this.deps.prompts.cancel(link.prompts)
+    } finally {
+      // Unpooled already, it is out of quit's reach: it still gets closed when a step above threw.
+      quietly(() => link.abort.abort())
+      quietly(() => link.close?.())
+    }
   }
 
   private dial(run: Run): HostLink {

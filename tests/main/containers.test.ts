@@ -416,6 +416,26 @@ describe('ContainerService', () => {
     await t.waitFor(() => expect(t.sh.running()).toBe(0))
   })
 
+  it('vaultReset stops every follow and forgets the listed names; later calls still work', async () => {
+    const t = await setup()
+    const host = t.ids['app-1']!
+    t.fixture('ps.out', PS_FIXTURE)
+    await t.containers.list(host, t.staging.id)
+    const id = await t.containers.follow(host, null, 'web-1', 10)
+    await t.waitFor(() => expect(t.sh.running()).toBe(1))
+    t.containers.vaultReset()
+    expect(t.ends(id)).toHaveLength(1)
+    await t.waitFor(() => expect(t.sh.running()).toBe(0))
+
+    // Named by its short id: the name came from a list before the reset.
+    await t.containers.action(host, t.staging.id, FULL_ID('a'), 'restart')
+    expect(t.containerRows()[0]).toMatchObject({ targetLabel: `${'a'.repeat(12)}@app-1` })
+    const again = await t.containers.follow(host, null, 'web-1', 10)
+    await t.waitFor(() => expect(t.sh.running()).toBe(1))
+    t.containers.unfollow(again)
+    await t.waitFor(() => expect(t.sh.running()).toBe(0))
+  })
+
   it('closeAll stops every follow and refuses later calls', async () => {
     const t = await setup()
     const id = await t.containers.follow(t.ids['app-1']!, null, 'web-1', 10)

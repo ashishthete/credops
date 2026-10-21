@@ -1,4 +1,4 @@
-import { AnimatePresence, motion } from 'framer-motion'
+import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
 import { CornerDownLeft, Search } from 'lucide-react'
 import {
   useEffect,
@@ -20,7 +20,7 @@ import {
   type Command,
   type RankedCommand,
 } from './commands'
-import { fast, spring, useMotionSafe } from './motion'
+import { exitFast, fast, spring, useMotionSafe } from './motion'
 import { formatShortcut, useShortcut } from './shortcuts'
 
 export { openCommandPalette, closeCommandPalette, registerCommand, type Command } from './commands'
@@ -34,6 +34,7 @@ export function CommandPalette() {
 
 function PaletteDialog() {
   const motionSafe = useMotionSafe()
+  const present = useIsPresent()
   const commands = useSyncExternalStore(commandStore.subscribe, commandStore.get)
   const [query, setQuery] = useState('')
   const [active, setActive] = useState(0)
@@ -77,24 +78,26 @@ function PaletteDialog() {
 
   return (
     <motion.div
+      // Still swallows clicks while it fades out, so none lands on the page underneath.
       className="fixed inset-0 z-50 flex items-start justify-center bg-black/45 px-4 pt-[14vh] backdrop-blur-md"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
+      exit={{ opacity: 0, transition: exitFast }}
       transition={fast}
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) closeCommandPalette()
+        if (present && e.target === e.currentTarget) closeCommandPalette()
       }}
     >
       <motion.div
         role="dialog"
         aria-modal="true"
         aria-label="Command palette"
+        inert={!present}
         onKeyDown={onKeyDown}
         className="w-full max-w-[600px] overflow-hidden rounded-[14px] border border-line bg-surface shadow-pop"
         initial={motionSafe ? { opacity: 0, scale: 0.96, y: -8 } : { opacity: 0 }}
         animate={motionSafe ? { opacity: 1, scale: 1, y: 0 } : { opacity: 1 }}
-        exit={motionSafe ? { opacity: 0, scale: 0.98, y: -4, transition: fast } : { opacity: 0 }}
+        exit={motionSafe ? { opacity: 0, scale: 0.98, y: -4, transition: exitFast } : { opacity: 0 }}
         transition={motionSafe ? spring : fast}
       >
         <div className="flex items-center gap-3 border-b border-line px-4">

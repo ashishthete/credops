@@ -4,7 +4,7 @@ import { useRef } from 'react'
 import { HOST_ROLES, type EnvironmentMeta, type HostMeta, type HostRole } from '../../../../shared/inventory'
 import { inv, type InventoryData } from '../../inventory/store'
 import { useMenuPopover } from '../../ui/common'
-import { fast, spring, useMotionSafe } from '../../ui/motion'
+import { exitFast, fast, spring, useMotionSafe } from '../../ui/motion'
 import { ROLE_LABEL } from '../products/ProductView'
 
 interface MembershipEditorProps {
@@ -24,7 +24,7 @@ export function MembershipEditor({ host, data, onRemove }: MembershipEditorProps
       const env = data.environments.find((e) => e.id === m.environmentId)
       return env ? [{ env, role: m.role }] : []
     })
-    .sort((a, b) => a.env.name.localeCompare(b.env.name))
+    .sort((a, b) => `${where(a.env)} ${a.env.name}`.localeCompare(`${where(b.env)} ${b.env.name}`))
   const joined = new Set(host.environments.map((m) => m.environmentId))
   const list = useRef<HTMLUListElement>(null)
   const available = data.environments.filter((e) => !joined.has(e.id)).sort((a, b) => a.name.localeCompare(b.name))
@@ -41,14 +41,14 @@ export function MembershipEditor({ host, data, onRemove }: MembershipEditorProps
               layout={motionSafe ? 'position' : false}
               initial={motionSafe ? { opacity: 0, x: -6 } : { opacity: 0 }}
               animate={{ opacity: 1, x: 0 }}
-              exit={motionSafe ? { opacity: 0, x: -10, transition: fast } : { opacity: 0, transition: fast }}
+              exit={motionSafe ? { opacity: 0, x: -10, transition: exitFast } : { opacity: 0, transition: exitFast }}
               transition={motionSafe ? spring : fast}
               className="group flex h-10 items-center gap-3 rounded-lg border border-line/70 bg-surface/50 pr-1.5 pl-3"
             >
               <span aria-hidden className="size-2 shrink-0 rounded-full" style={{ background: env.color, boxShadow: `0 0 10px ${env.color}` }} />
+              {where(env) && <span className="truncate text-[12px] text-muted">{where(env)} ›</span>}
               <span className="truncate text-[13px] font-medium text-fg">{env.name}</span>
               {env.protected && <Lock aria-label="Protected" className="size-3 shrink-0 text-warn" />}
-              {where(env) && <span className="truncate text-[12px] text-muted">{where(env)}</span>}
               <span className="relative ml-auto">
                 <select
                   aria-label={`Role in ${env.name}`}
@@ -78,7 +78,7 @@ export function MembershipEditor({ host, data, onRemove }: MembershipEditorProps
           ))}
         </AnimatePresence>
       </ul>
-      {available.length > 0 && <AddMenu envs={available} where={where} anchor={() => list.current} onPick={(e) => void inv.putHost(e.id, host.id, 'other')} />}
+      {available.length > 0 && <AddMenu envs={available} where={where} anchor={() => list.current} onPick={(e) => void inv.putHost(e.id, host.id, e.defaultJumpHostId === host.id ? 'bastion' : 'app')} />}
     </div>
   )
 }
@@ -115,7 +115,7 @@ function AddMenu({
             aria-label="Add to environment"
             initial={motionSafe ? { opacity: 0, scale: 0.95, y: -4 } : { opacity: 0 }}
             animate={motionSafe ? { opacity: 1, scale: 1, y: 0 } : { opacity: 1 }}
-            exit={{ opacity: 0, transition: fast }}
+            exit={{ opacity: 0, transition: exitFast }}
             transition={motionSafe ? spring : fast}
             style={{ transformOrigin: 'top left' }}
             className="absolute top-full left-0 z-40 mt-1 max-h-64 w-[240px] overflow-y-auto rounded-ui border border-line bg-surface-2/95 p-1 shadow-pop backdrop-blur-xl"

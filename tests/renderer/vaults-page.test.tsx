@@ -703,3 +703,51 @@ describe('vaults page behind the gate', () => {
     expect(await within(await row('DATABASE_URL')).findByText('hunter22')).toBeInTheDocument()
   })
 })
+
+describe('vaults page loading', () => {
+  it('reads the default vault alongside the vault list, not after it', async () => {
+    const { invoke } = renderPage('/vaults', { 'vault:list': new Promise(() => {}) })
+    await waitFor(() => expect(calls(invoke, 'secret:list')).toEqual([['secret:list', DEFAULT_VAULT_ID]]))
+    expect(calls(invoke, 'key:list')).toEqual([['key:list', DEFAULT_VAULT_ID]])
+    // The inventory reads every identity too (no vault); this page reads the vault's own.
+    expect(calls(invoke, 'identity:list').filter((c) => (c as unknown[])[1] === DEFAULT_VAULT_ID)).toHaveLength(1)
+  })
+
+  it('waits for the vault list before reading a vault it has never seen', async () => {
+    const { invoke } = renderPage(`/vaults?vault=${PROD_ID}`, { 'vault:list': new Promise(() => {}) })
+    await waitFor(() => expect(calls(invoke, 'vault:list')).toHaveLength(1))
+    await act(async () => {})
+    expect(calls(invoke, 'secret:list')).toHaveLength(0)
+  })
+
+  it('coming back draws the last rows at once, then refreshes them', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderPage()
+    await row('DATABASE_URL')
+    const nav = screen.getByRole('navigation', { name: 'Sections' })
+    await user.click(within(nav).getByRole('link', { name: /Hosts/ }))
+    const fallback = invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
+    let answer: (rows: SecretMeta[]) => void = () => {}
+    invoke.mockImplementation(async (c: string, ...args: unknown[]) =>
+      c === 'secret:list' ? new Promise<SecretMeta[]>((r) => (answer = r)) : fallback(c, ...args),
+    )
+    await user.click(within(nav).getByRole('link', { name: /Vaults/ }))
+    // Still waiting on the refresh, yet the rows are there.
+    expect(screen.getByRole('listitem', { name: 'DATABASE_URL' })).toBeInTheDocument()
+    await act(async () => answer([secret({ id: 's3', name: 'FRESH_TOKEN' })]))
+    expect(await row('FRESH_TOKEN')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('listitem', { name: 'DATABASE_URL' })).not.toBeInTheDocument())
+  })
+
+  it('a failed refresh keeps the rows it last showed', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderPage()
+    await row('DATABASE_URL')
+    const nav = screen.getByRole('navigation', { name: 'Sections' })
+    await user.click(within(nav).getByRole('link', { name: /Hosts/ }))
+    failOnce(invoke, 'secret:list', 'disk on fire')
+    await user.click(within(nav).getByRole('link', { name: /Vaults/ }))
+    expect(await screen.findByText(/Couldn't load this vault/)).toBeInTheDocument()
+    expect(screen.getByRole('listitem', { name: 'DATABASE_URL' })).toBeInTheDocument()
+  })
+})

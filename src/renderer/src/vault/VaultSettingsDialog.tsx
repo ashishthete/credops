@@ -225,7 +225,7 @@ function ChangePasswordForm({ onWrong }: { onWrong: () => void }) {
           label="New password"
           maxLength={MAX_MASTER_PASSWORD}
           onInput={measure}
-          error={short ? 'At least 10 characters' : undefined}
+          error={short ? `At least ${MIN_MASTER_PASSWORD} characters` : undefined}
         />
         <StrengthMeter strength={m.strength} active={m.nextLen > 0} />
       </div>

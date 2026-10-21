@@ -325,7 +325,7 @@ describe('HostView', () => {
     await user.click(screen.getByRole('button', { name: 'Add to environment…' }))
     expect(screen.queryByRole('menuitem', { name: /prod/ })).not.toBeInTheDocument()
     await user.click(screen.getByRole('menuitem', { name: /staging/ }))
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:putHost', 'staging', 'web1', 'other'))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:putHost', 'staging', 'web1', 'app'))
     expect(await screen.findByRole('combobox', { name: 'Role in staging' })).toBeInTheDocument()
   })
 
@@ -414,7 +414,7 @@ describe('HostView', () => {
     await user.click(await screen.findByRole('button', { name: 'Add to environment…' }))
     await user.keyboard('{End}')
     await user.keyboard('{Enter}')
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:putHost', 'staging', 'web1', 'other'))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:putHost', 'staging', 'web1', 'app'))
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Add to environment…' })).not.toBeInTheDocument())
     expect(screen.getByRole('list', { name: 'Environments' })).toHaveFocus()
   })

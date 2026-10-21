@@ -92,6 +92,10 @@ describe('validate', () => {
     expect(V['vault:setAutoLock']([60])).toEqual([60])
     expect(() => V['vault:setAutoLock']([7])).toThrow(/not an allowed value/)
     expect(() => V['vault:setAutoLock'](['5'])).toThrow(/not an allowed value/)
+    // The service decides whether the word is right; the boundary only bounds it.
+    expect(V['vault:reset'](['RESET', 'extra'])).toEqual(['RESET'])
+    expect(() => V['vault:reset']([])).toThrow(/must be a string/)
+    expect(() => V['vault:reset'](['x'.repeat(65)])).toThrow(InvalidArgs)
   })
 
   it('record builds a null-prototype copy and checks keys without echoing them', () => {
@@ -231,5 +235,36 @@ describe('validate', () => {
     expect(V['ssh:open']([{ hostId: ID, cols: 80, rows: 24, container: 'app_web.1' }])).toEqual([
       { hostId: ID, cols: 80, rows: 24, container: 'app_web.1' },
     ])
+  })
+})
+
+describe('settings and integration validators', () => {
+  const ID = '0190a1b2-c3d4-7e5f-8a6b-1234567890ab'
+  it('IPC validators reject bad shapes naming the path', async () => {
+    const { VALIDATORS } = await import('../../src/main/ipc/validators')
+    const check = (channel: string, a: unknown[]): unknown => (VALIDATORS as unknown as Record<string, (x: unknown[]) => unknown>)[channel](a)
+    expect(() => check('settings:get', [])).not.toThrow()
+    expect(() => check('settings:status', [])).not.toThrow()
+    expect(() => check('settings:update', [{ aiModel: 'claude-opus-5-5', macos: false, sendgridFrom: null }])).not.toThrow()
+    expect(() => check('integration:get', [ID])).not.toThrow()
+    expect(() =>
+      check('integration:update', [ID, { notifyEvents: ['release.failed'], emailTo: ['a@b.co'], qa: { repo: 'a/b', workflow: 'qa.yml', ref: 'main' } }]),
+    ).not.toThrow()
+    const bad: [string, unknown[], RegExp][] = [
+      ['integration:update', [ID, { notifyEvents: ['x'] }], /notifyEvents/],
+      ['integration:update', [ID, { emailTo: 'a' }], /emailTo/],
+      ['integration:update', [ID, { qa: { repo: 'a/b' } }], /qa/],
+      ['integration:update', ['nope', {}], /\[0\]/],
+      ['settings:update', [{ aiModel: 5 }], /aiModel/],
+      ['settings:update', [{ secret: 'x' }], /secret/],
+    ]
+    for (const [channel, a, path] of bad) {
+      expect(() => check(channel, a), channel).toThrow(path)
+      try {
+        check(channel, a)
+      } catch (e) {
+        expect((e as Error).message).not.toContain('hunter22')
+      }
+    }
   })
 })

@@ -4,12 +4,17 @@ import {
   COMPOSE_FILE,
   COMPOSE_PROJECT,
   GIT_REF,
+  HEALTH_STATUS_RANGE,
+  HEALTH_TIMEOUT_RANGE,
   MAX_DEPLOYMENTS,
   MAX_ENV_TEMPLATE,
   MAX_HOOK,
   MAX_URL,
+  MAX_POSITION,
   MAX_URLS,
   REPO_PATH,
+  STEP_TIMEOUT_RANGE,
+  isHttpUrl,
   VERSION,
   parseEnvTemplate,
   type DeploymentInput,
@@ -480,11 +485,11 @@ export class DeployStore {
     )
 
     const urls = this.checkUrls(f.urls)
-    this.checkInt(f.healthStatus, 100, 599, 'health status')
-    this.checkInt(f.healthTimeoutSec, 5, 600, 'health timeout')
-    this.checkInt(f.buildTimeoutSec, 10, 3600, 'build timeout')
-    this.checkInt(f.composeTimeoutSec, 10, 3600, 'compose timeout')
-    this.checkInt(f.position, 0, 1_000_000, 'position')
+    this.checkInt(f.healthStatus, ...HEALTH_STATUS_RANGE, 'health status')
+    this.checkInt(f.healthTimeoutSec, ...HEALTH_TIMEOUT_RANGE, 'health timeout')
+    this.checkInt(f.buildTimeoutSec, ...STEP_TIMEOUT_RANGE, 'build timeout')
+    this.checkInt(f.composeTimeoutSec, ...STEP_TIMEOUT_RANGE, 'compose timeout')
+    this.checkInt(f.position, 0, MAX_POSITION, 'position')
     if (f.useSudo !== 'auto' && f.useSudo !== 'yes' && f.useSudo !== 'no') throw new Error('use sudo must be auto, yes or no')
 
     const dbBackup = f.dbBackup === true
@@ -566,15 +571,8 @@ export class DeployStore {
     if (urls.length > MAX_URLS) throw new Error(`too many urls (${MAX_URLS})`)
     return urls.map((u, i) => {
       const bad = new Error(`url ${i + 1} must be http(s) without credentials`)
-      if (typeof u?.url !== 'string' || u.url.length === 0 || u.url.length > MAX_URL || /[{}\s\u0000-\u001f]/.test(u.url)) throw bad
+      if (typeof u?.url !== 'string' || u.url.length > MAX_URL || !isHttpUrl(u.url)) throw bad
       if (u.from !== 'host' && u.from !== 'mac') throw new Error(`url ${i + 1} must be checked from host or mac`)
-      let parsed: URL
-      try {
-        parsed = new URL(u.url)
-      } catch {
-        throw bad
-      }
-      if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || parsed.username !== '' || parsed.password !== '') throw bad
       return { url: u.url, from: u.from }
     })
   }

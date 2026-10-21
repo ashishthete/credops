@@ -1,3 +1,4 @@
+import type { ExplainSubject, Explanation, ReleaseNotesRequest, ReleaseNotesResult } from './ai'
 import type { AuditEvent, AuditFilter, ChainVerification } from './audit'
 import type { ConfigCounts } from './config-file'
 import type {
@@ -61,6 +62,17 @@ import type {
   RunEvent as DeployRunEvent,
 } from './deploy'
 import type { CopyServicesRequest, CopyServicesResult, ServiceInput, ServiceMeta, ServicePatch, ServiceUpdateResult } from './services'
+import type {
+  EnvironmentIntegrations,
+  EnvironmentIntegrationsPatch,
+  IntegrationSettings,
+  IntegrationSettingsPatch,
+  NotificationRecord,
+  NotifyLogFilter,
+  NotifyTestTarget,
+  QaDispatch,
+  IntegrationStatus,
+} from './settings'
 import type { TunnelEvent, TunnelInput, TunnelMeta, TunnelPatch, TunnelRuntime, TunnelStats } from './tunnels'
 import type {
   KnownHostMeta,
@@ -128,6 +140,7 @@ export interface IpcContract {
   'vault:delete': { args: [id: string]; result: void }
   'vault:setQuickUnlock': { args: [mode: QuickUnlockMode]; result: VaultStatus }
   'vault:setAutoLock': { args: [minutes: number | null]; result: VaultStatus }
+  'vault:reset': { args: [confirm: string]; result: VaultStatus }
   'secret:list': { args: [vaultId?: string]; result: SecretMeta[] }
   'secret:create': { args: [input: SecretInput]; result: SecretMeta }
   'secret:update': { args: [id: string, patch: SecretPatch]; result: SecretMeta }
@@ -206,6 +219,7 @@ export interface IpcContract {
   'release:rollback': { args: [releaseId: string, confirm: ReleaseConfirm]; result: { releaseId: string } }
   'release:break-lock': { args: [releaseId: string, hostId: string, confirm: BreakLockConfirm]; result: void }
   'release:discard': { args: [releaseId: string]; result: void }
+  'release:set-notes': { args: [releaseId: string, notes: string]; result: void }
   'release:retry-version': { args: [releaseId: string]; result: void }
   'release:list': { args: [filter: ReleaseListFilter]; result: ReleaseSummary[] }
   'release:get': { args: [releaseId: string]; result: ReleaseDetail }
@@ -255,6 +269,22 @@ export interface IpcContract {
   'service:reorder': { args: [environmentId: string, ids: string[]]; result: void }
   // One transaction and one `services.copy` audit; name conflicts come back in `skipped`.
   'service:copy': { args: [req: CopyServicesRequest]; result: CopyServicesResult }
+  // Integration settings hold secret ids, never values; updates need the vault unlocked.
+  'settings:get': { args: []; result: IntegrationSettings }
+  'settings:update': { args: [patch: IntegrationSettingsPatch]; result: IntegrationSettings }
+  'settings:status': { args: []; result: IntegrationStatus }
+  'integration:get': { args: [environmentId: string]; result: EnvironmentIntegrations }
+  'integration:update': { args: [environmentId: string, patch: EnvironmentIntegrationsPatch]; result: EnvironmentIntegrations }
+  // Sends a "Test from OpsDeck" card, email or alert; audited as notify.test. Errors never hold a URL or key.
+  'notify:test': { args: [target: NotifyTestTarget]; result: void }
+  'notify:log': { args: [filter: NotifyLogFilter]; result: NotificationRecord[] }
+  'qa:dispatch': { args: [environmentId: string]; result: QaDispatch }
+  'qa:list': { args: []; result: QaDispatch[] }
+  'ai:status': { args: []; result: IntegrationStatus['ai'] }
+  'ai:cancel': { args: [requestId: string]; result: void }
+  'ai:releaseNotes': { args: [requestId: string, req: ReleaseNotesRequest]; result: ReleaseNotesResult }
+  'ai:explain': { args: [requestId: string, subject: ExplainSubject]; result: Explanation }
+  'ai:command': { args: [requestId: string, index: number, mode: 'copy' | 'run']; result: void }
   // A kind `service` with a checkout: `docker compose logs -f` streamed as `containers:logs`; stop it with `containers:unfollow`.
   'service:logs': { args: [id: string, tail: number]; result: string }
   // Opens the stored URL in the browser; refused when the service has none.
@@ -285,7 +315,8 @@ export interface IpcContract {
   'containers:follow': { args: [hostId: string, environmentId: string | null, ref: string, tail: number]; result: string }
   'containers:unfollow': { args: [followId: string]; result: void }
   /** Asks where to save with a dialog in main: the renderer never sends a path. */
-  'config:export': { args: []; result: { path: string; counts: ConfigCounts } | null }
+  /** `omitted`: how many secret values were left out of the file. */
+  'config:export': { args: []; result: { path: string; counts: ConfigCounts; omitted: number } | null }
 }
 
 export type Channel = keyof IpcContract
@@ -308,6 +339,7 @@ export const CHANNELS = [
   'vault:delete',
   'vault:setQuickUnlock',
   'vault:setAutoLock',
+  'vault:reset',
   'secret:list',
   'secret:create',
   'secret:update',
@@ -380,6 +412,7 @@ export const CHANNELS = [
   'release:rollback',
   'release:break-lock',
   'release:discard',
+  'release:set-notes',
   'release:retry-version',
   'release:list',
   'release:get',
@@ -423,6 +456,20 @@ export const CHANNELS = [
   'service:delete',
   'service:reorder',
   'service:copy',
+  'settings:get',
+  'settings:update',
+  'settings:status',
+  'integration:get',
+  'integration:update',
+  'notify:test',
+  'notify:log',
+  'qa:dispatch',
+  'qa:list',
+  'ai:status',
+  'ai:cancel',
+  'ai:releaseNotes',
+  'ai:explain',
+  'ai:command',
   'service:logs',
   'service:open',
   'service:tunnelOpen',
@@ -478,6 +525,14 @@ export interface EventContract {
   'hub:catalog': Record<string, never>
   // A lock was taken or lifted by this client; refetch with hub:locks.
   'hub:locks': Record<string, never>
+  // A clicked macOS alert: the renderer navigates to this hash route.
+  'app:navigate': { route: string }
+  // One notification reached a terminal state (sent, failed or skipped); detail never holds a URL or value.
+  'notify:sent': NotificationRecord
+  // A QA dispatch changed state (dispatched, running, passed, failed or unknown).
+  'qa:state': QaDispatch
+  // A streamed text delta of a live AI request.
+  'ai:delta': { requestId: string; text: string }
 }
 export type EventName = keyof EventContract
 export const EVENTS = [
@@ -497,6 +552,10 @@ export const EVENTS = [
   'hub:state',
   'hub:catalog',
   'hub:locks',
+  'app:navigate',
+  'notify:sent',
+  'qa:state',
+  'ai:delta',
 ] as const satisfies readonly EventName[]
 type MissingEvents = Exclude<EventName, (typeof EVENTS)[number]>
 export const eventsAreComplete: [MissingEvents] extends [never] ? true : never = true

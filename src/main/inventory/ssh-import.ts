@@ -104,7 +104,7 @@ export class SshImporter {
 
     // The vault may have locked while key files were read.
     vault.assertUnlocked()
-    const environments = req.environmentId ? [{ environmentId: req.environmentId, role: req.role ?? 'other' }] : []
+    const environments = req.environmentId ? [{ environmentId: req.environmentId, role: req.role ?? 'app' }] : []
     const { ids, tunnelsCreated } = inTransaction(db, () => {
       const idByAlias = new Map<string, string>()
       const labelTaken = db.prepare('SELECT 1 FROM hosts WHERE label = ?') // label is COLLATE NOCASE

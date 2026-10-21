@@ -10,6 +10,7 @@ import {
   dialog,
   ipcMain,
   Menu,
+  Notification,
   powerMonitor,
   safeStorage,
   session,
@@ -25,6 +26,20 @@ import { CONFIG_FILE_NAME } from '../shared/config-file'
 import { createIdentityHandlers } from './ipc/handlers/identities'
 import { createDeployHandlers } from './ipc/handlers/deploy'
 import { createServiceHandlers } from './ipc/handlers/services'
+import { createSettingsHandlers } from './ipc/handlers/settings'
+import { createNotifyHandlers, createQaHandlers } from './ipc/handlers/notify'
+import { createAiHandlers } from './ipc/handlers/ai'
+import { AiRequests, ClaudeClient } from './ai/claude'
+import { promptContext } from './ai/prompt-redact'
+import { ExplainMemory, type ExplainSources } from './ai/explain'
+import { releaseNotesFinalizeStep, type NotesDeps } from './ai/release-notes'
+import { MacNotifier } from './notify/macos'
+import { LocalSink } from './notify/sink'
+import { NotificationDispatcher } from './notify/dispatcher'
+import { createFinalizeSteps } from './notify/finalize'
+import { QaDispatcher, qaFinalizeStep } from './notify/qa'
+import { IntegrationStore } from './settings/integration-store'
+import { SettingsStore } from './settings/settings-store'
 import { detectTools } from './deploy/tooling'
 import { startPrivateAgent, type ChildLike } from './deploy/agent'
 import { prepareHosts } from './deploy/hostkeys'
@@ -36,7 +51,6 @@ import { HubCatalog } from './hub/catalog'
 import { HubConnection } from './hub/connection'
 import { HubPublisher } from './hub/publish'
 import { createHubHandlers } from './ipc/handlers/hub'
-import { noopFinalize } from './deploy/finalize'
 import { ReleaseService } from './deploy/release-service'
 import { DeployStore, dbSecretRefs } from './deploy/deploy-store'
 import { ServiceStore } from './deploy/service-store'
@@ -75,6 +89,7 @@ import { PromptBroker } from './ssh/prompts'
 import { spawnLocalShell } from './ssh/local-shell'
 import { SessionManager } from './ssh/sessions'
 import { AutoLock } from './vault/auto-lock'
+import { wireVaultHooks } from './vault/hooks'
 import { IdentityStore } from './vault/identity-store'
 import { KeyStore } from './vault/key-store'
 import { SecretStore } from './vault/secret-store'
@@ -84,6 +99,10 @@ import { appMenuTemplate, devRendererUrl, dropOnRendererReset, forwardVaultLocks
 // Keep dev data apart from the packaged app's (same name, same userData otherwise).
 // Must run before anything touches userData, including the single-instance lock.
 if (!app.isPackaged) app.setPath('userData', `${app.getPath('userData')}-dev`)
+// A dev run is the stock Electron binary, so it would call itself "Electron" in the app menu,
+// About and Quit. Named after userData is pinned, so the data folder stays where it was.
+app.setName('OpsDeck')
+app.setAboutPanelOptions({ applicationName: 'OpsDeck', applicationVersion: app.getVersion() })
 
 const devServerUrl = devRendererUrl(app.isPackaged, process.env)
 
@@ -112,6 +131,7 @@ let environments: EnvironmentStore | null = null
 let products: ProductStore | null = null
 let sessions: SessionManager | null = null
 let tunnelManager: TunnelManager | null = null
+let qaService: QaDispatcher | null = null
 let execLinks: ExecLinks | null = null
 let runManager: RunManager | null = null
 let containerService: ContainerService | null = null
@@ -204,6 +224,66 @@ if (!app.requestSingleInstanceLock()) {
       environments = new EnvironmentStore(db, service, log)
       products = new ProductStore(db, service, log)
       const tunnels = new TunnelStore({ db, audit: log, vault: service })
+      const settingsStore = new SettingsStore({ db, audit: log, vault: service, secrets })
+      const integrations = new IntegrationStore({ db, audit: log, vault: service, secrets })
+      const macNotifier = new MacNotifier({
+        Notification,
+        enabled: () => settingsStore.get().macos,
+        onClick: (route) => {
+          if (!mainWindow) return
+          if (mainWindow.isMinimized()) mainWindow.restore()
+          mainWindow.show()
+          mainWindow.focus()
+          pushEvent(mainWindow, 'app:navigate', { route })
+        },
+      })
+      const notifySink = new LocalSink({
+        secrets,
+        settings: settingsStore,
+        integrations,
+        fetch: globalThis.fetch,
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        notifier: macNotifier,
+        knownSecrets,
+      })
+      const notifyDispatcher = new NotificationDispatcher({
+        db,
+        sink: notifySink,
+        integrations,
+        settings: settingsStore,
+        vault: service,
+        audit: log,
+        // The release service is built below; the dispatcher reads it only when an event arrives.
+        runs: { runMeta: (id, status) => release.runMeta(id, status) },
+        tunnels,
+        knownSecrets,
+      })
+      notifyDispatcher.onSent((record) => pushEvent(mainWindow, 'notify:sent', record))
+      service.onUnlock(() => void notifyDispatcher.flushPending())
+      const qa = new QaDispatcher({
+        secrets,
+        settings: settingsStore,
+        integrations,
+        fetch: globalThis.fetch,
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        audit: log,
+        dispatcher: notifyDispatcher,
+        runs: { runMeta: (id) => release.runMeta(id) },
+        knownSecrets,
+      })
+      qaService = qa
+      qa.onState((item) => pushEvent(mainWindow, 'qa:state', item))
+      const aiRequests = new AiRequests()
+      const claude = new ClaudeClient({ settings: settingsStore, secrets, vault: service, knownSecrets })
+      service.onLock(() => aiRequests.cancelAll())
+      const notesIdentities = identities
+      const notesHosts = hosts
+      const notesDeps: NotesDeps = {
+        claude,
+        audit: log,
+        redaction: () => promptContext({ knownSecrets, identities: notesIdentities, hosts: notesHosts }),
+        environmentName: (id) => integrations.environmentName(id),
+      }
       const snippets = new SnippetStore({ db, audit: log, vault: service })
       const deploys = new DeployStore({ db, audit: log, vault: service, secrets: dbSecretRefs(db) })
       deploys.onChanged = (environmentId) => pushEvent(mainWindow, 'deploy:changed', { environmentId })
@@ -316,7 +396,11 @@ if (!app.requestSingleInstanceLock()) {
         releases: releaseStore,
         runner: localRunner,
         access,
-        finalize: noopFinalize,
+        finalize: createFinalizeSteps({
+          dispatcher: notifyDispatcher,
+          notes: releaseNotesFinalizeStep(notesDeps),
+          qa: qaFinalizeStep({ qa, integrations }),
+        }),
         audit: log,
         vault: service,
         resolve,
@@ -329,6 +413,10 @@ if (!app.requestSingleInstanceLock()) {
         clock: { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: (h) => clearTimeout(h as NodeJS.Timeout) },
       })
       releaseService = release
+      service.onLock(() => release.vaultLocked())
+      release.onEvent((batch) => {
+        for (const e of batch) void notifyDispatcher.onRunEvent(e)
+      })
       // Startup recovery lives here (Task 7 must not add a second call): a release left preflight, running or
       // rolling back by a quit can never finish, so mark it failed (and audit it) before anything reads it.
       release.recoverInterrupted()
@@ -367,6 +455,7 @@ if (!app.requestSingleInstanceLock()) {
         emit: (event, payload) => pushEvent(mainWindow, event, payload),
       })
       tunnelManager = runner
+      runner.onEvent((e) => void notifyDispatcher.onTunnelEvent(e))
       const hostStore = hosts
       // Pooled exec-only links for runs and containers, apart from interactive sessions.
       const links = new ExecLinks({
@@ -401,6 +490,35 @@ if (!app.requestSingleInstanceLock()) {
         emit: (event, payload) => pushEvent(mainWindow, event, payload),
       })
       containerService = containers
+      const explainSources: ExplainSources = {
+        release,
+        sessions: manager,
+        tunnels: { get: (id) => tunnels.get(id), runtime: (id) => runner.runtime(id) },
+        host: (hostId) => {
+          try {
+            const h = hostMeta(inventoryDb, hostId)
+            return { label: h.label, os: h.osIcon }
+          } catch {
+            return null
+          }
+        },
+        environment: (id) => {
+          try {
+            const e = envStore.get(id)
+            return { name: e.name, protected: e.protected }
+          } catch {
+            return null
+          }
+        },
+        sessionAuth: (hostId, environmentId) => {
+          try {
+            const r = resolve(hostId, environmentId ?? undefined)
+            return { auth: r.identity.auth, port: r.port.value }
+          } catch {
+            return null
+          }
+        },
+      }
       const serviceTunnels = new ServiceTunnels({
         services,
         tunnels,
@@ -412,22 +530,10 @@ if (!app.requestSingleInstanceLock()) {
       })
       tunnels.onRemoved = (id) => runner.removed(id)
       tunnels.onChanged = (before, after) => runner.changed(before, after)
-      // On lock, in this order: sessions fail their dials and tunnels mark theirs to pause (both keep
-      // what is connected); runs end their queued and dialling hosts as `locked` while running
-      // commands finish; exec links fail their dials as `locked` and close idle links; then every
-      // prompt left is cancelled. Runs go before links so each dial a run aborts is already marked
-      // `locked` for that host. Every log follow (container and compose) stops and says the vault
-      // locked; a new one waits for unlock. Separate listeners, so one failing never
-      // skips the others. Quit (before-quit) stops tunnels, closes sessions, cancels runs (writing
-      // their run.finish), stops container log follows, closes exec links, and only then locks the vault.
-      service.onLock(() => manager.vaultLocked())
-      service.onLock(() => runner.vaultLocked())
-      service.onLock(() => runs.vaultLocked())
-      service.onLock(() => containers.vaultLocked())
-      service.onLock(() => links.vaultLocked())
-      service.onLock(() => prompts.cancelAll())
-      // Resumes paused tunnels; the first unlock also auto-starts.
-      service.onUnlock(() => runner.vaultUnlocked())
+      // Lock, unlock and reset hooks (order and reasons in vault/hooks.ts). Quit (before-quit) stops
+      // tunnels, closes sessions, cancels runs (writing their run.finish), stops container log
+      // follows, closes exec links, and only then locks the vault.
+      wireVaultHooks(service, { sessions: manager, tunnels: runner, runs, links, containers, prompts })
       stopAutoLock = new AutoLock({
         idleSeconds: () => powerMonitor.getSystemIdleTime(),
         minutes: () => service.autoLockMinutes(),
@@ -488,6 +594,16 @@ if (!app.requestSingleInstanceLock()) {
             tunnels: serviceTunnels,
             openExternal: (url) => shell.openExternal(url),
           }),
+          ...createSettingsHandlers({ settings: settingsStore, integrations }),
+          ...createQaHandlers({ qa, integrations }),
+          ...createAiHandlers({
+            settings: settingsStore,
+            requests: aiRequests,
+            notes: notesDeps,
+            explain: { claude, audit: log, redaction: notesDeps.redaction, sources: explainSources, memory: new ExplainMemory() },
+            onDelta: (delta) => pushEvent(mainWindow, 'ai:delta', delta),
+          }),
+          ...createNotifyHandlers({ db, sink: notifySink, settings: settingsStore, integrations, mac: macNotifier, audit: log, actor }),
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
           ...createOpsHandlers({ snippets, runs, containers }),
           ...createHubHandlers({ conn: hub, vault: service, audit: log, catalog: hubCatalog, publisher: hubPublisher, onLocksChanged: () => pushEvent(mainWindow, 'hub:locks', {}) }),
@@ -541,6 +657,7 @@ if (!app.requestSingleInstanceLock()) {
     }
     if (!audit || quitAudited) return
     quitAudited = true
+    qaService?.stop()
     try {
       tunnelManager?.stopAll('quit')
     } catch (err) {

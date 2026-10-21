@@ -19,7 +19,8 @@ import { KnownHostsDialog, closeKnownHosts, openKnownHosts } from '../pages/term
 import { PromptHost } from '../pages/terminals/PromptHost'
 import { TerminalDeck } from '../pages/terminals/TerminalDeck'
 import { TunnelsPage } from '../pages/tunnels/TunnelsPage'
-import { VaultsPage } from '../pages/vaults/VaultsPage'
+import { resetVaultsCache, VaultsPage } from '../pages/vaults/VaultsPage'
+import { SETTINGS_PATH, useSettingsCommands } from '../settings/commands'
 import { resetOps, startOpsSync } from '../ops/runs'
 import { resetReleases, startReleaseSync } from '../deploy/releases'
 import { resetDeploy, startDeploySync } from '../deploy/store'
@@ -47,6 +48,7 @@ export function AppShell() {
   useMapCommands()
   useOpsCommands()
   useHubCommands()
+  useSettingsCommands()
   useDeployCommands()
   // The shell mounts only while unlocked, so every unlock reloads (F22).
   useEffect(() => {
@@ -86,6 +88,8 @@ export function AppShell() {
       resetHub()
       resetReleases()
       resetDeploy()
+      // Relies on a lock unmounting the shell; see the cache in VaultsPage.
+      resetVaultsCache()
       closeKnownHosts()
     }
   }, [])
@@ -122,7 +126,7 @@ export function AppShell() {
             <Route path="/ops/:tab" element={<OpsPage />} />
             <Route path="/hub" element={<HubPage />} />
             <Route path="/audit" element={<AuditPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
+            <Route path={SETTINGS_PATH} element={<SettingsPage />} />
             <Route path="*" element={<Navigate to={SECTIONS[0].path} replace />} />
           </Routes>
         </motion.div>

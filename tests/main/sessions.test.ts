@@ -698,3 +698,40 @@ describe('SessionManager container exec tabs', () => {
     expect(srv.connections()).toBe(0)
   })
 })
+
+describe('SessionManager.closeAll after a failed close step', () => {
+  it('a session whose shell close throws still has its connection closed', async () => {
+    const pem = '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----'
+    // The shell channel's close throws, so finish() never reaches the chain's close.
+    const t = await setup({
+      connect: async (hops, deps, signal) => {
+        const chain = await connectChain(hops, deps, signal)
+        const shell = chain.client.shell.bind(chain.client) as (...a: unknown[]) => unknown
+        Object.assign(chain.client, {
+          shell: (window: unknown, opts: unknown, cb: (err: Error | undefined, stream: { close(): void }) => void) =>
+            shell(window, opts, (err: Error | undefined, stream: { close(): void }) => {
+              if (stream)
+                stream.close = () => {
+                  throw new Error(`close failed near ${pem}`)
+                }
+              cb(err, stream)
+            }),
+        })
+        return chain
+      },
+    })
+    const srv = await server()
+    t.trust(srv)
+    const meta = t.manager.openSsh({ hostId: t.host(srv.port), ...size })
+    await t.waitState(meta.id, 'ready')
+    expect(srv.connections()).toBe(1)
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    onTestFinished(() => error.mockRestore())
+
+    t.manager.closeAll('reset')
+    expect(t.manager.list()).toEqual([])
+    await vi.waitFor(() => expect(srv.connections()).toBe(0), { timeout: 10_000, interval: 5 })
+    expect(error.mock.calls.flat().join(' ')).toContain('Session close failed:')
+    expect(error.mock.calls.flat().join(' ')).not.toContain('b3BlbnNzaC1rZXk')
+  })
+})

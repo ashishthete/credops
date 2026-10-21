@@ -48,6 +48,7 @@
   },
   "author": "OpsDeck",
   "dependencies": {
+    "@anthropic-ai/sdk": "0.131.0",
     "node-pty": "^1.1.0",
     "ssh2": "^1.17.0"
   }

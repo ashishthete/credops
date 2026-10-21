@@ -18,6 +18,7 @@ import type { AuthPlan } from '../../src/main/ssh/auth'
 import { connectChain } from '../../src/main/ssh/connect'
 import { KnownHostStore } from '../../src/main/ssh/known-hosts'
 import { PromptBroker } from '../../src/main/ssh/prompts'
+import { SessionManager } from '../../src/main/ssh/sessions'
 import { resolveHost } from '../../src/main/inventory/resolve'
 import { hostMeta } from '../../src/main/inventory/rows'
 import { createInventoryHandlers } from '../../src/main/ipc/handlers/inventory'
@@ -26,6 +27,7 @@ import { ForwardError, startLocal, startRemote, type ForwardHandle } from '../..
 import { TunnelManager, type TunnelManagerDeps } from '../../src/main/tunnels/manager'
 import { startDynamic } from '../../src/main/tunnels/socks5'
 import { TunnelStore } from '../../src/main/tunnels/tunnel-store'
+import { wireVaultHooks, type VaultHookTargets } from '../../src/main/vault/hooks'
 import { makeInventory } from './inventory-helpers'
 import { generateKey, startServer, type ServerOpts, type TestServer } from './ssh-server'
 import { TUNNEL_USER, echoServer, manualTimers, type EchoServer } from './tunnel-helpers'
@@ -106,7 +108,16 @@ function stubbableEngines() {
   return { ctl, engines }
 }
 
+const idle = { vaultLocked() {}, closeAll() {}, vaultReset() {}, closeForReset() {} }
+
+/** wireVaultHooks targets with these tunnels and prompts; the rest idle unless given. */
+function hookTargets(tunnels: TunnelManager, prompts: PromptBroker, sessions: VaultHookTargets['sessions'] = idle): VaultHookTargets {
+  return { sessions, tunnels, runs: idle, links: idle, containers: idle, prompts }
+}
+
 interface SetupOpts {
+  /** false: leave the vault hooks unwired. */
+  wire?: boolean
   deps?: Partial<TunnelManagerDeps>
   whoHolds?: (port: number) => Promise<PortHolder | null>
   plan?: () => AuthPlan
@@ -146,10 +157,8 @@ async function setup(opts: SetupOpts = {}) {
   })
   store.onRemoved = (id) => manager.removed(id)
   store.onChanged = (before, after) => manager.changed(before, after)
-  // The same order as src/main/index.ts.
-  f.vault.onLock(() => manager.vaultLocked())
-  f.vault.onLock(() => broker.cancelAll())
-  f.vault.onUnlock(() => manager.vaultUnlocked())
+  // The app's own wiring; a test that needs live sessions wires them itself.
+  if (opts.wire !== false) wireVaultHooks(f.vault, hookTargets(manager, broker))
   onTestFinished(() => manager.stopAll('quit'))
 
   let hostN = 0
@@ -879,5 +888,154 @@ describe('TunnelManager', () => {
     const runtimes = [denied.id, blocked.id, ok.id].map((id) => t.manager.runtime(id))
     const everything = JSON.stringify(tunnelSide) + JSON.stringify(runtimes) + auditRows(t.db) + JSON.stringify(warn.mock.calls)
     expect(everything).not.toContain(TUNNEL_USER.username)
+  })
+})
+
+describe('vault reset', () => {
+  it('closes every session, local shells too, and stops every tunnel, paused ones too, before reset() resolves', async () => {
+    const t = await setup({ wire: false })
+    const srv = await server()
+    const unknown = await server()
+    let localOutput: ((chunk: string) => void) | null = null
+    const localKill = vi.fn()
+    const echo = await target()
+    const sessions = new SessionManager({
+      resolve: (hostId, environmentId) => resolveHost(t.db, hostId, environmentId, { localUser: 'tester' }),
+      hostInfo: (hostId) => ({ ...hostMeta(t.db, hostId), envVars: {} }),
+      envColor: () => null,
+      connect: connectChain,
+      plan: async () => passwordPlan(),
+      knownHosts: t.knownHosts,
+      prompts: t.broker,
+      audit: t.audit,
+      isLocked: () => !t.vault.isUnlocked(),
+      emit: () => {},
+      // A fake local shell: its scrollback may hold earlier SSH output, so a reset ends it too.
+      openLocal: () => ({
+        write: () => {},
+        resize: () => {},
+        onData: (cb) => void (localOutput = cb),
+        onExit: () => {},
+        kill: localKill,
+      }),
+    })
+    wireVaultHooks(t.vault, hookTargets(t.manager, t.broker, sessions))
+    onTestFinished(() => sessions.closeAll('quit'))
+
+    const hostId = t.host(srv)
+    const shell = sessions.openSsh({ hostId, cols: 80, rows: 24 })
+    await t.waitFor(() => expect(sessions.list()[0]?.state).toBe('ready'))
+    const local = sessions.openLocal({ cols: 80, rows: 24 })
+    localOutput!('$ ssh prod-db\r\n')
+    expect(sessions.attach(local.id).buffer).toContain('ssh prod-db')
+    const up = t.tunnel(hostId, { label: 'up', targetPort: echo.port })
+    const paused = t.tunnel(t.host(unknown, false), { label: 'paused', targetPort: echo.port })
+    t.manager.start(up.id)
+    const { boundPort } = await t.waitState(up.id, 'up')
+    t.manager.start(paused.id)
+    await t.waitPrompt()
+
+    t.vault.lock('manual')
+    await t.waitState(paused.id, 'retrying', (rt) => rt.error?.code === 'locked')
+    // Locking keeps both: the reset is what has to end them.
+    expect(sessions.list().map((s) => s.id)).toEqual([shell.id, local.id])
+    expect(t.manager.runtime(up.id).state).toBe('up')
+
+    await t.vault.reset('RESET')
+    expect(sessions.list()).toEqual([])
+    expect(() => sessions.attach(shell.id)).toThrow('session not found')
+    expect(() => sessions.attach(local.id)).toThrow('session not found')
+    expect(localKill).toHaveBeenCalledOnce()
+    expect(t.audit.list({ actions: ['shell.close'] }).map((a) => a.details.reason)).toEqual(['reset'])
+    expect(t.manager.status().map((r) => r.state)).toEqual(['stopped', 'stopped'])
+    expect(t.audits('tunnel.stop').map((a) => [a.targetLabel, a.details.reason])).toEqual([['up', 'reset']])
+    expect(t.audit.list({ actions: ['ssh.close'] }).map((a) => a.details.reason)).toEqual(['reset'])
+    await expect(dial(boundPort!)).rejects.toThrow()
+    await t.waitFor(() => expect(srv.connections() + unknown.connections()).toBe(0))
+
+    // Setup is a first unlock again: nothing paused comes back.
+    await t.vault.setup('a new password')
+    expect(t.manager.status().map((r) => r.state)).toEqual(['stopped', 'stopped'])
+  })
+
+  it('one tunnel failing to stop never leaves the others running; the error is logged redacted', async () => {
+    const t = await setup()
+    const srv = await server()
+    const echo = await target()
+    const hostId = t.host(srv)
+    const ids = ['a', 'b', 'c'].map((label) => t.tunnel(hostId, { label, targetPort: echo.port }).id)
+    for (const id of ids) t.manager.start(id)
+    const ports = await Promise.all(ids.map(async (id) => (await t.waitState(id, 'up')).boundPort!))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    onTestFinished(() => warn.mockRestore())
+    const realStop = t.manager.stop.bind(t.manager)
+    // The first stop does its work and then throws, as a late failure would.
+    vi.spyOn(t.manager, 'stop').mockImplementationOnce((id, reason) => {
+      realStop(id, reason)
+      throw new Error('-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----')
+    })
+    t.vault.lock('manual')
+    await t.vault.reset('RESET')
+    expect(t.manager.status().map((r) => r.state)).toEqual(['stopped', 'stopped', 'stopped'])
+    for (const port of ports) await expect(dial(port)).rejects.toThrow()
+    const logged = warn.mock.calls.flat().join(' ')
+    expect(logged).toContain('Tunnel stop failed:')
+    expect(logged).not.toContain('b3BlbnNzaC1rZXk')
+  })
+
+  it('a tunnel whose stop throws before doing anything still has its forward and link closed', async () => {
+    const t = await setup()
+    const srv = await server()
+    const echo = await target()
+    const hostId = t.host(srv)
+    const ids = ['a', 'b'].map((label) => t.tunnel(hostId, { label, targetPort: echo.port }).id)
+    for (const id of ids) t.manager.start(id)
+    const ports = await Promise.all(ids.map(async (id) => (await t.waitState(id, 'up')).boundPort!))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    onTestFinished(() => warn.mockRestore())
+    vi.spyOn(t.manager, 'stop').mockImplementationOnce(() => {
+      throw new Error('-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----')
+    })
+    t.vault.lock('manual')
+    await t.vault.reset('RESET')
+    for (const port of ports) await expect(dial(port)).rejects.toThrow()
+    await t.waitFor(() => expect(srv.connections()).toBe(0))
+    expect(warn.mock.calls.flat().join(' ')).not.toContain('b3BlbnNzaC1rZXk')
+  })
+
+  it("a tunnel whose link teardown throws still has its host link closed", async () => {
+    const t = await setup()
+    const srv = await server()
+    const echo = await target()
+    const tunnel = t.tunnel(t.host(srv), { label: 'a', targetPort: echo.port })
+    t.manager.start(tunnel.id)
+    await t.waitState(tunnel.id, 'up')
+    expect(srv.connections()).toBe(1)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    onTestFinished(() => warn.mockRestore())
+    t.vault.lock('manual')
+    // Cancelling the link's prompts comes after it is unpooled and before its close.
+    vi.spyOn(t.broker, 'cancel').mockImplementationOnce(() => {
+      throw new Error('-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----')
+    })
+    await t.vault.reset('RESET')
+    await t.waitFor(() => expect(srv.connections()).toBe(0))
+    expect(warn.mock.calls.length).toBeGreaterThan(0)
+    expect(warn.mock.calls.flat().join(' ')).not.toContain('b3BlbnNzaC1rZXk')
+  })
+
+  it('lets the first unlock after setup auto-start again', async () => {
+    const t = await setup()
+    const srv = await server()
+    const echo = await target()
+    const auto = t.tunnel(t.host(srv), { label: 'auto', targetPort: echo.port, autoStart: true })
+    t.vault.lock('manual')
+    await t.vault.unlock('correct horse')
+    await t.waitState(auto.id, 'up')
+    t.vault.lock('manual')
+    await t.vault.reset('RESET')
+    expect(t.manager.runtime(auto.id).state).toBe('stopped')
+    await t.vault.setup('a new password')
+    await t.waitState(auto.id, 'up')
   })
 })

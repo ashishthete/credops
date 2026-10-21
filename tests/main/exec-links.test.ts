@@ -10,12 +10,13 @@ import { connectChain } from '../../src/main/ssh/connect'
 import type { Client } from 'ssh2'
 import { KnownHostStore } from '../../src/main/ssh/known-hosts'
 import { PromptBroker } from '../../src/main/ssh/prompts'
+import { wireVaultHooks } from '../../src/main/vault/hooks'
 import { resolveHost } from '../../src/main/inventory/resolve'
 import { hostMeta } from '../../src/main/inventory/rows'
 import { ExecLinks, type ExecLinksDeps, type Lease } from '../../src/main/ops/exec-links'
 import { STOP_GRACE_MS, execOnce, type ExecResult } from '../../src/main/ops/exec'
 import { makeInventory } from './inventory-helpers'
-import { shellExec, type ShellHost } from './ops-helpers'
+import { idleContainers, idleSessions, idleTunnels, shellExec, type ShellHost } from './ops-helpers'
 import { startServer, type ServerOpts, type TestServer } from './ssh-server'
 import { TUNNEL_USER, manualTimers } from './tunnel-helpers'
 
@@ -67,9 +68,8 @@ async function setup(deps: Partial<ExecLinksDeps> = {}) {
     timers: mt.timers,
     ...deps,
   })
-  // The same order as src/main/index.ts: links before the broker.
-  f.vault.onLock(() => links.vaultLocked())
-  f.vault.onLock(() => broker.cancelAll())
+  // The app's own wiring: links before the broker on lock, and links on reset.
+  wireVaultHooks(f.vault, { sessions: idleSessions, tunnels: idleTunnels, runs: { vaultLocked() {}, vaultReset() {} }, links, containers: idleContainers, prompts: broker })
   onTestFinished(() => links.closeAll())
 
   let hostN = 0
@@ -534,5 +534,86 @@ describe('ExecLinks and execOnce', () => {
     expect(await run(l, "docker ps --format '{{json .}}'")).toMatchObject({ out: '{"ID":"abc"}\n', exitCode: 0 })
     expect(await run(l, 'docker pull x')).toMatchObject({ err: 'docker: unknown command\n', exitCode: 127 })
     expect(readFileSync(sh.dockerLog, 'utf8')).toBe('ps\n--format\n{{json .}}\npull\nx\n')
+  })
+})
+
+describe('ExecLinks on a vault reset', () => {
+  it('closes every link, leased ones too, and leases again after the next setup and unlock', async () => {
+    const t = await setup()
+    const srv = await server()
+    const leasedHost = t.host(srv)
+    const idleHost = t.host(srv)
+    const leased = await t.lease(leasedHost)
+    const idle = await t.lease(idleHost, null, undefined, 'runs:2')
+    idle.release()
+    expect(srv.connections()).toBe(2)
+    const closed = new Promise<void>((r) => leased.client.once('close', () => r()))
+
+    // Locking keeps the leased link up: the reset is what has to end it.
+    t.vault.lock('manual')
+    await t.waitFor(() => expect(srv.connections()).toBe(1))
+    await t.vault.reset('RESET')
+    await closed
+    await t.waitFor(() => expect(srv.connections()).toBe(0))
+    await expect(t.lease(leasedHost)).rejects.toMatchObject({ code: 'locked' })
+
+    // Unlike closeAll, a reset is not the end: leases are served again once the vault is back.
+    await t.vault.setup('a new password')
+    t.vault.lock('manual')
+    await t.vault.unlock('a new password')
+    const fresh = await t.lease(leasedHost, null, undefined, 'runs:3')
+    expect(fresh.client).not.toBe(leased.client)
+    expect(await run(fresh, 'echo again')).toMatchObject({ out: 'again\n', exitCode: 0 })
+  })
+
+  it('a link whose teardown throws before its close still has its connection closed', async () => {
+    const t = await setup()
+    const srv = await server()
+    await t.lease(t.host(srv))
+    expect(srv.connections()).toBe(1)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    onTestFinished(() => warn.mockRestore())
+    // Cancelling the link's prompts comes before its close.
+    vi.spyOn(t.broker, 'cancel').mockImplementationOnce(() => {
+      throw new Error('-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----')
+    })
+    t.vault.lock('manual')
+    await t.vault.reset('RESET')
+    await t.waitFor(() => expect(srv.connections()).toBe(0))
+    expect(warn.mock.calls.map((c) => c[0])).toEqual(['Exec link close failed:'])
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('b3BlbnNzaC1rZXk')
+  })
+
+  it('one link failing to close never leaves the others open; the error is logged redacted', async () => {
+    let throws = 1
+    const t = await setup({
+      connect: async (hops, deps, signal) => {
+        const chain = await connectChain(hops, deps, signal)
+        return {
+          ...chain,
+          close: () => {
+            chain.close()
+            if (throws-- > 0) throw new Error('-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----')
+          },
+        }
+      },
+    })
+    const srv = await server()
+    const a = t.host(srv)
+    const b = t.host(srv)
+    await t.lease(a)
+    await t.lease(b, null, undefined, 'runs:2')
+    expect(srv.connections()).toBe(2)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    onTestFinished(() => warn.mockRestore())
+
+    t.vault.lock('manual')
+    await t.vault.reset('RESET')
+    await t.waitFor(() => expect(srv.connections()).toBe(0))
+    expect(warn.mock.calls.map((c) => c[0])).toEqual(['Exec link close failed:'])
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('b3BlbnNzaC1rZXk')
+
+    await t.vault.setup('a new password')
+    expect(await run(await t.lease(a, null, undefined, 'runs:3'), 'echo up')).toMatchObject({ out: 'up\n' })
   })
 })

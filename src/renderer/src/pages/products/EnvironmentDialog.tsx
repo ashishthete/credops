@@ -10,6 +10,7 @@ import { Dialog } from '../../ui/Dialog'
 import { SelectField, TextField } from '../../ui/Field'
 import { fast, spring, useMotionSafe } from '../../ui/motion'
 import { toast } from '../../ui/Toaster'
+import { EnvironmentNotifications } from './EnvironmentNotifications'
 
 const DEFAULT_COLOR = VAULT_COLORS.find((c) => c.name === 'Green')!.hex
 
@@ -179,6 +180,8 @@ export function EnvironmentDialog({ open, environment, productIds, data, corrupt
           ))}
         </SelectField>
       </form>
+      {/* Saves on its own: integrations belong to an existing environment. */}
+      {environment && <EnvironmentNotifications environment={environment} />}
     </Dialog>
   )
 }

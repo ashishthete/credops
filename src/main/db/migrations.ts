@@ -223,7 +223,34 @@ CREATE INDEX services_env ON services(environment_id, position);
 `,
   },
   {
-    // Version 8 belongs to Phase 9 (notifications), which merges separately; migrate() applies by set.
+    version: 8,
+    name: 'notifications',
+    up: `
+CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE environment_integrations(
+  environment_id TEXT PRIMARY KEY REFERENCES environments(id) ON DELETE CASCADE,
+  notify_events TEXT NOT NULL DEFAULT '[]',              -- JSON NotifyEventKey[]
+  teams_webhook_secret_id TEXT REFERENCES secrets(id) ON DELETE SET NULL,
+  email_to TEXT NOT NULL DEFAULT '[]', email_cc TEXT NOT NULL DEFAULT '[]',  -- JSON string[]
+  qa_on_deploy INTEGER NOT NULL DEFAULT 0 CHECK (qa_on_deploy IN (0,1)),
+  qa_repo TEXT, qa_workflow TEXT, qa_ref TEXT,
+  qa_wait INTEGER NOT NULL DEFAULT 0 CHECK (qa_wait IN (0,1)),
+  updated_at TEXT NOT NULL,
+  CHECK ((qa_repo IS NULL) = (qa_workflow IS NULL)));
+CREATE TABLE notification_log(
+  id TEXT PRIMARY KEY,                                    -- UUIDv7
+  at TEXT NOT NULL,
+  source_type TEXT NOT NULL CHECK (source_type IN ('release','tunnel','test')),  -- release id = run stream id
+  source_id TEXT NOT NULL,
+  event TEXT NOT NULL,
+  channel TEXT NOT NULL CHECK (channel IN ('teams','email','macos','qa')),
+  status TEXT NOT NULL CHECK (status IN ('pending','sent','skipped','failed')),
+  detail TEXT,                                            -- redacted, <= 200 chars, never a URL
+  UNIQUE (source_type, source_id, event, channel));
+CREATE INDEX notification_log_at ON notification_log(at);
+`,
+  },
+  {
     version: 9,
     name: 'hub',
     up: `

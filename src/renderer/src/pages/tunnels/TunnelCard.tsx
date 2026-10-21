@@ -2,11 +2,12 @@ import { motion } from 'framer-motion'
 import { ArrowLeftToLine, ArrowRightToLine, Copy, Globe, Link2, Lock, Pencil, RotateCw, Trash2, type LucideIcon } from 'lucide-react'
 import { memo, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { isLoopback, type TunnelMeta, type TunnelRuntime, type TunnelState, type TunnelType } from '../../../../shared/tunnels'
+import { ExplainButton } from '../../ai/ExplainPanel'
 import { startTunnel, stopTunnel, useTunnel, useTunnelStats } from '../../tunnels/store'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
 import { plural, RowMenu } from '../../ui/common'
-import { fast, spring, useMotionSafe, useShake } from '../../ui/motion'
+import { exitFast, fast, spring, useMotionSafe, useShake } from '../../ui/motion'
 import { Padlock } from '../../ui/Padlock'
 import { Sparkline } from '../../ui/Sparkline'
 import { Switch } from '../../ui/Switch'
@@ -98,7 +99,7 @@ export const TunnelCard = memo(function TunnelCard({ id, hostLabel, hostAddress,
       layout={motionSafe ? 'position' : false}
       initial={motionSafe ? { opacity: 0, scale: 0.94, y: 10 } : { opacity: 0 }}
       animate={motionSafe ? { opacity: 1, scale: 1, y: 0 } : { opacity: 1 }}
-      exit={motionSafe ? { opacity: 0, scale: 0.92, transition: fast } : { opacity: 0, transition: fast }}
+      exit={motionSafe ? { opacity: 0, scale: 0.92, transition: exitFast } : { opacity: 0, transition: exitFast }}
       transition={motionSafe ? spring : fast}
       style={{
         borderColor: glow ? `color-mix(in oklab, ${glow} 38%, var(--border))` : undefined,
@@ -338,6 +339,7 @@ export function StatusLine({ runtime }: { runtime: TunnelRuntime | undefined }) 
     <div className="flex w-full min-w-0 items-start gap-2 text-[12px]">
       <span className="mt-[5px]">{dot}</span>
       <p className="min-w-0 flex-1 leading-[18px] break-words text-err">{runtime.error?.message ?? 'The tunnel failed.'}</p>
+      <ExplainButton subject={{ kind: 'tunnel', tunnelId: runtime.id }} />
       <Button size="sm" variant="ghost" icon={<RotateCw aria-hidden className="size-3" />} onClick={() => void startTunnel(runtime.id)}>
         Retry
       </Button>

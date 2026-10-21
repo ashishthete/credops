@@ -106,7 +106,7 @@ export interface TunnelStats {
   rejected: number
 }
 
-export type TunnelStopReason = 'user' | 'failed' | 'quit' | 'deleted' | 'edited'
+export type TunnelStopReason = 'user' | 'failed' | 'quit' | 'deleted' | 'edited' | 'reset'
 
 export type TunnelEvent =
   | { type: 'connecting'; tunnelId: string; label: string; at: string; trigger: 'user' | 'auto' }

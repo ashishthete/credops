@@ -2,7 +2,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronDown, ChevronUp, Search, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../lib/api'
-import { fast, spring, useMotionSafe } from '../ui/motion'
+import { exitFast, fast, spring, useMotionSafe } from '../ui/motion'
 import { isMac, useShortcut } from '../ui/shortcuts'
 import { attachSession, getTerminal, setLastSize } from './registry'
 
@@ -141,7 +141,7 @@ export function TerminalView({ sessionId, visible }: { sessionId: string; visibl
             className="absolute right-4 top-3 flex items-center gap-1 rounded-ui border border-line bg-surface-2 py-1 pl-2 pr-1 shadow-pop"
             initial={motionSafe ? { opacity: 0, y: -8, scale: 0.97 } : { opacity: 0 }}
             animate={motionSafe ? { opacity: 1, y: 0, scale: 1 } : { opacity: 1 }}
-            exit={motionSafe ? { opacity: 0, y: -8, scale: 0.97 } : { opacity: 0 }}
+            exit={motionSafe ? { opacity: 0, y: -8, scale: 0.97, transition: exitFast } : { opacity: 0, transition: exitFast }}
             transition={motionSafe ? spring : fast}
           >
             <Search size={14} className="text-muted" aria-hidden />

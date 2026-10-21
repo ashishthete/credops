@@ -25,16 +25,33 @@ afterEach(() => {
 
 describe('settings page', () => {
   it('Export config… calls config:export and toasts the count', async () => {
-    const invoke = mockBridge({ 'config:export': { path: '/Users/me/Desktop/opsdeck-config.json', counts } })
+    const invoke = mockBridge({ 'config:export': { path: '/Users/me/Desktop/opsdeck-config.json', counts, omitted: 0 } })
     renderPage()
     expect(screen.getByRole('heading', { name: 'Configuration' })).toBeInTheDocument()
     expect(screen.getByText(/Secrets are never exported; references to vault items are kept by name\./)).toBeInTheDocument()
+    expect(screen.getByText(/Free-text notes and hooks are exported as written\./)).toBeInTheDocument()
 
     await userEvent.click(screen.getByRole('button', { name: 'Export config…' }))
     expect(invoke).toHaveBeenCalledWith('config:export')
     expect(await screen.findByText('Exported 12 items to opsdeck-config.json')).toBeInTheDocument()
+    expect(screen.queryByText(/left out/)).not.toBeInTheDocument()
     // The renderer never sends a path, and the toast shows only the file's name.
     expect(screen.queryByText(/Desktop/)).not.toBeInTheDocument()
+  })
+
+  it('the toast says how many secret values were left out', async () => {
+    mockBridge({ 'config:export': { path: '/tmp/opsdeck-config.json', counts, omitted: 3 } })
+    renderPage()
+    await userEvent.click(screen.getByRole('button', { name: 'Export config…' }))
+    expect(await screen.findByText('Exported 12 items to opsdeck-config.json')).toBeInTheDocument()
+    expect(screen.getByText('3 secret values were left out')).toBeInTheDocument()
+  })
+
+  it('one value left out reads in the singular, none says nothing', async () => {
+    mockBridge({ 'config:export': { path: '/tmp/opsdeck-config.json', counts, omitted: 1 } })
+    renderPage()
+    await userEvent.click(screen.getByRole('button', { name: 'Export config…' }))
+    expect(await screen.findByText('1 secret value was left out')).toBeInTheDocument()
   })
 
   it('a cancelled save shows nothing', async () => {

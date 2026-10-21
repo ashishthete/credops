@@ -1,9 +1,10 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { StrictMode } from 'react'
 import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { inventoryStore } from '../../src/renderer/src/inventory/store'
+import { sessionsLoaded, sessionStore } from '../../src/renderer/src/terminal/sessions'
 import { AppShell } from '../../src/renderer/src/shell/AppShell'
 import { closeCommandPalette, commandStore } from '../../src/renderer/src/ui/commands'
 import { CommandPalette } from '../../src/renderer/src/ui/CommandPalette'
@@ -20,8 +21,10 @@ import type {
   SshImportPreview,
   SshImportRequest,
 } from '../../src/shared/inventory'
+import type { SessionMeta } from '../../src/shared/ssh'
 import { DEFAULT_VAULT_ID, VAULT_LOCKED, type VaultMeta } from '../../src/shared/vault'
 import { defaultVault, environment, host, mockBridge, product, vaultStatus } from './helpers'
+import { resetFakeXterm } from './terminal-fakes'
 
 // framer-motion caches matchMedia, so reduced motion is driven through useMotionSafe (F18).
 const motion = vi.hoisted(() => ({ safe: true }))
@@ -30,6 +33,11 @@ vi.mock('../../src/renderer/src/ui/motion', async (importOriginal) => ({
   useMotionSafe: () => motion.safe,
 }))
 
+
+vi.mock('@xterm/xterm', async () => ({ Terminal: (await import('./terminal-fakes')).FakeTerminal }))
+vi.mock('@xterm/addon-fit', async () => ({ FitAddon: (await import('./terminal-fakes')).FakeFit }))
+vi.mock('@xterm/addon-search', async () => ({ SearchAddon: (await import('./terminal-fakes')).FakeSearch }))
+vi.mock('@xterm/addon-web-links', async () => ({ WebLinksAddon: (await import('./terminal-fakes')).FakeWebLinks }))
 
 // Opening a session is the terminal store's job; these tests only care what it is asked for.
 const sessions = vi.hoisted(() => ({ openSsh: vi.fn(), openLocal: vi.fn() }))
@@ -188,12 +196,53 @@ function renderApp(w: World, path = '/hosts', { strict = false } = {}) {
   return { invoke, ...view }
 }
 
+/** Labelled by the host's label, as the real open does. */
+const openedSession = (hostId: string, environmentId?: string): SessionMeta => ({
+  id: 's1',
+  kind: 'ssh',
+  hostId,
+  environmentId: environmentId ?? null,
+  label: world().hosts.find((h) => h.id === hostId)?.label ?? hostId,
+  color: null,
+  state: 'ready',
+  hops: [],
+  error: null,
+  openedAt: '2026-01-01T00:00:00.000Z',
+  readyAt: '2026-01-01T00:00:00.000Z',
+  closedAt: null,
+  attempt: 1,
+  container: null,
+})
+
+/** The session list has landed, so a Terminals page with no tab would send you straight back: the case the flake hit. */
+const sessionsLanded = () => waitFor(() => expect(sessionsLoaded.get()).toBe(true))
+
+/** On Terminals with the new tab showing: not just passing through on the way back. */
+async function onTerminals(label: string): Promise<void> {
+  expect(await screen.findByRole('tab', { name: new RegExp(`^${label},`) })).toBeVisible()
+  expect(where).toBe('/terminals')
+}
+
 const hostList = () => screen.getByRole('listbox', { name: 'Hosts' })
 const rowNames = () => within(hostList()).queryAllByRole('option').map((o) => o.getAttribute('aria-label'))
 
 beforeEach(() => {
   motion.safe = true
-  sessions.openSsh.mockReset().mockResolvedValue('s1')
+  resetFakeXterm()
+  // The opened tab mounts a (fake) terminal, which watches its size.
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe() {}
+      disconnect() {}
+    },
+  )
+  // Like the real open, the session's tab exists once it resolves. Without one the deck sends
+  // Terminals straight back where it came from, once the session list has landed (a race).
+  sessions.openSsh.mockReset().mockImplementation(async (hostId: string, environmentId?: string) => {
+    sessionStore.set({ sessions: [openedSession(hostId, environmentId)], order: ['s1'], activeId: 's1' })
+    return 's1'
+  })
   inventoryStore.set(null)
   vaultStatusStore.set(null)
 })
@@ -204,6 +253,8 @@ afterEach(() => {
     closeCommandPalette()
     clearToasts()
   })
+  cleanup()
+  vi.unstubAllGlobals()
 })
 
 describe('hosts page', () => {
@@ -437,9 +488,10 @@ describe('hosts page', () => {
     const user = userEvent.setup()
     renderApp(world())
     await waitFor(() => expect(rowNames()).toEqual(['api-1', 'db-1', 'edge']))
+    await sessionsLanded()
     // api-1 is in prod, yet the Hosts page has no environment context.
     await user.dblClick(within(hostList()).getByRole('option', { name: 'api-1' }))
-    await waitFor(() => expect(where).toBe('/terminals'))
+    await onTerminals('api-1')
     expect(sessions.openSsh).toHaveBeenCalledWith('api1', undefined)
   })
 
@@ -447,8 +499,9 @@ describe('hosts page', () => {
     const user = userEvent.setup()
     renderApp(world())
     await waitFor(() => expect(rowNames()).toEqual(['api-1', 'db-1', 'edge']))
+    await sessionsLanded()
     await user.click(within(hostList()).getByRole('button', { name: 'Connect to edge' }))
-    await waitFor(() => expect(where).toBe('/terminals'))
+    await onTerminals('edge')
     expect(sessions.openSsh).toHaveBeenCalledTimes(1)
     expect(sessions.openSsh).toHaveBeenCalledWith('edge', undefined)
   })
@@ -457,6 +510,7 @@ describe('hosts page', () => {
     const user = userEvent.setup()
     renderApp(world())
     await waitFor(() => expect(rowNames()).toEqual(['api-1', 'db-1', 'edge']))
+    await sessionsLanded()
     expect(within(hostList()).getByRole('button', { name: 'Connect to edge' })).not.toHaveAttribute('tabindex', '-1')
     act(() => within(hostList()).getByRole('option', { name: 'api-1' }).focus())
     await user.keyboard('{Enter}')

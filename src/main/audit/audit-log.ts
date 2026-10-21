@@ -120,53 +120,64 @@ export class AuditLog {
   }
 
   append(input: AuditInput): AuditEvent {
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const event = this.write(input)
+      this.db.exec('COMMIT')
+      return event
+    } catch (err) {
+      if (this.db.isTransaction) this.db.exec('ROLLBACK')
+      throw err
+    }
+  }
+
+  /** Appends inside the caller's open transaction, so the row commits or rolls back with it. */
+  appendInTx(input: AuditInput): AuditEvent {
+    if (!this.db.isTransaction) throw new Error('appendInTx needs an open transaction')
+    return this.write(input)
+  }
+
+  private write(input: AuditInput): AuditEvent {
     // Round-trip so the hashed value is exactly what is stored and re-parsed.
     const secrets = this.knownSecrets()
     const detailsJson = JSON.stringify(redact(input.details ?? {}, secrets), bigintAsString)
     const details = JSON.parse(detailsJson) as Record<string, unknown>
 
-    this.db.exec('BEGIN IMMEDIATE')
-    try {
-      const last = this.db.prepare('SELECT hash FROM audit_events ORDER BY id DESC LIMIT 1').get() as
-        | { hash: string }
-        | undefined
-      const body: Omit<AuditEvent, 'id' | 'hash'> = {
-        ts: this.now().toISOString(),
-        actorOsUser: this.actor.osUser,
-        actorMachine: this.actor.machine,
-        action: input.action,
-        targetType: input.targetType ?? null,
-        targetId: input.targetId === undefined ? null : redact(input.targetId, secrets),
-        targetLabel: input.targetLabel === undefined ? null : redact(input.targetLabel, secrets),
-        outcome: input.outcome,
-        details,
-        prevHash: last?.hash ?? GENESIS_HASH,
-      }
-      const hash = computeHash(body)
-      const res = this.db
-        .prepare(
-          `INSERT INTO audit_events(ts, actor_os_user, actor_machine, action, target_type, target_id,
-             target_label, outcome, details, prev_hash, hash) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-        )
-        .run(
-          body.ts,
-          body.actorOsUser,
-          body.actorMachine,
-          body.action,
-          body.targetType,
-          body.targetId,
-          body.targetLabel,
-          body.outcome,
-          detailsJson,
-          body.prevHash,
-          hash,
-        )
-      this.db.exec('COMMIT')
-      return { id: Number(res.lastInsertRowid), ...body, hash }
-    } catch (err) {
-      if (this.db.isTransaction) this.db.exec('ROLLBACK')
-      throw err
+    const last = this.db.prepare('SELECT hash FROM audit_events ORDER BY id DESC LIMIT 1').get() as
+      | { hash: string }
+      | undefined
+    const body: Omit<AuditEvent, 'id' | 'hash'> = {
+      ts: this.now().toISOString(),
+      actorOsUser: this.actor.osUser,
+      actorMachine: this.actor.machine,
+      action: input.action,
+      targetType: input.targetType ?? null,
+      targetId: input.targetId === undefined ? null : redact(input.targetId, secrets),
+      targetLabel: input.targetLabel === undefined ? null : redact(input.targetLabel, secrets),
+      outcome: input.outcome,
+      details,
+      prevHash: last?.hash ?? GENESIS_HASH,
     }
+    const hash = computeHash(body)
+    const res = this.db
+      .prepare(
+        `INSERT INTO audit_events(ts, actor_os_user, actor_machine, action, target_type, target_id,
+           target_label, outcome, details, prev_hash, hash) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(
+        body.ts,
+        body.actorOsUser,
+        body.actorMachine,
+        body.action,
+        body.targetType,
+        body.targetId,
+        body.targetLabel,
+        body.outcome,
+        detailsJson,
+        body.prevHash,
+        hash,
+      )
+    return { id: Number(res.lastInsertRowid), ...body, hash }
   }
 
   list(filter: AuditFilter = {}): AuditEvent[] {

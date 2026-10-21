@@ -31,7 +31,7 @@ function everyNode(data: InventoryData): { expandable: Set<NodeKey>; all: Set<No
     rows = buildTree(data, expandable)
     rows.forEach((r) => r.expandable && expandable.add(r.key))
   }
-  return { expandable, all: new Set(rows.map((r) => r.key)) }
+  return { expandable, all: new Set(rows.filter((r) => r.kind !== 'hint').map((r) => r.key)) }
 }
 
 const parentOf = (key: NodeKey) => (key.includes('/') ? key.slice(0, key.lastIndexOf('/')) : key)
@@ -151,7 +151,9 @@ export function ProductsPage() {
 
   const dropHost = (host: TreeRow, target: TreeRow) =>
     whileDropping(async () => {
-      if (await inv.putHost(target.id, host.id, host.role ?? 'other')) {
+      // A new membership starts as app; the role in the source environment doesn't carry over.
+      const role = env(target.id)?.defaultJumpHostId === host.id ? 'bastion' : 'app'
+      if (await inv.putHost(target.id, host.id, role)) {
         expand(target.key)
         toast({ title: `Added ${host.label} to ${target.label}`, tone: 'success' })
       }
@@ -316,6 +318,11 @@ export function ProductsPage() {
               canDrop={canDrop}
               onDropHost={(h, e) => void dropHost(h, e)}
               onDropEnvironment={(e, p) => void dropEnvironment(e, p)}
+              onSetRole={(h, e, role) => void inv.putHost(e.id, h.id, role)}
+              onRemoveHost={(h, e) => {
+                const meta = env(e.id)
+                if (meta) askRemoveHost(meta, h.id)
+              }}
               productIcons={productIcons}
             />
           ) : (
