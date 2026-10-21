@@ -256,4 +256,18 @@ describe('playbook review handlers', () => {
     const got = await (handlers as unknown as Record<string, (id: string, after: number) => Promise<unknown>>)['release:events'](ID, 0)
     expect(got).toEqual([{ ...raw[0], line: 'GET /?t=‹redacted›' }])
   })
+  it('release:list and release:active mask a known secret in a Hub summary error, and leave its ids and times', async () => {
+    const SECRET = 'hunter2-secret-value'
+    const hub = { id: ID, environmentId: ID, status: 'failed', startedAt: '2026-10-21T18:00:00.000Z', error: `health failed: GET /?t=${SECRET} 503` }
+    const handlers = createDeployHandlers({
+      deploys: {} as never,
+      releases: { list: vi.fn(async () => [hub]), listActive: vi.fn(async () => [hub]) } as unknown as ReleaseService,
+      tooling: async () => ({}) as never,
+      knownSecrets: () => [SECRET],
+    })
+    const h = handlers as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>
+    const want = [{ ...hub, error: 'health failed: GET /?t=‹redacted› 503' }]
+    expect(await h['release:list']({})).toEqual(want)
+    expect(await h['release:active']()).toEqual(want)
+  })
 })

@@ -11,7 +11,7 @@ import {
 } from '../../../shared/deploy'
 import type { Handlers } from '../../../shared/ipc'
 import { DeployError } from '../../deploy/access'
-import { maskDetail, maskEvents } from '../../deploy/mask'
+import { maskDetail, maskEvents, maskSummary } from '../../deploy/mask'
 import type { DeployStore } from '../../deploy/deploy-store'
 import type { ReleaseApi } from '../../hub/runner'
 import type { HubCatalog } from '../../hub/catalog'
@@ -128,11 +128,11 @@ export function createDeployHandlers(deps: {
     'release:discard': (id) => releases.discard(id),
     'release:set-notes': (id, notes) => releases.setNotes(id, notes),
     'release:retry-version': (id) => releases.retryVersion(id),
-    'release:list': (filter) => releases.list(filter),
+    'release:list': async (filter) => (await releases.list(filter)).map((r) => maskSummary(r, secrets())),
     'release:get': (id) => maskedDetail(id),
     // The validator caps `limit`; the clamp keeps a direct caller honest too.
     'release:events': async (id, afterSeq, limit) => maskEvents(await releases.events(id, afterSeq, Math.min(limit ?? 1000, MAX_EVENTS_PAGE)), secrets()),
-    'release:active': () => releases.listActive(),
+    'release:active': async () => (await releases.listActive()).map((r) => maskSummary(r, secrets())),
     'release:latest': () => lastReleases?.() ?? [],
   }
 }
