@@ -446,20 +446,25 @@ export class ReleaseService {
     let run: { infos: Info[]; holder: Holder; tag: string | null; autoRollback: boolean; previousVersion: string | null; version: string | null }
     try {
       this.dropPreviews(releaseId)
-      const infos = this.infosOf(this.applySkips(rel, skips))
-      for (const i of infos) live.runIds.add(i.run.id)
+      // The skips stay in memory until the last step that can refuse (decrypting) has passed.
+      const infos = this.infosFor(rel, skips)
       const settings = this.d.deploys.settings(env.id)
       const holder = this.resolveSecrets(infos, { env: true, scope: 'release' })
       live.known = holder.secrets?.known ?? []
       const { plan, playbook, version, docker } = built
       const tag = !redeploy && settings.versioned && rel.version !== null && rel.version !== settings.currentVersion ? rel.version : null
-      this.d.releases.setStatus(releaseId, 'running', {
-        startedAt: this.d.now().toISOString(),
-        redeploy,
-        version,
-        ...(redeploy ? { versionBump: 'none' as const } : {}),
-        playbook,
+      this.d.releases.transaction(() => {
+        this.applySkips(rel, skips)
+        this.d.releases.setStatus(releaseId, 'running', {
+          startedAt: this.d.now().toISOString(),
+          redeploy,
+          version,
+          ...(redeploy ? { versionBump: 'none' as const } : {}),
+          playbook,
+        })
       })
+      for (const { run } of infos) if (!this.steps.has(run.id)) this.steps.set(run.id, run.steps.map((x) => ({ ...x })))
+      for (const i of infos) live.runIds.add(i.run.id)
       run = { infos, holder, tag, autoRollback: settings.autoRollback, previousVersion: settings.currentVersion, version }
       this.emitState(releaseId)
       this.audit('release.start', 'success', live, {
@@ -707,6 +712,12 @@ export class ReleaseService {
     }
 
     this.assertCapacity(env)
+    // What can refuse without decrypting (a step secret the environment stopped using, an invalid template) does so
+    // before the rollback has a row.
+    this.resolveSecrets(
+      eligible.map((r) => ({ run: r, dep: this.d.deploys.get(r.deploymentId as string), sel: selectionOf(r) })),
+      { env: true, values: false, scope: 'rollback' },
+    )
     // The rollback's own record: each entry moves from its deployed commit to the commit the rollback checks out.
     const entries: RunService[][] = eligible.map((r) =>
       r.services.map((e) => ({ ...e, previousCommit: shaOrNull(e.deployedCommit ?? r.deployedCommit), previousReleaseId: src.id, deployedCommit: r.previousCommit })),
@@ -1373,8 +1384,7 @@ export class ReleaseService {
   }
 
   /** Writes a start's skips: a run left with nothing is skipped (and its steps), the others keep what is left. */
-  private applySkips(rel: ReleaseDetail, skips: Skips): ReleaseDetail {
-    if (skips.sels.size === 0) return rel
+  private applySkips(rel: ReleaseDetail, skips: Skips): void {
     for (const run of rel.runs) {
       if (!skips.sels.has(run.id)) continue
       const sel = skips.sels.get(run.id) ?? null
@@ -1384,8 +1394,6 @@ export class ReleaseService {
         this.steps.set(run.id, steps)
       } else this.d.releases.setRunServices(run.id, sel.services, sel.whole)
     }
-    const next = this.d.releases.detail(rel.id)
-    return { ...next, runs: next.runs.filter((r) => skips.sels.get(r.id) !== null) }
   }
 
   // ---- bookkeeping ----
@@ -1803,7 +1811,8 @@ function selectionOf(run: Pick<DeploymentRunMeta, 'services' | 'wholeCheckout'>)
 
 /**
  * For each service of each run: how many of its checkout's commits (newest first) come before its last
- * deployed commit, falling back to the deploy tag's commit.
+ * deployed commit, falling back to the deploy tag's commit. Zero is known only when that commit is origin's head
+ * as the host resolved it; only then, with nothing hidden or cut and not a first deploy, is it skippable.
  */
 function serviceCommits(infos: Info[], commits: PreflightReport['commits'], services: ServiceMeta[]): PreflightReport['serviceCommits'] {
   const skips = new Set(services.flatMap((s) => (s.kind === 'service' && s.skipUnchanged ? [s.id] : [])))
@@ -1811,14 +1820,18 @@ function serviceCommits(infos: Info[], commits: PreflightReport['commits'], serv
   for (const { dep, sel } of infos) {
     const entry = commits[dep.id]
     const list = entry?.commits ?? []
-    // Nothing since the tag, and the service is at the tag's commit: the range is empty and nothing was hidden.
-    const atTag = (since: string): boolean =>
-      !!entry && list.length === 0 && entry.truncated === 0 && entry.hiddenPairs === 0 && !entry.firstDeploy && since === entry.tagCommit
+    const originHead = entry?.originHead ?? null
+    // Nothing else is reliable for "unchanged": the list is by date, so a merged older branch can sit after `since`.
+    const clean = !!entry && entry.truncated === 0 && entry.hiddenPairs === 0 && !entry.firstDeploy
     for (const s of sel.services) {
       const since = shaOrNull(s.previousCommit) ?? entry?.tagCommit ?? null
-      const idx = since === null ? -1 : atTag(since) ? 0 : list.findIndex((c) => c.sha === since)
-      const c = idx >= 0 ? { since, count: idx, known: true } : { since, count: list.length, known: false }
-      out[s.id] = { ...c, skippable: skips.has(s.id) && c.known && c.count === 0 }
+      if (since !== null && originHead !== null && SHA.test(originHead) && since === originHead) {
+        out[s.id] = { since, count: 0, known: true, skippable: skips.has(s.id) && clean }
+        continue
+      }
+      // A count to show. First place in the list is not proof of zero (only origin's head is), so it is unknown.
+      const idx = since === null ? -1 : list.findIndex((c) => c.sha === since)
+      out[s.id] = idx > 0 ? { since, count: idx, known: true, skippable: false } : { since, count: list.length, known: false, skippable: false }
     }
   }
   return out

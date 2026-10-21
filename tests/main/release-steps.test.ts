@@ -41,8 +41,8 @@ const step = (over: Partial<Step> = {}): Step => ({
 const svcIn = (r: Rig, d: DeploymentMeta, name: string, over: { skipUnchanged?: boolean } = {}) =>
   r.f.services.create({ kind: 'service', environmentId: d.environmentId, name, deploymentId: d.id, ...over }) as AppServiceMeta
 const ci = (sha: string, deploymentId: string): CommitInfo => ({ sha, subject: `s ${sha[0]}`, author: 'dev', date: '2026-10-18T00:00:00Z', deploymentId })
-/** Preflight reports these commits (newest first) and tag commit per checkout. */
-const commits = (r: Rig, byDep: Record<string, { list: string[]; tag?: string }>) => {
+/** Preflight reports these commits (newest first), tag commit and origin head per checkout. */
+const commits = (r: Rig, byDep: Record<string, { list: string[]; tag?: string; head?: string | null; hiddenPairs?: number; truncated?: number; firstDeploy?: boolean }>) => {
   r.runner.on.preflight = (plan: DeployPlan) => {
     const total = plan.deployments.reduce((n, d) => n + (byDep[d.deploymentId]?.list.length ?? 0), 0)
     return {
@@ -51,7 +51,18 @@ const commits = (r: Rig, byDep: Record<string, { list: string[]; tag?: string }>
         commits: Object.fromEntries(
           plan.deployments.map((d) => {
             const x = byDep[d.deploymentId] ?? { list: [] }
-            return [d.deploymentId, { commits: x.list.map((s) => ci(s, d.deploymentId)), hiddenPairs: 0, truncated: 0, firstDeploy: false, head: x.list[0] ?? null, tagCommit: x.tag ?? null }]
+            return [
+              d.deploymentId,
+              {
+                commits: x.list.map((s) => ci(s, d.deploymentId)),
+                hiddenPairs: x.hiddenPairs ?? 0,
+                truncated: x.truncated ?? 0,
+                firstDeploy: x.firstDeploy ?? false,
+                head: x.list[0] ?? null,
+                tagCommit: x.tag ?? null,
+                ...(x.head === undefined ? {} : { originHead: x.head }),
+              },
+            ]
           }),
         ),
         dockerModes: Object.fromEntries(plan.deployments.map((d) => [d.deploymentId, 'plain' as const])),
@@ -144,6 +155,22 @@ describe('release custom steps', () => {
     expect(audits(r, 'release.start')).toHaveLength(0)
   })
 
+  it('a rollback refused for a step secret the environment stopped using leaves no rollback row', async () => {
+    const r = await rig()
+    const tmpl = dep(r, 'env', { managedEnv: true, vaultIds: [DEFAULT_VAULT_ID], envTemplate: `TOKEN=\${secret:${r.f.secretId}}` })
+    const d = dep(r, 'api', { vaultIds: [DEFAULT_VAULT_ID], steps: [step({ alsoOnRollback: true, secrets: [{ envName: 'API_TOKEN', secretId: r.f.secretId }] })] })
+    const id = await ready(r, [d])
+    r.runner.on.release = (plan) => ({ commits: Object.fromEntries(plan.deployments.map((x) => [x.runId, { previous: A, deployed: B }])) })
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).status).toBe('succeeded')
+    r.f.deploys.update(tmpl.id, { envTemplate: 'MODE=plain' })
+    const releases = r.svc.list().length
+    expect((await fail(r.svc.rollback(id, {}))).message).toBe(STEP_SECRET_UNUSED_MESSAGE)
+    expect(r.svc.list()).toHaveLength(releases)
+    expect(r.runner.calls.filter((c) => c.plan.kind === 'rollback')).toHaveLength(0)
+  })
+
   it('a rollback runs only the steps that set alsoOnRollback, keeping their keys', async () => {
     const r = await rig()
     const d = dep(r, 'api', { steps: [step(), step({ id: 'warm', name: 'warm', alsoOnRollback: true })] })
@@ -171,10 +198,36 @@ describe('skip unchanged', () => {
       { serviceId: web.id, commit: A, releaseId: null },
       { serviceId: worker.id, commit: o.worker ?? C, releaseId: null },
     ])
-    commits(r, { [d.id]: { list: [C, B] } })
+    commits(r, { [d.id]: { list: [C, B], head: C } })
     const id = await ready(r, [d])
     return { r, d, web, worker, id }
   }
+
+  it('a start refused after the skips are known (a secret that fails to decrypt) writes none of them', async () => {
+    const r = await rig()
+    const d = dep(r, 'shop', { managedEnv: true, vaultIds: [DEFAULT_VAULT_ID], envTemplate: `TOKEN=\${secret:${r.f.secretId}}` })
+    const web = svcIn(r, d, 'web')
+    const worker = svcIn(r, d, 'worker', { skipUnchanged: true })
+    r.f.services.recordDeployed([
+      { serviceId: web.id, commit: A, releaseId: null },
+      { serviceId: worker.id, commit: C, releaseId: null },
+    ])
+    commits(r, { [d.id]: { list: [C, B], head: C } })
+    const id = await ready(r, [d])
+    const shape = () => r.svc.detail(id).runs.map((x) => [x.status, x.wholeCheckout, x.services.map((e) => e.id).sort(), x.steps.map((st) => st.state)])
+    const before = shape()
+    r.failValue.on = true
+    await expect(r.svc.start(id, {})).rejects.toThrow()
+    expect(r.svc.detail(id).status).toBe('ready')
+    expect(shape()).toEqual(before)
+    expect(before[0][2]).toEqual([web.id, worker.id].sort())
+    // a forced retry deploys the whole checkout, worker with it
+    r.failValue.on = false
+    await r.svc.start(id, { forceServiceIds: [worker.id] })
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).status).toBe('succeeded')
+    expect(r.runner.call('release').deployments[0].services).toBeNull()
+  })
 
   it('a known zero-commit service is skipped and reported; forcing it brings it back; the hash binds the skips', async () => {
     const { r, web, worker, id } = await shop({ skip: true })
@@ -230,7 +283,7 @@ describe('skip unchanged', () => {
     const web = svcIn(r, shopDep, 'web')
     const pay = svcIn(r, billing, 'pay', { skipUnchanged: true })
     r.f.services.recordDeployed([{ serviceId: pay.id, commit: C, releaseId: null }])
-    commits(r, { [shopDep.id]: { list: [B] }, [billing.id]: { list: [C, B] } })
+    commits(r, { [shopDep.id]: { list: [B], head: B }, [billing.id]: { list: [C, B], head: C } })
     const id = await ready(r, [shopDep, billing], { serviceIds: [web.id, pay.id] })
     await r.svc.start(id, {})
     await r.svc.whenIdle()
@@ -249,8 +302,8 @@ describe('skip unchanged', () => {
     const d = dep(r, 'api')
     const api = svcIn(r, d, 'api', { skipUnchanged: true })
     r.f.services.recordDeployed([{ serviceId: api.id, commit: C, releaseId: null }])
-    // nothing since the tag, which is the service's own commit: zero commits, known
-    commits(r, { [d.id]: { list: [], tag: C } })
+    // nothing since the tag, which is the service's own commit and origin's head: zero commits, known
+    commits(r, { [d.id]: { list: [], tag: C, head: C } })
     const id = await ready(r, [d])
     expect(r.svc.detail(id).preflight?.commitsTotal).toBe(0)
     expect(r.svc.detail(id).preflight?.serviceCommits[api.id]).toEqual({ since: C, count: 0, known: true, skippable: true })
@@ -267,13 +320,38 @@ describe('skip unchanged', () => {
     expect(r.svc.detail(id).status).toBe('succeeded')
   })
 
-  it('an empty list counts as zero only when the service is at the tag commit', async () => {
+  /** api (skipUnchanged) last deployed at `at`; preflight reports `c`. */
+  const one = async (at: string, c: Parameters<typeof commits>[1][string]) => {
     const r = await rig()
     const d = dep(r, 'api')
     const api = svcIn(r, d, 'api', { skipUnchanged: true })
-    r.f.services.recordDeployed([{ serviceId: api.id, commit: B, releaseId: null }])
-    commits(r, { [d.id]: { list: [], tag: C } })
+    r.f.services.recordDeployed([{ serviceId: api.id, commit: at, releaseId: null }])
+    commits(r, { [d.id]: c })
     const id = await ready(r, [d])
-    expect(r.svc.detail(id).preflight?.serviceCommits[api.id]).toEqual({ since: B, count: 0, known: false, skippable: false })
+    return r.svc.detail(id).preflight?.serviceCommits[api.id]
+  }
+
+  it('first in a date-ordered list is not unchanged: a merged branch older than the service is a change', async () => {
+    // A-B-C on main, F branched from B (dated before C) merged after C as M: `git log --no-merges` lists C F B
+    const M = 'a1'.repeat(20)
+    const F = 'f'.repeat(40)
+    expect(await one(C, { list: [C, F, B], head: M })).toMatchObject({ skippable: false })
+    // at origin's head it is unchanged
+    expect(await one(M, { list: [C, F, B], head: M })).toEqual({ since: M, count: 0, known: true, skippable: true })
+  })
+
+  it('origin moved back to an ancestor of the tag (force-push or reset) is a change', async () => {
+    // tag at C, origin reset to A: C..origin is empty, but the checkout would go back to A
+    expect(await one(C, { list: [], tag: C, head: A })).toEqual({ since: C, count: 0, known: false, skippable: false })
+  })
+
+  it('a hidden revert pair, a cut list or a first deploy is never unchanged', async () => {
+    for (const x of [{ hiddenPairs: 1 }, { truncated: 1 }, { firstDeploy: true }]) {
+      expect(await one(C, { list: [], tag: C, head: C, ...x })).toMatchObject({ skippable: false })
+    }
+  })
+
+  it('a missing origin head (unknown, or hosts that disagree) is never unchanged', async () => {
+    for (const head of [undefined, null]) expect(await one(C, { list: [C, B], head })).toMatchObject({ skippable: false })
   })
 })

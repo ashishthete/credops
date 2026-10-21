@@ -696,7 +696,9 @@ function commitsCmd(d: PlanDeployment): string {
   const { shas, tag } = d.commitBases
   const LOG = [
     '  out=$(git log --no-merges --max-count=501 --pretty=tformat:%H%x1f%s%x1f%an%x1f%aI%x1e "$R" 2>/dev/null | base64 | tr -d \'\\n\')',
-    '  echo "OD-PF commits log_b64=$out"',
+    // origin's head (read-only): a service at it has nothing new, whatever order the log lists commits in
+    '  o=$(git rev-parse -q --verify "origin/$B^{commit}" 2>/dev/null)',
+    '  echo "OD-PF commits log_b64=$out origin_head=$o"',
   ]
   const TAG_RANGE = '  if [ -n "$c" ] && git cat-file -e "$c^{commit}" 2>/dev/null; then R="$c..origin/$B"; X="$c"; else R="origin/$B"; X=""; fi'
   // shas are SHA-validated in dVars: plain hex words, safe unquoted.

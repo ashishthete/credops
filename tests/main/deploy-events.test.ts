@@ -367,6 +367,26 @@ describe('preflight parsing', () => {
     expect(whole.checks.find((c) => c.id === 'commits')).toBeUndefined()
   })
 
+  it("reports origin's head per checkout; a missing, malformed or disagreeing head is null", () => {
+    const p = planFixture({ kind: 'preflight' })
+    const head = ['tools missing=', 'docker plain=ok sudo=ok mode=plain use=auto', 'repo exists=1 git=1', 'clean ok=1', 'branch fetched=1 exists=1', 'compose exists=1', 'disk avail_kb=9999999', `tag exists=1 commit=${'c'.repeat(40)}`, 'version-tag exists=0'].map((l) => `OD-PF ${l}`).join('\n')
+    const H = 'd'.repeat(40)
+    const out = (fields: string) => `${head}\nOD-PF commits log_b64= ${fields}`
+    const parse = (o: Record<string, string>) => parsePreflight(p, o, { now: NOW }).commits
+    const runs = p.deployments.map((d) => d.runId)
+    const one = { [runs[0]]: out(`origin_head=${H}`), [runs[1]]: out('origin_head='), [runs[2]]: out('origin_head=nope') }
+    const c = parse(one)
+    expect([c['dep-1'].originHead, c['dep-2'].originHead, c['dep-3'].originHead]).toEqual([H, null, null])
+    // an older host script without the field
+    expect(parse({ [runs[0]]: `${head}\nOD-PF commits log_b64=` })['dep-1'].originHead).toBeNull()
+    // one checkout reported by two hosts that disagree: no head
+    const twice = planFixture({ kind: 'preflight' })
+    twice.deployments = [twice.deployments[0], { ...twice.deployments[2], deploymentId: 'dep-1' }]
+    const both = (a: string, b: string) => parsePreflight(twice, { [twice.deployments[0].runId]: out(`origin_head=${a}`), [twice.deployments[1].runId]: out(`origin_head=${b}`) }, { now: NOW }).commits['dep-1'].originHead
+    expect(both(H, 'e'.repeat(40))).toBeNull()
+    expect(both(H, H)).toBe(H)
+  })
+
   it('only a cut commits task marks the commit list as cut; a cut deps task does not', () => {
     const p = planFixture({ kind: 'preflight' })
     const tags = ['od_step=preflight', `od_run=${R3}`]

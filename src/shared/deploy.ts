@@ -408,8 +408,11 @@ export interface PreflightReport {
   checks: PreflightCheck[]
   commits: Record<
     string,
-    /** `tagCommit`: the deploy tag's commit on origin, null on a first deploy. */
-    { commits: CommitInfo[]; hiddenPairs: number; truncated: number; firstDeploy: boolean; head: string | null; tagCommit: string | null }
+    /**
+     * `tagCommit`: the deploy tag's commit on origin, null on a first deploy. `originHead`: `origin/<branch>`'s
+     * commit as the host resolved it; null when it is unknown, or when hosts disagree.
+     */
+    { commits: CommitInfo[]; hiddenPairs: number; truncated: number; firstDeploy: boolean; head: string | null; tagCommit: string | null; originHead?: string | null }
   >
   dockerModes: Record<string, DockerMode>
   /** Per deployment: the compose file's services (`docker compose config --services`), null when unknown. */
@@ -423,8 +426,9 @@ export interface PreflightReport {
   /**
    * Per service in the selection: `since` is its last deployed commit, else the deploy tag's commit; `count` is
    * how many commits of its checkout's list (newest first) come before `since`. `known` is false when `since`
-   * is not in the list, and then `count` is the list length; an empty list with `since` at the tag's commit is a
-   * known zero. `skippable` (the service's skipUnchanged with a known zero) is what start skips unless forced.
+   * is not in the list, and then `count` is the list length. A known zero is `since` at origin's head (the
+   * list's order is by date, so a first place in it is not one). `skippable` (skipUnchanged, a known zero, nothing
+   * hidden or cut, not a first deploy) is what start skips unless forced.
    */
   serviceCommits: Record<string, { since: string | null; count: number; known: boolean; skippable?: boolean }>
   locks: Record<string, { holder: LockHolder; stale: boolean; raw: string } | null>

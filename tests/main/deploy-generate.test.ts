@@ -595,6 +595,9 @@ describe('fix round 1', () => {
     const pf = every(plays(planFixture({ kind: 'preflight' }))[0].tasks).map(({ t }) => cmdOf(t)).join('\n')
     expect(pf).toContain('OD-PF commits unknown')
     expect(pf).toContain('if [ "$ok" = 0 ]; then echo "OD-PF commits unknown"; else')
+    // origin's head, read-only, next to the list: the one fact a skip of an unchanged service trusts
+    expect(pf).toContain('o=$(git rev-parse -q --verify "origin/$B^{commit}" 2>/dev/null)')
+    expect(pf).toContain('echo "OD-PF commits log_b64=$out origin_head=$o"')
   })
 
   it('ls-remote failure is reported as unknown, not as no tag', () => {
