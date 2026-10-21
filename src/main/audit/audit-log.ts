@@ -105,6 +105,11 @@ export interface AuditLogOptions {
   knownSecrets?: () => readonly string[]
 }
 
+/** What the notify and AI steps need from an audit log: they never read the event back. The Hub supplies its own. */
+export interface AuditAppender {
+  append(input: AuditInput): unknown
+}
+
 export class AuditLog {
   private readonly actor: { osUser: string; machine: string }
   private readonly now: () => Date

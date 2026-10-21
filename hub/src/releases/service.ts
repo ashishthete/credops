@@ -266,7 +266,8 @@ export class HubReleases {
   }
 
   private actorOf(user: HubUser): Actor {
-    return { osUser: user.upn, machine: this.d.config.name, hubUserId: user.oid }
+    // The name people read on cards and in history; the upn when the directory has none.
+    return { osUser: user.name || user.upn, machine: this.d.config.name, hubUserId: user.oid }
   }
 
   private deploymentsOf(releaseId: string): string[] {

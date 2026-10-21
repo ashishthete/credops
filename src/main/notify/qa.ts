@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { AuditLog } from '../audit/audit-log'
+import type { AuditAppender } from '../audit/audit-log'
 import type { FinalizeContext, ReleaseRunMeta } from '../deploy/finalize'
 import type { IntegrationStore } from '../settings/integration-store'
 import type { SettingsStore } from '../settings/settings-store'
@@ -40,7 +40,7 @@ export interface QaDeps {
   fetch: Fetch
   sleep: (ms: number) => Promise<void>
   now?: () => Date
-  audit: Pick<AuditLog, 'append'>
+  audit: AuditAppender
   dispatcher: Pick<NotificationDispatcher, 'notifyQa'>
   /** The release a dispatch belongs to, for the `qa.finished` notification. */
   runs: { runMeta(releaseId: string): ReleaseRunMeta | null }

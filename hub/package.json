@@ -3,12 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": {
-    "node": ">=24"
-  },
-  "bin": {
-    "opsdeck-hub": "dist/opsdeck-hub.mjs"
-  },
+  "engines": { "node": ">=24" },
+  "bin": { "opsdeck-hub": "dist/opsdeck-hub.mjs" },
   "scripts": {
     "start": "node dist/opsdeck-hub.mjs serve --config hub.config.json"
   },

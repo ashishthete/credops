@@ -149,34 +149,40 @@ export function createHubNotify(d: HubFinalizeDeps): HubNotify {
   }
 
   const audit: Pick<AuditLog, 'append'> = {
-    append(input: AuditInput): never {
+    append(input: AuditInput): void {
       let action: string = input.action
       let details = input.details ?? {}
+      let outcome = input.outcome
       let targetId = input.targetId
       if (input.action === 'notify.send') {
         const x = (input.details ?? {}) as { channel?: string; status?: string }
-        if (x.status !== 'sent' && x.status !== 'failed') return undefined as never
+        if (x.status !== 'sent' && x.status !== 'failed') return
         action = x.status === 'sent' ? 'notify.sent' : 'notify.failed'
         details = { channel: x.channel, releaseId: targetId }
       }
-      if (!AUDIT_ACTIONS.has(action) || input.outcome === 'info') return undefined as never
-      return d.audit.append({
+      if (!AUDIT_ACTIONS.has(action)) return
+      // QA stopped waiting without a conclusion: the Hub audit has no `info`, so it is a success with no conclusion.
+      if (outcome === 'info') {
+        outcome = 'success'
+        details = { ...details, conclusion: 'unknown' }
+      }
+      d.audit.append({
         action: action as HubAuditAction,
-        outcome: input.outcome,
+        outcome,
         actor: null,
         targetType: input.targetType ?? null,
         targetId: targetId ?? null,
         targetLabel: input.targetLabel ?? null,
         details,
-      }) as never
+      })
     },
   }
 
   const dispatcher = new NotificationDispatcher({
     db: d.db,
     sink,
-    integrations: integrations as never,
-    settings: settings as never,
+    integrations,
+    settings,
     vault: { isUnlocked: () => true },
     audit,
     runs: { runMeta: (id, status) => d.runMeta(id, status) },
@@ -186,17 +192,17 @@ export function createHubNotify(d: HubFinalizeDeps): HubNotify {
       },
     },
     environment: (id, fallback) => {
-      const row = d.db.prepare('SELECT name, protected FROM environments WHERE id = ?').get(id) as { name: string; protected: number } | undefined
-      return { name: row?.name ?? fallback ?? 'Unknown environment', color: '', protected: row?.protected === 1 }
+      const name = d.registry.nameOf(id)
+      return { name: name ?? fallback ?? 'Unknown environment', color: '', protected: name !== null && d.registry.get(id).protected }
     },
     knownSecrets: known,
     ...(d.now ? { now: d.now } : {}),
   })
 
   const qa = new QaDispatcher({
-    secrets: { value: () => d.secrets.integration(null, 'github_token') ?? '' } as never,
-    settings: settings as never,
-    integrations: integrations as never,
+    secrets: { value: () => d.secrets.integration(null, 'github_token') ?? '' },
+    settings,
+    integrations,
     fetch: d.fetch,
     sleep: d.sleep,
     audit,
@@ -229,14 +235,14 @@ export function createHubNotify(d: HubFinalizeDeps): HubNotify {
   const finalize = createFinalizeSteps({
     dispatcher,
     notes: releaseNotesFinalizeStep({
-      claude: claude as never,
+      claude,
       audit,
       redaction: () => {
         const rows = d.db.prepare('SELECT address, username FROM hosts').all() as { address: string; username: string }[]
         return promptContext({
           knownSecrets: known,
-          identities: { list: () => rows.map((r) => ({ username: r.username })) } as never,
-          hosts: { list: () => rows.map((r) => ({ address: r.address })) } as never,
+          identities: { list: () => rows.map((r) => ({ username: r.username })) },
+          hosts: { list: () => rows.map((r) => ({ address: r.address })) },
           osUser: () => 'hub',
         })
       },

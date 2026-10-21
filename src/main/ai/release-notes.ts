@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { AuditLog } from '../audit/audit-log'
+import type { AuditAppender } from '../audit/audit-log'
 import type { FinalizeSteps } from '../deploy/finalize'
 import { AiFailure, MAX_NOTES_SUBJECT, type AiError, type ReleaseNotesRequest, type ReleaseNotesResult } from '../../shared/ai'
 import { MAX_COMMITS } from '../../shared/deploy'
@@ -61,7 +61,7 @@ export function notesPrompt(req: ReleaseNotesRequest, opts: { redaction: PromptR
 
 export interface NotesDeps {
   claude: Pick<ClaudeClient, 'stream'>
-  audit: Pick<AuditLog, 'append'>
+  audit: AuditAppender
   /** The live redaction context, built per call. */
   redaction: () => PromptRedactionContext
   environmentName: (environmentId: string) => string | null

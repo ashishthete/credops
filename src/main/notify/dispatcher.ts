@@ -1,4 +1,4 @@
-import type { AuditLog } from '../audit/audit-log'
+import type { AuditAppender } from '../audit/audit-log'
 import type { Db } from '../db/connection'
 import type { ReleaseRunMeta } from '../deploy/finalize'
 import { uuidv7 } from '../deploy/uuidv7'
@@ -37,7 +37,7 @@ export interface DispatcherDeps {
   integrations: Pick<IntegrationStore, 'forEnvironment'>
   settings: Pick<SettingsStore, 'get'>
   vault: { isUnlocked(): boolean }
-  audit: Pick<AuditLog, 'append'>
+  audit: AuditAppender
   runs: { runMeta(releaseId: string, status?: ReleaseStatus): ReleaseRunMeta }
   tunnels: { get(id: string): Pick<TunnelMeta, 'label' | 'hostId' | 'environmentId'> }
   /** How an environment appears on a card; the default reads the app's `environments` table (the Hub has no color). */

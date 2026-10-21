@@ -31,6 +31,14 @@ export function assertNoSecretKeys(payload: unknown, depth = 0): void {
   }
 }
 
+const isHttpsUrl = (v: string): boolean => {
+  try {
+    return new URL(v).protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
 const actorOf = (req: FastifyRequest): HubActor => ({ oid: req.user.oid, upn: req.user.upn, name: req.user.name, role: req.user.role })
 
 export function registerSecrets(
@@ -100,6 +108,8 @@ export function registerSecrets(
       },
       async (req, reply) => {
         const b = req.body
+        // Checked here so a bad address fails at upload, not at the next release; the value is never echoed.
+        if (b.kind === 'teams_webhook' && !isHttpsUrl(b.value as string)) throw new HubHttpError(400, 'bad_request', 'A Teams webhook must be an https URL')
         assertNotReleasing(b.environmentId)
         secrets.set({ id: req.params.id, environmentId: b.environmentId, name: b.name, kind: b.kind, value: b.value as string }, actorOf(req))
         return reply.code(204).send()
