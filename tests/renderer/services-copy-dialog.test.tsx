@@ -5,7 +5,7 @@ import { loadDeploy, resetDeploy } from '../../src/renderer/src/deploy/store'
 import { inventoryStore, loadInventory } from '../../src/renderer/src/inventory/store'
 import { CopyServicesDialog } from '../../src/renderer/src/pages/products/services/CopyServicesDialog'
 import type { CopyServicesResult, ServiceMeta } from '../../src/shared/services'
-import { appService, dbService, deploymentMeta, environment, host, mockBridge } from './helpers'
+import { appService, dbService, deploymentMeta, environment, host, mockBridge, REGION } from './helpers'
 
 const staging = environment({ id: 'e1', name: 'staging', hosts: [{ hostId: 'h1', role: 'app' }] })
 const prod = environment({ id: 'e2', name: 'prod', hosts: [{ hostId: 'h3', role: 'app' }, { hostId: 'h4', role: 'bastion' }] })
@@ -24,8 +24,12 @@ const HOSTS = [host({ id: 'h1', label: 'stg1' }), host({ id: 'h3', label: 'prod1
 
 const calls = (invoke: ReturnType<typeof mockBridge>, channel: string) => (invoke.mock.calls as unknown[][]).filter((x) => x[0] === channel)
 
-async function mount(result: CopyServicesResult = { created: { services: 3, checkouts: 2 }, skipped: [], addedHosts: 0 }, source = staging) {
-  const invoke = mockBridge({ 'env:list': [staging, prod, dev], 'host:list': HOSTS, 'deploy:list': CHECKOUTS, 'service:list': SERVICES, 'service:copy': result })
+async function mount(
+  result: CopyServicesResult = { created: { services: 3, checkouts: 2 }, skipped: [], addedHosts: 0 },
+  source = staging,
+  extra: Record<string, unknown> = {},
+) {
+  const invoke = mockBridge({ 'env:list': [staging, prod, dev], 'host:list': HOSTS, 'deploy:list': CHECKOUTS, 'service:list': SERVICES, 'service:copy': result, ...extra })
   await act(async () => {
     await loadInventory()
     await loadDeploy()
@@ -132,6 +136,34 @@ describe('copy services dialog', () => {
     expect(within(dialog).getByRole('button', { name: 'Copy services' })).toBeDisabled()
     await user.click(within(dialog).getByRole('button', { name: 'Copy services' }))
     expect(calls(invoke, 'service:copy')).toHaveLength(0)
+  })
+
+  it('host selects group hosts by region; a checkout host from another region gets a hint', async () => {
+    const us = { ...REGION, id: 'region-2', code: 'us-east-1', displayName: 'US East' }
+    const hosts = HOSTS.map((h) => (h.id === 'h5' ? { ...h, regionId: us.id } : h))
+    const { user, dialog } = await mount(undefined, staging, { 'host:list': hosts, 'region:list': [REGION, us] })
+    await pickProd(user, dialog)
+    const web = within(dialog).getByRole('group', { name: 'web' })
+    const groups = [...within(web).getByLabelText('Host').querySelectorAll('optgroup')].map((g) => [g.label, [...g.querySelectorAll('option')].map((o) => o.textContent)])
+    expect(groups).toEqual([
+      ['test-1', ['jump1', 'prod1']],
+      ['Other hosts in test-1 (joins as an app host)', ['stg1']],
+      ['Other hosts in us-east-1 (joins as an app host)', ['spare1']],
+    ])
+    expect(within(web).queryByText(/is in/)).not.toBeInTheDocument()
+    await user.selectOptions(within(web).getByLabelText('Host'), 'spare1')
+    expect(within(web).getByText("prod's hosts are all in test-1; spare1 is in us-east-1.")).toBeInTheDocument()
+    // A hint, not a block.
+    await user.type(within(web).getByLabelText('Tag'), 'web-prod')
+    expect(within(dialog).getByRole('button', { name: 'Copy services' })).toBeEnabled()
+  })
+
+  it('a host from the same region brings no hint', async () => {
+    const { user, dialog } = await mount()
+    await pickProd(user, dialog)
+    const web = within(dialog).getByRole('group', { name: 'web' })
+    await user.selectOptions(within(web).getByLabelText('Host'), 'spare1')
+    expect(within(web).queryByText(/is in/)).not.toBeInTheDocument()
   })
 
   it('keeps its title and body while it animates out', async () => {
