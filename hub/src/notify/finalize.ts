@@ -289,10 +289,7 @@ export function createHubNotify(d: HubFinalizeDeps): HubNotify {
     qa: qaFinalizeStep({ qa: heldQa, integrations }),
   })
   // Only the card's "By" changes; the run the service stored is untouched.
-  const named = (ctx: FinalizeContext): FinalizeContext => {
-    const name = d.displayName?.(ctx.run.actor.osUser)
-    return name ? { ...ctx, run: { ...ctx.run, actor: { ...ctx.run.actor, osUser: name } } } : ctx
-  }
+  const named = (ctx: FinalizeContext): FinalizeContext => ({ ...ctx, run: nameActor(ctx.run) })
   const steps: FinalizeSteps = { ...finalize, notify: (ctx) => finalize.notify(named(ctx)) }
   return { finalize: steps, dispatcher, qa, held }
 }

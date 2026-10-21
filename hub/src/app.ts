@@ -121,13 +121,22 @@ export function buildApp(deps: HubDeps): FastifyInstance {
   registerRegistry(app, { registry, directory, auth })
   registerLocks(app, { locks, directory, audit: deps.audit, auth })
   registerSecrets(app, { secrets, deployKeys, registry, locks, directory, audit: deps.audit, auth })
+  // One directory scan serves a batch of cards; the cache is dropped on the next timer tick.
+  let names: Map<string, string> | null = null
+  const displayName = (upn: string): string | undefined => {
+    if (!names) {
+      names = new Map(directory.list().map((u) => [u.upn, u.name]))
+      setTimeout(() => (names = null), 0).unref()
+    }
+    return names.get(upn)
+  }
   const notify = createHubNotify({
     db: deps.db,
     secrets,
     registry,
     audit: deps.audit,
     runMeta: (id, status) => (releases as HubReleases).service.runMeta(id, status),
-    displayName: (upn) => directory.list().find((u) => u.upn === upn)?.name,
+    displayName,
     fetch: deps.notify?.fetch ?? globalThis.fetch,
     sleep: deps.notify?.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
     ...(deps.config.sendgridFrom ? { sendgridFrom: deps.config.sendgridFrom } : {}),
@@ -142,7 +151,11 @@ export function buildApp(deps: HubDeps): FastifyInstance {
   })
   deps.audit.setKnownSecrets(() => (releases as HubReleases).knownSecrets())
   app.decorate('releases', releases)
-  app.addHook('onClose', async () => releases?.close())
+  // Detached QA waits would otherwise keep polling GitHub after the Hub closes.
+  app.addHook('onClose', async () => {
+    notify.qa.stop()
+    await releases?.close()
+  })
   registerReleases(app, { releases, auth })
   return app
 }
