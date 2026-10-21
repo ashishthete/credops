@@ -386,7 +386,7 @@ describe('Touch ID needs turning on again', () => {
   it('a wrong PIN says how many tries are left', async () => {
     const user = userEvent.setup()
     const vault = fakeVault(
-      { quickUnlock: 'touchId', lastMethod: 'pin', pin: { enabled: true, attemptsLeft: 5 }, touchIdNeedsReenable: true },
+      { quickUnlock: 'touchId', lastMethod: 'password', pin: { enabled: true, attemptsLeft: 5 }, touchIdNeedsReenable: true },
       {
         'vault:unlock': [{ ok: true }],
         'vault:setQuickUnlock': [
@@ -399,11 +399,9 @@ describe('Touch ID needs turning on again', () => {
     )
     renderApp()
     const unlock = await gate('Unlock vaults')
-    // The unlock card is T9's: use the password whichever tab it opens on.
-    const toPassword = within(unlock).queryByRole('button', { name: /master password/i })
-    if (toPassword) await user.click(toPassword)
     await user.type(within(unlock).getByLabelText('Master password'), 'correct horse{Enter}')
     const card = await gate('Turn Touch ID on again')
+    await user.click(within(card).getByRole('button', { name: 'Use your PIN instead' }))
     await user.type(within(card).getByLabelText('PIN'), '000000')
     await user.click(within(card).getByRole('button', { name: 'Turn on Touch ID' }))
     expect(await within(card).findByText('Wrong PIN · 2 tries left')).toBeInTheDocument()
