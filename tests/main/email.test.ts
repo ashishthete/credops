@@ -41,6 +41,30 @@ describe('buildReleaseEmail', () => {
     expect(buildReleaseEmail(facts({ product: null }), null, addr).subject).toBe('uat released 1.4.0')
   })
 
+  it('subject without a version: update date with commits, redeployed with none (row 41)', () => {
+    const started = new Date(2026, 9, 5, 14, 30).toISOString() // local 05-Oct-2026
+    const subject = (over: Partial<NotificationFacts>) => buildReleaseEmail(facts({ version: null, ...over }), null, addr).subject
+    expect(subject({ commitCount: 3, startedAt: started })).toBe('[shop] uat update: 05-Oct-2026 available for testing')
+    expect(subject({ commitCount: 0, startedAt: started })).toBe('[shop] uat redeployed')
+    expect(subject({ commitCount: 3, startedAt: null })).toBe('[shop] uat redeployed')
+    expect(subject({ commitCount: 3, startedAt: started, product: null })).toBe('uat update: 05-Oct-2026 available for testing')
+    // a version still wins
+    expect(buildReleaseEmail(facts({ commitCount: 3, startedAt: started }), null, addr).subject).toBe('[shop] uat released 1.4.0')
+  })
+
+  it('lists changes in both bodies, capped at 10 with "and N more", and redacts secrets', () => {
+    const subjects = Array.from({ length: 13 }, (_, i) => `change ${i + 1}`)
+    subjects[0] = 'use token hunter22-secret'
+    const body = buildReleaseEmail(facts({ changes: [{ deployment: 'web', subjects }] }), null, { ...addr, knownSecrets: ['hunter22-secret'] })
+    const [text, html] = body.content
+    expect(text!.value).toContain('Changes\nweb:\n- use token ')
+    expect(text!.value).toContain('- change 10')
+    expect(text!.value).not.toContain('change 11')
+    expect(text!.value).toContain('- and 3 more')
+    expect(html!.value).toContain('<li>and 3 more</li>')
+    expect(JSON.stringify(body)).not.toContain('hunter22-secret')
+  })
+
   it('escapes facts in html', () => {
     const html = buildReleaseEmail(facts({ title: '<img src=x onerror=1>', deployment: '"web"' }), null, addr).content[1]!.value
     expect(html).not.toContain('<img')

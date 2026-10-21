@@ -323,6 +323,21 @@ describe('finalize notify', () => {
     expect(both.step('finalize_qa')).toEqual(['step.done'])
   })
 
+  it('facts carry env + product in the title, per-deployment commit subjects and the start time (rows 41-42)', async () => {
+    const t = await setup()
+    const run = t.meta('rel-1', {
+      version: null,
+      commits: [
+        { sha: 'a'.repeat(40), subject: 'Fix login', author: 'x', date: '2026-10-19', deploymentId: 'd1' },
+        { sha: 'b'.repeat(40), subject: 'Other repo change', author: 'x', date: '2026-10-19', deploymentId: 'other' },
+      ],
+    })
+    const facts = t.d.factsForRun(run, 'succeeded')
+    expect(facts.title).toBe('shop Release on staging')
+    expect(facts).toMatchObject({ startedAt: run.startedAt, commitCount: 2, changes: [{ deployment: 'api', subjects: ['Fix login'] }] })
+    expect(t.d.factsForRun({ ...run, kind: 'rollback', productName: null }, 'succeeded').title).toBe('Rollback on staging')
+  })
+
   it('logs skipped channels with the reason', async () => {
     const t = await setup()
     const lines: string[] = []

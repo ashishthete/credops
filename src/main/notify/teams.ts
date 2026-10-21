@@ -20,7 +20,16 @@ export interface NotificationFacts {
   at: string
   /** At most 600 chars; `release.succeeded` only. */
   notesExcerpt?: string
+  /** The release's start time (ISO); the available-for-testing email subject shows its local date. */
+  startedAt?: string | null
+  /** New commits in the release; 0 is a redeploy. Absent when unknown. */
+  commitCount?: number
+  /** Commit subjects per deployment, newest first. Shown as a "Changes" section, capped per deployment. */
+  changes?: { deployment: string; subjects: string[] }[]
 }
+
+export const MAX_CHANGES_SHOWN = 10
+export const MAX_SUBJECT_CHARS = 120
 
 export const MAX_NOTES_EXCERPT = 600
 const MAX_ACTIONS = 3
@@ -88,6 +97,25 @@ export function factRows(f: NotificationFacts): { title: string; value: string }
   return rows
 }
 
+/** Single-line plain text, redacted first so a cut can't split a secret, then cut to MAX_SUBJECT_CHARS. */
+export function commitSubject(s: string, knownSecrets: readonly string[] = []): string {
+  const one = redact(s.replace(/\s+/g, ' ').trim(), knownSecrets)
+  return one.length > MAX_SUBJECT_CHARS ? `${one.slice(0, MAX_SUBJECT_CHARS - 1)}…` : one
+}
+
+/** The "Changes" lines: per deployment a heading, up to MAX_CHANGES_SHOWN subjects, then "and N more". */
+export function changeLines(f: NotificationFacts, knownSecrets: readonly string[] = []): { deployment: string; lines: string[] }[] {
+  return (f.changes ?? [])
+    .filter((c) => c.subjects.length > 0)
+    .map((c) => ({
+      deployment: c.deployment,
+      lines: [
+        ...c.subjects.slice(0, MAX_CHANGES_SHOWN).map((s) => commitSubject(s, knownSecrets)),
+        ...(c.subjects.length > MAX_CHANGES_SHOWN ? [`and ${c.subjects.length - MAX_CHANGES_SHOWN} more`] : []),
+      ],
+    }))
+}
+
 export function notesFor(f: NotificationFacts): string | null {
   if (f.event !== 'release.succeeded' || !f.notesExcerpt) return null
   return f.notesExcerpt.length > MAX_NOTES_EXCERPT ? `${f.notesExcerpt.slice(0, MAX_NOTES_EXCERPT - 1)}…` : f.notesExcerpt
@@ -106,6 +134,13 @@ export function buildTeamsCard(facts: NotificationFacts, knownSecrets: readonly 
     { type: 'FactSet', facts: factRows(facts) },
   ]
   if (notes) body.push({ type: 'TextBlock', text: notes, wrap: true, isSubtle: true, spacing: 'Medium' })
+  const changes = changeLines(facts, knownSecrets)
+  if (changes.length > 0) {
+    body.push({ type: 'TextBlock', text: 'Changes', weight: 'Bolder', spacing: 'Medium' })
+    for (const c of changes) {
+      body.push({ type: 'TextBlock', text: [`**${c.deployment}**`, ...c.lines.map((l) => `- ${l}`)].join('\n\n'), wrap: true, spacing: 'Small' })
+    }
+  }
   const actions = httpsLinks(facts.urls).map((u) => ({ type: 'Action.OpenUrl', title: `Open ${u.host}`, url: u.href }))
   return redact(
     {

@@ -21,6 +21,32 @@ const facts = (over: Partial<NotificationFacts> = {}): NotificationFacts => ({
 
 const content = (card: object) => (card as { attachments: { content: Record<string, unknown> }[] }).attachments[0]!.content
 
+describe('buildTeamsCard changes (row 42)', () => {
+  const texts = (card: object) => (content(card).body as { text?: string }[]).map((b) => b.text ?? '')
+  it('adds a Changes section: up to 10 subjects per deployment, then "and N more"', () => {
+    const subjects = Array.from({ length: 12 }, (_, i) => `change ${i + 1}`)
+    const t = texts(buildTeamsCard(facts({ changes: [{ deployment: 'web', subjects }, { deployment: 'worker', subjects: ['one'] }] })))
+    expect(t).toContain('Changes')
+    const web = t.find((x) => x.startsWith('**web**'))!
+    expect(web).toContain('- change 10')
+    expect(web).not.toContain('change 11')
+    expect(web).toContain('- and 2 more')
+    expect(t.find((x) => x.startsWith('**worker**'))).toBe('**worker**\n\n- one')
+  })
+  it('has no Changes section without commits', () => {
+    expect(texts(buildTeamsCard(facts()))).not.toContain('Changes')
+    expect(texts(buildTeamsCard(facts({ changes: [{ deployment: 'web', subjects: [] }] })))).not.toContain('Changes')
+  })
+  it('truncates subjects to 120 chars and redacts secrets first', () => {
+    const long = 'x'.repeat(200)
+    const secret = 'hunter22-secret'
+    const json = JSON.stringify(buildTeamsCard(facts({ changes: [{ deployment: 'web', subjects: [long, `${'y'.repeat(105)} ${secret}`] }] }), [secret]))
+    expect(json).not.toContain(secret)
+    expect(json).not.toContain('x'.repeat(121))
+    expect(json).toContain(`${'x'.repeat(119)}…`)
+  })
+})
+
 describe('buildTeamsCard', () => {
   it('builds a succeeded card with facts and links', () => {
     expect(buildTeamsCard(facts())).toMatchSnapshot()

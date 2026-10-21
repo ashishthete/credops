@@ -170,9 +170,13 @@ export class NotificationDispatcher {
     const names = [...new Set(run.deployments.map((x) => x.name))]
     const started = run.startedAt ? Date.parse(run.startedAt) : NaN
     const finished = run.finishedAt ? Date.parse(run.finishedAt) : NaN
+    const byDeployment = run.deployments
+      .map((x) => ({ deployment: x.name, subjects: run.commits.filter((c) => x.id !== null && c.deploymentId === x.id).map((c) => c.subject) }))
+      .filter((c) => c.subjects.length > 0)
+    const what = run.kind === 'rollback' ? 'Rollback' : 'Release'
     return {
       event,
-      title: run.kind === 'rollback' ? 'Rollback' : 'Release',
+      title: `${run.productName ? `${run.productName} ` : ''}${what} on ${this.environment(run.environmentId, run.environmentName).name}`,
       environment: this.environment(run.environmentId, run.environmentName),
       product: run.productName,
       deployment: names.length ? names.join(', ') : null,
@@ -183,6 +187,9 @@ export class NotificationDispatcher {
       urls: [...run.urls],
       actor: `${run.actor.osUser}@${run.actor.machine}`,
       at: this.now().toISOString(),
+      startedAt: run.startedAt,
+      commitCount: run.commits.length,
+      changes: byDeployment,
     }
   }
 
