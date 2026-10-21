@@ -447,13 +447,13 @@ export class Registry {
       this.db.prepare('DELETE FROM unpublished_grants WHERE environment_id = ?').run(env.id)
 
       // Upsert by id, then remove what is gone: ids stay stable for grants and for the history that will hang off them.
+      // Hosts may be shared, so each environment upserts its own row for a host.
       const putHost = this.db.prepare(
         `INSERT INTO hosts(id, environment_id, label, address, port, username, hops, known_hosts, use_sudo) VALUES (?,?,?,?,?,?,?,?,?)
-         ON CONFLICT(id) DO UPDATE SET environment_id = excluded.environment_id, label = excluded.label, address = excluded.address,
+         ON CONFLICT(environment_id, id) DO UPDATE SET label = excluded.label, address = excluded.address,
            port = excluded.port, username = excluded.username, hops = excluded.hops, known_hosts = excluded.known_hosts, use_sudo = excluded.use_sudo`,
       )
       for (const h of manifest.hosts) {
-        this.guardForeign('hosts', h.id, env.id)
         putHost.run(h.id, env.id, h.label, h.address, h.port, h.username, JSON.stringify(h.hops), JSON.stringify(h.knownHosts), h.useSudo)
       }
       const putService = this.db.prepare(
@@ -503,8 +503,8 @@ export class Registry {
     return result
   }
 
-  /** A host, service or deployment id that belongs to another environment is never taken over. */
-  private guardForeign(table: 'hosts' | 'services' | 'deployments', id: string, environmentId: string): void {
+  /** A service or deployment id that belongs to another environment is never taken over. Hosts are per environment and may be shared. */
+  private guardForeign(table: 'services' | 'deployments', id: string, environmentId: string): void {
     const r = this.db.prepare(`SELECT environment_id FROM ${table} WHERE id = ?`).get(id) as { environment_id: string } | undefined
     if (r && r.environment_id !== environmentId) throw new HubHttpError(409, 'conflict', 'An id in the manifest belongs to another environment')
   }

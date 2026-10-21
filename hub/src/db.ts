@@ -157,6 +157,26 @@ CREATE INDEX unpublished_grants_env ON unpublished_grants(environment_id);
 /** The SQL condition for an environment that is published now, for queries on `environments`. */
 export const PUBLISHED = 'unpublished_at IS NULL'
 
+// A desktop host can serve several environments, each publishing its own address, user and hops for it:
+// hosts are keyed by (environment, id), and a deployment's host must be one of its own environment's.
+// The new tables are renamed into place last, which also rewrites deployments' reference to hosts_v9.
+const SHARED_HOSTS = `
+CREATE TABLE hosts_v9(id TEXT NOT NULL, environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+  label TEXT NOT NULL, address TEXT NOT NULL, port INTEGER NOT NULL, username TEXT NOT NULL,
+  hops TEXT NOT NULL, known_hosts TEXT NOT NULL, use_sudo TEXT NOT NULL, PRIMARY KEY (environment_id, id));
+INSERT INTO hosts_v9(id, environment_id, label, address, port, username, hops, known_hosts, use_sudo)
+  SELECT id, environment_id, label, address, port, username, hops, known_hosts, use_sudo FROM hosts;
+CREATE TABLE deployments_v9(id TEXT PRIMARY KEY, environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+  host_id TEXT NOT NULL, name TEXT NOT NULL, position INTEGER NOT NULL, meta TEXT NOT NULL,
+  FOREIGN KEY (environment_id, host_id) REFERENCES hosts_v9(environment_id, id) ON DELETE CASCADE);
+INSERT INTO deployments_v9(id, environment_id, host_id, name, position, meta)
+  SELECT id, environment_id, host_id, name, position, meta FROM deployments;
+DROP TABLE deployments;
+DROP TABLE hosts;
+ALTER TABLE hosts_v9 RENAME TO hosts;
+ALTER TABLE deployments_v9 RENAME TO deployments;
+`
+
 export const HUB_MIGRATIONS: Migration[] = [
   { version: 1, name: 'core', up: CORE },
   { version: 2, name: 'registry', up: REGISTRY },
@@ -166,6 +186,7 @@ export const HUB_MIGRATIONS: Migration[] = [
   { version: 6, name: 'releases', up: RELEASES },
   { version: 7, name: 'notify', up: NOTIFY },
   { version: 8, name: 'history', up: HISTORY },
+  { version: 9, name: 'shared_hosts', up: SHARED_HOSTS },
 ]
 
 export function openHubDb(file: string): HubDb {
