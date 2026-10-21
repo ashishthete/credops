@@ -222,8 +222,10 @@ on anything else here and should land first.
 - The Hub groups environments by product **name** (case-insensitive), never by
   id. Ids are local to each desktop (controller's call).
 - Compatibility: a newer desktop must still publish to an older Hub, or be told
-  clearly to upgrade it. The builder checks how the Hub validator treats unknown
-  manifest fields and picks one of the two.
+  clearly to upgrade it. Built: it still publishes. An older Hub copies only
+  the fields it knows, so it drops product and region and the environment stays
+  under "Team (Hub)"; both fields are optional, so an older desktop publishes to
+  a newer Hub unchanged (builder's call).
 - Already-published environments aren't flagged after the upgrade. Their Hub
   rows get product and region on their next normal publish.
 
