@@ -21,6 +21,7 @@ import { ConfirmDialog, type ConfirmRequest } from '../../../ui/common'
 import { Dialog } from '../../../ui/Dialog'
 import { SelectField, TextField } from '../../../ui/Field'
 import { Segmented } from '../../../ui/Segmented'
+import { Switch } from '../../../ui/Switch'
 
 const ENGINES: { id: DbEngine; label: string }[] = [
   { id: 'postgres', label: 'PostgreSQL' },
@@ -43,6 +44,7 @@ interface Form {
   composeEdited: boolean
   url: string
   urlCheckFrom: HealthFrom
+  skipUnchanged: boolean
   dbEngine: DbEngine
   dbAddress: string
   dbPort: string
@@ -58,6 +60,7 @@ function formOf(service: ServiceMeta | undefined): Form {
     composeEdited: false,
     url: '',
     urlCheckFrom: 'mac',
+    skipUnchanged: false,
     dbEngine: 'postgres',
     dbAddress: '',
     dbPort: String(DB_DEFAULT_PORT.postgres),
@@ -74,6 +77,7 @@ function formOf(service: ServiceMeta | undefined): Form {
       composeEdited: true,
       url: service.url ?? '',
       urlCheckFrom: service.urlCheckFrom,
+      skipUnchanged: service.skipUnchanged,
     }
   }
   return {
@@ -116,6 +120,7 @@ function toInput(f: Form, kind: ServiceKind, environmentId: string): ServiceInpu
       composeService: f.composeService,
       url: f.url.trim() || null,
       urlCheckFrom: f.urlCheckFrom,
+      skipUnchanged: f.skipUnchanged,
     }
   }
   return {
@@ -380,6 +385,10 @@ export function ServiceDialog({ env, service, kind, onClose }: ServiceDialogProp
               <div className="flex items-center justify-between gap-3">
                 <span className="text-[12.5px] font-medium text-fg/90">Check health from</span>
                 <Segmented label="Check health from" size="sm" options={CHECK_FROM} value={form.urlCheckFrom} onChange={(urlCheckFrom) => set({ urlCheckFrom })} />
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[12.5px] font-medium text-fg/90">Skip if no new commits</span>
+                <Switch label="Skip if no new commits" checked={form.skipUnchanged} onChange={(skipUnchanged) => set({ skipUnchanged })} />
               </div>
             </>
           )}

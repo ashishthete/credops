@@ -5,7 +5,6 @@ import {
   COMPOSE_PROJECT,
   GIT_REF,
   MAX_ENV_TEMPLATE,
-  MAX_HOOK,
   MAX_URL,
   MAX_URLS,
   REPO_PATH,
@@ -15,6 +14,7 @@ import {
   type HealthUrl,
   type UseSudo,
 } from '../../../shared/deploy'
+import { MAX_STEPS_PER_CHECKOUT, effectiveSteps, validateStep, type Step } from '../../../shared/steps'
 import { MAX_NAME, REPO_URL, REPO_URL_CREDENTIALS_MSG, hasRepoCredentials, maskRepoUrl } from '../../../shared/inventory'
 import { DEFAULT_VAULT_ID } from '../../../shared/vault'
 
@@ -39,8 +39,8 @@ export interface DeploymentForm {
   composeTimeoutSec: string
   useSudo: UseSudo
   becomeSecretId: string
-  preHook: string
-  postHook: string
+  /** The legacy hooks show up here as steps (effectiveSteps); saving writes steps and clears the hooks. */
+  steps: Step[]
   managedEnv: boolean
   envTemplate: string
   vaultIds: string[]
@@ -68,8 +68,7 @@ export function blankForm(hostId = ''): DeploymentForm {
     composeTimeoutSec: '120',
     useSudo: 'auto',
     becomeSecretId: '',
-    preHook: '',
-    postHook: '',
+    steps: [],
     managedEnv: false,
     envTemplate: '',
     vaultIds: [DEFAULT_VAULT_ID],
@@ -103,8 +102,7 @@ export function formFrom(d: DeploymentMeta): DeploymentForm {
     composeTimeoutSec: String(d.composeTimeoutSec),
     useSudo: d.useSudo,
     becomeSecretId: d.becomeSecretId ?? '',
-    preHook: d.preHook ?? '',
-    postHook: d.postHook ?? '',
+    steps: effectiveSteps(d).map((x) => structuredClone(x)),
     managedEnv: d.managedEnv,
     envTemplate: d.envTemplate ?? '',
     vaultIds: [...d.vaultIds],
@@ -162,8 +160,7 @@ export function checkForm(f: DeploymentForm): { errors: Partial<Record<FormField
   const compose = rangeError('The compose timeout', f.composeTimeoutSec, 10, 3600, ' seconds')
   if (compose) errors.composeTimeoutSec = compose
   if (f.urls.length > MAX_URLS) errors.urls = `At most ${MAX_URLS} health URLs`
-  if (f.preHook.length > MAX_HOOK) errors.preHook = `A hook can be at most ${MAX_HOOK} characters`
-  if (f.postHook.length > MAX_HOOK) errors.postHook = `A hook can be at most ${MAX_HOOK} characters`
+  if (f.steps.length > MAX_STEPS_PER_CHECKOUT) errors.steps = `At most ${MAX_STEPS_PER_CHECKOUT} steps`
   const urlErrors = f.urls.map(urlError)
   let envLines: string[] = []
   if (f.managedEnv) {
@@ -176,6 +173,19 @@ export function checkForm(f: DeploymentForm): { errors: Partial<Record<FormField
   return { errors, urlErrors, envLines }
 }
 
+/** One message per step (undefined when it is fine), from the same rules main applies. */
+export function stepErrors(steps: Step[], secretIds: Iterable<string>, serviceNames: string[]): (string | undefined)[] {
+  const allowedSecretIds = new Set(secretIds)
+  return steps.map((s) => {
+    try {
+      validateStep(s, { allowedSecretIds, serviceNames })
+      return undefined
+    } catch (e) {
+      return e instanceof Error ? e.message : 'step is not valid'
+    }
+  })
+}
+
 export function isValid(f: DeploymentForm): boolean {
   const { errors, urlErrors } = checkForm(f)
   return Object.keys(errors).length === 0 && urlErrors.every((e) => !e)
@@ -183,7 +193,6 @@ export function isValid(f: DeploymentForm): boolean {
 
 /** The wire shape for a create. */
 export function toInput(f: DeploymentForm, environmentId: string, position?: number): DeploymentInput {
-  const hook = (t: string) => (t.trim() ? t : null)
   return {
     name: f.name.trim(),
     environmentId,
@@ -200,8 +209,9 @@ export function toInput(f: DeploymentForm, environmentId: string, position?: num
     healthTimeoutSec: whole(f.healthTimeoutSec),
     dbBackup: f.dbBackup,
     backupDir: f.dbBackup ? f.backupDir : null,
-    preHook: hook(f.preHook),
-    postHook: hook(f.postHook),
+    steps: f.steps,
+    preHook: null,
+    postHook: null,
     buildTimeoutSec: whole(f.buildTimeoutSec),
     composeTimeoutSec: whole(f.composeTimeoutSec),
     useSudo: f.useSudo,
@@ -220,7 +230,14 @@ export function toPatch(f: DeploymentForm, original: DeploymentMeta, opts: { rem
     if (k === 'environmentId') continue
     // The form shows a legacy URL masked: leaving it as shown keeps the stored value.
     if (k === 'repoUrl' && f.repoUrl.trim() === formRepoUrl(original.repoUrl)) continue
+    // The form holds the hooks as steps: untouched steps leave the stored hooks and steps alone.
+    if (k === 'steps' || k === 'preHook' || k === 'postHook') continue
     if (JSON.stringify(v) !== JSON.stringify(original[k as keyof DeploymentMeta])) patch[k] = v
+  }
+  if (JSON.stringify(f.steps) !== JSON.stringify(effectiveSteps(original))) {
+    patch.steps = f.steps
+    patch.preHook = null
+    patch.postHook = null
   }
   if (opts.removeRepoUrl && original.repoUrl !== null) patch.repoUrl = null
   return patch as Partial<DeploymentInput>

@@ -3,17 +3,18 @@ import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type React
 import { MAX_URLS } from '../../../../shared/deploy'
 import { REPO_URL_LEGACY_WARNING, isLegacyRepoUrl } from '../../../../shared/inventory'
 import type { SecretMeta } from '../../../../shared/vault'
-import { blankForm, checkForm, formFrom, toInput, toPatch, type DeploymentForm, type FormField } from '../../deploy/form'
-import { createDeployment, deployStore, updateDeployment } from '../../deploy/store'
+import { blankForm, checkForm, formFrom, stepErrors, toInput, toPatch, type DeploymentForm, type FormField } from '../../deploy/form'
+import { createDeployment, deployStore, updateDeployment, useServices } from '../../deploy/store'
 import { reloadInventory, useInventory } from '../../inventory/store'
 import { api } from '../../lib/api'
 import { Button } from '../../ui/Button'
 import { Dialog } from '../../ui/Dialog'
-import { SelectField, TextAreaField, TextField } from '../../ui/Field'
+import { SelectField, TextField } from '../../ui/Field'
 import { Segmented } from '../../ui/Segmented'
 import { Switch } from '../../ui/Switch'
 import { toast } from '../../ui/Toaster'
 import { EnvTemplateEditor } from './EnvTemplateEditor'
+import { StepsSection } from './StepsSection'
 
 /** `focus: 'useSudo'` opens the edit on the sudo setting (from a logs follow docker refused). */
 export type DeploymentRequest = { kind: 'new'; environmentId: string } | { kind: 'edit'; id: string; focus?: 'useSudo' }
@@ -100,8 +101,17 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
     setServerError(null)
   }
 
+  // Compose services this checkout runs, for compose-exec steps.
+  const envServices = useServices(environmentId || null)
+  const serviceNames = useMemo(
+    () => envServices.flatMap((s) => (s.kind === 'service' && original && s.deploymentId === original.id ? [s.composeService] : [])),
+    [envServices, original],
+  )
+  const stepSecrets = useMemo(() => available.map((s) => ({ id: s.id, name: s.name })), [available])
+
   const result = checkForm(form)
-  const valid = Object.keys(result.errors).length === 0 && result.urlErrors.every((e) => !e)
+  const stepsOk = stepErrors(form.steps, stepSecrets.map((s) => s.id), serviceNames).every((e) => !e)
+  const valid = Object.keys(result.errors).length === 0 && result.urlErrors.every((e) => !e) && stepsOk
   // An empty untouched field says nothing yet; the Create button stays off until it is right.
   const err = (f: FormField) => (touched.has(f) ? result.errors[f] : undefined)
 
@@ -321,9 +331,13 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
           </div>
         </Section>
 
-        <Section title="Hooks">
-          <TextAreaField label="Pre-deploy hook" value={form.preHook} onChange={(e) => set({ preHook: e.target.value })} rows={2} className="font-mono text-[12.5px]" spellCheck={false} error={err('preHook')} />
-          <TextAreaField label="Post-deploy hook" value={form.postHook} onChange={(e) => set({ postHook: e.target.value })} rows={2} className="font-mono text-[12.5px]" spellCheck={false} error={err('postHook')} />
+        <Section title="Steps">
+          <StepsSection steps={form.steps} onChange={(steps) => set({ steps })} secrets={stepSecrets} serviceNames={serviceNames} />
+          {err('steps') && (
+            <p role="alert" className="text-[12.5px] text-err">
+              {err('steps')}
+            </p>
+          )}
         </Section>
 
         <Section title="Environment">
