@@ -1,14 +1,13 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { Fingerprint, X } from 'lucide-react'
-import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import type { ReverifyProof } from '../../../shared/sso'
-import { MAX_MASTER_PASSWORD, MAX_PIN, MIN_PIN, PIN_INPUT_MAX, VERIFICATION_FAILED, type VaultStatus } from '../../../shared/vault'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { type VaultStatus } from '../../../shared/vault'
 import { api } from '../lib/api'
 import { Button } from '../ui/Button'
-import { SecretField } from '../ui/Field'
 import { closeCommandPalette } from '../ui/commands'
 import { fast, spring, useMotionSafe, useShake } from '../ui/motion'
 import { toast } from '../ui/Toaster'
+import { ProofForm, proofMethods } from './ReverifyDialog'
 import { ResetVaultsDialog } from './ResetVaultsDialog'
 import { SetupCard } from './SetupCard'
 import { SignInCard, signInCopy } from './SignInCard'
@@ -37,8 +36,6 @@ const HUB_NUDGE_KEY = 'opsdeck.gate.hubNudgeDismissed'
  * to turn a broken Touch ID back on, after an unlock. All keep the gate up.
  */
 type Hold = 'none' | 'ready' | 'celebrate' | 'reenable'
-
-const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
 function announceCorrupt(status: VaultStatus | null) {
   const n = status?.corruptVaultIds.length ?? 0
@@ -347,77 +344,14 @@ function useSignInCheck(status: VaultStatus | null): boolean {
   return due || inflight || (!!status && status.sso.required && status.sso.checking && !status.unlocked)
 }
 
-type ProofMethod = 'password' | 'pin'
-
-const PIN_SHAPE = new RegExp(`^\\d{${MIN_PIN},${MAX_PIN}}$`)
-const PIN_LENGTH = `PIN must be ${MIN_PIN}-${MAX_PIN} digits`
-
 /**
  * Touch ID is on but its Keychain copy could not be read (status.touchIdNeedsReenable): offer to
- * write it again. Turning a factor on needs a reverify proof (the T7 contract); the secret stays in
- * the input until it is sent and is never kept in state.
+ * write it again. Turning a factor on needs a reverify proof (the T7 contract); Touch ID itself
+ * cannot prove its own re-enable, so only the password and the PIN are offered.
  */
 function ReenableStep({ status, onWrong, onContinue }: { status: VaultStatus; onWrong: () => void; onContinue: () => void }) {
-  const methods: ProofMethod[] = []
-  if (status.hasPassword) methods.push('password')
-  if (status.pin.enabled) methods.push('pin')
-  const [method, setMethod] = useState<ProofMethod | null>(() =>
-    status.lastMethod === 'pin' && status.pin.enabled ? 'pin' : (methods[0] ?? null),
-  )
-  const inputRef = useRef<HTMLInputElement>(null)
-  const [hasInput, setHasInput] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const other = methods.find((m) => m !== method)
-
-  const submit = async (e: FormEvent) => {
-    e.preventDefault()
-    const input = inputRef.current
-    if (!input || !method || busy || !input.value) return
-    // A malformed PIN never goes to main, where it would cost one of the tries.
-    if (method === 'pin' && !PIN_SHAPE.test(input.value)) return setError(PIN_LENGTH)
-    const proof: ReverifyProof = method === 'pin' ? { method, pin: input.value } : { method, password: input.value }
-    input.value = ''
-    setHasInput(false)
-    setBusy(true)
-    setError(null)
-    try {
-      const res = await api.invoke('vault:setQuickUnlock', 'touchId', proof)
-      vaultStatusStore.set(res.status)
-      if (res.ok) {
-        toast({ title: 'Touch ID is on again', tone: 'success' })
-        return onContinue()
-      }
-      // pin-wiped: the PIN is gone. Locked means nothing else was left open; the gate offers what remains, or reset.
-      toast({
-        title: 'Too many wrong PINs',
-        description: res.status.unlocked ? 'Your PIN was turned off.' : 'Your vaults locked. Unlock another way, or erase them.',
-        tone: 'error',
-      })
-      if (!res.status.unlocked || !res.status.hasPassword) return onContinue()
-      setMethod('password')
-    } catch (err) {
-      if (err instanceof Error && err.message === VERIFICATION_FAILED) {
-        onWrong()
-        if (method === 'pin') {
-          // The rejection carries no count: read it from a fresh status, so a wipe never comes unwarned.
-          const left = await refreshVaultStatus()
-            .then((fresh) => (fresh.pin.enabled ? fresh.pin.attemptsLeft : null))
-            .catch(() => null)
-          setError(left === null ? 'Wrong PIN' : `Wrong PIN · ${left} ${left === 1 ? 'try' : 'tries'} left`)
-        } else {
-          setError('Wrong password')
-        }
-      } else {
-        setError(err instanceof Error ? err.message : String(err))
-      }
-    } finally {
-      setBusy(false)
-      inputRef.current?.focus()
-    }
-  }
-
-  if (!method) {
+  const methods = proofMethods(status).filter((m) => m !== 'touchId')
+  if (!methods.length) {
     return (
       <Button autoFocus onClick={onContinue} className="w-full">
         Continue
@@ -425,39 +359,18 @@ function ReenableStep({ status, onWrong, onContinue }: { status: VaultStatus; on
     )
   }
   return (
-    <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-3" noValidate>
-      <SecretField
-        key={method}
-        ref={inputRef}
-        label={method === 'pin' ? 'PIN' : 'Master password'}
-        autoFocus
-        readOnly={busy}
-        inputMode={method === 'pin' ? 'numeric' : undefined}
-        maxLength={method === 'pin' ? PIN_INPUT_MAX : MAX_MASTER_PASSWORD}
-        onInput={(e) => setHasInput(e.currentTarget.value.length > 0)}
-        error={error ?? undefined}
-      />
-      {other && (
-        <button
-          type="button"
-          onClick={() => {
-            setMethod(other)
-            setError(null)
-            setHasInput(false)
-          }}
-          disabled={busy}
-          className="-mt-1 self-start rounded px-1 text-[12px] text-muted transition-colors duration-150 hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
-        >
-          {other === 'pin' ? 'Use your PIN instead' : 'Use your master password instead'}
-        </button>
-      )}
-      <Button type="submit" loading={busy} disabled={!hasInput} icon={<Fingerprint aria-hidden className="size-4" />} className="w-full">
-        Turn on Touch ID
-      </Button>
-      <Button variant="ghost" disabled={busy} onClick={onContinue} className="w-full">
-        Not now
-      </Button>
-    </form>
+    <ProofForm
+      status={status}
+      methods={methods}
+      wide
+      icon={<Fingerprint aria-hidden className="size-4" />}
+      submitLabel="Turn on Touch ID"
+      cancelLabel="Not now"
+      onProof={(proof) => api.invoke('vault:setQuickUnlock', 'touchId', proof)}
+      onProven={() => toast({ title: 'Touch ID is on again', tone: 'success' })}
+      onClose={onContinue}
+      onWrong={onWrong}
+    />
   )
 }
 

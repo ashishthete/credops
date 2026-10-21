@@ -471,7 +471,7 @@ describe('settings', () => {
     // Turning a way in on needs a proof.
     expect(invoke).not.toHaveBeenCalledWith('vault:setQuickUnlock', 'touchId')
     const proof = await screen.findByRole('dialog', { name: 'Turn on Touch ID' })
-    await user.type(within(proof).getByLabelText('Your master password'), 'correct horse')
+    await user.type(within(proof).getByLabelText('Master password'), 'correct horse')
     await user.click(within(proof).getByRole('button', { name: 'Turn on Touch ID' }))
     expect(invoke).toHaveBeenCalledWith('vault:setQuickUnlock', 'touchId', { method: 'password', password: 'correct horse' })
     await waitFor(() => expect(quick).toHaveValue('touchId'))

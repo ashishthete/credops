@@ -28,7 +28,9 @@ export function SignInBanner() {
   if (!status?.unlocked) return null
 
   const expired = status.sso.required && status.sso.verdict === 'needs-signin'
-  const legacy = !dismissed && status.hasPassword && !status.pin.enabled && status.quickUnlock === 'off'
+  // Nothing to suggest on a Mac with no Keychain: neither Touch ID nor a PIN can be added there.
+  const keychain = status.quickUnlockAvailable.touchId || status.quickUnlockAvailable.login
+  const legacy = !dismissed && keychain && status.hasPassword && !status.pin.enabled && status.quickUnlock === 'off'
   if (!expired && !legacy) return null
 
   const signIn = async () => {

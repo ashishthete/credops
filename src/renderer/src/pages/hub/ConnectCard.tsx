@@ -8,7 +8,7 @@ import { ConfirmDialog, plural, type ConfirmRequest } from '../../ui/common'
 import { TextField } from '../../ui/Field'
 import { toast } from '../../ui/Toaster'
 import { useVaultStatus } from '../../vault/status'
-import { ReverifyDialog } from '../../vault/VaultSettingsDialog'
+import { ReverifyDialog } from '../../vault/ReverifyDialog'
 import { PendingNotice, roleLabel } from './shared'
 import { useHubGroupNames } from './names'
 
