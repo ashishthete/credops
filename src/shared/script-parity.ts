@@ -9,6 +9,9 @@ export interface ScriptEnv {
   versioned: boolean
   protected: boolean
   qa?: QaWorkflow | null
+  /** The environment's "QA after deploy" and "Wait for result" switches (Notifications); absent means on. */
+  qaOnDeploy?: boolean
+  qaWait?: boolean
 }
 export type ScriptDeployment = Pick<DeploymentMeta, 'id' | 'name' | 'composeFile' | 'useSudo' | 'buildTimeoutSec' | 'composeTimeoutSec'>
 
@@ -46,7 +49,7 @@ export const SCRIPT_UP_SEC = 900
 export const SCRIPT_QA_WAIT_MIN = 45
 
 /** The script tags versions on prod only; never touch a prod or protected environment's flag. */
-const isProd = (name: string) => /^prod$/i.test(name.trim())
+export const isProd = (name: string): boolean => /^prod$/i.test(name.trim())
 const byId = <T>(ds: ScriptDeployment[], patch: (d: ScriptDeployment) => T | null): Record<string, T> =>
   Object.fromEntries(ds.flatMap((d) => {
     const p = patch(d)
@@ -101,7 +104,7 @@ export function checkAgainstScript(env: ScriptEnv, deployments: ScriptDeployment
     opsdeck: env.versioned
       ? versionRisk
         ? `Versioned releases are on, so every release to ${env.name} creates and pushes a version tag.${env.protected ? ' This environment is protected: change it yourself.' : ''}`
-        : 'Versioned releases are on for prod, as in the script.'
+        : 'Versioned releases are on for prod; the script also tags prod only.'
       : 'Versioned releases are off: no version tag is created.',
     ...(versionRisk && !env.protected && { fix: { env: { versioned: false } } }),
   })
@@ -119,27 +122,38 @@ export function checkAgainstScript(env: ScriptEnv, deployments: ScriptDeployment
     ...(explicit.length > 0 && { fix: { deployments: byId(explicit, () => ({ composeFile: COMPOSE_AUTO })) } }),
   })
 
-  // Row 45.
+  // Row 45: the script starts QA after every release except on prod.
+  const prod = isProd(env.name)
+  const onDeploy = env.qaOnDeploy ?? true
+  const started = !!env.qa && onDeploy
   checks.push({
     id: 'qa-env-name',
-    level: env.qa ? 'ok' : 'differs',
+    level: started === !prod ? 'ok' : 'differs',
     title: 'QA workflow',
-    script: 'Starts the QA workflow with environment set to the --env value (alpha or uat).',
-    opsdeck: env.qa
-      ? `Starts ${env.qa.repo} ${env.qa.workflow} on ${env.qa.ref} with environment set to "${env.name}", the environment name exactly.`
-      : 'No QA workflow is set for this environment.',
-    ...(!env.qa && { fix: { open: 'notifications' as const } }),
+    script: prod ? 'The script never starts QA on prod.' : 'Starts the QA workflow with environment set to the --env value (alpha or uat).',
+    opsdeck: !env.qa
+      ? 'No QA workflow is set for this environment.'
+      : `${started ? 'Starts' : 'Has'} ${env.qa.repo} ${env.qa.workflow} on ${env.qa.ref} with environment set to "${env.name}", the environment name exactly${started ? '' : ', but it is not started after a deploy'}.`,
+    ...(started !== !prod && { fix: { open: 'notifications' as const } }),
   })
 
-  // Row 46.
+  // Row 46. Only meaningful when QA starts and the script would start it too.
   const wait = env.qa?.waitMinutes ?? QA_WAIT_DEFAULT_MIN
+  const waits = env.qaWait ?? true
+  const waitDiffers = started && !prod && (!waits || wait < SCRIPT_QA_WAIT_MIN)
   checks.push({
     id: 'qa-wait',
-    level: wait < SCRIPT_QA_WAIT_MIN ? 'differs' : 'ok',
+    level: waitDiffers ? 'differs' : 'ok',
     title: 'QA result wait',
     script: `Waits up to ${SCRIPT_QA_WAIT_MIN} minutes for the QA result.`,
-    opsdeck: `Waits up to ${wait} minutes for the QA result, in the background.`,
-    ...(wait < SCRIPT_QA_WAIT_MIN && { fix: { open: 'notifications' as const } }),
+    opsdeck: !started
+      ? 'Not applicable: QA is not started.'
+      : prod
+        ? 'Not applicable: the script never starts QA on prod.'
+        : waits
+          ? `Waits up to ${wait} minutes for the QA result, in the background.`
+          : 'OpsDeck does not wait for the QA result.',
+    ...(waitDiffers && { fix: { open: 'notifications' as const } }),
   })
 
   // Row 32: OpsDeck is deliberately stricter, so there is nothing to fix.

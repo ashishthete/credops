@@ -4,8 +4,8 @@ import { useNavigate } from 'react-router'
 import { COMPOSE_AUTO, type DeployBatch, type DeploymentMeta, type EnvDeploySettings } from '../../../../shared/deploy'
 import type { EnvironmentMeta } from '../../../../shared/inventory'
 import { checkAgainstScript, scriptPreset, type ScriptCheckLevel, type ScriptDeploymentPatch, type ScriptPreset } from '../../../../shared/script-parity'
-import type { QaWorkflow } from '../../../../shared/settings'
-import { applyDeployBatch } from '../../deploy/store'
+import type { EnvironmentIntegrations } from '../../../../shared/settings'
+import { applyDeployBatch, deployStore } from '../../deploy/store'
 import { environmentKey } from '../../inventory/tree'
 import { api } from '../../lib/api'
 import { Button } from '../../ui/Button'
@@ -56,6 +56,22 @@ function undoOf(batch: DeployBatch, settings: EnvDeploySettings, deployments: De
   }
 }
 
+/** The undo, less every field changed again since `batch` was saved: those keep their newer value. */
+function stillApplied(envId: string, batch: DeployBatch, undo: DeployBatch): DeployBatch {
+  const now = deployStore.get()
+  const byId = new Map(now.deployments.map((d) => [d.id, d]))
+  const keepSettings = !!undo.settings && now.settings[envId]?.versioned === batch.settings?.versioned
+  return {
+    ...(keepSettings && { settings: undo.settings }),
+    deployments: undo.deployments.flatMap(({ id, patch }) => {
+      const applied = batch.deployments.find((b) => b.id === id)!.patch
+      const d = byId.get(id)
+      const kept = Object.entries(patch).filter(([k]) => d && d[k as keyof ScriptDeploymentPatch] === applied[k as keyof ScriptDeploymentPatch])
+      return kept.length ? [{ id, patch: Object.fromEntries(kept) }] : []
+    }),
+  }
+}
+
 /**
  * Checks this environment's deploy config against what deployment/unified_release.sh does, and saves every
  * script-compatible setting in one go. QA settings live in the environment's Notifications; rows about them link there.
@@ -65,13 +81,13 @@ export function ScriptCompare({ environment, settings, deployments }: { environm
   const [open, setOpen] = useState(false)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   // undefined while loading; null when it couldn't be read (the QA rows are left out rather than guessed).
-  const [qa, setQa] = useState<{ value: QaWorkflow | null } | null | undefined>(undefined)
+  const [qa, setQa] = useState<Pick<EnvironmentIntegrations, 'qa' | 'qaOnDeploy' | 'qaWait'> | null | undefined>(undefined)
 
   useEffect(() => {
     let live = true
     setQa(undefined)
     api.invoke('integration:get', environment.id).then(
-      (s) => live && setQa(s ? { value: s.qa } : null),
+      (s) => live && setQa(s ? { qa: s.qa, qaOnDeploy: s.qaOnDeploy, qaWait: s.qaWait } : null),
       () => live && setQa(null),
     )
     return () => {
@@ -80,13 +96,14 @@ export function ScriptCompare({ environment, settings, deployments }: { environm
   }, [environment.id])
 
   const env = useMemo(
-    () => ({ name: environment.name, protected: environment.protected, versioned: settings.versioned, qa: qa?.value ?? null }),
+    () => ({ name: environment.name, protected: environment.protected, versioned: settings.versioned, ...(qa ?? { qa: null }) }),
     [environment.name, environment.protected, settings.versioned, qa],
   )
   const checks = useMemo(() => checkAgainstScript(env, deployments).filter((c) => qa || !c.id.startsWith('qa-')), [env, deployments, qa])
   const preset = useMemo(() => scriptPreset(env, deployments), [env, deployments])
   const lines = useMemo(() => describe(preset, settings, deployments), [preset, settings, deployments])
-  const flagged = checks.filter((c) => c.level !== 'ok').length
+  // A difference with nothing to change (failed builds) is a note, not a difference.
+  const flagged = checks.filter((c) => c.level === 'risk' || (c.level === 'differs' && c.fix)).length
 
   const apply = () => {
     const batch = toBatch(preset, deployments)
@@ -102,7 +119,14 @@ export function ScriptCompare({ environment, settings, deployments }: { environm
         toast({
           title: 'Script-compatible settings saved',
           tone: 'success',
-          action: { label: 'Undo', run: () => void applyDeployBatch(environment.id, undo) },
+          action: {
+            label: 'Undo',
+            run: () => {
+              const left = stillApplied(environment.id, batch, undo)
+              if (!left.settings && !left.deployments.length) toast({ title: 'Nothing to undo', description: 'Those settings were changed again since.' })
+              else void applyDeployBatch(environment.id, left)
+            },
+          },
         })
       },
     })
@@ -130,7 +154,7 @@ export function ScriptCompare({ environment, settings, deployments }: { environm
                 </div>
                 {c.fix?.open === 'notifications' && (
                   <Button size="sm" variant="ghost" className="shrink-0 self-start" onClick={() => navigate(`/products?${new URLSearchParams({ node: environmentKey(environment) })}`)}>
-                    Open notification settings
+                    Go to notification settings
                   </Button>
                 )}
               </li>

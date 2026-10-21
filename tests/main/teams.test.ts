@@ -22,20 +22,34 @@ const facts = (over: Partial<NotificationFacts> = {}): NotificationFacts => ({
 const content = (card: object) => (card as { attachments: { content: Record<string, unknown> }[] }).attachments[0]!.content
 
 describe('buildTeamsCard changes (row 42)', () => {
-  type Block = { type: string; text?: string; inlines?: { type: string; text: string }[] }
+  type Block = { type: string; text?: string; spacing?: string; inlines?: { type: string; text: string }[] }
   const blocks = (card: object) => content(card).body as Block[]
   const runs = (b: Block) => (b.inlines ?? []).map((i) => i.text)
   const deploymentBlock = (card: object, name: string) => blocks(card).find((b) => b.type === 'RichTextBlock' && runs(b)[0] === name)!
+  /** The deployment's subject lines: one RichTextBlock each, with no spacing, right after its name. */
+  const linesOf = (card: object, name: string) => {
+    const all = blocks(card)
+    const out: Block[] = []
+    for (const b of all.slice(all.indexOf(deploymentBlock(card, name)) + 1)) {
+      if (b.spacing !== 'None') break
+      out.push(b)
+    }
+    for (const b of out) expect(b.type).toBe('RichTextBlock')
+    return out.map((b) => runs(b))
+  }
   it('adds a Changes section: up to 10 subjects per deployment, then "and N more"', () => {
     const subjects = Array.from({ length: 12 }, (_, i) => `change ${i + 1}`)
     const card = buildTeamsCard(facts({ changes: [{ deployment: 'web', subjects }, { deployment: 'worker', subjects: ['one'] }] }))
     expect(blocks(card).map((b) => b.text)).toContain('Changes')
-    const web = runs(deploymentBlock(card, 'web'))
-    expect(web).toHaveLength(1 + 10 + 1)
-    expect(web[10]).toBe('\n• change 10')
-    expect(web.join('')).not.toContain('change 11')
-    expect(web[11]).toBe('\n• and 2 more')
-    expect(runs(deploymentBlock(card, 'worker'))).toEqual(['worker', '\n• one'])
+    expect(runs(deploymentBlock(card, 'web'))).toEqual(['web'])
+    const web = linesOf(card, 'web')
+    expect(web).toHaveLength(10 + 1)
+    expect(web[9]).toEqual(['• change 10'])
+    expect(web.flat().join('')).not.toContain('change 11')
+    expect(web[10]).toEqual(['• and 2 more'])
+    expect(linesOf(card, 'worker')).toEqual([['• one']])
+    // No line relies on a newline inside a TextRun.
+    expect(JSON.stringify(content(card).body)).not.toContain('\\n')
   })
   it('has no Changes section without commits', () => {
     expect(blocks(buildTeamsCard(facts())).map((b) => b.text)).not.toContain('Changes')
