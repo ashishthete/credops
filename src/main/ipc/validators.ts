@@ -812,6 +812,7 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'release:get': args(v.uuid()),
   'release:events': args(v.uuid(), v.int({ min: 0, max: Number.MAX_SAFE_INTEGER }), v.optional(v.int({ min: 1, max: MAX_EVENTS_PAGE }))),
   'release:active': args(),
+  'release:latest': args(),
   'hub:status': args(),
   'hub:connect': args(hubUrl),
   'hub:signIn': args(),

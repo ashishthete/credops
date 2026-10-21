@@ -140,6 +140,7 @@ describe('deploy contract', () => {
     'release:get',
     'release:events',
     'release:active',
+    'release:latest',
   ]
 
   it('lists every deploy channel and the changed event, all validated', () => {

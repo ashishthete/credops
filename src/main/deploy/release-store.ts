@@ -3,6 +3,7 @@ import {
   type CommitInfo,
   type DeploymentRunMeta,
   type DeploymentRunStatus,
+  type EnvLastRelease,
   type PreflightReport,
   type ReleaseDetail,
   type ReleaseKind,
@@ -251,6 +252,20 @@ export class ReleaseStore {
     const limit = Math.max(1, Math.min(Math.floor(q.limit), 200))
     const sql = `${SELECT}${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY r.id DESC LIMIT ?`
     return (this.db.prepare(sql).all(...args, limit) as unknown as ReleaseRow[]).map(summary)
+  }
+
+  /**
+   * Per environment, its newest release that started or is running (a preflight, a ready or blocked one and a discarded
+   * one never ran), with the commits of its first run that deployed one. One statement for every environment.
+   */
+  latestPerEnvironment(): EnvLastRelease[] {
+    const run = (col: string) =>
+      `(SELECT d.${col} FROM deployment_runs d WHERE d.release_id = q.id ORDER BY d.deployed_commit IS NULL, d.position, d.id LIMIT 1)`
+    const sql = `SELECT q.*, ${run('previous_commit')} AS last_previous_commit, ${run('deployed_commit')} AS last_deployed_commit
+      FROM (${SELECT} WHERE r.id IN (SELECT MAX(id) FROM releases WHERE status NOT IN ('preflight','ready','blocked','discarded') GROUP BY environment_id)) q
+      ORDER BY q.id DESC`
+    const rows = this.db.prepare(sql).all() as unknown as (ReleaseRow & { last_previous_commit: string | null; last_deployed_commit: string | null })[]
+    return rows.map((r) => ({ ...summary(r), previousCommit: r.last_previous_commit, deployedCommit: r.last_deployed_commit }))
   }
 
   /** Releases that are executing right now (running or rolling back). */

@@ -654,6 +654,7 @@ if (!app.requestSingleInstanceLock()) {
               },
               write: (path, text) => writeFile(path, text, 'utf8'),
             },
+            lastReleases: () => release.latestPerEnvironment(),
           }),
           ...createServiceHandlers({
             services,
