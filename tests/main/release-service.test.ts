@@ -1316,4 +1316,30 @@ describe('per-service record', () => {
     const all = JSON.stringify(r.f.audit.list({ actions: ['release.preflight', 'release.start', 'release.finish', 'release.rollback'] }))
     for (const bad of ['app1', '10.0.0.7', r.f.host.id]) expect(all).not.toContain(bad)
   })
+
+  it('ctx actor overrides the constructor actor in rows and audit', async () => {
+    const seen: { actor: unknown; action: string }[] = []
+    const checked: unknown[] = []
+    const access: DeployAccess = { check: async (actor) => (checked.push(actor), { allowed: true }) }
+    let late!: Rig
+    const r = await rig({ access, audit: { append: (input) => (seen.push({ actor: input.actor, action: input.action }), late.f.audit.append(input)) } })
+    late = r
+    const hub = { osUser: 'ada@example.com', machine: 'hub-1', hubUserId: 'oid-1' }
+    const { releaseId } = await r.svc.preflight(
+      { environmentId: r.f.staging.id, serviceIds: tracked(r, dep(r, 'api')).map((s) => s.id), bump: 'none', options: DEFAULT_RELEASE_OPTIONS },
+      { actor: hub },
+    )
+    for (let i = 0; i < 200 && r.svc.detail(releaseId).status === 'preflight'; i++) await new Promise((res) => setImmediate(res))
+    await r.svc.start(releaseId, {}, { actor: hub })
+    await r.svc.whenIdle()
+    expect(r.svc.list().find((x) => x.id === releaseId)?.triggeredBy).toBe('ada@example.com@hub-1')
+    expect(r.runner.call('release').actor).toEqual(hub)
+    expect(checked.every((a) => a === hub)).toBe(true)
+    const mine = seen.filter((x) => ['release.preflight', 'release.start', 'release.finish'].includes(x.action))
+    expect(mine.map((x) => x.action)).toEqual(['release.preflight', 'release.start', 'release.finish'])
+    expect(mine.every((x) => x.actor === hub)).toBe(true)
+    // Without a ctx the constructor's actor is still used.
+    const id2 = await ready(r, [dep(r, 'web')])
+    expect(r.svc.list().find((x) => x.id === id2)?.triggeredBy).toBe('tester@box')
+  })
 })

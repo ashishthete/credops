@@ -389,7 +389,7 @@ export class ReleaseStore {
    * A release left preflight, running or rolling back by a quit can never finish: mark it failed (its runs and
    * their steps too). `ready` is a stable waiting state and stays. Returns the ids.
    */
-  failInterrupted(): string[] {
+  failInterrupted(message: string = INTERRUPTED_MESSAGE): string[] {
     const ids = (this.db.prepare("SELECT id FROM releases WHERE status IN ('preflight','running','rolling_back') ORDER BY id").all() as { id: string }[]).map((r) => r.id)
     if (ids.length === 0) return ids
     const ts = this.now().toISOString()
@@ -405,8 +405,8 @@ export class ReleaseStore {
             .prepare('UPDATE deployment_runs SET status = ?, steps = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?')
             .run(status, JSON.stringify(steps), run.status === 'running' ? ts : null, run.id)
         }
-        this.setStatus(id, 'failed', { error: INTERRUPTED_MESSAGE, finishedAt: ts })
-        this.appendEvents(id, [{ type: 'run.finished', status: 'failed', error: INTERRUPTED_MESSAGE }])
+        this.setStatus(id, 'failed', { error: message, finishedAt: ts })
+        this.appendEvents(id, [{ type: 'run.finished', status: 'failed', error: message }])
       }
     })
     return ids
