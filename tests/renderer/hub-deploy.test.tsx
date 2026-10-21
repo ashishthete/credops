@@ -96,13 +96,19 @@ describe('team deployments', () => {
   afterEach(cleanup)
 
   it('team environments appear in a Hub group with lock badges', async () => {
-    await open({ 'hub:locks': [lock()], 'hub:catalog': [teamEnv(), teamEnv({ id: 'hub-stg', name: 'stg-eu', protected: false }, { lock: null })] })
+    await open({ 'hub:locks': [lock()], 'hub:catalog': [teamEnv(), teamEnv({ id: 'hub-stg', name: 'stg-eu', protected: false }, { lock: null })] }, '/deployments')
     const group = await screen.findByRole('group', { name: 'Team (Hub)' })
-    expect(within(group).getByRole('button', { name: 'prod-eu', pressed: true })).toBeInTheDocument()
-    expect(within(group).getByRole('button', { name: 'stg-eu' })).toBeInTheDocument()
-    expect(await screen.findByText(/Frozen by Bob until .+: db migration/)).toBeInTheDocument()
-    // Local environments keep their own group, and a team environment's cards are read only.
+    const row = within(group).getByRole('listitem', { name: 'prod-eu' })
+    expect(within(group).getByRole('listitem', { name: 'stg-eu' })).toBeInTheDocument()
+    // Local environments keep their own group; a team environment gets no Add service here.
     expect(screen.getByRole('group', { name: 'Shop' })).toBeInTheDocument()
+    expect(within(group).queryByRole('button', { name: /^Add service/ })).not.toBeInTheDocument()
+    expect(within(row).getByText('eu-app1 · 1 service')).toBeInTheDocument()
+    const user = userEvent.setup()
+    await user.click(within(row).getByRole('button', { name: /^prod-eu,/ }))
+    expect(await screen.findByText(/Frozen by Bob until .+: db migration/)).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'Breadcrumb' })).toHaveTextContent('Deployments›Team (Hub)›prod-eu')
+    // A team environment's cards are read only.
     expect(screen.queryByRole('button', { name: 'New deployment' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'eu-app1' })).toBeInTheDocument()
@@ -124,7 +130,8 @@ describe('team deployments', () => {
   })
 
   it('a team environment that arrives after the first deploy load becomes deployable', async () => {
-    const invoke = await open({ 'hub:catalog': [], 'deploy:list': [] }, '/deployments?env=e1')
+    const invoke = await open({ 'hub:catalog': [], 'deploy:list': [] }, '/deployments')
+    await screen.findByRole('group', { name: 'Shop' })
     expect(screen.queryByRole('group', { name: 'Team (Hub)' })).not.toBeInTheDocument()
     // The catalog arrives over HTTP after sign-in; main now lists its deployments in deploy:list.
     const arrived = deploymentMeta({ id: 'hd1', name: 'core', environmentId: 'hub-prod', hostId: 'hh1' })
@@ -139,7 +146,10 @@ describe('team deployments', () => {
     })
     await act(async () => emitBridgeEvent('hub:catalog', undefined))
     const user = userEvent.setup()
-    await user.click(await screen.findByRole('button', { name: 'prod-eu' }))
+    await user.click(await screen.findByRole('button', { name: 'Deploy to prod-eu' }))
+    expect(await screen.findByRole('dialog', { name: 'Deploy to prod-eu' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    await user.click(screen.getByRole('button', { name: /^prod-eu,/ }))
     expect(await screen.findByRole('region', { name: 'eu-app1' })).toBeInTheDocument()
     expect(screen.queryByText(/No deployments in/)).not.toBeInTheDocument()
   })
