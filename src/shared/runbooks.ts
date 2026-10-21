@@ -37,7 +37,7 @@ export const MAX_RUNBOOK_NAME = 64
 export const MAX_RUNBOOK_DESCRIPTION = 500
 const MAX_CHOICES = 50
 const MAX_CHOICE = 100
-const MAX_UNTIL_HOURS = 168
+export const MAX_UNTIL_HOURS = 168
 
 export const PARAM_PATTERN: Record<RunbookParam['pattern'], RegExp> = {
   identifier: /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/,
@@ -107,10 +107,10 @@ function validateItem(it: unknown, o: RunbookValidationOptions): RunbookItem {
     const tail = it.tail ?? LOG_TAIL_DEFAULT
     if (!Number.isInteger(tail) || (tail as number) < 1 || (tail as number) > LOG_TAIL_MAX) bad(`logs tail must be 1-${LOG_TAIL_MAX}`)
     out.tail = tail as number
-    if (it.untilHours !== undefined) {
-      if (!Number.isInteger(it.untilHours) || (it.untilHours as number) < 1 || (it.untilHours as number) > MAX_UNTIL_HOURS) bad(`logs hours must be 1-${MAX_UNTIL_HOURS}`)
-      out.untilHours = it.untilHours as number
-    }
+  }
+  if (builtin === 'prune-images' && it.untilHours !== undefined) {
+    if (!Number.isInteger(it.untilHours) || (it.untilHours as number) < 1 || (it.untilHours as number) > MAX_UNTIL_HOURS) bad(`prune hours must be 1-${MAX_UNTIL_HOURS}`)
+    out.untilHours = it.untilHours as number
   }
   return out
 }

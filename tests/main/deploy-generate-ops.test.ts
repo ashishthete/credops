@@ -4,7 +4,7 @@ import { generatePlaybook } from '../../src/main/deploy/generate'
 import { generateOperation } from '../../src/main/deploy/generate-ops'
 import type { DeployPlan, PlanOperation } from '../../src/main/deploy/runner'
 import { LOG_TAIL_MAX } from '../../src/shared/ops'
-import type { BuiltinKind } from '../../src/shared/runbooks'
+import { MAX_UNTIL_HOURS, validateRunbook, type BuiltinKind } from '../../src/shared/runbooks'
 import { FIX, depFixture, planFixture, shellWords, stepFixture } from './deploy-helpers'
 
 type Task = Record<string, unknown> & { block?: Task[]; rescue?: Task[]; tags?: string[]; no_log?: boolean; name: string }
@@ -181,10 +181,33 @@ describe('operation playbook', () => {
       }
   })
 
-  it('a non-operation plan keeps its operation field out of the playbook, and an operation plan needs one', () => {
+  it('a non-operation plan cannot carry an operation, and an operation plan needs one', () => {
     expect(() => generateOperation(planFixture())).toThrow(/operation/)
     const p = opPlan([bi('status')])
     expect(() => generatePlaybook({ ...p, kind: 'release' })).toThrow(/operation/)
-    expect(depFixture(1, 'h').runId).toBe(RUN1)
+    const rel = planFixture()
+    expect(generatePlaybook({ ...rel, operation: null })).toBe(generatePlaybook(rel))
+  })
+
+  it('an operation plan cannot also carry a flow or a parallel prepare', () => {
+    expect(() => generateOperation(opPlan([bi('status')], {}, { prepare: { cap: 2 } }))).toThrow(/operation/)
+    expect(() => generateOperation(opPlan([bi('status')], {}, { flow: { stages: [], onFailure: 'stop-all' } }))).toThrow(/operation/)
+  })
+
+  it('prune-images runs once per host, on the first target', () => {
+    const tasks = flat(parse(opPlan([bi('prune-images', { untilHours: 6 }), bi('status')]))[0].tasks)
+    expect(tasks.filter((t) => kindOf(t) === 'op_prune_images').map((t) => t.name)).toEqual(['prune_images dep1'])
+    expect(tasks.filter((t) => kindOf(t) === 'op_status').length).toBe(2)
+  })
+
+  it('a saved prune-images runbook keeps untilHours and generates the filter', () => {
+    const o = { allowedSecretIds: new Set<string>(), serviceIds: ['s1'], serviceNames: ['web'] }
+    const input = { environmentId: 'e', name: 'prune', targetServiceIds: ['s1'], items: [{ type: 'builtin', builtin: 'prune-images', untilHours: MAX_UNTIL_HOURS }] }
+    const saved = validateRunbook(input, o)
+    expect(saved.items).toEqual([{ type: 'builtin', builtin: 'prune-images', untilHours: MAX_UNTIL_HOURS }])
+    expect(() => validateRunbook({ ...input, items: [{ type: 'builtin', builtin: 'prune-images', untilHours: MAX_UNTIL_HOURS + 1 }] }, o)).toThrow(/hours/)
+    expect(() => validateRunbook({ ...input, items: [{ type: 'builtin', builtin: 'prune-images', untilHours: 0 }] }, o)).toThrow(/hours/)
+    const text = generateOperation(opPlan(saved.items as PlanOperation['items']))
+    expect(text).toContain(`until=${MAX_UNTIL_HOURS}h`)
   })
 })

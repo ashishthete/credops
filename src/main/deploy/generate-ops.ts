@@ -1,5 +1,5 @@
 import { LOG_TAIL_DEFAULT, LOG_TAIL_MAX } from '../../shared/ops'
-import { isReadOnlyRunbook, type BuiltinKind } from '../../shared/runbooks'
+import { MAX_UNTIL_HOURS, isReadOnlyRunbook, type BuiltinKind } from '../../shared/runbooks'
 import { MAX_STEPS_PER_CHECKOUT } from '../../shared/steps'
 import { shJoin } from '../ops/quote'
 import { composeCommand } from './compose'
@@ -37,7 +37,6 @@ import type { DeployPlan, PlanDeployment, PlanOperation, PlanStep } from './runn
 
 type Task = Record<string, unknown>
 
-const MAX_PRUNE_HOURS = 168
 type Item = PlanOperation['items'][number]
 
 /** `op_<builtin>`: the log and tag kind of a built-in, within [a-z_]. */
@@ -51,7 +50,7 @@ function opTask(b: BuiltinKind, d: PlanDeployment, body: string): Task {
   return sh(nm(b, d), kind, d.runId, streamed(kind, body), { timeout: clampSec(d.composeTimeoutSec, 'compose timeout'), chdir: IN_REPO, become: becomes(d), guarded: true })
 }
 
-function builtinTasks(it: Extract<Item, { type: 'builtin' }>, d: PlanDeployment): Task[] {
+function builtinTasks(it: Extract<Item, { type: 'builtin' }>, d: PlanDeployment, firstOnHost: boolean): Task[] {
   const b = it.builtin
   switch (b) {
     case 'restart':
@@ -66,7 +65,9 @@ function builtinTasks(it: Extract<Item, { type: 'builtin' }>, d: PlanDeployment)
     }
     case 'prune-images': {
       const h = it.untilHours
-      need(h === undefined || (Number.isInteger(h) && h >= 1 && h <= MAX_PRUNE_HOURS), 'prune hours')
+      // Images are host-wide: once per host, not once per checkout.
+      if (!firstOnHost) return []
+      need(h === undefined || (Number.isInteger(h) && h >= 1 && h <= MAX_UNTIL_HOURS), 'prune hours')
       return [opTask(b, d, shJoin(['docker', 'image', 'prune', '-f', ...(h === undefined ? [] : ['--filter', `until=${h}h`])]))]
     }
     case 'backup-db':
@@ -83,6 +84,7 @@ function checkOperation(plan: DeployPlan): PlanOperation {
   const op = plan.operation
   if (plan.kind !== 'operation' || !op) return need(false, 'operation') as never
   need(op.items.length >= 1 && op.items.length <= MAX_STEPS_PER_CHECKOUT, 'operation items')
+  need((plan.flow ?? null) === null && (plan.prepare ?? null) === null, 'operation')
   need(typeof op.lock === 'boolean' && (op.lock || isReadOnlyRunbook({ items: op.items.map((i) => (i.type === 'step' ? { type: 'step' as const, step: i.step.step } : i)) })), 'operation lock')
   const keys = new Set<string>()
   for (const i of op.items) {
@@ -122,8 +124,8 @@ export function generateOperation(plan: DeployPlan): string {
     if (become !== undefined) vars.ansible_become_password = become
     // The prep task makes the run directory the streams write to, so it stays when there is no lock.
     const tasks: Task[] = [taskPrep(h), ...(op.lock ? [taskLock(h)] : [])]
-    for (const d of targets) {
-      const items = op.items.flatMap((i) => (i.type === 'step' ? [stepTask(d, i.step, null)] : builtinTasks(i, d)))
+    for (const [n, d] of targets.entries()) {
+      const items = op.items.flatMap((i) => (i.type === 'step' ? [stepTask(d, i.step, null)] : builtinTasks(i, d, n === 0)))
       tasks.push(block(d, 'operation', items, rescueRelease(d), steps))
     }
     plays.push({ name: `operation ${sanitizeIdent(h.alias)}`, hosts: h.alias, gather_facts: false, strategy: 'linear', vars, tasks })
