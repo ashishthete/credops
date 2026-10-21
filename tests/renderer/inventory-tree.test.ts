@@ -21,6 +21,7 @@ const data = (): InventoryData => ({
   ],
   identities: [],
   vaults: [],
+  regions: [],
 })
 
 const all = new Set(['p:p1', 'p:p2', 'p:p1/e:prod', 'p:p1/e:shared', 'u'])

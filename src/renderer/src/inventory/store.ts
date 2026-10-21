@@ -9,6 +9,9 @@ import type {
   HostRole,
   ProductInput,
   ProductMeta,
+  RegionInput,
+  RegionMeta,
+  RegionPatch,
   SshImportRequest,
   SshImportResult,
 } from '../../../shared/inventory'
@@ -24,6 +27,7 @@ export interface InventoryData {
   hosts: HostMeta[]
   identities: IdentityMeta[]
   vaults: VaultMeta[]
+  regions: RegionMeta[]
 }
 
 export const inventoryStore = createStore<InventoryData | null>(null)
@@ -56,7 +60,7 @@ type ListKey = keyof InventoryData
  * Bumped by every write to a list. A read only applies the lists nobody wrote while it was in
  * flight, so a slow load or refresh can't overwrite a newer edit with what it read before.
  */
-const written: Record<ListKey, number> = { products: 0, environments: 0, hosts: 0, identities: 0, vaults: 0 }
+const written: Record<ListKey, number> = { products: 0, environments: 0, hosts: 0, identities: 0, vaults: 0, regions: 0 }
 
 function applyRead(seen: Record<ListKey, number>, lists: Partial<InventoryData>) {
   const d = inventoryStore.get()
@@ -71,14 +75,15 @@ function applyRead(seen: Record<ListKey, number>, lists: Partial<InventoryData>)
 async function readInventory(): Promise<void> {
   const seen = { ...written }
   const data = await attempt("Couldn't load your inventory", async () => {
-    const [products, environments, hosts, identities, vaults] = await Promise.all([
+    const [products, environments, hosts, identities, vaults, regions] = await Promise.all([
       api.invoke('product:list'),
       api.invoke('env:list'),
       api.invoke('host:list'),
       api.invoke('identity:list'),
       api.invoke('vault:list'),
+      api.invoke('region:list'),
     ])
-    return { products, environments, hosts, identities, vaults }
+    return { products, environments, hosts, identities, vaults, regions }
   })
   if (data) applyRead(seen, data)
 }
@@ -103,6 +108,7 @@ const LISTS = {
   products: () => api.invoke('product:list'),
   environments: () => api.invoke('env:list'),
   hosts: () => api.invoke('host:list'),
+  regions: () => api.invoke('region:list'),
 }
 
 /** Re-reads the lists on the other side of a link, so shared items update everywhere. */
@@ -126,7 +132,7 @@ function diff<T extends object>(input: Partial<T>, current: T | undefined, keys:
   return out
 }
 
-const HOST_KEYS = ['label', 'address', 'port', 'identityId', 'jumpHostId', 'tags', 'osIcon', 'notes', 'keepaliveSec', 'envVars'] as const satisfies readonly (keyof HostPatch)[]
+const HOST_KEYS = ['label', 'address', 'regionId', 'port', 'identityId', 'jumpHostId', 'tags', 'osIcon', 'notes', 'keepaliveSec', 'envVars'] as const satisfies readonly (keyof HostPatch)[]
 const ENV_KEYS = ['name', 'color', 'protected', 'defaultIdentityId', 'defaultPort', 'defaultJumpHostId', 'domain'] as const satisfies readonly (keyof EnvironmentPatch)[]
 
 const deleted = async (fn: () => Promise<unknown>, title: string) =>
@@ -148,6 +154,20 @@ export async function openEnvironmentDomain(id: string): Promise<void> {
 }
 
 export const inv = {
+  async saveRegion(input: RegionInput, id?: string): Promise<RegionMeta | undefined> {
+    const row = await attempt("Couldn't save the region", () =>
+      id ? api.invoke('region:update', id, input satisfies RegionPatch) : api.invoke('region:create', input),
+    )
+    if (row) patchStore((d) => ({ regions: upsert(d.regions, row) }))
+    return row
+  },
+
+  async deleteRegion(id: string): Promise<boolean> {
+    const ok = await deleted(() => api.invoke('region:delete', id), "Couldn't delete the region")
+    if (ok) patchStore((d) => ({ regions: d.regions.filter((r) => r.id !== id) }))
+    return ok
+  },
+
   async saveProduct(input: ProductInput, id?: string): Promise<ProductMeta | undefined> {
     const row = await attempt("Couldn't save the product", () =>
       id ? api.invoke('product:update', id, input) : api.invoke('product:create', input),
@@ -255,7 +275,8 @@ export const inv = {
     })
     if (row) {
       patchStore((d) => ({ hosts: upsert(d.hosts, row) }))
-      if (!id) await refresh('environments')
+      // A region's host count changes when a host is added or moves region.
+      await refresh(...(id ? ['regions' as const] : ['environments' as const, 'regions' as const]))
     } else if (updated) {
       // The edit saved but the vault links didn't; show what was saved.
       await refresh('hosts')
@@ -267,7 +288,7 @@ export const inv = {
     const ok = await deleted(() => api.invoke('host:delete', id), "Couldn't delete the host")
     if (ok) {
       patchStore((d) => ({ hosts: d.hosts.filter((h) => h.id !== id) }))
-      await refresh('environments')
+      await refresh('environments', 'regions')
       // The host's tunnels went with it (main stops them and the rows cascade).
       void loadTunnels()
     }

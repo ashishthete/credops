@@ -47,6 +47,7 @@ beforeEach(() => {
     ],
     identities: [],
     vaults: [],
+    regions: [],
   })
 })
 

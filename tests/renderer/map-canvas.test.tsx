@@ -48,7 +48,7 @@ const prod = environment({
   ],
 })
 const hosts = [host({ id: 'h1', label: 'web' }), host({ id: 'h2', label: 'pg' })]
-const data: InventoryData = { products: [web], environments: [prod], hosts, identities: [], vaults: [] }
+const data: InventoryData = { products: [web], environments: [prod], hosts, identities: [], vaults: [], regions: [] }
 
 const flush = () => act(async () => {})
 const node = (id: string) => document.querySelector<HTMLElement>(`.react-flow__node[data-id="${id}"]`)

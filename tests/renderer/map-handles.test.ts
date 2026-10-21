@@ -12,6 +12,7 @@ describe('tunnel edge handles', () => {
         hosts: [host({ id: 'h1', label: 'web' })],
         identities: [],
         vaults: [],
+        regions: [],
       },
       tunnels: [
         tunnelMeta({ id: 'tl', hostId: 'h1', environmentId: 'e1', type: 'L' }),

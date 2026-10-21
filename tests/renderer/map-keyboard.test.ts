@@ -15,6 +15,7 @@ function data(): InventoryData {
     hosts: [host({ id: 'h1', label: 'web' }), host({ id: 'h2', label: 'api' }), host({ id: 'h3', label: 'pg' })],
     identities: [],
     vaults: [],
+    regions: [],
   }
 }
 

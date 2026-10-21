@@ -209,7 +209,7 @@ describe('products page', () => {
     expect(item('prod')).toHaveAttribute('aria-level', '2')
 
     const all = new Set(['p:acme', 'p:essentials', 'p:acme/e:prod'])
-    const order = buildTree({ ...w, identities: [], vaults: [] }, all).map((r) => r.label)
+    const order = buildTree({ ...w, identities: [], vaults: [], regions: [] }, all).map((r) => r.label)
     expect(items().map((el) => el.getAttribute('aria-label'))).toEqual(order)
 
     await user.click(chevron(acme))

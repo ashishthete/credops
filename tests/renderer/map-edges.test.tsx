@@ -250,7 +250,7 @@ describe('map edges', () => {
 
   it('clicking the chip selects its edge', async () => {
     const onEdgeSelect = vi.fn()
-    const data = { products: [web, shop], environments: [prod], hosts, identities: [], vaults: [] }
+    const data = { products: [web, shop], environments: [prod], hosts, identities: [], vaults: [], regions: [] }
     const graph = buildGraph({ data, tunnels: [t1], scope: { kind: 'all' } })
     render(
       <ReactFlowProvider>

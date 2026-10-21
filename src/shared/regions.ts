@@ -66,3 +66,12 @@ export function regionRefs(ids: readonly string[], all: readonly RegionRef[]): R
 }
 
 const distinct = (ids: (string | null)[]): string[] => [...new Set(ids.filter((id): id is string => id !== null))]
+
+/**
+ * The soft hint shown when a host joins an environment: the environment's regions when the host's region isn't
+ * among them, else null. Never a block, and silent while the environment has no hosts yet.
+ */
+export function regionHint(envRegionIds: readonly string[], hostRegionId: string): string[] | null {
+  if (envRegionIds.length === 0 || envRegionIds.includes(hostRegionId)) return null
+  return [...envRegionIds]
+}

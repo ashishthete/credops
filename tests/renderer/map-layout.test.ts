@@ -8,7 +8,7 @@ import {
 import { environment, host, product, tunnelMeta } from './helpers'
 
 const ALL: MapScope = { kind: 'all' }
-const empty: InventoryData = { products: [], environments: [], hosts: [], identities: [], vaults: [] }
+const empty: InventoryData = { products: [], environments: [], hosts: [], identities: [], vaults: [], regions: [] }
 
 function inventory(envs: { id: string; name: string; productId: string; hostIds: string[] }[], products: string[] = []): InventoryData {
   const hostIds = [...new Set(envs.flatMap((e) => e.hostIds))]

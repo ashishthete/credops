@@ -35,7 +35,7 @@ beforeEach(() => {
   mockBridge({ 'snippets:list': [] })
   resetSnippets()
   snippetStore.set({ snippets: [snip('s1', 'Disk usage', ['system']), snip('s2', 'Tail logs')], loaded: true })
-  inventoryStore.set({ products: [], environments: [], hosts: [host({ id: 'h-web', label: 'web' }), host({ id: 'h-db', label: 'db' })], identities: [], vaults: [] })
+  inventoryStore.set({ products: [], environments: [], hosts: [host({ id: 'h-web', label: 'web' }), host({ id: 'h-db', label: 'db' })], identities: [], vaults: [], regions: [] })
 })
 afterEach(() => {
   cleanup()

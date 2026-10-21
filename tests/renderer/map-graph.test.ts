@@ -33,7 +33,7 @@ function releaseSummary(id: string, serviceIds: string[]): ReleaseSummary {
 
 
 const ALL: MapScope = { kind: 'all' }
-const empty: InventoryData = { products: [], environments: [], hosts: [], identities: [], vaults: [] }
+const empty: InventoryData = { products: [], environments: [], hosts: [], identities: [], vaults: [], regions: [] }
 const ids = (g: ReturnType<typeof buildGraph>) => g.nodes.map((n) => n.id)
 const build = (data: InventoryData, scope: MapScope = ALL, tunnels = [] as ReturnType<typeof tunnelMeta>[]) => buildGraph({ data, tunnels, scope })
 

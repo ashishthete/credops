@@ -26,6 +26,7 @@ const data: InventoryData = {
   ],
   identities: [],
   vaults: [],
+  regions: [],
 }
 const graph = buildGraph({ data, tunnels: [], scope: { kind: 'all' } })
 

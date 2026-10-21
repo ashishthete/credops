@@ -4,6 +4,7 @@ import {
   environmentRegions,
   hostRegion,
   hostRegions,
+  regionHint,
   regionRefs,
   regionsOfHosts,
   serviceRegion,
@@ -83,5 +84,19 @@ describe('derived regions', () => {
       { id: 'r-eu', code: 'eu-west-1', displayName: 'EU' },
       { id: 'r-us', code: 'us-east-1', displayName: 'US' },
     ])
+  })
+})
+
+describe('regionHint', () => {
+  it('is silent while the environment has no hosts', () => {
+    expect(regionHint([], 'r-us')).toBeNull()
+  })
+
+  it('is silent when the host is in a region the environment already uses', () => {
+    expect(regionHint(['r-eu', 'r-us'], 'r-us')).toBeNull()
+  })
+
+  it("names the environment's regions when the host brings a new one", () => {
+    expect(regionHint(['r-eu'], 'r-us')).toEqual(['r-eu'])
   })
 })

@@ -57,7 +57,7 @@ const calls = (invoke: ReturnType<typeof mockBridge>, channel: string) => (invok
 
 async function renderTab(results: Record<string, unknown> = {}, entry = '/ops/containers?host=h-app&env=e-prod') {
   const invoke = mockBridge({ 'containers:list': containers, ...results })
-  inventoryStore.set({ products: [], environments: [prod, staging], hosts: [app1, stg1, both], identities: [], vaults: [] })
+  inventoryStore.set({ products: [], environments: [prod, staging], hosts: [app1, stg1, both], identities: [], vaults: [], regions: [] })
   render(
     <MemoryRouter initialEntries={[entry]}>
       <Routes>
@@ -205,7 +205,7 @@ describe('containers tab review fixes', () => {
   it('a host in two protected environments is refused in a blocked dialog', async () => {
     const prod2 = environment({ id: 'e-prod2', name: 'prod2', protected: true, hosts: [{ hostId: 'h-both', role: 'app' }] })
     mockBridge({ 'containers:list': containers })
-    inventoryStore.set({ products: [], environments: [prod, prod2, staging], hosts: [app1, stg1, both], identities: [], vaults: [] })
+    inventoryStore.set({ products: [], environments: [prod, prod2, staging], hosts: [app1, stg1, both], identities: [], vaults: [], regions: [] })
     render(
       <MemoryRouter initialEntries={['/ops/containers?host=h-both&env=e-stg']}>
         <ContainersTab />
@@ -219,7 +219,7 @@ describe('containers tab review fixes', () => {
 
   it('a link change resets the picked host', async () => {
     mockBridge({ 'containers:list': containers })
-    inventoryStore.set({ products: [], environments: [prod, staging], hosts: [app1, stg1, both], identities: [], vaults: [] })
+    inventoryStore.set({ products: [], environments: [prod, staging], hosts: [app1, stg1, both], identities: [], vaults: [], regions: [] })
     let go: (to: string) => void = () => {}
     function Nav() {
       go = useNavigate()
@@ -250,7 +250,7 @@ describe('containers tab review fixes', () => {
   it('remembers the pick and offers a host without environments', async () => {
     const lone = host({ id: 'h-lone', label: 'lone-1' })
     mockBridge({ 'containers:list': containers })
-    inventoryStore.set({ products: [], environments: [prod], hosts: [app1, lone], identities: [], vaults: [] })
+    inventoryStore.set({ products: [], environments: [prod], hosts: [app1, lone], identities: [], vaults: [], regions: [] })
     const view = render(
       <MemoryRouter initialEntries={['/ops/containers']}>
         <ContainersTab />

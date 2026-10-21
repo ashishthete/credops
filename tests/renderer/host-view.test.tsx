@@ -85,6 +85,7 @@ function world(): InventoryData {
     ],
     identities: [deploy],
     vaults: [defaultVault],
+    regions: [],
   }
 }
 
