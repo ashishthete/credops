@@ -81,7 +81,7 @@ export class LiveFeed {
   private readonly last = new Map<string, number>()
   private readonly notified = new Set<string>()
   /** Releases whose terminal state was seen (capped), with the last seq shown: late events are dropped, and a retry resumes from that seq. */
-  private readonly finished = new Map<string, { seq: number | null; status: string }>()
+  private readonly finished = new Map<string, { seq: number | null; status: string; at: string | null }>()
   private readonly listeners = new Set<(batch: RunEvent[]) => void>()
   private chain: Promise<void> = Promise.resolve()
 
@@ -180,7 +180,7 @@ export class LiveFeed {
         const done = await this.d.client().get<ReleaseSummary>(`/api/v1/releases/${id}`)
         if (!signal.aborted) {
           this.state(done)
-          if (TERMINAL.has(done.status)) this.finish(id, done.status)
+          if (TERMINAL.has(done.status)) this.finish(id, done.status, done.finishedAt)
         }
       } catch (err) {
         if (!this.gone(err)) throw err
@@ -200,13 +200,23 @@ export class LiveFeed {
       if (signal.aborted) return
       try {
         const done = await this.d.client().get<ReleaseSummary>(`/api/v1/releases/${id}`)
-        if (signal.aborted || done.status === f.status) continue
-        // It ran again: show its events and final state, and let its new outcome notify.
+        if (signal.aborted || (done.status === f.status && done.finishedAt === f.at)) continue
+        // It ran again: show its events, then its state, and let its new outcome notify.
+        if (!TERMINAL.has(done.status)) {
+          // Still running: state() resumes tracking from the saved position.
+          this.state(done)
+          if (this.last.has(id)) await this.backfill(id, signal)
+          continue
+        }
         this.notified.delete(id)
+        // With no saved position there is nothing to resume from: never page an untracked release from seq 0.
+        if (f.seq != null) {
+          this.last.set(id, f.seq)
+          await this.backfill(id, signal)
+        }
+        if (signal.aborted) return
         this.state(done)
-        if (!this.last.has(id) && f.seq != null) this.last.set(id, f.seq)
-        await this.backfill(id, signal)
-        if (TERMINAL.has(done.status)) this.finish(id, done.status)
+        this.finish(id, done.status, done.finishedAt)
       } catch (err) {
         if (!this.gone(err)) throw err
         this.forget(id)
@@ -215,11 +225,11 @@ export class LiveFeed {
   }
 
   /** A finished release: no catch-up later, and events straggling in behind its terminal state are ignored. */
-  private finish(id: string, status: string): void {
+  private finish(id: string, status: string, at: string | null): void {
     const seq = this.last.get(id) ?? null
     this.last.delete(id)
     this.finished.delete(id)
-    this.finished.set(id, { seq, status })
+    this.finished.set(id, { seq, status, at })
     if (this.finished.size > MAX_TRACKED) this.finished.delete(this.finished.keys().next().value as string)
   }
 
@@ -258,7 +268,7 @@ export class LiveFeed {
             }
           }
           // Its events are in before it is forgotten; a late batch for it is dropped by `finished`.
-          if (!signal.aborted) this.finish(id, msg.summary.status)
+          if (!signal.aborted) this.finish(id, msg.summary.status, msg.summary.finishedAt)
         }
         break
       case 'lock.updated':

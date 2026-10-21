@@ -369,6 +369,95 @@ describe('hub live feed', () => {
     expect(shown).toHaveLength(2)
   })
 
+  it('a failed release retried and failed again during a drop is replayed: error, log and one notification', async () => {
+    const upTo = (n: number) => Array.from({ length: n }, (_, i) => ev(REL, i + 1))
+    const log = new Map([[REL, upTo(2)]])
+    const detail = new Map<string, ReleaseSummary>()
+    const { base } = await start({
+      log,
+      detail,
+      active: () => [],
+      live: [
+        async (res) => {
+          res.write(frame(batch(REL, 1, 2)))
+          res.write(frame({ type: 'release.state', summary: summary(REL, 'failed') }))
+          await new Promise((r) => setTimeout(r, 40))
+          log.set(REL, upTo(4))
+          detail.set(REL, { ...summary(REL, 'failed'), finishedAt: '2026-10-20T10:09:00.000Z', error: 'second failure' })
+          res.destroy()
+        },
+        () => undefined,
+      ],
+    })
+    const { feed, pushed, shown } = make(base)
+    feed.start()
+    await vi.waitFor(() => expect(pushed.states.map((s) => s.error)).toEqual([null, 'second failure']))
+    await feed.idle()
+    expect(seqs(pushed.events)).toEqual([1, 2, 3, 4])
+    expect(shown).toHaveLength(2)
+  })
+
+  it('a retry seen at the recheck is pushed after its events', async () => {
+    const upTo = (n: number) => Array.from({ length: n }, (_, i) => ev(REL, i + 1))
+    const log = new Map([[REL, upTo(2)]])
+    const detail = new Map<string, ReleaseSummary>()
+    const { base } = await start({
+      log,
+      detail,
+      active: () => [],
+      live: [
+        async (res) => {
+          res.write(frame(batch(REL, 1, 2)))
+          res.write(frame({ type: 'release.state', summary: summary(REL, 'failed') }))
+          await new Promise((r) => setTimeout(r, 40))
+          log.set(REL, upTo(4))
+          detail.set(REL, summary(REL, 'succeeded'))
+          res.destroy()
+        },
+        () => undefined,
+      ],
+    })
+    const order: string[] = []
+    const t = make(base, {
+      push: {
+        events: (b) => void order.push(...b.map((e) => `e${e.seq}`)),
+        state: (s) => void order.push(`rel:${s.status}`),
+        locks: () => undefined,
+        catalog: () => undefined,
+      },
+    })
+    t.feed.start()
+    await vi.waitFor(() => expect(order).toContain('rel:succeeded'))
+    await t.feed.idle()
+    expect(order).toEqual(['e1', 'e2', 'rel:failed', 'e3', 'e4', 'rel:succeeded'])
+  })
+
+  it('an untracked release that is retried during a drop is never paged from seq 0', async () => {
+    const log = new Map([[OTHER, Array.from({ length: 50 }, (_, i) => ev(OTHER, i + 1))]])
+    const detail = new Map<string, ReleaseSummary>()
+    const { base, seen } = await start({
+      log,
+      detail,
+      active: () => [],
+      live: [
+        async (res) => {
+          // First seen at its terminal state, with no events: no position is saved for it.
+          res.write(frame({ type: 'release.state', summary: summary(OTHER, 'failed') }))
+          await new Promise((r) => setTimeout(r, 40))
+          detail.set(OTHER, summary(OTHER, 'succeeded'))
+          res.destroy()
+        },
+        () => undefined,
+      ],
+    })
+    const { feed, pushed } = make(base)
+    feed.start()
+    await vi.waitFor(() => expect(pushed.states.map((s) => s.status)).toEqual(['failed', 'succeeded']))
+    await feed.idle()
+    expect(seen.events).toEqual([])
+    expect(pushed.events).toEqual([])
+  })
+
   it('a terminal state for a release this client never tracked fetches no events', async () => {
     const log = new Map([[OTHER, Array.from({ length: 50 }, (_, i) => ev(OTHER, i + 1))]])
     const { base, seen } = await start({
