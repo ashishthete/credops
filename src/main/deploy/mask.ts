@@ -1,46 +1,25 @@
-import type { PreflightCheck, PreflightReport, ReleaseDetail, RunEvent } from '../../shared/deploy'
+import type { ReleaseDetail, RunEvent } from '../../shared/deploy'
 import { redact } from '../security/redact'
 
 /**
  * A release's text as it leaves main (over IPC or to a file), masked again with every known secret value and key
  * block. A local release's events were masked as they were stored; a Hub release's text reaches this desktop as the
- * Hub sent it. Only text fields change: ids, states and order stay as they were.
+ * Hub sent it. Every string is masked (`redact` walks the whole value), so ids, states and order stay as they were.
+ *
+ * The stored playbook is JSON text, where a secret holding `"` or `\` appears escaped: each secret is also masked in
+ * its JSON-escaped form, so that text stays valid JSON.
  */
-const checkOf = (c: PreflightCheck, m: (s: string) => string): PreflightCheck => ({ ...c, message: m(c.message) })
-const reportOf = (r: PreflightReport, m: (s: string) => string): PreflightReport => ({ ...r, checks: r.checks.map((c) => checkOf(c, m)) })
+function withJsonForms(secrets: readonly string[]): string[] {
+  return secrets.flatMap((s) => {
+    const escaped = JSON.stringify(s).slice(1, -1)
+    return escaped === s ? [s] : [s, escaped]
+  })
+}
 
 export function maskDetail(d: ReleaseDetail, secrets: readonly string[]): ReleaseDetail {
-  const m = (s: string) => redact(s, secrets)
-  return {
-    ...d,
-    playbook: d.playbook === null ? null : m(d.playbook),
-    error: d.error === null ? null : m(d.error),
-    preflight: d.preflight && reportOf(d.preflight, m),
-  }
+  return redact(d, withJsonForms(secrets))
 }
 
 export function maskEvents(events: RunEvent[], secrets: readonly string[]): RunEvent[] {
-  const m = (s: string) => redact(s, secrets)
-  return events.map((e): RunEvent => {
-    switch (e.type) {
-      case 'log':
-        return { ...e, line: m(e.line), ...(e.task === undefined ? {} : { task: m(e.task) }) }
-      case 'task.done':
-        return { ...e, task: m(e.task) }
-      case 'step.failed':
-        return { ...e, error: m(e.error) }
-      case 'step.done':
-        return e.message === undefined ? e : { ...e, message: m(e.message) }
-      case 'lock.busy':
-        return { ...e, text: m(e.text) }
-      case 'run.finished':
-        return e.error === undefined ? e : { ...e, error: m(e.error) }
-      case 'preflight.check':
-        return { ...e, check: checkOf(e.check, m) }
-      case 'preflight.done':
-        return { ...e, report: reportOf(e.report, m) }
-      default:
-        return e
-    }
-  })
+  return redact(events, withJsonForms(secrets))
 }

@@ -37,4 +37,27 @@ describe('masking release text in main', () => {
     expect(out.playbook).toBe('[{"name": "‹redacted›"}]')
     expect(maskDetail({ ...d, playbook: null, error: null, preflight: null }, [SECRET])).toMatchObject({ playbook: null, error: null, preflight: null })
   })
+  it('masks a secret with quotes or backslashes as it appears in the stored JSON playbook', () => {
+    const odd = 'p@ss"w\\rd9-long'
+    const playbook = JSON.stringify([{ name: 'health', vars: { url: `https://x/?t=${odd}` } }], null, 2)
+    expect(playbook).not.toContain(odd)
+    const out = maskDetail({ id: 'rel', playbook, error: null, preflight: null, runs: [] } as unknown as ReleaseDetail, [odd])
+    expect(out.playbook).toBe(JSON.stringify([{ name: 'health', vars: { url: 'https://x/?t=‹redacted›' } }], null, 2))
+    expect(JSON.parse(out.playbook!)).toBeTruthy()
+  })
+
+  it('masks every free text of a detail: release notes, step errors and commit messages', () => {
+    const d = {
+      id: 'rel',
+      playbook: null,
+      error: null,
+      preflight: null,
+      releaseNotes: `see https://x/?t=${SECRET}`,
+      runs: [{ id: 'run1', steps: [{ id: 's1', error: `boom ${SECRET}` }], commits: [{ sha: 'abc', message: `fix ${SECRET}` }] }],
+    } as unknown as ReleaseDetail
+    const out = maskDetail(d, [SECRET])
+    expect(JSON.stringify(d)).toContain(SECRET)
+    expect(JSON.stringify(out)).not.toContain(SECRET)
+    expect(out.runs[0]).toMatchObject({ id: 'run1', steps: [{ id: 's1', error: 'boom ‹redacted›' }] })
+  })
 })
