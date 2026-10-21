@@ -164,9 +164,6 @@ export function ReleaseView({ releaseId }: { releaseId: string }) {
   useEffect(() => {
     if (envId && finished && !releaseStore.get().history[envId]) void loadHistory(envId)
   }, [envId, finished])
-  useEffect(() => {
-    if (state?.result) markCancelling(releaseId, false)
-  }, [state?.result, releaseId])
 
   const now = useNow(running)
   const steps = useStepHistory(envId, releaseId, running)

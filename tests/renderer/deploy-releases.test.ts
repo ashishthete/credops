@@ -1,6 +1,6 @@
 import { act } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
-import { closeRelease, onLogEvents, openRelease, releaseStore, resetReleases, startReleaseSync } from '../../src/renderer/src/deploy/releases'
+import { closeRelease, isCancelling, markCancelling, onLogEvents, openRelease, releaseStore, resetReleases, startReleaseSync } from '../../src/renderer/src/deploy/releases'
 import { initialPipeline, reducePipeline } from '../../src/renderer/src/deploy/pipeline'
 import type { ReleaseSummary, RunEvent } from '../../src/shared/deploy'
 import { events, healthFailure, OK_RUN, REL, releaseDetail } from './fixtures/release-events'
@@ -196,6 +196,30 @@ describe('release store', () => {
     onLogEvents(REL, (batch) => logs.push(...batch.map((e) => (e.type === 'log' ? e.line : ''))))
     act(() => emitBridgeEvent('deploy:event', [all[0], all[0], all[1]]))
     expect(logs).toEqual(['one', 'two'])
+    stop()
+  })
+  it('a cancel flag clears when the release finishes, whichever page is open', async () => {
+    const all = events(OK_RUN)
+    world(all.slice(0, 4), { 'release:get': releaseDetail({ status: 'running' }) })
+    const stop = startReleaseSync()
+    await act(() => openRelease(REL))
+    markCancelling(REL, true)
+    act(() => emitBridgeEvent('deploy:event', all.slice(4, -1)))
+    expect(isCancelling(REL)).toBe(true)
+    act(() => emitBridgeEvent('deploy:event', all.slice(-1)))
+    expect(isCancelling(REL)).toBe(false)
+    closeRelease(REL)
+
+    // Not open anywhere: the release's own state push ends it.
+    act(() => emitBridgeEvent('release:state', summary({ status: 'running' })))
+    markCancelling(REL, true)
+    act(() => emitBridgeEvent('release:state', summary({ status: 'running' })))
+    expect(isCancelling(REL)).toBe(true)
+    act(() => emitBridgeEvent('release:state', summary({ status: 'cancelled' })))
+    expect(isCancelling(REL)).toBe(false)
+    // A cancel's reply that lands after the release finished sets nothing.
+    markCancelling(REL, true)
+    expect(isCancelling(REL)).toBe(false)
     stop()
   })
 })
