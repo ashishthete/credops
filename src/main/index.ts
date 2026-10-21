@@ -50,7 +50,7 @@ import { localAllowAll } from './deploy/access'
 import { HubAccess, RoutingAccess } from './hub/access'
 import { HubCatalog } from './hub/catalog'
 import { HubConnection } from './hub/connection'
-import { LiveFeed, sleepUnlessAborted } from './hub/live'
+import { hubFeedSync, LiveFeed, sleepUnlessAborted } from './hub/live'
 import { HubRunner, RoutingReleases } from './hub/runner'
 import { backoffMs } from './tunnels/backoff'
 import { HubPublisher, toHubIntegrations } from './hub/publish'
@@ -449,11 +449,7 @@ if (!app.requestSingleInstanceLock()) {
         track: (id) => void hubReleaseIds.add(id),
         now: () => new Date(),
       })
-      const syncHubFeed = (): void => {
-        const st = hub.status()
-        if (st.linked && st.signedIn) hubFeed.start()
-        else hubFeed.stop()
-      }
+      const syncHubFeed = hubFeedSync({ status: () => hub.status(), feed: hubFeed, ids: hubReleaseIds })
       hub.onState(syncHubFeed)
       hubFeedStop = () => hubFeed.stop()
       syncHubFeed()

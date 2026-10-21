@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ReleaseSummary, RunEvent } from '../../src/shared/deploy'
 import type { HubLiveMessage } from '../../src/shared/hub'
 import { HubClient } from '../../src/main/hub/client'
-import { LiveFeed } from '../../src/main/hub/live'
+import { hubFeedSync, LiveFeed } from '../../src/main/hub/live'
+import type { HubStatus } from '../../src/shared/hub'
 
 const REL = '99999999-9999-4999-8999-999999999999'
 const OTHER = '88888888-8888-4888-8888-888888888888'
@@ -528,5 +529,45 @@ describe('hub live feed', () => {
     third.feed.start()
     await vi.waitFor(() => expect(signedOut).toHaveBeenCalledTimes(1))
     expect(calls).toHaveLength(1)
+  })
+})
+
+describe('hubFeedSync', () => {
+  const on = (hubId: string, oid: string, signedIn = true): HubStatus =>
+    ({ linked: true, url: 'http://hub', hubId, hubName: 'Test Hub', signedIn, signingIn: false, online: true, user: { oid } as never, sessionExpiresAt: null }) as HubStatus
+
+  it('forgets the Hub release ids on sign-out, unlink, and a different Hub or person; keeps them otherwise', () => {
+    let st: HubStatus = on('h1', 'o1')
+    const ids = new Set<string>()
+    const feed = { start: vi.fn(), stop: vi.fn() }
+    const sync = hubFeedSync({ status: () => st, feed, ids })
+    sync()
+    expect(feed.start).toHaveBeenCalledTimes(1)
+    ids.add(REL)
+    sync()
+    expect([...ids]).toEqual([REL])
+
+    st = on('h1', 'o1', false)
+    sync()
+    expect(ids.size).toBe(0)
+    expect(feed.stop).toHaveBeenCalledTimes(1)
+
+    sync()
+    ids.add(REL)
+    st = { linked: false }
+    sync()
+    expect(ids.size).toBe(0)
+
+    st = on('h1', 'o1')
+    sync()
+    ids.add(REL)
+    st = on('h2', 'o1')
+    sync()
+    expect(ids.size).toBe(0)
+
+    ids.add(REL)
+    st = on('h2', 'o2')
+    sync()
+    expect(ids.size).toBe(0)
   })
 })

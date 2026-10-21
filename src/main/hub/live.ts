@@ -1,5 +1,5 @@
 import type { ReleaseSummary, RunEvent } from '../../shared/deploy'
-import type { HubEnvLock, HubLiveMessage } from '../../shared/hub'
+import type { HubEnvLock, HubLiveMessage, HubStatus } from '../../shared/hub'
 import type { NotifyEventKey } from '../../shared/settings'
 import type { NotificationFacts } from '../notify/teams'
 import { HubError, type HubClient } from './client'
@@ -372,6 +372,23 @@ export class LiveFeed {
       actor: s.triggeredBy,
       at: this.d.now().toISOString(),
     }
+  }
+}
+
+/**
+ * Keeps the live feed running while a Hub is linked and signed in. The ids of releases the Hub told us about
+ * route release calls to it, so they are forgotten on sign-out, unlink, or a different Hub or person.
+ */
+export function hubFeedSync(d: { status: () => HubStatus; feed: Pick<LiveFeed, 'start' | 'stop'>; ids: Set<string> }): () => void {
+  let who: string | null = null
+  return () => {
+    const st = d.status()
+    const active = st.linked && st.signedIn
+    const now = active ? `${st.hubId}|${st.user?.oid ?? ''}` : null
+    if (now === null || (who !== null && who !== now)) d.ids.clear()
+    who = now
+    if (active) d.feed.start()
+    else d.feed.stop()
   }
 }
 
