@@ -156,3 +156,67 @@ The user's ask (2026-10-21): "i dont want deployment script to run from ansible.
   - The preview has no secret values (use a fixture vault with a known secret and assert it is absent).
 - [ ] **Test** (renderer). Deploy is disabled until the review step, and the start call carries the hash.
 - [ ] **Implement, verify and commit.**
+
+---
+
+## Added 2026-10-21 from the user's later answers
+
+### Task 7: Strip credentials from repository URLs already saved (user approved: "1 ok")
+
+**Files:** a new additive migration in the main DB migrations, plus tests. Use the existing `hasRepoCredentials` from `src/shared/inventory.ts`.
+
+**Behaviour.**
+- Run once, as a migration, over `products.repo_url` and `deployments.repo_url`.
+- For any URL with userinfo (`https://user:token@host/...` or `https://token@host/...`), remove the userinfo and keep the rest byte for byte.
+- Write an audit event with the **count only**, never a URL or a value.
+- Rows without credentials are untouched.
+- The migration is idempotent.
+
+- [ ] **Test.**
+  - Seed both tables via SQL with credentialed, clean and null URLs.
+  - After the migration: the credentials are gone, everything else is unchanged, and the audit detail has the count and no URL text.
+  - A second run changes nothing.
+- [ ] **Implement, verify and commit.**
+
+### Task 8: Hub unpublish keeps release history (user: "we can keep history", "commit id basically and time")
+
+**Files:** `hub/src/**` (the unpublish route and its store; today it cascades and deletes releases, per final-review M5), the hub tests, and the app side only if it shows history for an unpublished environment.
+
+**Behaviour.**
+- Unpublishing an environment keeps its releases on the Hub, read-only.
+- Each kept release keeps at least: release id, deployment names, commit ids (previous and deployed), started and finished time, status and actor.
+- Logs may be dropped.
+- Unpublished history is visible to admins and to the env's former members in the Hub history list, marked "unpublished".
+- Republishing the same environment shows its old history again.
+- Do the schema change additively: soft-unlink (for example `unpublished_at`) rather than delete.
+
+- [ ] **Test (hub).**
+  - Unpublish, then the releases still exist with commit ids and times, and no new release can be started.
+  - Republish, then the history is visible again.
+  - A non-member cannot read it.
+- [ ] **Implement, verify (hub suite + `tsc -p hub/tsconfig.json`) and commit.**
+
+### Task 9: Ansible steps and logs, clearer in the release view (user: "better show logs and steps of ansible in app")
+
+**Files:**
+- `src/renderer/src/pages/deployments/release/{Pipeline,LiveLog,StepChip,ReleaseView}.tsx`, plus a new `AnsibleSteps.tsx` if needed.
+- `src/main/deploy/callback-plugin.ts` and `events.ts` only if the per-task data the UI needs is not already emitted.
+- Tests.
+
+**Behaviour.** The release view shows a step list per host and per deployment, in playbook order, one row per Ansible task, using the same names as the Task 6 preview step list. Each row shows:
+- the status icon (pending, running, ok, changed, skipped, failed);
+- the duration;
+- the attempt or retry count if any.
+
+**Logs.**
+- Clicking a row opens that task's own output: stdout and stderr, already redacted, with rc and the command's failure message.
+- "All logs" keeps today's full live log.
+- When a step fails, its row auto-expands, and the existing AI help attaches to that step.
+- Live updates while running.
+- Finished releases show the same view from stored events.
+
+- [ ] **Test.**
+  - Events produce rows in playbook order with the right statuses.
+  - A failed task auto-expands and shows its redacted output (a fixture secret is absent).
+  - A stored release renders the same rows.
+- [ ] **Implement, verify and commit.**
