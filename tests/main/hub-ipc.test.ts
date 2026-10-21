@@ -57,7 +57,7 @@ describe('hub handlers', () => {
   function setup(client: Record<string, unknown>, extra: { secrets?: string[]; onLocksChanged?: () => void } = {}) {
     const secrets = extra.secrets ?? []
     const audit = { append: vi.fn() }
-    const vault = { assertUnlocked: vi.fn() }
+    const vault = { assertUnlocked: vi.fn(), status: vi.fn(() => ({ setUp: true })) }
     const conn = {
       client: () => client,
       status: vi.fn(),
@@ -78,7 +78,7 @@ describe('hub handlers', () => {
 
   it('leaves hub:signOut to the auth handlers, so the sign-in gate always hears of it', () => {
     const { conn } = setup({})
-    const handlers = createHubHandlers({ conn: conn as never, vault: { assertUnlocked: vi.fn() }, audit: { append: vi.fn() }, catalog: { refresh: vi.fn(async () => []) }, publisher: {} as never })
+    const handlers = createHubHandlers({ conn: conn as never, vault: { assertUnlocked: vi.fn(), status: () => ({ setUp: true }) }, audit: { append: vi.fn() }, catalog: { refresh: vi.fn(async () => []) }, publisher: {} as never })
     expect('hub:signOut' in handlers).toBe(false)
   })
 
@@ -115,6 +115,18 @@ describe('hub handlers', () => {
     await expect(t.call('hub:createGroup', { name: 'Ops' })).rejects.toThrow(/locked/)
     expect(client.post).not.toHaveBeenCalled()
     expect(t.audit.append).not.toHaveBeenCalled()
+  })
+
+  it('hub:connect needs the vault open once set up, but not before setup', async () => {
+    const t = setup({})
+    t.vault.assertUnlocked.mockImplementation(() => {
+      throw new Error('Vault is locked')
+    })
+    await expect(t.call('hub:connect', 'https://hub.example.com')).rejects.toThrow(/locked/)
+    expect(t.conn.connect).not.toHaveBeenCalled()
+    t.vault.status.mockReturnValue({ setUp: false })
+    await t.call('hub:connect', 'https://hub.example.com')
+    expect(t.conn.connect).toHaveBeenCalledWith('https://hub.example.com')
   })
 
   it('a failed Hub call writes no audit and a token in its error text is redacted', async () => {

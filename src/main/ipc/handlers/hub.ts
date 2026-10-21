@@ -27,7 +27,7 @@ const ADMIN = '/api/v1/admin'
 /** Admin calls go through the Hub; each mutation is audited locally as `hub.admin { op, target }` (never the values). */
 export function createHubHandlers(deps: {
   conn: Pick<HubConnection, 'client' | 'status' | 'connect' | 'signIn' | 'cancelSignIn' | 'unlink' | 'me'>
-  vault: { assertUnlocked(): void }
+  vault: { assertUnlocked(): void; status(): { setUp: boolean } }
   audit: { append(input: AuditInput): unknown }
   catalog: Pick<HubCatalog, 'refresh'>
   publisher: Pick<HubPublisher, 'publish' | 'unpublish' | 'uploadSecrets' | 'setIntegrationSecret'>
@@ -59,7 +59,9 @@ export function createHubHandlers(deps: {
   return {
     'hub:status': () => conn.status(),
     'hub:connect': (url) => {
-      vault.assertUnlocked()
+      // A fresh install links its Hub before any vault exists (the gate's first step), so there is
+      // nothing to protect yet; once set up, linking needs the vault open.
+      if (vault.status().setUp) vault.assertUnlocked()
       return conn.connect(url)
     },
     'hub:signIn': () => {
