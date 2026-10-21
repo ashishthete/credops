@@ -113,7 +113,10 @@ one product. Add a unique index `(product_id, name COLLATE NOCASE)`.
 
 1. Create `regions` with one row: code `default`, display name "Default",
    empty provider. The UUID is generated in SQL (builder's call on the
-   expression; the Hub validates ids as UUIDs).
+   expression; the Hub validates ids as UUIDs). **Only when hosts exist**
+   (controller's call): a fresh database starts with no regions, and the
+   user creates one, inline, before their first host. No banner or audit
+   event appears when there is nothing to report.
 2. Set every host's `region_id` to it.
 3. Fill `environments.product_id`:
    - **One product:** that product.
@@ -181,8 +184,9 @@ never moves anything:
   map with step 3's rules, and the preview shows the mapping.
 - **An existing host whose region in the file differs:** it keeps its local
   region and is listed as "region not changed".
-- **An existing environment whose product in the file differs:** it is skipped,
-  with the reason listed.
+- **An existing environment whose product in the file differs:** everything
+  else about it merges as normal, its product is left alone, and it is listed
+  as "product not changed" (controller's call, mirroring hosts).
 
 ## 6. Hub
 
@@ -385,6 +389,10 @@ These edits keep the older specs true. They land with the build, not before.
 - The small calls marked "builder's call" in §7.
 
 ## 11. Calls made when writing this spec
+
+- The `Default` region is created on upgrade only when hosts exist.
+- Migration 10 on this branch; renumbered at merge if another branch has
+  taken 10 by then.
 
 - Leave out every ERD-only field.
 - Regions are managed from the Hosts page, not a new sidebar section.
