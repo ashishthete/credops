@@ -5,6 +5,7 @@ import { shJoin } from '../ops/quote'
 import { checkComposeServices, composeCommand } from './compose'
 import { hostBecome, hostOd } from './host-vars'
 import { ALIAS, B64, SECRET_KEY, b64, need, sanitizeIdent } from './quote'
+import { generateOperation } from './generate-ops'
 import type { DeployPlan, PlanDeployment, PlanFlow, PlanHost, PlanStep } from './runner'
 
 export { generateAnsibleCfg, generateInventory, generateKnownHosts, generateSshConfig, knownHostsToken, socketPathFits } from './ssh-files'
@@ -31,14 +32,14 @@ const URL_SAFE = /^https?:\/\/[A-Za-z0-9._~:/?#[\]@!$&()*+,;=%-]+$/
 
 const LOCK_FILE = '.opsdeck-deploy.lock'
 const WHEN = 'not (od_failed | default(false))'
-const SECRETS_VAR = "{{ lookup('env','OPSDECK_SECRETS') | default('{}', true) | from_json }}"
+export const SECRETS_VAR = "{{ lookup('env','OPSDECK_SECRETS') | default('{}', true) | from_json }}"
 
 // Timeouts (seconds)
 const T_SHORT = 120
 const T_BACKUP = 1800
 const T_PREFLIGHT = 60
 
-const clampSec = (n: number, what: string): number => {
+export const clampSec = (n: number, what: string): number => {
   need(Number.isInteger(n) && n >= 1 && n <= 86400, what)
   return n
 }
@@ -46,7 +47,7 @@ const clampSec = (n: number, what: string): number => {
 // ---------------------------------------------------------------- plan -> validated view
 
 /** The per-deployment variables a block binds as `d`. Only validated tokens and base64. */
-function dVars(d: PlanDeployment, kind: DeployPlan['kind']): Record<string, unknown> {
+function dVars(d: PlanDeployment, kind: DeployPlan['kind'], extraSteps: readonly PlanStep[] = []): Record<string, unknown> {
   need(REPO_PATH.test(d.repoPath), 'repo path')
   need(GIT_REF.test(d.branch), 'branch')
   need(COMPOSE_FILE.test(d.composeFile), 'compose file')
@@ -97,7 +98,7 @@ function dVars(d: PlanDeployment, kind: DeployPlan['kind']): Record<string, unkn
     urls: d.urls.map((u) => ({ url: u.url, from: u.from })),
   }
   // Only the steps this playbook runs, and only when there are any: a step-free block is unchanged.
-  const run = kind === 'release' || kind === 'rollback' ? stepsRun(kind, d) : []
+  const run = kind === 'release' || kind === 'rollback' ? stepsRun(kind, d) : [...extraSteps]
   if (run.length > 0) out.steps = Object.fromEntries(run.map((p) => [p.key, stepVars(p, d.whenBase)]))
   // Only with skips: a block without them is unchanged.
   if (head !== null) out.origin_head = head
@@ -106,7 +107,7 @@ function dVars(d: PlanDeployment, kind: DeployPlan['kind']): Record<string, unkn
 
 // ---------------------------------------------------------------- custom steps
 
-const STEP_KEY = /^c_\d{1,2}$/
+export const STEP_KEY = /^c_\d{1,2}$/
 const PARAM_ENV = /^OD_PARAM_[A-Z0-9_]{1,55}$/
 
 /** A checkout's steps: the plan's, or its legacy hooks migrated by effectiveSteps (so a hook is never dropped). */
@@ -143,7 +144,7 @@ function stepsRun(kind: 'release' | 'rollback', d: PlanDeployment): PlanStep[] {
 }
 
 /** A step's body, env names and keys: what the playbook could not carry safely throws. */
-function checkStep(p: PlanStep): void {
+export function checkStep(p: PlanStep): void {
   // The editor's rules. The secret ids and service passed here are the step's own, so those two checks are no-ops:
   // the real guards are checkPlan (secretRefs) and checkComposeServices.
   validateStep(p.step, { allowedSecretIds: new Set(p.step.secrets.map((x) => x.secretId)), serviceNames: p.step.service === null ? [] : [p.step.service], body: true })
@@ -258,14 +259,16 @@ export function stepList(
   )
 }
 
-function checkPlan(plan: DeployPlan): void {
+export function checkPlan(plan: DeployPlan): void {
   need(RELEASE_ID.test(plan.releaseId), 'release id')
+  need((plan.kind === 'operation') === ((plan.operation ?? null) !== null), 'operation')
   for (const h of plan.hosts) {
     need(ALIAS.test(h.alias), 'host alias')
     need(SAFE_IDENT.test(h.hostId), 'host id')
   }
   const flowKeys = (plan.flow?.stages ?? []).flatMap((st) => (st.kind === 'step' ? st.step.secretKeys.map((x) => x.key) : []))
-  for (const k of [...plan.deployments.flatMap((d) => [d.envSecretKey, d.becomeSecretKey, ...d.steps.flatMap((p) => p.secretKeys.map((x) => x.key))]), ...flowKeys]) {
+  const opKeys = (plan.operation?.items ?? []).flatMap((i) => (i.type === 'step' ? i.step.secretKeys.map((x) => x.key) : []))
+  for (const k of [...opKeys, ...plan.deployments.flatMap((d) => [d.envSecretKey, d.becomeSecretKey, ...d.steps.flatMap((p) => p.secretKeys.map((x) => x.key))]), ...flowKeys]) {
     if (k === null) continue
     need(SECRET_KEY.test(k) && k in plan.secretRefs, 'secret reference')
   }
@@ -286,7 +289,7 @@ interface ShOpts {
 }
 
 /** One shell task. `name` is built from the step kind and sanitized identifiers only. */
-function sh(name: string, kind: string, run: string, cmd: string, o: ShOpts): Task {
+export function sh(name: string, kind: string, run: string, cmd: string, o: ShOpts): Task {
   const mod: Record<string, unknown> = { cmd, executable: '/bin/bash' }
   if (o.chdir !== undefined) mod.chdir = o.chdir
   if (o.stdin !== undefined) {
@@ -301,8 +304,8 @@ function sh(name: string, kind: string, run: string, cmd: string, o: ShOpts): Ta
   return t
 }
 
-const IN_REPO = '{{ d.repo }}'
-const becomes = (d: PlanDeployment): boolean => d.docker !== 'plain'
+export const IN_REPO = '{{ d.repo }}'
+export const becomes = (d: PlanDeployment): boolean => d.docker !== 'plain'
 /**
  * The user's home even under sudo: root's $HOME would put the log in the wrong place.
  * Without SUDO_USER we are the user, so $HOME is right; no getent, so BusyBox hosts work.
@@ -320,7 +323,7 @@ const LOG_SETUP = [
  * read loop: no GNU sed -u). The exit code is the body's. On failure the step's own last 40 lines are
  * printed so the failure carries context; `post` runs only on success, outside the log.
  */
-function streamed(kind: string, body: string, o: { pre?: string; post?: string } = {}): string {
+export function streamed(kind: string, body: string, o: { pre?: string; post?: string } = {}): string {
   return [
     ...(o.pre ? [o.pre] : []),
     LOG_SETUP,
@@ -337,7 +340,7 @@ function streamed(kind: string, body: string, o: { pre?: string; post?: string }
 function runOf(d: PlanDeployment): string {
   return d.runId
 }
-const nm = (kind: string, d: PlanDeployment): string => `${kind} ${sanitizeIdent(d.name)}`
+export const nm = (kind: string, d: PlanDeployment): string => `${kind} ${sanitizeIdent(d.name)}`
 
 // ---- release steps
 // ok=0 when ls-remote itself fails (network, auth): that is "unknown", not "no tag".
@@ -354,7 +357,7 @@ const taskRecord = (d: PlanDeployment): Task =>
     'if [ "$ok" = 0 ]; then echo "OD-PREV unknown"; elif [ -n "$c" ]; then echo "OD-PREV $c"; else echo "OD-PREV none"; fi',
   ].join('\n'), { timeout: T_SHORT, chdir: IN_REPO, guarded: true })
 
-const taskBackup = (d: PlanDeployment): Task => {
+export const taskBackup = (d: PlanDeployment): Task => {
   // DB_* are read as KEY=VALUE lines (quotes stripped, nothing executed): the .env is never sourced.
   const body = [
     'CR=$(printf \'\\r\')',
@@ -383,7 +386,7 @@ const taskBackup = (d: PlanDeployment): Task => {
 }
 
 const FETCH = 'git fetch --force --tags origin "refs/heads/$B:refs/remotes/origin/$B"'
-const taskFetch = (d: PlanDeployment): Task =>
+export const taskFetch = (d: PlanDeployment): Task =>
   sh(nm('fetch', d), 'fetch', runOf(d), ['B={{ d.branch | quote }}', FETCH].join('\n'), { timeout: T_SHORT, chdir: IN_REPO, guarded: true })
 
 /**
@@ -398,7 +401,7 @@ const taskOriginCheck = (d: PlanDeployment): Task =>
     `if [ "$h" != "$E" ]; then echo '${ORIGIN_MOVED_MESSAGE}' >&2; exit 1; fi`,
   ].join('\n'), { timeout: T_SHORT, chdir: IN_REPO, guarded: true })
 
-const taskCheckout = (d: PlanDeployment): Task =>
+export const taskCheckout = (d: PlanDeployment): Task =>
   sh(nm('checkout', d), 'checkout', runOf(d), [
     'B={{ d.branch | quote }}',
     'git checkout -q -B "$B" "refs/remotes/origin/$B" || exit $?',
@@ -436,7 +439,7 @@ function envTask(kind: 'env' | 'rb_env', d: PlanDeployment): Task {
 }
 const taskEnv = (d: PlanDeployment): Task => envTask('env', d)
 
-const composeOf = (d: PlanDeployment) => ({ composeFile: d.composeFile, composeProject: d.composeProject })
+export const composeOf = (d: PlanDeployment) => ({ composeFile: d.composeFile, composeProject: d.composeProject })
 
 /*
  * Custom step text. Every shell variable the generator sets here is lowercase (`od_*`, `rc`): a step's env names
@@ -519,7 +522,7 @@ function stepStreamed(key: string, body: string, o: { pre?: string; cont: boolea
 }
 
 /** A custom step, with its own kind `c_<n>`. `continue` never fails the host and reports OD-STEP. A flow step has no anchor. */
-function stepTask(d: PlanDeployment, p: PlanStep, anchor: StepAnchor | null): Task {
+export function stepTask(d: PlanDeployment, p: PlanStep, anchor: StepAnchor | null): Task {
   const s = p.step
   const env = p.secretKeys.length + p.paramKeys.length > 0
   const become = s.sudo === 'docker' ? becomes(d) : s.sudo === 'yes'
@@ -632,7 +635,7 @@ const odRunDir = `"$HOME/${RUNS_SUBDIR}/{{ od.rel }}"`
 const REPOS = "{{ od.lock_repos | map('quote') | join(' ') }}"
 const HOST_CWD = '/'
 
-function taskPrep(h: PlanHost): Task {
+export function taskPrep(h: PlanHost): Task {
   const cmd = ['umask 077', `mkdir -p ${odRunDir}`, `touch ${odRunDir}/stream.log`].join('\n')
   return sh(`lock prep ${sanitizeIdent(h.alias)}`, 'lock', hostRun(h), cmd, { timeout: T_SHORT, chdir: HOST_CWD })
 }
@@ -642,7 +645,7 @@ function taskPrep(h: PlanHost): Task {
  * reentrant per repo when the holder is this release. On a busy repo it releases what this task took and
  * exits 42, so a refusal never leaves a partial lock set behind.
  */
-function taskLock(h: PlanHost): Task {
+export function taskLock(h: PlanHost): Task {
   const cmd = [
     'J=$(echo {{ od.lock_b64 | quote }} | base64 -d)',
     'umask 077',
@@ -686,7 +689,7 @@ const KILL_BUILDS = [
 ].join('\n')
 
 /** Unlock releases only locks this release holds; break-lock only locks whose content equals the expected raw. */
-function taskUnlock(h: PlanHost, breakLock: boolean, kill = false): Task {
+export function taskUnlock(h: PlanHost, breakLock: boolean, kill = false): Task {
   const guard = breakLock
     ? '[ "$cur" = "$(echo {{ od.expect_b64 | quote }} | base64 -d)" ]'
     : 'case "$cur" in *\'"releaseId":"{{ od.rel }}"\'*) true;; *) false;; esac'
@@ -840,11 +843,11 @@ function taskPreflightLock(h: PlanHost): Task {
 
 // ---------------------------------------------------------------- plays
 
-function block(d: PlanDeployment, kind: DeployPlan['kind'], tasks: Task[], rescue: Task[]): Task {
-  return { name: `deployment ${sanitizeIdent(d.name)}`, vars: { d: dVars(d, kind) }, block: tasks, rescue }
+export function block(d: PlanDeployment, kind: DeployPlan['kind'], tasks: Task[], rescue: Task[], extraSteps: readonly PlanStep[] = []): Task {
+  return { name: `deployment ${sanitizeIdent(d.name)}`, vars: { d: dVars(d, kind, extraSteps) }, block: tasks, rescue }
 }
 
-const rescueRelease = (d: PlanDeployment): Task[] => [
+export const rescueRelease = (d: PlanDeployment): Task[] => [
   { name: `mark failed ${sanitizeIdent(d.name)}`, 'ansible.builtin.set_fact': { od_failed: true } },
   { name: `fail ${sanitizeIdent(d.name)}`, 'ansible.builtin.fail': { msg: `OpsDeck step failed for ${sanitizeIdent(d.runId)}` } },
 ]
@@ -911,10 +914,11 @@ function playFor(plan: DeployPlan, h: PlanHost, deps: PlanDeployment[]): Play {
   return { name: `${plan.kind} ${sanitizeIdent(h.alias)}`, hosts: h.alias, gather_facts: false, strategy: 'linear', vars, tasks }
 }
 
-const depsOf = (plan: DeployPlan, h: PlanHost): PlanDeployment[] => plan.deployments.filter((d) => d.hostId === h.hostId)
+export const depsOf = (plan: DeployPlan, h: PlanHost): PlanDeployment[] => plan.deployments.filter((d) => d.hostId === h.hostId)
 
 export function generatePlaybook(plan: DeployPlan): string {
   checkPlan(plan)
+  if (plan.kind === 'operation') return generateOperation(plan)
   const flow = plan.flow ?? null
   if (flow !== null) return JSON.stringify(flowPlays(plan, flow), null, 2)
   if (plan.kind === 'release' && (plan.prepare ?? null) !== null) return JSON.stringify(preparedPlays(plan), null, 2)

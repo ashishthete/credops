@@ -1,4 +1,5 @@
 import type { Actor, DockerMode, HealthUrl, PreflightReport, ReleaseFlow, RunEventBody, UseSudo } from '../../shared/deploy'
+import type { BuiltinKind } from '../../shared/runbooks'
 import type { StepAnchor, StepBody } from '../../shared/steps'
 
 /** One SSH hop. `hostId` is null for a hop that isn't an inventory host. */
@@ -101,7 +102,21 @@ export interface PlanFlow {
   onFailure: ReleaseFlow['onFailure']
 }
 
-export type PlanKind = 'preflight' | 'release' | 'rollback' | 'version' | 'unlock' | 'break-lock'
+/**
+ * A runbook run: its items in order on each target checkout. Never a release: no tags, notes or rollback.
+ * Steps carry `anchor: null` and their param values as base64 (PlanStep.paramKeys).
+ */
+export interface PlanOperation {
+  runbookId: string
+  name: string
+  /** Takes the host lock like a release (the same lock and unlock tasks); only read-only runbooks may be false. */
+  lock: boolean
+  items: ({ type: 'step'; step: PlanStep } | { type: 'builtin'; builtin: BuiltinKind; tail?: number; untilHours?: number })[]
+  /** `services` are compose service names; empty means the whole checkout. */
+  targets: { runId: string; services: string[] }[]
+}
+
+export type PlanKind = 'preflight' | 'release' | 'rollback' | 'version' | 'unlock' | 'break-lock' | 'operation'
 
 /**
  * Everything a run needs, by reference only: no secret values, so it is serialisable (the Phase 10 Hub
@@ -127,6 +142,8 @@ export interface DeployPlan {
    * `cap` per host at once); no service goes up unless every checkout prepared. Null: each checkout runs in order.
    */
   prepare: { cap: number } | null
+  /** Operation only: what to run on `deployments` (the targeted checkouts). */
+  operation?: PlanOperation | null
   /** Unlock only: the builds a parallel prepare launched, whose recorded process groups are stopped before the lock goes. */
   killBuilds?: { runId: string; repoPath: string }[]
 }

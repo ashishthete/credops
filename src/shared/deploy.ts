@@ -320,6 +320,7 @@ export type StepKind =
   | 'finalize_notify'
   | 'finalize_qa'
   | 'custom'
+  | 'op'
 
 export const STEP_LABEL: Record<StepKind, string> = {
   lock: 'Lock',
@@ -345,6 +346,7 @@ export const STEP_LABEL: Record<StepKind, string> = {
   finalize_notify: 'Notify',
   finalize_qa: 'QA',
   custom: 'Step',
+  op: 'Operation',
 }
 
 export type StepState = 'pending' | 'running' | 'ok' | 'warn' | 'failed' | 'skipped' | 'cancelled'
