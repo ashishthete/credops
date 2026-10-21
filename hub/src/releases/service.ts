@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Actor, PlaybookPreview, PreflightRequest, ReleaseConfirm, ReleaseDetail, ReleaseListFilter, ReleaseStatus, ReleaseSummary, RunEvent } from '../../../src/shared/deploy'
-import { READY_RELEASE_TTL_MS, type HubAction, type HubEnvManifest, type HubUser } from '../../../src/shared/hub'
+import { READY_RELEASE_TTL_MS, type HubAction, type HubEnvManifest, type HubGroup, type HubUser } from '../../../src/shared/hub'
 import { startPrivateAgent, type ChildLike } from '../../../src/main/deploy/agent'
 import { DeployError } from '../../../src/main/deploy/access'
 import { noopFinalize, type FinalizeSteps } from '../../../src/main/deploy/finalize'
@@ -447,16 +447,34 @@ export class HubReleases {
 
   // ---- readers: only what the caller can view ----
 
+  /**
+   * The groups a read of `environmentId` is judged by. An unpublished environment has no grants of its own any
+   * more; the ones it had (kept at unpublish) count, so its former viewers still read its history.
+   */
+  private groupsFor(environmentId: string): HubGroup[] {
+    const groups = this.d.directory.listGroups()
+    if (!this.d.registry.historyOf(environmentId)?.unpublished) return groups
+    const former = this.d.registry.formerGrants(environmentId)
+    return groups.map((g) => ({ ...g, grants: [...g.grants, ...former.filter((x) => x.groupId === g.id)] }))
+  }
+
   private canView(user: HubUser, environmentId: string): boolean {
-    return decide(user, this.d.directory.listGroups(), 'deploy.view', { environmentId }).allowed
+    return decide(user, this.groupsFor(environmentId), 'deploy.view', { environmentId }).allowed
+  }
+
+  /** Marks the releases of an unpublished environment. */
+  private marked<T extends ReleaseSummary>(r: T): T {
+    return this.d.registry.historyOf(r.environmentId)?.unpublished ? { ...r, unpublished: true } : r
   }
 
   private viewable(user: HubUser, list: ReleaseSummary[]): ReleaseSummary[] {
     const seen = new Map<string, boolean>()
-    return list.filter((r) => {
-      if (!seen.has(r.environmentId)) seen.set(r.environmentId, this.canView(user, r.environmentId))
-      return seen.get(r.environmentId)
-    })
+    return list
+      .filter((r) => {
+        if (!seen.has(r.environmentId)) seen.set(r.environmentId, this.canView(user, r.environmentId))
+        return seen.get(r.environmentId)
+      })
+      .map((r) => this.marked(r))
   }
 
   list(user: HubUser, filter: ReleaseListFilter): ReleaseSummary[] {
@@ -468,14 +486,17 @@ export class HubReleases {
     return this.viewable(user, this.service.listActive())
   }
 
+  /** A release the caller cannot view is a 404 like an unknown one, so its existence does not leak. */
   private viewOf(user: HubUser, releaseId: string): void {
-    const { environmentId } = this.known(releaseId)
-    if (!this.canView(user, environmentId)) throw new HubHttpError(403, 'forbidden', 'You cannot view this environment')
+    const environmentId = this.envOf(releaseId)
+    if (environmentId === null || this.d.registry.historyOf(environmentId) === null || !this.canView(user, environmentId)) {
+      throw new HubHttpError(404, 'not_found', 'That release was not found')
+    }
   }
 
   detail(user: HubUser, releaseId: string): ReleaseDetail {
     this.viewOf(user, releaseId)
-    return this.service.detail(releaseId)
+    return this.marked(this.service.detail(releaseId))
   }
 
   events(user: HubUser, releaseId: string, afterSeq: number, limit: number): RunEvent[] {

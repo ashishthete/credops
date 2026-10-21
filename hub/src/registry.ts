@@ -24,6 +24,7 @@ import {
   type HubActor,
   type HubCatalogEnv,
   type HubEnvManifest,
+  type HubGrant,
   type HubIntegrations,
   type HubPublishResult,
   type HubUser,
@@ -31,7 +32,7 @@ import {
 import { decide } from './access/policy'
 import type { Directory } from './access/directory'
 import type { HubAudit } from './audit'
-import type { HubDb } from './db'
+import { PUBLISHED, type HubDb } from './db'
 import type { EnvLocks } from './locks'
 import { HubHttpError } from './errors'
 
@@ -347,8 +348,8 @@ export class Registry {
   required(environmentId?: string): { environmentId: string; secretId: string; name: string }[] {
     const rows = (
       environmentId === undefined
-        ? this.db.prepare('SELECT id, integrations FROM environments ORDER BY name, id').all()
-        : this.db.prepare('SELECT id, integrations FROM environments WHERE id = ?').all(environmentId)
+        ? this.db.prepare(`SELECT id, integrations FROM environments WHERE ${PUBLISHED} ORDER BY name, id`).all()
+        : this.db.prepare(`SELECT id, integrations FROM environments WHERE id = ? AND ${PUBLISHED}`).all(environmentId)
     ) as { id: string; integrations: string }[]
     return rows.flatMap((r) => {
       const present = this.secretIdsPresent(r.id)
@@ -357,12 +358,32 @@ export class Registry {
     })
   }
 
+  /** The name of a published environment; null when it is unknown or unpublished. */
   nameOf(environmentId: string): string | null {
-    return (this.db.prepare('SELECT name FROM environments WHERE id = ?').get(environmentId) as { name: string } | undefined)?.name ?? null
+    return (this.db.prepare(`SELECT name FROM environments WHERE id = ? AND ${PUBLISHED}`).get(environmentId) as { name: string } | undefined)?.name ?? null
   }
 
   exists(environmentId: string): boolean {
-    return this.db.prepare('SELECT 1 FROM environments WHERE id = ?').get(environmentId) !== undefined
+    return this.nameOf(environmentId) !== null
+  }
+
+  /** An environment whose release history the Hub keeps: published now, or unpublished (read-only). */
+  historyOf(environmentId: string): { name: string; unpublished: boolean } | null {
+    const r = this.db.prepare('SELECT name, unpublished_at FROM environments WHERE id = ?').get(environmentId) as { name: string; unpublished_at: string | null } | undefined
+    return r ? { name: r.name, unpublished: r.unpublished_at !== null } : null
+  }
+
+  /** The grants an unpublished environment had, which still say who may read its history. */
+  formerGrants(environmentId: string): HubGrant[] {
+    const rows = this.db
+      .prepare('SELECT grant_id, group_id, deployment_id, created_at FROM unpublished_grants WHERE environment_id = ? ORDER BY created_at, grant_id')
+      .all(environmentId) as { grant_id: string; group_id: string; deployment_id: string | null; created_at: string }[]
+    return rows.map((g) => ({
+      id: g.grant_id,
+      groupId: g.group_id,
+      scope: g.deployment_id === null ? { kind: 'environment', environmentId } : { kind: 'deployment', environmentId, deploymentId: g.deployment_id },
+      createdAt: g.created_at,
+    }))
   }
 
   private readonly listeners = new Set<() => void>()
@@ -391,7 +412,7 @@ export class Registry {
     const result = inTransaction(this.db, () => {
       const existing = this.db.prepare('SELECT name FROM environments WHERE id = ?').get(env.id) as { name: string } | undefined
       if (existing) this.assertNoRelease(env.id, existing.name)
-      const dup = this.db.prepare('SELECT id FROM environments WHERE name = ? COLLATE NOCASE AND id <> ?').get(env.name, env.id)
+      const dup = this.db.prepare(`SELECT id FROM environments WHERE name = ? COLLATE NOCASE AND id <> ? AND ${PUBLISHED}`).get(env.name, env.id)
       if (dup) throw new HubHttpError(409, 'conflict', 'An environment with that name is already published')
 
       this.db
@@ -402,7 +423,8 @@ export class Registry {
              auto_rollback = excluded.auto_rollback,
              current_version = CASE WHEN EXISTS (SELECT 1 FROM releases WHERE environment_id = environments.id AND version IS NOT NULL AND status IN ('succeeded','rolled_back')) THEN environments.current_version ELSE excluded.current_version END,
              integrations = excluded.integrations,
-             manifest_hash = excluded.manifest_hash, published_by = excluded.published_by, published_at = excluded.published_at`,
+             manifest_hash = excluded.manifest_hash, published_by = excluded.published_by, published_at = excluded.published_at,
+             unpublished_at = NULL`,
         )
         .run(
           env.id,
@@ -417,6 +439,8 @@ export class Registry {
           actor.upn,
           now,
         )
+      // A republish: from now on its history follows the grants given again, not the ones it had.
+      this.db.prepare('DELETE FROM unpublished_grants WHERE environment_id = ?').run(env.id)
 
       // Upsert by id, then remove what is gone: ids stay stable for grants and for the history that will hang off them.
       const putHost = this.db.prepare(
@@ -481,10 +505,14 @@ export class Registry {
     if (r && r.environment_id !== environmentId) throw new HubHttpError(409, 'conflict', 'An id in the manifest belongs to another environment')
   }
 
-  // Deleting the environment deletes its Hub release history and run events with it (ON DELETE CASCADE); the audit chain keeps the record.
+  /**
+   * Removes the environment's inventory, secrets, deploy key, freeze and grants, and keeps its row (marked
+   * unpublished) so its releases, runs and events stay as read-only history. The grants it had move to
+   * unpublished_grants, so the people who could view it still can. A republish of the same id lifts the mark.
+   */
   unpublish(id: string, actor: HubActor): void {
     inTransaction(this.db, () => {
-      const row = this.db.prepare('SELECT name FROM environments WHERE id = ?').get(id) as { name: string } | undefined
+      const row = this.db.prepare(`SELECT name FROM environments WHERE id = ? AND ${PUBLISHED}`).get(id) as { name: string } | undefined
       if (!row) throw new HubHttpError(404, 'not_found', 'Environment not found')
       this.assertNoRelease(id, row.name)
       const counts = {
@@ -492,8 +520,18 @@ export class Registry {
         deployments: (this.db.prepare('SELECT COUNT(*) AS n FROM deployments WHERE environment_id = ?').get(id) as { n: number }).n,
       }
       const hash = (this.db.prepare('SELECT manifest_hash FROM environments WHERE id = ?').get(id) as { manifest_hash: string }).manifest_hash
+      const keptReleases = (this.db.prepare('SELECT COUNT(*) AS n FROM releases WHERE environment_id = ?').get(id) as { n: number }).n
+      this.db
+        .prepare(
+          `INSERT OR REPLACE INTO unpublished_grants(grant_id, group_id, environment_id, deployment_id, created_at)
+           SELECT id, group_id, environment_id, deployment_id, created_at FROM grants WHERE environment_id = ?`,
+        )
+        .run(id)
       this.db.prepare('DELETE FROM grants WHERE environment_id = ?').run(id)
-      this.db.prepare('DELETE FROM environments WHERE id = ?').run(id)
+      for (const t of ['deployments', 'services', 'hosts', 'hub_secrets', 'env_deploy_keys', 'env_locks']) {
+        this.db.prepare(`DELETE FROM ${t} WHERE environment_id = ?`).run(id)
+      }
+      this.db.prepare('UPDATE environments SET unpublished_at = ? WHERE id = ?').run(this.opts.now().toISOString(), id)
       this.opts.audit.append({
         action: 'env.unpublish',
         outcome: 'success',
@@ -501,14 +539,14 @@ export class Registry {
         targetType: 'environment',
         targetId: id,
         targetLabel: row.name,
-        details: { name: row.name, ...counts, manifestHash: hash },
+        details: { name: row.name, ...counts, manifestHash: hash, keptReleases },
       })
     })
     this.changed()
   }
 
   private envRow(id: string): EnvRow {
-    const r = this.db.prepare('SELECT * FROM environments WHERE id = ?').get(id) as unknown as EnvRow | undefined
+    const r = this.db.prepare(`SELECT * FROM environments WHERE id = ? AND ${PUBLISHED}`).get(id) as unknown as EnvRow | undefined
     if (!r) throw new HubHttpError(404, 'not_found', 'Environment not found')
     return r
   }
@@ -572,7 +610,7 @@ export class Registry {
   }
 
   private rows(): EnvRow[] {
-    return this.db.prepare('SELECT * FROM environments ORDER BY name COLLATE NOCASE, id').all() as unknown as EnvRow[]
+    return this.db.prepare(`SELECT * FROM environments WHERE ${PUBLISHED} ORDER BY name COLLATE NOCASE, id`).all() as unknown as EnvRow[]
   }
 
   /** Every environment in catalog form (no addresses): for the admin list. */

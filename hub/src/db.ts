@@ -145,6 +145,18 @@ CREATE TABLE notification_log(
 CREATE INDEX notification_log_at ON notification_log(at);
 `
 
+// Unpublishing keeps an environment's row (and so its releases) with unpublished_at set; every published read
+// filters on PUBLISHED. The grants it had are moved to unpublished_grants: they say who may still read its history.
+const HISTORY = `
+ALTER TABLE environments ADD COLUMN unpublished_at TEXT;
+CREATE TABLE unpublished_grants(grant_id TEXT PRIMARY KEY, group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE, deployment_id TEXT, created_at TEXT NOT NULL);
+CREATE INDEX unpublished_grants_env ON unpublished_grants(environment_id);
+`
+
+/** The SQL condition for an environment that is published now, for queries on `environments`. */
+export const PUBLISHED = 'unpublished_at IS NULL'
+
 export const HUB_MIGRATIONS: Migration[] = [
   { version: 1, name: 'core', up: CORE },
   { version: 2, name: 'registry', up: REGISTRY },
@@ -153,6 +165,7 @@ export const HUB_MIGRATIONS: Migration[] = [
   { version: 5, name: 'services', up: SERVICES },
   { version: 6, name: 'releases', up: RELEASES },
   { version: 7, name: 'notify', up: NOTIFY },
+  { version: 8, name: 'history', up: HISTORY },
 ]
 
 export function openHubDb(file: string): HubDb {
