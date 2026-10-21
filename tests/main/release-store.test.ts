@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { uuidv7Time } from '../../src/main/deploy/uuidv7'
 import { DEFAULT_RELEASE_OPTIONS, type PreflightReport, type RunEventBody, type RunService } from '../../src/shared/deploy'
 import { makeDeployFixture } from './deploy-helpers'
+import type { OperationMeta } from '../../src/shared/runbooks'
 
 const log = (line: string): RunEventBody => ({ type: 'log', stepId: null, hostId: null, stream: 'out', line })
 
@@ -296,10 +297,11 @@ describe('ReleaseStore', () => {
     type F = Awaited<ReturnType<typeof release>>['f']
     type D = Awaited<ReturnType<typeof release>>['d']
     /** One release with one run listing `services`; started unless `started` is false. */
-    const rel = (f: F, d: D, services: RunService[], o: { started?: boolean; runStatus?: 'succeeded' | 'failed' | 'rolled_back'; kind?: 'release' | 'rollback'; status?: 'succeeded' | 'rolled_back'; serviceIds?: string[] } = {}) => {
+    const rel = (f: F, d: D, services: RunService[], o: { started?: boolean; runStatus?: 'succeeded' | 'failed' | 'rolled_back'; kind?: 'release' | 'rollback'; status?: 'succeeded' | 'rolled_back'; serviceIds?: string[]; operation?: OperationMeta } = {}) => {
       const r = f.releases.createRelease({
         environmentId: f.staging.id, kind: o.kind ?? 'release', status: 'ready', version: null, previousVersion: null, versionBump: 'none',
         redeploy: false, rollbackOf: null, options: DEFAULT_RELEASE_OPTIONS, triggeredBy: 'ana@mbp', serviceIds: o.serviceIds ?? services.map((s) => s.id),
+        ...(o.operation ? { operation: o.operation } : {}),
       })
       const [run] = f.releases.createRuns(r.id, [
         { deploymentId: d.id, deploymentName: 'api', hostId: d.hostId, hostLabel: 'app1', position: 0, branch: 'main', steps: [], services, wholeCheckout: false },
@@ -370,6 +372,16 @@ describe('ReleaseStore', () => {
       f.db.prepare('UPDATE releases SET rollback_of = ? WHERE id = ?').run(r2.id, r2.id)
       expect(Object.fromEntries(f.releases.latestTouching(['s1', 's2'], r1.id))).toEqual({ s1: r1.id, s2: r1.id })
       expect(Object.fromEntries(f.releases.latestTouching(['s1', 's2'], r2.id))).toEqual({ s1: r1.id, s2: r2.id })
+    })
+
+    it('an operation run never counts as deploying its services', async () => {
+      const { f, d } = await release()
+      const op: OperationMeta = { runbookId: 'rb1', name: 'Restart', params: {}, readOnly: false, lock: true, targetServiceIds: ['s1'] }
+      const r1 = rel(f, d, [entry('s1', { deployedCommit: SA })], { runStatus: 'succeeded' })
+      rel(f, d, [entry('s1')], { runStatus: 'succeeded', operation: op })
+      const r3 = rel(f, d, [entry('s1')], { runStatus: 'failed' })
+      expect(Object.fromEntries(f.releases.latestTouching(['s1']))).toEqual({ s1: r1.id })
+      expect(f.releases.previousTouching('s1', r3.id)).toMatchObject({ releaseId: r1.id, commit: SA })
     })
 
     it('previousTouching returns the earlier succeeded deploy of that service', async () => {

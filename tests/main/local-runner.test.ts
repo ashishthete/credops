@@ -269,6 +269,15 @@ describe('LocalRunner', () => {
     expect(t.fs.dirs.size).toBe(0)
   })
 
+  it('a parallel prepare release writes the same run files as any release', async () => {
+    const t = setup()
+    let seen: string[] = []
+    t.ansible.onSpawn = () => void (seen = [...t.fs.files.keys()].map((f) => f.replace(/^\/tmp\/od-t\d+\//, '')).sort())
+    t.ansible.stdout = fixtureLines('release-ok.jsonl')
+    await t.runner.start(planFixture({ prepare: { cap: 2 } }), SECRETS).done
+    expect(seen).toEqual(['ansible.cfg', 'callback_plugins/opsdeck_jsonl.py', 'inventory', 'known_hosts', 'playbook.yml', 'ssh_config'])
+  })
+
   it.each(['rollback', 'unlock'] as const)('%s still runs on the reachable host and reports the unreachable one failed', async (kind) => {
     const t = setup({}, fakePrepare({ checks: [down('host-od-2')] }))
     let inv = ''

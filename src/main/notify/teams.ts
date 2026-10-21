@@ -26,6 +26,8 @@ export interface NotificationFacts {
   commitCount?: number
   /** Commit subjects per deployment, newest first. Shown as a "Changes" section, capped per deployment. */
   changes?: { deployment: string; subjects: string[] }[]
+  /** A runbook operation's one line (runbook, environment, outcome, service count): the card shows only it. */
+  summary?: string
 }
 
 export const MAX_CHANGES_SHOWN = 10
@@ -124,15 +126,14 @@ export function notesFor(f: NotificationFacts): string | null {
 /** An Adaptive Card 1.5 message. Reads only the §8.7 fields, and redacts every string once more. */
 export function buildTeamsCard(facts: NotificationFacts, knownSecrets: readonly string[] = []): object {
   const notes = notesFor(facts)
-  const body: object[] = [
-    {
-      type: 'Container',
-      style: STYLE[facts.status],
-      bleed: true,
-      items: [{ type: 'TextBlock', text: facts.title, weight: 'Bolder', size: 'Medium', wrap: true }],
-    },
-    { type: 'FactSet', facts: factRows(facts) },
-  ]
+  const heading = {
+    type: 'Container',
+    style: STYLE[facts.status],
+    bleed: true,
+    items: [{ type: 'TextBlock', text: facts.title, weight: 'Bolder', size: 'Medium', wrap: true }],
+  }
+  if (facts.summary !== undefined) return redact(card([heading, { type: 'TextBlock', text: facts.summary, wrap: true }], []), knownSecrets)
+  const body: object[] = [heading, { type: 'FactSet', facts: factRows(facts) }]
   if (notes) body.push({ type: 'TextBlock', text: notes, wrap: true, isSubtle: true, spacing: 'Medium' })
   const changes = changeLines(facts, knownSecrets)
   if (changes.length > 0) {
@@ -145,25 +146,26 @@ export function buildTeamsCard(facts: NotificationFacts, knownSecrets: readonly 
     }
   }
   const actions = httpsLinks(facts.urls).map((u) => ({ type: 'Action.OpenUrl', title: `Open ${u.host}`, url: u.href }))
-  return redact(
-    {
-      type: 'message',
-      attachments: [
-        {
-          contentType: 'application/vnd.microsoft.card.adaptive',
-          content: {
-            $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
-            type: 'AdaptiveCard',
-            version: '1.5',
-            msteams: { width: 'Full' },
-            body,
-            actions,
-          },
+  return redact(card(body, actions), knownSecrets)
+}
+
+function card(body: object[], actions: object[]): object {
+  return {
+    type: 'message',
+    attachments: [
+      {
+        contentType: 'application/vnd.microsoft.card.adaptive',
+        content: {
+          $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
+          type: 'AdaptiveCard',
+          version: '1.5',
+          msteams: { width: 'Full' },
+          body,
+          actions,
         },
-      ],
-    },
-    knownSecrets,
-  )
+      },
+    ],
+  }
 }
 
 export interface TeamsDeps {

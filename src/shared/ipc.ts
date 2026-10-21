@@ -1,3 +1,4 @@
+import type { OperationRequest, Runbook, RunbookSaveInput } from './runbooks'
 import type { ExplainSubject, Explanation, ReleaseNotesRequest, ReleaseNotesResult } from './ai'
 import type { AuditEvent, AuditFilter, ChainVerification } from './audit'
 import type { ConfigCounts, ImportPreview, ImportResult } from './config-file'
@@ -228,6 +229,8 @@ export interface IpcContract {
   'release:savePlaybook': { args: [releaseId: string]; result: { path: string } | null }
   // `release:start` resolves once the run has started; progress arrives as `deploy:event` batches.
   'release:preflight': { args: [request: PreflightRequest]; result: { releaseId: string } }
+  /** A runbook operation's preflight: a `ready` release row that `release:start` runs like a release. */
+  'release:preflightOperation': { args: [request: OperationRequest]; result: { releaseId: string } }
   'release:start': { args: [releaseId: string, confirm: ReleaseConfirm]; result: void }
   'release:cancel': { args: [releaseId: string]; result: void }
   'release:rollback': { args: [releaseId: string, confirm: ReleaseConfirm]; result: { releaseId: string } }
@@ -241,6 +244,10 @@ export interface IpcContract {
   'release:active': { args: []; result: ReleaseSummary[] }
   /** Each local environment's newest release that ran, for the Deployments list. Hub environments are not included. */
   'release:latest': { args: []; result: EnvLastRelease[] }
+  // Runbooks: an environment's saved operations. Save creates, or updates when the input carries an id.
+  'runbook:list': { args: [environmentId: string]; result: Runbook[] }
+  'runbook:save': { args: [input: RunbookSaveInput]; result: Runbook }
+  'runbook:delete': { args: [id: string]; result: void }
   // Hub (Phase 10). Results carry no token; `hub:state` pushes the same token-free HubStatus.
   'hub:status': { args: []; result: HubStatus }
   'hub:connect': { args: [url: string]; result: HubStatus }
@@ -432,6 +439,7 @@ export const CHANNELS = [
   'deploy:savePlaybook',
   'release:savePlaybook',
   'release:preflight',
+  'release:preflightOperation',
   'release:start',
   'release:cancel',
   'release:rollback',
@@ -444,6 +452,9 @@ export const CHANNELS = [
   'release:events',
   'release:active',
   'release:latest',
+  'runbook:list',
+  'runbook:save',
+  'runbook:delete',
   'hub:status',
   'hub:connect',
   'hub:signIn',

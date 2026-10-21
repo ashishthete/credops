@@ -4,7 +4,20 @@ import { LOG_TAIL_DEFAULT, LOG_TAIL_MAX, VARIABLE_NAME } from './ops'
 import { MAX_STEPS_PER_CHECKOUT, validateStep, type StepBody } from './steps'
 
 export type BuiltinKind = 'restart' | 'stop' | 'start' | 'logs' | 'status' | 'prune-images' | 'backup-db' | 'pull-only'
-const BUILTINS: readonly BuiltinKind[] = ['restart', 'stop', 'start', 'logs', 'status', 'prune-images', 'backup-db', 'pull-only']
+export const BUILTINS: readonly BuiltinKind[] = ['restart', 'stop', 'start', 'logs', 'status', 'prune-images', 'backup-db', 'pull-only']
+/** A built-in's name in step rows and pickers. */
+export const BUILTIN_LABEL: Record<BuiltinKind, string> = {
+  restart: 'Restart',
+  stop: 'Stop',
+  start: 'Start',
+  logs: 'Logs',
+  status: 'Status',
+  'prune-images': 'Prune images',
+  'backup-db': 'Backup DB',
+  'pull-only': 'Pull',
+}
+/** Built-ins whose step rows reuse a release step's key (backup, fetch, checkout): one of each per runbook. */
+export const ONCE_BUILTINS: readonly BuiltinKind[] = ['backup-db', 'pull-only']
 
 export type RunbookItem = { type: 'step'; step: StepBody } | { type: 'builtin'; builtin: BuiltinKind; tail?: number; untilHours?: number }
 
@@ -30,6 +43,16 @@ export interface Runbook {
   updatedAt: string
 }
 export type RunbookInput = Omit<Runbook, 'id' | 'createdAt' | 'updatedAt'>
+/** `runbook:save`: an id updates that runbook, none creates one. */
+export type RunbookSaveInput = RunbookInput & { id?: string }
+
+/** `release:preflightOperation`: run a runbook on some of its target services with these param values. */
+export interface OperationRequest {
+  environmentId: string
+  runbookId: string
+  serviceIds: string[]
+  params: Record<string, string>
+}
 
 export const MAX_PARAMS = 10
 export const MAX_RUNBOOKS = 100
@@ -37,7 +60,7 @@ export const MAX_RUNBOOK_NAME = 64
 export const MAX_RUNBOOK_DESCRIPTION = 500
 const MAX_CHOICES = 50
 const MAX_CHOICE = 100
-const MAX_UNTIL_HOURS = 168
+export const MAX_UNTIL_HOURS = 168
 
 export const PARAM_PATTERN: Record<RunbookParam['pattern'], RegExp> = {
   identifier: /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/,
@@ -107,10 +130,10 @@ function validateItem(it: unknown, o: RunbookValidationOptions): RunbookItem {
     const tail = it.tail ?? LOG_TAIL_DEFAULT
     if (!Number.isInteger(tail) || (tail as number) < 1 || (tail as number) > LOG_TAIL_MAX) bad(`logs tail must be 1-${LOG_TAIL_MAX}`)
     out.tail = tail as number
-    if (it.untilHours !== undefined) {
-      if (!Number.isInteger(it.untilHours) || (it.untilHours as number) < 1 || (it.untilHours as number) > MAX_UNTIL_HOURS) bad(`logs hours must be 1-${MAX_UNTIL_HOURS}`)
-      out.untilHours = it.untilHours as number
-    }
+  }
+  if (builtin === 'prune-images' && it.untilHours !== undefined) {
+    if (!Number.isInteger(it.untilHours) || (it.untilHours as number) < 1 || (it.untilHours as number) > MAX_UNTIL_HOURS) bad(`prune hours must be 1-${MAX_UNTIL_HOURS}`)
+    out.untilHours = it.untilHours as number
   }
   return out
 }
@@ -131,6 +154,7 @@ export function validateRunbook(input: unknown, o: RunbookValidationOptions): Ru
   if (!Array.isArray(items) || items.length === 0) return bad('a runbook needs at least one item')
   if (items.length > MAX_STEPS_PER_CHECKOUT) bad(`too many items (${MAX_STEPS_PER_CHECKOUT})`)
   const checked = items.map((i) => validateItem(i, o))
+  for (const b of ONCE_BUILTINS) if (checked.filter((i) => i.type === 'builtin' && i.builtin === b).length > 1) bad(`${BUILTIN_LABEL[b]} can be in a runbook only once`)
   const stepIds = checked.flatMap((i) => (i.type === 'step' ? [i.step.id] : []))
   if (new Set(stepIds).size !== stepIds.length) bad('step ids must be unique')
   const rawParams = input.params ?? []

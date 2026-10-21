@@ -9,6 +9,8 @@ import type {
   ReleaseSummary,
   RunEvent,
 } from '../../shared/deploy'
+import { DeployError } from '../../shared/deploy-error'
+import type { OperationRequest } from '../../shared/runbooks'
 import type { AuditLog } from '../audit/audit-log'
 import type { ReleaseRunMeta } from '../deploy/finalize'
 import { HubError, type HubClient } from './client'
@@ -21,6 +23,8 @@ type Maybe<T> = T | Promise<T>
  */
 export interface ReleaseApi {
   preflight(req: PreflightRequest): Maybe<{ releaseId: string }>
+  /** A runbook operation's preflight: a `ready` row that `start` runs. */
+  preflightOperation(req: OperationRequest): Maybe<{ releaseId: string }>
   /** `ctx` is the local service's (the router never sends one); `forceServiceIds` deploys those skippable services anyway. */
   previewPlaybook(releaseId: string, ctx?: undefined, forceServiceIds?: string[]): Maybe<PlaybookPreview>
   start(releaseId: string, confirm?: ReleaseConfirm): Maybe<void>
@@ -69,6 +73,11 @@ export class HubRunner implements ReleaseApi {
     return res
   }
 
+  /** The Hub has no runbook route yet: an operation on a Hub environment is refused before anything is sent. */
+  preflightOperation(_req: OperationRequest): Promise<{ releaseId: string }> {
+    return Promise.reject(new DeployError('INVALID_STATE', 'Runbooks run on local environments only'))
+  }
+
   /** A read: not audited, like `detail`. */
   previewPlaybook(releaseId: string, _ctx?: undefined, forceServiceIds?: string[]): Promise<PlaybookPreview> {
     const q = new URLSearchParams((forceServiceIds ?? []).map((id) => ['forceServiceIds', id])).toString()
@@ -108,8 +117,10 @@ export class HubRunner implements ReleaseApi {
     throw new Error('Release notes of a Hub release are set when it is prepared')
   }
 
+  /** The Hub runs no operations, so every row is a release: `operations` is the router's to apply, never sent. */
   async list(filter: ReleaseListFilter = {}): Promise<ReleaseSummary[]> {
-    const rows = await this.d.client().get<ReleaseSummary[]>('/api/v1/releases', { ...filter })
+    const { operations: _operations, ...query } = filter
+    const rows = await this.d.client().get<ReleaseSummary[]>('/api/v1/releases', query)
     for (const r of rows) this.remember(r.id, r.environmentName)
     return rows
   }
@@ -242,6 +253,9 @@ export class RoutingReleases implements ReleaseApi {
   async preflight(req: PreflightRequest): Promise<{ releaseId: string }> {
     return this.d.isHubEnv(req.environmentId) ? this.d.hub.preflight(req) : this.d.local.preflight(req)
   }
+  async preflightOperation(req: OperationRequest): Promise<{ releaseId: string }> {
+    return this.d.isHubEnv(req.environmentId) ? this.d.hub.preflightOperation(req) : this.d.local.preflightOperation(req)
+  }
   previewPlaybook(releaseId: string, _ctx?: undefined, forceServiceIds?: string[]): Maybe<PlaybookPreview> {
     return this.pick(releaseId).previewPlaybook(releaseId, undefined, forceServiceIds)
   }
@@ -279,7 +293,8 @@ export class RoutingReleases implements ReleaseApi {
   async list(filter: ReleaseListFilter = {}): Promise<ReleaseSummary[]> {
     const env = filter.environmentId
     const hubOnly = env !== undefined && this.d.isHubEnv(env)
-    const localOnly = env !== undefined && !hubOnly
+    // The Hub has no operations yet: an operations-only list never asks it.
+    const localOnly = (env !== undefined && !hubOnly) || filter.operations === 'only'
     const local = hubOnly ? [] : await this.d.local.list(filter)
     const hub = localOnly ? [] : await this.fromHub(() => this.d.hub.list(filter))
     return this.merge(local, hub, filter.limit)

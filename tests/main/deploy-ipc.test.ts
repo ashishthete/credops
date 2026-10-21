@@ -9,6 +9,9 @@ import { PLAYBOOK_CHANGED_MESSAGE } from '../../src/main/deploy/release-service'
 import { REVIEW_REQUIRED_MESSAGE } from '../../src/main/ipc/handlers/deploy'
 import { MAX_EVENTS_PAGE, PLAYBOOK_NOT_STORED_MESSAGE, type ReleaseDetail } from '../../src/shared/deploy'
 import { MAX_SERVICES } from '../../src/shared/services'
+import { DeployError } from '../../src/shared/deploy-error'
+import { RunbookStore } from '../../src/main/deploy/runbook-store'
+import { makeDeployFixture } from './deploy-helpers'
 
 const ID = '0190a1b2-c3d4-7e5f-8a6b-1234567890ab'
 const check = (channel: string, args: unknown[]): unknown => (VALIDATORS as Record<string, (a: unknown[]) => unknown>)[channel](args)
@@ -355,5 +358,66 @@ describe('playbook review handlers', () => {
     const want = [{ ...hub, error: 'health failed: GET /?t=‹redacted› 503' }]
     expect(await h['release:list']({})).toEqual(want)
     expect(await h['release:active']()).toEqual(want)
+  })
+})
+
+describe('runbook and operation channels', () => {
+  const RB = { environmentId: ID, name: 'Bounce', description: '', targetServiceIds: [ID], items: [{ type: 'builtin', builtin: 'logs', tail: 50 }], params: [], lock: false, notify: false }
+  const OP = { environmentId: ID, runbookId: ID, serviceIds: [ID], params: { target: 'blue' } }
+
+  it('validators accept well-formed arguments', () => {
+    expect(() => check('runbook:list', [ID])).not.toThrow()
+    expect(() => check('runbook:save', [RB])).not.toThrow()
+    expect(() => check('runbook:save', [{ ...RB, id: ID }])).not.toThrow()
+    expect(() => check('runbook:delete', [ID])).not.toThrow()
+    expect(() => check('release:preflightOperation', [OP])).not.toThrow()
+    expect(() => check('release:preflightOperation', [{ ...OP, params: {} }])).not.toThrow()
+    expect(() => check('release:list', [{ operations: 'only' }])).not.toThrow()
+    expect(() => check('release:list', [{ operations: 'exclude' }])).not.toThrow()
+  })
+
+  const bad: [string, unknown[], RegExp][] = [
+    ['runbook:list', ['x'], /./],
+    ['runbook:delete', [], /./],
+    ['runbook:save', [{ ...RB, environmentId: 'x' }], /environmentId/],
+    ['runbook:save', [{ ...RB, id: 'x' }], /id/],
+    ['runbook:save', [{ ...RB, name: 5 }], /name/],
+    ['runbook:save', [{ ...RB, targetServiceIds: ['x'] }], /targetServiceIds/],
+    ['runbook:save', [{ ...RB, items: 'restart' }], /items/],
+    ['runbook:save', [{ ...RB, lock: 'no' }], /lock/],
+    ['runbook:save', [{ ...RB, script: 'rm -rf /' }], /script/],
+    ['release:preflightOperation', [{ ...OP, runbookId: 'x' }], /runbookId/],
+    ['release:preflightOperation', [{ ...OP, serviceIds: ['x'] }], /serviceIds/],
+    ['release:preflightOperation', [{ ...OP, params: { 'Bad-Name': 'x' } }], /params/],
+    ['release:preflightOperation', [{ ...OP, params: { target: 5 } }], /params/],
+    ['release:preflightOperation', [{ ...OP, params: { target: 'x'.repeat(1001) } }], /params/],
+    ['release:list', [{ operations: 'some' }], /operations/],
+  ]
+  it.each(bad)('%s rejects bad shapes and names the path', (channel, args, path) => {
+    expect(() => check(channel, args)).toThrow(path)
+  })
+
+  it('runbook:save creates or updates through the store and refuses an invalid runbook with VALIDATION', async () => {
+    const f = await makeDeployFixture()
+    const d = f.deploys.create(f.input({ name: 'api', repoPath: '/srv/api', deployTag: 'deploy_api' }))
+    const s = f.services.create({ kind: 'service', environmentId: f.staging.id, name: 'api', deploymentId: d.id })
+    const runbooks = new RunbookStore({ db: f.db, audit: f.audit, vault: f.vault })
+    const preflightOperation = vi.fn(async () => ({ releaseId: ID }))
+    const h = createDeployHandlers({ deploys: {} as never, releases: { preflightOperation } as unknown as ReleaseService, tooling: async () => ({}) as never, runbooks }) as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>
+    const input = { ...RB, environmentId: f.staging.id, targetServiceIds: [s.id] }
+    const made = (await h['runbook:save'](input)) as { id: string; name: string }
+    expect(made.name).toBe('Bounce')
+    const renamed = (await h['runbook:save']({ ...input, id: made.id, name: 'Logs' })) as { id: string; name: string }
+    expect(renamed).toMatchObject({ id: made.id, name: 'Logs' })
+    expect(((await h['runbook:list'](f.staging.id)) as { id: string }[]).map((x) => x.id)).toEqual([made.id])
+    for (const wrong of [{ ...input, name: '' }, { ...input, items: [] }, { ...input, items: [{ type: 'builtin', builtin: 'explode' }] }]) {
+      const err = await h['runbook:save'](wrong).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(DeployError)
+      expect((err as DeployError).code).toBe('VALIDATION')
+    }
+    expect(await h['release:preflightOperation'](OP)).toEqual({ releaseId: ID })
+    expect(preflightOperation).toHaveBeenCalledWith(OP)
+    await h['runbook:delete'](made.id)
+    expect(await h['runbook:list'](f.staging.id)).toEqual([])
   })
 })

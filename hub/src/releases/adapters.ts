@@ -149,6 +149,8 @@ const ACTION: Record<DeployAction, HubAction> = {
   'release.rollback': 'release.rollback',
   'release.cancel': 'release.cancel',
   'lock.break': 'lock.break',
+  // A runbook run is a start decision until the Hub has its own ops permission.
+  'ops.run': 'release.start',
 }
 
 /** The group a decision went through, as the audit trail names it. */

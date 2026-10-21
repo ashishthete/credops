@@ -5,12 +5,13 @@ import { INTERRUPTED_MESSAGE } from '../../src/main/deploy/release-store'
 import { RESET_CUT_ROLLBACK } from '../../src/main/deploy/release-service'
 import { REDACTED } from '../../src/main/security/redact'
 import type { DeployPlan } from '../../src/main/deploy/runner'
+import { generatePlaybook } from '../../src/main/deploy/generate'
 import { ToolingError } from '../../src/main/deploy/tooling'
 import { CONFIRM_MESSAGE } from '../../src/shared/ops'
-import { BREAK_LOCK_CONFIRM_MESSAGE, DEFAULT_RELEASE_OPTIONS, type CommitInfo, type DeploymentMeta, type PreflightCheck, type RunEvent } from '../../src/shared/deploy'
+import { BREAK_LOCK_CONFIRM_MESSAGE, DEFAULT_RELEASE_OPTIONS, PREPARE_FAILED_MESSAGE, PREPARE_FETCH_FAILED_MESSAGE, type CommitInfo, type DeploymentMeta, type PreflightCheck, type RunEvent } from '../../src/shared/deploy'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import type { AppServiceMeta } from '../../src/shared/services'
-import { A, B, C, NOW, SECRET, dep, ready, rig, tracked, type Rig } from './release-rig'
+import { A, B, C, NOW, SECRET, dep, opReady, ready, rig, runbook, tracked, type Rig } from './release-rig'
 
 const audits = (r: Rig, action: string) => r.f.audit.list({ actions: [action as never] })
 const runIds = (plan: DeployPlan): string[] => plan.deployments.map((d) => d.runId)
@@ -1594,5 +1595,441 @@ describe('per-service record', () => {
     // Without a ctx the constructor's actor is still used.
     const id2 = await ready(r, [dep(r, 'web')])
     expect(r.svc.list().find((x) => x.id === id2)?.triggeredBy).toBe('tester@box')
+  })
+})
+
+describe('parallel prepare', () => {
+  const on = (r: Rig) => r.f.deploys.updateSettings(r.f.staging.id, { parallelPrepare: true })
+
+  it('the release plan carries the prepare cap, and other plans none', async () => {
+    const r = await rig()
+    on(r)
+    r.f.deploys.updateSettings(r.f.staging.id, { prepareCap: 5 })
+    const id = await ready(r, [dep(r, 'one'), dep(r, 'two')])
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).status).toBe('succeeded')
+    expect(r.runner.call('release').prepare).toEqual({ cap: 5 })
+    expect(r.runner.call('preflight').prepare).toBeNull()
+    expect(r.runner.call('unlock').prepare).toBeNull()
+
+    const off = await rig()
+    const oid = await ready(off)
+    await off.svc.start(oid, {})
+    await off.svc.whenIdle()
+    expect(off.runner.call('release').prepare).toBeNull()
+    expect(off.runner.call('unlock').killBuilds).toBeUndefined()
+  })
+
+  it('a build that fails in prepare restarts nothing, rolls back nothing and says so', async () => {
+    const r = await rig()
+    on(r)
+    const deps = [dep(r, 'one'), dep(r, 'two')]
+    const id = await ready(r, deps)
+    r.runner.on.release = (plan, _s, emit) => {
+      const [r1, r2] = runIds(plan)
+      emit({ type: 'step.started', stepId: `${r2}:build`, kind: 'build', name: 'Build two', hostId: r.f.host.id, deploymentRunId: r2 })
+      emit({ type: 'step.failed', stepId: `${r2}:build`, error: 'compose build failed', durationMs: 1 })
+      return { exitCode: 2, failedDeploymentRunIds: [r2], reachedCheckout: [r1, r2], reachedUp: [], commits: { [r1]: { previous: A }, [r2]: { previous: B } } }
+    }
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    expect(r.runner.kinds).toEqual(['preflight', 'release', 'unlock'])
+    const d = r.svc.detail(id)
+    expect(d.status).toBe('failed')
+    expect(d.error).toBe(PREPARE_FAILED_MESSAGE(tracked(r, deps[1]).map((s) => s.name).join(', ')))
+    // every launched build is stopped by the unlock
+    const plan = r.runner.call('release')
+    expect(r.runner.call('unlock').killBuilds).toEqual(plan.deployments.map((x) => ({ runId: x.runId, repoPath: x.repoPath })))
+  })
+
+  it.each([
+    ['nothing checked out', false],
+    ['another checkout did', true],
+  ] as const)('a fetch that fails in prepare says the server is unchanged (%s)', async (_n, other) => {
+    const r = await rig()
+    on(r)
+    const deps = [dep(r, 'one'), dep(r, 'two')]
+    const id = await ready(r, deps)
+    r.runner.on.release = (plan, _s, emit) => {
+      const [r1, r2] = runIds(plan)
+      if (other) emit({ type: 'step.started', stepId: `${r1}:checkout`, kind: 'checkout', name: 'Checkout one', hostId: r.f.host.id, deploymentRunId: r1 })
+      emit({ type: 'step.started', stepId: `${r2}:fetch`, kind: 'fetch', name: 'Fetch two', hostId: r.f.host.id, deploymentRunId: r2 })
+      emit({ type: 'step.failed', stepId: `${r2}:fetch`, error: 'could not fetch', durationMs: 1 })
+      return { exitCode: 2, failedDeploymentRunIds: [r2], reachedCheckout: other ? [r1] : [], reachedUp: [], commits: {} }
+    }
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    const svc = tracked(r, deps[1]).map((s) => s.name).join(', ')
+    const d = r.svc.detail(id)
+    expect(d.status).toBe('failed')
+    expect(d.error).toBe(PREPARE_FETCH_FAILED_MESSAGE(svc, other))
+    expect(d.error).toContain('still on the old commit')
+    if (!other) expect(d.error).not.toContain('new commit')
+    expect(r.runner.kinds).toEqual(['preflight', 'release', 'unlock'])
+  })
+
+  it('a checkout that fails in prepare keeps the build-failed text', async () => {
+    const r = await rig()
+    on(r)
+    const deps = [dep(r, 'one')]
+    const id = await ready(r, deps)
+    r.runner.on.release = (plan, _s, emit) => {
+      const [r1] = runIds(plan)
+      emit({ type: 'step.started', stepId: `${r1}:checkout`, kind: 'checkout', name: 'Checkout one', hostId: r.f.host.id, deploymentRunId: r1 })
+      emit({ type: 'step.failed', stepId: `${r1}:checkout`, error: 'dirty tree', durationMs: 1 })
+      return { exitCode: 2, failedDeploymentRunIds: [r1], reachedCheckout: [r1], reachedUp: [], commits: { [r1]: { previous: A } } }
+    }
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).error).toBe(PREPARE_FAILED_MESSAGE(tracked(r, deps[0]).map((s) => s.name).join(', ')))
+  })
+
+  it('with auto-rollback off, a failure after up ends failed with nothing rolled back', async () => {
+    const r = await rig()
+    on(r)
+    r.f.deploys.updateSettings(r.f.staging.id, { autoRollback: false })
+    const id = await ready(r, [dep(r, 'one'), dep(r, 'two')])
+    r.runner.on.release = (plan) => {
+      const [r1, r2] = runIds(plan)
+      return { exitCode: 2, failedDeploymentRunIds: [r2], reachedCheckout: [r1, r2], reachedUp: [r1, r2], commits: { [r1]: { previous: A }, [r2]: { previous: B } } }
+    }
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    const d = r.svc.detail(id)
+    expect(d.status).toBe('failed')
+    // something went up: the reason is the step's, not the prepare text
+    expect(d.error ?? '').not.toContain('no service was restarted')
+    expect(r.runner.kinds).toEqual(['preflight', 'release', 'unlock'])
+    expect(r.runner.call('unlock').killBuilds).toHaveLength(2)
+  })
+
+  it('a vault reset mid-prepare cancels the release and the unlock still stops the builds', async () => {
+    const r = await rig()
+    on(r)
+    const g = gate()
+    r.runner.onCancel = g.open
+    r.runner.on.release = async () => {
+      await g.p
+      return { cancelled: true, exitCode: null }
+    }
+    const id = await ready(r, [dep(r, 'one'), dep(r, 'two')])
+    await r.svc.start(id, {})
+    r.svc.vaultReset()
+    await r.svc.whenIdle()
+    expect(r.runner.cancels).toHaveLength(1)
+    expect(r.runner.kinds).toEqual(['preflight', 'release', 'unlock'])
+    expect(r.svc.detail(id).status).toBe('cancelled')
+    expect(r.svc.hasActive()).toBe(false)
+    const plan = r.runner.call('release')
+    expect(r.runner.call('unlock').killBuilds).toEqual(plan.deployments.map((x) => ({ runId: x.runId, repoPath: x.repoPath })))
+  })
+
+  it('a vault reset during the auto-rollback after an up cancels it and still unlocks with the builds', async () => {
+    const r = await rig()
+    on(r)
+    const id = await ready(r, [dep(r, 'one')])
+    r.runner.on.release = (plan) => {
+      const [r1] = runIds(plan)
+      return { exitCode: 2, failedDeploymentRunIds: [r1], reachedCheckout: [r1], reachedUp: [r1], commits: { [r1]: { previous: A } } }
+    }
+    const g = gate()
+    const rolling = gate()
+    r.runner.onCancel = g.open
+    r.runner.on.rollback = async () => {
+      rolling.open()
+      await g.p
+      return { cancelled: true, exitCode: null }
+    }
+    await r.svc.start(id, {})
+    await rolling.p
+    r.svc.vaultReset()
+    await r.svc.whenIdle()
+    expect(r.runner.kinds).toEqual(['preflight', 'release', 'rollback', 'unlock'])
+    expect(r.svc.detail(id).status).not.toBe('running')
+    expect(r.runner.call('unlock').killBuilds).toHaveLength(1)
+  })
+
+  it('after a service went up, a failure rolls back only the runs that went up', async () => {
+    const r = await rig()
+    on(r)
+    const id = await ready(r, [dep(r, 'one'), dep(r, 'two')])
+    r.runner.on.release = (plan) => {
+      const [r1, r2] = runIds(plan)
+      return { exitCode: 2, failedDeploymentRunIds: [r2], reachedCheckout: [r1, r2], reachedUp: [r1], commits: { [r1]: { previous: A }, [r2]: { previous: B } } }
+    }
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    const [r1] = runIds(r.runner.call('release'))
+    expect(runIds(r.runner.call('rollback'))).toEqual([r1])
+    expect(r.svc.detail(id).status).toBe('rolled_back')
+  })
+
+  it('a cancel mid-build stops the launched builds before the lock goes', async () => {
+    const r = await rig()
+    on(r)
+    const g = gate()
+    r.runner.onCancel = g.open
+    r.runner.on.release = async () => {
+      await g.p
+      return { cancelled: true, exitCode: null }
+    }
+    const id = await ready(r, [dep(r, 'one'), dep(r, 'two')])
+    await r.svc.start(id, {})
+    await r.svc.cancel(id)
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).status).toBe('cancelled')
+    const plan = r.runner.call('release')
+    expect(r.runner.call('unlock').killBuilds).toEqual(plan.deployments.map((x) => ({ runId: x.runId, repoPath: x.repoPath })))
+  })
+
+  it('preflight blocks two checkouts sharing a repo on a host on different branches', async () => {
+    const r = await rig()
+    on(r)
+    const one = dep(r, 'one')
+    const two = dep(r, 'two', { repoPath: '/srv/one', defaultBranch: 'next' })
+    const id = await ready(r, [one, two])
+    const d = r.svc.detail(id)
+    expect(d.status).toBe('blocked')
+    expect(d.preflight?.checks.find((c) => c.id === 'shared-repo')).toMatchObject({ level: 'block', label: 'shared repo', hostId: r.f.host.id })
+    expect(d.preflight?.checks.find((c) => c.id === 'shared-repo')!.message).toContain('turn off parallel prepare')
+    // the same branch shares the checkout and is fine; with parallel prepare off nothing is checked
+    const same = await rig()
+    on(same)
+    const sid = await ready(same, [dep(same, 'one'), dep(same, 'two', { repoPath: '/srv/one' })])
+    expect(same.svc.detail(sid).preflight?.checks.some((c) => c.id === 'shared-repo')).toBe(false)
+    const off = await rig()
+    const oid = await ready(off, [dep(off, 'one'), dep(off, 'two', { repoPath: '/srv/one', defaultBranch: 'next' })])
+    expect(off.svc.detail(oid).preflight?.checks.some((c) => c.id === 'shared-repo')).toBe(false)
+  })
+})
+
+describe('ReleaseService operations', () => {
+  const PARAM = 'blue-green-77'
+  const shell = (id: string, name: string, script: string) => ({
+    type: 'step' as const,
+    step: { id, name, run: 'shell' as const, service: null, script, cwd: null, sudo: 'docker' as const, timeoutSec: 60, onFailure: 'stop' as const, when: { kind: 'always' as const }, secrets: [] },
+  })
+  const bounce = (r: Rig, serviceIds: string[], over: Parameters<typeof runbook>[2] = {}) =>
+    runbook(r, serviceIds, {
+      items: [{ type: 'builtin', builtin: 'restart' }, shell('warm', 'warm-cache', 'echo "$OD_PARAM_TARGET"'), { type: 'builtin', builtin: 'logs', tail: 50 }],
+      params: [{ name: 'target', label: 'Target', type: 'text', pattern: 'identifier', choices: [] }],
+      ...over,
+    })
+  const logsOnly = (r: Rig, serviceIds: string[], lock: boolean) => runbook(r, serviceIds, { name: lock ? 'Logs locked' : 'Logs', items: [{ type: 'builtin', builtin: 'logs', tail: 20 }], lock })
+
+  it('preflights, previews and runs an operation that shares the release history without deploying anything', async () => {
+    const r = await rig()
+    r.f.deploys.updateSettings(r.f.staging.id, { versioned: true, currentVersion: 'v1.4.0' })
+    const d = dep(r, 'api')
+    const [svcA] = tracked(r, d)
+    const rb = bounce(r, [svcA.id])
+    const id = await opReady(r, rb, { target: PARAM })
+    const ready1 = r.svc.detail(id)
+    expect(ready1.status).toBe('ready')
+    expect(ready1.version).toBeNull()
+    expect(ready1.operation).toEqual({ runbookId: rb.id, name: 'Bounce', params: { target: PARAM }, readOnly: false, lock: true, targetServiceIds: [svcA.id] })
+    expect(ready1.runs).toHaveLength(1)
+    expect(ready1.runs[0].steps.map((x) => [x.key, x.kind, x.label])).toEqual([
+      ['op_restart', 'op', 'Restart'],
+      ['c_1', 'custom', 'warm-cache'],
+      ['op_logs', 'op', 'Logs'],
+    ])
+    expect(audits(r, 'ops.preflight')).toHaveLength(1)
+
+    const preview = await r.svc.previewPlaybook(id)
+    expect(preview.playbook).toContain('op_restart')
+    expect(preview.playbook).not.toContain(PARAM)
+    await r.svc.start(id, { playbookSha256: preview.sha256 })
+    await r.svc.whenIdle()
+    const done = r.svc.detail(id)
+    expect(done.status).toBe('succeeded')
+    expect(done.runs.map((x) => x.status)).toEqual(['succeeded'])
+    expect(r.runner.kinds).toEqual(['preflight', 'operation', 'unlock'])
+    const plan = r.runner.call('operation')
+    expect(plan.operation).toMatchObject({ runbookId: rb.id, name: 'Bounce', lock: true, targets: [{ runId: done.runs[0].id, services: [svcA.composeService] }] })
+    expect(plan.operation!.items.map((i) => (i.type === 'step' ? i.step.key : i.builtin))).toEqual(['restart', 'c_1', 'logs'])
+    const step = plan.operation!.items[1] as { type: 'step'; step: DeployPlan['deployments'][number]['steps'][number] }
+    expect(step.step.paramKeys).toEqual([{ envName: 'OD_PARAM_TARGET', valueB64: Buffer.from(PARAM).toString('base64') }])
+    // Nothing about the operation is a deploy: no tag, no finalize, no recorded commit.
+    expect(r.svc.events(id, 0).some((e) => 'stepId' in e && String(e.stepId).startsWith('release:finalize'))).toBe(false)
+    expect(r.f.deploys.settings(r.f.staging.id).currentVersion).toBe('v1.4.0')
+    expect(r.f.services.list(r.f.staging.id).find((x) => x.id === svcA.id)).toMatchObject({ lastReleaseId: null })
+    expect(r.svc.list({ operations: 'only' }).map((x) => x.id)).toEqual([id])
+    expect(r.svc.list({ operations: 'exclude' }).map((x) => x.id)).not.toContain(id)
+  })
+
+  it('an operation is never rolled back, tag-retried or an environment\'s latest release', async () => {
+    const r = await rig()
+    const d = dep(r, 'api')
+    const rel = await ready(r, [d])
+    await r.svc.start(rel, {})
+    await r.svc.whenIdle()
+    const ok = await opReady(r, runbook(r, tracked(r, d).map((x) => x.id)))
+    await r.svc.start(ok, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(ok).status).toBe('succeeded')
+    r.runner.on.operation = () => ({ exitCode: 2 })
+    const bad = await opReady(r, runbook(r, tracked(r, d).map((x) => x.id), { name: 'Bounce 2' }))
+    await r.svc.start(bad, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(bad).status).toBe('failed')
+    expect(r.svc.detail(bad).runs.map((x) => x.status)).toEqual(['failed'])
+    // A failed operation is not rolled back on its own either.
+    expect(r.runner.kinds).not.toContain('rollback')
+    for (const id of [ok, bad]) {
+      await expect(r.svc.rollback(id, {})).rejects.toThrow(/operation/i)
+      await expect(r.svc.retryVersion(id)).rejects.toThrow(/operation/i)
+    }
+    expect(r.svc.latestPerEnvironment().find((x) => x.environmentId === r.f.staging.id)?.id).toBe(rel)
+  })
+
+  it('a lock-free read-only operation runs beside a release on its environment; one that locks is refused BUSY', async () => {
+    const r = await rig()
+    const g = gate()
+    r.runner.on.release = async () => {
+      await g.p
+    }
+    const d = dep(r, 'api')
+    const ids = tracked(r, d).map((x) => x.id)
+    const rel = await ready(r, [d])
+    await r.svc.start(rel, {})
+    const free = await opReady(r, logsOnly(r, ids, false))
+    expect(r.svc.detail(free).operation).toMatchObject({ readOnly: true, lock: false })
+    await r.svc.start(free, {})
+    for (const rb of [logsOnly(r, ids, true), runbook(r, ids, { name: 'Restart' })]) {
+      const locking = await opReady(r, rb)
+      const err = await r.svc.start(locking, {}).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(DeployError)
+      expect((err as DeployError).code).toBe('BUSY')
+    }
+    g.open()
+    await r.svc.whenIdle()
+    expect(r.svc.detail(free).status).toBe('succeeded')
+    expect(r.svc.detail(rel).status).toBe('succeeded')
+    // A lock-free run still removes its run directory, and an operation's unlock never stops builds.
+    const unlocks = r.runner.calls.filter((c) => c.plan.kind === 'unlock').map((c) => c.plan)
+    expect(unlocks.map((p) => p.releaseId).sort()).toEqual([free, rel].sort())
+    expect(unlocks.find((p) => p.releaseId === free)?.killBuilds).toBeUndefined()
+  })
+
+  it('an operation unlocks after it fails and after it is cancelled, and its unlock never stops builds', async () => {
+    const r = await rig()
+    const d = dep(r, 'api')
+    const ids = tracked(r, d).map((x) => x.id)
+    r.runner.on.operation = () => ({ exitCode: 2 })
+    const bad = await opReady(r, runbook(r, ids))
+    await r.svc.start(bad, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(bad).status).toBe('failed')
+    expect(r.runner.kinds.slice(-2)).toEqual(['operation', 'unlock'])
+    const g = gate()
+    r.runner.onCancel = g.open
+    r.runner.on.operation = async () => {
+      await g.p
+      return { cancelled: true, exitCode: null }
+    }
+    const stopped = await opReady(r, runbook(r, ids, { name: 'Bounce 2' }))
+    await r.svc.start(stopped, {})
+    await r.svc.cancel(stopped)
+    await r.svc.whenIdle()
+    expect(r.svc.detail(stopped).status).toBe('cancelled')
+    expect(r.runner.kinds.slice(-2)).toEqual(['operation', 'unlock'])
+    expect(r.svc.hasActive()).toBe(false)
+    const unlocks = r.runner.calls.filter((c) => c.plan.kind === 'unlock').map((c) => c.plan)
+    expect(unlocks.map((p) => p.releaseId)).toEqual([bad, stopped])
+    for (const p of unlocks) {
+      expect(p).not.toHaveProperty('killBuilds')
+      expect(generatePlaybook(p)).not.toMatch(/kill_pids|kill -/)
+    }
+    // The same unlock with builds to stop does carry the kill, so the check above is not vacuous.
+    const withKill = { ...unlocks[0], killBuilds: [{ runId: unlocks[0].deployments[0]?.runId ?? 'r', repoPath: '/srv/api' }] }
+    expect(generatePlaybook(withKill as DeployPlan)).toMatch(/kill_pids/)
+  })
+
+  it('an operation on a protected environment needs the typed name, audited as ops.run', async () => {
+    const r = await rig()
+    r.f.envs.putHost(r.f.prod.id, r.f.host.id, 'app')
+    const d = dep(r, 'api', { environmentId: r.f.prod.id, deployTag: 'deploy_prod' })
+    const rb = runbook(r, tracked(r, d).map((x) => x.id), { environmentId: r.f.prod.id })
+    const id = await opReady(r, rb)
+    const err = await r.svc.start(id, {}).catch((e: unknown) => e)
+    expect((err as DeployError).code).toBe('CONFIRM_REQUIRED')
+    expect(audits(r, 'ops.run').map((e) => e.outcome)).toEqual(['denied'])
+    expect(audits(r, 'ops.run')[0].details).toMatchObject({ reason: 'confirm', name: rb.name, serviceCount: rb.targetServiceIds.length })
+    expect(r.runner.kinds).toEqual(['preflight'])
+    await r.svc.start(id, { typedName: 'prod' })
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).status).toBe('succeeded')
+  })
+
+  it('audits names, counts and outcome only: no host, address, script or param value anywhere', async () => {
+    const r = await rig()
+    const d = dep(r, 'api')
+    const rb = bounce(r, tracked(r, d).map((x) => x.id))
+    r.runner.on.operation = (_p, s, emit) => {
+      expect(s.known).toContain(PARAM)
+      emit({ type: 'log', stepId: null, hostId: null, stream: 'out', line: `restarting for ${PARAM}` })
+    }
+    const id = await opReady(r, rb, { target: PARAM })
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    const pre = audits(r, 'ops.preflight')
+    expect(pre[0].details).toMatchObject({ name: 'Bounce', serviceCount: 1, deploymentCount: 1, hostCount: 1 })
+    const runs = audits(r, 'ops.run')
+    expect(runs.map((e) => [e.outcome, (e.details as { outcome: string }).outcome]).sort()).toEqual([
+      ['success', 'started'],
+      ['success', 'succeeded'],
+    ])
+    for (const e of runs) expect(e.details).toMatchObject({ name: 'Bounce', serviceCount: 1 })
+    expect(audits(r, 'release.start')).toEqual([])
+    expect(audits(r, 'release.finish')).toEqual([])
+    const all = JSON.stringify([...pre, ...runs])
+    for (const leak of [PARAM, 'app1', '10.0.0.7', 'OD_PARAM_TARGET', '/srv/api']) expect(all).not.toContain(leak)
+    expect(JSON.stringify(r.svc.events(id, 0))).not.toContain(PARAM)
+  })
+
+  it('preflightOperation refuses a service the runbook does not target, a bad param and another environment', async () => {
+    const r = await rig()
+    const d = dep(r, 'api')
+    const other = dep(r, 'web')
+    const rb = bounce(r, tracked(r, d).map((x) => x.id))
+    const base = { environmentId: r.f.staging.id, runbookId: rb.id, serviceIds: rb.targetServiceIds, params: { target: 'ok' } }
+    const code = (p: Promise<unknown>) => p.then(() => null, (e: unknown) => (e as DeployError).code)
+    expect(await code(r.svc.preflightOperation({ ...base, serviceIds: tracked(r, other).map((x) => x.id) }))).toBe('VALIDATION')
+    expect(await code(r.svc.preflightOperation({ ...base, serviceIds: [] }))).toBe('VALIDATION')
+    expect(await code(r.svc.preflightOperation({ ...base, params: { target: 'no spaces' } }))).toBe('VALIDATION')
+    expect(await code(r.svc.preflightOperation({ ...base, params: {} }))).toBe('VALIDATION')
+    // Services from another environment fail the selection, as a release preflight's do, before the runbook is read.
+    expect(await code(r.svc.preflightOperation({ ...base, environmentId: r.f.prod.id }))).toBe('INVALID_STATE')
+    expect(r.runner.kinds).toEqual([])
+  })
+
+  it('preflightOperation checks access before it reads the runbook: a denied caller learns nothing about it', async () => {
+    const r = await rig({ access: { check: async (_a, action) => (action === 'ops.run' ? { allowed: false, reason: 'no' } : { allowed: true }) } })
+    const d = dep(r, 'api')
+    const rb = bounce(r, tracked(r, d).map((x) => x.id))
+    const base = { environmentId: r.f.staging.id, runbookId: rb.id, serviceIds: rb.targetServiceIds, params: { target: 'ok' } }
+    const code = (p: Promise<unknown>) => p.then(() => null, (e: unknown) => (e as DeployError).code)
+    for (const req of [base, { ...base, runbookId: '00000000-0000-4000-8000-000000000000' }, { ...base, params: { target: 'no spaces' } }, { ...base, params: {} }]) {
+      expect(await code(r.svc.preflightOperation(req))).toBe('DENIED')
+    }
+    const denied = audits(r, 'ops.preflight')
+    expect(denied.map((e) => e.outcome)).toEqual(['denied', 'denied', 'denied', 'denied'])
+    expect(JSON.stringify(denied)).not.toContain(rb.name)
+    expect(r.runner.kinds).toEqual([])
+  })
+
+  it('an operation preflight blocks on what it needs only', async () => {
+    const r = await rig()
+    const d = dep(r, 'api')
+    const rb = runbook(r, tracked(r, d).map((x) => x.id))
+    const chk = (id: string): PreflightCheck => ({ id, deploymentId: d.id, hostId: r.f.host.id, label: id, level: 'block', message: `${id} failed` })
+    r.runner.checks = [chk('clean'), chk('commits'), chk('version-tag')]
+    const okId = await opReady(r, rb)
+    expect(r.svc.detail(okId).status).toBe('ready')
+    expect(r.svc.detail(okId).preflight?.checks.filter((c) => ['clean', 'commits', 'version-tag'].includes(c.id)).map((c) => c.level)).toEqual(['warn', 'warn', 'warn'])
+    r.runner.checks = [chk('reachable')]
+    expect(r.svc.detail(await opReady(r, rb)).status).toBe('blocked')
   })
 })

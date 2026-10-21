@@ -154,9 +154,10 @@ const SELECT = `SELECT r.*, e.name AS environment_name,
 
 /**
  * A run (`d`) of release `r` that left its services deployed: a release run that succeeded and was not rolled back, in a
- * release that was not rolled back, or a rollback run that succeeded (rollback runs end `rolled_back`).
+ * release that was not rolled back, or a rollback run that succeeded (rollback runs end `rolled_back`). An operation
+ * (a runbook run) deploys nothing.
  */
-const DEPLOYED = `((r.kind = 'release' AND r.status <> 'rolled_back' AND d.status = 'succeeded' AND d.rolled_back = 0)
+const DEPLOYED = `((r.kind = 'release' AND r.operation IS NULL AND r.status <> 'rolled_back' AND d.status = 'succeeded' AND d.rolled_back = 0)
   OR (r.kind = 'rollback' AND d.status = 'rolled_back'))`
 
 /**

@@ -16,6 +16,8 @@ import {
   type DeploymentRunStatus,
   type DockerMode,
   PLAYBOOK_CHANGED_MESSAGE,
+  PREPARE_FAILED_MESSAGE,
+  PREPARE_FETCH_FAILED_MESSAGE,
   REVIEW_EXPIRED_MESSAGE,
   REVIEW_TTL_MS,
   stepBound,
@@ -37,7 +39,8 @@ import {
 import type { AuditAction, AuditInput } from '../../shared/audit'
 import { CONFIRM_MESSAGE } from '../../shared/ops'
 import { listNames, type ServiceMeta } from '../../shared/services'
-import { effectiveSteps, stepLabel, type Step } from '../../shared/steps'
+import { effectiveSteps, stepLabel, type Step, type StepBody } from '../../shared/steps'
+import { ONCE_BUILTINS, isReadOnlyRunbook, validateParamValues, type OperationMeta, type OperationRequest, type Runbook } from '../../shared/runbooks'
 import { ProtectError, confirmNeeded, protectionFor } from '../ops/protect'
 import type { ResolvedHost } from '../../shared/inventory'
 import type { Db } from '../db/connection'
@@ -50,11 +53,14 @@ import { flowStages, planFields, resolveSelection, runServicesOf, skipServices, 
 import type { ServiceStore } from './service-store'
 import { noopFinalize, type FinalizeSteps, type ReleaseRunMeta } from './finalize'
 import { INTERRUPTED_MESSAGE, type ReleaseStore } from './release-store'
-import type { DeployPlan, DeployRunner, PlanDeployment, PlanFlow, PlanHop, PlanHost, PlanKind, PlanStep, RunOutcome, RunSecrets } from './runner'
+import type { DeployPlan, DeployRunner, PlanDeployment, PlanFlow, PlanHop, PlanHost, PlanKind, PlanOperation, PlanStep, RunOutcome, RunSecrets } from './runner'
 import { generatePlaybook, stepList } from './generate'
+import { operationSteps } from './generate-ops'
+import type { RunbookStore } from './runbook-store'
 import { generateInventory } from './ssh-files'
 import { withBase64Forms } from './mask'
 import { ToolingError } from './tooling'
+import { type EditError, validateEditedPlaybook } from './playbook-validate'
 
 /* The release lifecycle: preflight, start, rollback, versioning, locks. It owns the stream (run.started /
    run.finished / preflight.done), the access and confirmation boundaries and the secrets' lifetime; the runner
@@ -109,6 +115,8 @@ export interface ReleaseServiceDeps {
   secrets: { value(id: string, environmentId?: string): string }
   /** Defaults to the app database. */
   inventory?: ReleaseInventory
+  /** The runbooks an operation runs; without it `preflightOperation` refuses. */
+  runbooks?: Pick<RunbookStore, 'get'>
   /** One call per flushed batch (about every EVENT_BATCH_MS), already persisted with their seq. */
   emit: (batch: RunEvent[]) => void
   emitState: (summary: ReleaseSummary) => void
@@ -120,9 +128,12 @@ export interface ReleaseServiceDeps {
 /** The part of the service the Hub's routes and tests use. */
 export type ReleaseOps = Pick<
   ReleaseService,
-  'preflight' | 'previewPlaybook' | 'start' | 'cancel' | 'rollback' | 'breakLock' | 'discard' | 'retryVersion' | 'runMeta' | 'detail' | 'list' | 'events' | 'hasActive' | 'onEvent'
+  'preflight' | 'preflightOperation' | 'previewPlaybook' | 'start' | 'cancel' | 'rollback' | 'breakLock' | 'discard' | 'retryVersion' | 'runMeta' | 'detail' | 'list' | 'events' | 'hasActive' | 'onEvent'
 >
 type ReleaseCounts = { serviceCount: number; deploymentCount: number; hostCount: number }
+
+/** A run of a runbook on some of its services, with the param values it asks for. */
+export type { OperationRequest }
 
 type Phase = 'preflight' | 'release' | 'version' | 'rollback' | 'unlock'
 
@@ -139,6 +150,10 @@ interface Live {
   done: Promise<void>
   runStatus: Map<string, DeploymentRunStatus>
   checkedOut: Set<string>
+  /** Runs whose up step started (a parallel prepare rolls back only these). */
+  upped: Set<string>
+  /** The builds this release's parallel prepare launched: the unlock stops any still running. */
+  killBuilds: { runId: string; repoPath: string }[]
   runIds: Set<string>
   failure: string | null
   versionError: string | null
@@ -149,6 +164,8 @@ interface Live {
   failedStep: string | null
   /** Aborts finalize's slow work (Claude notes); set only while finalize runs. */
   finalize: AbortController | null
+  /** Set while a runbook operation preflights or runs. */
+  op: OperationMeta | null
 }
 
 /** The decrypted values of one release. Held by reference so `drop` can let go of them. */
@@ -221,7 +238,7 @@ export class ReleaseService {
   // ---- readers ----
 
   list(filter: ReleaseListFilter = {}): ReleaseSummary[] {
-    return this.d.releases.list({ environmentId: filter.environmentId, limit: filter.limit ?? 50, before: filter.before })
+    return this.d.releases.list({ environmentId: filter.environmentId, limit: filter.limit ?? 50, before: filter.before, operations: filter.operations })
   }
 
   detail(releaseId: string): ReleaseDetail {
@@ -277,14 +294,17 @@ export class ReleaseService {
     const ids = this.d.releases.failInterrupted(message)
     for (const id of ids) {
       const r = this.d.releases.get(id)
+      const counts = { serviceCount: r.serviceCount, deploymentCount: r.deploymentCount, hostCount: r.hostCount }
       this.d.audit.append({
         actor: this.d.actor,
-        action: 'release.finish',
+        action: r.operation ? 'ops.run' : 'release.finish',
         outcome: 'failure',
         targetType: 'release',
         targetId: id,
-        targetLabel: `${r.environmentName} ${r.version ?? r.kind}`,
-        details: { status: 'failed', version: r.version, durationSec: null, interrupted: true, serviceCount: r.serviceCount, deploymentCount: r.deploymentCount, hostCount: r.hostCount },
+        targetLabel: `${r.environmentName} ${r.operation?.name ?? r.version ?? r.kind}`,
+        details: r.operation
+          ? { name: r.operation.name, outcome: 'failed', durationSec: null, interrupted: true, ...counts }
+          : { status: 'failed', version: r.version, durationSec: null, interrupted: true, ...counts },
       })
     }
     return ids
@@ -350,7 +370,75 @@ export class ReleaseService {
     return { releaseId: release.id }
   }
 
-  private async runPreflight(live: Live, infos: Info[], tag: string | null): Promise<void> {
+  /**
+   * Preflights a run of a runbook on some of the services it targets: a release row of kind `release` with
+   * `operation` set, so it shares the release history, the host lock and the audit trail. Its preflight blocks only
+   * on what the run needs (operationChecks). The param values are checked here and stored on the row; they travel
+   * to the host as base64 only.
+   */
+  async preflightOperation(req: OperationRequest, ctx?: CallCtx): Promise<{ releaseId: string }> {
+    const actor = ctx?.actor ?? this.d.actor
+    this.d.vault.assertUnlocked()
+    if (!this.d.runbooks) throw new DeployError('INVALID_STATE', 'Runbooks are not available here')
+    if (req.serviceIds.length === 0) throw new DeployError('VALIDATION', 'Pick one or more of the services this runbook targets')
+    // Access first, on the picked services alone: a caller who may not run operations learns nothing about the runbook.
+    const env = this.inv.environment(req.environmentId)
+    const groups = resolveSelection(env.id, { serviceIds: req.serviceIds, checkoutIds: [] }, { services: this.d.services.list(env.id), deployments: this.d.deploys.list(env.id) })
+    const counts = { serviceCount: req.serviceIds.length, deploymentCount: groups.length, hostCount: new Set(groups.map((g) => g.deployment.hostId)).size }
+    await this.guard(actor, 'ops.run', 'ops.preflight', env, groups.map((g) => g.deployment.id), undefined, counts)
+    const rb = this.d.runbooks.get(req.runbookId)
+    if (rb.environmentId !== req.environmentId) throw new DeployError('VALIDATION', 'This runbook belongs to another environment')
+    const targets = new Set(rb.targetServiceIds)
+    if (req.serviceIds.some((x) => !targets.has(x))) throw new DeployError('VALIDATION', 'Pick one or more of the services this runbook targets')
+    const params = validateParamValues(rb.params, req.params)
+    if (rb.items.some((i) => i.type === 'builtin' && i.builtin === 'backup-db')) {
+      const none = groups.find((g) => !g.deployment.dbBackup || !g.deployment.backupDir)
+      if (none) throw new DeployError('VALIDATION', `${none.deployment.name} has no database backup set up`)
+    }
+    const meta: OperationMeta = { runbookId: rb.id, name: rb.name, params, readOnly: isReadOnlyRunbook(rb), lock: rb.lock, targetServiceIds: [...req.serviceIds] }
+    const deps = groups.map((g) => g.deployment)
+    // Always the named services: an operation acts on what was picked, never on a whole checkout by default.
+    const sels: RunSelection[] = groups.map((g) => ({ services: runServicesOf({ ...g, whole: false }), whole: false }))
+    const release = this.d.releases.createRelease({
+      environmentId: env.id,
+      kind: 'release',
+      status: 'preflight',
+      version: null,
+      previousVersion: null,
+      versionBump: 'none',
+      redeploy: false,
+      rollbackOf: null,
+      options: { backup: false, notify: rb.notify, qa: false },
+      triggeredBy: this.who(actor),
+      serviceIds: [...req.serviceIds],
+      operation: meta,
+    })
+    const runs = this.d.releases.createRuns(
+      release.id,
+      deps.map((x, i) => ({
+        deploymentId: x.id,
+        deploymentName: x.name,
+        hostId: x.hostId,
+        hostLabel: this.inv.hostLabel(x.hostId, env.id),
+        position: i,
+        branch: x.defaultBranch,
+        steps: [],
+        services: sels[i].services,
+        wholeCheckout: false,
+      })),
+    )
+    const infos: Info[] = deps.map((dep, i) => ({ dep, run: runs[i], sel: sels[i] }))
+    this.seedOpSteps(infos, rb)
+    this.emitState(release.id)
+
+    const live = this.register(release.id, env, 'preflight', rb.name, actor)
+    live.op = meta
+    for (const r of runs) live.runIds.add(r.id)
+    live.done = this.runPreflight(live, infos, null, rb).catch((e: unknown) => this.crash(live, e)).finally(() => this.unregister(live))
+    return { releaseId: release.id }
+  }
+
+  private async runPreflight(live: Live, infos: Info[], tag: string | null, op: Runbook | null = null): Promise<void> {
     const id = live.id
     let report: PreflightReport
     let holder: Holder | null = null
@@ -363,7 +451,7 @@ export class ReleaseService {
         this.finish(live, 'cancelled', 'Cancelled', null)
         return
       }
-      const checks: PreflightCheck[] = []
+      const checks: PreflightCheck[] = this.sharedRepoChecks(live.environmentId, infos)
       if (err !== null) checks.push(this.block('ansible', err))
       else checks.push({ id: 'ansible', deploymentId: null, hostId: '', label: 'ansible', level: 'ok', message: 'ansible-playbook is available' })
       if (out?.preflight)
@@ -378,12 +466,15 @@ export class ReleaseService {
     } finally {
       this.drop(holder)
     }
+    if (op !== null) report = { ...report, checks: operationChecks(report.checks, op), blocked: false }
     report.blocked = report.blocked || report.checks.some((c) => c.level === 'block')
     for (const check of report.checks) this.push(id, { type: 'preflight.check', check })
     this.push(id, { type: 'preflight.done', report })
     this.flush()
     this.setStatus(id, report.blocked ? 'blocked' : 'ready')
-    this.audit('release.preflight', 'success', live, { deployments: infos.map((i) => i.dep.id), commits: report.commitsTotal, blockers: report.checks.filter((c) => c.level === 'block').length, hostCount: this.hostCount(infos), ...this.counts(infos) })
+    const blockers = report.checks.filter((c) => c.level === 'block').length
+    if (op !== null) this.audit('ops.preflight', 'success', live, { name: op.name, blockers, hostCount: this.hostCount(infos), ...this.counts(infos) })
+    else this.audit('release.preflight', 'success', live, { deployments: infos.map((i) => i.dep.id), commits: report.commitsTotal, blockers, hostCount: this.hostCount(infos), ...this.counts(infos) })
     this.clearSteps(live)
   }
 
@@ -402,16 +493,40 @@ export class ReleaseService {
     this.assertStartable(rel)
     const env = this.inv.environment(rel.environmentId)
     // An access check without the denied audit row `guard` writes: start audits a denial.
-    const res = await this.d.access.check(actor, 'release.start', { environmentId: env.id, deploymentIds: this.depIds(rel) })
+    const res = await this.d.access.check(actor, rel.operation ? 'ops.run' : 'release.start', { environmentId: env.id, deploymentIds: this.depIds(rel) })
     if (!res.allowed) throw new DeployError('DENIED', redact(res.reason ?? 'Not allowed'))
-    this.assertCurrent(rel, env)
-    const skips = this.skips(rel, forceServiceIds)
+    const skips = rel.operation ? NO_SKIPS : this.skips(rel, forceServiceIds)
+    if (rel.operation) this.assertOpCurrent(rel)
+    else this.assertCurrent(rel, env)
     const now = this.d.now()
     const startedAt = now.toISOString()
-    const { playbook, inventory } = this.releasePlan(rel, env, actor, startedAt, skips)
+    const { playbook, inventory } = rel.operation ? this.opPlan(rel, env, actor, startedAt) : this.releasePlan(rel, env, actor, startedAt, skips)
     for (const [k, p] of this.previews) if (now.getTime() - p.at > PREVIEW_KEEP_MS) this.previews.delete(k)
     this.previews.set(reviewKey(releaseId, actor), { releaseId, startedAt, at: now.getTime() })
     return { playbook, sha256: reviewHash(playbook, skips, inventory), skippedServiceIds: skips.skipped.map((x) => x.id), ...(inventory !== null && { inventory }) }
+  }
+
+  /**
+   * Checks an edited playbook against the one the preview shows (same start time, same plan). Static only:
+   * nothing is written, no secret is decrypted and no agent or shell runs. The sha256 is of the canonical text,
+   * which is what a start bound to this edit must carry.
+   */
+  async validateEdit(releaseId: string, text: string, ctx?: CallCtx, forceServiceIds?: string[]): Promise<{ ok: true; canonical: string; sha256: string } | { ok: false; errors: EditError[] }> {
+    const actor = ctx?.actor ?? this.d.actor
+    this.d.vault.assertUnlocked()
+    const rel = this.d.releases.detail(releaseId)
+    this.assertStartable(rel)
+    const env = this.inv.environment(rel.environmentId)
+    // The same check as the preview: the errors say whether generated text matches, so they are not for everyone.
+    const allowed = await this.d.access.check(actor, rel.operation ? 'ops.run' : 'release.start', { environmentId: env.id, deploymentIds: this.depIds(rel) })
+    if (!allowed.allowed) throw new DeployError('DENIED', redact(allowed.reason ?? 'Not allowed'))
+    if (rel.operation) this.assertOpCurrent(rel)
+    else this.assertCurrent(rel, env)
+    const reviewed = this.previews.get(reviewKey(releaseId, actor))
+    const startedAt = reviewed?.startedAt ?? this.d.now().toISOString()
+    const { playbook } = rel.operation ? this.opPlan(rel, env, actor, startedAt) : this.releasePlan(rel, env, actor, startedAt, this.skips(rel, forceServiceIds))
+    const res = validateEditedPlaybook(text, playbook)
+    return res.ok ? { ok: true, canonical: res.canonical, sha256: sha256(res.canonical) } : res
   }
 
   /**
@@ -427,6 +542,7 @@ export class ReleaseService {
     this.assertStartable(rel)
     if (this.live.has(releaseId)) throw new DeployError('INVALID_STATE', 'This release is busy')
     const env = this.inv.environment(rel.environmentId)
+    if (rel.operation) return this.startOperation(rel, rel.operation, env, confirm, actor)
     await this.guard(actor, 'release.start', 'release.start', env, this.depIds(rel), releaseId)
     this.assertStatus(releaseId, ['ready'])
     this.confirmProtected(actor, 'release.start', rel, env, rel.runs.map((r) => r.hostId).filter((h): h is string => h !== null), confirm.typedName)
@@ -495,6 +611,7 @@ export class ReleaseService {
     for (const [k, p] of this.previews) if (p.releaseId === releaseId) this.previews.delete(k)
   }
 
+  /** A release or an operation (an operation's row is kind `release` too). */
   private assertStartable(rel: ReleaseDetail): void {
     if (rel.kind !== 'release') throw new DeployError('INVALID_STATE', 'Only a release can be started')
     if (rel.status !== 'ready') {
@@ -538,9 +655,10 @@ export class ReleaseService {
       startedAt,
       tagCommits: rel.preflight?.commits,
       originHeads: originHeads(rel, skips),
+      prepare: settings.parallelPrepare ? { cap: settings.prepareCap } : null,
     })
-    // With a flow, `od` and become are inventory host vars: the review covers them as it covers play vars.
-    return { plan, playbook: generatePlaybook(plan), inventory: plan.flow === null ? null : generateInventory(plan), version, docker }
+    // With a flow or a parallel prepare, `od` and become are inventory host vars: the review covers them as it covers play vars.
+    return { plan, playbook: generatePlaybook(plan), inventory: plan.flow === null && plan.prepare === null ? null : generateInventory(plan), version, docker }
   }
 
   private async runRelease(
@@ -557,6 +675,8 @@ export class ReleaseService {
     try {
       this.push(id, { type: 'run.started', kind: 'release', version: c.version })
       live.phase = 'release'
+      // Set before the run: a cancel mid-build still has its unlock stop the builds.
+      if (plan.prepare !== null) live.killBuilds = plan.deployments.map((d) => ({ runId: d.runId, repoPath: d.repoPath }))
       const res = await this.exec(live, plan, c.holder.secrets ?? EMPTY)
       // Whatever else happens next (rollback, tag, finalize), the runs that succeeded now run this code.
       this.recordDeployedRuns(live, res.out)
@@ -564,9 +684,9 @@ export class ReleaseService {
         status = 'cancelled'
         error = 'Cancelled'
       } else if (res.err !== null || !res.out || this.failed(res.out)) {
-        error = this.reason(live, res.out, res.err, 'Release')
+        error = this.prepareFailed(live, c.infos, plan, res.out) ?? this.reason(live, res.out, res.err, 'Release')
         status = 'failed'
-        const targets = c.autoRollback && live.busyText === null ? this.rollbackTargets(live, c.infos, res.out) : []
+        const targets = c.autoRollback && live.busyText === null ? this.rollbackTargets(live, c.infos, res.out, plan.prepare !== null) : []
         if (targets.length > 0) {
           const rb = await this.autoRollback(live, c, targets, docker, backup)
           status = rb.ok ? 'rolled_back' : 'failed'
@@ -603,6 +723,169 @@ export class ReleaseService {
       this.dropForReset(live, c.holder)
       await this.safeUnlock(live, c.infos, c.holder)
       this.finish(live, status, error, notes, c.holder)
+    }
+  }
+
+  // ---- operations ----
+
+  /**
+   * Starts a ready operation: the `ops.run` access check and typed-name rule, the same capacity and review-hash rules
+   * as a release (a lock-free read-only one may run beside a release on its environment), then the run and always the
+   * unlock, which also removes the run directory. Nothing is recorded as deployed, tagged or finalized.
+   */
+  private async startOperation(rel: ReleaseDetail, op: OperationMeta, env: EnvironmentLike, confirm: ReleaseConfirm, actor: Actor): Promise<void> {
+    const releaseId = rel.id
+    await this.guard(actor, 'ops.run', 'ops.run', env, this.depIds(rel), releaseId)
+    this.assertStatus(releaseId, ['ready'])
+    this.confirmProtected(actor, 'ops.run', { id: releaseId, version: op.name }, env, rel.runs.map((r) => r.hostId).filter((h): h is string => h !== null), confirm.typedName, {
+      name: op.name,
+      ...this.rowCounts(releaseId),
+    })
+    this.assertOpCurrent(rel)
+    const lockFree = !op.lock && op.readOnly
+    this.assertCapacity(env, lockFree)
+    const reviewed = confirm.playbookSha256 !== undefined ? this.previews.get(reviewKey(releaseId, actor)) : undefined
+    if (reviewed !== undefined && this.d.now().getTime() - reviewed.at > PREVIEW_TTL_MS) throw new DeployError('INVALID_STATE', REVIEW_EXPIRED_MESSAGE)
+    const built = this.opPlan(rel, env, actor, reviewed?.startedAt ?? this.d.now().toISOString())
+    if (confirm.playbookSha256 !== undefined && reviewHash(built.playbook, NO_SKIPS, null) !== confirm.playbookSha256) {
+      throw new DeployError('INVALID_STATE', PLAYBOOK_CHANGED_MESSAGE)
+    }
+    const live = this.register(releaseId, env, 'release', op.name, actor)
+    live.op = op
+    try {
+      this.dropPreviews(releaseId)
+      const infos = this.infosFor(rel)
+      const holder = this.opSecrets(infos, built.rb, op.params, true)
+      live.known = holder.secrets?.known ?? []
+      this.d.releases.setStatus(releaseId, 'running', { startedAt: this.d.now().toISOString(), playbook: built.playbook })
+      for (const { run } of infos) if (!this.steps.has(run.id)) this.steps.set(run.id, run.steps.map((x) => ({ ...x })))
+      for (const i of infos) live.runIds.add(i.run.id)
+      this.emitState(releaseId)
+      this.audit('ops.run', 'success', live, { name: op.name, outcome: 'started', hostCount: this.hostCount(infos), ...this.counts(infos), credentialIds: holder.secretIds })
+      live.done = this.runOperation(live, infos, holder, built.plan).catch((e: unknown) => this.crash(live, e)).finally(() => this.unregister(live))
+    } catch (e) {
+      this.unregister(live)
+      throw e
+    }
+  }
+
+  private async runOperation(live: Live, infos: Info[], holder: Holder, plan: DeployPlan): Promise<void> {
+    let status: ReleaseStatus = 'failed'
+    let error: string | null = null
+    try {
+      this.push(live.id, { type: 'run.started', kind: 'release', version: null })
+      live.phase = 'release'
+      const res = await this.exec(live, plan, holder.secrets ?? EMPTY)
+      if (live.cancelRequested || res.out?.cancelled) {
+        status = 'cancelled'
+        error = 'Cancelled'
+      } else if (res.err !== null || !res.out || this.failed(res.out)) {
+        status = 'failed'
+        error = this.reason(live, res.out, res.err, 'Operation')
+      } else status = 'succeeded'
+      // The runner settles each run from its steps; whatever it left open ends with the operation.
+      const failedRuns = new Set(res.out?.failedDeploymentRunIds ?? [])
+      for (const { run } of infos) {
+        const now = live.runStatus.get(run.id)
+        if (now !== undefined && now !== 'pending' && now !== 'running') continue
+        if (status === 'succeeded') this.applyRun(live, { type: 'deployment.updated', deploymentRunId: run.id, status: 'succeeded' })
+        else if (status === 'failed' && (failedRuns.size === 0 || failedRuns.has(run.id))) this.applyRun(live, { type: 'deployment.updated', deploymentRunId: run.id, status: 'failed' })
+      }
+    } catch (e) {
+      status = 'failed'
+      error = this.red(live, e instanceof Error ? e.message : String(e))
+    } finally {
+      this.dropForReset(live, holder)
+      // Lock or not, the unlock removes the run directory; an operation launches no builds for it to stop.
+      live.killBuilds = []
+      await this.safeUnlock(live, infos, holder)
+      this.finish(live, status, error, null, holder)
+    }
+  }
+
+  /** An operation's plan and playbook, as its preview and start build them. Holds secret references only. */
+  private opPlan(rel: ReleaseDetail, env: { id: string; name: string }, actor: Actor, startedAt: string): { plan: DeployPlan; playbook: string; inventory: null; rb: Runbook } {
+    const op = rel.operation as OperationMeta
+    const rb = this.opRunbook(rel)
+    const infos = this.infosFor(rel)
+    const refs = this.opSecrets(infos, rb, op.params, false)
+    const operation: PlanOperation = {
+      runbookId: rb.id,
+      name: op.name,
+      lock: op.lock,
+      items: opItems(rb, op.params, refs),
+      targets: infos.map((i) => ({ runId: i.run.id, services: i.sel.services.map((e) => e.composeService) })),
+    }
+    const docker = new Map<string, DockerMode>(Object.entries(rel.preflight?.dockerModes ?? {}))
+    const backup = rb.items.some((i) => i.type === 'builtin' && i.builtin === 'backup-db')
+    const plan = this.plan('operation', { id: rel.id, environmentId: env.id, environmentName: env.name, actor }, infos, { version: null, holder: refs, docker, backup, startedAt, operation })
+    return { plan, playbook: generatePlaybook(plan), inventory: null, rb }
+  }
+
+  /** The runbook as it is now, held to what preflight saw: the same name, lock, params and steps. */
+  private opRunbook(rel: ReleaseDetail): Runbook {
+    const op = rel.operation as OperationMeta
+    if (!this.d.runbooks) throw new DeployError('INVALID_STATE', 'Runbooks are not available here')
+    let rb: Runbook
+    try {
+      rb = this.d.runbooks.get(op.runbookId)
+    } catch {
+      throw new DeployError('INVALID_STATE', 'This runbook was deleted since preflight')
+    }
+    const first = new Set<string>()
+    const same =
+      rb.environmentId === rel.environmentId &&
+      rb.name === op.name &&
+      rb.lock === op.lock &&
+      isReadOnlyRunbook(rb) === op.readOnly &&
+      rel.runs.every((run) => {
+        const isFirst = run.hostId !== null && !first.has(run.hostId)
+        if (run.hostId !== null) first.add(run.hostId)
+        return operationSteps(opItems(rb, op.params, null), isFirst).map((x) => x.key).join() === run.steps.map((x) => x.key).join()
+      })
+    if (!same) throw new DeployError('INVALID_STATE', 'This runbook changed since preflight; run it again')
+    try {
+      validateParamValues(rb.params, op.params)
+    } catch {
+      throw new DeployError('INVALID_STATE', 'This runbook changed since preflight; run it again')
+    }
+    return rb
+  }
+
+  /** Each run's services must still be in its checkout under the same compose name (a deploy since is fine). */
+  private assertOpCurrent(rel: ReleaseDetail): void {
+    const now = new Map(this.d.services.list(rel.environmentId).flatMap((s) => (s.kind === 'service' ? [[s.id, s] as const] : [])))
+    for (const run of rel.runs) {
+      if (run.deploymentId === null) throw new DeployError('INVALID_STATE', `${run.deploymentName} was removed since preflight; run it again`)
+      for (const e of run.services) {
+        const cur = now.get(e.id)
+        if (!cur || cur.deploymentId !== run.deploymentId || cur.composeService !== e.composeService) throw new DeployError('INVALID_STATE', `${e.name} changed since preflight; run it again`)
+      }
+    }
+    this.opRunbook(rel)
+  }
+
+  /**
+   * The sudo passwords and the steps' secrets an operation needs (each one the environment already uses, S12), and
+   * the param values as known values so any echo of one is masked like a secret.
+   */
+  private opSecrets(infos: Info[], rb: Runbook, params: Record<string, string>, values: boolean): Holder {
+    const steps = rb.items.flatMap((it, i) => (it.type === 'step' ? [{ i, step: it.step }] : []))
+    const holder = this.resolveSecrets(infos, { env: false, values, opSteps: steps })
+    if (values && holder.secrets) holder.secrets.known.push(...Object.values(params).filter((v) => v !== ''))
+    return holder
+  }
+
+  /** The step rows of an operation's runs, as generate-ops tags them (a host's first run also prunes images). */
+  private seedOpSteps(infos: Info[], rb: Runbook): void {
+    const first = new Set<string>()
+    const items = opItems(rb, {}, null)
+    for (const { run, dep } of infos) {
+      const isFirst = !first.has(dep.hostId)
+      first.add(dep.hostId)
+      const steps = operationSteps(items, isFirst).map((x) => ({ stepId: `${run.id}:${x.key}`, kind: x.kind, label: x.label, key: x.key, state: 'pending' as const, startedAt: null, finishedAt: null }))
+      this.d.releases.updateRun(run.id, { steps })
+      this.steps.set(run.id, steps)
     }
   }
 
@@ -709,6 +992,7 @@ export class ReleaseService {
     if (this.live.has(releaseId)) throw new DeployError('INVALID_STATE', 'This release is busy')
     const env = this.inv.environment(src.environmentId)
     await this.guard(actor, 'release.rollback', 'release.rollback', env, this.depIds(src), releaseId)
+    if (src.operation !== null) throw new DeployError('INVALID_STATE', 'An operation deploys nothing, so it cannot be rolled back')
     if (src.kind !== 'release') throw new DeployError('INVALID_STATE', 'Only a release can be rolled back')
     if (src.status !== 'succeeded' && src.status !== 'failed' && src.status !== 'rolled_back') throw new DeployError('INVALID_STATE', `This release is ${src.status}`)
     // The runs the rollback rebuilds, last first: each checks out its run's previous commit.
@@ -951,6 +1235,7 @@ export class ReleaseService {
     if (this.live.has(releaseId)) throw new DeployError('INVALID_STATE', 'This release is busy')
     const env = this.inv.environment(rel.environmentId)
     await this.guard(actor, 'release.start', 'release.start', env, this.depIds(rel), releaseId)
+    if (rel.operation !== null) throw new DeployError('INVALID_STATE', 'An operation has no version tag to retry')
     this.assertStatus(releaseId, ['failed'])
     const tagFailed = rel.kind === 'release' && rel.status === 'failed' && rel.version !== null && (rel.error ?? '').startsWith(TAG_FAILED)
     if (!tagFailed || rel.runs.length === 0 || !rel.runs.every((r) => r.status === 'succeeded')) {
@@ -1041,6 +1326,7 @@ export class ReleaseService {
       finishedAt: d.finishedAt,
       actor: ctx?.actor ?? this.live.get(releaseId)?.actor ?? this.d.actor,
       urls,
+      operation: d.operation,
     }
   }
 
@@ -1076,7 +1362,7 @@ export class ReleaseService {
 
   private async exec(live: Live, plan: DeployPlan, secrets: RunSecrets): Promise<{ out: RunOutcome | null; err: string | null }> {
     live.failure = null
-    if (live.cancelRequested && (plan.kind === 'release' || plan.kind === 'version' || plan.kind === 'preflight' || (live.vaultReset && plan.kind !== 'unlock'))) {
+    if (live.cancelRequested && (plan.kind === 'release' || plan.kind === 'version' || plan.kind === 'preflight' || plan.kind === 'operation' || (live.vaultReset && plan.kind !== 'unlock'))) {
       return { out: { exitCode: null, signal: null, cancelled: true, failedDeploymentRunIds: [], reachedCheckout: [], commits: {} }, err: null }
     }
     try {
@@ -1114,7 +1400,7 @@ export class ReleaseService {
     void holder
     live.phase = 'unlock'
     if (infos.length === 0) return
-    const res = await this.exec(live, this.plan('unlock', live, infos, { version: null, holder: null, docker: new Map() }), EMPTY)
+    const res = await this.exec(live, this.plan('unlock', live, infos, { version: null, holder: null, docker: new Map(), killBuilds: live.killBuilds }), EMPTY)
     if (res.err !== null || !res.out || this.failed(res.out)) {
       this.push(live.id, { type: 'log', stepId: null, hostId: null, stream: 'err', line: this.red(live, `Could not release the deploy lock: ${res.err ?? 'see the log'}`) })
     }
@@ -1129,8 +1415,26 @@ export class ReleaseService {
     return this.red(live, msg)
   }
 
-  private rollbackTargets(live: Live, infos: Info[], out: RunOutcome | null): { info: Info; commit: string }[] {
-    const reached = new Set([...(out?.reachedCheckout ?? []), ...live.checkedOut])
+  /**
+   * A parallel prepare that failed before any service went up: which checkout failed, and that nothing was restarted.
+   * Null when something went up, or no checkout's step failed (a lock refusal, an unreachable host).
+   */
+  private prepareFailed(live: Live, infos: Info[], plan: DeployPlan, out: RunOutcome | null): string | null {
+    if (plan.prepare === null || live.busyText !== null || live.upped.size > 0 || (out?.reachedUp ?? []).length > 0) return null
+    const run = live.failedStep?.split(':')[0]
+    const info = infos.find((i) => i.run.id === run)
+    if (!info) return null
+    const names = info.sel.services.map((x) => x.name)
+    const svc = names.length > 0 ? names.join(', ') : info.dep.name
+    const checkedOut = new Set([...(out?.reachedCheckout ?? []), ...live.checkedOut])
+    // before its checkout the failed one's server is still on the old commit
+    if (!checkedOut.has(info.run.id)) return PREPARE_FETCH_FAILED_MESSAGE(svc, checkedOut.size > 0)
+    return PREPARE_FAILED_MESSAGE(svc)
+  }
+
+  /** The runs a rollback undoes: those that reached checkout, or with a parallel prepare only those that reached up. */
+  private rollbackTargets(live: Live, infos: Info[], out: RunOutcome | null, prepared = false): { info: Info; commit: string }[] {
+    const reached = prepared ? new Set([...(out?.reachedUp ?? []), ...live.upped]) : new Set([...(out?.reachedCheckout ?? []), ...live.checkedOut])
     const rows = new Map(this.d.releases.detail(live.id).runs.map((r) => [r.id, r]))
     const targets: { info: Info; commit: string }[] = []
     for (const info of infos) {
@@ -1163,7 +1467,11 @@ export class ReleaseService {
     this.emitState(id)
     const row = this.d.releases.get(id)
     const durationSec = row.startedAt ? Math.max(0, Math.round((Date.parse(now) - Date.parse(row.startedAt)) / 1000)) : 0
-    this.audit('release.finish', status === 'succeeded' ? 'success' : status === 'cancelled' ? 'info' : 'failure', live, {
+    const outcome = status === 'succeeded' ? 'success' : status === 'cancelled' ? 'info' : 'failure'
+    // An operation's preflight that ends (a cancel, a crash) is not a run: only a started one is audited as ops.run.
+    if (live.op !== null && live.phase === 'preflight') this.audit('ops.preflight', outcome, live, { name: live.op.name, outcome: status, serviceCount: row.serviceCount, deploymentCount: row.deploymentCount, hostCount: row.hostCount })
+    else if (live.op !== null) this.audit('ops.run', outcome, live, { name: live.op.name, outcome: status, durationSec, ...(live.failedStep ? { failedStep: live.failedStep } : {}), serviceCount: row.serviceCount, deploymentCount: row.deploymentCount, hostCount: row.hostCount })
+    else this.audit('release.finish', outcome, live, {
       status,
       version: row.version,
       durationSec,
@@ -1198,6 +1506,12 @@ export class ReleaseService {
       originHeads?: Map<string, string>
       /** Release only: the environment's flow as this release's stages (flowOf). */
       flow?: PlanFlow | null
+      /** Release only: the parallel prepare, from the environment's settings. */
+      prepare?: { cap: number } | null
+      /** Unlock only: the builds a parallel prepare launched. */
+      killBuilds?: { runId: string; repoPath: string }[]
+      /** Operation only: what the runbook runs. */
+      operation?: PlanOperation
     },
   ): DeployPlan {
     const hosts = this.planHosts(live.environmentId, infos)
@@ -1213,7 +1527,7 @@ export class ReleaseService {
       deployTag: dep.deployTag,
       healthStatus: dep.healthStatus,
       healthTimeoutSec: dep.healthTimeoutSec,
-      backup: kind === 'release' && o.backup && dep.dbBackup && dep.backupDir ? { dir: dep.backupDir, label: dep.name } : null,
+      backup: (kind === 'release' || kind === 'operation') && o.backup && dep.dbBackup && dep.backupDir ? { dir: dep.backupDir, label: dep.name } : null,
       // The hooks run as the migrated steps (effectiveSteps), never as hooks.
       preHookB64: null,
       postHookB64: null,
@@ -1240,6 +1554,9 @@ export class ReleaseService {
       lock: o.lockRaw ? { expectRaw: o.lockRaw } : {},
       startedAt: o.startedAt ?? this.d.now().toISOString(),
       flow: kind === 'release' ? (o.flow ?? null) : null,
+      prepare: kind === 'release' ? (o.prepare ?? null) : null,
+      ...(kind === 'unlock' && o.killBuilds && o.killBuilds.length > 0 ? { killBuilds: o.killBuilds } : {}),
+      ...(kind === 'operation' && o.operation ? { operation: o.operation } : {}),
     }
   }
 
@@ -1317,7 +1634,7 @@ export class ReleaseService {
    * steps of `scope` (a release's, or the rollback's `alsoOnRollback` ones) get their secrets too, each of which
    * must be one the environment's env templates or sudo passwords already use (S12).
    */
-  private resolveSecrets(infos: Info[], o: { env: boolean; values?: boolean; scope?: 'release' | 'rollback'; flow?: PlanFlow | null }): Holder {
+  private resolveSecrets(infos: Info[], o: { env: boolean; values?: boolean; scope?: 'release' | 'rollback'; flow?: PlanFlow | null; opSteps?: { i: number; step: StepBody }[] }): Holder {
     const environmentId = infos[0]?.dep.environmentId
     const values: Record<string, string> = {}
     const known = new Set<string>()
@@ -1333,7 +1650,7 @@ export class ReleaseService {
       return v
     }
     const holder: Holder = { secrets: null, envKey: new Map(), becomeKey: new Map(), stepKey: new Map(), secretIds: [], refs: {} }
-    const allowed = o.env ? this.usedSecrets(environmentId) : new Set<string>()
+    const allowed = o.env || o.opSteps ? this.usedSecrets(environmentId) : new Set<string>()
     for (const { run, dep } of infos) {
       if (dep.becomeSecretId) {
         const key = `BECOME_${run.id.replace(/-/g, '_')}`
@@ -1376,6 +1693,16 @@ export class ReleaseService {
         if (secretId === undefined || !allowed.has(secretId)) throw new DeployError('VALIDATION', STEP_SECRET_UNUSED_MESSAGE)
         values[x.key] = value(secretId)
         holder.refs[x.key] = { secretId }
+      })
+    }
+    // An operation's steps, once for every run (the item is the same on each), held to the same rule (S12).
+    for (const { i, step } of o.opSteps ?? []) {
+      step.secrets.forEach((x, n) => {
+        if (!allowed.has(x.secretId)) throw new DeployError('VALIDATION', STEP_SECRET_UNUSED_MESSAGE)
+        const key = `OPSTEP_${i}_${n}`
+        values[key] = value(x.secretId)
+        holder.stepKey.set(`op:${i}:${n}`, key)
+        holder.refs[key] = { secretId: x.secretId }
       })
     }
     holder.secrets = { values, known: [...known] }
@@ -1495,9 +1822,14 @@ export class ReleaseService {
     return rel.runs.flatMap((r) => (r.deploymentId === null ? [] : [r.deploymentId]))
   }
 
-  private assertCapacity(env: { id: string; name: string }): void {
+  /**
+   * One run per environment, MAX_ACTIVE_RELEASES in all. A lock-free read-only operation (`lockFree`) holds no host
+   * lock, so it neither waits for nor blocks the one run of its environment; it still counts toward the total.
+   */
+  private assertCapacity(env: { id: string; name: string }, lockFree = false): void {
     const running = [...this.live.values()].filter((l) => l.phase !== 'preflight')
-    if (running.some((l) => l.environmentId === env.id)) throw new DeployError('BUSY', `A release is already running on ${env.name}`)
+    const holdsEnv = (l: Live): boolean => l.environmentId === env.id && !(l.op !== null && !l.op.lock && l.op.readOnly)
+    if (!lockFree && running.some(holdsEnv)) throw new DeployError('BUSY', `A release is already running on ${env.name}`)
     if (running.length >= MAX_ACTIVE_RELEASES) throw new DeployError('BUSY', `At most ${MAX_ACTIVE_RELEASES} releases can run at once`)
   }
 
@@ -1516,6 +1848,8 @@ export class ReleaseService {
       done: Promise.resolve(),
       runStatus: new Map(),
       checkedOut: new Set(),
+      upped: new Set(),
+      killBuilds: [],
       runIds: new Set(),
       failure: null,
       versionError: null,
@@ -1524,6 +1858,7 @@ export class ReleaseService {
       label,
       failedStep: null,
       finalize: null,
+      op: null,
     }
     this.live.set(id, live)
     return live
@@ -1693,7 +2028,16 @@ export class ReleaseService {
   }
 
   /** The typed-name rule of Phase 7: every protected environment the target hosts serve counts, not only this one. */
-  private confirmProtected(actor: Actor, action: AuditAction, rel: { id: string; version: string | null }, env: { id: string; name: string; protected: boolean }, hostIds: string[], typedName: string | undefined): void {
+  /** `details` adds to a refusal's audit row (an operation's name and counts). */
+  private confirmProtected(
+    actor: Actor,
+    action: AuditAction,
+    rel: { id: string; version: string | null },
+    env: { id: string; name: string; protected: boolean },
+    hostIds: string[],
+    typedName: string | undefined,
+    details: Record<string, unknown> = {},
+  ): void {
     const memberships = this.inv.environmentsOfHosts([...new Set(hostIds)])
     let message = CONFIRM_MESSAGE
     try {
@@ -1703,7 +2047,7 @@ export class ReleaseService {
       if (!(e instanceof ProtectError)) throw e
       message = e.message
     }
-    this.auditRelease(actor, action, 'denied', rel.id, env.name, rel.version ?? 'release', { reason: 'confirm' })
+    this.auditRelease(actor, action, 'denied', rel.id, env.name, rel.version ?? 'release', { reason: 'confirm', ...details })
     throw new DeployError('CONFIRM_REQUIRED', message)
   }
 
@@ -1713,6 +2057,34 @@ export class ReleaseService {
 
   private red(live: Live, text: string): string {
     return redact(text, withBase64Forms(live.known))
+  }
+
+  /**
+   * With parallel prepare on, two selected checkouts in one repo on one host must deploy the same branch: their
+   * prepares run one after the other there, so the second checkout would replace the tree the first one built.
+   */
+  private sharedRepoChecks(environmentId: string, infos: Info[]): PreflightCheck[] {
+    if (!this.d.deploys.settings(environmentId).parallelPrepare) return []
+    const first = new Map<string, Info>()
+    const out: PreflightCheck[] = []
+    for (const i of infos) {
+      const key = `${i.dep.hostId}\0${i.dep.repoPath}`
+      const a = first.get(key)
+      if (!a) {
+        first.set(key, i)
+        continue
+      }
+      if (a.dep.defaultBranch === i.dep.defaultBranch) continue
+      out.push({
+        id: 'shared-repo',
+        deploymentId: i.dep.id,
+        hostId: i.dep.hostId,
+        label: 'shared repo',
+        level: 'block',
+        message: `${a.dep.name} and ${i.dep.name} share ${i.dep.repoPath} on this host but deploy different branches; deploy them in separate releases, or turn off parallel prepare`,
+      })
+    }
+    return out
   }
 
   private block(id: string, message: string): PreflightCheck {
@@ -1739,6 +2111,8 @@ export class ReleaseService {
 
   private push(releaseId: string, body: RunEventBody): void {
     const live = this.live.get(releaseId)
+    // An operation's param values are masked like secrets wherever its output carries them.
+    if (live?.op && body.type === 'log' && live.known.length > 0) body = { ...body, line: this.red(live, body.line) }
     this.apply(live, body)
     const q = this.queue.get(releaseId)
     if (q) q.push(body)
@@ -1789,6 +2163,7 @@ export class ReleaseService {
         break
       case 'step.started': {
         if (live && body.kind === 'checkout' && body.deploymentRunId) live.checkedOut.add(body.deploymentRunId)
+        if (live && body.kind === 'up' && body.deploymentRunId) live.upped.add(body.deploymentRunId)
         if (!body.deploymentRunId) break
         const list = this.stepsOf(body.deploymentRunId)
         const entry = { stepId: body.stepId, kind: body.kind, state: 'running' as const, startedAt: this.d.now().toISOString(), finishedAt: null }
@@ -1937,4 +2312,41 @@ function reviewKey(releaseId: string, actor: Actor): string {
 
 function sha256(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex')
+}
+
+/** What an operation's preflight still blocks on: reaching the host and running compose there, its lock, and the disk a backup or pull needs. The rest (a dirty tree, new commits, tags) only warns. */
+function operationChecks(checks: PreflightCheck[], rb: Pick<Runbook, 'lock' | 'items'>): PreflightCheck[] {
+  const keep = new Set(['reachable', 'auth', 'ansible', 'tools', 'docker', 'repo', 'compose'])
+  if (rb.lock) keep.add('lock')
+  if (rb.items.some((i) => i.type === 'builtin' && ONCE_BUILTINS.includes(i.builtin))) keep.add('disk')
+  return checks.map((c) => (c.level === 'block' && !keep.has(c.id) ? { ...c, level: 'warn' as const } : c))
+}
+
+/** `OD_PARAM_<NAME>`: the env name a step reads a param from. */
+const paramEnv = (name: string): string => `OD_PARAM_${name.toUpperCase()}`
+
+const NO_SKIPS: Skips = { skipped: [], sels: new Map() }
+
+type EnvironmentLike = Pick<EnvironmentMeta, 'id' | 'name' | 'protected'>
+
+/**
+ * A runbook's items as a plan carries them: a step under `c_<item index>` with its secrets' keys from `holder` and
+ * every param as base64 under `OD_PARAM_<NAME>`. Without a holder the keys are blank (step rows only).
+ */
+function opItems(rb: Pick<Runbook, 'items' | 'params'>, params: Record<string, string>, holder: Holder | null): PlanOperation['items'] {
+  return rb.items.map((it, i) => {
+    if (it.type === 'builtin') return { ...it }
+    const step: StepBody = it.step
+    return {
+      type: 'step' as const,
+      step: {
+        key: `c_${i}`,
+        label: stepLabel(step),
+        step,
+        anchor: null,
+        secretKeys: step.secrets.map((x, n) => ({ envName: x.envName, key: holder?.stepKey.get(`op:${i}:${n}`) ?? '' })),
+        paramKeys: rb.params.flatMap((p) => (p.name in params ? [{ envName: paramEnv(p.name), valueB64: Buffer.from(params[p.name], 'utf8').toString('base64') }] : [])),
+      },
+    }
+  })
 }

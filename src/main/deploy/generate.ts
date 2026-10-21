@@ -5,6 +5,7 @@ import { shJoin } from '../ops/quote'
 import { checkComposeServices, composeCommand } from './compose'
 import { hostBecome, hostOd } from './host-vars'
 import { ALIAS, B64, SECRET_KEY, b64, need, sanitizeIdent } from './quote'
+import { generateOperation } from './generate-ops'
 import type { DeployPlan, PlanDeployment, PlanFlow, PlanHost, PlanStep } from './runner'
 
 export { generateAnsibleCfg, generateInventory, generateKnownHosts, generateSshConfig, knownHostsToken, socketPathFits } from './ssh-files'
@@ -31,14 +32,14 @@ const URL_SAFE = /^https?:\/\/[A-Za-z0-9._~:/?#[\]@!$&()*+,;=%-]+$/
 
 const LOCK_FILE = '.opsdeck-deploy.lock'
 const WHEN = 'not (od_failed | default(false))'
-const SECRETS_VAR = "{{ lookup('env','OPSDECK_SECRETS') | default('{}', true) | from_json }}"
+export const SECRETS_VAR = "{{ lookup('env','OPSDECK_SECRETS') | default('{}', true) | from_json }}"
 
 // Timeouts (seconds)
 const T_SHORT = 120
 const T_BACKUP = 1800
 const T_PREFLIGHT = 60
 
-const clampSec = (n: number, what: string): number => {
+export const clampSec = (n: number, what: string): number => {
   need(Number.isInteger(n) && n >= 1 && n <= 86400, what)
   return n
 }
@@ -46,7 +47,7 @@ const clampSec = (n: number, what: string): number => {
 // ---------------------------------------------------------------- plan -> validated view
 
 /** The per-deployment variables a block binds as `d`. Only validated tokens and base64. */
-function dVars(d: PlanDeployment, kind: DeployPlan['kind']): Record<string, unknown> {
+function dVars(d: PlanDeployment, kind: DeployPlan['kind'], extraSteps: readonly PlanStep[] = []): Record<string, unknown> {
   need(REPO_PATH.test(d.repoPath), 'repo path')
   need(GIT_REF.test(d.branch), 'branch')
   need(COMPOSE_FILE.test(d.composeFile), 'compose file')
@@ -97,7 +98,7 @@ function dVars(d: PlanDeployment, kind: DeployPlan['kind']): Record<string, unkn
     urls: d.urls.map((u) => ({ url: u.url, from: u.from })),
   }
   // Only the steps this playbook runs, and only when there are any: a step-free block is unchanged.
-  const run = kind === 'release' || kind === 'rollback' ? stepsRun(kind, d) : []
+  const run = kind === 'release' || kind === 'rollback' ? stepsRun(kind, d) : [...extraSteps]
   if (run.length > 0) out.steps = Object.fromEntries(run.map((p) => [p.key, stepVars(p, d.whenBase)]))
   // Only with skips: a block without them is unchanged.
   if (head !== null) out.origin_head = head
@@ -106,7 +107,7 @@ function dVars(d: PlanDeployment, kind: DeployPlan['kind']): Record<string, unkn
 
 // ---------------------------------------------------------------- custom steps
 
-const STEP_KEY = /^c_\d{1,2}$/
+export const STEP_KEY = /^c_\d{1,2}$/
 const PARAM_ENV = /^OD_PARAM_[A-Z0-9_]{1,55}$/
 
 /** A checkout's steps: the plan's, or its legacy hooks migrated by effectiveSteps (so a hook is never dropped). */
@@ -143,7 +144,7 @@ function stepsRun(kind: 'release' | 'rollback', d: PlanDeployment): PlanStep[] {
 }
 
 /** A step's body, env names and keys: what the playbook could not carry safely throws. */
-function checkStep(p: PlanStep): void {
+export function checkStep(p: PlanStep): void {
   // The editor's rules. The secret ids and service passed here are the step's own, so those two checks are no-ops:
   // the real guards are checkPlan (secretRefs) and checkComposeServices.
   validateStep(p.step, { allowedSecretIds: new Set(p.step.secrets.map((x) => x.secretId)), serviceNames: p.step.service === null ? [] : [p.step.service], body: true })
@@ -258,14 +259,16 @@ export function stepList(
   )
 }
 
-function checkPlan(plan: DeployPlan): void {
+export function checkPlan(plan: DeployPlan): void {
   need(RELEASE_ID.test(plan.releaseId), 'release id')
+  need((plan.kind === 'operation') === ((plan.operation ?? null) !== null), 'operation')
   for (const h of plan.hosts) {
     need(ALIAS.test(h.alias), 'host alias')
     need(SAFE_IDENT.test(h.hostId), 'host id')
   }
   const flowKeys = (plan.flow?.stages ?? []).flatMap((st) => (st.kind === 'step' ? st.step.secretKeys.map((x) => x.key) : []))
-  for (const k of [...plan.deployments.flatMap((d) => [d.envSecretKey, d.becomeSecretKey, ...d.steps.flatMap((p) => p.secretKeys.map((x) => x.key))]), ...flowKeys]) {
+  const opKeys = (plan.operation?.items ?? []).flatMap((i) => (i.type === 'step' ? i.step.secretKeys.map((x) => x.key) : []))
+  for (const k of [...opKeys, ...plan.deployments.flatMap((d) => [d.envSecretKey, d.becomeSecretKey, ...d.steps.flatMap((p) => p.secretKeys.map((x) => x.key))]), ...flowKeys]) {
     if (k === null) continue
     need(SECRET_KEY.test(k) && k in plan.secretRefs, 'secret reference')
   }
@@ -286,7 +289,7 @@ interface ShOpts {
 }
 
 /** One shell task. `name` is built from the step kind and sanitized identifiers only. */
-function sh(name: string, kind: string, run: string, cmd: string, o: ShOpts): Task {
+export function sh(name: string, kind: string, run: string, cmd: string, o: ShOpts): Task {
   const mod: Record<string, unknown> = { cmd, executable: '/bin/bash' }
   if (o.chdir !== undefined) mod.chdir = o.chdir
   if (o.stdin !== undefined) {
@@ -301,8 +304,8 @@ function sh(name: string, kind: string, run: string, cmd: string, o: ShOpts): Ta
   return t
 }
 
-const IN_REPO = '{{ d.repo }}'
-const becomes = (d: PlanDeployment): boolean => d.docker !== 'plain'
+export const IN_REPO = '{{ d.repo }}'
+export const becomes = (d: PlanDeployment): boolean => d.docker !== 'plain'
 /**
  * The user's home even under sudo: root's $HOME would put the log in the wrong place.
  * Without SUDO_USER we are the user, so $HOME is right; no getent, so BusyBox hosts work.
@@ -320,7 +323,7 @@ const LOG_SETUP = [
  * read loop: no GNU sed -u). The exit code is the body's. On failure the step's own last 40 lines are
  * printed so the failure carries context; `post` runs only on success, outside the log.
  */
-function streamed(kind: string, body: string, o: { pre?: string; post?: string } = {}): string {
+export function streamed(kind: string, body: string, o: { pre?: string; post?: string } = {}): string {
   return [
     ...(o.pre ? [o.pre] : []),
     LOG_SETUP,
@@ -337,7 +340,7 @@ function streamed(kind: string, body: string, o: { pre?: string; post?: string }
 function runOf(d: PlanDeployment): string {
   return d.runId
 }
-const nm = (kind: string, d: PlanDeployment): string => `${kind} ${sanitizeIdent(d.name)}`
+export const nm = (kind: string, d: PlanDeployment): string => `${kind} ${sanitizeIdent(d.name)}`
 
 // ---- release steps
 // ok=0 when ls-remote itself fails (network, auth): that is "unknown", not "no tag".
@@ -354,7 +357,7 @@ const taskRecord = (d: PlanDeployment): Task =>
     'if [ "$ok" = 0 ]; then echo "OD-PREV unknown"; elif [ -n "$c" ]; then echo "OD-PREV $c"; else echo "OD-PREV none"; fi',
   ].join('\n'), { timeout: T_SHORT, chdir: IN_REPO, guarded: true })
 
-const taskBackup = (d: PlanDeployment): Task => {
+export const taskBackup = (d: PlanDeployment): Task => {
   // DB_* are read as KEY=VALUE lines (quotes stripped, nothing executed): the .env is never sourced.
   const body = [
     'CR=$(printf \'\\r\')',
@@ -383,7 +386,7 @@ const taskBackup = (d: PlanDeployment): Task => {
 }
 
 const FETCH = 'git fetch --force --tags origin "refs/heads/$B:refs/remotes/origin/$B"'
-const taskFetch = (d: PlanDeployment): Task =>
+export const taskFetch = (d: PlanDeployment): Task =>
   sh(nm('fetch', d), 'fetch', runOf(d), ['B={{ d.branch | quote }}', FETCH].join('\n'), { timeout: T_SHORT, chdir: IN_REPO, guarded: true })
 
 /**
@@ -398,7 +401,7 @@ const taskOriginCheck = (d: PlanDeployment): Task =>
     `if [ "$h" != "$E" ]; then echo '${ORIGIN_MOVED_MESSAGE}' >&2; exit 1; fi`,
   ].join('\n'), { timeout: T_SHORT, chdir: IN_REPO, guarded: true })
 
-const taskCheckout = (d: PlanDeployment): Task =>
+export const taskCheckout = (d: PlanDeployment): Task =>
   sh(nm('checkout', d), 'checkout', runOf(d), [
     'B={{ d.branch | quote }}',
     'git checkout -q -B "$B" "refs/remotes/origin/$B" || exit $?',
@@ -436,7 +439,7 @@ function envTask(kind: 'env' | 'rb_env', d: PlanDeployment): Task {
 }
 const taskEnv = (d: PlanDeployment): Task => envTask('env', d)
 
-const composeOf = (d: PlanDeployment) => ({ composeFile: d.composeFile, composeProject: d.composeProject })
+export const composeOf = (d: PlanDeployment) => ({ composeFile: d.composeFile, composeProject: d.composeProject })
 
 /*
  * Custom step text. Every shell variable the generator sets here is lowercase (`od_*`, `rc`): a step's env names
@@ -519,7 +522,7 @@ function stepStreamed(key: string, body: string, o: { pre?: string; cont: boolea
 }
 
 /** A custom step, with its own kind `c_<n>`. `continue` never fails the host and reports OD-STEP. A flow step has no anchor. */
-function stepTask(d: PlanDeployment, p: PlanStep, anchor: StepAnchor | null): Task {
+export function stepTask(d: PlanDeployment, p: PlanStep, anchor: StepAnchor | null): Task {
   const s = p.step
   const env = p.secretKeys.length + p.paramKeys.length > 0
   const become = s.sudo === 'docker' ? becomes(d) : s.sudo === 'yes'
@@ -632,7 +635,7 @@ const odRunDir = `"$HOME/${RUNS_SUBDIR}/{{ od.rel }}"`
 const REPOS = "{{ od.lock_repos | map('quote') | join(' ') }}"
 const HOST_CWD = '/'
 
-function taskPrep(h: PlanHost): Task {
+export function taskPrep(h: PlanHost): Task {
   const cmd = ['umask 077', `mkdir -p ${odRunDir}`, `touch ${odRunDir}/stream.log`].join('\n')
   return sh(`lock prep ${sanitizeIdent(h.alias)}`, 'lock', hostRun(h), cmd, { timeout: T_SHORT, chdir: HOST_CWD })
 }
@@ -642,7 +645,7 @@ function taskPrep(h: PlanHost): Task {
  * reentrant per repo when the holder is this release. On a busy repo it releases what this task took and
  * exits 42, so a refusal never leaves a partial lock set behind.
  */
-function taskLock(h: PlanHost): Task {
+export function taskLock(h: PlanHost): Task {
   const cmd = [
     'J=$(echo {{ od.lock_b64 | quote }} | base64 -d)',
     'umask 077',
@@ -662,12 +665,36 @@ function taskLock(h: PlanHost): Task {
   return sh(`lock ${sanitizeIdent(h.alias)}`, 'lock', hostRun(h), cmd, { timeout: T_SHORT, chdir: HOST_CWD })
 }
 
+/**
+ * Stops the builds a parallel prepare launched on the host (each recorded its process group, `od.kill_pids`) and
+ * removes their pid files, before any lock goes. A group is signalled (as the user, then with sudo) only while it is
+ * still that build's: some member's argv names the run's pid file (the launch's own shell does), and it is not this
+ * task's group. Anything else (no plain number above 1, a group gone or reused) only loses its stale pid file.
+ */
+const KILL_BUILDS = [
+  "me=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')",
+  "for p in {{ od.kill_pids | map('quote') | join(' ') }}; do",
+  '  g=$(cat "$p" 2>/dev/null)',
+  '  m="${p##*/}"',
+  '  ours=',
+  '  case "$g" in \'\'|*[!0-9]*) ;; *) if [ "$g" -gt 1 ] && [ "$g" != "$me" ] && ps -eo pgid=,args= 2>/dev/null | awk -v g="$g" \'$1 == g\' | grep -qF -- "$m"; then ours=1; fi;; esac',
+  '  if [ -n "$ours" ]; then',
+  '    kill -TERM -- "-$g" 2>/dev/null || sudo -n kill -TERM -- "-$g" 2>/dev/null || true',
+  '    echo "stopped build process group $g"',
+  '  elif [ -n "$g" ]; then',
+  '    echo "build process group $g is no longer this build\'s: not stopped"',
+  '  fi',
+  '  rm -f "$p" 2>/dev/null || sudo -n rm -f "$p" 2>/dev/null || true',
+  'done',
+].join('\n')
+
 /** Unlock releases only locks this release holds; break-lock only locks whose content equals the expected raw. */
-function taskUnlock(h: PlanHost, breakLock: boolean): Task {
+export function taskUnlock(h: PlanHost, breakLock: boolean, kill = false): Task {
   const guard = breakLock
     ? '[ "$cur" = "$(echo {{ od.expect_b64 | quote }} | base64 -d)" ]'
     : 'case "$cur" in *\'"releaseId":"{{ od.rel }}"\'*) true;; *) false;; esac'
   const cmd = [
+    ...(kill ? [KILL_BUILDS] : []),
     'rc=0',
     `for r in ${REPOS}; do`,
     `  f="$r/${LOCK_FILE}"`,
@@ -816,11 +843,11 @@ function taskPreflightLock(h: PlanHost): Task {
 
 // ---------------------------------------------------------------- plays
 
-function block(d: PlanDeployment, kind: DeployPlan['kind'], tasks: Task[], rescue: Task[]): Task {
-  return { name: `deployment ${sanitizeIdent(d.name)}`, vars: { d: dVars(d, kind) }, block: tasks, rescue }
+export function block(d: PlanDeployment, kind: DeployPlan['kind'], tasks: Task[], rescue: Task[], extraSteps: readonly PlanStep[] = []): Task {
+  return { name: `deployment ${sanitizeIdent(d.name)}`, vars: { d: dVars(d, kind, extraSteps) }, block: tasks, rescue }
 }
 
-const rescueRelease = (d: PlanDeployment): Task[] => [
+export const rescueRelease = (d: PlanDeployment): Task[] => [
   { name: `mark failed ${sanitizeIdent(d.name)}`, 'ansible.builtin.set_fact': { od_failed: true } },
   { name: `fail ${sanitizeIdent(d.name)}`, 'ansible.builtin.fail': { msg: `OpsDeck step failed for ${sanitizeIdent(d.runId)}` } },
 ]
@@ -850,7 +877,7 @@ function deploymentTasks(kind: 'release' | 'rollback', d: PlanDeployment): Task[
 }
 
 function playFor(plan: DeployPlan, h: PlanHost, deps: PlanDeployment[]): Play {
-  const vars: Record<string, unknown> = { od: hostOd(plan, h, deps), s: SECRETS_VAR }
+  const vars: Record<string, unknown> & { od: Record<string, unknown> } = { od: hostOd(plan, h, deps), s: SECRETS_VAR }
   const become = hostBecome(deps)
   if (become !== undefined) vars.ansible_become_password = become
 
@@ -881,18 +908,20 @@ function playFor(plan: DeployPlan, h: PlanHost, deps: PlanDeployment[]): Play {
     }
     case 'unlock':
     case 'break-lock':
-      tasks.push(taskUnlock(h, plan.kind === 'break-lock'))
+      tasks.push(taskUnlock(h, plan.kind === 'break-lock', 'kill_pids' in vars.od))
       break
   }
   return { name: `${plan.kind} ${sanitizeIdent(h.alias)}`, hosts: h.alias, gather_facts: false, strategy: 'linear', vars, tasks }
 }
 
-const depsOf = (plan: DeployPlan, h: PlanHost): PlanDeployment[] => plan.deployments.filter((d) => d.hostId === h.hostId)
+export const depsOf = (plan: DeployPlan, h: PlanHost): PlanDeployment[] => plan.deployments.filter((d) => d.hostId === h.hostId)
 
 export function generatePlaybook(plan: DeployPlan): string {
   checkPlan(plan)
+  if (plan.kind === 'operation') return generateOperation(plan)
   const flow = plan.flow ?? null
   if (flow !== null) return JSON.stringify(flowPlays(plan, flow), null, 2)
+  if (plan.kind === 'release' && (plan.prepare ?? null) !== null) return JSON.stringify(preparedPlays(plan), null, 2)
   const plays: Play[] = []
   for (const h of plan.hosts) {
     const deps = depsOf(plan, h)
@@ -990,6 +1019,7 @@ function flowGate(i: number, lastPlay: ReadonlyMap<string, number>): Task {
  */
 function flowPlays(plan: DeployPlan, flow: PlanFlow): Play[] {
   checkFlow(plan, flow)
+  const prepare = plan.prepare ?? null
   const hostOf = new Map(plan.hosts.map((h) => [h.hostId, h]))
   const hosts = plan.hosts.filter((h) => depsOf(plan, h).length > 0)
   for (const h of hosts) {
@@ -1025,19 +1055,189 @@ function flowPlays(plan: DeployPlan, flow: PlanFlow): Play[] {
   return phases.map(([name, stage, ids], p) => {
     const here = hosts.filter((h) => ids.some((id) => runs.get(id)?.host === h))
     const tasks: Task[] = []
+    // A parallel prepare replaces the prepare play's lock and blocks; it always runs linear (its gate reads every host).
+    const parallel = p === 0 && prepare !== null
     if (p > 0) tasks.push(flowGate(p, lastPlay))
-    if (p === 0) for (const h of here) tasks.push({ ...taskPrep(h), when: onHost(h) }, { ...taskLock(h), when: onHost(h) })
-    for (const id of ids) tasks.push(...blockAt(id, stage))
+    if (parallel)
+      tasks.push(
+        ...prepareTasks(
+          prepare,
+          here,
+          plan.deployments.map((d) => {
+            const r = runs.get(d.runId) as { d: PlanDeployment; host: PlanHost; vars: Record<string, unknown>; slots: { stage: number; slot: FlowSlot<PlanStep> }[] }
+            return { d, host: r.host, vars: r.vars, slots: r.slots.filter((x) => x.stage === -1).map((x) => x.slot) }
+          }),
+        ),
+      )
+    else if (p === 0) for (const h of here) tasks.push({ ...taskPrep(h), when: onHost(h) }, { ...taskLock(h), when: onHost(h) })
+    if (!parallel) for (const id of ids) tasks.push(...blockAt(id, stage))
     if (p < phases.length - 1) tasks.push({ name: `flow play ${p} done`, 'ansible.builtin.set_fact': { od_stage: p } })
     for (const h of here) lastPlay.set(h.alias, p)
+    const stopAll = flow.onFailure === 'stop-all' || parallel
     return {
       name,
       hosts: here.map((h) => h.alias).join(':'),
       gather_facts: false,
-      strategy: flow.onFailure === 'stop-all' ? 'linear' : 'free',
-      ...(flow.onFailure === 'stop-all' ? { any_errors_fatal: true } : {}),
+      strategy: stopAll ? 'linear' : 'free',
+      ...(stopAll ? { any_errors_fatal: true } : {}),
       vars: { s: SECRETS_VAR },
       tasks,
     }
   })
+}
+
+// ---------------------------------------------------------------- parallel prepare
+
+const PREPARE_STOPPED = 'OpsDeck prepare stopped: a checkout did not prepare'
+
+/**
+ * Per host, waves of at most `cap` checkouts, in plan order; a wave holds every host's next group. Checkouts that
+ * share a host and repo path go in successive waves, so one's fetch and checkout never run while another's build
+ * reads that tree.
+ */
+export function prepareSchedule(deps: readonly PlanDeployment[], cap: number): string[][] {
+  need(Number.isInteger(cap) && cap >= 1 && cap <= 8, 'prepare cap')
+  const waves: string[][] = []
+  const used = new Map<string, number>()
+  const lastOfRepo = new Map<string, number>()
+  for (const d of deps) {
+    const repo = `${d.hostId}\0${d.repoPath}`
+    let w = (lastOfRepo.get(repo) ?? -1) + 1
+    while ((used.get(`${w}\0${d.hostId}`) ?? 0) >= cap) w++
+    used.set(`${w}\0${d.hostId}`, (used.get(`${w}\0${d.hostId}`) ?? 0) + 1)
+    lastOfRepo.set(repo, w)
+    ;(waves[w] ??= []).push(d.runId)
+  }
+  return waves
+}
+
+/**
+ * The build, launched in the background (`async`, `poll: 0`) so a wave's builds run at once on every host. The
+ * shell records its process group in the repo's `.git/opsdeck-build-<run>.pid` (removed when the build ends), so an
+ * unlock after a cancel can stop it. A helper task: the build step is settled by its async_status poll.
+ */
+function taskBuildLaunch(d: PlanDeployment, n: number): Task {
+  const pid = '.git/opsdeck-build-{{ d.run }}.pid'
+  const warn = `echo "OpsDeck warning: cancel can't stop this build: its process group could not be recorded in ${pid}"`
+  const cmd = [
+    // the process group: from ps, else /proc (BusyBox ps has no -o pgid), else the shell's own pid
+    "g=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')",
+    "case \"$g\" in ''|*[!0-9]*) g=$(sed 's/.*) //' /proc/$$/stat 2>/dev/null | cut -d' ' -f3);; esac",
+    "case \"$g\" in ''|*[!0-9]*) g=$$;; esac",
+    // a .git that is a file (a worktree, a submodule) cannot hold it: the build goes on, with a warning in its log
+    'W=1',
+    `if [ "$g" -gt 1 ] && printf '%s' "$g" > ${pid} 2>/dev/null; then W=; fi`,
+    '(',
+    streamed('build', [`if [ -n "$W" ]; then ${warn}; fi`, composeCommand(composeOf(d), ['build'], d.services ?? [])].join('\n')),
+    ')',
+    'rc=$?',
+    `rm -f ${pid} 2>/dev/null`,
+    'exit "$rc"',
+  ].join('\n')
+  const t = sh(`build launch ${sanitizeIdent(d.name)}`, 'build', runOf(d), cmd, { timeout: T_SHORT, chdir: IN_REPO, become: becomes(d), guarded: true })
+  return { ...t, async: clampSec(d.buildTimeoutSec, 'build timeout'), poll: 0, register: `od_bj_${n}` }
+}
+
+/** Waits for a launched build (every 5s, up to its timeout): the build step's own task. */
+function taskBuildPoll(d: PlanDeployment, n: number): Task {
+  const t: Task = {
+    name: nm('build', d),
+    'ansible.builtin.async_status': { jid: `{{ od_bj_${n}.ansible_job_id }}` },
+    register: `od_bs_${n}`,
+    until: `od_bs_${n}.finished`,
+    retries: Math.ceil(clampSec(d.buildTimeoutSec, 'build timeout') / 5),
+    delay: 5,
+    timeout: T_SHORT,
+    tags: tagsOf('build', runOf(d)),
+  }
+  // the job's status file is the launching user's
+  if (becomes(d)) t.become = true
+  return { ...t, when: WHEN }
+}
+
+/** Removes the job's status file (it holds the build's failure tail) whatever the poll did; never fails. */
+function taskBuildCleanup(d: PlanDeployment, n: number): Task {
+  const t: Task = {
+    name: `build cleanup ${sanitizeIdent(d.name)}`,
+    'ansible.builtin.async_status': { jid: `{{ od_bj_${n}.ansible_job_id }}`, mode: 'cleanup' },
+    failed_when: false,
+    timeout: T_SHORT,
+  }
+  if (becomes(d)) t.become = true
+  return t
+}
+
+/** A prepare failure marks the host and lets the play go on: the gate at its end stops every host. */
+const rescuePrepare = (d: PlanDeployment): Task[] => [{ name: `mark prepare failed ${sanitizeIdent(d.name)}`, 'ansible.builtin.set_fact': { od_prep_failed: true } }]
+
+/** Fails every host unless each one finished the prepare play without a failed checkout. Aliases only (ALIAS-checked). */
+function prepareGate(hosts: readonly PlanHost[]): Task {
+  const when = hosts.map((h) => `not (hostvars['${h.alias}'].od_prepared | default(false)) or (hostvars['${h.alias}'].od_prep_failed | default(false))`).join(' or ')
+  return { name: 'od gate', 'ansible.builtin.fail': { msg: PREPARE_STOPPED }, when }
+}
+
+interface PrepRun {
+  d: PlanDeployment
+  host: PlanHost
+  vars: Record<string, unknown>
+  /** Everything before up, the build among them. */
+  slots: FlowSlot<PlanStep>[]
+}
+
+/**
+ * The prepare play's tasks: each host's lock, then wave by wave (prepareSchedule) each checkout's steps up to its
+ * build launch, then each one's build poll and after_build steps. Every block is bound to its host by `when`; a
+ * poll block runs only where its launch did. Last, a marker and the gate (prepareGate).
+ */
+function prepareTasks(prepare: { cap: number }, hosts: readonly PlanHost[], runs: readonly PrepRun[]): Task[] {
+  const byRun = new Map(runs.map((r, n) => [r.d.runId, { ...r, n }]))
+  const tasks: Task[] = []
+  for (const h of hosts) tasks.push({ ...taskPrep(h), when: onHost(h) }, { ...taskLock(h), when: onHost(h) })
+  const blk = (r: PrepRun, when: string, body: Task[]): Task => ({ name: `deployment ${sanitizeIdent(r.d.name)}`, when, vars: { d: r.vars }, block: body, rescue: rescuePrepare(r.d) })
+  const at = (r: PrepRun): number => {
+    const i = r.slots.findIndex((x) => 'builtin' in x && x.builtin === 'build')
+    need(i >= 0, 'prepare build')
+    return i
+  }
+  for (const wave of prepareSchedule(runs.map((r) => r.d), prepare.cap)) {
+    const here = wave.map((id) => byRun.get(id) as PrepRun & { n: number })
+    for (const r of here) tasks.push(blk(r, onHost(r.host), [...r.slots.slice(0, at(r)).flatMap((x) => flowSlotTasks(r.d, x)), taskBuildLaunch(r.d, r.n)]))
+    for (const r of here) {
+      const when = `${onHost(r.host)} and (od_bj_${r.n} | default({})).ansible_job_id is defined`
+      tasks.push({ ...blk(r, when, [taskBuildPoll(r.d, r.n), ...r.slots.slice(at(r) + 1).flatMap((x) => flowSlotTasks(r.d, x))]), always: [taskBuildCleanup(r.d, r.n)] })
+    }
+  }
+  tasks.push({ name: 'od prepared', 'ansible.builtin.set_fact': { od_prepared: true } }, prepareGate(hosts))
+  return tasks
+}
+
+/**
+ * A release with a parallel prepare and no flow: the prepare play over every host (prepareTasks), then one play per
+ * host for the rest (up, health, the tag and their steps), in plan order. `od` and become are inventory host vars.
+ */
+function preparedPlays(plan: DeployPlan): Play[] {
+  const prepare = plan.prepare as { cap: number }
+  const hosts = plan.hosts.filter((h) => depsOf(plan, h).length > 0)
+  for (const h of hosts) {
+    hostOd(plan, h, depsOf(plan, h))
+    hostBecome(depsOf(plan, h))
+  }
+  const hostOf = new Map(plan.hosts.map((h) => [h.hostId, h]))
+  const runs = plan.deployments.map((d) => {
+    const seq = sequence('release', d, stepsRun('release', d))
+    const up = seq.findIndex((x) => 'builtin' in x && x.builtin === 'up')
+    const host = hostOf.get(d.hostId)
+    need(up >= 0 && host !== undefined, 'deployment host')
+    return { d, host: host as PlanHost, vars: dVars(d, 'release'), slots: seq.slice(0, up) as FlowSlot<PlanStep>[], rest: seq.slice(up) }
+  })
+  const plays: Play[] = [
+    { name: 'release prepare', hosts: hosts.map((h) => h.alias).join(':'), gather_facts: false, strategy: 'linear', any_errors_fatal: true, vars: { s: SECRETS_VAR }, tasks: prepareTasks(prepare, hosts, runs) },
+  ]
+  for (const h of hosts) {
+    const tasks = runs
+      .filter((r) => r.host === h)
+      .map((r) => ({ name: `deployment ${sanitizeIdent(r.d.name)}`, vars: { d: r.vars }, block: r.rest.flatMap((x) => flowSlotTasks(r.d, x)), rescue: rescueRelease(r.d) }))
+    plays.push({ name: `release ${sanitizeIdent(h.alias)}`, hosts: h.alias, gather_facts: false, strategy: 'linear', vars: { s: SECRETS_VAR }, tasks })
+  }
+  return plays
 }

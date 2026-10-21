@@ -62,6 +62,8 @@ interface Job {
   /** The run's `options.notify`; false keeps Teams and email off (macOS still fires). */
   remote: boolean
   route: string
+  /** A runbook operation's one-line summary: no email. */
+  summary?: boolean
 }
 
 const RUN_STATUS: Partial<Record<NotifyEventKey, NotificationFacts['status']>> = {
@@ -96,9 +98,10 @@ export class NotificationDispatcher {
   /** The rule table for run events. `release.succeeded` is never sent from here: finalize sends it with notes. */
   async onRunEvent(e: RunEvent): Promise<void> {
     try {
-      const event = this.runEventKey(e)
-      if (!event) return
+      if (e.type !== 'run.started' && e.type !== 'run.finished') return
       const run = this.d.runs.runMeta(e.runId)
+      const event = run.operation ? this.operationEventKey(e, run) : this.runEventKey(e)
+      if (!event) return
       if (run.redeploy && event === 'release.started') return
       await this.dispatch(this.runJob(run, event, null))
     } catch {
@@ -174,9 +177,11 @@ export class NotificationDispatcher {
       .map((x) => ({ deployment: x.name, subjects: run.commits.filter((c) => x.id !== null && c.deploymentId === x.id).map((c) => c.subject) }))
       .filter((c) => c.subjects.length > 0)
     const what = run.kind === 'rollback' ? 'Rollback' : 'Release'
+    const env = this.environment(run.environmentId, run.environmentName).name
+    if (run.operation) return this.factsForOperation(run, run.operation, env, status, event)
     return {
       event,
-      title: `${run.productName ? `${run.productName} ` : ''}${what} on ${this.environment(run.environmentId, run.environmentName).name}`,
+      title: `${run.productName ? `${run.productName} ` : ''}${what} on ${env}`,
       environment: this.environment(run.environmentId, run.environmentName),
       product: run.productName,
       deployment: names.length ? names.join(', ') : null,
@@ -190,6 +195,35 @@ export class NotificationDispatcher {
       startedAt: run.startedAt,
       commitCount: run.commits.length,
       changes: byDeployment,
+    }
+  }
+
+  /** One line, no rows: the runbook, the environment, the outcome and a service count. Never a host or a checkout. */
+  private factsForOperation(
+    run: ReleaseRunMeta,
+    op: NonNullable<ReleaseRunMeta['operation']>,
+    env: string,
+    status: NotificationFacts['status'],
+    event: NotifyEventKey,
+  ): NotificationFacts {
+    const n = op.targetServiceIds?.length ?? 0
+    return {
+      event,
+      title: `Operation ${op.name} on ${env}`,
+      environment: this.environment(run.environmentId, run.environmentName),
+      product: null,
+      deployment: null,
+      hosts: [],
+      status,
+      version: null,
+      durationSec: null,
+      urls: [],
+      actor: `${run.actor.osUser}@${run.actor.machine}`,
+      at: this.now().toISOString(),
+      startedAt: run.startedAt,
+      commitCount: 0,
+      changes: [],
+      summary: `${op.name} on ${env} ${status === 'succeeded' ? 'succeeded' : 'failed'} · ${n} service${n === 1 ? '' : 's'}`,
     }
   }
 
@@ -214,6 +248,12 @@ export class NotificationDispatcher {
 
   // ---- internals ----
 
+  /** An operation sends one line when it ends, and only when its runbook notifies. */
+  private operationEventKey(e: RunEvent, run: ReleaseRunMeta): NotifyEventKey | null {
+    if (e.type !== 'run.finished' || !run.options.notify) return null
+    return e.status === 'succeeded' ? 'release.succeeded' : e.status === 'failed' ? 'release.failed' : null
+  }
+
   private runEventKey(e: RunEvent): NotifyEventKey | null {
     if (e.type === 'run.started') return e.kind === 'release' ? 'release.started' : null
     if (e.type !== 'run.finished') return null
@@ -233,7 +273,7 @@ export class NotificationDispatcher {
   private runJob(run: ReleaseRunMeta, event: NotifyEventKey, notes: string | null): Job {
     const facts = this.factsForRun(run, RUN_STATUS[event] ?? 'succeeded', event)
     if (event === 'release.succeeded' && notes) facts.notesExcerpt = notes.slice(0, MAX_NOTES_EXCERPT)
-    return { source: { type: 'release', id: run.releaseId }, event, environmentId: run.environmentId, facts, notes, remote: run.options.notify, route: RELEASE_ROUTE }
+    return { source: { type: 'release', id: run.releaseId }, event, environmentId: run.environmentId, facts, notes, remote: run.options.notify, route: RELEASE_ROUTE, ...(run.operation ? { summary: true } : {}) }
   }
 
   private environment(id: string, fallbackName: string | null): NotificationFacts['environment'] {
@@ -254,7 +294,7 @@ export class NotificationDispatcher {
     const off = !selected ? 'not selected' : null
     const remoteOff = off ?? (job.remote ? null : 'turned off for this release')
     const out: { channel: SendChannel; skip: string | null }[] = [{ channel: 'teams', skip: remoteOff ?? (integ.teamsWebhookSecretId ? null : 'no webhook') }]
-    if (job.event === 'release.succeeded') {
+    if (job.event === 'release.succeeded' && !job.summary) {
       const email = remoteOff ?? (integ.emailTo.length === 0 ? 'no recipients' : !s.sendgridApiKeySecretId || !s.sendgridFrom ? 'SendGrid not set up' : null)
       out.push({ channel: 'email', skip: email })
     }

@@ -230,6 +230,7 @@ export function planFixture(over: Partial<DeployPlan> = {}): DeployPlan {
     lock: {},
     startedAt: '2026-10-19T10:00:00.000Z',
     flow: null,
+    prepare: null,
     ...over,
   }
 }

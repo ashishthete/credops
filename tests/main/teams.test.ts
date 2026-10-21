@@ -132,3 +132,18 @@ describe('sendTeams', () => {
     }
   })
 })
+
+describe('buildTeamsCard operation summary', () => {
+  it('an operation card is its title and one summary line: no facts, hosts, changes, notes or links', () => {
+    const summary = 'Restart api on staging succeeded · 2 services'
+    const card = buildTeamsCard(facts({ title: 'Operation Restart api on staging', summary, changes: [{ deployment: 'web', subjects: ['x'] }] }))
+    const c = content(card)
+    expect(c.body).toEqual([
+      expect.objectContaining({ type: 'Container', items: [expect.objectContaining({ text: 'Operation Restart api on staging' })] }),
+      { type: 'TextBlock', text: summary, wrap: true },
+    ])
+    expect(c.actions).toEqual([])
+    const json = JSON.stringify(card)
+    for (const leak of ['web-1', 'web, worker', 'grafana', 'Adds checkout', 'ashish@mbp']) expect(json).not.toContain(leak)
+  })
+})
