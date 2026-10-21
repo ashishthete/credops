@@ -19,28 +19,82 @@ export const TAG = /^[\p{L}\p{N}_.:/-]+$/u
 export const MAX_NOTES = 4000
 export const MAX_DESCRIPTION = 1000
 export const MAX_URL = 2048
-export const REPO_URL = /^(https?:\/\/|ssh:\/\/|git@)\S+$/
+/**
+ * The authority can't start with a slash or backslash (WHATWG skips them); the scp form needs a host (an ssh-config
+ * alias with `_` or a bracketed IPv6 address included) and a path that isn't `//…`; no control or format characters.
+ * Cases are spelled out: with both `i` and `u`, U+017F and U+212A fold to `s` and `k`, and the other checks (no `u`) wouldn't see them.
+ */
+export const REPO_URL =
+  /^(?!.*[\p{Cc}\p{Cf}])(?:(?:[Hh][Tt][Tt][Pp][Ss]?|[Ss][Ss][Hh]):\/\/[^\/\\\s]\S*|[Gg][Ii][Tt]@(?:[A-Za-z0-9_][A-Za-z0-9_.-]*|\[[0-9A-Fa-f:.]+\]):(?![\/\\]{2})\S+)$/u
+
+/** http(s) values must also parse as WHATWG URLs, so the credential check below can't silently drop out. */
+export function isParsableRepoUrl(url: string): boolean {
+  if (!/^https?:/i.test(url)) return true
+  try {
+    new URL(url)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Shown wherever a repo URL with a username or password is refused; it never carries the URL. */
+export const REPO_URL_CREDENTIALS_MSG = 'Repository URL must not contain a username or password. Use a deploy key or an SSH identity instead.'
+/** Shown beside a stored repo URL that still carries credentials (rows saved before the rule). */
+export const REPO_URL_LEGACY_WARNING = 'Contains a username or password; replace with a deploy key'
+
+const safeDecode = (s: string): string => {
+  try {
+    return decodeURIComponent(s)
+  } catch {
+    return s
+  }
+}
 
 /** Scheme, userinfo and the rest of an http(s) or ssh:// URL that has userinfo; the userinfo ends at the authority's last @. */
 function splitUserinfo(url: string): { scheme: string; userinfo: string; rest: string } | null {
-  const m = /^(https?:\/\/|ssh:\/\/)([^/?#]*)/i.exec(url)
+  const m = /^(https?:|ssh:)[/\\]*([^/\\?#]*)/i.exec(url)
   const at = m ? m[2].lastIndexOf('@') : -1
   if (!m || at < 0) return null
-  return { scheme: m[1], userinfo: m[2].slice(0, at), rest: url.slice(m[1].length + at + 1) }
+  return { scheme: m[1], userinfo: m[2].slice(0, at), rest: url.slice(m[0].length - m[2].length + at + 1) }
 }
+
+/** Userinfo in a value the pattern no longer accepts (a legacy row such as `git@https://tok:pw@host/a`). */
+const LEGACY_USERINFO = /([a-z][a-z0-9+.-]*:)[/\\]*[^/\\?#\s]*@/i
 
 /** Credentials in a repo URL: any http(s) userinfo, or a password after an ssh user. `git@host:path` and `ssh://git@` carry none. */
 export function hasRepoCredentials(url: string): boolean {
   const u = splitUserinfo(url)
-  return u !== null && (/^https?/i.test(u.scheme) || u.userinfo.includes(':'))
+  if (u !== null && (/^https?/i.test(u.scheme) || safeDecode(u.userinfo).includes(':'))) return true
+  if (/^https?:/i.test(url)) {
+    try {
+      const w = new URL(url)
+      return w.username !== '' || w.password !== ''
+    } catch {
+      return false
+    }
+  }
+  return u === null && !REPO_URL.test(url) && LEGACY_USERINFO.test(url)
 }
 
 /** The repo URL without its credentials: http(s) userinfo goes whole, an ssh URL keeps its user. */
 export function stripRepoCredentials(url: string): string {
   const u = splitUserinfo(url)
-  if (!u || !hasRepoCredentials(url)) return url
-  const user = /^ssh/i.test(u.scheme) ? u.userinfo.slice(0, u.userinfo.indexOf(':')) : ''
-  return `${u.scheme}${user ? `${user}@` : ''}${u.rest}`
+  if (!u) return hasRepoCredentials(url) ? url.replace(LEGACY_USERINFO, '$1//') : url
+  if (!hasRepoCredentials(url)) return url
+  const user = /^ssh/i.test(u.scheme) ? u.userinfo.split(/:|%3a/i)[0] : ''
+  return `${u.scheme}//${user ? `${user}@` : ''}${u.rest}`
+}
+
+/** A stored repo URL that no longer passes today's rules, or carries credentials: never shown as is. */
+export function isLegacyRepoUrl(url: string): boolean {
+  return hasRepoCredentials(url) || !REPO_URL.test(url) || !isParsableRepoUrl(url)
+}
+
+/** What the UI shows for a stored repo URL: credentials removed, and an unrecognisable value hidden. */
+export function maskRepoUrl(url: string): string {
+  const clean = stripRepoCredentials(url)
+  return REPO_URL.test(clean) ? clean : '(invalid repository URL)'
 }
 export const MAX_JUMP_DEPTH = 8
 export const MAX_SSH_CONFIG_BYTES = 1024 * 1024

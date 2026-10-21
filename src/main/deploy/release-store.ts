@@ -79,6 +79,8 @@ export interface RunPatch {
 
 export const INTERRUPTED_MESSAGE = 'interrupted: OpsDeck quit during the run'
 const MAX_PAGE = 5000
+/** previousRelease follows at most this many rollbacks back. */
+const MAX_ROLLBACK_CHAIN = 1000
 
 interface ReleaseRow {
   id: string
@@ -140,6 +142,13 @@ const SELECT = `SELECT r.*, e.name AS environment_name,
   (SELECT COUNT(*) FROM deployment_runs d, json_each(CASE WHEN json_valid(d.services) AND json_type(d.services) = 'array' THEN d.services ELSE '[]' END) j
     WHERE d.release_id = r.id AND j.type = 'object') AS service_count
   FROM releases r JOIN environments e ON e.id = r.environment_id`
+
+/**
+ * A run (`d`) of release `r` that left its services deployed: a release run that succeeded and was not rolled back, in a
+ * release that was not rolled back, or a rollback run that succeeded (rollback runs end `rolled_back`).
+ */
+const DEPLOYED = `((r.kind = 'release' AND r.status <> 'rolled_back' AND d.status = 'succeeded' AND d.rolled_back = 0)
+  OR (r.kind = 'rollback' AND d.status = 'rolled_back'))`
 
 /**
  * Releases, their per-deployment runs and the append-only event stream. Holds no secrets: events are
@@ -277,18 +286,22 @@ export class ReleaseStore {
     if (res.changes === 0) throw new Error('deployment run not found')
   }
 
-  /** Each service → the newest started release (either kind) with a run that lists it. */
-  latestTouching(serviceIds: string[]): Map<string, string> {
+  /**
+   * Each service → the newest started release (either kind) whose run left it deployed (see `DEPLOYED`). A failed or
+   * rolled-back release does not count, nor, with `undoneAfter`, a rollback of a release newer than that one.
+   */
+  latestTouching(serviceIds: string[], undoneAfter?: string): Map<string, string> {
     const out = new Map<string, string>()
     if (serviceIds.length === 0) return out
     const rows = this.db
       .prepare(
         `SELECT j.value ->> '$.id' AS service_id, MAX(r.id) AS release_id
          FROM releases r JOIN deployment_runs d ON d.release_id = r.id, json_each(d.services) j
-         WHERE r.started_at IS NOT NULL AND j.value ->> '$.id' IN (SELECT value FROM json_each(?))
+         WHERE r.started_at IS NOT NULL AND j.value ->> '$.id' IN (SELECT value FROM json_each(?)) AND ${DEPLOYED}
+           AND NOT (r.kind = 'rollback' AND COALESCE(r.rollback_of > ?, 0))
          GROUP BY service_id`,
       )
-      .all(JSON.stringify(serviceIds)) as { service_id: string; release_id: string }[]
+      .all(JSON.stringify(serviceIds), undoneAfter ?? null) as { service_id: string; release_id: string }[]
     for (const r of rows) out.set(r.service_id, r.release_id)
     return out
   }
@@ -297,18 +310,31 @@ export class ReleaseStore {
    * The newest started release before `beforeReleaseId` whose run for the service succeeded, with the commit it
    * deployed. A rollback release's runs end `rolled_back` when they succeed; a release that was rolled back no longer counts.
    */
-  previousTouching(serviceId: string, beforeReleaseId: string): { releaseId: string; commit: string | null } | null {
+  previousTouching(serviceId: string, beforeReleaseId: string): { releaseId: string; commit: string | null; rollbackOf: string | null } | null {
     const row = this.db
       .prepare(
-        `SELECT r.id AS release_id, j.value ->> '$.deployedCommit' AS commit_sha
+        `SELECT r.id AS release_id, j.value ->> '$.deployedCommit' AS commit_sha, CASE WHEN r.kind = 'rollback' THEN r.rollback_of END AS rollback_of
          FROM releases r JOIN deployment_runs d ON d.release_id = r.id, json_each(d.services) j
-         WHERE r.started_at IS NOT NULL AND r.id < ? AND j.value ->> '$.id' = ?
-           AND ((r.kind = 'release' AND r.status <> 'rolled_back' AND d.status = 'succeeded' AND d.rolled_back = 0)
-             OR (r.kind = 'rollback' AND d.status = 'rolled_back'))
+         WHERE r.started_at IS NOT NULL AND r.id < ? AND j.value ->> '$.id' = ? AND ${DEPLOYED}
          ORDER BY r.id DESC LIMIT 1`,
       )
-      .get(beforeReleaseId, serviceId) as { release_id: string; commit_sha: string | null } | undefined
-    return row ? { releaseId: row.release_id, commit: row.commit_sha } : null
+      .get(beforeReleaseId, serviceId) as { release_id: string; commit_sha: string | null; rollback_of: string | null } | undefined
+    return row ? { releaseId: row.release_id, commit: row.commit_sha, rollbackOf: row.rollback_of } : null
+  }
+
+  /**
+   * The release (never a rollback) the service was on before `beforeReleaseId`: a rollback found on the way stands for
+   * the release it restored, the one before the release it undid. A malformed chain (a rollback not newer than the
+   * release it undid) gives null rather than looping.
+   */
+  previousRelease(serviceId: string, beforeReleaseId: string): string | null {
+    let hit = this.previousTouching(serviceId, beforeReleaseId)
+    for (let steps = 0; hit !== null && hit.rollbackOf !== null; steps++) {
+      const next = this.previousTouching(serviceId, hit.rollbackOf)
+      if (steps >= MAX_ROLLBACK_CHAIN || (next !== null && next.releaseId >= hit.releaseId)) return null
+      hit = next
+    }
+    return hit?.releaseId ?? null
   }
 
   updateRun(runId: string, patch: RunPatch): void {

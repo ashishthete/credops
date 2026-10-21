@@ -88,6 +88,10 @@ playbook for exactly those** the way deploys happen.
 - The protected-environment typed-name confirmation applies to every deploy
   and rollback into a protected environment (existing rule; Phase 8
   `ReleaseConfirm.typedName`).
+- Creating, editing or deleting a service or checkout in a protected
+  environment through the UI asks for no typed name, because nothing runs
+  until a deploy or rollback, which does ask. Config import does ask, because
+  it is a bulk retarget.
 - No new npm dependencies.
 
 ## 6. Reconciling with Phase 8
@@ -181,11 +185,27 @@ migration 7 in place (see Migration below).
    - restores `.env` as Phase 8 does;
    - runs `build`/`up` in the same form the release used.
 
-   A manual rollback is allowed only if, for every service the release
-   deployed, it is the latest release that touched that service. Otherwise it
-   is refused and the refusal names the services deployed since. On rollback,
-   each service's `last_deployed_commit` goes back to the previous commit
-   stored for it in `deployment_runs.services`.
+   A manual rollback is allowed only if every service it would rebuild is
+   still where the release left it. That means two things.
+   - No later release or rollback left the service deployed. A release that
+     failed or was rolled back does not count. A rollback of a release newer
+     than this one does not count either, since it moved the service back
+     towards this release. Any other rollback does count, so after rolling back
+     R1, a later failed R2 can't be rolled back onto R1's commit.
+   - The service's `last_release_id` is this release (or, when this release's
+     run for it did not record a commit, the release it was on before).
+
+   Otherwise the rollback is refused, and the refusal names each service and
+   the release it is now on (a rollback reads "the rollback of …"); a release
+   already rolled back says so. A
+   rollback sets `last_release_id` back to the release before the one it
+   undid (always a release, never a rollback), so "the new release failed, roll back one more" works whether the
+   newer release was rolled back automatically or by hand, and rolling back
+   the same release twice is refused. On rollback, each service's
+   `last_deployed_commit` is set to the commit the rollback checked out for
+   its checkout (the run's previous commit), not each service's own stored
+   previous commit: the whole checkout moves together, so siblings that had
+   different last commits all end at the one that is now on the host.
 10. **Release record.** `releases` gains `service_ids TEXT` (JSON, the
     selected service ids, as confirmed). Each `deployment_runs` row gains
     `services TEXT`: a JSON array with one entry per deployed service, holding
@@ -223,7 +243,7 @@ no data is migrated. Migration 7 is amended in place:
 | `compose_service` | Required for kind `service`: the service name in the compose file (`esg`, `js_foundry`, `fastapi-app`, …). Unique per checkout. The form defaults it to the service name (controller's call). |
 | `url` | Optional, http(s), `MAX_URL`. Used for Open and for health checks. |
 | `url_check_from` | `mac` (default) or `host`: where the health check of `url` runs (controller's call). |
-| `last_deployed_commit`, `last_release_id` | Set when a release that included it succeeds. A rollback restores the previous commit stored for it in `deployment_runs.services`. |
+| `last_deployed_commit`, `last_release_id` | Set when a release that included it succeeds. A rollback sets it to the commit the rollback checked out for its checkout. |
 | **kind `db`** | |
 | `db_engine` | `postgres`, `mysql`, `mongodb`, `redis` or `other`, used for the icon and the default port. |
 | `db_address`, `db_port` | Address as seen **from the via-host**: a hostname, IP or an inventory host's address. |

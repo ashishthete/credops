@@ -308,6 +308,24 @@ describe('deployments page', () => {
     expect(calls(invoke, 'deploy:update')[0][2]).toEqual({ repoUrl: 'https://github.com/acme/api', composeProject: null })
   })
 
+  it('a legacy repository URL is masked, warned about, and can be removed', async () => {
+    const user = userEvent.setup()
+    const invoke = world({
+      'deploy:list': [deploymentMeta({ id: 'd1', name: 'api', repoUrl: 'https://tok:pw@host/r' })],
+      'deploy:update': deploymentMeta({ id: 'd1', name: 'api' }),
+    })
+    await open()
+    expect(screen.queryByText(/tok:pw/)).not.toBeInTheDocument()
+    await user.click(await screen.findByRole('button', { name: 'Edit' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Edit checkout' })
+    expect(within(dialog).getByLabelText('Repository URL')).toHaveValue('https://host/r')
+    expect(within(dialog).getByText('Contains a username or password; replace with a deploy key')).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Remove repository URL' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(calls(invoke, 'deploy:update')).toHaveLength(1))
+    expect(calls(invoke, 'deploy:update')[0][2]).toEqual({ repoUrl: null })
+  })
+
   it('saves a corrected current version', async () => {
     const user = userEvent.setup()
     const invoke = world({ 'deploy:updateSettings': envSettings({ currentVersion: 'v1.3.0' }) })

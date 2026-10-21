@@ -2,6 +2,7 @@ import { motion } from 'framer-motion'
 import { GitBranch, Server } from 'lucide-react'
 import { useEffect, useRef, type InputHTMLAttributes } from 'react'
 import type { PreflightReport } from '../../../../../shared/deploy'
+import { REPO_URL_LEGACY_WARNING, isLegacyRepoUrl, maskRepoUrl } from '../../../../../shared/inventory'
 import type { AppServiceMeta } from '../../../../../shared/services'
 import { checkoutNotice, type PickerGroup } from '../../../deploy/picker'
 import { Badge } from '../../../ui/Badge'
@@ -87,7 +88,8 @@ export function ServicePicker({ groups, unavailable, hostLabel, report, onToggle
               <span className="truncate text-[13px] font-semibold text-fg">{g.checkout.name}</span>
               {g.whole && <Badge tone="success">whole checkout</Badge>}
               <span className="ml-auto flex min-w-0 items-center gap-3 text-[11.5px] text-muted">
-                <span className="truncate font-mono">{g.checkout.repoUrl ?? g.checkout.repoPath}</span>
+                <span className="truncate font-mono">{g.checkout.repoUrl ? maskRepoUrl(g.checkout.repoUrl) : g.checkout.repoPath}</span>
+                {g.checkout.repoUrl && isLegacyRepoUrl(g.checkout.repoUrl) && <span className="shrink-0 text-warn">{REPO_URL_LEGACY_WARNING}</span>}
                 <span className="flex items-center gap-1">
                   <GitBranch aria-hidden className="size-3" />
                   <span className="font-mono">{g.checkout.defaultBranch}</span>

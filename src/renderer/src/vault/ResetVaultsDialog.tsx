@@ -13,7 +13,9 @@ const POINTS = [
   "The master password can't be recovered.",
   'Resetting permanently erases every secret in every vault: passwords, private keys, passphrases and other secret items.',
   'It also turns off Touch ID quick unlock.',
-  'Open terminals and tunnels will be closed.',
+  'Running deploys and rollbacks are cancelled first, and open terminals and tunnels are closed.',
+  'A host whose deploy is cancelled may stay deploy-locked; break the lock from its release.',
+  'Deployment secret links are cleared: become passwords and .env template secrets (a managed .env is turned off until you link them again), plus the Teams, AI, SendGrid and GitHub keys.',
   'Products, environments, hosts, tunnels and other settings are kept. Files in ~/.ssh are not touched.',
   'Hosts that used a vault identity will need it added again.',
 ]

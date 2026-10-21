@@ -173,6 +173,77 @@ describe('config export', () => {
     for (const { v } of sealed) if (v) expect(text).not.toContain(v)
   })
 
+  it('blanks more secret-looking names, credentialed values and URL tokens', async () => {
+    const f = await makeConfigFixture()
+    // Fake values only.
+    f.db
+      .prepare('UPDATE hosts SET env_vars = ? WHERE id = ?')
+      .run(
+        JSON.stringify({ LANG: 'C.UTF-8', DB_PASS: 'fakepass1', db_pwd: 'fakepass2', SENTRY_DSN: 'https://fakedsn@sentry.example/1', DATABASE_URL: 'postgres://app:fakepw3@db.example/app' }),
+        f.host.id,
+      )
+    f.db
+      .prepare('UPDATE deployments SET env_template = ?, repo_url = ?, urls = ? WHERE id = ?')
+      .run(
+        ['# note', 'DB_PASS=fakepass4', 'db_pwd=fakepass5', 'SENTRY_DSN=https://fakedsn2@sentry.example/1', 'DATABASE_URL=postgres://app:fakepw6@db.example/app', 'APP_ENV=staging', 'EMPTY_PASS=', ''].join('\n'),
+        'https://git.example/x.git?private_token=faketok7&ref=main',
+        JSON.stringify([{ url: 'https://app.example/health?token=faketok8&x=1', from: 'mac' }]),
+        f.ids.deployment,
+      )
+    f.db.prepare("UPDATE services SET url = ? WHERE kind = 'service'").run('https://svc.example/h?api_key=faketok9')
+    const { file, omitted } = buildConfigExport(f.db, clock)
+    const text = serializeConfig(file)
+    expect(text).not.toMatch(/fakepass|fakepw|fakedsn|faketok/)
+    expect(file.hosts.find((h) => h.id === f.host.id)!.envVars).toEqual({ LANG: 'C.UTF-8', DB_PASS: '', db_pwd: '', SENTRY_DSN: '', DATABASE_URL: '' })
+    const [d] = file.deployments
+    expect(d.envTemplate).toBe(['# note', 'DB_PASS=', 'db_pwd=', 'SENTRY_DSN=', 'DATABASE_URL=', 'APP_ENV=staging', 'EMPTY_PASS=', ''].join('\n'))
+    expect(d.repoUrl).toBe('https://git.example/x.git?private_token=&ref=main')
+    expect(d.urls[0].url).toBe('https://app.example/health?token=&x=1')
+    expect(file.services.find((s) => s.kind === 'service')).toMatchObject({ url: 'https://svc.example/h?api_key=' })
+    // 4 env vars + 4 template lines + 3 URL params.
+    expect(omitted).toBe(11)
+    expect(parseConfigFile(text).ok).toBe(true)
+  })
+
+  it('legacy repo URLs the rules would now refuse are omitted, others are stripped', async () => {
+    const f = await makeConfigFixture()
+    // Rows saved under the old pattern, seeded in SQL. Fake values only.
+    f.db.prepare('UPDATE products SET repo_url = ? WHERE id = ?').run('git@https://tok:pw@github.com/a', f.ids.product)
+    f.db.prepare('UPDATE deployments SET repo_url = ? WHERE id = ?').run('https:///tok:pw@host/r', f.ids.deployment)
+    const { file, omitted } = buildConfigExport(f.db, clock)
+    const text = serializeConfig(file)
+    expect(text).not.toMatch(/tok|pw@/)
+    expect(file.products[0].repoUrl).toBeNull()
+    expect(file.deployments[0].repoUrl).toBeNull()
+    expect(omitted).toBe(2)
+    expect(parseConfigFile(text).ok).toBe(true)
+    f.db.prepare('UPDATE products SET repo_url = ? WHERE id = ?').run('ssh://u%3Apw@host/r', f.ids.product)
+    const again = buildConfigExport(f.db, clock)
+    expect(serializeConfig(again.file)).not.toContain('%3Apw')
+    expect(again.file.products[0].repoUrl).toBe('ssh://u@host/r')
+  })
+
+  it('template lines: only a whole ref is exempt, comments are checked, a bare http(s) token counts, a stray ? does not hide params', async () => {
+    const f = await makeConfigFixture()
+    const ref = '${secret:0190a1b2-c3d4-4e5f-8a6b-aaaaaaaaaaaa}'
+    f.db
+      .prepare('UPDATE deployments SET env_template = ?, urls = ?, repo_url = ? WHERE id = ?')
+      .run(
+        ['DB_PASS=fakepw1' + ref, '# DB_PASS=fakepw2', '# note: plain words', '# export DB_PASS=fakepw7', '## DB_PASS=fakepw8', '# DB_PASS = fakepw9', 'R1=https:///faketok@github.com/x', 'R2=https:\\\\faketok@h/x', 'R3=https:/\\faketok@h/x', 'R4=https://\tfaketok@h', 'GIT_REMOTE=https://faketok3@github.com/x', 'APP_ENV=staging', ''].join('\n'),
+        JSON.stringify([{ url: 'https://app.example/h?a=1?token=faketok4', from: 'mac' }]),
+        null,
+        f.ids.deployment,
+      )
+    const { file, omitted } = buildConfigExport(f.db, clock)
+    const [d] = file.deployments
+    // The deleted ref inside DB_PASS goes with its whole line; the comment note stays.
+    expect(d.envTemplate).toBe(['DB_PASS=', '# DB_PASS=', '# note: plain words', '# export DB_PASS=', '## DB_PASS=', '# DB_PASS=', 'R1=', 'R2=', 'R3=', 'R4=', 'GIT_REMOTE=', 'APP_ENV=staging', ''].join('\n'))
+    expect(d.urls[0].url).toBe('https://app.example/h?a=1?token=')
+    expect(omitted).toBe(11)
+    expect(serializeConfig(file)).not.toMatch(/fakepw|faketok/)
+    expect(parseConfigFile(serializeConfig(file)).ok).toBe(true)
+  })
+
   it('env template secret refs become ref-N with vault and item names', async () => {
     const f = await makeConfigFixture()
     const { file } = buildConfigExport(f.db, clock)
@@ -243,7 +314,7 @@ describe('config export', () => {
   it('config.export audit carries counts only', async () => {
     const f = await makeConfigFixture()
     const path = tmpPath()
-    const h = createConfigHandlers({ ...exportDeps(f), saveDialog: async () => path })
+    const h = createConfigHandlers({ ...exportDeps(f), openDialog: async () => undefined, saveDialog: async () => path })
     const res = await h['config:export']()
     expect(res).toEqual({ path, counts: { products: 1, identities: 2, hosts: 2, environments: 2, tunnels: 1, deployments: 1, services: 2 }, omitted: 0 })
     const [e] = f.audit.list({ actions: ['config.export'] })
@@ -257,7 +328,7 @@ describe('config export', () => {
 
   it('a cancelled save writes nothing and audits nothing', async () => {
     const f = await makeConfigFixture()
-    const h = createConfigHandlers({ ...exportDeps(f), saveDialog: async () => undefined })
+    const h = createConfigHandlers({ ...exportDeps(f), openDialog: async () => undefined, saveDialog: async () => undefined })
     expect(await h['config:export']()).toBeNull()
     expect(f.audit.list({ actions: ['config.export'] })).toEqual([])
   })
@@ -267,7 +338,7 @@ describe('config export', () => {
     f.vault.lock('manual')
     const path = tmpPath()
     let asked = false
-    const h = createConfigHandlers({ ...exportDeps(f), saveDialog: async () => ((asked = true), path) })
+    const h = createConfigHandlers({ ...exportDeps(f), openDialog: async () => undefined, saveDialog: async () => ((asked = true), path) })
     await expect(h['config:export']()).rejects.toThrow(VAULT_LOCKED)
     expect(asked).toBe(false)
     await expect(exportConfig(exportDeps(f), path)).rejects.toThrow(VAULT_LOCKED)

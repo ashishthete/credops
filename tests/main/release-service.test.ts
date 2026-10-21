@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { DeployError, type DeployAccess } from '../../src/main/deploy/access'
 import type { FinalizeSteps } from '../../src/main/deploy/finalize'
 import { INTERRUPTED_MESSAGE } from '../../src/main/deploy/release-store'
+import { RESET_CUT_ROLLBACK } from '../../src/main/deploy/release-service'
+import { REDACTED } from '../../src/main/security/redact'
 import type { DeployPlan } from '../../src/main/deploy/runner'
 import { ToolingError } from '../../src/main/deploy/tooling'
 import { CONFIRM_MESSAGE } from '../../src/shared/ops'
@@ -177,7 +179,7 @@ describe('ReleaseService', () => {
     expect(runIds(r.runner.call('rollback'))).toEqual([runIds(r.runner.call('release'))[1]])
   })
 
-  it('auto-rollback off ends failed and rollback() refuses a release whose services were deployed again', async () => {
+  it('auto-rollback off ends failed and rollback() refuses a release whose services were deployed since', async () => {
     const r = await rig()
     r.f.deploys.updateSettings(r.f.staging.id, { autoRollback: false })
     const deps = [dep(r, 'one'), dep(r, 'two')]
@@ -197,7 +199,7 @@ describe('ReleaseService', () => {
     await r.svc.whenIdle()
     expect(r.svc.detail(newer).status).toBe('succeeded')
 
-    await expect(r.svc.rollback(failing, {})).rejects.toThrow("Can't roll back: one-0 and two-1 were deployed again since this release")
+    await expect(r.svc.rollback(failing, {})).rejects.toThrow(`Can't roll back: one-0 and two-1 are now on release ${newer.slice(0, 8)}`)
     const { releaseId } = await r.svc.rollback(newer, {})
     await r.svc.whenIdle()
     const rb = r.svc.detail(releaseId)
@@ -263,6 +265,94 @@ describe('ReleaseService', () => {
     expect(r.runner.kinds).toEqual(['preflight', 'release', 'unlock'])
     expect(r.svc.detail(id).status).toBe('cancelled')
     expect(audits(r, 'release.cancel')).toHaveLength(1)
+  })
+
+  it('a vault reset cancels a running release, and still releases the deploy lock', async () => {
+    const r = await rig()
+    const g = gate()
+    r.runner.onCancel = g.open
+    r.runner.on.release = async () => {
+      await g.p
+      return { cancelled: true, exitCode: null }
+    }
+    const id = await ready(r)
+    await r.svc.start(id, {})
+    r.svc.vaultReset()
+    await r.svc.whenIdle()
+    expect(r.runner.cancels).toHaveLength(1)
+    expect(r.runner.kinds).toEqual(['preflight', 'release', 'unlock'])
+    expect(r.svc.detail(id).status).toBe('cancelled')
+    expect(r.svc.hasActive()).toBe(false)
+  })
+
+  it('a vault reset cancels an auto-rollback too, which a plain cancel lets finish, and drops the secrets before the unlock', async () => {
+    const r = await rig()
+    const d = dep(r, 'one', { managedEnv: true, vaultIds: [DEFAULT_VAULT_ID], envTemplate: `TOKEN=\${secret:${r.f.secretId}}` })
+    const id = await ready(r, [d])
+    r.runner.on.release = (plan) => {
+      const [r1] = runIds(plan)
+      return { exitCode: 2, failedDeploymentRunIds: [r1], reachedCheckout: [r1], commits: { [r1]: { previous: A } } }
+    }
+    const g = gate()
+    const rolling = gate()
+    r.runner.onCancel = g.open
+    r.runner.on.rollback = async () => {
+      rolling.open()
+      await g.p
+      return { cancelled: true, exitCode: null }
+    }
+    let atUnlock: Record<string, string> | null = null
+    r.runner.on.unlock = () => {
+      atUnlock = { ...r.runner.calls.find((c) => c.plan.kind === 'rollback')!.secrets.values }
+      // Late output after the drop still goes through the release's redaction.
+      throw new Error(`ssh: permission denied near ${SECRET}`)
+    }
+    await r.svc.start(id, {})
+    await rolling.p
+    expect(JSON.stringify(r.runner.calls.find((c) => c.plan.kind === 'rollback')!.secrets.values)).toContain(SECRET)
+    const cancelled = r.svc.cancel(id)
+    await vi.waitFor(() => expect(audits(r, 'release.cancel')).toHaveLength(1))
+    expect(r.runner.cancels).toEqual([])
+    r.svc.vaultReset()
+    await cancelled
+    await r.svc.whenIdle()
+    expect(r.runner.cancels).toHaveLength(1)
+    expect(r.runner.kinds).toEqual(['preflight', 'release', 'rollback', 'unlock'])
+    expect(atUnlock).toEqual({})
+    expect(r.svc.detail(id)).toMatchObject({ status: 'cancelled', error: RESET_CUT_ROLLBACK })
+    expect(r.svc.hasActive()).toBe(false)
+    const lines = r.svc.events(id, 0).flatMap((e) => (e.type === 'log' ? [e.line] : []))
+    expect(lines).toContain(`Could not release the deploy lock: ssh: permission denied near ${REDACTED}`)
+    expect(JSON.stringify({ events: r.svc.events(id, 0), detail: r.svc.detail(id) })).not.toContain(SECRET)
+  })
+
+  it('a vault reset flags every release before cancelling, so one failing cancel never skips the rest', async () => {
+    const r = await rig()
+    const qa = r.f.envs.create({ name: 'qa', color: '#334455' })
+    r.f.envs.putHost(qa.id, r.f.host.id, 'app')
+    const ids = [await ready(r, [dep(r, 'api')]), await ready(r, [dep(r, 'web', { environmentId: qa.id, deployTag: 'deploy_qa' })], { envId: qa.id })]
+    const g = gate()
+    let started = 0
+    const both = gate()
+    r.runner.on.release = async () => {
+      if (++started === 2) both.open()
+      await g.p
+      return { cancelled: true, exitCode: null }
+    }
+    r.runner.onCancel = () => {
+      if (r.runner.cancels.length === 1) throw new Error('kill failed')
+      g.open()
+    }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    for (const id of ids) await r.svc.start(id, {})
+    await both.p
+    r.svc.vaultReset()
+    await r.svc.whenIdle()
+    expect(r.runner.cancels).toHaveLength(2)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('kill failed'))
+    warn.mockRestore()
+    for (const id of ids) expect(r.svc.detail(id).status).toBe('cancelled')
+    expect(r.svc.hasActive()).toBe(false)
   })
 
   it('a thrown runner error is redacted and never carries a secret', async () => {
@@ -677,6 +767,33 @@ describe('ReleaseService', () => {
     expect(dis[0]).toMatchObject({ targetType: 'release', targetId: id, outcome: 'success' })
   })
 
+  it('every release audit row carries its counts, denials, cancels and discards included', async () => {
+    const counts = { serviceCount: 1, deploymentCount: 1, hostCount: 1 }
+    const denied = await rig({ access: { check: async (_a, action) => (action === 'deploy.view' ? { allowed: false, reason: 'no' } : { allowed: true }) } })
+    await expect(ready(denied)).rejects.toThrow(/no/)
+    expect(audits(denied, 'release.preflight')[0].details).toEqual({ reason: 'access', ...counts })
+
+    const r = await rig()
+    r.f.envs.update(r.f.staging.id, { protected: true })
+    const id = await ready(r)
+    await expect(r.svc.start(id, {})).rejects.toThrow(DeployError)
+    expect(audits(r, 'release.start')[0].details).toEqual({ reason: 'confirm', ...counts })
+    await r.svc.discard(id)
+    expect(audits(r, 'release.discard')[0].details).toEqual(counts)
+
+    const g = gate()
+    r.runner.onCancel = g.open
+    r.runner.on.release = async () => {
+      await g.p
+      return { cancelled: true, exitCode: null }
+    }
+    const id2 = await ready(r, r.f.deploys.list(r.f.staging.id))
+    await r.svc.start(id2, { typedName: 'staging' })
+    await r.svc.cancel(id2)
+    await r.svc.whenIdle()
+    expect(audits(r, 'release.cancel')[0].details).toEqual({ releaseId: id2, ...counts })
+  })
+
   it('a throw after the run leaves no stranded row', async () => {
     const r = await rig()
     const id = await ready(r)
@@ -1042,6 +1159,26 @@ describe('per-service record', () => {
     expect(r.runner.kinds).not.toContain('release')
   })
 
+  it('a checkout with no services, deployed whole, refuses a start once it gains one and records it after', async () => {
+    const r = await rig()
+    const bare = dep(r, 'bare')
+    const id = await ready(r, [], { checkoutIds: [bare.id] })
+    expect(r.svc.detail(id).runs.map((x) => [x.deploymentName, x.wholeCheckout, x.services])).toEqual([['bare', true, []]])
+    const late = svcIn(r, bare, 'late')
+    const err = await r.svc.start(id, {}).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(DeployError)
+    expect((err as DeployError).message).toBe('bare changed since preflight; run preflight again')
+    expect(r.runner.kinds).not.toContain('release')
+
+    // It has a service now, so it's picked by service.
+    const again = await ready(r, [], { serviceIds: [late.id] })
+    r.runner.on.release = deploys(A, B)
+    await r.svc.start(again, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(again).status).toBe('succeeded')
+    expect(last(r, late.id)).toEqual([B, again])
+  })
+
   it("auto-rollback rolls back only selected services, in reverse, in the release's form", async () => {
     const { r, esg, ui, pay, idler } = await platformRig()
     const r0 = await release(r, [esg.id, pay.id], C, A)
@@ -1081,15 +1218,129 @@ describe('per-service record', () => {
   it('rollback of R1 is refused after R2 redeployed esg, naming esg', async () => {
     const { r, esg, ui, pay } = await platformRig()
     const r1 = await release(r, [esg.id], A, B)
-    await release(r, [esg.id, ui.id], B, C)
+    const r2 = await release(r, [esg.id, ui.id], B, C)
     const err = await r.svc.rollback(r1, {}).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(DeployError)
     expect((err as DeployError).code).toBe('INVALID_STATE')
-    expect((err as DeployError).message).toBe("Can't roll back: esg was deployed again since this release")
+    expect((err as DeployError).message).toBe(`Can't roll back: esg is now on release ${r2.slice(0, 8)}`)
     const r3 = await release(r, [ui.id, pay.id], C, A)
-    await release(r, [ui.id, pay.id], A, B)
-    await expect(r.svc.rollback(r3, {})).rejects.toThrow("Can't roll back: ui and pay were deployed again since this release")
+    const r4 = await release(r, [ui.id, pay.id], A, B)
+    await expect(r.svc.rollback(r3, {})).rejects.toThrow(`Can't roll back: ui and pay are now on release ${r4.slice(0, 8)}`)
     expect(r.runner.kinds).not.toContain('rollback')
+  })
+
+  it('a failed, auto-rolled-back R2 leaves R1 the one to roll back, and a succeeded R2 still blocks it', async () => {
+    const { r, esg, ui } = await platformRig()
+    const r1 = await release(r, [esg.id], A, B)
+    const failR2 = async (reached: boolean) => {
+      const id = await ready(r, [], { serviceIds: [esg.id] })
+      r.runner.on.release = (plan) => {
+        const [x] = runIds(plan)
+        return { exitCode: 2, failedDeploymentRunIds: [x], reachedCheckout: reached ? [x] : [], commits: { [x]: reached ? { previous: B } : {} } }
+      }
+      await r.svc.start(id, {})
+      await r.svc.whenIdle()
+      return id
+    }
+    const r2 = await failR2(true)
+    expect(r.svc.detail(r2).status).toBe('rolled_back')
+    expect(last(r, esg.id)).toEqual([B, r1])
+    // R2 failing before checkout counts no more than R2 rolled back.
+    const r3 = await failR2(false)
+    expect(r.svc.detail(r3).status).toBe('failed')
+    expect(Object.fromEntries(r.f.releases.latestTouching([esg.id]))).toEqual({ [esg.id]: r1 })
+    await expect(r.svc.rollback(r2, {})).rejects.toThrow('Nothing to roll back: this release was already rolled back')
+    const { releaseId } = await r.svc.rollback(r1, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(releaseId).status).toBe('succeeded')
+    expect(r.runner.call('rollback', r.runner.kinds.filter((k) => k === 'rollback').length - 1).deployments.map((d) => [d.name, d.services, d.previousCommit])).toEqual([['platform', ['esg'], A]])
+
+    // A succeeded R2 is a real redeploy.
+    const r4 = await release(r, [ui.id], A, B)
+    const r5 = await release(r, [ui.id], B, C)
+    await expect(r.svc.rollback(r4, {})).rejects.toThrow(`Can't roll back: ui is now on release ${r5.slice(0, 8)}`)
+  })
+
+  it('after rolling back R2 by hand, R1 can be rolled back too, rebuilding at its previous commit', async () => {
+    const { r, esg, pay } = await platformRig()
+    const r1 = await release(r, [esg.id, pay.id], A, B)
+    const r2 = await release(r, [esg.id, pay.id], B, C)
+    const err = await r.svc.rollback(r1, {}).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(DeployError)
+    expect((err as DeployError).message).toBe(`Can't roll back: esg and pay are now on release ${r2.slice(0, 8)}`)
+    await r.svc.rollback(r2, {})
+    await r.svc.whenIdle()
+    expect(last(r, esg.id)).toEqual([B, r1])
+    const { releaseId } = await r.svc.rollback(r1, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(releaseId).status).toBe('succeeded')
+    expect(r.runner.call('rollback', 1).deployments.map((d) => [d.name, d.services, d.previousCommit])).toEqual([
+      ['billing', null, A],
+      ['platform', ['esg'], A],
+    ])
+    expect(last(r, esg.id)).toEqual([A, null])
+    await expect(r.svc.rollback(r1, {})).rejects.toThrow('Nothing to roll back: this release was already rolled back')
+    expect(r.runner.kinds.filter((k) => k === 'rollback')).toHaveLength(2)
+  })
+
+  it('with auto-rollback off, rolling back R1 blocks rolling back the later failed R2, record or none', async () => {
+    for (const recorded of [true, false]) {
+      const { r, esg } = await platformRig()
+      r.f.deploys.updateSettings(r.f.staging.id, { autoRollback: false })
+      // With a record, R0 put esg at A; without, esg was never recorded and the host is at A.
+      if (recorded) await release(r, [esg.id], C, A)
+      const fail = async (previous: string, deployed: string) => {
+        const id = await ready(r, [], { serviceIds: [esg.id] })
+        r.runner.on.release = (plan) => {
+          const [x] = runIds(plan)
+          return { exitCode: 2, failedDeploymentRunIds: [x], reachedCheckout: [x], commits: { [x]: { previous, deployed } } }
+        }
+        await r.svc.start(id, {})
+        await r.svc.whenIdle()
+        expect(r.svc.detail(id).status).toBe('failed')
+        return id
+      }
+      const r1 = await fail(A, B)
+      const r2 = await fail(B, C)
+      const { releaseId: rb1 } = await r.svc.rollback(r1, {})
+      await r.svc.whenIdle()
+      expect(r.svc.detail(rb1).status).toBe('succeeded')
+      // R2's previous commit is R1's failed one: rolling R2 back now would put it back.
+      const err = await r.svc.rollback(r2, {}).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(DeployError)
+      expect((err as DeployError).message).toBe(`Can't roll back: esg is now on the rollback of ${r1.slice(0, 8)}`)
+      expect(r.runner.kinds.filter((k) => k === 'rollback')).toHaveLength(1)
+    }
+  })
+
+  it('after rolling back R2, a later R3 undone by hand or automatically leaves R1 on record and rollbackable', async () => {
+    for (const auto of [false, true]) {
+      const { r, esg } = await platformRig()
+      const r1 = await release(r, [esg.id], A, B)
+      const r2 = await release(r, [esg.id], B, C)
+      await r.svc.rollback(r2, {})
+      await r.svc.whenIdle()
+      if (auto) {
+        const id = await ready(r, [], { serviceIds: [esg.id] })
+        r.runner.on.release = (plan) => {
+          const [x] = runIds(plan)
+          return { exitCode: 2, failedDeploymentRunIds: [x], reachedCheckout: [x], commits: { [x]: { previous: B, deployed: C } } }
+        }
+        await r.svc.start(id, {})
+        await r.svc.whenIdle()
+        expect(r.svc.detail(id).status).toBe('rolled_back')
+      } else {
+        const r3 = await release(r, [esg.id], B, C)
+        await r.svc.rollback(r3, {})
+        await r.svc.whenIdle()
+      }
+      // The record names the release the host is back on, never a rollback.
+      expect(last(r, esg.id)).toEqual([B, r1])
+      const { releaseId } = await r.svc.rollback(r1, {})
+      await r.svc.whenIdle()
+      expect(r.svc.detail(releaseId).status).toBe('succeeded')
+      expect(last(r, esg.id)).toEqual([A, null])
+    }
   })
 
   it('rollback restores last_deployed_commit to the commit it checked out', async () => {
@@ -1259,12 +1510,12 @@ describe('per-service record', () => {
     expect(last(r, esg.id)).toEqual([A, null])
   })
 
-  it('after rolling back R1, rolling back R1 again is refused naming its services', async () => {
+  it('after rolling back R1, rolling back R1 again is refused', async () => {
     const { r, esg, pay } = await platformRig()
     const r1 = await release(r, [esg.id, pay.id], A, B)
     await r.svc.rollback(r1, {})
     await r.svc.whenIdle()
-    await expect(r.svc.rollback(r1, {})).rejects.toThrow("Can't roll back: esg and pay were deployed again since this release")
+    await expect(r.svc.rollback(r1, {})).rejects.toThrow('Nothing to roll back: this release was already rolled back')
     expect(r.runner.kinds.filter((k) => k === 'rollback')).toHaveLength(1)
   })
 

@@ -16,7 +16,7 @@ import { hostMeta } from '../../src/main/inventory/rows'
 import { ExecLinks, type ExecLinksDeps, type Lease } from '../../src/main/ops/exec-links'
 import { STOP_GRACE_MS, execOnce, type ExecResult } from '../../src/main/ops/exec'
 import { makeInventory } from './inventory-helpers'
-import { idleContainers, idleSessions, idleTunnels, shellExec, type ShellHost } from './ops-helpers'
+import { idleAi, idleContainers, idleReleases, idleSessions, idleTunnels, shellExec, type ShellHost } from './ops-helpers'
 import { startServer, type ServerOpts, type TestServer } from './ssh-server'
 import { TUNNEL_USER, manualTimers } from './tunnel-helpers'
 
@@ -69,7 +69,7 @@ async function setup(deps: Partial<ExecLinksDeps> = {}) {
     ...deps,
   })
   // The app's own wiring: links before the broker on lock, and links on reset.
-  wireVaultHooks(f.vault, { sessions: idleSessions, tunnels: idleTunnels, runs: { vaultLocked() {}, vaultReset() {} }, links, containers: idleContainers, prompts: broker })
+  wireVaultHooks(f.vault, { sessions: idleSessions, tunnels: idleTunnels, runs: { vaultLocked() {}, vaultReset() {} }, links, containers: idleContainers, releases: idleReleases, ai: idleAi, prompts: broker })
   onTestFinished(() => links.closeAll())
 
   let hostN = 0

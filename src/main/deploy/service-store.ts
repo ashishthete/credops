@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { isHttpUrl, type HealthFrom } from '../../shared/deploy'
+import { MAX_POSITION, isHttpUrl, type HealthFrom } from '../../shared/deploy'
 import { MAX_DESCRIPTION, MAX_NAME, MAX_URL } from '../../shared/inventory'
 import {
   COMPOSE_SERVICE,
@@ -131,14 +131,13 @@ export class ServiceStore {
    * Validates and writes a service; no transaction, no audit and no `onChanged`, so a caller (copy to another
    * environment) can batch several inside its own `inTransaction`. `position` defaults to the end of the environment.
    */
-  insertInTx(input: ServiceInput, position?: number): string {
+  insertInTx(input: ServiceInput, position?: number, id: string = this.ids()): string {
     const kind = input.kind
     if (kind !== 'service' && kind !== 'db') throw new Error('kind must be service or db')
     this.refuseForeign(kind, input)
     if (!this.db.prepare('SELECT 1 FROM environments WHERE id = ?').get(input.environmentId)) throw new Error('environment not found')
     const n = (this.db.prepare('SELECT COUNT(*) AS n FROM services').get() as { n: number }).n
     if (n >= MAX_SERVICES) throw new Error(`too many services (${MAX_SERVICES})`)
-    const id = this.ids()
     const ts = this.now().toISOString()
     const pos = position ?? this.nextPosition(input.environmentId)
     if (input.kind === 'service') {
@@ -186,52 +185,7 @@ export class ServiceStore {
   /** `undefined` keeps a field; `null` clears the nullable ones. The kind and environment never change. */
   update(id: string, patch: ServicePatch): ServiceMeta {
     this.vault.assertUnlocked()
-    const before = this.get(id)
-    const raw = patch as Record<string, unknown>
-    if ((has(raw, 'kind') && raw.kind !== before.kind) || (has(raw, 'environmentId') && raw.environmentId !== before.environmentId)) {
-      throw new Error(FIXED_MESSAGE)
-    }
-    this.refuseForeign(before.kind, raw)
-    const fields = inTransaction(this.db, () => {
-      const pick = <T extends ServiceMeta, K extends keyof T>(b: T, k: K): T[K] => (has(raw, k as string) ? (raw[k as string] as T[K]) : b[k])
-      const name = has(raw, 'name') ? this.checkName(raw.name as string, before.environmentId, id) : before.name
-      let changed: string[]
-      if (before.kind === 'service') {
-        const f = this.validateApp(
-          {
-            name,
-            description: pick(before, 'description'),
-            deploymentId: pick(before, 'deploymentId'),
-            composeService: pick(before, 'composeService'),
-            url: pick(before, 'url'),
-            urlCheckFrom: pick(before, 'urlCheckFrom'),
-          },
-          before.environmentId,
-          id,
-        )
-        changed = APP_FIELDS.filter((k) => !same(f[k], before[k]))
-        if (changed.length === 0) return changed
-        this.db
-          .prepare('UPDATE services SET name = ?, description = ?, deployment_id = ?, compose_service = ?, url = ?, url_check_from = ?, updated_at = ? WHERE id = ?')
-          .run(f.name, f.description, f.deploymentId, f.composeService, f.url, f.urlCheckFrom, this.now().toISOString(), id)
-      } else {
-        const f = this.validateDb({
-          name,
-          description: pick(before, 'description'),
-          dbEngine: this.checkEngine(pick(before, 'dbEngine')),
-          dbAddress: pick(before, 'dbAddress'),
-          dbPort: pick(before, 'dbPort'),
-          viaHostId: pick(before, 'viaHostId'),
-          localPort: pick(before, 'localPort'),
-        })
-        changed = DB_FIELDS.filter((k) => !same(f[k], before[k]))
-        if (changed.length === 0) return changed
-        this.db
-          .prepare('UPDATE services SET name = ?, description = ?, db_engine = ?, db_address = ?, db_port = ?, via_host_id = ?, local_port = ?, updated_at = ? WHERE id = ?')
-          .run(f.name, f.description, f.dbEngine, f.dbAddress, f.dbPort, f.viaHostId, f.localPort, this.now().toISOString(), id)
-      }
-      return changed
-    })
+    const fields = inTransaction(this.db, () => this.updateInTx(id, patch))
     const after = this.get(id)
     if (fields.length === 0) return after
     this.audit.append({
@@ -244,6 +198,63 @@ export class ServiceStore {
     })
     this.onChanged?.(after.environmentId)
     return after
+  }
+
+  /** update() without the transaction, the unlock check, the audit or `onChanged`; the changed field names. */
+  updateInTx(id: string, patch: ServicePatch): string[] {
+    const before = this.get(id)
+    const raw = patch as Record<string, unknown>
+    if ((has(raw, 'kind') && raw.kind !== before.kind) || (has(raw, 'environmentId') && raw.environmentId !== before.environmentId)) {
+      throw new Error(FIXED_MESSAGE)
+    }
+    this.refuseForeign(before.kind, raw)
+    const pick = <T extends ServiceMeta, K extends keyof T>(b: T, k: K): T[K] => (has(raw, k as string) ? (raw[k as string] as T[K]) : b[k])
+    const name = has(raw, 'name') ? this.checkName(raw.name as string, before.environmentId, id) : before.name
+    let changed: string[]
+    if (before.kind === 'service') {
+      const f = this.validateApp(
+        {
+          name,
+          description: pick(before, 'description'),
+          deploymentId: pick(before, 'deploymentId'),
+          composeService: pick(before, 'composeService'),
+          url: pick(before, 'url'),
+          urlCheckFrom: pick(before, 'urlCheckFrom'),
+        },
+        before.environmentId,
+        id,
+      )
+      changed = APP_FIELDS.filter((k) => !same(f[k], before[k]))
+      if (changed.length === 0) return changed
+      this.db
+        .prepare('UPDATE services SET name = ?, description = ?, deployment_id = ?, compose_service = ?, url = ?, url_check_from = ?, updated_at = ? WHERE id = ?')
+        .run(f.name, f.description, f.deploymentId, f.composeService, f.url, f.urlCheckFrom, this.now().toISOString(), id)
+    } else {
+      const f = this.validateDb({
+        name,
+        description: pick(before, 'description'),
+        dbEngine: this.checkEngine(pick(before, 'dbEngine')),
+        dbAddress: pick(before, 'dbAddress'),
+        dbPort: pick(before, 'dbPort'),
+        viaHostId: pick(before, 'viaHostId'),
+        localPort: pick(before, 'localPort'),
+      })
+      changed = DB_FIELDS.filter((k) => !same(f[k], before[k]))
+      if (changed.length === 0) return changed
+      this.db
+        .prepare('UPDATE services SET name = ?, description = ?, db_engine = ?, db_address = ?, db_port = ?, via_host_id = ?, local_port = ?, updated_at = ? WHERE id = ?')
+        .run(f.name, f.description, f.dbEngine, f.dbAddress, f.dbPort, f.viaHostId, f.localPort, this.now().toISOString(), id)
+    }
+    return changed
+  }
+
+  /** Moves a service to `position` without renumbering the others; no transaction and no audit. False when it's already there. */
+  setPositionInTx(id: string, position: number): boolean {
+    const before = this.get(id)
+    if (!Number.isInteger(position) || position < 0 || position > MAX_POSITION) throw new Error(`position must be 0-${MAX_POSITION}`)
+    if (before.position === position) return false
+    this.db.prepare('UPDATE services SET position = ?, updated_at = ? WHERE id = ?').run(position, this.now().toISOString(), id)
+    return true
   }
 
   delete(id: string): void {
@@ -296,13 +307,20 @@ export class ServiceStore {
     this.vault.assertUnlocked()
     const before = this.get(id)
     if (before.kind !== 'db') throw new Error('only a db service has a tunnel')
-    inTransaction(this.db, () => {
-      if (tunnelId !== null && !this.db.prepare('SELECT 1 FROM tunnels WHERE id = ?').get(tunnelId)) throw new Error('tunnel not found')
-      const port = localPort === null ? null : checkPort(localPort)
-      this.db.prepare('UPDATE services SET tunnel_id = ?, local_port = ?, updated_at = ? WHERE id = ?').run(tunnelId, port, this.now().toISOString(), id)
-    })
+    inTransaction(this.db, () => this.setTunnelInTx(id, tunnelId, localPort))
     this.onChanged?.(before.environmentId)
     return this.get(id) as DbServiceMeta
+  }
+
+  /** setTunnel() without the transaction, the unlock check or `onChanged`; false when nothing changed. */
+  setTunnelInTx(id: string, tunnelId: string | null, localPort: number | null): boolean {
+    const before = this.get(id)
+    if (before.kind !== 'db') throw new Error('only a db service has a tunnel')
+    if (tunnelId !== null && !this.db.prepare('SELECT 1 FROM tunnels WHERE id = ?').get(tunnelId)) throw new Error('tunnel not found')
+    const port = localPort === null ? null : checkPort(localPort)
+    if (before.tunnelId === tunnelId && before.localPort === port) return false
+    this.db.prepare('UPDATE services SET tunnel_id = ?, local_port = ?, updated_at = ? WHERE id = ?').run(tunnelId, port, this.now().toISOString(), id)
+    return true
   }
 
   /** Release bookkeeping: what each service last shipped. Not audited (the release is); db services are skipped. */

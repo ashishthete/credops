@@ -46,6 +46,7 @@ import {
   TAG,
   UNSAFE_SSH_CHAR,
   hasRepoCredentials,
+  isParsableRepoUrl,
   parseEnvDomain,
   type HostRole,
   type OsIcon,
@@ -346,6 +347,7 @@ const color = str({ max: 7, pattern: VAULT_COLOR })
 const repoUrl: Check<string | null> = nullable((value, path, errs) => {
   const s = str({ max: MAX_URL, pattern: REPO_URL })(value, path, errs)
   if (s === BAD) return BAD
+  if (!isParsableRepoUrl(s)) return fail(errs, path, 'must be a valid URL')
   return hasRepoCredentials(s) ? fail(errs, path, 'must not carry credentials') : s
 })
 const vaultRef = object({ vaultName: text(MAX_VAULT_NAME) })
@@ -610,4 +612,42 @@ export function parseConfigFile(text: string): { ok: true; file: ConfigFile } | 
     return { ok: false, errors }
   }
   return { ok: true, file }
+}
+
+// ---- Import ----
+
+export type ImportAction = 'add' | 'update' | 'unchanged' | 'skip'
+export const IMPORT_ACTIONS: readonly ImportAction[] = ['add', 'update', 'unchanged', 'skip']
+
+/** One object in the file and what the import does with it; `id` is the local id it lands on (the file's for an add). */
+export interface ImportItem {
+  kind: keyof ConfigCounts
+  id: string
+  name: string
+  action: ImportAction
+  reason?: string
+  /** For an update: the fields that differ. */
+  fields?: string[]
+}
+
+/** A field the import leaves unset because the secret (or the object holding one) isn't here; `reason` says why when it isn't plain. */
+export interface ImportNeedsSecret {
+  kind: keyof ConfigCounts
+  name: string
+  field: string
+  reason?: string
+}
+
+export interface ImportPreview {
+  token: string
+  items: ImportItem[]
+  counts: Record<ImportAction, number>
+  needsSecret: ImportNeedsSecret[]
+  /** Existing protected environments the import changes: each name must be typed to confirm. */
+  protectedEnvironments: string[]
+}
+
+export interface ImportResult {
+  counts: Record<ImportAction, number>
+  needsSecret: ImportNeedsSecret[]
 }

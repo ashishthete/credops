@@ -1,10 +1,11 @@
-import { Download, FileJson } from 'lucide-react'
+import { Download, FileJson, Upload } from 'lucide-react'
 import { useState } from 'react'
-import type { ConfigCounts } from '../../../../shared/config-file'
+import type { ConfigCounts, ImportPreview } from '../../../../shared/config-file'
 import { api } from '../../lib/api'
 import { Button } from '../../ui/Button'
 import { attempt, plural } from '../../ui/common'
 import { toast } from '../../ui/Toaster'
+import { ImportConfigDialog } from './ImportConfigDialog'
 import { IntegrationsSection } from './IntegrationsPage'
 
 const total = (counts: ConfigCounts): number => Object.values(counts).reduce((a, b) => a + b, 0)
@@ -27,6 +28,8 @@ export function SettingsPage() {
 
 function ConfigSection() {
   const [exporting, setExporting] = useState(false)
+  const [opening, setOpening] = useState(false)
+  const [preview, setPreview] = useState<ImportPreview | { errors: string[] } | null>(null)
 
   const exportConfig = async () => {
     setExporting(true)
@@ -44,6 +47,17 @@ function ConfigSection() {
     }
   }
 
+  const openImport = async () => {
+    setOpening(true)
+    try {
+      // null: the open dialog was closed.
+      const res = await attempt("Couldn't open the config", () => api.invoke('config:importOpen'))
+      if (res) setPreview(res)
+    } finally {
+      setOpening(false)
+    }
+  }
+
   return (
     <section aria-labelledby="settings-config" className="mt-2 max-w-[640px] rounded-xl border border-line bg-surface p-5">
       <div className="flex items-start gap-3">
@@ -56,15 +70,20 @@ function ConfigSection() {
           </h2>
           <p className="mt-1 text-[12.5px] leading-relaxed text-muted">
             Exports products, environments, hosts, identities, tunnels, checkouts and services. Secrets are never exported;
-            references to vault items are kept by name. Free-text notes and hooks are exported as written.
+            references to vault items are kept by name. Free-text fields (notes, hooks, descriptions, env values and URLs) are exported as written, so check them for anything sensitive.
+            Importing adds and updates by id or name and never deletes.
           </p>
         </div>
       </div>
-      <div className="mt-4 pl-11">
+      <div className="mt-4 flex gap-2 pl-11">
         <Button size="sm" loading={exporting} icon={<Download aria-hidden className="size-3.5" />} onClick={() => void exportConfig()}>
           Export config…
         </Button>
+        <Button size="sm" loading={opening} icon={<Upload aria-hidden className="size-3.5" />} onClick={() => void openImport()}>
+          Import config…
+        </Button>
       </div>
+      {preview && <ImportConfigDialog preview={preview} onClose={() => setPreview(null)} />}
     </section>
   )
 }

@@ -29,7 +29,7 @@ describe('settings page', () => {
     renderPage()
     expect(screen.getByRole('heading', { name: 'Configuration' })).toBeInTheDocument()
     expect(screen.getByText(/Secrets are never exported; references to vault items are kept by name\./)).toBeInTheDocument()
-    expect(screen.getByText(/Free-text notes and hooks are exported as written\./)).toBeInTheDocument()
+    expect(screen.getByText(/Free-text fields \(notes, hooks, descriptions, env values and URLs\) are exported as written/)).toBeInTheDocument()
 
     await userEvent.click(screen.getByRole('button', { name: 'Export config…' }))
     expect(invoke).toHaveBeenCalledWith('config:export')

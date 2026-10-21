@@ -310,14 +310,21 @@ describe('ReleaseStore', () => {
       expect(f.releases.get(id).serviceCount).toBe(0)
     })
 
-    it('latestTouching ignores releases that never started', async () => {
+    it('latestTouching counts only started releases that left the service deployed', async () => {
       const { f, d } = await release()
-      const r1 = rel(f, d, [entry('s1'), entry('s2')])
-      const r2 = rel(f, d, [entry('s2')], { kind: 'rollback' })
-      rel(f, d, [entry('s1'), entry('s2')], { started: false })
+      const r1 = rel(f, d, [entry('s1'), entry('s2')], { runStatus: 'succeeded' })
+      const r2 = rel(f, d, [entry('s2')], { kind: 'rollback', runStatus: 'rolled_back' })
+      rel(f, d, [entry('s1'), entry('s2')], { runStatus: 'succeeded', started: false })
+      rel(f, d, [entry('s1'), entry('s2')], { runStatus: 'failed' })
+      rel(f, d, [entry('s1'), entry('s2')], { runStatus: 'succeeded', status: 'rolled_back' })
+      rel(f, d, [entry('s1'), entry('s2')], { kind: 'rollback', runStatus: 'failed' })
       const m = f.releases.latestTouching(['s1', 's2', 's3'])
       expect(Object.fromEntries(m)).toEqual({ s1: r1.id, s2: r2.id })
       expect(f.releases.latestTouching([]).size).toBe(0)
+      // A rollback of a release newer than the one given does not count; a rollback of it or an older one does.
+      f.db.prepare('UPDATE releases SET rollback_of = ? WHERE id = ?').run(r2.id, r2.id)
+      expect(Object.fromEntries(f.releases.latestTouching(['s1', 's2'], r1.id))).toEqual({ s1: r1.id, s2: r1.id })
+      expect(Object.fromEntries(f.releases.latestTouching(['s1', 's2'], r2.id))).toEqual({ s1: r1.id, s2: r2.id })
     })
 
     it('previousTouching returns the earlier succeeded deploy of that service', async () => {
@@ -326,7 +333,7 @@ describe('ReleaseStore', () => {
       rel(f, d, [entry('s1', { deployedCommit: SB })], { runStatus: 'failed' })
       rel(f, d, [entry('s1', { deployedCommit: SB })], { runStatus: 'succeeded', started: false })
       const r4 = rel(f, d, [entry('s1', { deployedCommit: SB })], { runStatus: 'succeeded' })
-      expect(f.releases.previousTouching('s1', r4.id)).toEqual({ releaseId: r1.id, commit: SA })
+      expect(f.releases.previousTouching('s1', r4.id)).toEqual({ releaseId: r1.id, commit: SA, rollbackOf: null })
       expect(f.releases.previousTouching('s1', r1.id)).toBeNull()
       expect(f.releases.previousTouching('s2', r4.id)).toBeNull()
     })
@@ -339,9 +346,39 @@ describe('ReleaseStore', () => {
       const rb = rel(f, d, [entry('s1', { deployedCommit: SB })], { kind: 'rollback', runStatus: 'rolled_back' })
       const gone = rel(f, d, [entry('s1', { deployedCommit: SA })], { runStatus: 'succeeded', status: 'rolled_back' })
       const r5 = rel(f, d, [entry('s1')], { runStatus: 'succeeded' })
-      expect(f.releases.previousTouching('s1', r5.id)).toEqual({ releaseId: rb.id, commit: SB })
-      expect(f.releases.previousTouching('s1', gone.id)).toEqual({ releaseId: rb.id, commit: SB })
-      expect(f.releases.previousTouching('s1', rb.id)).toEqual({ releaseId: r1.id, commit: SA })
+      expect(f.releases.previousTouching('s1', r5.id)).toEqual({ releaseId: rb.id, commit: SB, rollbackOf: null })
+      expect(f.releases.previousTouching('s1', gone.id)).toEqual({ releaseId: rb.id, commit: SB, rollbackOf: null })
+      expect(f.releases.previousTouching('s1', rb.id)).toEqual({ releaseId: r1.id, commit: SA, rollbackOf: null })
+    })
+
+    it('previousRelease resolves a rollback to the release it restored, never naming a rollback', async () => {
+      const { f, d } = await release()
+      const r1 = rel(f, d, [entry('s1', { deployedCommit: SA })], { runStatus: 'succeeded' })
+      const r2 = rel(f, d, [entry('s1', { deployedCommit: SB })], { runStatus: 'succeeded', status: 'rolled_back' })
+      const rb2 = rel(f, d, [entry('s1', { deployedCommit: SA })], { kind: 'rollback', runStatus: 'rolled_back' })
+      const r3 = rel(f, d, [entry('s1', { deployedCommit: SB })], { runStatus: 'succeeded', status: 'rolled_back' })
+      const rb3 = rel(f, d, [entry('s1', { deployedCommit: SA })], { kind: 'rollback', runStatus: 'rolled_back' })
+      const setOf = (id: string, of: string) => f.db.prepare('UPDATE releases SET rollback_of = ? WHERE id = ?').run(of, id)
+      setOf(rb2.id, r2.id)
+      setOf(rb3.id, r3.id)
+      expect(f.releases.previousTouching('s1', r3.id)).toEqual({ releaseId: rb2.id, commit: SA, rollbackOf: r2.id })
+      expect(f.releases.previousRelease('s1', r3.id)).toBe(r1.id)
+      // Rollbacks all the way down: the one after rb3 resolves through rb3 and rb2 to r1.
+      const r4 = rel(f, d, [entry('s1')], { runStatus: 'succeeded' })
+      expect(f.releases.previousRelease('s1', r4.id)).toBe(r1.id)
+      expect(f.releases.previousRelease('s1', r1.id)).toBeNull()
+      expect(f.releases.previousRelease('s2', r4.id)).toBeNull()
+    })
+
+    it('previousRelease gives null on a rollback that claims to undo a newer release', { timeout: 2000 }, async () => {
+      const { f, d } = await release()
+      rel(f, d, [entry('s1', { deployedCommit: SA })], { runStatus: 'succeeded' })
+      const rb = rel(f, d, [entry('s1', { deployedCommit: SA })], { kind: 'rollback', runStatus: 'rolled_back' })
+      const r3 = rel(f, d, [entry('s1')], { runStatus: 'succeeded' })
+      // Only a corrupt row (or a clock gone backwards) can do this; the app never writes it. rb is the newest deploy
+      // before r3, so following its rollback_of finds rb again.
+      f.db.prepare('UPDATE releases SET rollback_of = ? WHERE id = ?').run(r3.id, rb.id)
+      expect(f.releases.previousRelease('s1', r3.id)).toBeNull()
     })
   })
 })

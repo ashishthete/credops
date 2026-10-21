@@ -74,7 +74,7 @@ export class HostStore {
    * Validates and writes a host with its links; no transaction and no audit, so a caller (the ssh
    * importer) can batch several inside its own `inTransaction` and append the audit rows after commit.
    */
-  insertInTx(input: HostInput): string {
+  insertInTx(input: HostInput, id: string = randomUUID()): string {
     const label = this.uniqueLabel(checkLabel(input.label))
     const address = checkAddress(input.address)
     const port = input.port == null ? null : checkPort(input.port)
@@ -87,7 +87,6 @@ export class HostStore {
     const envVars = checkEnvVars(input.envVars ?? {})
     const vaultIds = this.checkVaults(input.vaultIds ?? [])
     const memberships = this.checkMemberships(input.environments ?? [])
-    const id = randomUUID()
     const ts = new Date().toISOString()
     this.db
       .prepare(
@@ -109,46 +108,7 @@ export class HostStore {
   /** `undefined` keeps a field; `null` clears port, identityId and jumpHostId so they inherit. */
   update(id: string, patch: HostPatch): HostMeta {
     this.vault.assertUnlocked()
-    const before = hostRow(this.db, id)
-    const next = inTransaction(this.db, () => {
-      const label = patch.label === undefined ? before.label : this.uniqueLabel(checkLabel(patch.label), id)
-      const address = patch.address === undefined ? before.address : checkAddress(patch.address)
-      const port = patch.port === undefined ? before.port : patch.port === null ? null : checkPort(patch.port)
-      const identityId = patch.identityId === undefined ? before.identity_id : this.checkIdentity(patch.identityId)
-      const jumpHostId =
-        patch.jumpHostId === undefined ? before.jump_host_id : patch.jumpHostId === null ? null : this.checkJump(patch.jumpHostId, id)
-      const tags = patch.tags === undefined ? (JSON.parse(before.tags) as string[]) : checkTags(patch.tags)
-      const osIcon = patch.osIcon === undefined ? before.os_icon : this.checkIcon(patch.osIcon)
-      const notes = patch.notes === undefined ? before.notes : this.checkNotes(patch.notes)
-      const keepaliveSec =
-        patch.keepaliveSec === undefined
-          ? before.keepalive_sec
-          : patch.keepaliveSec === null
-            ? null
-            : checkKeepalive(patch.keepaliveSec)
-      const envVars = patch.envVars === undefined ? before.env_vars : checkEnvVars(patch.envVars)
-      const tagsJson = JSON.stringify(tags)
-      const fields = [
-        label !== before.label && 'label',
-        address !== before.address && 'address',
-        port !== before.port && 'port',
-        identityId !== before.identity_id && 'identityId',
-        jumpHostId !== before.jump_host_id && 'jumpHostId',
-        tagsJson !== before.tags && 'tags',
-        osIcon !== before.os_icon && 'osIcon',
-        notes !== before.notes && 'notes',
-        keepaliveSec !== before.keepalive_sec && 'keepaliveSec',
-        envVars !== before.env_vars && 'envVars',
-      ].filter(Boolean)
-      if (fields.length === 0) return null
-      this.db
-        .prepare(
-          `UPDATE hosts SET label = ?, address = ?, port = ?, identity_id = ?, jump_host_id = ?, tags = ?,
-            os_icon = ?, notes = ?, keepalive_sec = ?, env_vars = ?, updated_at = ? WHERE id = ?`,
-        )
-        .run(label, address, port, identityId, jumpHostId, tagsJson, osIcon, notes, keepaliveSec, envVars, new Date().toISOString(), id)
-      return { label, fields }
-    })
+    const next = inTransaction(this.db, () => this.updateInTx(id, patch))
     if (next === null) return hostMeta(this.db, id)
     this.audit.append({
       action: 'host.update',
@@ -159,6 +119,58 @@ export class HostStore {
       details: { fields: next.fields },
     })
     return hostMeta(this.db, id)
+  }
+
+  /** update() without the transaction, the unlock check or the audit; null when nothing changed. */
+  updateInTx(id: string, patch: HostPatch): { label: string; fields: string[] } | null {
+    const before = hostRow(this.db, id)
+    const label = patch.label === undefined ? before.label : this.uniqueLabel(checkLabel(patch.label), id)
+    const address = patch.address === undefined ? before.address : checkAddress(patch.address)
+    const port = patch.port === undefined ? before.port : patch.port === null ? null : checkPort(patch.port)
+    const identityId = patch.identityId === undefined ? before.identity_id : this.checkIdentity(patch.identityId)
+    const jumpHostId =
+      patch.jumpHostId === undefined ? before.jump_host_id : patch.jumpHostId === null ? null : this.checkJump(patch.jumpHostId, id)
+    const tags = patch.tags === undefined ? (JSON.parse(before.tags) as string[]) : checkTags(patch.tags)
+    const osIcon = patch.osIcon === undefined ? before.os_icon : this.checkIcon(patch.osIcon)
+    const notes = patch.notes === undefined ? before.notes : this.checkNotes(patch.notes)
+    const keepaliveSec =
+      patch.keepaliveSec === undefined
+        ? before.keepalive_sec
+        : patch.keepaliveSec === null
+          ? null
+          : checkKeepalive(patch.keepaliveSec)
+    const envVars = patch.envVars === undefined ? before.env_vars : checkEnvVars(patch.envVars)
+    const tagsJson = JSON.stringify(tags)
+    const fields = [
+      label !== before.label && 'label',
+      address !== before.address && 'address',
+      port !== before.port && 'port',
+      identityId !== before.identity_id && 'identityId',
+      jumpHostId !== before.jump_host_id && 'jumpHostId',
+      tagsJson !== before.tags && 'tags',
+      osIcon !== before.os_icon && 'osIcon',
+      notes !== before.notes && 'notes',
+      keepaliveSec !== before.keepalive_sec && 'keepaliveSec',
+      envVars !== before.env_vars && 'envVars',
+    ].filter((f): f is string => typeof f === 'string')
+    if (fields.length === 0) return null
+    this.db
+      .prepare(
+        `UPDATE hosts SET label = ?, address = ?, port = ?, identity_id = ?, jump_host_id = ?, tags = ?,
+          os_icon = ?, notes = ?, keepalive_sec = ?, env_vars = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(label, address, port, identityId, jumpHostId, tagsJson, osIcon, notes, keepaliveSec, envVars, new Date().toISOString(), id)
+    return { label, fields }
+  }
+
+  /** Links the vaults the host doesn't have yet (never unlinks); no transaction and no audit. Returns the added ids. */
+  addVaultsInTx(id: string, vaultIds: string[]): string[] {
+    const before = hostMeta(this.db, id)
+    const added = this.checkVaults(vaultIds).filter((v) => !before.vaultIds.includes(v))
+    if (added.length === 0) return []
+    for (const v of added) this.db.prepare('INSERT INTO host_vaults(host_id, vault_id) VALUES (?,?)').run(id, v)
+    this.db.prepare('UPDATE hosts SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), id)
+    return added
   }
 
   /** Throws what `delete` would refuse with, so a caller can tear down what depends on the host first. */

@@ -18,8 +18,7 @@ import {
   type ItemRef,
   type VaultRef,
 } from '../../shared/config-file'
-import { SENSITIVE_KEY } from '../../shared/deploy'
-import { stripRepoCredentials } from '../../shared/inventory'
+import { REPO_URL, isParsableRepoUrl, stripRepoCredentials } from '../../shared/inventory'
 import type { DbEngine } from '../../shared/services'
 import type { AuditLog } from '../audit/audit-log'
 import type { Db } from '../db/connection'
@@ -30,6 +29,16 @@ import type { VaultService } from '../vault/vault-service'
 // config columns are left out too: sensitive host env var values, repo URL credentials and refs to deleted secrets.
 
 type Row = Record<string, unknown>
+
+// Export-only rules, wider than the stores' SENSITIVE_KEY (which stays as it is so stored templates and older
+// files keep validating). They err toward blanking too much: a blanked value is easy to re-enter, a leaked one is not.
+const EXPORT_SECRET_NAME = /PASS|PWD|TOKEN|SECRET|KEY|CREDENTIAL|PRIVATE|AUTH|DSN|SALT|COOKIE|SESSION|WEBHOOK|CERT|SIGNATURE/i
+/** A URL with a password in its userinfo, or any http(s) userinfo (a bare token), wherever it sits in the value. */
+const URL_USERINFO_VALUE = /https?:[\s\/\\]*[^\s\/\\@?#]*@|[a-z][a-z0-9+.-]*:[\s\/\\]*[^\s\/\\@]*:[^\s\/\\@]*@/i
+/** A value that is exactly one secret ref: the only form the store reads as a ref. */
+const WHOLE_SECRET_REF = /^\$\{secret:[^}]*\}$/
+/** Query or fragment parameters, with the delimiter kept. */
+const URL_PARAM = /([?&#;])([^=&#;?\s]*)=([^&#;?\s]*)/g
 
 const byId = <T extends { id: string }>(xs: T[]): T[] => xs.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
 const byKey = <T>(xs: T[], key: (x: T) => string): T[] => xs.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0))
@@ -57,14 +66,26 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: numbe
   const repoUrl = (v: unknown): string | null => {
     const url = optStr(v)
     if (url === null) return null
+    // A legacy row the rules would now refuse could still hold a token in a shape the strip can't read: leave it out.
+    if (!REPO_URL.test(url) || !isParsableRepoUrl(url)) {
+      omitted++
+      return null
+    }
     const clean = stripRepoCredentials(url)
     if (clean !== url) omitted++
-    return clean
+    return blankUrlParams(clean)
   }
+  /** Blanks the value of every query parameter whose name looks secret; each one counts. */
+  const blankUrlParams = (url: string): string =>
+    url.replace(URL_PARAM, (m, d: string, name: string, value: string) => {
+      if (value === '' || !EXPORT_SECRET_NAME.test(name)) return m
+      omitted++
+      return `${d}${name}=`
+    })
   const envVars = (v: unknown): Record<string, string> => {
     const vars = JSON.parse(str(v)) as Record<string, string>
     for (const [k, value] of Object.entries(vars)) {
-      if (value === '' || !SENSITIVE_KEY.test(k)) continue
+      if (value === '' || !(EXPORT_SECRET_NAME.test(k) || URL_USERINFO_VALUE.test(value))) continue
       vars[k] = ''
       omitted++
     }
@@ -180,10 +201,26 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: numbe
 
   const deployVaults = groups(all('SELECT deployment_id, vault_id FROM deployment_vaults'), 'deployment_id', (r) => str(r.vault_id), (x) => x)
   // A ref to a secret that no longer exists exports blank: its local id means nothing elsewhere.
+  // Template lines with a secret-looking name or a credentialed URL value (and no ${secret:} ref) export as `KEY=`.
+  const blankTemplateLines = (template: string): string =>
+    template
+      .split('\n')
+      .map((line) => {
+        // A commented-out assignment (`# KEY=value`) is checked like a live one.
+        const comment = /^(\s*#+\s*(?:export\s+)?)([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/.exec(line.replace(/\r$/, ''))
+        const eq = line.indexOf('=')
+        if (!comment && (eq <= 0 || line.trimStart().startsWith('#'))) return line
+        const [prefix, key, value] = comment ? [comment[1], comment[2], comment[3]] : ['', line.slice(0, eq), line.slice(eq + 1).replace(/\r$/, '')]
+        if (value === '' || WHOLE_SECRET_REF.test(value)) return line
+        if (!EXPORT_SECRET_NAME.test(key) && !URL_USERINFO_VALUE.test(value)) return line
+        omitted++
+        return `${prefix}${key}=${line.endsWith('\r') ? '\r' : ''}`
+      })
+      .join('\n')
   const rewrite = (template: string | null): string | null =>
     template === null
       ? null
-      : template.replace(TEMPLATE_SECRET_REF, (_m, id: string) => {
+      : blankTemplateLines(template).replace(TEMPLATE_SECRET_REF, (_m, id: string) => {
           if (refOf.has(id)) return `\${secret:${refOf.get(id)}}`
           omitted++
           return ''
@@ -200,7 +237,7 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: numbe
     composeProject: optStr(r.compose_project),
     deployTag: str(r.deploy_tag),
     position: Number(r.position),
-    urls: JSON.parse(str(r.urls)) as ConfigDeployment['urls'],
+    urls: (JSON.parse(str(r.urls)) as ConfigDeployment['urls']).map((u) => ({ ...u, url: blankUrlParams(u.url) })),
     healthStatus: Number(r.health_status),
     healthTimeoutSec: Number(r.health_timeout_sec),
     dbBackup: bool(r.db_backup),
@@ -229,7 +266,7 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: numbe
           description: str(r.description),
           deploymentId: optStr(r.deployment_id),
           composeService: str(r.compose_service),
-          url: optStr(r.url),
+          url: r.url === null ? null : blankUrlParams(str(r.url)),
           urlCheckFrom: r.url_check_from as 'mac' | 'host',
         }
       : {
@@ -305,13 +342,22 @@ export async function exportConfig(deps: ConfigExportDeps, path: string): Promis
   }
   const { file, counts, omitted } = built
   const temp = join(dirname(path), `.${basename(path)}.${randomBytes(6).toString('hex')}.tmp`)
+  // Cleanup only touches a temp file this call created: an EEXIST means the name belongs to someone else.
+  let created = false
   try {
-    await writeFile(temp, serializeConfig(file), { mode: 0o600, flag: 'wx' })
+    try {
+      await writeFile(temp, serializeConfig(file), { mode: 0o600, flag: 'wx' })
+    } catch (err) {
+      // A partial write leaves a file of ours behind; a name collision does not.
+      created = (err as NodeJS.ErrnoException).code !== 'EEXIST'
+      throw err
+    }
+    created = true
     // `mode` is masked by the umask: make sure of it before the file takes the target's name.
     await chmod(temp, 0o600)
     await rename(temp, path)
   } catch {
-    await rm(temp, { force: true }).catch(() => undefined)
+    if (created) await rm(temp, { force: true }).catch(() => undefined)
     throw failed("Couldn't write the config file")
   }
   deps.audit.append({ action: 'config.export', outcome: 'success', targetType: 'config', targetLabel: 'config', details: { counts, omitted } })
