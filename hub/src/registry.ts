@@ -332,8 +332,10 @@ export function readManifest(input: unknown): HubEnvManifest {
     const given = (raw as unknown[] | undefined ?? []).map((x, j) => rule(`${p}/${j}`, () => validateStep(x, { allowedSecretIds: stepSecretIds, serviceNames: namesOf(d.id) })))
     if (new Set(given.map((x) => x.id)).size !== given.length) bad(`invalid manifest: ${p} ids must be unique`)
     // A schema-1 publisher has hooks and no steps: they become steps here, so the Hub runs them as the desktop does.
+    if (schema === 2 && given.length > 0 && (d.preHook !== null || d.postHook !== null)) bad(`invalid manifest: ${p} cannot be set next to preHook or postHook`)
     const steps: Step[] = schema === 2 ? given : effectiveSteps({ steps: given, preHook: d.preHook, postHook: d.postHook })
-    return steps.length > 0 ? { ...d, steps } : d
+    // Steps non-empty means no hooks, as in the app's store: the hooks live on as steps.
+    return steps.length > 0 ? { ...d, preHook: null, postHook: null, steps } : d
   })
 
   const serviceIdSet = new Set(services.map((s) => s.id))

@@ -166,8 +166,21 @@ export function registerReleases(app: FastifyInstance, deps: { releases: HubRele
     releases.detail(req.user, req.params.id),
   )
 
-  app.get<{ Params: { id: string } }>('/api/v1/releases/:id/playbook', { onRequest, schema: { params: idParams } }, async (req): Promise<PlaybookPreview> =>
-    releases.previewPlaybook(req.user, req.params.id),
+  app.get<{ Params: { id: string }; Querystring: { forceServiceIds?: string[] } }>(
+    '/api/v1/releases/:id/playbook',
+    {
+      onRequest,
+      schema: {
+        params: idParams,
+        // Repeated (?forceServiceIds=a&forceServiceIds=b) or comma-separated; ids only.
+        querystring: {
+          type: 'object',
+          additionalProperties: false,
+          properties: { forceServiceIds: { type: 'array', maxItems: 500, items: { type: 'string', pattern: UUID } } },
+        },
+      },
+    },
+    async (req): Promise<PlaybookPreview> => releases.previewPlaybook(req.user, req.params.id, req.query.forceServiceIds),
   )
 
   app.get<{ Params: { id: string }; Querystring: { afterSeq?: number; limit?: number } }>(

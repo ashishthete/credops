@@ -383,7 +383,7 @@ export class ReleaseService {
    * (the playbook holds references only) and starts no agent. The start time it generates with is kept in memory
    * so a start bound to this hash regenerates the same text.
    */
-  async previewPlaybook(releaseId: string, ctx?: CallCtx): Promise<PlaybookPreview> {
+  async previewPlaybook(releaseId: string, ctx?: CallCtx, _forceServiceIds?: string[]): Promise<PlaybookPreview> {
     const actor = ctx?.actor ?? this.d.actor
     this.d.vault.assertUnlocked()
     const rel = this.d.releases.detail(releaseId)

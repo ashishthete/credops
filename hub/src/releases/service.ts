@@ -448,15 +448,21 @@ export class HubReleases {
    * The playbook a start would run, for review on the desktop. Generating it writes nothing and takes no lock.
    * It is a read: a refusal writes no audit row (like `detail`, and like the desktop's own preview).
    */
-  async previewPlaybook(user: HubUser, releaseId: string): Promise<PlaybookPreview> {
+  async previewPlaybook(user: HubUser, releaseId: string, forceServiceIds?: string[]): Promise<PlaybookPreview> {
     const { environmentId } = this.known(releaseId)
     // A release the caller cannot view is unknown to them; one they view only part of is refused below.
     this.viewOf(user, releaseId)
     const deploymentIds = this.deploymentsOf(releaseId)
+    // Only a service of this release can be forced, and never more of them than it has.
+    const forced = forceServiceIds === undefined ? undefined : [...new Set(forceServiceIds)]
+    if (forced) {
+      const own = new Set(this.store.get(releaseId).serviceIds)
+      if (forced.length > own.size || forced.some((id) => !own.has(id))) throw new HubHttpError(400, 'bad_request', 'forceServiceIds names a service this release does not run')
+    }
     const decision = decide(user, this.d.directory.listGroups(), this.startAction(releaseId), { environmentId, ...(deploymentIds.length ? { deploymentIds } : {}) })
     if (!decision.allowed) throw new HubHttpError(403, 'forbidden', refusal(decision, deploymentIds))
     try {
-      return await this.service.previewPlaybook(releaseId, { actor: this.actorOf(user) })
+      return await this.service.previewPlaybook(releaseId, { actor: this.actorOf(user) }, forced)
     } catch (err) {
       return this.fail(err)
     }
@@ -466,7 +472,8 @@ export class HubReleases {
     const { environmentId } = this.known(releaseId)
     this.reachable(user, releaseId, environmentId, 'release.start')
     const operation = this.store.get(releaseId).operation
-    this.allow(user, operation ? 'ops.run' : 'release.start', environmentId, this.deploymentsOf(releaseId), operation ? 'ops.run' : 'release.start', releaseId)
+    const action = this.startAction(releaseId)
+    this.allow(user, action, environmentId, this.deploymentsOf(releaseId), action, releaseId)
     if (confirm.editedPlaybook !== undefined) this.editGuard(user, environmentId, 'playbook.edit', releaseId)
     this.confirm(user, environmentId, confirm.typedName, 'release.start', releaseId)
     // A read-only runbook takes no environment lock, so there is none to hold.

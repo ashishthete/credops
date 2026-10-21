@@ -585,6 +585,8 @@ export interface ReleaseConfirm {
   playbookSha256?: string
   /** The reviewed playbook, edited by the user; main re-validates it and runs it in place of the generated one. */
   editedPlaybook?: string
+  /** Services whose unchanged-skip is overridden for this release; the preview and the start must name the same ones. */
+  forceServiceIds?: string[]
 }
 /** The playbook a start would run, for review before Deploy. */
 export interface PlaybookPreview {

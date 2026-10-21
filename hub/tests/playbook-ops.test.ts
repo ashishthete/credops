@@ -8,7 +8,7 @@ import { HUB_MIGRATIONS } from '../src/db'
 import { decide } from '../src/access/policy'
 import { hubAudit } from '../src/releases/adapters'
 import { DEP_API, DEP_WEB, ENV_ID, SECRET_DB, deployment, manifest } from './manifest'
-import { ADMIN, BOB, CAROL, OPTIONS, SVC_API, SVC_WEB, rig, type Rig } from './history-rig'
+import { ADMIN, BOB, CAROL, OPTIONS, SVC_API, SVC_WEB, envManifest, rig, type Rig } from './history-rig'
 import { testHub, type TestHub } from './helpers'
 
 let r: Rig | undefined
@@ -175,5 +175,166 @@ describe('operation visibility and audit', () => {
     const rows = hub.audit.list({ actions: ['ops.run'] })
     expect(rows).toHaveLength(1)
     expect(JSON.stringify(rows)).not.toMatch(/host|address|10\.0\.0/i)
+  })
+})
+
+describe('hooks next to steps', () => {
+  it('schema-1 hooks migrate to steps and the hooks are nulled', async () => {
+    const m = manifest()
+    m.deployments[0] = deployment(DEP_WEB, 'web', { preHook: 'make prep', postHook: 'make done' })
+    const { res, admin } = await put(m)
+    expect(res.statusCode, res.body).toBe(200)
+    const got = (await hub!.app.inject({ method: 'GET', url: `/api/v1/admin/environments/${ENV_ID}`, headers: { authorization: `Bearer ${admin}` } })).json() as HubEnvManifest
+    const d = got.deployments.find((x) => x.id === DEP_WEB)!
+    expect(d.steps?.map((s) => s.id)).toEqual(['pre-hook', 'post-hook'])
+    expect(d.preHook).toBeNull()
+    expect(d.postHook).toBeNull()
+  })
+
+  it('a schema-2 manifest with steps and hooks is rejected with a path message', async () => {
+    const m = withSteps([STEP])
+    m.deployments[0] = { ...m.deployments[0], preHook: 'make prep' }
+    ;(m as { schema?: number }).schema = 2
+    const { res } = await put(m)
+    expect(res.statusCode).toBe(400)
+    expect(res.body).toMatch(/deployments\/0\/steps/)
+    expect(res.body).not.toContain('make prep')
+  })
+})
+
+describe('preview forceServiceIds', () => {
+  it('forwards the ids to previewPlaybook and rejects bad ones', async () => {
+    r = await rig()
+    const store = new ReleaseStore({ db: r.hub.db, now: () => new Date() })
+    const rel = store.createRelease({
+      environmentId: ENV_ID, kind: 'release', status: 'ready', version: null, previousVersion: null, versionBump: 'none',
+      redeploy: true, rollbackOf: null, options: OPTIONS, triggeredBy: 'x', serviceIds: [SVC_WEB, SVC_API],
+    })
+    store.createRuns(rel.id, [{ deploymentId: DEP_WEB, deploymentName: 'web', hostId: manifest().hosts[0].id, hostLabel: 'web-1', position: 0, branch: 'main', steps: [], services: [], wholeCheckout: true } as never])
+    const seen: unknown[] = []
+    ;(r.hub.app.releases as any).service.previewPlaybook = async (_id: string, _ctx: unknown, force: unknown) => {
+      seen.push(force)
+      return { playbook: 'p', sha256: 'a'.repeat(64) }
+    }
+    const url = `/api/v1/releases/${rel.id}/playbook`
+    expect((await r.call(r.admin, 'GET', url)).statusCode).toBe(200)
+    expect((await r.call(r.admin, 'GET', `${url}?forceServiceIds=${SVC_WEB}&forceServiceIds=${SVC_API}`)).statusCode).toBe(200)
+    expect((await r.call(r.admin, 'GET', `${url}?forceServiceIds=${SVC_API}`)).statusCode).toBe(200)
+    expect(seen).toEqual([undefined, [SVC_WEB, SVC_API], [SVC_API]])
+    expect((await r.call(r.admin, 'GET', `${url}?forceServiceIds=not-an-id`)).statusCode).toBe(400)
+    expect((await r.call(r.admin, 'GET', `${url}?forceServiceIds=73333333-3333-4333-8333-333333333333`)).statusCode).toBe(400)
+    expect(seen).toHaveLength(3)
+  })
+})
+
+describe('operations: preflight and start', () => {
+  const RB_LOCK = 'b1111111-1111-4111-8111-111111111111'
+  const RB_READ = 'b2222222-2222-4222-8222-222222222222'
+  const RB_OTHER = 'b3333333-3333-4333-8333-333333333333'
+  const ENV2 = 'e2222222-2222-4222-8222-222222222222'
+  const HOST2 = 'a3333333-3333-4333-8333-333333333333'
+  const DEP2 = 'd3333333-3333-4333-8333-333333333333'
+  const SVC2 = '74444444-4444-4444-8444-444444444444'
+  const runbook = (id: string, name: string, svc: string, builtin: 'restart' | 'status') => ({
+    id, name, description: '', targetServiceIds: [svc], items: [{ type: 'builtin' as const, builtin }], params: [], lock: true, notify: false,
+  })
+  const lockOf = () => r!.hub.db.prepare('SELECT release_id FROM env_locks WHERE environment_id = ?').get(ENV_ID) as { release_id: string } | undefined
+  const operation = (lock: boolean) => ({ runbookId: RB_LOCK, name: 'restart', params: {}, readOnly: !lock, lock, targetServiceIds: [SVC_WEB] })
+  const seedOp = (lock: boolean, status: 'ready' | 'succeeded' = 'ready') => {
+    const store = new ReleaseStore({ db: r!.hub.db, now: () => new Date() })
+    const rel = store.createRelease({
+      environmentId: ENV_ID, kind: 'release', status, version: null, previousVersion: null, versionBump: 'none',
+      redeploy: true, rollbackOf: null, options: OPTIONS, triggeredBy: 'x', serviceIds: [SVC_WEB], operation: operation(lock),
+    })
+    store.createRuns(rel.id, [{ deploymentId: DEP_WEB, deploymentName: 'web', hostId: manifest().hosts[0].id, hostLabel: 'web-1', position: 0, branch: 'main', steps: [], services: [], wholeCheckout: true } as never])
+    return rel.id
+  }
+  const body = (runbookId: string, serviceIds = [SVC_WEB]) => ({ environmentId: ENV_ID, runbookId, serviceIds, params: {} })
+
+  async function setup(config = {}) {
+    r = await rig(config)
+    const m = envManifest()
+    m.runbooks = [runbook(RB_LOCK, 'restart', SVC_WEB, 'restart'), { ...runbook(RB_READ, 'status', SVC_WEB, 'status'), lock: false }]
+    expect((await r.call(r.admin, 'PUT', `/api/v1/admin/environments/${ENV_ID}`, m)).statusCode).toBe(200)
+    const m2 = manifest()
+    m2.environment = { id: ENV2, name: 'stage', protected: false, versioned: true, autoRollback: false, currentVersion: 'v1.0.0' }
+    m2.hosts = [{ ...m2.hosts[0], id: HOST2, label: 'web-2', address: '10.0.1.5', hops: [{ hostId: HOST2, label: 'web-2', address: '10.0.1.5', port: 22, username: 'deploy' }] }]
+    m2.deployments = [deployment(DEP2, 'web2', { environmentId: ENV2, hostId: HOST2 })]
+    m2.services = [{ id: SVC2, name: 'web2-svc', kind: 'service', composeService: 'web', deploymentId: DEP2, hostId: HOST2, viaHostId: null }]
+    m2.requiredSecrets = []
+    m2.runbooks = [runbook(RB_OTHER, 'other', SVC2, 'restart')]
+    expect((await r.call(r.admin, 'PUT', `/api/v1/admin/environments/${ENV2}`, m2)).statusCode).toBe(200)
+    return (r.hub.app.releases as any).service as Record<string, unknown>
+  }
+  const URL_PF = '/api/v1/releases/preflight-operation'
+
+  it('refuses a holder whose grant does not cover the target checkout', async () => {
+    const svc = await setup()
+    let called = false
+    svc.preflightOperation = async () => ((called = true), { releaseId: 'x' })
+    svc.validateEdit = async () => ({ ok: true })
+    const res = await r!.call(r!.carol, 'POST', URL_PF, body(RB_LOCK))
+    expect(res.statusCode).toBe(403)
+    expect(called).toBe(false)
+    expect(lockOf()).toBeUndefined()
+  })
+
+  it('404s for a runbook of another environment', async () => {
+    const svc = await setup()
+    svc.preflightOperation = async () => ({ releaseId: 'x' })
+    svc.validateEdit = async () => ({ ok: true })
+    expect((await r!.call(r!.admin, 'POST', URL_PF, body(RB_OTHER))).statusCode).toBe(404)
+    expect(lockOf()).toBeUndefined()
+  })
+
+  it('takes the lock for a locking runbook, binds it to the release, and frees it when the service fails', async () => {
+    const svc = await setup()
+    svc.validateEdit = async () => ({ ok: true })
+    const rel = seedOp(true)
+    svc.preflightOperation = async () => ({ releaseId: rel })
+    const ok = await r!.call(r!.admin, 'POST', URL_PF, body(RB_LOCK))
+    expect(ok.statusCode, ok.body).toBe(201)
+    expect(lockOf()).toEqual({ release_id: rel })
+    r!.hub.db.exec('DELETE FROM env_locks')
+    svc.preflightOperation = async () => {
+      expect(lockOf()).toBeDefined()
+      throw new Error('boom')
+    }
+    const bad = await r!.call(r!.admin, 'POST', URL_PF, body(RB_LOCK))
+    expect(bad.statusCode).toBeGreaterThanOrEqual(400)
+    expect(lockOf()).toBeUndefined()
+  })
+
+  it('takes no lock for a runbook that does not lock, and start does not need one', async () => {
+    const svc = await setup()
+    svc.validateEdit = async () => ({ ok: true })
+    const rel = seedOp(false)
+    svc.preflightOperation = async () => {
+      expect(lockOf()).toBeUndefined()
+      return { releaseId: rel }
+    }
+    const pf = await r!.call(r!.admin, 'POST', URL_PF, body(RB_READ))
+    expect(pf.statusCode, pf.body).toBe(201)
+    expect(lockOf()).toBeUndefined()
+    const started: string[] = []
+    svc.start = async (id: string) => void started.push(id)
+    const st = await r!.call(r!.admin, 'POST', `/api/v1/releases/${rel}/start`, {})
+    expect(st.statusCode, st.body).toBe(204)
+    expect(started).toEqual([rel])
+    // A locking operation without its lock is refused.
+    const locked = seedOp(true)
+    const no = await r!.call(r!.admin, 'POST', `/api/v1/releases/${locked}/start`, {})
+    expect(no.statusCode).toBe(409)
+  })
+
+  it('refuses start with an editedPlaybook while edits are off, before the service runs', async () => {
+    const svc = await setup()
+    let started = false
+    svc.start = async () => void (started = true)
+    const rel = seedOp(false)
+    const res = await r!.call(r!.admin, 'POST', `/api/v1/releases/${rel}/start`, { editedPlaybook: 'x' })
+    expect(res.statusCode).toBe(403)
+    expect(started).toBe(false)
+    expect(r!.hub.audit.list({ actions: ['access.denied'] }).length).toBeGreaterThan(0)
   })
 })
