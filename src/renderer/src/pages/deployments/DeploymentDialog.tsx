@@ -1,6 +1,6 @@
 import { Plus, X } from 'lucide-react'
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import { COMPOSE_AUTO, MAX_URLS } from '../../../../shared/deploy'
+import { MAX_URLS } from '../../../../shared/deploy'
 import { REPO_URL_LEGACY_WARNING, isLegacyRepoUrl } from '../../../../shared/inventory'
 import type { SecretMeta } from '../../../../shared/vault'
 import { blankForm, checkForm, formFrom, toInput, toPatch, type DeploymentForm, type FormField } from '../../deploy/form'
@@ -227,7 +227,7 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
           )}
           <div className="grid grid-cols-3 gap-3">
             <TextField label="Branch" value={form.defaultBranch} onChange={(e) => set({ defaultBranch: e.target.value })} className="font-mono" spellCheck={false} error={err('defaultBranch')} />
-            {form.composeFile === COMPOSE_AUTO ? (
+            {form.composeAuto ? (
               <TextField label="Compose file" value="Found by Compose" disabled readOnly />
             ) : (
               <TextField label="Compose file" value={form.composeFile} onChange={(e) => set({ composeFile: e.target.value })} className="font-mono" spellCheck={false} error={err('composeFile')} />
@@ -236,8 +236,8 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
           </div>
           <Switch
             label="Let Compose find files (uses docker-compose.override.yml and COMPOSE_FILE)"
-            checked={form.composeFile === COMPOSE_AUTO}
-            onChange={(on) => set({ composeFile: on ? COMPOSE_AUTO : 'docker-compose.yml' })}
+            checked={form.composeAuto}
+            onChange={(composeAuto) => set({ composeAuto })}
           />
         </Section>
 
