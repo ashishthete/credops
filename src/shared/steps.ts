@@ -36,7 +36,8 @@ export const PRE_HOOK_STEP_ID = 'pre-hook'
 export const POST_HOOK_STEP_ID = 'post-hook'
 
 export const ENV_NAME = /^[A-Z][A-Z0-9_]{0,63}$/
-const DENIED_ENV = /^(?:LD_|BASH_|GIT_|DOCKER_|COMPOSE_|OPSDECK_|SUDO_|OD_)|^(?:PATH|IFS|ENV|PS4|SHELLOPTS)$/
+// Case-sensitive: ENV_NAME is uppercase only. Names the shell, the loader or the generator's own environment read.
+const DENIED_ENV = /^(?:LD_|DYLD_|BASH_|GIT_|DOCKER_|COMPOSE_|OPSDECK_|SUDO_|OD_)|^(?:PATH|IFS|ENV|PS4|SHELLOPTS|BASHOPTS|PROMPT_COMMAND|HOME)$/
 export function deniedEnvName(name: string): boolean {
   return DENIED_ENV.test(name)
 }
@@ -169,5 +170,7 @@ export function validateStep(input: unknown, o: StepValidationOptions): Step | S
   if (typeof alsoOnRollback !== 'boolean') bad('step also-on-rollback must be true or false')
   // The tag is the last thing a release does: a failing step there cannot undo it.
   if (anchor === 'after_tag') onFailure = 'continue'
+  // Before the fetch the new commit is not on the host, so `when` would compare the old commit with itself.
+  if (anchor === 'before_fetch' && when.kind !== 'always') bad('a before_fetch step must always run (when needs the fetched commit)')
   return { ...body, onFailure: onFailure as StepBody['onFailure'], anchor: anchor as StepAnchor, alsoOnRollback: alsoOnRollback as boolean }
 }

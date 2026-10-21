@@ -6,7 +6,7 @@ import { b64, lockJson, sanitizeIdent } from '../../src/main/deploy/quote'
 import type { DeployPlan, PlanDeployment, PlanKind, PlanStep } from '../../src/main/deploy/runner'
 import { COMPOSE_AUTO, COMPOSE_FILE } from '../../src/shared/deploy'
 import { MAX_SERVICES } from '../../src/shared/services'
-import type { StepAnchor } from '../../src/shared/steps'
+import { ENV_NAME, deniedEnvName, type StepAnchor } from '../../src/shared/steps'
 import { FIX, planFixture, shellWords, stepFixture } from './deploy-helpers'
 
 type Task = Record<string, unknown> & { block?: Task[]; rescue?: Task[]; tags?: string[]; no_log?: boolean }
@@ -118,9 +118,9 @@ describe('release playbook', () => {
     const up = cmdOf(flat(ps[0].tasks).find((t) => step(t) === 'up')!)
     expect(dockerWords(up)).toEqual(['docker', 'compose', '-f', FIX.compose, 'up', '-d'])
     const pre = cmdOf(flat(ps[0].tasks).find((t) => step(t) === 'c_0')!)
-    expect(pre).toContain('P="{{ d.run }}:c_0"')
-    expect(pre).toContain('S=$(echo {{ d.steps.c_0.script_b64 | quote }} | base64 -d && printf .) || exit 2')
-    expect(pre).toContain('bash -e -c "$S"')
+    expect(pre).toContain('od_p="{{ d.run }}:c_0"')
+    expect(pre).toContain('od_s=$(echo {{ d.steps.c_0.script_b64 | quote }} | base64 -d && printf .) || exit 2')
+    expect(pre).toContain('bash -e -c "$od_s"')
     const backup = cmdOf(flat(ps[0].tasks).find((t) => step(t) === 'backup')!)
     expect(backup).not.toContain('. ./.env')
     expect(backup).not.toContain('set -a')
@@ -931,7 +931,7 @@ describe('custom steps', () => {
     expect(t0.timeout).toBe(42)
     expect(t0.when).toBe('not (od_failed | default(false))')
     expect(shellOf(t0).chdir).toBe('/srv/apps/alpha1/tools')
-    expect(shellOf(t0).cmd).toContain('P="{{ d.run }}:c_0"')
+    expect(shellOf(t0).cmd).toContain('od_p="{{ d.run }}:c_0"')
     expect(t0.become).toBe(true)
     expect(task(plan, 'c_1').become).toBe(true)
     expect(task(plan, 'c_2').become).toBeUndefined()
@@ -945,7 +945,8 @@ describe('custom steps', () => {
     const plan = withSteps([stepFixture(0, 'after_up', { onFailure: 'continue' }), stepFixture(1, 'after_up'), stepFixture(2, 'after_tag')])
     const c0 = task(plan, 'c_0')
     expect(c0.failed_when).toBe(false)
-    expect(shellOf(c0).cmd).toContain('if [ "$rc" -ne 0 ]; then echo "OD-STEP rc=$rc"; fi')
+    // on stdout, and as a stream line the log tap reads even under no_log: only the marker and rc
+    expect(shellOf(c0).cmd).toContain(`if [ "$rc" -ne 0 ]; then echo "OD-STEP rc=$rc"; printf '%s\\t%s\\n' "$od_p" "OD-STEP rc=$rc" >> "$od_l"; fi`)
     expect(task(plan, 'c_1').failed_when).toBeUndefined()
     expect(shellOf(task(plan, 'c_1')).cmd).not.toContain('OD-STEP')
     expect(task(plan, 'c_2').failed_when).toBe(false)
@@ -963,15 +964,20 @@ describe('custom steps', () => {
     expect(d.c_1).toEqual({ script_b64: b64('echo step 1'), base, paths_b64: b64('db/migrations/*\npackage.json') })
     expect(d.c_2).toEqual({ script_b64: b64('echo step 2') })
     const changed = shellOf(task(plan, 'c_0')).cmd
-    expect(changed).toContain('B={{ d.steps.c_0.base | quote }}')
+    expect(changed).toContain('od_b={{ d.steps.c_0.base | quote }}')
     expect(changed).toContain('rev-parse HEAD')
-    expect(changed).toContain('echo "OD-SKIP"; exit 0')
+    expect(changed).toContain(`echo "OD-SKIP"; printf '%s\\t%s\\n' "$od_p" "OD-SKIP" >> "$od_l"; exit 0`)
+    // a check git cannot make says so, and the step runs
+    expect(changed).toContain(`printf '%s\\t%s\\n' "$od_p" "when check unavailable, running step" >> "$od_l"`)
+    // dep1 runs docker under sudo, where git needs the repo marked safe
+    expect(changed).toContain('git -c safe.directory={{ d.repo | quote }} -C {{ d.repo | quote }} rev-parse HEAD')
     const paths = shellOf(task(plan, 'c_1')).cmd
     expect(paths).toContain('echo {{ d.steps.c_1.paths_b64 | quote }} | base64 -d')
-    expect(paths).toContain('a+=(":(glob)$g")')
-    expect(paths).toContain('diff --quiet "$B" HEAD -- "${a[@]}"; then echo "OD-SKIP"; exit 0; fi')
-    // the skip check runs before the stream log, so the marker reaches stdout
-    expect(paths.indexOf('OD-SKIP')).toBeLessThan(paths.indexOf('stream.log'))
+    expect(paths).toContain('od_a+=(":(glob)$od_g")')
+    expect(paths).toContain('diff --quiet "$od_b" HEAD -- "${od_a[@]}"; then echo "OD-SKIP";')
+    // the skip check runs once the log is set up and before the body, outside the streamed subshell
+    expect(paths.indexOf('od_l=')).toBeLessThan(paths.indexOf('OD-SKIP'))
+    expect(paths.indexOf('OD-SKIP')).toBeLessThan(paths.indexOf('\n(\n'))
     expect(JSON.stringify(dep1(plan))).not.toContain('db/migrations')
     expect(shellOf(task(plan, 'c_2')).cmd).not.toContain('OD-SKIP')
     // no base: the step always counts as changed
@@ -1010,17 +1016,17 @@ describe('custom steps', () => {
     // a step name or env name appears only in its stdin line
     for (const name of ['API_TOKEN', 'DB_PASSWORD', 'OD_PARAM_REGION']) expect(raw.split(name).length - 1, name).toBe(1)
     const c1 = shellOf(task(plan, 'c_1')).cmd
-    expect(dockerWords(c1.slice(c1.lastIndexOf('docker compose')))).toEqual(['docker', 'compose', '-f', FIX.compose, 'exec', '-T', '${E[@]}', 'api', 'sh', '-c', '$S'])
+    expect(dockerWords(c1.slice(c1.lastIndexOf('docker compose')))).toEqual(['docker', 'compose', '-f', FIX.compose, 'exec', '-T', '${od_e[@]}', 'api', 'sh', '-c', '$od_s'])
     expect(c1).not.toMatch(/\| *docker/)
     // a step with params only is not hidden from the log: no secret flows through it
     expect(task(plan, 'c_2').no_log).toBeUndefined()
-    expect(shellOf(task(plan, 'c_2')).cmd).toContain('export "$k=${x%.}"')
+    expect(shellOf(task(plan, 'c_2')).cmd).toContain('export "$od_k=${od_x%.}"')
   })
 
   it('every step body parses with bash -n (parse only, nothing runs)', () => {
     const plan = secretPlan()
     plan.deployments[0].steps.push(
-      stepFixture(3, 'before_fetch', { onFailure: 'continue', when: { kind: 'changed' } }),
+      stepFixture(3, 'after_build', { onFailure: 'continue', when: { kind: 'changed' } }),
       stepFixture(4, 'after_checkout', { when: { kind: 'paths', paths: ['a/**', 'b.txt'] } }),
     )
     plan.deployments[0].whenBase = 'a'.repeat(40)
@@ -1036,6 +1042,51 @@ describe('custom steps', () => {
       }
       expect(generatePlaybook(p).replace(/\{\{[^}]*\}\}/g, '')).not.toMatch(/\{[%#]/)
     }
+  })
+
+  it('no variable the generator sets in a step body can be a step env name (a secret named E or S stays out of argv)', () => {
+    const plan = secretPlan()
+    plan.deployments[0].steps[1].secretKeys = [{ envName: 'E', key: 'step_1_1' }, { envName: 'S', key: 'step_1_0' }]
+    plan.deployments[0].steps[1].step.secrets = [{ envName: 'E', secretId: 'sec-8' }, { envName: 'S', secretId: 'sec-9' }]
+    plan.deployments[0].steps.push(stepFixture(3, 'after_build', { onFailure: 'continue', when: { kind: 'paths', paths: ['a/*'] } }), stepFixture(4, 'after_checkout', { when: { kind: 'changed' } }))
+    plan.deployments[0].whenBase = 'a'.repeat(40)
+    const bodies = flat(plays(plan)[0].tasks).filter((t) => /^c_\d+$/.test(step(t))).map(cmdOf)
+    expect(bodies).toHaveLength(5)
+    for (const cmd of bodies) {
+      // assignments (`x=`, `x+=`, `IFS= read`), read targets and export targets other than the reader's own "$od_k"
+      const assigned = new Set([
+        ...[...cmd.matchAll(/(?:^|[\s;(])([A-Za-z_][A-Za-z0-9_]*)\+?=/gm)].map((m) => m[1]),
+        ...[...cmd.matchAll(/\bread -r ([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]),
+      ])
+      expect(assigned.size).toBeGreaterThan(3)
+      for (const v of assigned) expect(ENV_NAME.test(v) && !deniedEnvName(v), `${v} in ${cmd}`).toBe(false)
+    }
+    const c1 = shellOf(task(plan, 'c_1'))
+    expect(c1.stdin).toBe('E={{ s.step_1_1 }}\nS={{ s.step_1_0 }}\n')
+    expect(c1.cmd).toContain('"${od_e[@]}" api sh -c "$od_s"')
+    expect(c1.cmd).not.toMatch(/\$\{?[ES]\b/)
+  })
+
+  it('a no_log step still reports OD-SKIP and OD-STEP as stream lines, with no value in them', () => {
+    const plan = secretPlan()
+    plan.deployments[0].steps[0].step.onFailure = 'continue'
+    plan.deployments[0].steps[0].step.when = { kind: 'changed' }
+    plan.deployments[0].whenBase = 'a'.repeat(40)
+    const t = task(plan, 'c_0')
+    expect(t.no_log).toBe(true)
+    const lines = cmdOf(t).split('\n').filter((l) => l.includes('>> "$od_l"') && !l.includes('PIPESTATUS'))
+    expect(lines.length).toBe(3)
+    for (const l of lines) {
+      const printed = [...l.matchAll(/printf '%s\\t%s\\n' "\$od_p" "([^"]*)" >> "\$od_l"/g)].map((m) => m[1])
+      expect(printed.length).toBe(1)
+      expect(['OD-SKIP', 'OD-STEP rc=$rc', 'when check unavailable, running step']).toContain(printed[0])
+    }
+  })
+
+  it('rejects a when other than always at before_fetch, where the new commit is not fetched yet', () => {
+    const plan = withSteps([stepFixture(0, 'before_fetch', { when: { kind: 'changed' } })], {}, { whenBase: 'a'.repeat(40) })
+    expect(() => generatePlaybook(plan)).toThrow(/before_fetch/)
+    expect(() => generatePlaybook(withSteps([stepFixture(0, 'before_fetch')]))).not.toThrow()
   })
 
   it('rejects step data the playbook could not carry safely', () => {

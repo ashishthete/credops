@@ -44,6 +44,8 @@ describe('masking release text in main', () => {
     const out = maskEvents(raw, [SECRET]).map((e) => (e as { line: string }).line)
     expect(out).toEqual(['‹redacted› ‹redacted›', '‹redacted›', 'token=‹redacted›'])
     for (const l of out) expect(l).not.toContain(b(SECRET).slice(0, 8))
+    // a 5-byte secret still has its full encodings masked (8 characters), though its prefix is too short
+    expect(maskEvents(at([{ type: 'log', stepId: 'r1:c_0', hostId: 'h1', stream: 'out', line: `x ${b('k3y99')} ${b('k3y99\n')}` }]), ['k3y99']).map((e) => (e as { line: string }).line)).toEqual(['x ‹redacted› ‹redacted›'])
     // a short secret has no base64 form worth masking, and plain text stays as it was
     expect(maskEvents(at([{ type: 'log', stepId: 'r1:c_0', hostId: 'h1', stream: 'out', line: `x ${b('pin')}` }]), ['pin']).map((e) => (e as { line: string }).line)).toEqual([`x ${b('pin')}`])
   })

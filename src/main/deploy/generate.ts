@@ -132,7 +132,9 @@ function stepsRun(kind: 'release' | 'rollback', d: PlanDeployment): PlanStep[] {
     need(STEP_KEY.test(p.key) && !keys.has(p.key), 'step key')
     keys.add(p.key)
     need(p.anchor !== null && STEP_ANCHORS.includes(p.anchor), 'step anchor')
-    // the same rules as the step editor; the secrets a step may use were resolved into secretKeys already
+    need(p.anchor !== 'before_fetch' || p.step.when.kind === 'always', 'when at before_fetch')
+    // The editor's rules. The secret ids and service passed here are the step's own, so those two checks are no-ops:
+    // the real guards are checkPlan (secretRefs) and checkComposeServices.
     validateStep(p.step, { allowedSecretIds: new Set(p.step.secrets.map((x) => x.secretId)), serviceNames: p.step.service === null ? [] : [p.step.service], body: true })
     if (p.step.run === 'compose-exec') checkComposeServices([p.step.service ?? ''])
     const names = new Set<string>()
@@ -256,7 +258,7 @@ const LOG_SETUP = [
  * read loop: no GNU sed -u). The exit code is the body's. On failure the step's own last 40 lines are
  * printed so the failure carries context; `post` runs only on success, outside the log.
  */
-function streamed(kind: string, body: string, o: { pre?: string; post?: string; fail?: string } = {}): string {
+function streamed(kind: string, body: string, o: { pre?: string; post?: string } = {}): string {
   return [
     ...(o.pre ? [o.pre] : []),
     LOG_SETUP,
@@ -265,7 +267,6 @@ function streamed(kind: string, body: string, o: { pre?: string; post?: string; 
     body,
     `) 2>&1 | while IFS= read -r l || [ -n "$l" ]; do printf '%s\\t%s\\n' "$P" "$l"; done >> "$L"; rc=\${PIPESTATUS[0]}`,
     `if [ "$rc" -ne 0 ]; then grep -F "$P"$'\\t' "$L" | tail -n 40; fi`,
-    ...(o.fail ? [`if [ "$rc" -ne 0 ]; then ${o.fail}; fi`] : []),
     ...(o.post ? [`if [ "$rc" -eq 0 ]; then ${o.post}; fi`] : []),
     'exit "$rc"',
   ].join('\n')
@@ -363,52 +364,96 @@ const taskEnv = (d: PlanDeployment): Task => envTask('env', d)
 
 const composeOf = (d: PlanDeployment) => ({ composeFile: d.composeFile, composeProject: d.composeProject })
 
+/*
+ * Custom step text. Every shell variable the generator sets here is lowercase (`od_*`, `rc`): a step's env names
+ * pass ENV_NAME, which is uppercase only, so a secret named `E` or `P` can never overwrite one of them.
+ */
+
+/** Appends one line to the step's own stream lines, which the log tap reads whatever no_log is (markers only, never a value). */
+const streamLine = (text: string): string => `printf '%s\\t%s\\n' "$od_p" "${text}" >> "$od_l"`
+
 /**
  * Reads the step's `NAME=<base64>` stdin lines into its environment (and `-e NAME` for compose exec, so the
  * value never reaches an argv). The names were checked at generate time; the shell checks them again.
  */
 const STEP_ENV = [
-  'E=()',
-  'while IFS= read -r l || [ -n "$l" ]; do',
-  '  k="${l%%=*}"',
-  '  case "$k" in [A-Z]*) ;; *) exit 2;; esac',
-  '  case "$k" in *[!A-Z0-9_]*) exit 2;; esac',
-  '  x=$(printf \'%s\' "${l#*=}" | base64 -d && printf .) || exit 2',
-  '  export "$k=${x%.}"',
-  '  E+=(-e "$k")',
+  'od_e=()',
+  'while IFS= read -r od_l1 || [ -n "$od_l1" ]; do',
+  '  od_k="${od_l1%%=*}"',
+  '  case "$od_k" in [A-Z]*) ;; *) exit 2;; esac',
+  '  case "$od_k" in *[!A-Z0-9_]*) exit 2;; esac',
+  '  od_x=$(printf \'%s\' "${od_l1#*=}" | base64 -d && printf .) || exit 2',
+  '  export "$od_k=${od_x%.}"',
+  '  od_e+=(-e "$od_k")',
   'done',
+  'unset od_l1 od_k od_x',
 ].join('\n')
 
 /**
- * Prints OD-SKIP and ends the task when `when` finds nothing changed since the base commit. No base, or a base
- * the repo does not have, counts as changed. Runs outside the stream log, so the marker reaches the translator.
+ * Prints OD-SKIP (to stdout and to the stream lines, so a no_log step still shows it) and ends the task when `when`
+ * finds nothing changed since the base commit. No base counts as changed; a check git cannot make says so and runs.
  * No `${#...}` here: `{#` opens a Jinja comment.
  */
-function whenCheck(p: PlanStep): string | undefined {
+function whenCheck(p: PlanStep, become: boolean): string | undefined {
   const w = p.step.when
   if (w.kind === 'always') return undefined
   const ref = `d.steps.${p.key}`
-  const G = 'git -C {{ d.repo | quote }}'
+  // under sudo, git refuses a repo another user owns unless told it is safe
+  const g = `git ${become ? '-c safe.directory={{ d.repo | quote }} ' : ''}-C {{ d.repo | quote }}`
+  const skip = `echo "OD-SKIP"; ${streamLine('OD-SKIP')}; exit 0`
   const test =
     w.kind === 'changed'
-      ? [`  if [ "$(${G} rev-parse HEAD 2>/dev/null)" = "$B" ]; then echo "OD-SKIP"; exit 0; fi`]
+      ? [`    if [ "$od_h" = "$od_b" ]; then ${skip}; fi`]
       : [
-          '  a=()',
-          `  while IFS= read -r g; do [ -n "$g" ] && a+=(":(glob)$g"); done < <(echo {{ ${ref}.paths_b64 | quote }} | base64 -d)`,
-          `  if [ -n "\${a[*]}" ] && ${G} diff --quiet "$B" HEAD -- "\${a[@]}"; then echo "OD-SKIP"; exit 0; fi`,
+          '    od_a=()',
+          `    while IFS= read -r od_g; do [ -n "$od_g" ] && od_a+=(":(glob)$od_g"); done < <(echo {{ ${ref}.paths_b64 | quote }} | base64 -d)`,
+          `    if [ -n "\${od_a[*]}" ] && ${g} diff --quiet "$od_b" HEAD -- "\${od_a[@]}"; then ${skip}; fi`,
         ]
-  return [`B={{ ${ref}.base | quote }}`, `if [ -n "$B" ] && ${G} cat-file -e "$B^{commit}" 2>/dev/null; then`, ...test, 'fi'].join('\n')
+  return [
+    `od_b={{ ${ref}.base | quote }}`,
+    'if [ -n "$od_b" ]; then',
+    `  if ${g} cat-file -e "$od_b^{commit}" 2>/dev/null && od_h=$(${g} rev-parse HEAD 2>/dev/null); then`,
+    ...test,
+    '  else',
+    `    echo "when check unavailable, running step"; ${streamLine('when check unavailable, running step')}`,
+    '  fi',
+    'fi',
+  ].join('\n')
 }
 
-/** A custom step: streamed like build, with its own kind `c_<n>`. `continue` never fails the host and reports OD-STEP. */
+/**
+ * streamed() for a custom step, with lowercase names: output goes to stream.log as `<run>:c_<n>\t` lines. The
+ * `when` check runs after the log is set up and before the body. A `continue` failure reports OD-STEP on stdout
+ * and as a stream line.
+ */
+function stepStreamed(key: string, body: string, o: { pre?: string; cont: boolean }): string {
+  return [
+    'od_u="${SUDO_USER:-}"',
+    'if [ -n "$od_u" ]; then od_hm=$(awk -F: -v u="$od_u" \'$1==u {print $6; exit}\' /etc/passwd 2>/dev/null); fi',
+    'od_hm="${od_hm:-$HOME}"',
+    `od_l="$od_hm/${RUNS_SUBDIR}/{{ od.rel }}/stream.log"`,
+    'umask 022',
+    `od_p="{{ d.run }}:${key}"`,
+    ...(o.pre ? [o.pre] : []),
+    '(',
+    body,
+    `) 2>&1 | while IFS= read -r od_l1 || [ -n "$od_l1" ]; do printf '%s\\t%s\\n' "$od_p" "$od_l1"; done >> "$od_l"; rc=\${PIPESTATUS[0]}`,
+    `if [ "$rc" -ne 0 ]; then grep -F "$od_p"$'\\t' "$od_l" | tail -n 40; fi`,
+    ...(o.cont ? [`if [ "$rc" -ne 0 ]; then echo "OD-STEP rc=$rc"; ${streamLine('OD-STEP rc=$rc')}; fi`] : []),
+    'exit "$rc"',
+  ].join('\n')
+}
+
+/** A custom step, with its own kind `c_<n>`. `continue` never fails the host and reports OD-STEP. */
 function stepTask(d: PlanDeployment, p: PlanStep, anchor: StepAnchor): Task {
   const s = p.step
   const env = p.secretKeys.length + p.paramKeys.length > 0
-  const script = `S=$(echo {{ d.steps.${p.key}.script_b64 | quote }} | base64 -d && printf .) || exit 2\nS="\${S%.}"`
+  const become = s.sudo === 'docker' ? becomes(d) : s.sudo === 'yes'
+  const script = `od_s=$(echo {{ d.steps.${p.key}.script_b64 | quote }} | base64 -d && printf .) || exit 2\nod_s="\${od_s%.}"`
   const run =
     s.run === 'compose-exec'
-      ? `${composeCommand(composeOf(d), ['exec', '-T'])}${env ? ' "${E[@]}"' : ''} ${shJoin(checkComposeServices([s.service ?? '']))} sh -c "$S"`
-      : 'bash -e -c "$S"'
+      ? `${composeCommand(composeOf(d), ['exec', '-T'])}${env ? ' "${od_e[@]}"' : ''} ${shJoin(checkComposeServices([s.service ?? '']))} sh -c "$od_s"`
+      : 'bash -e -c "$od_s"'
   const body = [...(env ? [STEP_ENV] : []), script, run].join('\n')
   // An after_tag step cannot fail the release: the tag is already pushed (validateStep forces this for a saved step too).
   const cont = s.onFailure === 'continue' || anchor === 'after_tag'
@@ -416,10 +461,10 @@ function stepTask(d: PlanDeployment, p: PlanStep, anchor: StepAnchor): Task {
     ...p.secretKeys.map((x) => `${x.envName}={{ s.${x.key} }}`),
     ...p.paramKeys.map((x, i) => `${x.envName}={{ d.steps.${p.key}.params[${i}] }}`),
   ]
-  return sh(`${p.key} ${sanitizeIdent(d.name)}`, p.key, runOf(d), streamed(p.key, body, { pre: whenCheck(p), fail: cont ? 'echo "OD-STEP rc=$rc"' : undefined }), {
+  return sh(`${p.key} ${sanitizeIdent(d.name)}`, p.key, runOf(d), stepStreamed(p.key, body, { pre: whenCheck(p, become), cont }), {
     timeout: s.timeoutSec,
     chdir: s.cwd ?? IN_REPO,
-    become: s.sudo === 'docker' ? becomes(d) : s.sudo === 'yes',
+    become,
     ...(env && { stdin: `${stdin.join('\n')}\n` }),
     noLog: p.secretKeys.length > 0,
     failedWhen: cont ? false : undefined,

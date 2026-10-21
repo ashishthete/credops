@@ -28,14 +28,15 @@ function withJsonForms(secrets: readonly string[]): string[] {
 /**
  * A step's output can carry a secret as base64 (`echo "$TOKEN" | base64`). Base64 at offset 0 is stable up to the
  * last whole 3-byte group, so that prefix is masked wherever it appears, with the full encodings (with and without a
- * trailing newline) masked first. A prefix shorter than 8 characters would also match unrelated text, so is left out.
+ * trailing newline) masked first. A form shorter than 8 characters would also match unrelated text, so is left out.
+ * An encoding at offset 1 or 2 (`echo "x=$T" | base64`) is not caught: this is best effort.
  */
 function withBase64Forms(secrets: readonly string[]): string[] {
   return secrets.flatMap((s) => {
     const bytes = Buffer.from(s, 'utf8')
     const prefix = bytes.subarray(0, bytes.length - (bytes.length % 3)).toString('base64')
-    if (prefix.length < 8) return [s]
-    return [s, bytes.toString('base64'), Buffer.from(`${s}\n`, 'utf8').toString('base64'), prefix]
+    const forms = [bytes.toString('base64'), Buffer.from(`${s}\n`, 'utf8').toString('base64'), prefix]
+    return [s, ...forms.filter((f) => f.length >= 8)]
   })
 }
 
