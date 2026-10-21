@@ -3,7 +3,7 @@ import { addressSourceLabel, identityChoices, jumpHostChoices, sourceLabel } fro
 import { buildTree, moveFocus, selectionFromKey } from '../../src/renderer/src/inventory/tree'
 import type { InventoryData } from '../../src/renderer/src/inventory/store'
 import type { IdentityMeta } from '../../src/shared/vault'
-import { defaultVault, environment, host, product } from './helpers'
+import { defaultVault, environment, host, product, REGION } from './helpers'
 
 const data = (): InventoryData => ({
   products: [
@@ -33,12 +33,12 @@ describe('inventory tree', () => {
     const d = data()
     const rows = buildTree(d, all)
     expect(rows.map((r) => r.label)).toEqual([
-      'Acme', 'analytics-db', HINT, 'prod', 'bastion', 'web-1', 'Essentials', 'Unassigned', 'orphan',
+      'Acme', 'analytics-db', HINT, 'prod', 'bastion', 'web-1', 'Essentials', 'Unassigned hosts', 'orphan',
     ])
   })
 
   it('collapsed hides children', () => {
-    expect(buildTree(data(), new Set()).map((r) => r.label)).toEqual(['Acme', 'Essentials', 'Unassigned'])
+    expect(buildTree(data(), new Set()).map((r) => r.label)).toEqual(['Acme', 'Essentials', 'Unassigned hosts'])
   })
 
   it('keyboard moves', () => {
@@ -50,6 +50,26 @@ describe('inventory tree', () => {
     expect(moveFocus(rows, 'p:p1/e:prod/h:web', 'ArrowLeft')).toEqual({ focus: 'p:p1/e:prod' })
     expect(moveFocus(rows, 'p:p1/e:prod', 'Home').focus).toBe('p:p1')
     expect(moveFocus(rows, 'p:p1', 'End').focus).toBe('u/h:orph')
+  })
+
+  it('host rows carry a region only when their environment spans several', () => {
+    const one = buildTree({ ...data(), regions: [REGION] }, all)
+    expect(one.filter((r) => r.region)).toEqual([])
+    const us = { ...REGION, id: 'region-2', code: 'us-east-1', displayName: 'US East' }
+    const d = data()
+    const split = buildTree({ ...d, regions: [REGION, us], hosts: d.hosts.map((h) => (h.id === 'bast' ? { ...h, regionId: us.id } : h)) }, all)
+    expect(split.filter((r) => r.region).map((r) => [r.label, r.region!.code])).toEqual([
+      ['bastion', 'us-east-1'],
+      ['web-1', 'test-1'],
+    ])
+    // The loose host isn't in an environment, so it never shows one.
+    expect(split.find((r) => r.label === 'orphan')!.region).toBeUndefined()
+  })
+
+  it('each environment shows once, under its product', () => {
+    const d = data()
+    const rows = buildTree({ ...d, products: d.products.map((p) => ({ ...p, environmentIds: ['prod'] })) }, all)
+    expect(rows.filter((r) => r.label === 'prod')).toHaveLength(1)
   })
 
   it('maps keys to selections', () => {

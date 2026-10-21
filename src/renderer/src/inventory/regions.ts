@@ -1,5 +1,5 @@
-import type { RegionMeta, RegionRef } from '../../../shared/inventory'
-import { environmentRegions, hostRegions, regionRefs } from '../../../shared/regions'
+import type { HostMeta, RegionMeta, RegionRef } from '../../../shared/inventory'
+import { environmentRegions, hostRegions, regionHint, regionRefs } from '../../../shared/regions'
 import type { DeploymentMeta } from '../../../shared/deploy'
 import type { ServiceMeta } from '../../../shared/services'
 import type { InventoryData } from './store'
@@ -42,4 +42,28 @@ export function hostsByRegion<H extends { label: string; regionId: string }>(
   return [...groups.entries()]
     .map(([id, hs]) => ({ region: regionById(regions, id), hosts: [...hs].sort((a, b) => a.label.localeCompare(b.label)) }))
     .sort((a, b) => (a.region?.code ?? '').localeCompare(b.region?.code ?? ''))
+}
+
+const listed = (codes: string[]) => (codes.length < 2 ? codes.join('') : `${codes.slice(0, -1).join(', ')} and ${codes.at(-1)}`)
+
+/**
+ * The soft hint for `host` joining an environment, in words: "prod's hosts are all in eu-west-1; app-us-1 is in
+ * us-east-1." Null when the host's region is already one of the environment's, or the environment has no hosts yet.
+ * The host itself doesn't count as a member, so this reads the same before and after it joins.
+ */
+export function regionHintText(
+  data: Pick<InventoryData, 'hosts' | 'regions' | 'environments'>,
+  envId: string,
+  host: Pick<HostMeta, 'id' | 'label' | 'regionId'>,
+  checkouts: readonly Pick<DeploymentMeta, 'environmentId' | 'hostId'>[] = [],
+  services: readonly ServiceMeta[] = [],
+): string | null {
+  const env = data.environments.find((e) => e.id === envId)
+  if (!env) return null
+  const without = { ...env, hosts: env.hosts.filter((m) => m.hostId !== host.id) }
+  const envRegions = regionRefs(environmentRegions(hostRegions(data.hosts), without, checkouts, services), data.regions)
+  if (!regionHint(envRegions.map((r) => r.id), host.regionId)) return null
+  const codes = envRegions.map((r) => r.code)
+  const own = regionById(data.regions, host.regionId)?.code ?? 'another region'
+  return `${env.name}'s hosts are ${codes.length === 1 ? 'all ' : ''}in ${listed(codes)}; ${host.label} is in ${own}.`
 }
