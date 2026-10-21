@@ -281,6 +281,64 @@ describe('hub live feed', () => {
     expect(seqs(pushed.events)).toEqual([1, 2, 3, 4])
   })
 
+  it('a retried release is live again: its events and terminal state are shown and notified', async () => {
+    const upTo = (n: number) => Array.from({ length: n }, (_, i) => ev(REL, i + 1))
+    const log = new Map([[REL, upTo(2)]])
+    const { base } = await start({
+      log,
+      active: () => [],
+      live: [
+        async (res) => {
+          res.write(frame(batch(REL, 1, 2)))
+          res.write(frame({ type: 'release.state', summary: summary(REL, 'failed') }))
+          await new Promise((r) => setTimeout(r, 40))
+          // retry-version: the same release id runs again and its log grows.
+          log.set(REL, upTo(6))
+          res.write(frame({ type: 'release.state', summary: summary(REL, 'running') }))
+          res.write(frame(batch(REL, 3, 6)))
+          res.write(frame({ type: 'release.state', summary: summary(REL, 'succeeded') }))
+        },
+      ],
+    })
+    const { feed, pushed, shown } = make(base)
+    feed.start()
+    await vi.waitFor(() => expect(pushed.states.map((s) => s.status)).toEqual(['failed', 'running', 'succeeded']))
+    await feed.idle()
+    expect(seqs(pushed.events)).toEqual([1, 2, 3, 4, 5, 6])
+    // Each terminal state of the person's own release notifies once.
+    expect(shown).toHaveLength(2)
+  })
+
+  it('a retry that starts while the stream is down is caught up without duplicates', async () => {
+    const upTo = (n: number) => Array.from({ length: n }, (_, i) => ev(REL, i + 1))
+    const log = new Map([[REL, upTo(4)]])
+    let running = false
+    const { base } = await start({
+      log,
+      active: () => (running ? [summary(REL, 'running')] : []),
+      live: [
+        async (res) => {
+          res.write(frame(batch(REL, 1, 2)))
+          // The failed state backfills 3-4 from the Hub's log.
+          res.write(frame({ type: 'release.state', summary: summary(REL, 'failed') }))
+          await new Promise((r) => setTimeout(r, 40))
+          log.set(REL, upTo(6))
+          running = true
+          res.destroy()
+        },
+        (res) => {
+          res.write(frame(batch(REL, 5, 6)))
+          res.write(frame({ type: 'release.state', summary: summary(REL, 'succeeded') }))
+        },
+      ],
+    })
+    const { feed, pushed } = make(base)
+    feed.start()
+    await vi.waitFor(() => expect(pushed.states.map((s) => s.status)).toEqual(['failed', 'running', 'succeeded']))
+    await feed.idle()
+    expect(seqs(pushed.events)).toEqual([1, 2, 3, 4, 5, 6])
+  })
+
   it('a terminal state for a release this client never tracked fetches no events', async () => {
     const log = new Map([[OTHER, Array.from({ length: 50 }, (_, i) => ev(OTHER, i + 1))]])
     const { base, seen } = await start({

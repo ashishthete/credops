@@ -78,8 +78,8 @@ export class LiveFeed {
   private ctl: AbortController | null = null
   private readonly last = new Map<string, number>()
   private readonly notified = new Set<string>()
-  /** Releases whose terminal state was seen (capped): their late events are dropped, not pushed twice. */
-  private readonly finished = new Set<string>()
+  /** Releases whose terminal state was seen (capped), with the last seq shown: late events are dropped, and a retry resumes from that seq. */
+  private readonly finished = new Map<string, number | null>()
   private readonly listeners = new Set<(batch: RunEvent[]) => void>()
   private chain: Promise<void> = Promise.resolve()
 
@@ -189,10 +189,11 @@ export class LiveFeed {
 
   /** A finished release: no catch-up later, and events straggling in behind its terminal state are ignored. */
   private finish(id: string): void {
+    const seq = this.last.get(id) ?? null
     this.last.delete(id)
     this.finished.delete(id)
-    this.finished.add(id)
-    if (this.finished.size > MAX_TRACKED) this.finished.delete(this.finished.values().next().value as string)
+    this.finished.set(id, seq)
+    if (this.finished.size > MAX_TRACKED) this.finished.delete(this.finished.keys().next().value as string)
   }
 
   private gone(err: unknown): boolean {
@@ -301,7 +302,17 @@ export class LiveFeed {
   private state(s: ReleaseSummary): void {
     this.d.track?.(s.id)
     this.d.push.state(s)
-    if (!TERMINAL.has(s.status) || this.notified.has(s.id) || !this.d.isMine(s)) return
+    if (!TERMINAL.has(s.status)) {
+      // The same release running again (retry-version): it is live, and may notify, once more.
+      this.notified.delete(s.id)
+      if (this.finished.has(s.id)) {
+        const seq = this.finished.get(s.id)
+        this.finished.delete(s.id)
+        if (seq != null) this.last.set(s.id, seq)
+      }
+      return
+    }
+    if (this.notified.has(s.id) || !this.d.isMine(s)) return
     this.notified.add(s.id)
     if (this.notified.size > MAX_TRACKED) this.notified.delete(this.notified.values().next().value as string)
     this.d.notifier.show(this.facts(s), `/deployments/release/${s.id}`)
