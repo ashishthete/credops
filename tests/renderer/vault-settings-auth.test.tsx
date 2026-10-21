@@ -8,10 +8,11 @@ import { clearToasts, Toaster } from '../../src/renderer/src/ui/Toaster'
 import { signOutRequest, useAccountCommands } from '../../src/renderer/src/vault/account'
 import { SignInBanner } from '../../src/renderer/src/vault/SignInBanner'
 import { vaultStatusStore } from '../../src/renderer/src/vault/status'
+import { cancelUnlock } from '../../src/renderer/src/vault/unlock'
 import { openVaultSettings, VaultSettingsDialog } from '../../src/renderer/src/vault/VaultSettingsDialog'
 import type { HubStatus } from '../../src/shared/hub'
 import type { SsoState } from '../../src/shared/sso'
-import type { VaultStatus } from '../../src/shared/vault'
+import { VAULT_LOCKED, type VaultStatus } from '../../src/shared/vault'
 import { mockBridge, vaultStatus } from './helpers'
 
 const UPN = 'alice@contoso.com'
@@ -161,16 +162,24 @@ describe('unlock methods', () => {
     expect(await screen.findByText('PIN removed')).toBeInTheDocument()
   })
 
-  it('remove PIN shows no success when the unlock it needed was cancelled', async () => {
+  it('remove PIN shows no success when the re-unlock it needed is cancelled', async () => {
     const user = userEvent.setup()
-    fakeVault(
+    const { state } = fakeVault(
       { hasPassword: true, quickUnlock: 'touchId', pin: { enabled: true, attemptsLeft: 5 } },
-      { 'vault:clearPin': () => Promise.reject(new Error('could not remove')) },
+      {
+        'vault:clearPin': () => {
+          state.unlocked = false
+          return Promise.reject(new Error(VAULT_LOCKED))
+        },
+      },
     )
     const dialog = await openSettings()
     await user.click(within(dialog).getByRole('button', { name: 'Remove PIN' }))
-    expect(await screen.findByText("Couldn't remove the PIN")).toBeInTheDocument()
+    await waitFor(() => expect(vaultStatusStore.get()?.unlocked).toBe(false))
+    act(() => cancelUnlock())
+    await new Promise((r) => setTimeout(r, 50))
     expect(screen.queryByText('PIN removed')).not.toBeInTheDocument()
+    expect(screen.queryByText("Couldn't remove the PIN")).not.toBeInTheDocument()
   })
 
   it('add master password calls vault:setPassword', async () => {

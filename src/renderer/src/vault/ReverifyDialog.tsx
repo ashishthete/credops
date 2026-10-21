@@ -104,7 +104,7 @@ export function ProofForm({
 }: Omit<ReverifyDialogProps, 'open' | 'title' | 'description' | 'status'> & { status: VaultStatus; onWrong: () => void }) {
   const methods = offered ?? proofMethods(status)
   const [method, setMethod] = useState<ProofMethod | null>(() =>
-    status.lastMethod === 'pin' && status.pin.enabled ? 'pin' : (methods[0] ?? null),
+    status.lastMethod === 'pin' && methods.includes('pin') ? 'pin' : (methods[0] ?? null),
   )
   const inputRef = useRef<HTMLInputElement>(null)
   const [hasInput, setHasInput] = useState(false)

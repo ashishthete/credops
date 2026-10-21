@@ -18,6 +18,7 @@ import {
   SetPinDialog,
   TouchIdDialog,
 } from './UnlockMethodDialogs'
+import { factorGuard } from './factorGuard'
 import { withUnlock } from './unlock'
 import { useSecondsLeft } from './UnlockCard'
 
@@ -123,10 +124,7 @@ function SettingsBody({ status, onWrong }: { status: VaultStatus | null; onWrong
   // Mirrors main's keepsAWayIn: Touch ID or a PIN must stay, and a master password never counts as
   // one. Main still refuses anything that slips past.
   const touchId = status?.quickUnlock === 'touchId'
-  const pin = !!status?.pin.enabled
-  const canRemovePin = touchId
-  const canTurnOffTouchId = pin
-  const canRemovePassword = pin || touchId
+  const { canRemovePin, canTurnOffTouchId, canRemovePassword } = factorGuard(status)
 
   const setQuick = async (mode: QuickUnlockMode) => {
     // Turning a way in on needs a proof; turning it off does not.
