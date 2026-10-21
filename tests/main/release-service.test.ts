@@ -7,7 +7,7 @@ import { REDACTED } from '../../src/main/security/redact'
 import type { DeployPlan } from '../../src/main/deploy/runner'
 import { ToolingError } from '../../src/main/deploy/tooling'
 import { CONFIRM_MESSAGE } from '../../src/shared/ops'
-import { BREAK_LOCK_CONFIRM_MESSAGE, DEFAULT_RELEASE_OPTIONS, PREPARE_FAILED_MESSAGE, type CommitInfo, type DeploymentMeta, type PreflightCheck, type RunEvent } from '../../src/shared/deploy'
+import { BREAK_LOCK_CONFIRM_MESSAGE, DEFAULT_RELEASE_OPTIONS, PREPARE_FAILED_MESSAGE, PREPARE_FETCH_FAILED_MESSAGE, type CommitInfo, type DeploymentMeta, type PreflightCheck, type RunEvent } from '../../src/shared/deploy'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import type { AppServiceMeta } from '../../src/shared/services'
 import { A, B, C, NOW, SECRET, dep, ready, rig, tracked, type Rig } from './release-rig'
@@ -1640,6 +1640,113 @@ describe('parallel prepare', () => {
     // every launched build is stopped by the unlock
     const plan = r.runner.call('release')
     expect(r.runner.call('unlock').killBuilds).toEqual(plan.deployments.map((x) => ({ runId: x.runId, repoPath: x.repoPath })))
+  })
+
+  it.each([
+    ['nothing checked out', false],
+    ['another checkout did', true],
+  ] as const)('a fetch that fails in prepare says the server is unchanged (%s)', async (_n, other) => {
+    const r = await rig()
+    on(r)
+    const deps = [dep(r, 'one'), dep(r, 'two')]
+    const id = await ready(r, deps)
+    r.runner.on.release = (plan, _s, emit) => {
+      const [r1, r2] = runIds(plan)
+      if (other) emit({ type: 'step.started', stepId: `${r1}:checkout`, kind: 'checkout', name: 'Checkout one', hostId: r.f.host.id, deploymentRunId: r1 })
+      emit({ type: 'step.started', stepId: `${r2}:fetch`, kind: 'fetch', name: 'Fetch two', hostId: r.f.host.id, deploymentRunId: r2 })
+      emit({ type: 'step.failed', stepId: `${r2}:fetch`, error: 'could not fetch', durationMs: 1 })
+      return { exitCode: 2, failedDeploymentRunIds: [r2], reachedCheckout: other ? [r1] : [], reachedUp: [], commits: {} }
+    }
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    const svc = tracked(r, deps[1]).map((s) => s.name).join(', ')
+    const d = r.svc.detail(id)
+    expect(d.status).toBe('failed')
+    expect(d.error).toBe(PREPARE_FETCH_FAILED_MESSAGE(svc, other))
+    expect(d.error).toContain('still on the old commit')
+    if (!other) expect(d.error).not.toContain('new commit')
+    expect(r.runner.kinds).toEqual(['preflight', 'release', 'unlock'])
+  })
+
+  it('a checkout that fails in prepare keeps the build-failed text', async () => {
+    const r = await rig()
+    on(r)
+    const deps = [dep(r, 'one')]
+    const id = await ready(r, deps)
+    r.runner.on.release = (plan, _s, emit) => {
+      const [r1] = runIds(plan)
+      emit({ type: 'step.started', stepId: `${r1}:checkout`, kind: 'checkout', name: 'Checkout one', hostId: r.f.host.id, deploymentRunId: r1 })
+      emit({ type: 'step.failed', stepId: `${r1}:checkout`, error: 'dirty tree', durationMs: 1 })
+      return { exitCode: 2, failedDeploymentRunIds: [r1], reachedCheckout: [r1], reachedUp: [], commits: { [r1]: { previous: A } } }
+    }
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).error).toBe(PREPARE_FAILED_MESSAGE(tracked(r, deps[0]).map((s) => s.name).join(', ')))
+  })
+
+  it('with auto-rollback off, a failure after up ends failed with nothing rolled back', async () => {
+    const r = await rig()
+    on(r)
+    r.f.deploys.updateSettings(r.f.staging.id, { autoRollback: false })
+    const id = await ready(r, [dep(r, 'one'), dep(r, 'two')])
+    r.runner.on.release = (plan) => {
+      const [r1, r2] = runIds(plan)
+      return { exitCode: 2, failedDeploymentRunIds: [r2], reachedCheckout: [r1, r2], reachedUp: [r1, r2], commits: { [r1]: { previous: A }, [r2]: { previous: B } } }
+    }
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    const d = r.svc.detail(id)
+    expect(d.status).toBe('failed')
+    // something went up: the reason is the step's, not the prepare text
+    expect(d.error ?? '').not.toContain('no service was restarted')
+    expect(r.runner.kinds).toEqual(['preflight', 'release', 'unlock'])
+    expect(r.runner.call('unlock').killBuilds).toHaveLength(2)
+  })
+
+  it('a vault reset mid-prepare cancels the release and the unlock still stops the builds', async () => {
+    const r = await rig()
+    on(r)
+    const g = gate()
+    r.runner.onCancel = g.open
+    r.runner.on.release = async () => {
+      await g.p
+      return { cancelled: true, exitCode: null }
+    }
+    const id = await ready(r, [dep(r, 'one'), dep(r, 'two')])
+    await r.svc.start(id, {})
+    r.svc.vaultReset()
+    await r.svc.whenIdle()
+    expect(r.runner.cancels).toHaveLength(1)
+    expect(r.runner.kinds).toEqual(['preflight', 'release', 'unlock'])
+    expect(r.svc.detail(id).status).toBe('cancelled')
+    expect(r.svc.hasActive()).toBe(false)
+    const plan = r.runner.call('release')
+    expect(r.runner.call('unlock').killBuilds).toEqual(plan.deployments.map((x) => ({ runId: x.runId, repoPath: x.repoPath })))
+  })
+
+  it('a vault reset during the auto-rollback after an up cancels it and still unlocks with the builds', async () => {
+    const r = await rig()
+    on(r)
+    const id = await ready(r, [dep(r, 'one')])
+    r.runner.on.release = (plan) => {
+      const [r1] = runIds(plan)
+      return { exitCode: 2, failedDeploymentRunIds: [r1], reachedCheckout: [r1], reachedUp: [r1], commits: { [r1]: { previous: A } } }
+    }
+    const g = gate()
+    const rolling = gate()
+    r.runner.onCancel = g.open
+    r.runner.on.rollback = async () => {
+      rolling.open()
+      await g.p
+      return { cancelled: true, exitCode: null }
+    }
+    await r.svc.start(id, {})
+    await rolling.p
+    r.svc.vaultReset()
+    await r.svc.whenIdle()
+    expect(r.runner.kinds).toEqual(['preflight', 'release', 'rollback', 'unlock'])
+    expect(r.svc.detail(id).status).not.toBe('running')
+    expect(r.runner.call('unlock').killBuilds).toHaveLength(1)
   })
 
   it('after a service went up, a failure rolls back only the runs that went up', async () => {

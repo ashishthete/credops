@@ -1072,3 +1072,20 @@ describe('parallel prepare builds', () => {
     expect(out.filter((e) => e.type !== 'log')).toEqual([])
   })
 })
+
+describe('parallel prepare build cleanup', () => {
+  it('the untagged cleanup after a poll is no step and no task row', () => {
+    const tr = new EventTranslator({ plan: planFixture({ prepare: { cap: 2 } }), secrets: () => [], now: () => NOW })
+    const tags = ['od_step=build', `od_run=${R1}`]
+    tr.feed(JSON.stringify({ event: 'task_start', name: 'build launch dep1', tags }))
+    tr.feed(JSON.stringify({ event: 'ok', host: 'od-1', task: 'build launch dep1', tags, changed: true }))
+    tr.feed(JSON.stringify({ event: 'task_start', name: 'build dep1', tags }))
+    tr.feed(JSON.stringify({ event: 'ok', host: 'od-1', task: 'build dep1', tags, changed: true, rc: 0 }))
+    const out = [
+      ...tr.feed(JSON.stringify({ event: 'task_start', name: 'build cleanup dep1', tags: [] })),
+      ...tr.feed(JSON.stringify({ event: 'ok', host: 'od-1', task: 'build cleanup dep1', tags: [], changed: false })),
+      ...tr.feed(JSON.stringify({ event: 'failed', host: 'od-1', task: 'build cleanup dep1', tags: [], ignored: true, msg: 'gone' })),
+    ]
+    expect(out.filter((e) => e.type.startsWith('step.') || e.type === 'task.done' || e.type === 'deployment.updated')).toEqual([])
+  })
+})

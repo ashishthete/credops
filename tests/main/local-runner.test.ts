@@ -269,20 +269,13 @@ describe('LocalRunner', () => {
     expect(t.fs.dirs.size).toBe(0)
   })
 
-  it('a parallel prepare release also writes async.json: each planned build, by run, host and repo, nothing secret', async () => {
+  it('a parallel prepare release writes the same run files as any release', async () => {
     const t = setup()
-    let files = new Map<string, string>()
-    t.ansible.onSpawn = () => void (files = new Map([...t.fs.files].map(([f, v]) => [f.replace(/^\/tmp\/od-t\d+\//, ''), String(v)])))
+    let seen: string[] = []
+    t.ansible.onSpawn = () => void (seen = [...t.fs.files.keys()].map((f) => f.replace(/^\/tmp\/od-t\d+\//, '')).sort())
     t.ansible.stdout = fixtureLines('release-ok.jsonl')
-    const plan = planFixture({ prepare: { cap: 2 } })
-    await t.runner.start(plan, SECRETS).done
-    expect(JSON.parse(files.get('async.json')!)).toEqual(plan.deployments.map((d) => ({ runId: d.runId, hostId: d.hostId, repoPath: d.repoPath })))
-    for (const v of Object.values(SECRETS.values)) expect(files.get('async.json')).not.toContain(v)
-    // not for another kind, nor without a prepare
-    for (const p of [planFixture({ kind: 'unlock', prepare: { cap: 2 } }), planFixture()]) {
-      await t.runner.start(p, SECRETS).done
-      expect(files.has('async.json')).toBe(false)
-    }
+    await t.runner.start(planFixture({ prepare: { cap: 2 } }), SECRETS).done
+    expect(seen).toEqual(['ansible.cfg', 'callback_plugins/opsdeck_jsonl.py', 'inventory', 'known_hosts', 'playbook.yml', 'ssh_config'])
   })
 
   it.each(['rollback', 'unlock'] as const)('%s still runs on the reachable host and reports the unreachable one failed', async (kind) => {

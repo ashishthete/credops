@@ -17,6 +17,7 @@ import {
   type DockerMode,
   PLAYBOOK_CHANGED_MESSAGE,
   PREPARE_FAILED_MESSAGE,
+  PREPARE_FETCH_FAILED_MESSAGE,
   REVIEW_EXPIRED_MESSAGE,
   REVIEW_TTL_MS,
   type PlaybookPreview,
@@ -1147,7 +1148,11 @@ export class ReleaseService {
     const info = infos.find((i) => i.run.id === run)
     if (!info) return null
     const names = info.sel.services.map((x) => x.name)
-    return PREPARE_FAILED_MESSAGE(names.length > 0 ? names.join(', ') : info.dep.name)
+    const svc = names.length > 0 ? names.join(', ') : info.dep.name
+    const checkedOut = new Set([...(out?.reachedCheckout ?? []), ...live.checkedOut])
+    // before its checkout the failed one's server is still on the old commit
+    if (!checkedOut.has(info.run.id)) return PREPARE_FETCH_FAILED_MESSAGE(svc, checkedOut.size > 0)
+    return PREPARE_FAILED_MESSAGE(svc)
   }
 
   /** The runs a rollback undoes: those that reached checkout, or with a parallel prepare only those that reached up. */

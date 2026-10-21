@@ -1480,6 +1480,65 @@ describe('parallel prepare', () => {
     }
   })
 
+  it('the unlock signals a recorded group only after checking it is still the run\'s build, on both kill paths', () => {
+    const base = planFixture({ kind: 'unlock' })
+    const [d1] = base.deployments
+    const cmd = cmdOf(plays({ ...base, killBuilds: [{ runId: d1.runId, repoPath: d1.repoPath }] })[0].tasks[0])
+    const lines = cmd.split('\n')
+    const check = lines.findIndex((l) => l.includes('ps -eo pgid=,args='))
+    expect(check).toBeGreaterThan(-1)
+    // the check: the group's members by pgid, one of them naming this run's pid file, and not the unlock's own group
+    expect(lines[check]).toContain(`awk -v g="$g" '$1 == g'`)
+    expect(lines[check]).toContain('grep -qF -- "$m"')
+    expect(lines[check]).toContain('[ "$g" != "$me" ]')
+    expect(lines[check]).toContain('ours=1')
+    expect(lines.findIndex((l) => l.includes('m="${p##*/}"'))).toBeLessThan(check)
+    // the user's kill and the sudo retry are both on the one line gated by ours
+    const kills = lines.map((l, i) => [l, i] as const).filter(([l]) => /\bkill -TERM\b/.test(l))
+    expect(kills).toHaveLength(1)
+    expect(kills[0][0]).toBe('    kill -TERM -- "-$g" 2>/dev/null || sudo -n kill -TERM -- "-$g" 2>/dev/null || true')
+    expect(lines[kills[0][1] - 1]).toBe('  if [ -n "$ours" ]; then')
+    expect(kills[0][1]).toBeGreaterThan(check)
+    expect(cmd.match(/sudo -n kill/g)).toHaveLength(1)
+    // a stale file is only removed
+    expect(lines.indexOf('  rm -f "$p" 2>/dev/null || sudo -n rm -f "$p" 2>/dev/null || true')).toBeGreaterThan(kills[0][1])
+    // the marker the check looks for is in the launch's own argv
+    expect(cmdOf(flat(plays(planFixture({ prepare: { cap: 2 } }))[0].tasks).find((t) => t.name === 'build launch dep1')!)).toContain('.git/opsdeck-build-{{ d.run }}.pid')
+  })
+
+  it('records the group from ps, else /proc, else $$, and warns in the build log when it cannot', () => {
+    const launch = flat(plays(planFixture({ prepare: { cap: 2 } }))[0].tasks).find((t) => t.name === 'build launch dep1')!
+    const lines = cmdOf(launch).split('\n')
+    const ps = lines.indexOf("g=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')")
+    const proc = lines.findIndex((l) => l.includes('/proc/$$/stat'))
+    const self = lines.indexOf(`case "$g" in ''|*[!0-9]*) g=$$;; esac`)
+    expect(ps).toBeGreaterThan(-1)
+    expect(proc).toBeGreaterThan(ps)
+    expect(self).toBeGreaterThan(proc)
+    const write = lines.findIndex((l) => l.includes(`printf '%s' "$g" > .git/opsdeck-build-{{ d.run }}.pid 2>/dev/null; then W=; fi`))
+    expect(write).toBeGreaterThan(self)
+    expect(lines.indexOf('W=1')).toBeLessThan(write)
+    const warn = lines.findIndex((l) => l.startsWith('if [ -n "$W" ]; then echo "OpsDeck warning: cancel can\'t stop this build'))
+    // inside the streamed body, so it lands in the build step's log, before compose runs
+    const stream = lines.findIndex((l) => l.startsWith('P="{{ d.run }}:build"'))
+    expect(warn).toBeGreaterThan(stream)
+    expect(warn).toBeLessThan(lines.findIndex((l) => l.includes('docker compose')))
+  })
+
+  it('cleans each polled job\'s status file whatever the poll did', () => {
+    const plan = prepPlan(2)
+    const ps = plays(plan)
+    const polls = ps[0].tasks.filter((t) => t.block?.[0]?.['ansible.builtin.async_status'])
+    expect(polls).toHaveLength(3)
+    expect(polls.map((b) => b.always)).toEqual([
+      [{ name: 'build cleanup dep1', 'ansible.builtin.async_status': { jid: '{{ od_bj_0.ansible_job_id }}', mode: 'cleanup' }, failed_when: false, timeout: 120, become: true }],
+      [{ name: 'build cleanup dep2', 'ansible.builtin.async_status': { jid: '{{ od_bj_1.ansible_job_id }}', mode: 'cleanup' }, failed_when: false, timeout: 120, become: true }],
+      [{ name: 'build cleanup dep3', 'ansible.builtin.async_status': { jid: '{{ od_bj_2.ansible_job_id }}', mode: 'cleanup' }, failed_when: false, timeout: 120 }],
+    ])
+    // the launch blocks have none
+    expect(ps[0].tasks.filter((t) => t.block && !t.block[0]?.['ansible.builtin.async_status']).every((t) => t.always === undefined)).toBe(true)
+  })
+
   it('the unlock plan stops recorded builds before it removes the lock', () => {
     const base = planFixture({ kind: 'unlock' })
     const [d1, , d3] = base.deployments

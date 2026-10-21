@@ -23,6 +23,7 @@ const fail = async (p: Promise<unknown>): Promise<DeployError> => {
   expect(e).toBeInstanceOf(DeployError)
   return e as DeployError
 }
+const runIds = (plan: DeployPlan): string[] => plan.deployments.map((d) => d.runId)
 const step = (over: Partial<Step> = {}): Step => ({
   id: 'migrate',
   name: 'migrate',
@@ -439,6 +440,43 @@ describe('release flow', () => {
     const plan = r.runner.call('release')
     expect(plan.flow?.stages.map((x) => x.kind)).toEqual(['services', 'step', 'services'])
     expect(plan.flow?.onFailure).toBe('stop-all')
+  })
+
+  it.each([false, true])('stop-all with parallel prepare: a halted sibling ends neither running nor succeeded (autoRollback %s)', async (auto) => {
+    const { r, id } = await flowRig()
+    r.f.deploys.updateSettings(r.f.staging.id, { parallelPrepare: true, autoRollback: auto })
+    r.runner.on.release = (plan, _s, emit) => {
+      const by = (n: string) => plan.deployments.find((d) => d.name === n)!.runId
+      const [be, fe] = [by('backend'), by('frontend')]
+      emit({ type: 'step.started', stepId: `${be}:up`, kind: 'up', name: 'Up backend', hostId: r.f.host.id, deploymentRunId: be })
+      emit({ type: 'step.failed', stepId: `${be}:up`, error: 'up failed', durationMs: 1 })
+      // frontend was mid-step when any_errors_fatal halted it: no failed step, no od_failed
+      emit({ type: 'step.started', stepId: `${fe}:tag`, kind: 'tag', name: 'Tag frontend', hostId: r.f.host.id, deploymentRunId: fe })
+      // reachedCheckout is the backend only: the fake marks every other reached run succeeded, as the translator does
+      // only for a run whose last step finished, which a halted sibling never does (its checkout started above)
+      emit({ type: 'deployment.updated', deploymentRunId: fe, status: 'running' })
+      emit({ type: 'step.started', stepId: `${fe}:checkout`, kind: 'checkout', name: 'Checkout frontend', hostId: r.f.host.id, deploymentRunId: fe })
+      emit({ type: 'step.done', stepId: `${fe}:checkout`, state: 'ok', durationMs: 1 })
+      return { exitCode: 2, failedDeploymentRunIds: [be], reachedCheckout: [be], reachedUp: [be], commits: Object.fromEntries(runIds(plan).map((x) => [x, { previous: A }])) }
+    }
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    const plan = r.runner.call('release')
+    expect(plan.flow?.onFailure).toBe('stop-all')
+    expect(plan.prepare).toEqual({ cap: 3 })
+    const d = r.svc.detail(id)
+    expect(d.status).toBe(auto ? 'rolled_back' : 'failed')
+    expect(d.runs.map((x) => [x.deploymentName, x.status])).toEqual([
+      ['backend', auto ? 'rolled_back' : 'failed'],
+      ['frontend', 'failed'],
+      // never started in this fake: skipped, as finish() leaves a pending run
+      ['fastapi', 'skipped'],
+    ])
+    expect(r.runner.call('unlock').killBuilds).toEqual(plan.deployments.map((x) => ({ runId: x.runId, repoPath: x.repoPath })))
+    const be = plan.deployments.find((x) => x.name === 'backend')!.runId
+    // only the run that went up is rolled back; the halted ones never did
+    if (auto) expect(runIds(r.runner.call('rollback'))).toEqual([be])
+    else expect(r.runner.kinds).not.toContain('rollback')
   })
 
   it('the review hash binds the flow order', async () => {

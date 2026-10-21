@@ -612,10 +612,18 @@ export const STEP_SECRET_UNUSED_MESSAGE = 'This step uses a secret the environme
 export const PLAYBOOK_SHA256 = /^[0-9a-f]{64}$/
 /** A release from before playbooks were stored (or one that never started). */
 export const PLAYBOOK_NOT_STORED_MESSAGE = 'Playbook not stored for this release'
-/** A release with skipped services fails before any change when origin's head is not the one its preflight saw. */
-/** A parallel prepare that failed before any service went up. */
+/** A parallel prepare that failed at or after its checkout, before any service went up. */
 export const PREPARE_FAILED_MESSAGE = (svc: string): string =>
   `Build failed for ${svc}: no service was restarted; servers are left at the new commit with the new .env; running containers are unchanged.`
+/**
+ * A parallel prepare that failed before its checkout (the fetch, a step before it), before any service went up. When
+ * other checkouts did check out, they are said to be at the new commit.
+ */
+export const PREPARE_FETCH_FAILED_MESSAGE = (svc: string, othersCheckedOut: boolean): string =>
+  othersCheckedOut
+    ? `Fetch failed for ${svc}: no service was restarted; ${svc} is unchanged and still on the old commit; other checkouts are left at the new commit with the new .env; running containers are unchanged.`
+    : `Fetch failed for ${svc}: no service was restarted; servers are unchanged and still on the old commit.`
+/** A release with skipped services fails before any change when origin's head is not the one its preflight saw. */
 export const ORIGIN_MOVED_MESSAGE = 'origin moved since preview, preview again'
 export const PLAYBOOK_CHANGED_MESSAGE = 'The playbook changed since you reviewed it. Review it again.'
 /** How long a reviewed playbook can be started from (main's `PREVIEW_TTL_MS`). */

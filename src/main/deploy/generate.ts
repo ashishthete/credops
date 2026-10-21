@@ -664,12 +664,23 @@ function taskLock(h: PlanHost): Task {
 
 /**
  * Stops the builds a parallel prepare launched on the host (each recorded its process group, `od.kill_pids`) and
- * removes their pid files, before any lock goes. A pid file that does not hold a plain number above 1 is only removed.
+ * removes their pid files, before any lock goes. A group is signalled (as the user, then with sudo) only while it is
+ * still that build's: some member's argv names the run's pid file (the launch's own shell does), and it is not this
+ * task's group. Anything else (no plain number above 1, a group gone or reused) only loses its stale pid file.
  */
 const KILL_BUILDS = [
+  "me=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')",
   "for p in {{ od.kill_pids | map('quote') | join(' ') }}; do",
   '  g=$(cat "$p" 2>/dev/null)',
-  '  case "$g" in \'\'|*[!0-9]*) ;; *) if [ "$g" -gt 1 ]; then kill -TERM -- "-$g" 2>/dev/null || sudo -n kill -TERM -- "-$g" 2>/dev/null || true; echo "stopped build process group $g"; fi;; esac',
+  '  m="${p##*/}"',
+  '  ours=',
+  '  case "$g" in \'\'|*[!0-9]*) ;; *) if [ "$g" -gt 1 ] && [ "$g" != "$me" ] && ps -eo pgid=,args= 2>/dev/null | awk -v g="$g" \'$1 == g\' | grep -qF -- "$m"; then ours=1; fi;; esac',
+  '  if [ -n "$ours" ]; then',
+  '    kill -TERM -- "-$g" 2>/dev/null || sudo -n kill -TERM -- "-$g" 2>/dev/null || true',
+  '    echo "stopped build process group $g"',
+  '  elif [ -n "$g" ]; then',
+  '    echo "build process group $g is no longer this build\'s: not stopped"',
+  '  fi',
   '  rm -f "$p" 2>/dev/null || sudo -n rm -f "$p" 2>/dev/null || true',
   'done',
 ].join('\n')
@@ -1103,14 +1114,20 @@ export function prepareSchedule(deps: readonly PlanDeployment[], cap: number): s
  */
 function taskBuildLaunch(d: PlanDeployment, n: number): Task {
   const pid = '.git/opsdeck-build-{{ d.run }}.pid'
+  const warn = `echo "OpsDeck warning: cancel can't stop this build: its process group could not be recorded in ${pid}"`
   const cmd = [
+    // the process group: from ps, else /proc (BusyBox ps has no -o pgid), else the shell's own pid
     "g=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')",
-    `case "$g" in ''|*[!0-9]*) ;; *) if [ "$g" -gt 1 ]; then printf '%s' "$g" > ${pid}; fi;; esac`,
+    "case \"$g\" in ''|*[!0-9]*) g=$(sed 's/.*) //' /proc/$$/stat 2>/dev/null | cut -d' ' -f3);; esac",
+    "case \"$g\" in ''|*[!0-9]*) g=$$;; esac",
+    // a .git that is a file (a worktree, a submodule) cannot hold it: the build goes on, with a warning in its log
+    'W=1',
+    `if [ "$g" -gt 1 ] && printf '%s' "$g" > ${pid} 2>/dev/null; then W=; fi`,
     '(',
-    streamed('build', composeCommand(composeOf(d), ['build'], d.services ?? [])),
+    streamed('build', [`if [ -n "$W" ]; then ${warn}; fi`, composeCommand(composeOf(d), ['build'], d.services ?? [])].join('\n')),
     ')',
     'rc=$?',
-    `rm -f ${pid}`,
+    `rm -f ${pid} 2>/dev/null`,
     'exit "$rc"',
   ].join('\n')
   const t = sh(`build launch ${sanitizeIdent(d.name)}`, 'build', runOf(d), cmd, { timeout: T_SHORT, chdir: IN_REPO, become: becomes(d), guarded: true })
@@ -1132,6 +1149,18 @@ function taskBuildPoll(d: PlanDeployment, n: number): Task {
   // the job's status file is the launching user's
   if (becomes(d)) t.become = true
   return { ...t, when: WHEN }
+}
+
+/** Removes the job's status file (it holds the build's failure tail) whatever the poll did; never fails. */
+function taskBuildCleanup(d: PlanDeployment, n: number): Task {
+  const t: Task = {
+    name: `build cleanup ${sanitizeIdent(d.name)}`,
+    'ansible.builtin.async_status': { jid: `{{ od_bj_${n}.ansible_job_id }}`, mode: 'cleanup' },
+    failed_when: false,
+    timeout: T_SHORT,
+  }
+  if (becomes(d)) t.become = true
+  return t
 }
 
 /** A prepare failure marks the host and lets the play go on: the gate at its end stops every host. */
@@ -1171,7 +1200,7 @@ function prepareTasks(prepare: { cap: number }, hosts: readonly PlanHost[], runs
     for (const r of here) tasks.push(blk(r, onHost(r.host), [...r.slots.slice(0, at(r)).flatMap((x) => flowSlotTasks(r.d, x)), taskBuildLaunch(r.d, r.n)]))
     for (const r of here) {
       const when = `${onHost(r.host)} and (od_bj_${r.n} | default({})).ansible_job_id is defined`
-      tasks.push(blk(r, when, [taskBuildPoll(r.d, r.n), ...r.slots.slice(at(r) + 1).flatMap((x) => flowSlotTasks(r.d, x))]))
+      tasks.push({ ...blk(r, when, [taskBuildPoll(r.d, r.n), ...r.slots.slice(at(r) + 1).flatMap((x) => flowSlotTasks(r.d, x))]), always: [taskBuildCleanup(r.d, r.n)] })
     }
   }
   tasks.push({ name: 'od prepared', 'ansible.builtin.set_fact': { od_prepared: true } }, prepareGate(hosts))
