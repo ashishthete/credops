@@ -7,7 +7,7 @@ import { createDeployHandlers } from '../../src/main/ipc/handlers/deploy'
 import { VALIDATORS } from '../../src/main/ipc/validators'
 import { PLAYBOOK_CHANGED_MESSAGE } from '../../src/main/deploy/release-service'
 import { REVIEW_REQUIRED_MESSAGE } from '../../src/main/ipc/handlers/deploy'
-import { MAX_EVENTS_PAGE, PLAYBOOK_NOT_STORED_MESSAGE } from '../../src/shared/deploy'
+import { MAX_EVENTS_PAGE, PLAYBOOK_NOT_STORED_MESSAGE, type ReleaseDetail } from '../../src/shared/deploy'
 import { MAX_SERVICES } from '../../src/shared/services'
 
 const ID = '0190a1b2-c3d4-7e5f-8a6b-1234567890ab'
@@ -197,5 +197,22 @@ describe('playbook review handlers', () => {
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
+  })
+  it('release:get masks known secret values in main: the stored playbook, the error and the check messages', async () => {
+    const SECRET = 'hunter2-secret-value'
+    const detail = vi.fn(async () => ({
+      id: ID,
+      playbook: JSON.stringify([{ hosts: 'od-1', tasks: [{ name: `curl https://x.example/?t=${SECRET}` }] }], null, 2),
+      error: `health check failed: GET /?t=${SECRET} 503`,
+      preflight: { releaseId: ID, checks: [{ id: 'ssh', label: 'ssh', level: 'block', message: `auth ${SECRET} refused` }] },
+      runs: [],
+    }))
+    const handlers = createDeployHandlers({ deploys: {} as never, releases: { detail } as unknown as ReleaseService, tooling: async () => ({}) as never, knownSecrets: () => [SECRET] })
+    const got = (await (handlers as unknown as Record<string, (id: string) => Promise<ReleaseDetail>>)['release:get'](ID))
+    expect(JSON.stringify(got)).not.toContain(SECRET)
+    expect(got.playbook).toContain('"name": "curl https://x.example/?t=‹redacted›"')
+    expect(got.error).toBe('health check failed: GET /?t=‹redacted› 503')
+    expect(got.preflight!.checks[0].message).toBe('auth ‹redacted› refused')
+    expect(got.id).toBe(ID)
   })
 })
