@@ -257,7 +257,9 @@ describe('environment registry', () => {
     const r = await call(admin, 'DELETE', `/api/v1/admin/environments/${ENV_ID}`)
     expect(r.statusCode).toBe(204)
     expect(hub.db.prepare('SELECT COUNT(*) AS n FROM grants WHERE group_id = ?').get(g)).toEqual({ n: 0 })
-    for (const t of ['environments', 'hosts', 'deployments']) expect(hub.db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get()).toEqual({ n: 0 })
+    for (const t of ['hosts', 'deployments']) expect(hub.db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get()).toEqual({ n: 0 })
+    // The row stays, marked, for its release history.
+    expect(hub.db.prepare('SELECT COUNT(*) AS n FROM environments WHERE unpublished_at IS NOT NULL').get()).toEqual({ n: 1 })
     const audit = hub.audit.list({ actions: ['env.unpublish'] })
     expect(audit).toHaveLength(1)
     expect(audit[0].details).toMatchObject({ name: 'prod' })

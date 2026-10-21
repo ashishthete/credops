@@ -483,6 +483,8 @@ export interface ReleaseSummary {
   /** The run entries: every service the release deploys, including a whole checkout's. */
   serviceCount: number
   error: string | null
+  /** Hub only: the release's environment was unpublished; the release is kept as read-only history. */
+  unpublished?: boolean
 }
 
 /** An environment's newest release that ran (or is running), with the commits of its first run. */

@@ -1,6 +1,6 @@
 import { HubHttpError } from '../errors'
 import type { HubAudit } from '../audit'
-import type { HubDb } from '../db'
+import { PUBLISHED, type HubDb } from '../db'
 import type { HubActor, HubSecretKind, HubSecretMeta } from '../../../src/shared/hub'
 import { HUB_INTEGRATION_KINDS, MAX_SECRET_BYTES } from '../../../src/shared/hub'
 import { inTransaction } from '../../../src/main/db/tx'
@@ -54,7 +54,7 @@ export class SecretStore {
     this.inflight.add(input.value)
     try {
       const savedId = inTransaction(this.db, () => {
-        if (environmentId !== null && !this.db.prepare('SELECT 1 FROM environments WHERE id = ?').get(environmentId)) {
+        if (environmentId !== null && !this.db.prepare(`SELECT 1 FROM environments WHERE id = ? AND ${PUBLISHED}`).get(environmentId)) {
           throw new HubHttpError(404, 'not_found', 'That environment is not published to this Hub')
         }
         const scope = environmentId ?? '*'

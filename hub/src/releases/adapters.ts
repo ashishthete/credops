@@ -13,7 +13,7 @@ import type { HostKeyCheck } from '../../../src/main/ssh/prompts'
 import type { Directory } from '../access/directory'
 import { decide } from '../access/policy'
 import type { HubAudit } from '../audit'
-import type { HubDb } from '../db'
+import { PUBLISHED, type HubDb } from '../db'
 import { HubHttpError } from '../errors'
 import type { Registry } from '../registry'
 import type { DeployKeys } from '../secrets/deploykeys'
@@ -49,7 +49,7 @@ export function hubDeploys(db: HubDb, registry: Registry): Pick<DeployStore, 'ge
     },
     list: (environmentId) => {
       if (environmentId !== undefined) return registry.exists(environmentId) ? metas(environmentId) : []
-      const ids = db.prepare('SELECT id FROM environments').all() as { id: string }[]
+      const ids = db.prepare(`SELECT id FROM environments WHERE ${PUBLISHED}`).all() as { id: string }[]
       return ids.flatMap((e) => metas(e.id))
     },
     settings,
@@ -105,7 +105,7 @@ export function hubServices(db: HubDb, registry: Registry): Pick<ServiceStore, '
   return {
     list: (environmentId) => {
       if (environmentId !== undefined) return registry.exists(environmentId) ? listOf(environmentId) : []
-      return (db.prepare('SELECT id FROM environments ORDER BY name COLLATE NOCASE').all() as { id: string }[]).flatMap((e) => listOf(e.id))
+      return (db.prepare(`SELECT id FROM environments WHERE ${PUBLISHED} ORDER BY name COLLATE NOCASE`).all() as { id: string }[]).flatMap((e) => listOf(e.id))
     },
     recordDeployed: (entries) => {
       const envOf = db.prepare("SELECT environment_id FROM services WHERE id = ? AND kind = 'service'")
