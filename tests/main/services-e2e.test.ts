@@ -28,7 +28,7 @@ const NOW = Date.parse('2026-10-19T12:00:00Z')
 const clipboard = { async writeText(): Promise<void> {}, async readText(): Promise<string> { return '' } }
 
 type Task = { name: string; tags: string[]; deployment: string | null; json: string }
-type Spawned = { kind: string; playbook: string }
+type Spawned = { kind: string; playbook: string; env: Record<string, string | undefined> }
 
 /** Every task of a generated playbook, block tasks with the deployment (sanitized checkout name) they belong to. */
 function tasksOf(playbook: string): Task[] {
@@ -59,7 +59,7 @@ async function world() {
   ansible.onSpawn = (call) => {
     const playbook = fs.files.get(join(call.cwd, 'playbook.yml'))!
     const kind = (JSON.parse(playbook) as { name: string }[])[0].name.split(' ')[0]
-    spawned.push({ kind, playbook })
+    spawned.push({ kind, playbook, env: { ...call.env } })
     const failStep = kind === 'release' ? script.failStep : undefined
     ansible.stdout = scriptFromPlaybook(playbook, { commits: script.commits, failStep })
     ansible.exit = { code: failStep ? 2 : 0, signal: null }
@@ -229,7 +229,8 @@ describe('services deploy end to end', () => {
     expect(f.releases.get(r4).serviceIds).toEqual([esg.id])
     expect(commitOf(w, 'esg')).toBe(P0)
 
-    // 6. R1 again is refused; R2 is still the latest release for its services.
+    // 6. R1 again is refused; R2 is still the latest release for its services, so the real rollback path takes it,
+    // and only once.
     await expect(w.ipc.rollback(r1, {})).rejects.toThrow(/^Can't roll back: esg was deployed again since this release$/)
     expect(f.releases.latestTouching([fastapi.id, langgraph.id])).toEqual(
       new Map([
@@ -237,6 +238,12 @@ describe('services deploy end to end', () => {
         [langgraph.id, r2],
       ]),
     )
+    const { releaseId: r2back } = await w.ipc.rollback(r2, {})
+    await svc.whenIdle()
+    expect(svc.detail(r2back).status).toBe('succeeded')
+    expect(f.releases.get(r2back).serviceIds).toEqual([fastapi.id, langgraph.id])
+    expect(cmds(tasksOf(lastOf(w, 'rollback')), 'rb_up', 'fast-api').join('\n')).toMatch(/ up -d$/)
+    await expect(w.ipc.rollback(r2, {})).rejects.toThrow(/^Can't roll back: fastapi-app and langgraph-api were deployed again since this release$/)
 
     // 7. A database is never deployed.
     await expect(w.ipc.preflight({ environmentId: f.staging.id, serviceIds: [pg.id], bump: 'none', options: DEFAULT_RELEASE_OPTIONS })).rejects.toThrow(
@@ -273,6 +280,19 @@ describe('services deploy end to end', () => {
       expect(d.envTemplate ?? '').not.toContain('${secret:')
       expect(d.vaultIds ?? []).toEqual([])
     }
+    // The target's own rows: no secret id, become secret, vault link or tunnel anywhere.
+    const prodCheckoutRows = f.db.prepare('SELECT * FROM deployments WHERE environment_id = ?').all(f.prod.id) as { id: string; become_secret_id: string | null; env_template: string | null }[]
+    expect(prodCheckoutRows).toHaveLength(2)
+    for (const r of prodCheckoutRows) {
+      expect(r.become_secret_id).toBeNull()
+      expect(r.env_template ?? '').not.toMatch(/\$\{secret:/)
+    }
+    const placeholders = prodCheckoutRows.map(() => '?').join(',')
+    expect(f.db.prepare(`SELECT COUNT(*) AS n FROM deployment_vaults WHERE deployment_id IN (${placeholders})`).get(...prodCheckoutRows.map((r) => r.id))).toEqual({ n: 0 })
+    const prodRows = JSON.stringify([prodCheckoutRows, f.db.prepare('SELECT * FROM services WHERE environment_id = ?').all(f.prod.id)])
+    expect(prodRows).not.toContain(f.secretId)
+    expect(prodRows).not.toContain(SECRET)
+    expect(f.db.prepare('SELECT COUNT(*) AS n FROM services WHERE environment_id = ? AND tunnel_id IS NOT NULL').get(f.prod.id)).toEqual({ n: 0 })
 
     // 10. Audit rows carry counts, never a host id or label.
     const rows = f.db.prepare('SELECT * FROM audit_events ORDER BY id').all() as { action: string; details: string }[]
@@ -290,7 +310,14 @@ describe('services deploy end to end', () => {
       expect(JSON.parse(r.details)).toEqual(expect.objectContaining({ serviceCount: expect.any(Number), hostCount: expect.any(Number) }))
     }
 
-    // 11. The managed .env secret never leaves the vault.
+    // 11. The managed .env secret never leaves the vault. It did reach the runs that render the .env, as the
+    // runner's base64 secrets env, and the playbook renders it from there; so the checks below aren't vacuous.
+    const handedOver = w.spawned
+      .filter((s) => s.kind === 'release' && s.env.OPSDECK_SECRETS)
+      .flatMap((s) => Object.values(JSON.parse(s.env.OPSDECK_SECRETS!) as Record<string, string>).map((v) => Buffer.from(v, 'base64').toString('utf8')))
+    // Each value is a rendered .env, so the secret sits inside one.
+    expect(handedOver.some((v) => v.includes(`B='${SECRET}'`))).toBe(true)
+    expect(tasksOf(lastOf(w, 'release')).some((t) => step(t) === 'env' && t.deployment === 'webapp_esg')).toBe(true)
     const ids = svc.list({ limit: 100 }).map((r) => r.id)
     for (const id of ids) {
       expect(f.releases.detail(id).playbook ?? '').not.toContain(SECRET)
