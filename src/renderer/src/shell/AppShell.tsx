@@ -12,6 +12,7 @@ import { HostsPage } from '../pages/hosts/HostsPage'
 import { MapPage } from '../pages/map/MapPage'
 import { OpsPage } from '../pages/ops/OpsPage'
 import { DeploymentsPage } from '../pages/deployments/DeploymentsPage'
+import { PlaybookLogsPage } from '../pages/deployments/PlaybookLogsPage'
 import { ReleasePage } from '../pages/deployments/ReleasePage'
 import { ProductsPage } from '../pages/products/ProductsPage'
 import { SettingsPage } from '../pages/settings/SettingsPage'
@@ -116,6 +117,7 @@ export function AppShell() {
             <Route path="/" element={<Navigate to={SECTIONS[0].path} replace />} />
             <Route path="/deployments" element={<DeploymentsPage />} />
             <Route path="/deployments/release/:id" element={<ReleasePage />} />
+            <Route path="/deployments/release/:id/logs" element={<PlaybookLogsPage />} />
             <Route path="/products" element={<ProductsPage />} />
             {/* The deck below draws this page; it stays mounted so terminals survive navigation. */}
             <Route path="/terminals" element={null} />

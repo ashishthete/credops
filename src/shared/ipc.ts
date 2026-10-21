@@ -223,6 +223,8 @@ export interface IpcContract {
   'deploy:previewPlaybook': { args: [releaseId: string]; result: PlaybookPreview }
   /** Saves the last reviewed playbook of the release (by its sha256) where a dialog in main says; null when cancelled. */
   'deploy:savePlaybook': { args: [releaseId: string, sha256: string]; result: { path: string } | null }
+  /** Saves the playbook the release stored (as `release:get` reads it, redacted) where a dialog in main says; null when cancelled. */
+  'release:savePlaybook': { args: [releaseId: string]; result: { path: string } | null }
   // `release:start` resolves once the run has started; progress arrives as `deploy:event` batches.
   'release:preflight': { args: [request: PreflightRequest]; result: { releaseId: string } }
   'release:start': { args: [releaseId: string, confirm: ReleaseConfirm]; result: void }
@@ -427,6 +429,7 @@ export const CHANNELS = [
   'deploy:tooling',
   'deploy:previewPlaybook',
   'deploy:savePlaybook',
+  'release:savePlaybook',
   'release:preflight',
   'release:start',
   'release:cancel',

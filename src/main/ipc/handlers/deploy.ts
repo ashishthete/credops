@@ -1,6 +1,7 @@
 import {
   MAX_EVENTS_PAGE,
   PLAYBOOK_CHANGED_MESSAGE,
+  PLAYBOOK_NOT_STORED_MESSAGE,
   type DeploymentMeta,
   type EnvDeploySettings,
   type EnvLastRelease,
@@ -27,6 +28,7 @@ type DeployChannel =
   | 'deploy:tooling'
   | 'deploy:previewPlaybook'
   | 'deploy:savePlaybook'
+  | 'release:savePlaybook'
   | 'release:preflight'
   | 'release:start'
   | 'release:cancel'
@@ -92,6 +94,16 @@ export function createDeployHandlers(deps: {
       const path = await playbookFile.saveDialog(id)
       if (path === undefined) return null
       await playbookFile.write(path, preview.playbook)
+      return { path }
+    },
+    // The text the release stored, read back through `detail` (which redacts it again), never the release's inputs.
+    'release:savePlaybook': async (id) => {
+      const { playbook } = await releases.detail(id)
+      if (!playbook) throw new DeployError('INVALID_STATE', PLAYBOOK_NOT_STORED_MESSAGE)
+      if (!playbookFile) throw new DeployError('INVALID_STATE', 'Saving a playbook is not available here')
+      const path = await playbookFile.saveDialog(id)
+      if (path === undefined) return null
+      await playbookFile.write(path, playbook)
       return { path }
     },
     // Every start from the UI is bound to the playbook the person reviewed: without its hash it is refused here.

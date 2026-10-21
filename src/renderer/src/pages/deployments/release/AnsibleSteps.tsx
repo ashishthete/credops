@@ -2,15 +2,15 @@ import { CircleCheck, ChevronRight } from 'lucide-react'
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { PlaybookPlay } from '../../../../../shared/playbook-steps'
 import type { PipelineState } from '../../../deploy/pipeline'
-import { taskRows, type RowState, type TaskRow } from '../../../deploy/task-rows'
+import { allRows, taskRows, type RowState, type TaskRow } from '../../../deploy/task-rows'
 import { FailurePanel, StepOutput } from './FailurePanel'
 import { clock, STATE_ICON, STATE_WORD, useNow } from './StepChip'
 
-type RowView = RowState | 'cancelling'
+export type RowView = RowState | 'cancelling'
 
-const ICON: Record<RowView, (typeof STATE_ICON)[keyof typeof STATE_ICON]> = { ...STATE_ICON, changed: { icon: CircleCheck, name: 'check-changed' } }
-const WORD: Record<RowView, string> = { ...STATE_WORD, changed: 'changed' }
-const TINT: Record<RowView, string> = {
+export const ICON: Record<RowView, (typeof STATE_ICON)[keyof typeof STATE_ICON]> = { ...STATE_ICON, changed: { icon: CircleCheck, name: 'check-changed' } }
+export const WORD: Record<RowView, string> = { ...STATE_WORD, changed: 'changed' }
+export const TINT: Record<RowView, string> = {
   pending: 'text-muted',
   running: 'text-accent',
   ok: 'text-ok',
@@ -24,7 +24,19 @@ const TINT: Record<RowView, string> = {
 }
 
 /** States the icon alone doesn't tell apart, shown as a word too (all of them are in the row's label). */
-const SAY = new Set<RowView>(['changed', 'warn', 'skipped', 'cancelled', 'rolled_back'])
+export const SAY = new Set<RowView>(['changed', 'warn', 'skipped', 'cancelled', 'rolled_back'])
+
+/** How a row shows: a cancel in flight turns its running and waiting tasks to "cancelling". */
+export const rowView = (row: TaskRow, cancelling: boolean): RowView => (cancelling && (row.state === 'running' || row.state === 'pending') ? 'cancelling' : row.state)
+
+/** The time a row shows: running so far, else how long it took. */
+export const rowTimer = (row: TaskRow, view: RowView, now: number): string | null =>
+  view === 'running' && row.startedAt !== null ? clock(now - row.startedAt) : row.durationMs !== null ? clock(row.durationMs) : null
+
+/** A row as read out: "Health 1 on app2: done, 3 attempts, 1:01". */
+export function rowTitle(row: TaskRow, host: string | null, view: RowView, timer: string | null): string {
+  return `${row.label}${host ? ` on ${host}` : ''}: ${WORD[view]}${row.attempts !== null ? `, ${row.attempts} attempts` : ''}${timer ? `, ${timer}` : ''}`
+}
 
 interface RowProps {
   releaseId: string
@@ -41,7 +53,7 @@ const sameRow = (a: TaskRow, b: TaskRow) => (Object.keys(a) as (keyof TaskRow)[]
 /** Rows are rebuilt on every event; one only renders again when something it shows changed. */
 const Row = memo(
   function Row({ releaseId, row, host, open, cancelling, onToggle, onShowLog }: RowProps) {
-    const view: RowView = cancelling && (row.state === 'running' || row.state === 'pending') ? 'cancelling' : row.state
+    const view = rowView(row, cancelling)
     const now = useNow(view === 'running')
     const ref = useRef<HTMLLIElement>(null)
     const scrolled = useRef(false)
@@ -52,18 +64,18 @@ const Row = memo(
       ref.current?.scrollIntoView?.({ block: 'nearest' })
     }, [row.failure])
     const { icon: Icon, name: iconName } = ICON[view]
-    const timer = view === 'running' && row.startedAt !== null ? clock(now - row.startedAt) : row.durationMs !== null ? clock(row.durationMs) : null
-    const where = `${row.label}${host ? ` on ${host}` : ''}`
-    const title = `${where}: ${WORD[view]}${row.attempts !== null ? `, ${row.attempts} attempts` : ''}${timer ? `, ${timer}` : ''}`
+    const timer = rowTimer(row, view, now)
+    const title = rowTitle(row, host, view, timer)
     return (
       <li ref={ref} data-task={row.name || row.label} data-task-step={row.stepId} data-state={view} className="flex flex-col">
         <button
           type="button"
           aria-expanded={open}
+          aria-current={view === 'running' ? 'step' : undefined}
           aria-label={title}
           title={row.name ? `${title} (${row.name})` : title}
           onClick={() => onToggle(row.key, !open)}
-          className={`flex h-7 items-center gap-2 rounded-md px-1.5 text-left text-[12px] hover:bg-surface-2 ${row.failure ? 'bg-err/6' : ''}`}
+          className={`flex h-7 items-center gap-2 rounded-md px-1.5 text-left text-[12px] hover:bg-surface-2 ${row.failure ? 'bg-err/6' : view === 'running' ? 'bg-accent/10 ring-1 ring-accent/40' : ''}`}
         >
           <ChevronRight aria-hidden className={`size-3 shrink-0 text-muted transition-transform ${open ? 'rotate-90' : ''}`} />
           <span data-icon={iconName} className={`inline-flex shrink-0 ${TINT[view]}`}>
@@ -138,7 +150,7 @@ export function AnsibleSteps({
   const { hosts, release: releaseRows } = useMemo(() => taskRows({ lanes, release, tasks }, plays), [lanes, release, tasks, plays])
   const firstOf = useMemo(() => {
     const m = new Map<string, string>()
-    for (const r of [...hosts.flatMap((h) => [...h.before, ...h.runs.flatMap((g) => g.rows), ...h.after]), ...releaseRows]) if (!m.has(r.stepId)) m.set(r.stepId, r.key)
+    for (const r of allRows({ hosts, release: releaseRows })) if (!m.has(r.stepId)) m.set(r.stepId, r.key)
     return m
   }, [hosts, releaseRows])
   const [toggled, setToggled] = useState<Record<string, boolean>>({})

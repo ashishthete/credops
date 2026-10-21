@@ -1,17 +1,16 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useNavigate } from 'react-router'
 import { BREAK_LOCK_CONFIRM_MESSAGE, type ReleaseStatus, type StepKind } from '../../../../../shared/deploy'
 import { playbookSteps, type PlaybookPlay } from '../../../../../shared/playbook-steps'
 import { etaMs, type ChipState, type PipelineState } from '../../../deploy/pipeline'
-import type { LogFilter } from '../../../deploy/log-buffer'
 import { loadHistory, releaseStore, retainRelease, startReleaseSync, usePipeline } from '../../../deploy/releases'
+import { allRows, taskProgress, taskRows, type HostRows, type TaskRow } from '../../../deploy/task-rows'
 import { api } from '../../../lib/api'
 import { Badge } from '../../../ui/Badge'
 import { Button } from '../../../ui/Button'
 import { attempt, ConfirmDialog, type ConfirmRequest } from '../../../ui/common'
-import { Dialog } from '../../../ui/Dialog'
 import { AnsibleSteps } from './AnsibleSteps'
 import { Celebrate } from './Celebrate'
-import { LiveLog } from './LiveLog'
 import { Pipeline } from './Pipeline'
 import { canRollback, duration, STATUS_TONE, STATUS_WORD, useRollback } from './ReleaseHistory'
 import { clock, useNow } from './StepChip'
@@ -112,15 +111,40 @@ function useAnnouncer(state: PipelineState | undefined): string {
   return message
 }
 
-/** A release as it runs or ran: the header, the pipeline, any failure and the log. */
+/** Where a row runs, as the step list names it: "Health 2 on app2". */
+function rowWhere(row: TaskRow, hosts: HostRows[]): string {
+  const host = hosts.find((h) => h.before.includes(row) || h.after.includes(row) || h.runs.some((g) => g.rows.includes(row)))
+  return `${row.label}${host ? ` on ${host.hostLabel}` : ''}`
+}
+
+/** Tasks finished out of all of them, and the ones running now. */
+function Progress({ rows, hosts }: { rows: TaskRow[]; hosts: HostRows[] }) {
+  const { done, total, current } = taskProgress(rows)
+  if (!total) return null
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-baseline gap-3 text-[12px]">
+        <span className="text-fg/90 tabular-nums">{`${done} of ${total} tasks done`}</span>
+        {current.length > 0 && <span className="truncate text-accent">{`Now: ${current.map((r) => rowWhere(r, hosts)).join(', ')}`}</span>}
+      </div>
+      <div role="progressbar" aria-label="Tasks done" aria-valuemin={0} aria-valuemax={total} aria-valuenow={done} className="h-1.5 overflow-hidden rounded-full bg-surface-2">
+        <div className="h-full rounded-full bg-accent transition-[width] duration-300 motion-reduce:transition-none" style={{ width: `${(done / total) * 100}%` }} />
+      </div>
+    </div>
+  )
+}
+
+/**
+ * A release as it runs or ran: the header, overall progress, the pipeline and its Ansible steps (a failed one
+ * opens with its output and the AI help). The playbook and the full log are on its Playbook & logs page.
+ */
 export function ReleaseView({ releaseId }: { releaseId: string }) {
   const summary = useSyncExternalStore(releaseStore.subscribe, () => releaseStore.get().byId[releaseId])
   const history = useSyncExternalStore(releaseStore.subscribe, () => (summary ? releaseStore.get().history[summary.environmentId] : undefined))
   const state = usePipeline(releaseId)
-  const [filter, setFilter] = useState<LogFilter>({})
+  const [selected, setSelected] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   const [cancelling, setCancelling] = useState(false)
-  const [playbook, setPlaybook] = useState<string | null>(null)
   const rollback = useRollback()
   const sawRunning = useRef(false)
 
@@ -144,7 +168,10 @@ export function ReleaseView({ releaseId }: { releaseId: string }) {
   const steps = useStepHistory(envId, releaseId, running)
   const message = useAnnouncer(state)
   const plays = usePlays(releaseId, status, state?.plays)
-  const showLog = useCallback((stepId: string) => setFilter((f) => ({ ...f, stepId })), [])
+  const navigate = useNavigate()
+  const logsPath = `/deployments/release/${releaseId}/logs`
+  const showLog = useCallback((stepId: string) => navigate(`${logsPath}?step=${encodeURIComponent(stepId)}`), [navigate, logsPath])
+  const rows = useMemo(() => (state ? taskRows(state, plays) : null), [state, plays])
 
   if (!summary || !state) return <p className="text-[12.5px] text-muted">Loading the release</p>
 
@@ -154,6 +181,7 @@ export function ReleaseView({ releaseId }: { releaseId: string }) {
   const failed = chips.filter(({ chip }) => chip.state === 'failed')
   const versionOnly = state.result?.status === 'failed' && failed.length > 0 && failed.every(({ chip }) => chip.stepId === 'release:version')
   const hostLabel = (id: string) => state.lanes.find((l) => l.hostId === id)?.hostLabel ?? id
+  const deployments = [...new Set(state.lanes.flatMap((l) => l.runs.map((r) => r.name)))].join(', ')
   const version = state.version.to ? (state.version.from ? `${state.version.from} → ${state.version.to}` : state.version.to) : null
 
   const cancel = () =>
@@ -183,21 +211,19 @@ export function ReleaseView({ releaseId }: { releaseId: string }) {
   }
 
   const retryTagging = () => void attempt("Couldn't retry tagging", () => api.invoke('release:retry-version', releaseId))
-  const viewPlaybook = async () => {
-    const detail = await attempt("Couldn't read the release", () => api.invoke('release:get', releaseId))
-    if (detail) setPlaybook(detail.playbook ?? 'No playbook was stored for this release')
-  }
 
   return (
     <div className="flex min-h-0 flex-col gap-3">
-      <header className="relative flex flex-wrap items-center gap-2">
+      <header aria-label="Release summary" className="relative flex flex-wrap items-center gap-2">
         <span className="text-[13px] font-semibold text-fg">{summary.environmentName}</span>
+        {deployments && <span className="text-[12.5px] text-fg/85">{deployments}</span>}
         {version && <span className="font-mono text-[12.5px] text-fg/85 tabular-nums">{version}</span>}
         <Badge tone={STATUS_TONE[state.status]} dot>
           {cancelling && running ? 'cancelling' : STATUS_WORD[state.status]}
         </Badge>
         {elapsed && <span className="font-mono text-[12px] text-muted tabular-nums">{elapsed}</span>}
         {eta !== null && <span className="text-[12px] text-muted">{`about ${clock(eta)} left`}</span>}
+        {summary.triggeredBy && <span className="text-[12px] text-muted">{`Started by ${summary.triggeredBy}`}</span>}
         {state.status === 'succeeded' && sawRunning.current && <Celebrate key="done" />}
         <span className="ml-auto flex items-center gap-1.5">
           {/* Main lets a rollback finish once it has begun, so a cancel then would do nothing. */}
@@ -216,11 +242,13 @@ export function ReleaseView({ releaseId }: { releaseId: string }) {
               Rollback
             </Button>
           )}
-          <Button size="sm" variant="ghost" onClick={() => void viewPlaybook()}>
-            View playbook
+          <Button size="sm" variant="ghost" onClick={() => navigate(logsPath)}>
+            Playbook & logs
           </Button>
         </span>
       </header>
+
+      {rows && <Progress rows={allRows(rows)} hosts={rows.hosts} />}
 
       {state.lockBusy.map((b) => (
         <div key={b.hostId} role="status" className="flex items-center gap-3 rounded-lg border border-warn/40 bg-warn/8 px-3 py-2">
@@ -235,9 +263,9 @@ export function ReleaseView({ releaseId }: { releaseId: string }) {
 
       <Pipeline
         state={state}
-        selected={filter.stepId ?? null}
+        selected={selected}
         cancelling={cancelling && running}
-        onSelect={(stepId) => setFilter((f) => ({ ...f, stepId }))}
+        onSelect={setSelected}
       />
 
       {state.result?.error && !failed.length && (
@@ -250,15 +278,10 @@ export function ReleaseView({ releaseId }: { releaseId: string }) {
         releaseId={releaseId}
         state={state}
         plays={plays}
-        selected={filter.stepId ?? null}
+        selected={selected}
         cancelling={cancelling && running}
         onShowLog={showLog}
       />
-
-      <section aria-label="All logs" className="flex min-h-0 flex-col gap-2">
-        <h3 className="text-[12px] font-semibold tracking-wide text-muted uppercase">All logs</h3>
-        <LiveLog releaseId={releaseId} filter={filter} onFilterChange={setFilter} />
-      </section>
 
       <p aria-live="polite" role="status" className="sr-only">
         {message}
@@ -266,9 +289,6 @@ export function ReleaseView({ releaseId }: { releaseId: string }) {
 
       <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
       <ConfirmDialog request={rollback.request} onClose={rollback.close} />
-      <Dialog open={playbook !== null} onClose={() => setPlaybook(null)} title="Release playbook" width={680}>
-        <pre className="max-h-[60vh] overflow-auto rounded-lg bg-canvas/70 p-3 font-mono text-[11.5px] whitespace-pre text-fg/90">{playbook}</pre>
-      </Dialog>
     </div>
   )
 }

@@ -241,7 +241,7 @@ describe('Ansible steps in the release view', () => {
     expect(within(stepList()).getByRole('button', { name: /^Health 1 on app2/ })).toHaveAttribute('aria-expanded', 'true')
   })
 
-  it('clicking a row opens its output; Show in All logs filters the full log to that step', async () => {
+  it('clicking a row opens its output, with a way to the full log', async () => {
     await view([...OK_RUN.slice(0, -1), task('r1:build', 'build core', 'changed'), OK_RUN.at(-1)!], detailWithPlaybook({ status: 'succeeded' }))
     const row = stepList().querySelector<HTMLElement>('[data-task="build core"]')!
     expect(row).toHaveAttribute('data-state', 'changed')
@@ -251,9 +251,9 @@ describe('Ansible steps in the release view', () => {
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
     expect(within(row).getByText('built')).toBeInTheDocument()
     expect(within(row).getByText('exit code 0')).toBeInTheDocument()
-    fireEvent.click(within(row).getByRole('button', { name: 'Show in All logs' }))
-    expect(screen.getByRole('button', { name: 'Clear the step filter' })).toBeInTheDocument()
-    expect(screen.getByRole('log', { name: 'Release log' })).toBeInTheDocument()
+    // the full log is on Playbook & logs (release-pages.test.tsx follows the button there)
+    expect(within(row).getByRole('button', { name: 'Show in All logs' })).toBeInTheDocument()
+    expect(screen.queryByRole('log', { name: 'Release log' })).toBeNull()
     fireEvent.click(toggle)
     expect(within(row).queryByText('built')).toBeNull()
   })

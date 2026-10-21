@@ -179,3 +179,17 @@ export function taskRows(s: Pick<PipelineState, 'lanes' | 'release' | 'tasks'>, 
     release: s.release.map((c) => row(fromChip(c))),
   }
 }
+
+/** Every row in list order: per host its lock, deployments and unlock, then the release-wide steps. */
+export function allRows({ hosts, release }: { hosts: HostRows[]; release: TaskRow[] }): TaskRow[] {
+  return [...hosts.flatMap((h) => [...h.before, ...h.runs.flatMap((g) => g.rows), ...h.after]), ...release]
+}
+
+/** How far the release is: rows that finished (in any state) out of all of them, and the ones running now. */
+export function taskProgress(rows: TaskRow[]): { done: number; total: number; current: TaskRow[] } {
+  return {
+    done: rows.filter((r) => r.state !== 'pending' && r.state !== 'running').length,
+    total: rows.length,
+    current: rows.filter((r) => r.state === 'running'),
+  }
+}

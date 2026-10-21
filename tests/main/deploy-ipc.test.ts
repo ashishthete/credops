@@ -4,7 +4,7 @@ import { createDeployHandlers } from '../../src/main/ipc/handlers/deploy'
 import { VALIDATORS } from '../../src/main/ipc/validators'
 import { PLAYBOOK_CHANGED_MESSAGE } from '../../src/main/deploy/release-service'
 import { REVIEW_REQUIRED_MESSAGE } from '../../src/main/ipc/handlers/deploy'
-import { MAX_EVENTS_PAGE } from '../../src/shared/deploy'
+import { MAX_EVENTS_PAGE, PLAYBOOK_NOT_STORED_MESSAGE } from '../../src/shared/deploy'
 import { MAX_SERVICES } from '../../src/shared/services'
 
 const ID = '0190a1b2-c3d4-7e5f-8a6b-1234567890ab'
@@ -20,6 +20,7 @@ describe('release:* validators', () => {
     expect(() => check('release:start', [ID, { playbookSha256: HASH }])).not.toThrow()
     expect(() => check('deploy:previewPlaybook', [ID])).not.toThrow()
     expect(() => check('deploy:savePlaybook', [ID, HASH])).not.toThrow()
+    expect(() => check('release:savePlaybook', [ID])).not.toThrow()
     expect(() => check('release:break-lock', [ID, ID, { typedLabel: 'app1' }])).not.toThrow()
     expect(() => check('release:list', [{ environmentId: ID, limit: 10 }])).not.toThrow()
     expect(() => check('release:events', [ID, 0, 5000])).not.toThrow()
@@ -46,6 +47,8 @@ describe('release:* validators', () => {
     ['deploy:previewPlaybook', ['x'], /./],
     ['deploy:savePlaybook', [ID, 'nope'], /./],
     ['deploy:savePlaybook', [ID], /./],
+    ['release:savePlaybook', ['x'], /./],
+    ['release:savePlaybook', [], /./],
     ['release:cancel', [], /./],
     ['release:rollback', [ID, { typedName: {} }], /typedName/],
     ['release:break-lock', [ID, ID, {}], /typedLabel/],
@@ -91,9 +94,12 @@ describe('release handlers', () => {
 
 describe('playbook review handlers', () => {
   const PLAYBOOK = '[{"hosts":"od-1"}]'
-  const setup = (over: { path?: string } = {}) => {
+  /** As `release:get` reads it: redacted again on read. */
+  const STORED = '[\n  {\n    "hosts": "od-1",\n    "vars": { "token": "‹redacted›" }\n  }\n]'
+  const setup = (over: { path?: string; stored?: string | null } = {}) => {
     const releases = {
       previewPlaybook: vi.fn(async () => ({ playbook: PLAYBOOK, sha256: HASH })),
+      detail: vi.fn(async () => ({ id: ID, playbook: over.stored === undefined ? STORED : over.stored })),
       start: vi.fn(async () => undefined),
     }
     const writes: [string, string][] = []
@@ -144,5 +150,22 @@ describe('playbook review handlers', () => {
     expect(saveDialog).not.toHaveBeenCalled()
     expect(await h['deploy:savePlaybook'](ID, HASH)).toBeNull()
     expect(writes).toEqual([])
+  })
+
+  it('release:savePlaybook writes the stored playbook, as read, where the dialog says', async () => {
+    const { h, writes, saveDialog, releases } = setup({ path: '/tmp/x/release.yml' })
+    expect(await h['release:savePlaybook'](ID)).toEqual({ path: '/tmp/x/release.yml' })
+    expect(releases.detail).toHaveBeenCalledWith(ID)
+    expect(saveDialog).toHaveBeenCalledWith(ID)
+    expect(writes).toEqual([['/tmp/x/release.yml', STORED]])
+  })
+
+  it('release:savePlaybook refuses a release with no stored playbook, and a cancelled dialog writes nothing', async () => {
+    const none = setup({ path: '/tmp/x/release.yml', stored: null })
+    await expect(none.h['release:savePlaybook'](ID)).rejects.toThrow(PLAYBOOK_NOT_STORED_MESSAGE)
+    expect(none.saveDialog).not.toHaveBeenCalled()
+    const cancelled = setup()
+    expect(await cancelled.h['release:savePlaybook'](ID)).toBeNull()
+    expect(cancelled.writes).toEqual([])
   })
 })
