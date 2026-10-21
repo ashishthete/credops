@@ -184,6 +184,22 @@ describe('hub connection', () => {
     expect({ ...(row as object) }).toEqual({ session_enc: null, refresh_enc: null, session_expires_at: null })
   })
 
+  it('a 503 during renew reports unavailable and keeps the session', async () => {
+    const conn = make()
+    await conn.connect(hubUrl)
+    await conn.signIn()
+    expireHubSessions()
+    const down: typeof fetch = async (input, init) => {
+      if (String(input).includes('/token')) return new Response('down', { status: 503 })
+      return fetch(input, init)
+    }
+    const c2 = make({ fetch: down })
+    await expect(c2.renew()).rejects.toMatchObject({ code: expect.stringMatching(/network|unavailable/) })
+    expect(c2.status()).toMatchObject({ signedIn: true })
+    const row = db.prepare('SELECT session_enc, refresh_enc FROM hub_link').get() as { session_enc: Buffer | null; refresh_enc: Buffer | null }
+    expect(row.refresh_enc).not.toBeNull()
+  })
+
   it('a refresh that fails on the network reports unreachable and keeps the session', async () => {
     const conn = make()
     await conn.connect(hubUrl)

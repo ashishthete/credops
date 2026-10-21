@@ -167,16 +167,30 @@ export class LiveFeed {
     const running = new Set(active.map((s) => s.id))
     for (const id of [...this.last.keys()]) {
       if (signal.aborted) return
-      await this.backfill(id, signal)
-      if (running.has(id)) continue
-      // It finished while the stream was down: its terminal state would otherwise never arrive.
+      // One release the person can no longer see (revoked grant, deleted) must not stop the others or the stream.
       try {
+        await this.backfill(id, signal)
+        if (running.has(id)) continue
+        // It finished while the stream was down: its terminal state would otherwise never arrive.
         const done = await this.d.client().get<ReleaseSummary>(`/api/v1/releases/${id}`)
-        if (!signal.aborted) this.state(done)
+        if (!signal.aborted) {
+          this.state(done)
+          if (TERMINAL.has(done.status)) this.last.delete(id)
+        }
       } catch (err) {
-        if (!(err instanceof HubError) || err.status !== 404) throw err
+        if (!this.gone(err)) throw err
+        this.forget(id)
       }
     }
+  }
+
+  private gone(err: unknown): boolean {
+    return err instanceof HubError && (err.status === 403 || err.status === 404)
+  }
+
+  private forget(id: string): void {
+    this.last.delete(id)
+    this.notified.delete(id)
   }
 
   private async frame(frame: { event: string; data: string }, signal: AbortSignal): Promise<void> {
@@ -193,6 +207,15 @@ export class LiveFeed {
         break
       case 'release.state':
         this.state(msg.summary)
+        if (TERMINAL.has(msg.summary.status)) {
+          // Its events are in before it is forgotten; a finished release needs no catch-up later.
+          try {
+            await this.backfill(msg.summary.id, signal)
+          } catch (err) {
+            if (!this.gone(err)) throw err
+          }
+          if (!signal.aborted) this.last.delete(msg.summary.id)
+        }
         break
       case 'lock.updated':
         this.d.push.locks(msg.environmentId, msg.lock)
@@ -215,7 +238,13 @@ export class LiveFeed {
       if (last !== undefined && e.seq > last + 1) {
         // A gap: the Hub's log has what was missed, this event included.
         this.flush(out)
-        await this.backfill(id, signal)
+        try {
+          await this.backfill(id, signal)
+        } catch (err) {
+          if (!this.gone(err)) throw err
+          this.forget(id)
+          continue
+        }
         if (signal.aborted) return
         if (e.seq <= (this.last.get(id) ?? 0)) continue
       }

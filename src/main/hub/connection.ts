@@ -309,9 +309,11 @@ export class HubConnection {
       return true
     } catch (err) {
       if (err instanceof OidcError && err.code === 'refresh_expired') return this.signedOut()
-      if (err instanceof HubError && (err.status === 401 || err.status === 403)) return this.signedOut()
-      // Unreachable is not rejected: keep the session and say so.
-      if (err instanceof HubError && (err.code === 'network' || err.code === 'timeout')) throw err
+      // Only a refresh the Hub or Entra rejects as invalid ends the sign-in.
+      if (err instanceof HubError && (err.status === 401 || err.status === 400 || err.status === 403)) return this.signedOut()
+      // Unreachable or failing is not rejected: keep the session and say so, so callers back off instead of signing out.
+      if (err instanceof HubError && (err.code === 'network' || err.code === 'timeout' || err.code === 'unavailable')) throw err
+      if (err instanceof HubError && err.status !== undefined && err.status >= 500) throw new HubError('unavailable', 'The Hub is unavailable', err.status)
       if (err instanceof OidcError && (err.code === 'network' || err.code === 'timeout')) throw new HubError('network', "Can't reach the Hub")
       return false
     }

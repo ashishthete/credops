@@ -240,6 +240,8 @@ async function tokenRequest(
     if (form.grant_type === 'refresh_token' && body.error === 'invalid_grant') {
       throw new OidcError('refresh_expired', 'Your sign-in has expired. Sign in again')
     }
+    // The provider failing is not the person's sign-in failing: callers keep the session and retry.
+    if (res.status >= 500) throw new OidcError('network', 'The sign-in service is unavailable')
     throw new OidcError(failure.code, failure.message)
   }
   const { access_token: access, refresh_token: refresh, expires_in: ttl } = body

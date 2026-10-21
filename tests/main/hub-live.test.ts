@@ -47,6 +47,8 @@ interface Script {
   log: Map<string, RunEvent[]>
   /** GET /releases/:id */
   detail?: Map<string, ReleaseSummary>
+  /** Releases whose events and detail answer 403, as after a revoked grant. */
+  forbidden?: Set<string>
 }
 
 let server: Server | undefined
@@ -73,6 +75,12 @@ async function start(script: Script) {
     if (url.pathname === '/api/v1/releases/active') {
       seen.active++
       res.end(JSON.stringify(script.active()))
+      return
+    }
+    const rel = /^\/api\/v1\/releases\/([^/]+)/.exec(url.pathname)
+    if (rel && script.forbidden?.has(rel[1]!)) {
+      res.statusCode = 403
+      res.end(JSON.stringify({ error: { code: 'forbidden', message: 'No access' } }))
       return
     }
     const one = /^\/api\/v1\/releases\/([^/]+)$/.exec(url.pathname)
@@ -224,6 +232,33 @@ describe('hub live feed', () => {
     await feed.idle()
     expect(seqs(pushed.events)).toEqual([1, 2, 3, 4])
     expect(shown).toHaveLength(1)
+  })
+
+  it('a release whose grant was revoked is dropped and the feed keeps going', async () => {
+    const forbidden = new Set<string>()
+    const log = new Map([
+      [REL, Array.from({ length: 4 }, (_, i) => ev(REL, i + 1))],
+      [OTHER, Array.from({ length: 4 }, (_, i) => ev(OTHER, i + 1))],
+    ])
+    const { base } = await start({
+      log,
+      forbidden,
+      active: () => [summary(OTHER, 'running')],
+      live: [
+        (res) => {
+          res.write(frame(batch(REL, 1, 2)))
+          res.write(frame(batch(OTHER, 1, 2)))
+          setTimeout(() => (forbidden.add(REL), res.destroy()), 20)
+        },
+        (res) => void res.write(frame({ type: 'catalog.updated' })),
+      ],
+    })
+    const { feed, pushed } = make(base)
+    feed.start()
+    await vi.waitFor(() => expect(pushed.catalog).toBeGreaterThan(0))
+    await feed.idle()
+    expect(seqs(pushed.events, OTHER)).toEqual([1, 2, 3, 4])
+    expect(seqs(pushed.events)).toEqual([1, 2])
   })
 
   it('401 renews once, then signs out', async () => {
