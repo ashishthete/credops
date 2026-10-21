@@ -10,6 +10,11 @@ import {
   type ConfigDeployment,
   type ConfigEnvironment,
   type ConfigFile,
+  type ConfigFlow,
+  type ConfigRunbook,
+  type ConfigRunbookItem,
+  type ConfigStep,
+  type ConfigStepBody,
   type ConfigHost,
   type ConfigIdentity,
   type ConfigProduct,
@@ -19,6 +24,9 @@ import {
   type VaultRef,
 } from '../../shared/config-file'
 import { REPO_URL, isParsableRepoUrl, stripRepoCredentials } from '../../shared/inventory'
+import type { ReleaseFlow } from '../../shared/deploy'
+import type { Runbook } from '../../shared/runbooks'
+import type { Step, StepBody, StepSecret } from '../../shared/steps'
 import type { DbEngine } from '../../shared/services'
 import type { AuditLog } from '../audit/audit-log'
 import type { Db } from '../db/connection'
@@ -96,17 +104,28 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: numbe
   // Secret refs: the become secrets and the secrets env templates name, keyed ref-N in (vault name, item name) order.
   const deployRows = all(
     `SELECT id, environment_id, host_id, name, repo_url, repo_path, default_branch, compose_file, compose_project, deploy_tag,
-       position, urls, health_status, health_timeout_sec, db_backup, backup_dir, pre_hook, post_hook, build_timeout_sec,
+       position, urls, health_status, health_timeout_sec, db_backup, backup_dir, pre_hook, post_hook, steps, build_timeout_sec,
        compose_timeout_sec, use_sudo, become_secret_id, managed_env, env_template FROM deployments`,
   )
   const secretItems = new Map(
     all('SELECT id, vault_id, name FROM secrets').map((r) => [str(r.id), { vaultName: vaultName.get(str(r.vault_id))!, itemName: str(r.name) }]),
   )
   const used = new Set<string>()
+  const stepsOf = (v: unknown): Step[] => JSON.parse(optStr(v) ?? '[]') as Step[]
+  const flowRows = all('SELECT id, release_flow FROM environments WHERE release_flow IS NOT NULL')
+  const runbookRows = all('SELECT id, environment_id, name, description, definition FROM runbooks')
+  const runbookDefs = runbookRows.map((r) => JSON.parse(str(r.definition)) as Pick<Runbook, 'targetServiceIds' | 'items' | 'params' | 'lock' | 'notify'>)
+  const flowSteps = (flow: ReleaseFlow): StepBody[] => flow.stages.flatMap((st) => (st.kind === 'step' ? [st.step] : []))
+  const useSecrets = (steps: StepBody[]): void => {
+    for (const st of steps) for (const sec of st.secrets) if (secretItems.has(sec.secretId)) used.add(sec.secretId)
+  }
   for (const d of deployRows) {
     if (d.become_secret_id !== null) used.add(str(d.become_secret_id))
     for (const m of (optStr(d.env_template) ?? '').matchAll(TEMPLATE_SECRET_REF)) if (secretItems.has(m[1])) used.add(m[1])
+    useSecrets(stepsOf(d.steps))
   }
+  for (const r of flowRows) useSecrets(flowSteps(JSON.parse(str(r.release_flow)) as ReleaseFlow))
+  for (const d of runbookDefs) useSecrets(d.items.flatMap((i) => (i.type === 'step' ? [i.step] : [])))
   const refItems = byKey(
     [...used].map((id) => ({ id, item: secretItems.get(id)! })),
     (x) => `${x.item.vaultName}\u0000${x.item.itemName}`,
@@ -114,6 +133,23 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: numbe
   const refOf = new Map(refItems.map((x, i) => [x.id, `ref-${i + 1}`]))
   const secretRefs: Record<string, ItemRef> = {}
   refItems.forEach((x, i) => (secretRefs[`ref-${i + 1}`] = x.item))
+
+  /** A step's secrets as ref keys; a secret that no longer exists is left out (its local id means nothing elsewhere). */
+  const refSecrets = (secrets: StepSecret[]): ConfigStepBody['secrets'] =>
+    secrets.flatMap((sec) => {
+      const key = refOf.get(sec.secretId)
+      if (key === undefined) {
+        omitted++
+        return []
+      }
+      return [{ envName: sec.envName, secret: key }]
+    })
+  const configBody = (st: StepBody): ConfigStepBody => ({ ...st, secrets: refSecrets(st.secrets) })
+  const configStep = (st: Step): ConfigStep => ({ ...st, secrets: refSecrets(st.secrets) })
+  const configFlow = (flow: ReleaseFlow): ConfigFlow => ({
+    stages: flow.stages.map((st) => (st.kind === 'services' ? st : { ...st, step: configBody(st.step) })),
+    onFailure: flow.onFailure,
+  })
 
   const vaultRefs = (ids: string[] | undefined): VaultRef[] =>
     byKey(
@@ -166,8 +202,8 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: numbe
     (x) => x.hostId,
   )
   const environments: ConfigEnvironment[] = all(
-    `SELECT id, name, color, protected, default_identity_id, default_port, default_jump_host_id, versioned, auto_rollback, domain
-     FROM environments`,
+    `SELECT id, name, color, protected, default_identity_id, default_port, default_jump_host_id, versioned, auto_rollback, domain,
+       parallel_prepare, prepare_cap, release_flow FROM environments`,
   ).map((r) => ({
     id: str(r.id),
     name: str(r.name),
@@ -179,6 +215,9 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: numbe
     versioned: bool(r.versioned),
     autoRollback: bool(r.auto_rollback),
     domain: optStr(r.domain),
+    parallelPrepare: bool(r.parallel_prepare),
+    prepareCap: Number(r.prepare_cap),
+    ...(r.release_flow === null ? {} : { flow: configFlow(JSON.parse(str(r.release_flow)) as ReleaseFlow) }),
     productIds: envProducts.get(str(r.id)) ?? [],
     hosts: envHosts.get(str(r.id)) ?? [],
   }))
@@ -244,6 +283,7 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: numbe
     backupDir: optStr(r.backup_dir),
     preHook: optStr(r.pre_hook),
     postHook: optStr(r.post_hook),
+    ...(stepsOf(r.steps).length === 0 ? {} : { steps: stepsOf(r.steps).map(configStep) }),
     buildTimeoutSec: Number(r.build_timeout_sec),
     composeTimeoutSec: Number(r.compose_timeout_sec),
     useSudo: r.use_sudo as ConfigDeployment['useSudo'],
@@ -255,7 +295,7 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: numbe
 
   const services: ConfigService[] = all(
     `SELECT id, environment_id, name, kind, position, description, deployment_id, compose_service, url, url_check_from,
-       db_engine, db_address, db_port, via_host_id, local_port, tunnel_id FROM services`,
+       db_engine, db_address, db_port, via_host_id, local_port, tunnel_id, skip_unchanged FROM services`,
   ).map((r) => {
     const common = { id: str(r.id), environmentId: str(r.environment_id), name: str(r.name) }
     return r.kind === 'service'
@@ -268,6 +308,7 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: numbe
           composeService: str(r.compose_service),
           url: r.url === null ? null : blankUrlParams(str(r.url)),
           urlCheckFrom: r.url_check_from as 'mac' | 'host',
+          skipUnchanged: bool(r.skip_unchanged),
         }
       : {
           ...common,
@@ -283,6 +324,18 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: numbe
         }
   })
 
+  const runbooks: ConfigRunbook[] = runbookRows.map((r, i) => ({
+    id: str(r.id),
+    environmentId: str(r.environment_id),
+    name: str(r.name),
+    description: str(r.description),
+    targetServiceIds: [...runbookDefs[i].targetServiceIds].sort(),
+    items: runbookDefs[i].items.map((it): ConfigRunbookItem => (it.type === 'step' ? { type: 'step', step: configBody(it.step) } : it)),
+    params: runbookDefs[i].params,
+    lock: runbookDefs[i].lock,
+    notify: runbookDefs[i].notify,
+  }))
+
   const file: ConfigFile = {
     format: CONFIG_FORMAT,
     version: CONFIG_VERSION,
@@ -295,6 +348,7 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: numbe
     tunnels: byId(tunnels),
     deployments: byId(deployments),
     services: byId(services),
+    ...(runbooks.length === 0 ? {} : { runbooks: byId(runbooks) }),
   }
   return { file, omitted }
 }

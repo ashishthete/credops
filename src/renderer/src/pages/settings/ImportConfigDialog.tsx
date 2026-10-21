@@ -21,12 +21,16 @@ const KIND_LABEL: Record<ImportItem['kind'], string> = {
   tunnels: 'Tunnel',
   deployments: 'Checkout',
   services: 'Service',
+  runbooks: 'Runbook',
 }
 const FIELD_LABEL: Record<string, string> = {
   password: 'password',
   key: 'SSH key',
   becomeSecret: 'sudo password',
   envTemplate: '.env template',
+  steps: 'step secrets',
+  flow: 'flow step secrets',
+  items: 'runbook step secrets',
   vaults: 'vault access',
   identityId: 'identity',
   defaultIdentityId: 'default identity',
