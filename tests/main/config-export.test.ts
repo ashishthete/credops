@@ -173,6 +173,38 @@ describe('config export', () => {
     for (const { v } of sealed) if (v) expect(text).not.toContain(v)
   })
 
+  it('blanks more secret-looking names, credentialed values and URL tokens', async () => {
+    const f = await makeConfigFixture()
+    // Fake values only.
+    f.db
+      .prepare('UPDATE hosts SET env_vars = ? WHERE id = ?')
+      .run(
+        JSON.stringify({ LANG: 'C.UTF-8', DB_PASS: 'fakepass1', db_pwd: 'fakepass2', SENTRY_DSN: 'https://fakedsn@sentry.example/1', DATABASE_URL: 'postgres://app:fakepw3@db.example/app' }),
+        f.host.id,
+      )
+    f.db
+      .prepare('UPDATE deployments SET env_template = ?, repo_url = ?, urls = ? WHERE id = ?')
+      .run(
+        ['# note', 'DB_PASS=fakepass4', 'db_pwd=fakepass5', 'SENTRY_DSN=https://fakedsn2@sentry.example/1', 'DATABASE_URL=postgres://app:fakepw6@db.example/app', 'APP_ENV=staging', 'EMPTY_PASS=', ''].join('\n'),
+        'https://git.example/x.git?private_token=faketok7&ref=main',
+        JSON.stringify([{ url: 'https://app.example/health?token=faketok8&x=1', from: 'mac' }]),
+        f.ids.deployment,
+      )
+    f.db.prepare("UPDATE services SET url = ? WHERE kind = 'service'").run('https://svc.example/h?api_key=faketok9')
+    const { file, omitted } = buildConfigExport(f.db, clock)
+    const text = serializeConfig(file)
+    expect(text).not.toMatch(/fakepass|fakepw|fakedsn|faketok/)
+    expect(file.hosts.find((h) => h.id === f.host.id)!.envVars).toEqual({ LANG: 'C.UTF-8', DB_PASS: '', db_pwd: '', SENTRY_DSN: '', DATABASE_URL: '' })
+    const [d] = file.deployments
+    expect(d.envTemplate).toBe(['# note', 'DB_PASS=', 'db_pwd=', 'SENTRY_DSN=', 'DATABASE_URL=', 'APP_ENV=staging', 'EMPTY_PASS=', ''].join('\n'))
+    expect(d.repoUrl).toBe('https://git.example/x.git?private_token=&ref=main')
+    expect(d.urls[0].url).toBe('https://app.example/health?token=&x=1')
+    expect(file.services.find((s) => s.kind === 'service')).toMatchObject({ url: 'https://svc.example/h?api_key=' })
+    // 4 env vars + 4 template lines + 3 URL params.
+    expect(omitted).toBe(11)
+    expect(parseConfigFile(text).ok).toBe(true)
+  })
+
   it('env template secret refs become ref-N with vault and item names', async () => {
     const f = await makeConfigFixture()
     const { file } = buildConfigExport(f.db, clock)
