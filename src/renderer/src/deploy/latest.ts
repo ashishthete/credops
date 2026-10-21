@@ -12,6 +12,9 @@ const NOT_RUN = new Set<ReleaseStatus>(['preflight', 'ready', 'blocked', 'discar
 const REFETCH_MS = 250
 
 let generation = 0
+/** Each read's number: a reply older than the newest one applied is dropped. */
+let reads = 0
+let applied = 0
 let syncUsers = 0
 let stopSync: (() => void) | null = null
 
@@ -20,15 +23,28 @@ export function resetLatest(): void {
   latestStore.set({})
 }
 
-async function load(): Promise<void> {
+/** How far a release has got: a later state never gives way to an earlier one of the same release. */
+const progress = (s: ReleaseStatus) => (s === 'running' ? 0 : s === 'rolling_back' ? 1 : 2)
+
+/** The read row against the one held, for the same environment. */
+function merge(read: EnvLastRelease, held: EnvLastRelease | undefined): EnvLastRelease {
+  if (!held || held.id < read.id) return read
+  if (held.id > read.id) return held
+  // The same release: a state that arrived while the read was in flight may be further on; the read has the commits.
+  return progress(held.status) > progress(read.status) ? { ...held, previousCommit: read.previousCommit, deployedCommit: read.deployedCommit } : read
+}
+
+/** Reads every environment's last release. Exported for tests; the sync calls it. */
+export async function loadLatest(): Promise<void> {
   const started = generation
+  const seq = ++reads
   try {
     const rows = await api.invoke('release:latest')
-    if (started !== generation || !Array.isArray(rows)) return
-    // A state that arrived while the read was in flight may be newer than the row read.
+    if (started !== generation || seq < applied || !Array.isArray(rows)) return
+    applied = seq
     const next: Record<string, EnvLastRelease> = {}
     const now = latestStore.get()
-    for (const r of rows) next[r.environmentId] = now[r.environmentId] && now[r.environmentId].id > r.id ? now[r.environmentId] : r
+    for (const r of rows) next[r.environmentId] = merge(r, now[r.environmentId])
     for (const [env, r] of Object.entries(now)) if (!next[env]) next[env] = r
     latestStore.set(next)
   } catch {
@@ -56,10 +72,10 @@ export function startLatestSync(): () => void {
       onState(summary)
       timer ??= setTimeout(() => {
         timer = null
-        void load()
+        void loadLatest()
       }, REFETCH_MS)
     })
-    void load()
+    void loadLatest()
     stopSync = () => {
       off()
       if (timer) clearTimeout(timer)
