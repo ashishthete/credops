@@ -2,7 +2,7 @@ import { motion } from 'framer-motion'
 import { ArrowUpDown, Boxes, CopyPlus, Database, FolderGit2, GitBranch, Pencil, Plus, Rocket, Server, Tag } from 'lucide-react'
 import { useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import type { DeploymentMeta } from '../../../../../shared/deploy'
-import type { EnvironmentMeta } from '../../../../../shared/inventory'
+import { REPO_URL_LEGACY_WARNING, isLegacyRepoUrl, maskRepoUrl, type EnvironmentMeta } from '../../../../../shared/inventory'
 import { envAppHost, type AppServiceMeta, type DbServiceMeta, type ServiceKind, type ServiceMeta } from '../../../../../shared/services'
 import { reorderServices, useDeploy, useDeployments, useServices } from '../../../deploy/store'
 import type { InventoryData } from '../../../inventory/store'
@@ -181,7 +181,8 @@ function CheckoutHeader({ checkout: d, items, host, onEdit }: { checkout: Deploy
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div className="flex min-w-0 items-baseline gap-2">
           <h4 className="truncate text-[12.5px] font-semibold text-fg">{d.name}</h4>
-          <span className="truncate font-mono text-[11.5px] text-muted">{d.repoUrl ?? d.repoPath}</span>
+          <span className="truncate font-mono text-[11.5px] text-muted">{d.repoUrl ? maskRepoUrl(d.repoUrl) : d.repoPath}</span>
+          {d.repoUrl && isLegacyRepoUrl(d.repoUrl) && <span className="shrink-0 text-[11px] text-warn">{REPO_URL_LEGACY_WARNING}</span>}
         </div>
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5">
           <span className={meta}>

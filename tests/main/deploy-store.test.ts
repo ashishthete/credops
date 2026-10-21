@@ -107,6 +107,10 @@ describe('DeployStore', () => {
     const f = await makeDeployFixture()
     const bad: [Partial<ReturnType<typeof f.input>>, string][] = [
       [{ repoUrl: 'ftp://x/y' }, 'repository URL must be an http(s), ssh:// or git@ URL without spaces'],
+      [{ repoUrl: 'https:///tok:pw@github.com/a' }, 'repository URL must be an http(s), ssh:// or git@ URL without spaces'],
+      [{ repoUrl: 'https:////tok@github.com/a' }, 'repository URL must be an http(s), ssh:// or git@ URL without spaces'],
+      [{ repoUrl: 'git@https://tok:pw@github.com/a' }, 'repository URL must be an http(s), ssh:// or git@ URL without spaces'],
+      [{ repoUrl: 'https:\\\\\\\\tok:pw@github.com/a' }, 'repository URL must be an http(s), ssh:// or git@ URL without spaces'],
       [{ repoUrl: 'git@host:a b' }, 'repository URL must be an http(s), ssh:// or git@ URL without spaces'],
       [{ repoUrl: 'https://' + 'x'.repeat(2048) }, 'repository URL must be an http(s), ssh:// or git@ URL without spaces'],
       [{ composeProject: '--rm' }, 'compose project must be letters, digits, dashes, dots or underscores'],

@@ -14,7 +14,7 @@ import {
   type HealthUrl,
   type UseSudo,
 } from '../../../shared/deploy'
-import { MAX_NAME, REPO_URL } from '../../../shared/inventory'
+import { MAX_NAME, REPO_URL, REPO_URL_CREDENTIALS_MSG, hasRepoCredentials, maskRepoUrl } from '../../../shared/inventory'
 import { DEFAULT_VAULT_ID } from '../../../shared/vault'
 
 export interface DeploymentForm {
@@ -71,11 +71,18 @@ export function blankForm(hostId = ''): DeploymentForm {
   }
 }
 
+/** A stored repo URL as the form shows it: credentials removed, and a value nothing can be made of left blank. */
+function formRepoUrl(stored: string | null): string {
+  if (stored === null) return ''
+  const masked = maskRepoUrl(stored)
+  return REPO_URL.test(masked) ? masked : ''
+}
+
 export function formFrom(d: DeploymentMeta): DeploymentForm {
   return {
     name: d.name,
     hostId: d.hostId,
-    repoUrl: d.repoUrl ?? '',
+    repoUrl: formRepoUrl(d.repoUrl),
     composeProject: d.composeProject ?? '',
     repoPath: d.repoPath,
     defaultBranch: d.defaultBranch,
@@ -133,6 +140,7 @@ export function checkForm(f: DeploymentForm): { errors: Partial<Record<FormField
   if (!COMPOSE_FILE.test(f.composeFile)) errors.composeFile = 'Use a relative path (letters, digits and . _ / -), with no ".."'
   const repoUrl = f.repoUrl.trim()
   if (repoUrl && (repoUrl.length > MAX_URL || !REPO_URL.test(repoUrl))) errors.repoUrl = 'Use an http(s), ssh:// or git@ URL, with no spaces'
+  else if (repoUrl && hasRepoCredentials(repoUrl)) errors.repoUrl = REPO_URL_CREDENTIALS_MSG
   const project = f.composeProject.trim()
   if (project && !COMPOSE_PROJECT.test(project)) errors.composeProject = 'A compose project uses letters, digits and . _ -, and starts with a letter or digit'
   if (f.dbBackup && !BACKUP_DIR.test(f.backupDir)) errors.backupDir = 'Use an absolute path for backups (letters, digits and . _ @ + / -), with no ".." or "//"'
@@ -196,13 +204,16 @@ export function toInput(f: DeploymentForm, environmentId: string, position?: num
 }
 
 /** Only the fields that differ from the saved deployment. */
-export function toPatch(f: DeploymentForm, original: DeploymentMeta): Partial<DeploymentInput> {
+export function toPatch(f: DeploymentForm, original: DeploymentMeta, opts: { removeRepoUrl?: boolean } = {}): Partial<DeploymentInput> {
   const next = toInput(f, original.environmentId)
   const patch: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(next)) {
     if (k === 'environmentId') continue
+    // The form shows a legacy URL masked: leaving it as shown keeps the stored value.
+    if (k === 'repoUrl' && f.repoUrl.trim() === formRepoUrl(original.repoUrl)) continue
     if (JSON.stringify(v) !== JSON.stringify(original[k as keyof DeploymentMeta])) patch[k] = v
   }
+  if (opts.removeRepoUrl && original.repoUrl !== null) patch.repoUrl = null
   return patch as Partial<DeploymentInput>
 }
 

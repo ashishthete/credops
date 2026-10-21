@@ -18,6 +18,9 @@ import {
   OS_ICONS,
   PRODUCT_ICONS,
   REPO_URL,
+  REPO_URL_CREDENTIALS_MSG,
+  hasRepoCredentials,
+  isParsableRepoUrl,
   TAG,
   type EnvironmentInput,
   type EnvironmentPatch,
@@ -249,13 +252,20 @@ export const asHostPatch: Check<HostPatch> = v.object({
   envVars: v.optional(envVars),
 }) as Check<HostPatch>
 
+/** A repo URL with a username or password is refused before any store sees it; the message never carries the value. */
+const noRepoCredentials = (check: Check<string>): Check<string> => (value, path) => {
+  const s = check(value, path)
+  if (s.trim() !== '' && REPO_URL.test(s.trim()) && !isParsableRepoUrl(s.trim())) throw new InvalidArgs(path, 'has an invalid format')
+  if (hasRepoCredentials(s.trim())) throw new InvalidArgs(path, REPO_URL_CREDENTIALS_MSG)
+  return s
+}
 // Deploy config. Shapes and ranges only: the store owns the content rules (paths, refs, memberships).
 const deployName = v.str({ min: 1, max: MAX_NAME, trim: true })
 const deployPath = v.str({ min: 1, max: MAX_REPO_PATH })
 const range = ([min, max]: readonly [number, number]) => v.int({ min, max })
 const healthUrl = v.object({ url: v.str({ min: 1, max: MAX_HEALTH_URL }), from: v.oneOf(['host', 'mac'] as const) })
 const deployFields = {
-  repoUrl: v.nullable(v.str({ max: MAX_URL })),
+  repoUrl: v.nullable(noRepoCredentials(v.str({ max: MAX_URL }))),
   composeProject: v.nullable(v.str({ max: MAX_COMPOSE_NAME })),
   repoPath: deployPath,
   defaultBranch: v.str({ min: 1, max: MAX_GIT_REF_INPUT }),
@@ -510,7 +520,7 @@ export const asEnvironmentPatch: Check<EnvironmentPatch> = v.object({
 }) as Check<EnvironmentPatch>
 
 const productIcon = v.oneOf(PRODUCT_ICONS)
-const repoUrl = v.optional(v.nullable(v.str({ max: MAX_URL, pattern: REPO_URL })))
+const repoUrl = v.optional(v.nullable(noRepoCredentials(v.str({ max: MAX_URL, pattern: REPO_URL }))))
 const description = v.str({ max: MAX_DESCRIPTION })
 
 export const asProductInput: Check<ProductInput> = v.object({
