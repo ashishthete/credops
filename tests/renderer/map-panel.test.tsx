@@ -139,6 +139,7 @@ describe('map detail panel', () => {
     expect(p).toHaveTextContent('Ops vault')
     expect(p).toHaveTextContent('Not checked')
     expect(p).toHaveTextContent('0 sessions')
+    expect(within(p).getByText('test-1')).toHaveAttribute('title', 'Test')
     expect(document.activeElement).toBe(within(p).getByRole('button', { name: 'Connect' }))
     expect(node('e:e1/h:h1')).toHaveClass('selected')
   })
@@ -228,6 +229,8 @@ describe('map detail panel', () => {
     expect(p).toHaveTextContent('Web')
     expect(p).toHaveTextContent('2 hosts')
     expect(p).toHaveTextContent('Bastion 1 · Database 1')
+    // Its regions come from its hosts.
+    expect(within(within(p).getByRole('list', { name: 'Regions' })).getByText('test-1')).toBeInTheDocument()
     await click(within(p).getByRole('button', { name: 'Filter to this environment' }))
     // ?env=e1 scopes the map to Prod alone.
     expect(node('e:e2')).toBeNull()

@@ -1,11 +1,10 @@
 import type { DeploymentMeta } from '../../../shared/deploy'
-import type { EnvironmentMeta, HostMeta, HostRole, OsIcon, ProductIcon } from '../../../shared/inventory'
+import type { EnvironmentMeta, HostMeta, HostRole, OsIcon, ProductIcon, RegionRef } from '../../../shared/inventory'
 import type { ServiceMeta } from '../../../shared/services'
 import type { TunnelMeta, TunnelType } from '../../../shared/tunnels'
 import type { InventoryData } from '../inventory/store'
+import { regionById } from '../inventory/regions'
 import { byName, compareHosts, UNASSIGNED_COLOR } from '../inventory/tree'
-// regions-ui: one product per environment, read as a list until the Regions UI.
-import { productIdsOf } from '../inventory/regions-stopgap'
 
 export type MapScope = { kind: 'all' } | { kind: 'product'; productId: string } | { kind: 'environment'; environmentId: string }
 
@@ -75,7 +74,8 @@ export interface EnvironmentNodeData {
   color: string
   protected: boolean
   hostCount: number
-  productNames: string[]
+  /** Null for the unassigned group. */
+  productName: string | null
 }
 export interface HostNodeData {
   kind: 'host'
@@ -83,6 +83,8 @@ export interface HostNodeData {
   environmentId: string | null
   label: string
   address: string
+  /** Null only for a region the inventory doesn't list. */
+  region: RegionRef | null
   role: HostRole | null
   osIcon: OsIcon
   tags: string[]
@@ -108,7 +110,6 @@ export interface MapNode {
 
 export interface MembershipEdgeData {
   kind: 'membership'
-  primary: boolean
 }
 export interface JumpEdgeData {
   kind: 'jump'
@@ -137,7 +138,8 @@ export interface MapGraph {
 interface Group {
   id: string
   env: EnvironmentMeta | null
-  primaryProductId: string | null
+  /** The environment's product when it is drawn; null for the unassigned group. */
+  productId: string | null
 }
 
 const NO_ATTACHMENTS: MapAttachments = {}
@@ -156,35 +158,35 @@ export function buildGraph({
   const productById = new Map(data.products.map((p) => [p.id, p]))
   const hostById = new Map(data.hosts.map((h) => [h.id, h]))
   const vaultName = new Map(data.vaults.map((v) => [v.id, v.name]))
+  const regionOf = (id: string): RegionRef | null => {
+    const r = regionById(data.regions, id)
+    return r ? { id: r.id, code: r.code, displayName: r.displayName } : null
+  }
 
   // Scope: which environments and products are drawn.
   const scopedEnvs =
     scope.kind === 'all' ? data.environments
     : scope.kind === 'environment' ? data.environments.filter((e) => e.id === scope.environmentId)
-    : data.environments.filter((e) => productIdsOf(e).includes(scope.productId))
+    : data.environments.filter((e) => e.productId === scope.productId)
   const productIds = new Set(
     scope.kind === 'all' ? data.products.map((p) => p.id)
     : scope.kind === 'product' ? [scope.productId]
-    : scopedEnvs.flatMap((e) => productIdsOf(e)),
+    : scopedEnvs.map((e) => e.productId),
   )
   const scopedProducts = data.products.filter((p) => productIds.has(p.id)).sort((a, b) => byName(a.name, b.name))
   const productRank = new Map(scopedProducts.map((p, i) => [p.id, i]))
 
-  // Each environment sits once, under its primary product (first by id among the products in scope).
-  const groups: Group[] = scopedEnvs.map((env) => {
-    const inScope = productIdsOf(env).filter((id) => productRank.has(id))
-    const primaryProductId = inScope.length ? [...inScope].sort()[0] : null
-    return { id: `e:${env.id}`, env, primaryProductId }
-  })
+  // Each environment sits once, under its product.
+  const groups: Group[] = scopedEnvs.map((env) => ({ id: `e:${env.id}`, env, productId: productRank.has(env.productId) ? env.productId : null }))
   groups.sort((a, b) => {
-    const ra = a.primaryProductId === null ? Infinity : productRank.get(a.primaryProductId)!
-    const rb = b.primaryProductId === null ? Infinity : productRank.get(b.primaryProductId)!
+    const ra = a.productId === null ? Infinity : productRank.get(a.productId)!
+    const rb = b.productId === null ? Infinity : productRank.get(b.productId)!
     return ra - rb || byName(a.env!.name, b.env!.name)
   })
 
   const placed = new Set(data.environments.flatMap((e) => e.hosts.map((m) => m.hostId)))
   const looseHosts = scope.kind === 'all' ? data.hosts.filter((h) => !placed.has(h.id)).sort((a, b) => byName(a.label, b.label)) : []
-  if (looseHosts.length) groups.push({ id: 'u', env: null, primaryProductId: null })
+  if (looseHosts.length) groups.push({ id: 'u', env: null, productId: null })
 
   const placementCount = new Map<string, number>()
   for (const e of data.environments) for (const m of new Set(e.hosts.map((x) => x.hostId))) placementCount.set(m, (placementCount.get(m) ?? 0) + 1)
@@ -199,7 +201,7 @@ export function buildGraph({
       id: `p:${p.id}`,
       data: {
         kind: 'product', productId: p.id, name: p.name, color: p.color, icon: p.icon,
-        environmentCount: scopedEnvs.filter((e) => productIdsOf(e).includes(p.id)).length,
+        environmentCount: scopedEnvs.filter((e) => e.productId === p.id).length,
       },
     })
   }
@@ -218,14 +220,14 @@ export function buildGraph({
         ? {
             kind: 'environment', environmentId: g.env.id, name: g.env.name, color: g.env.color, protected: g.env.protected,
             hostCount: members.length,
-            productNames: productIdsOf(g.env).flatMap((id) => productById.get(id)?.name ?? []).sort(byName),
+            productName: productById.get(g.env.productId)?.name ?? null,
           }
-        : { kind: 'environment', environmentId: null, name: 'Unassigned', color: UNASSIGNED_COLOR, protected: false, hostCount: members.length, productNames: [] },
+        : { kind: 'environment', environmentId: null, name: 'Unassigned', color: UNASSIGNED_COLOR, protected: false, hostCount: members.length, productName: null },
     })
     for (const { host, role } of members) {
       const id = `${g.id}/h:${host.id}`
       const data: HostNodeData = {
-          kind: 'host', hostId: host.id, environmentId: g.env?.id ?? null, label: host.label, address: host.address, role,
+          kind: 'host', hostId: host.id, environmentId: g.env?.id ?? null, label: host.label, address: host.address, region: regionOf(host.regionId), role,
           osIcon: host.osIcon, tags: [...host.tags], vaultNames: host.vaultIds.flatMap((v) => vaultName.get(v) ?? []),
           sharedCount: placementCount.get(host.id) ?? 1, jumpLabel: null,
           // Only an environment placement carries services; the unassigned group has none.
@@ -235,14 +237,7 @@ export function buildGraph({
       hostNodes.push({ id, data, host, env: g.env })
       ;(placementsByHost[host.id] ??= []).push(id)
     }
-    if (g.env && g.primaryProductId !== null) {
-      for (const productId of productIdsOf(g.env).filter((pid) => productRank.has(pid)).sort()) {
-        edges.push({
-          id: `m:${productId}>${g.id}`, source: `p:${productId}`, target: g.id,
-          data: { kind: 'membership', primary: productId === g.primaryProductId },
-        })
-      }
-    }
+    if (g.productId !== null) edges.push({ id: `m:${g.productId}>${g.id}`, source: `p:${g.productId}`, target: g.id, data: { kind: 'membership' } })
   }
 
   // Jumps: the host's own, else the environment's default.

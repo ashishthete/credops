@@ -403,6 +403,7 @@ describe('map list view', () => {
 
     const web = row('web', 'Prod')
     expect(web).toHaveTextContent('10.0.0.5')
+    expect(web).toHaveTextContent('test-1')
     expect(web).toHaveTextContent('Bastion')
     expect(web).toHaveTextContent('Not checked')
     expect(within(web).getByRole('list', { name: 'web tunnels' })).toHaveTextContent('pg-local')

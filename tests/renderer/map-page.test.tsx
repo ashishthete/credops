@@ -96,10 +96,10 @@ describe('map page', () => {
     expect(h1).not.toBeNull()
     expect(h1).toHaveTextContent('web')
     expect(h1).toHaveTextContent('10.0.0.5')
+    expect(within(h1).getByText('test-1')).toHaveAttribute('title', 'Test')
     // Children sit inside their group: React Flow positions them relative to the parent.
     expect(node('e:e1')).toHaveTextContent('Prod')
     expect(node('e:e1')).toHaveTextContent('3 hosts')
-    expect(node('e:e1')).not.toHaveTextContent('also in')
     expect(within(node('e:e1')!).getByLabelText('Protected')).toBeInTheDocument()
   })
 

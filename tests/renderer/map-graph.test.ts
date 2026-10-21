@@ -11,7 +11,7 @@ import { ATTACH_H, HOST_H, layoutGraph } from '../../src/renderer/src/map/layout
 import { nodeTypes } from '../../src/renderer/src/map/nodes'
 import type { ReleaseSummary } from '../../src/shared/deploy'
 import { releaseDetail } from './fixtures/release-events'
-import { appService, dbService, deploymentMeta, environment, host, product, tunnelMeta } from './helpers'
+import { appService, dbService, deploymentMeta, environment, host, product, REGION, tunnelMeta } from './helpers'
 
 // framer-motion caches matchMedia, so reduced motion is driven through its hook directly.
 const reduced = vi.hoisted(() => ({ on: false }))
@@ -58,6 +58,16 @@ describe('buildGraph', () => {
     const g = build(basic())
     expect(ids(g)).toEqual(['p:p1', 'e:e1', 'e:e1/h:h1', 'e:e1/h:h2', 'e:e2', 'e:e2/h:h3'])
     for (const n of g.nodes.filter((n) => n.data.kind === 'host')) expect(n.parentId).toBe(n.id.split('/')[0])
+  })
+
+  it('an environment carries its one product, with one membership edge, and a host its region', () => {
+    const g = build({ ...basic(), regions: [REGION] })
+    const env = g.nodes.find((n) => n.id === 'e:e1')!.data
+    expect(env).toMatchObject({ kind: 'environment', productName: 'Web' })
+    expect(g.edges.filter((e) => e.data.kind === 'membership').map((e) => e.id)).toEqual(['m:p1>e:e1', 'm:p1>e:e2'])
+    expect(g.nodes.find((n) => n.id === 'e:e1/h:h1')!.data).toMatchObject({ region: { id: REGION.id, code: 'test-1', displayName: 'Test' } })
+    // A region the inventory doesn't list leaves the host without one.
+    expect(build(basic()).nodes.find((n) => n.id === 'e:e1/h:h1')!.data).toMatchObject({ region: null })
   })
 
   it('orders hosts by role, then label', () => {

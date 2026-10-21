@@ -49,7 +49,7 @@ describe('layoutGraph', () => {
     expect(l.positions['e:e1'].width).toBe(2 * GROUP_PAD + HOST_W)
   })
 
-  it('stacks groups under their primary product and centres the product', () => {
+  it('stacks groups under their product and centres the product', () => {
     const l = layout(
       inventory(
         [
