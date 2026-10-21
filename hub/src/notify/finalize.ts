@@ -190,6 +190,12 @@ export function createHubNotify(d: HubFinalizeDeps): HubNotify {
     },
   }
 
+  // Cards read the actor from the run's meta; only their "By" text takes the display name, never the stored run.
+  const nameActor = <T extends { actor: { osUser: string } }>(meta: T): T => {
+    const name = d.displayName?.(meta.actor.osUser)
+    return name ? { ...meta, actor: { ...meta.actor, osUser: name } } : meta
+  }
+
   const dispatcher = new NotificationDispatcher({
     db: d.db,
     sink,
@@ -197,7 +203,7 @@ export function createHubNotify(d: HubFinalizeDeps): HubNotify {
     settings,
     vault: { isUnlocked: () => true },
     audit,
-    runs: { runMeta: (id, status) => d.runMeta(id, status) },
+    runs: { runMeta: (id, status) => nameActor(d.runMeta(id, status)) },
     tunnels: {
       get: () => {
         throw new Error('The Hub has no tunnels')
@@ -219,7 +225,7 @@ export function createHubNotify(d: HubFinalizeDeps): HubNotify {
     sleep: d.sleep,
     audit,
     dispatcher,
-    runs: { runMeta: (id) => d.runMeta(id) },
+    runs: { runMeta: (id) => nameActor(d.runMeta(id)) },
     knownSecrets: known,
     ...(d.now ? { now: d.now } : {}),
   })
@@ -246,7 +252,6 @@ export function createHubNotify(d: HubFinalizeDeps): HubNotify {
 
   // The GitHub token is read inside QaDispatcher on every call; it is masked while a dispatch runs and while its
   // background wait can still poll (2 min to find the run, then 30 min), so errors and the live feed never carry it.
-  const QA_WAIT_MS = 33 * 60_000
   const heldQa: Pick<QaDispatcher, 'dispatch' | 'watch'> = {
     async dispatch(environmentId, o) {
       const token = d.secrets.integration(null, 'github_token')
@@ -259,8 +264,9 @@ export function createHubNotify(d: HubFinalizeDeps): HubNotify {
     },
     watch(item) {
       const token = d.secrets.integration(null, 'github_token')
-      if (token !== null) setTimeout(hold(token), QA_WAIT_MS).unref()
-      qa.watch(item)
+      const release = token === null ? () => undefined : hold(token)
+      // Held for as long as the wait polls, however long that is; watch never rejects.
+      return qa.watch(item).finally(release)
     },
   }
 

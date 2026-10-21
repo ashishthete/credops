@@ -33,7 +33,8 @@ export function assertNoSecretKeys(payload: unknown, depth = 0): void {
 
 const isHttpsUrl = (v: string): boolean => {
   try {
-    return new URL(v).protocol === 'https:'
+    const u = new URL(v)
+    return u.protocol === 'https:' && u.username === '' && u.password === ''
   } catch {
     return false
   }

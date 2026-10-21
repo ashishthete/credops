@@ -25,10 +25,11 @@ interface Posted {
   body: string
 }
 
-function stubFetch(posts: Posted[], status = 200, onCall?: (url: string) => void) {
+function stubFetch(posts: Posted[], status = 200, onCall?: (url: string) => Response | void) {
   return vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-    onCall?.(String(url))
+    const custom = onCall?.(String(url))
     posts.push({ url: String(url), body: typeof init?.body === 'string' ? init.body : '' })
+    if (custom) return custom
     return new Response('ok', { status })
   }) as unknown as typeof fetch
 }
@@ -56,7 +57,7 @@ const claudeStub = (text: string) => {
   return { stream, factory: () => ({ beta: { messages: { create: vi.fn(), stream } } }) as unknown as AnthropicLike }
 }
 
-async function setup(o: { env?: string; events?: string[]; webhook?: boolean; anthropic?: boolean; fetchStatus?: number; claude?: ReturnType<typeof claudeStub>; qa?: boolean; onFetch?: (url: string) => void } = {}) {
+async function setup(o: { env?: string; events?: string[]; webhook?: boolean; anthropic?: boolean; fetchStatus?: number; claude?: ReturnType<typeof claudeStub>; qa?: boolean; qaWait?: boolean; onFetch?: (url: string) => Response | void } = {}) {
   const posts: Posted[] = []
   const fr = new FakeRunner()
   const claude = o.claude ?? claudeStub('Release notes written by the stub model.')
@@ -71,7 +72,7 @@ async function setup(o: { env?: string; events?: string[]; webhook?: boolean; an
   m.deployments = [deployment(DEP_WEB, 'web', { envTemplate: `DB_PASSWORD=\${secret:${SECRET_DB}}\n` })]
   m.services = [{ id: SVC, name: 'web-svc', kind: 'service', composeService: 'web', deploymentId: DEP_WEB, hostId: HOST_ID, viaHostId: null }]
   m.requiredSecrets = [{ secretId: SECRET_DB, name: 'DB_PASSWORD', usedBy: ['web'] }]
-  m.integrations = { notifyEvents: o.events ?? ['release.succeeded', 'release.failed'], emailTo: ['ops@example.com'], emailCc: [], qaOnDeploy: o.qa === true, qa: o.qa ? { repo: 'acme/web', workflow: 'qa.yml', ref: 'main' } : null, qaWait: false }
+  m.integrations = { notifyEvents: o.events ?? ['release.succeeded', 'release.failed'], emailTo: ['ops@example.com'], emailCc: [], qaOnDeploy: o.qa === true, qa: o.qa ? { repo: 'acme/web', workflow: 'qa.yml', ref: 'main' } : null, qaWait: o.qaWait === true }
   expect((await call(admin, 'PUT', `/api/v1/admin/environments/${ENV_ID}`, m)).statusCode).toBe(200)
   expect((await call(admin, 'POST', `/api/v1/admin/environments/${ENV_ID}/deploy-key`)).statusCode).toBe(200)
   const put = async (path: string, body: object) => expect((await call(admin, 'PUT', path, body)).statusCode).toBe(204)
@@ -187,6 +188,10 @@ describe('hub notifications', () => {
     await release(a.bob, a.fr)
     expect(cards(a.posts).length).toBe(1)
     expect(cards(a.posts)[0]!.body).toContain('prod')
+    // Failed cards name the person too, while the stored triggeredBy stays the upn.
+    expect(cards(a.posts)[0]!.body).toContain('Bob Builder@')
+    expect(cards(a.posts)[0]!.body).not.toContain('bob@example.com')
+    expect((hub.db.prepare('SELECT triggered_by FROM releases').get() as { triggered_by: string }).triggered_by).toMatch(/^bob@example\.com@/)
     await hub.close()
 
     const b = await setup({ events: ['release.succeeded'] })
@@ -217,6 +222,38 @@ describe('hub notifications', () => {
     for (const known of seen) expect(known).toContain(GITHUB)
     expect(JSON.stringify(posts)).not.toContain(GITHUB)
     expect(everything()).not.toContain(GITHUB)
+    expect(hub.app.releases.knownSecrets()).not.toContain(GITHUB)
+  })
+
+  it('the GitHub token is released when the dispatch fails with a 500', async () => {
+    const { fr, bob } = await setup({ qa: true, onFetch: (url) => (url.includes('/dispatches') ? new Response('boom', { status: 500 }) : undefined) })
+    await release(bob, fr, true)
+    expect(hub.app.releases.knownSecrets()).not.toContain(GITHUB)
+    expect(everything()).not.toContain(GITHUB)
+  })
+
+  it('the GitHub token stays masked while the QA wait polls and is released when it settles', async () => {
+    const seen: string[][] = []
+    let polls = 0
+    const { fr, bob } = await setup({
+      qa: true,
+      qaWait: true,
+      onFetch: (url) => {
+        if (!url.includes('api.github.com')) return undefined
+        seen.push(hub.app.releases.knownSecrets())
+        const run = (status: string) => ({ id: 1, created_at: new Date(Date.now() + 5_000).toISOString(), status, conclusion: status === 'completed' ? 'success' : null, html_url: 'https://github.com/acme/web/actions/runs/1' })
+        if (url.includes('/dispatches')) return new Response(null, { status: 204 })
+        if (url.includes('/runs?')) return Response.json({ workflow_runs: [run('queued')] })
+        if (url.includes('/runs/1')) return Response.json(run(++polls < 3 ? 'in_progress' : 'completed'))
+        return undefined
+      },
+    })
+    await release(bob, fr, true)
+    await vi.waitFor(() => expect(polls).toBeGreaterThanOrEqual(3))
+    await vi.waitFor(() => expect(hub.app.releases.knownSecrets()).not.toContain(GITHUB))
+    expect(seen.length).toBeGreaterThanOrEqual(4)
+    for (const known of seen) expect(known).toContain(GITHUB)
+    expect(everything()).not.toContain(GITHUB)
   })
 
   it('rejects a Teams webhook that is not an https URL, without echoing it', async () => {
@@ -226,6 +263,13 @@ describe('hub notifications', () => {
       expect(r.statusCode).toBe(400)
       expect(r.body).not.toContain('SECRET-BAD-VALUE')
     }
+    for (const bad of ['https://user:pw-SECRET-BAD-VALUE@hooks.example.com/x', 'https://SECRET-BAD-VALUE@hooks.example.com/x']) {
+      const r = await call(admin, 'PUT', '/api/v1/admin/secrets/65555555-5555-4555-8555-555555555555', { environmentId: ENV_ID, name: 'teams', kind: 'teams_webhook', value: bad })
+      expect(r.statusCode).toBe(400)
+      expect(r.body).not.toContain('SECRET-BAD-VALUE')
+    }
+    expect(JSON.stringify(hub.audit.list({ limit: 1000 }))).not.toContain('SECRET-BAD-VALUE')
+    expect(JSON.stringify(hub.logs)).not.toContain('SECRET-BAD-VALUE')
     expect((await call(admin, 'PUT', '/api/v1/admin/secrets/65555555-5555-4555-8555-555555555555', { environmentId: ENV_ID, name: 'teams', kind: 'teams_webhook', value: WEBHOOK })).statusCode).toBe(204)
   })
 })

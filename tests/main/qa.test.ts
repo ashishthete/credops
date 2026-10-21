@@ -187,7 +187,7 @@ describe('QaDispatcher', () => {
 describe('qa handlers', () => {
   it('a manual dispatch audits trigger manual and waits when qaWait is on', async () => {
     const t = await setup()
-    const watch = vi.spyOn(t.qa, 'watch').mockImplementation(() => undefined)
+    const watch = vi.spyOn(t.qa, 'watch').mockImplementation(async () => undefined)
     const h = createQaHandlers({ qa: t.qa, integrations: t.integrations })
     const d = await h['qa:dispatch'](t.env.id)
     expect(watch).toHaveBeenCalledWith(d)

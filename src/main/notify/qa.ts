@@ -138,9 +138,12 @@ export class QaDispatcher {
     }
   }
 
-  /** Waits in the background for the dispatch's run; never throws. */
-  watch(d: QaDispatch): void {
-    void this.wait(d, this.lifetime.signal).catch(() => undefined)
+  /** Waits in the background for the dispatch's run; the promise settles when the wait does and never rejects. */
+  watch(d: QaDispatch): Promise<void> {
+    return this.wait(d, this.lifetime.signal).then(
+      () => undefined,
+      () => undefined,
+    )
   }
 
   /**
