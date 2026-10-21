@@ -3,10 +3,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import type { EnvironmentIntegrations } from '../../src/shared/settings'
-import { HubPublisher, buildManifest, toHubIntegrations } from '../../src/main/hub/publish'
+import { HUB_TOO_OLD_MESSAGE, HubPublisher, buildManifest, toHubIntegrations } from '../../src/main/hub/publish'
 import { resolveHost } from '../../src/main/inventory/resolve'
 import { KnownHostStore } from '../../src/main/ssh/known-hosts'
 import type { HubEnvManifest } from '../../src/shared/hub'
+import { RunbookStore } from '../../src/main/deploy/runbook-store'
+import type { Step } from '../../src/shared/steps'
+import { hubReadManifest } from './hub-fixture'
 import { SecretStore } from '../../src/main/vault/secret-store'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import { makeDeployFixture, type DeployFixture } from './deploy-helpers'
@@ -227,5 +230,125 @@ describe('toHubIntegrations', () => {
     expect(withWait.qa).toEqual({ repo: 'acme/web', workflow: 'qa.yml', ref: 'main', waitMinutes: 90 })
     expect(Object.keys(toHubIntegrations(local).qa as object)).toEqual(['repo', 'workflow', 'ref'])
     expect(JSON.stringify(m)).not.toContain('updatedAt')
+  })
+})
+
+const step = (over: Partial<Step> = {}): Step => ({
+  id: 'c_1', name: 'migrate', run: 'shell', service: null, script: 'echo TOPSECRETSCRIPT', cwd: null, sudo: 'docker', timeoutSec: 600,
+  onFailure: 'stop', when: { kind: 'always' }, secrets: [], anchor: 'after_up', alsoOnRollback: false, ...over,
+})
+
+describe('buildManifest by Hub schema', () => {
+  async function ready(trustAll = true) {
+    const s = await setup()
+    if (trustAll) {
+      s.trust('203.0.113.9', 2222)
+      s.trust('10.0.0.7', 22)
+    }
+    const dep = s.f.deploys.list(s.f.prod.id)[0]
+    return { ...s, dep }
+  }
+
+  it('schema 1 with only hooks publishes preHook and postHook and no steps', async () => {
+    const { f, deps, dep } = await ready()
+    f.deploys.update(dep.id, { preHook: 'echo pre', postHook: 'echo post' })
+    const m = await buildManifest(f.prod.id, deps, { hubSchema: 1 })
+    expect(m.schema).toBeUndefined()
+    expect(m.deployments[0]).toMatchObject({ preHook: 'echo pre', postHook: 'echo post' })
+    expect(m.deployments[0].steps).toBeUndefined()
+    expect(m.runbooks).toBeUndefined()
+  })
+
+  it('schema 1 with a custom step, a flow or a runbook throws HUB_TOO_OLD', async () => {
+    const { f, deps, dep } = await ready()
+    const svc = f.services.create({ kind: 'service', environmentId: f.prod.id, name: 'web', deploymentId: dep.id })
+    f.deploys.update(dep.id, { steps: [step()] })
+    await expect(buildManifest(f.prod.id, deps, { hubSchema: 1 })).rejects.toThrow(HUB_TOO_OLD_MESSAGE)
+    f.deploys.update(dep.id, { steps: [] })
+    await expect(buildManifest(f.prod.id, deps, { hubSchema: 1 })).resolves.toBeDefined()
+    f.deploys.updateSettings(f.prod.id, { flow: { stages: [{ kind: 'services', serviceIds: [svc.id] }], onFailure: 'stop-all' } })
+    await expect(buildManifest(f.prod.id, deps, { hubSchema: 1 })).rejects.toThrow(HUB_TOO_OLD_MESSAGE)
+    f.deploys.updateSettings(f.prod.id, { flow: null })
+    const runbooks = new RunbookStore({ db: f.db, audit: f.audit, vault: f.vault })
+    runbooks.create({ environmentId: f.prod.id, name: 'Restart', description: '', targetServiceIds: [svc.id], items: [{ type: 'builtin', builtin: 'restart' }], params: [], lock: true, notify: false }, { osUser: 'a', machine: 'm' })
+    await expect(buildManifest(f.prod.id, { ...deps, runbooks }, { hubSchema: 1 })).rejects.toThrow(HUB_TOO_OLD_MESSAGE)
+  })
+
+  it('schema 2 round-trips steps, flow, prepare settings, skipUnchanged and runbooks through the Hub readManifest', async () => {
+    const { f, deps, dep, sudo } = await ready()
+    const svc = f.services.create({ kind: 'service', environmentId: f.prod.id, name: 'web', deploymentId: dep.id, skipUnchanged: true })
+    f.deploys.update(dep.id, { steps: [step({ secrets: [{ envName: 'TOKEN', secretId: sudo.id }] })] })
+    f.deploys.updateSettings(f.prod.id, { parallelPrepare: false, prepareCap: 2, flow: { stages: [{ kind: 'services', serviceIds: [svc.id] }], onFailure: 'continue-other-hosts' } })
+    const runbooks = new RunbookStore({ db: f.db, audit: f.audit, vault: f.vault })
+    runbooks.create({ environmentId: f.prod.id, name: 'Restart', description: 'd', targetServiceIds: [svc.id], items: [{ type: 'builtin', builtin: 'restart' }], params: [], lock: true, notify: false }, { osUser: 'a', machine: 'm' })
+    const m = await buildManifest(f.prod.id, { ...deps, runbooks }, { hubSchema: 2 })
+    expect(m.schema).toBe(2)
+    expect(m.environment).toMatchObject({ parallelPrepare: false, prepareCap: 2 })
+    expect(m.services.find((s) => s.id === svc.id)?.skipUnchanged).toBe(true)
+    expect(m.deployments[0].steps).toEqual([step({ secrets: [{ envName: 'TOKEN', secretId: sudo.id }] })])
+    expect(m.runbooks).toHaveLength(1)
+    expect(m.runbooks?.[0]).not.toHaveProperty('environmentId')
+    const readManifest = await hubReadManifest()
+    const back = readManifest(JSON.parse(JSON.stringify(m)))
+    expect(back.environment.flow?.onFailure).toBe('continue-other-hosts')
+    expect(back.deployments[0].steps).toHaveLength(1)
+    expect(back.runbooks?.[0].name).toBe('Restart')
+    expect(JSON.stringify(m)).not.toContain(SUDO_PW)
+  })
+
+  it('schema 2 sends migrated hooks as steps with the hooks cleared', async () => {
+    const { f, deps, dep } = await ready()
+    f.deploys.update(dep.id, { preHook: 'echo pre' })
+    const readManifest = await hubReadManifest()
+    const m = await buildManifest(f.prod.id, deps, { hubSchema: 2 })
+    expect(m.deployments[0]).toMatchObject({ preHook: null, postHook: null })
+    expect(m.deployments[0].steps?.map((x) => x.id)).toEqual(['pre-hook'])
+    expect(() => readManifest(JSON.parse(JSON.stringify(m)))).not.toThrow()
+  })
+
+  it('requiredSecrets includes step, flow and runbook secrets', async () => {
+    const { f, deps, dep, secrets } = await ready()
+    const extra = secrets.create({ vaultId: DEFAULT_VAULT_ID, name: 'stepsecret', kind: 'password', value: 'step-value-77' })
+    const svc = f.services.create({ kind: 'service', environmentId: f.prod.id, name: 'web', deploymentId: dep.id })
+    f.deploys.update(dep.id, { steps: [step({ secrets: [{ envName: 'TOKEN', secretId: extra.id }] })] })
+    const m = await buildManifest(f.prod.id, deps, { hubSchema: 2 })
+    expect(m.requiredSecrets.map((r) => r.name).sort()).toEqual(['envsecret', 'stepsecret', 'sudo'])
+    expect(m.requiredSecrets.find((r) => r.name === 'stepsecret')?.usedBy).toEqual([dep.name])
+    expect(JSON.stringify(m)).not.toContain('step-value-77')
+    void svc
+  })
+})
+
+describe('HubPublisher by Hub capabilities', () => {
+  async function publisher(get: ((path: string) => Promise<unknown>) | undefined) {
+    const s = await setup()
+    s.trust('203.0.113.9', 2222)
+    s.trust('10.0.0.7', 22)
+    const dep = s.f.deploys.list(s.f.prod.id)[0]
+    s.f.deploys.update(dep.id, { steps: [step()] })
+    const put = vi.fn(async (_p: string, _b: unknown) => ({ manifestHash: 'h', missingSecrets: [] }))
+    const pub = new HubPublisher({ ...s.deps, audit: s.f.audit, vault: s.f.vault, client: () => ({ put: put as never, del: vi.fn(), ...(get ? { get: get as never } : {}) }), hubId: () => 'hub-1' })
+    return { ...s, pub, put }
+  }
+
+  it('reads /meta first and publishes schema 2 to a Hub that supports it', async () => {
+    const get = vi.fn(async (_p: string) => ({ capabilities: { manifestSchema: 2, playbookEdits: false } }))
+    const { f, pub, put } = await publisher(get)
+    await pub.publish(f.prod.id)
+    expect(get).toHaveBeenCalledWith('/api/v1/meta')
+    expect((put.mock.calls[0][1] as HubEnvManifest).schema).toBe(2)
+  })
+
+  it('counts a Hub with no capabilities as schema 1 and refuses a custom step before sending', async () => {
+    const { f, pub, put } = await publisher(async () => ({ hubId: 'x' }))
+    await expect(pub.publish(f.prod.id)).rejects.toThrow(HUB_TOO_OLD_MESSAGE)
+    expect(put).not.toHaveBeenCalled()
+    expect(auditRows(f.db)).not.toContain('hub.publish')
+  })
+
+  it('counts a client that cannot get as schema 1', async () => {
+    const { f, pub, put } = await publisher(undefined)
+    await expect(pub.publish(f.prod.id)).rejects.toThrow(HUB_TOO_OLD_MESSAGE)
+    expect(put).not.toHaveBeenCalled()
   })
 })

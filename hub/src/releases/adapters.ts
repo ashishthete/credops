@@ -180,6 +180,7 @@ const ACTION: Record<DeployAction, HubAction> = {
   'release.rollback': 'release.rollback',
   'release.cancel': 'release.cancel',
   'lock.break': 'lock.break',
+  'ops.run': 'ops.run',
 }
 
 /** The group a decision went through, as the audit trail names it. */

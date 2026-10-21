@@ -1,5 +1,7 @@
 import type {
   BreakLockConfirm,
+  EditValidation,
+  OperationRequest,
   PlaybookPreview,
   PreflightRequest,
   ReleaseConfirm,
@@ -21,6 +23,13 @@ type Maybe<T> = T | Promise<T>
  */
 export interface ReleaseApi {
   preflight(req: PreflightRequest): Maybe<{ releaseId: string }>
+  /**
+   * Run a runbook on services. Optional until the app's own ReleaseService has it: a router answers 503-style
+   * ("not available") when the side that owns the environment cannot.
+   */
+  preflightOperation?(req: OperationRequest): Maybe<{ releaseId: string }>
+  /** Check an edited playbook of a ready release; the answer carries the canonical text and its hash. */
+  validateEdit?(releaseId: string, text: string): Maybe<EditValidation>
   previewPlaybook(releaseId: string): Maybe<PlaybookPreview>
   start(releaseId: string, confirm?: ReleaseConfirm): Maybe<void>
   cancel(releaseId: string): Maybe<void>
@@ -38,7 +47,7 @@ export interface ReleaseApi {
   onEvent(fn: (batch: RunEvent[]) => void): () => void
 }
 
-type Op = 'preflight' | 'start' | 'cancel' | 'rollback' | 'break-lock' | 'discard' | 'retry-version'
+type Op = 'preflight' | 'preflight-operation' | 'start' | 'cancel' | 'rollback' | 'break-lock' | 'discard' | 'retry-version'
 
 export interface HubRunnerDeps {
   client: () => Pick<HubClient, 'get' | 'post'>
@@ -66,6 +75,19 @@ export class HubRunner implements ReleaseApi {
     const res = await this.audited('preflight', null, envName, () => this.d.client().post<{ releaseId: string }>('/api/v1/releases/preflight', req))
     this.remember(res.releaseId, envName)
     return res
+  }
+
+  /** A mutation: the audit row names the environment and the number of services, never a host or a param. */
+  async preflightOperation(req: OperationRequest): Promise<{ releaseId: string }> {
+    const envName = this.d.envName(req.environmentId) ?? ''
+    const res = await this.audited('preflight-operation', null, envName, () => this.d.client().post<{ releaseId: string }>('/api/v1/releases/preflight-operation', req), { serviceCount: req.serviceIds.length })
+    this.remember(res.releaseId, envName)
+    return res
+  }
+
+  /** A read of the Hub's checker: not audited. The text is sent once and never kept. */
+  validateEdit(releaseId: string, text: string): Promise<EditValidation> {
+    return this.d.client().post<EditValidation>(`/api/v1/releases/${releaseId}/validate-edit`, { text })
   }
 
   /** A read: not audited, like `detail`. */
@@ -188,27 +210,27 @@ export class HubRunner implements ReleaseApi {
     }
   }
 
-  private async audited<T>(op: Op, releaseId: string | null, environmentName: string, run: () => Promise<T>): Promise<T> {
+  private async audited<T>(op: Op, releaseId: string | null, environmentName: string, run: () => Promise<T>, counts?: { serviceCount: number }): Promise<T> {
     let result: T
     try {
       result = await run()
     } catch (err) {
-      this.audit(op, releaseId, environmentName, 'failure', err instanceof HubError ? err.code : undefined)
+      this.audit(op, releaseId, environmentName, 'failure', err instanceof HubError ? err.code : undefined, counts)
       throw err
     }
     const made = (result as { releaseId?: unknown } | undefined)?.releaseId
-    this.audit(op, typeof made === 'string' && (op === 'preflight' || op === 'rollback') ? made : releaseId, environmentName, 'success')
+    this.audit(op, typeof made === 'string' && (op === 'preflight' || op === 'preflight-operation' || op === 'rollback') ? made : releaseId, environmentName, 'success', undefined, counts)
     return result
   }
 
-  private audit(op: Op, releaseId: string | null, environmentName: string, outcome: 'success' | 'failure', reason?: string): void {
+  private audit(op: Op, releaseId: string | null, environmentName: string, outcome: 'success' | 'failure', reason?: string, counts?: { serviceCount: number }): void {
     this.d.audit.append({
       action: 'hub.release',
       outcome,
       targetType: 'release',
       ...(releaseId ? { targetId: releaseId } : {}),
       ...(environmentName ? { targetLabel: environmentName } : {}),
-      details: { op, releaseId, environmentName, ...(reason ? { reason } : {}) },
+      details: { op, releaseId, environmentName, ...(counts ?? {}), ...(reason ? { reason } : {}) },
     })
   }
 }
@@ -239,6 +261,16 @@ export class RoutingReleases implements ReleaseApi {
 
   async preflight(req: PreflightRequest): Promise<{ releaseId: string }> {
     return this.d.isHubEnv(req.environmentId) ? this.d.hub.preflight(req) : this.d.local.preflight(req)
+  }
+  async preflightOperation(req: OperationRequest): Promise<{ releaseId: string }> {
+    const api = this.d.isHubEnv(req.environmentId) ? this.d.hub : this.d.local
+    if (!api.preflightOperation) throw new Error('Runbook runs are not available here')
+    return api.preflightOperation(req)
+  }
+  async validateEdit(releaseId: string, text: string): Promise<EditValidation> {
+    const api = this.pick(releaseId)
+    if (!api.validateEdit) throw new Error('Playbook edits are not available here')
+    return api.validateEdit(releaseId, text)
   }
   previewPlaybook(releaseId: string): Maybe<PlaybookPreview> {
     return this.pick(releaseId).previewPlaybook(releaseId)

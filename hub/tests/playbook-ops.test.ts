@@ -6,7 +6,7 @@ import type { HubEnvManifest, HubUser } from '../../src/shared/hub'
 import { HUB_AUDIT_ACTIONS } from '../../src/shared/hub'
 import { HUB_MIGRATIONS } from '../src/db'
 import { decide } from '../src/access/policy'
-import { hubAudit } from '../src/releases/adapters'
+import { HubDeployAccess, hubAudit } from '../src/releases/adapters'
 import { DEP_API, DEP_WEB, ENV_ID, SECRET_DB, deployment, manifest } from './manifest'
 import { ADMIN, BOB, CAROL, OPTIONS, SVC_API, SVC_WEB, envManifest, rig, type Rig } from './history-rig'
 import { testHub, type TestHub } from './helpers'
@@ -117,6 +117,20 @@ describe('policy', () => {
     expect(decide(maintainer, groups, 'playbook.edit', { environmentId: ENV_ID }).allowed).toBe(false)
     expect(decide(maintainer, groups, 'ops.run', { environmentId: ENV_ID }).allowed).toBe(true)
     expect(decide({ ...maintainer, role: 'admin' }, groups, 'playbook.edit', { environmentId: ENV_ID }).allowed).toBe(true)
+  })
+})
+
+describe('DeployAction to HubAction map', () => {
+  const maintainer: HubUser = { oid: 'u1', upn: 'u@x.com', name: 'U', role: 'maintainer', status: 'active', groupIds: ['g'], createdAt: '', lastSeenAt: null }
+  const group = (grants: object[]) => ({ id: 'g', name: 'G', description: '', builtin: false, memberOids: [], createdAt: '', updatedAt: '', grants })
+  const access = (groups: object[]) => new HubDeployAccess({ directory: { get: () => maintainer, listGroups: () => groups as never } })
+  const actor = { osUser: 'u', hubUserId: 'u1' } as never
+
+  it('ops.run is decided as ops.run: allowed with a covering grant, denied without one', async () => {
+    const granted = access([group([{ id: 'x', groupId: 'g', scope: { kind: 'environment', environmentId: ENV_ID }, createdAt: '' }])])
+    expect((await granted.check(actor, 'ops.run', { environmentId: ENV_ID })).allowed).toBe(true)
+    const none = access([group([])])
+    expect((await none.check(actor, 'ops.run', { environmentId: ENV_ID })).allowed).toBe(false)
   })
 })
 

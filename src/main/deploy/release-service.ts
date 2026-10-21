@@ -42,6 +42,7 @@ import { environmentMeta, hostMeta, productMeta } from '../inventory/rows'
 import { redact } from '../security/redact'
 import { DeployError, type DeployAccess, type DeployAction } from './access'
 import type { DeployStore } from './deploy-store'
+import type { RunbookStore } from './runbook-store'
 import { planFields, resolveSelection, runServicesOf, type RunSelection } from './selection'
 import type { ServiceStore } from './service-store'
 import { noopFinalize, type FinalizeSteps, type ReleaseRunMeta } from './finalize'
@@ -91,6 +92,8 @@ export interface ReleaseServiceDeps {
   db: Db
   deploys: Pick<DeployStore, 'get' | 'list' | 'settings' | 'updateSettings'>
   services: Pick<ServiceStore, 'list' | 'recordDeployed'>
+  /** The environment's runbooks, read-only here. Optional: a service without them cannot run operations. */
+  runbooks?: Pick<RunbookStore, 'list' | 'get'>
   releases: ReleaseStore
   runner: DeployRunner
   access: DeployAccess

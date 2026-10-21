@@ -577,6 +577,16 @@ export interface PreflightRequest {
   options: ReleaseOptions
   releaseNotes?: string
 }
+/** What a runbook run asks of preflight: the services to run it on, with its param values. */
+export interface OperationRequest {
+  environmentId: string
+  runbookId: string
+  serviceIds: string[]
+  params: Record<string, string>
+}
+/** The answer to checking an edited playbook: the canonical text and its hash, or the lines at fault. */
+export type EditValidation = { ok: true; canonical: string; sha256: string } | { ok: false; errors: { line: number; message: string }[] }
+
 /** `typedName` is the environment name (protected environments). `redeploy` confirms a release with zero new commits. */
 export interface ReleaseConfirm {
   typedName?: string

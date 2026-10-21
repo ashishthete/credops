@@ -2,7 +2,7 @@ import { execFile, spawn } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { Actor, PlaybookPreview, PreflightRequest, ReleaseConfirm, ReleaseDetail, ReleaseListFilter, ReleaseStatus, ReleaseSummary, RunEvent } from '../../../src/shared/deploy'
+import type { Actor, EditValidation, OperationRequest, PlaybookPreview, PreflightRequest, ReleaseConfirm, ReleaseDetail, ReleaseListFilter, ReleaseStatus, ReleaseSummary, RunEvent } from '../../../src/shared/deploy'
 import { READY_RELEASE_TTL_MS, type HubAction, type HubDecision, type HubEnvManifest, type HubEnvLock, type HubGroup, type HubLiveMessage, type HubUser } from '../../../src/shared/hub'
 import { startPrivateAgent, type ChildLike } from '../../../src/main/deploy/agent'
 import { DeployError } from '../../../src/main/deploy/access'
@@ -57,14 +57,7 @@ export interface HubReleasesDeps {
   log?: (message: string) => void
 }
 
-/** What the Hub asks of a runbook run: the services to run it on, with its param values. */
-export interface OperationRequest {
-  environmentId: string
-  runbookId: string
-  serviceIds: string[]
-  params: Record<string, string>
-}
-export type EditValidation = { ok: true; canonical: string; sha256: string } | { ok: false; errors: { line: number; message: string }[] }
+export type { EditValidation, OperationRequest }
 
 /** The ReleaseService methods the operation and edit routes call; they arrive with the operations and playbook-edit work on the service. */
 interface OpsApi {
@@ -176,6 +169,7 @@ export class HubReleases {
       db: d.db,
       deploys: hubDeploys(d.db, d.registry),
       services: hubServices(d.db, d.registry),
+      runbooks: hubRunbooks(d.db, d.registry),
       releases: this.store,
       runner,
       access,

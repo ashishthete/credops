@@ -34,9 +34,9 @@ const summary = (id: string, environmentId: string, createdAt: string): ReleaseS
 const PREFLIGHT = { environmentId: HUB_ENV, serviceIds: [], bump: 'none' as const, options: { backup: false, notify: false, qa: false } }
 
 /** A ReleaseApi whose every method is a spy. */
-function stub(over: Partial<ReleaseApi> = {}): { [K in keyof ReleaseApi]: ReturnType<typeof vi.fn> } & ReleaseApi {
+function stub(over: Partial<ReleaseApi> = {}): { [K in keyof Required<ReleaseApi>]: ReturnType<typeof vi.fn> } & ReleaseApi {
   const fns: Record<string, ReturnType<typeof vi.fn>> = {}
-  for (const k of ['preflight', 'previewPlaybook', 'start', 'cancel', 'rollback', 'breakLock', 'discard', 'retryVersion', 'setNotes', 'list', 'listActive', 'detail', 'events', 'runMeta']) {
+  for (const k of ['preflight', 'preflightOperation', 'validateEdit', 'previewPlaybook', 'start', 'cancel', 'rollback', 'breakLock', 'discard', 'retryVersion', 'setNotes', 'list', 'listActive', 'detail', 'events', 'runMeta']) {
     fns[k] = vi.fn(async () => undefined)
   }
   fns.hasActive = vi.fn(() => false)
@@ -236,5 +236,58 @@ describe('hub runner and release routing', () => {
     const sh = createServiceHandlers({ services: { list: () => [] } as never, copy: vi.fn(), deploys: {} as never, containers: {} as never, tunnels: {} as never, openExternal: async () => undefined, catalog })
     const services = await sh['service:list'](HUB_ENV)
     expect(services.map((x) => [x.id, x.kind])).toEqual([['s1', 'service']])
+  })
+
+  const OP = { environmentId: HUB_ENV, runbookId: 'b1111111-1111-4111-8111-111111111111', serviceIds: ['c1111111-1111-4111-8111-111111111111'], params: { tag: 'v1' } }
+
+  it('runs an operation on the Hub, audits the count and never the params, and remembers the release', async () => {
+    const r = rig({ posts: () => ({ releaseId: 'h-9' }) })
+    expect(await r.routing.preflightOperation(OP)).toEqual({ releaseId: 'h-9' })
+    expect(r.calls).toEqual([{ method: 'POST', path: '/api/v1/releases/preflight-operation', body: OP }])
+    expect(r.ids.has('h-9')).toBe(true)
+    expect(r.audits).toHaveLength(1)
+    expect(r.audits[0]).toMatchObject({ action: 'hub.release', outcome: 'success', details: { op: 'preflight-operation', releaseId: 'h-9', serviceCount: 1 } })
+    expect(JSON.stringify(r.audits)).not.toContain('v1')
+    expect(r.local.preflightOperation).not.toHaveBeenCalled()
+  })
+
+  it('audits a failed operation with the Hub code', async () => {
+    const r = rig({
+      posts: () => {
+        throw new HubError('env_locked', 'Locked', 409)
+      },
+    })
+    await expect(r.routing.preflightOperation(OP)).rejects.toMatchObject({ code: 'env_locked' })
+    expect(r.audits[0]).toMatchObject({ outcome: 'failure', details: { op: 'preflight-operation', serviceCount: 1, reason: 'env_locked' } })
+  })
+
+  it('a local environment runs its operation locally; a local side without the method says so', async () => {
+    const r = rig()
+    const local = { ...OP, environmentId: LOCAL_ENV }
+    r.local.preflightOperation.mockResolvedValue({ releaseId: 'l-1' })
+    expect(await r.routing.preflightOperation(local)).toEqual({ releaseId: 'l-1' })
+    expect(r.calls).toEqual([])
+    delete (r.local as Partial<ReleaseApi>).preflightOperation
+    await expect(r.routing.preflightOperation(local)).rejects.toThrow('not available')
+  })
+
+  it('validates an edit on the Hub release, unaudited, and locally for a local release', async () => {
+    const ok = { ok: true, canonical: '[]', sha256: 'a'.repeat(64) }
+    const r = rig({ posts: (path) => (path.endsWith('/preflight') ? { releaseId: 'h-1' } : ok) })
+    await r.routing.preflight(PREFLIGHT)
+    expect(await r.routing.validateEdit('h-1', '[]')).toEqual(ok)
+    expect(r.calls.slice(1)).toEqual([{ method: 'POST', path: '/api/v1/releases/h-1/validate-edit', body: { text: '[]' } }])
+    expect(r.audits).toHaveLength(1)
+    r.local.validateEdit.mockResolvedValue({ ok: false, errors: [{ line: 1, message: 'bad' }] })
+    expect(await r.routing.validateEdit('l-7', 'x')).toEqual({ ok: false, errors: [{ line: 1, message: 'bad' }] })
+    expect(r.local.validateEdit).toHaveBeenCalledWith('l-7', 'x')
+  })
+
+  it('start forwards the edited playbook and the forced services to the Hub', async () => {
+    const r = rig({ posts: () => ({ releaseId: 'h-1' }) })
+    await r.routing.preflight(PREFLIGHT)
+    const confirm = { typedName: 'prod', editedPlaybook: '[{"x":1}]', playbookSha256: 'a'.repeat(64), forceServiceIds: [OP.serviceIds[0]] }
+    await r.routing.start('h-1', confirm)
+    expect(r.calls[1]).toEqual({ method: 'POST', path: '/api/v1/releases/h-1/start', body: confirm })
   })
 })
