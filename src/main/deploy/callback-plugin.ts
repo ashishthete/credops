@@ -3,7 +3,7 @@
  * every line on stdout is one JSON object, flushed after each write (events.ts reads them).
  *
  *   {event: 'task_start', name, tags}
- *   {event: 'ok'|'failed'|'skipped'|'unreachable', host, task, tags, rc, stdout, stderr, msg, no_log, truncated, ignored}
+ *   {event: 'ok'|'failed'|'skipped'|'unreachable', host, task, tags, rc, changed, attempts, stdout, stderr, msg, no_log, truncated, ignored}
  *   {event: 'rescued', host, count}      (from the stats; a rescued failure was already reported as 'failed')
  *   {event: 'stats', hosts}
  *   {event: 'warning', msg}              (deprecation warnings are dropped)
@@ -86,6 +86,8 @@ class CallbackModule(CallbackBase):
             "tags": self._tags(task),
             "no_log": no_log,
             "rc": res.get("rc") if isinstance(res.get("rc"), int) else None,
+            "changed": bool(res.get("changed")),
+            "attempts": res.get("attempts") if isinstance(res.get("attempts"), int) else None,
         }
         cut = []
         if not no_log:

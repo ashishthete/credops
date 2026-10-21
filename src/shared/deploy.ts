@@ -315,6 +315,8 @@ export const STEP_LABEL: Record<StepKind, string> = {
 }
 
 export type StepState = 'pending' | 'running' | 'ok' | 'warn' | 'failed' | 'skipped' | 'cancelled'
+/** How one Ansible task ended: `changed` is an ok that changed something on the host. */
+export type TaskState = 'ok' | 'changed' | 'skipped' | 'failed'
 export type ReleaseStatus =
   | 'preflight'
   | 'ready'
@@ -412,6 +414,12 @@ export type RunEventBody =
   | { type: 'step.started'; stepId: string; kind: StepKind; name: string; hostId: string | null; deploymentRunId: string | null }
   | { type: 'step.done'; stepId: string; state: 'ok' | 'warn' | 'skipped' | 'cancelled'; durationMs: number; message?: string }
   | { type: 'step.failed'; stepId: string; error: string; durationMs: number }
+  /**
+   * One Ansible task of a step finished (a step can run several, e.g. one health task per URL). `task` is the
+   * task's playbook name; `attempts` is set when the task retried (`until`). Releases from before this event
+   * have none, and the view then shows their steps' states.
+   */
+  | { type: 'task.done'; stepId: string; task: string; hostId: string | null; state: TaskState; rc: number | null; attempts: number | null; durationMs: number }
   | { type: 'log'; stepId: string | null; hostId: string | null; stream: 'out' | 'err' | 'ansible'; line: string }
   | { type: 'log.truncated'; dropped: number }
   | { type: 'lock.busy'; hostId: string; holder: LockHolder; stale: boolean; text: string }

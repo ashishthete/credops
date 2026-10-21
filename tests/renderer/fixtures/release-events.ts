@@ -124,3 +124,34 @@ export function healthFailure(autoRollback: boolean): RunEventBody[] {
       : ([{ type: 'run.finished', status: 'failed', error: 'health check failed on app2' }] satisfies RunEventBody[])),
   ]
 }
+
+/**
+ * A release playbook for `detail`'s runs in the generator's shape (JSON, one play per host: lock prep, lock, then
+ * one block per deployment). `health` sets how many health tasks (URLs) a run has.
+ */
+export function playbookOf(detail: ReleaseDetail, health: Record<string, number> = {}): string {
+  const hosts = [...new Set(detail.runs.map((r) => r.hostId ?? ''))]
+  const tags = (kind: string, run: string) => [`od_step=${kind}`, `od_run=${run}`]
+  return JSON.stringify(
+    hosts.map((h, i) => ({
+      name: `release od-${i + 1}`,
+      hosts: `od-${i + 1}`,
+      tasks: [
+        { name: `lock prep od-${i + 1}`, tags: tags('lock', `host:${h}`) },
+        { name: `lock od-${i + 1}`, tags: tags('lock', `host:${h}`) },
+        ...detail.runs
+          .filter((r) => r.hostId === h)
+          .map((r) => ({
+            name: `deployment ${r.deploymentName}`,
+            vars: { d: { name: r.deploymentName, run: r.id } },
+            block: r.steps.flatMap((s) =>
+              s.kind === 'health'
+                ? Array.from({ length: health[r.id] ?? 1 }, (_, n) => ({ name: `health ${r.deploymentName} ${n}`, tags: tags('health', r.id) }))
+                : [{ name: `${s.kind} ${r.deploymentName}`, tags: tags(s.kind, r.id) }],
+            ),
+            rescue: [{ name: `mark failed ${r.deploymentName}`, 'ansible.builtin.set_fact': { od_failed: true } }],
+          })),
+      ],
+    })),
+  )
+}

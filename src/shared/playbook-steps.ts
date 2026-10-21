@@ -28,6 +28,9 @@ export interface PlaybookPlay {
   deployments: PlaybookDeployment[]
 }
 
+/** The lock's mkdir/touch helper: part of the lock step, not a step of its own (events and views skip it). */
+export const isHelperTask = (name: string): boolean => name.startsWith('lock prep ')
+
 type Obj = Record<string, unknown>
 const isObj = (x: unknown): x is Obj => typeof x === 'object' && x !== null && !Array.isArray(x)
 

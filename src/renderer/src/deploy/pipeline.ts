@@ -6,7 +6,9 @@ import {
   type RunEvent,
   type StepKind,
   type StepState,
+  type TaskState,
 } from '../../../shared/deploy'
+import { listNames } from '../../../shared/services'
 
 export interface ChipState {
   stepId: string
@@ -16,6 +18,17 @@ export interface ChipState {
   startedAt: number | null
   durationMs: number | null
   error: string | null
+}
+
+/** One Ansible task's result (`task.done`); `at` is when it arrived. */
+export interface TaskResult {
+  task: string
+  hostId: string | null
+  state: TaskState
+  rc: number | null
+  attempts: number | null
+  durationMs: number
+  at: number
 }
 
 export interface LaneRun {
@@ -29,6 +42,10 @@ export interface LaneRun {
   previousCommit: string | null
   deployedCommit: string | null
 }
+
+/** `<checkout>: <services>`, or `<checkout>: whole checkout`. */
+export const runLabel = (run: Pick<LaneRun, 'name' | 'services' | 'wholeCheckout'>) =>
+  `${run.name}: ${run.wholeCheckout || !run.services.length ? 'whole checkout' : listNames(run.services)}`
 
 export interface Lane {
   hostId: string
@@ -47,6 +64,8 @@ export interface PipelineState {
   rollback: { active: boolean; runIds: string[]; ok: boolean | null }
   version: { from: string | null; to: string | null }
   lockBusy: { hostId: string; text: string; stale: boolean }[]
+  /** Per step id, its tasks' results in arrival order; empty for releases from before `task.done`. */
+  tasks: Record<string, TaskResult[]>
   lastSeq: number
   /** An event arrived past `lastSeq + 1`; the store refetches from `lastSeq`. */
   gap: boolean
@@ -95,6 +114,7 @@ export function initialPipeline(detail: ReleaseDetail): PipelineState {
     rollback: { active: false, runIds: [], ok: null },
     version: { from: detail.previousVersion, to: detail.version },
     lockBusy: [],
+    tasks: {},
     lastSeq: 0,
     gap: false,
     result: null,
@@ -190,6 +210,11 @@ export function reducePipeline(s: PipelineState, events: RunEvent[]): PipelineSt
       case 'step.failed': {
         const c = findChip(ev.stepId)
         if (c) Object.assign(c, { state: 'failed', durationMs: ev.durationMs, error: ev.error })
+        break
+      }
+      case 'task.done': {
+        const { stepId, task, hostId, state, rc, attempts, durationMs } = ev
+        d.tasks = { ...d.tasks, [stepId]: [...(d.tasks[stepId] ?? []), { task, hostId, state, rc, attempts, durationMs, at: Date.parse(ev.at) }] }
         break
       }
       case 'deployment.updated': {

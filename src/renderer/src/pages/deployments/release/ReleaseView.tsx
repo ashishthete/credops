@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { BREAK_LOCK_CONFIRM_MESSAGE, type StepKind } from '../../../../../shared/deploy'
+import { BREAK_LOCK_CONFIRM_MESSAGE, type ReleaseStatus, type StepKind } from '../../../../../shared/deploy'
+import { playbookSteps, type PlaybookPlay } from '../../../../../shared/playbook-steps'
 import { etaMs, type ChipState, type PipelineState } from '../../../deploy/pipeline'
 import type { LogFilter } from '../../../deploy/log-buffer'
 import { loadHistory, releaseStore, retainRelease, startReleaseSync, usePipeline } from '../../../deploy/releases'
@@ -8,8 +9,8 @@ import { Badge } from '../../../ui/Badge'
 import { Button } from '../../../ui/Button'
 import { attempt, ConfirmDialog, type ConfirmRequest } from '../../../ui/common'
 import { Dialog } from '../../../ui/Dialog'
+import { AnsibleSteps } from './AnsibleSteps'
 import { Celebrate } from './Celebrate'
-import { FailurePanel } from './FailurePanel'
 import { LiveLog } from './LiveLog'
 import { Pipeline } from './Pipeline'
 import { canRollback, duration, STATUS_TONE, STATUS_WORD, useRollback } from './ReleaseHistory'
@@ -47,6 +48,27 @@ function useStepHistory(envId: string | undefined, releaseId: string, on: boolea
     }
   }, [envId, releaseId, on])
   return history
+}
+
+/**
+ * The stored playbook's tasks, for the step list. Read again as the status moves until there is one: a release
+ * opened while ready has no playbook until it starts.
+ */
+function usePlays(releaseId: string, status: ReleaseStatus | undefined): PlaybookPlay[] {
+  const [plays, setPlays] = useState<PlaybookPlay[]>([])
+  const have = plays.length > 0
+  useEffect(() => {
+    if (have) return
+    let live = true
+    void (async () => {
+      const detail = await api.invoke('release:get', releaseId).catch(() => null)
+      if (live && detail?.playbook) setPlays(playbookSteps(detail.playbook))
+    })()
+    return () => {
+      live = false
+    }
+  }, [releaseId, status, have])
+  return plays
 }
 
 /** Every chip with the label of the host it runs on (null for release-wide steps). */
@@ -118,6 +140,7 @@ export function ReleaseView({ releaseId }: { releaseId: string }) {
   const now = useNow(running)
   const steps = useStepHistory(envId, releaseId, running)
   const message = useAnnouncer(state)
+  const plays = usePlays(releaseId, status)
 
   if (!summary || !state) return <p className="text-[12.5px] text-muted">Loading the release</p>
 
@@ -213,16 +236,25 @@ export function ReleaseView({ releaseId }: { releaseId: string }) {
         onSelect={(stepId) => setFilter((f) => ({ ...f, stepId }))}
       />
 
-      {failed.map(({ chip, host }) => (
-        <FailurePanel key={chip.stepId} releaseId={releaseId} chip={chip} host={host} />
-      ))}
       {state.result?.error && !failed.length && (
         <p role="alert" className="text-[12.5px] text-err">
           {state.result.error}
         </p>
       )}
 
-      <LiveLog releaseId={releaseId} filter={filter} onFilterChange={setFilter} />
+      <AnsibleSteps
+        releaseId={releaseId}
+        state={state}
+        plays={plays}
+        selected={filter.stepId ?? null}
+        cancelling={cancelling && running}
+        onShowLog={(stepId) => setFilter((f) => ({ ...f, stepId }))}
+      />
+
+      <section aria-label="All logs" className="flex min-h-0 flex-col gap-2">
+        <h3 className="text-[12px] font-semibold tracking-wide text-muted uppercase">All logs</h3>
+        <LiveLog releaseId={releaseId} filter={filter} onFilterChange={setFilter} />
+      </section>
 
       <p aria-live="polite" role="status" className="sr-only">
         {message}

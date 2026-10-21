@@ -12,9 +12,11 @@ import {
   type RunEventBody,
   STEP_LABEL,
   type StepKind,
+  type TaskState,
   filterReverts,
   lockHolderText,
 } from '../../shared/deploy'
+import { isHelperTask } from '../../shared/playbook-steps'
 import { redact } from '../security/redact'
 import { MARK, RC_BREAK_KEPT, RC_LOCK_BUSY, parseMarker, parsePfLine, parsePrev, parseStreamLine } from './markers'
 import type { DeployPlan, PlanDeployment, PlanHost, RunnerPreflight } from './runner'
@@ -30,6 +32,8 @@ interface ResultEvent {
   task?: string
   tags?: string[]
   rc?: number | null
+  changed?: boolean
+  attempts?: number | null
   stdout?: string
   stderr?: string
   msg?: string
@@ -62,6 +66,8 @@ export class EventTranslator {
   private readonly pfCut = new Set<string>()
   private readonly rescuedBy = new Map<string, number>()
   private readonly unknownPrevious = new Set<string>()
+  /** When each task (by name) last started, for its task.done duration. */
+  private readonly taskBegan = new Map<string, number>()
   private current: { stepId: string; kind: StepKind; run: string; name: string } | null = null
   private sawFailure = false
   private tagNote: string | null = null
@@ -188,10 +194,11 @@ export class EventTranslator {
 
   /** The lock task's mkdir/touch helper is part of the lock step, not a step of its own. */
   private internal(name: string): boolean {
-    return name.startsWith('lock prep ')
+    return isHelperTask(name)
   }
 
   private taskStart(name: string, tags: string[]): RunEventBody[] {
+    this.taskBegan.set(name, this.o.now())
     const t = this.tagsOf(tags)
     if (!t || !STEP_KINDS.has(t.kind)) {
       this.current = t?.kind === 'preflight' ? { stepId: '', kind: 'record', run: t.run, name } : null
@@ -218,7 +225,32 @@ export class EventTranslator {
     return a
   }
 
+  /** A task's result: what it means for its step, then the task's own row (helper and untagged tasks have none). */
   private result(e: ResultEvent): RunEventBody[] {
+    const out = this.stepResult(e)
+    const t = this.tagsOf(e.tags)
+    const name = e.task ?? ''
+    if (!t || !STEP_KINDS.has(t.kind) || this.internal(name)) return out
+    const d = this.describe(t.kind as StepKind, t.run)
+    const began = this.taskBegan.get(name)
+    const state: TaskState =
+      e.event === 'skipped' ? 'skipped' : e.event === 'unreachable' || (e.event === 'failed' && e.ignored !== true) ? 'failed' : e.changed === true ? 'changed' : 'ok'
+    // the task ends before its step does
+    const at = out.findIndex((x) => x.type === 'step.done' || x.type === 'step.failed')
+    out.splice(at < 0 ? out.length : at, 0, {
+      type: 'task.done',
+      stepId: d.stepId,
+      task: this.line(name),
+      hostId: (e.host ? this.hostByAlias.get(e.host)?.hostId : undefined) ?? d.hostId,
+      state,
+      rc: typeof e.rc === 'number' ? e.rc : null,
+      attempts: typeof e.attempts === 'number' ? e.attempts : null,
+      durationMs: began === undefined ? 0 : this.o.now() - began,
+    })
+    return out
+  }
+
+  private stepResult(e: ResultEvent): RunEventBody[] {
     const t = this.tagsOf(e.tags)
     const out: RunEventBody[] = []
     const host = e.host ? this.hostByAlias.get(e.host) : undefined
