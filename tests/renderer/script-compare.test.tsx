@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { resetDeploy } from '../../src/renderer/src/deploy/store'
+import { deployStore, resetDeploy } from '../../src/renderer/src/deploy/store'
 import { inventoryStore, loadInventory } from '../../src/renderer/src/inventory/store'
 import { DeploymentsPage } from '../../src/renderer/src/pages/deployments/DeploymentsPage'
 import { Toaster, clearToasts } from '../../src/renderer/src/ui/Toaster'
@@ -17,7 +17,15 @@ const QA: QaWorkflow = { repo: 'acme/qa', workflow: 'playwright.yml', ref: 'main
 const compatible = (over: Partial<DeploymentMeta> & { id: string }) =>
   deploymentMeta({ composeFile: '', useSudo: 'yes', buildTimeoutSec: 3600, composeTimeoutSec: 900, ...over })
 
-function world(opts: { deployments: DeploymentMeta[]; versioned?: boolean; qa?: QaWorkflow | null; envId?: string }) {
+function world(opts: {
+  deployments: DeploymentMeta[]
+  versioned?: boolean
+  qa?: QaWorkflow | null
+  qaOnDeploy?: boolean
+  envId?: string
+  /** What main returns from deploy:applyBatch: the deployments as saved. */
+  applied?: DeploymentMeta[]
+}) {
   const envId = opts.envId ?? 'e1'
   return mockBridge({
     'product:list': [product({ id: 'p1', name: 'Essentials', environmentIds: ['e1', 'e2'] })],
@@ -26,8 +34,8 @@ function world(opts: { deployments: DeploymentMeta[]; versioned?: boolean; qa?: 
     'deploy:tooling': toolingOk(),
     'deploy:settings': envSettings({ environmentId: envId, versioned: opts.versioned ?? false }),
     'deploy:list': opts.deployments,
-    'integration:get': { environmentId: envId, qa: opts.qa === undefined ? QA : opts.qa, qaOnDeploy: true, qaWait: true },
-    'deploy:applyBatch': { settings: envSettings({ environmentId: envId, versioned: false }), deployments: opts.deployments },
+    'integration:get': { environmentId: envId, qa: opts.qa === undefined ? QA : opts.qa, qaOnDeploy: opts.qaOnDeploy ?? true, qaWait: true },
+    'deploy:applyBatch': { settings: envSettings({ environmentId: envId, versioned: false }), deployments: opts.applied ?? opts.deployments },
   })
 }
 
@@ -79,7 +87,7 @@ describe('Compared with unified_release.sh', () => {
   it('applies every change in one save after a confirm, and Undo restores the previous values', async () => {
     const d1 = deploymentMeta({ id: 'd1', name: 'backend' })
     const d2 = compatible({ id: 'd2', name: 'frontend', useSudo: 'auto' })
-    const invoke = world({ deployments: [d1, d2], versioned: true })
+    const invoke = world({ deployments: [d1, d2], versioned: true, applied: [compatible({ id: 'd1', name: 'backend' }), compatible({ id: 'd2', name: 'frontend' })] })
     const { user, panel } = await open()
     await user.click(within(panel).getByRole('button', { name: 'Apply script-compatible settings' }))
     const dialog = await screen.findByRole('dialog')
@@ -148,7 +156,53 @@ describe('Compared with unified_release.sh', () => {
     const row = within(panel).getByRole('listitem', { name: 'QA result wait' })
     await waitFor(() => expect(row).toHaveAttribute('data-level', 'differs'))
     expect(within(panel).getByRole('button', { name: 'Apply script-compatible settings' })).toBeDisabled()
-    await user.click(within(row).getByRole('button', { name: 'Open notification settings' }))
+    await user.click(within(row).getByRole('button', { name: 'Go to notification settings' }))
     expect(screen.getByTestId('where')).toHaveTextContent('/products?node=p%3Ap1%2Fe%3Ae1')
+  })
+
+  async function applyThenEdit(edit: { versioned?: boolean; useSudo?: 'no' }) {
+    const d1 = deploymentMeta({ id: 'd1', name: 'backend', useSudo: 'auto', buildTimeoutSec: 3600, composeTimeoutSec: 900, composeFile: '' })
+    const invoke = world({ deployments: [d1], versioned: true, applied: [{ ...d1, useSudo: 'yes' }] })
+    const { user, panel } = await open()
+    await user.click(within(panel).getByRole('button', { name: 'Apply script-compatible settings' }))
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Apply' }))
+    await waitFor(() => expect(calls(invoke, 'deploy:applyBatch')).toHaveLength(1))
+    await screen.findByRole('button', { name: 'Undo' })
+    // Someone changes a value again before Undo.
+    const st = deployStore.get()
+    deployStore.set({
+      ...st,
+      settings: { ...st.settings, e1: { ...st.settings.e1, versioned: edit.versioned ?? st.settings.e1.versioned } },
+      deployments: st.deployments.map((d) => ({ ...d, useSudo: edit.useSudo ?? d.useSudo })),
+    })
+    await user.click(screen.getByRole('button', { name: 'Undo' }))
+    return invoke
+  }
+
+  it('Undo leaves alone a value changed again since the apply', async () => {
+    const invoke = await applyThenEdit({ useSudo: 'no' })
+    await waitFor(() => expect(calls(invoke, 'deploy:applyBatch')).toHaveLength(2))
+    expect(calls(invoke, 'deploy:applyBatch')[1].slice(1)).toEqual(['e1', { settings: { versioned: true }, deployments: [] }])
+  })
+
+  it('Undo with every value changed again saves nothing', async () => {
+    const invoke = await applyThenEdit({ versioned: true, useSudo: 'no' })
+    expect(await screen.findByText('Nothing to undo')).toBeInTheDocument()
+    expect(calls(invoke, 'deploy:applyBatch')).toHaveLength(1)
+  })
+
+  it('QA that does not start on deploy is a difference with the Notifications link', async () => {
+    world({ deployments: [compatible({ id: 'd1', name: 'backend' })], qaOnDeploy: false })
+    const { panel } = await open()
+    const row = within(panel).getByRole('listitem', { name: 'QA workflow' })
+    await waitFor(() => expect(row).toHaveAttribute('data-level', 'differs'))
+    expect(within(row).getByRole('button', { name: 'Go to notification settings' })).toBeInTheDocument()
+    expect(within(panel).getByRole('listitem', { name: 'QA result wait' })).toHaveTextContent('Not applicable: QA is not started.')
+  })
+
+  it('a compatible environment counts no differences: failed builds is a note', async () => {
+    world({ deployments: [compatible({ id: 'd1', name: 'backend' })] })
+    await open()
+    expect(screen.getByRole('button', { name: /Compared with unified_release\.sh/ })).toHaveTextContent('no differences')
   })
 })
