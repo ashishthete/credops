@@ -255,6 +255,15 @@ export interface HubManifestService {
   viaHostId: string | null
 }
 
+export interface HubProductRef {
+  id: string
+  name: string
+}
+export interface HubRegionRef {
+  code: string
+  displayName: string
+}
+
 /** What an admin publishes: addresses, jump chains and pinned public host keys. Never a secret value. */
 export interface HubEnvManifest {
   environment: {
@@ -264,6 +273,8 @@ export interface HubEnvManifest {
     versioned: boolean
     autoRollback: boolean
     currentVersion: string | null
+    /** The publisher's product. Absent from an older desktop's manifest; its id is local to that desktop, so the Hub groups by name. */
+    product?: HubProductRef
   }
   hosts: {
     id: string
@@ -272,6 +283,8 @@ export interface HubEnvManifest {
     port: number
     username: string
     useSudo: UseSudo
+    /** Absent from an older desktop's manifest. */
+    region?: HubRegionRef
     /** Jump chain, target last. */
     hops: HubHop[]
     /** OpenSSH known_hosts lines, public keys only. */
@@ -297,7 +310,7 @@ export interface HubEnvLock {
 
 export interface HubCatalogEnv {
   environment: HubEnvManifest['environment']
-  hosts: { id: string; label: string }[]
+  hosts: { id: string; label: string; region?: HubRegionRef }[]
   services: HubEnvManifest['services']
   deployments: HubEnvManifest['deployments']
   missingSecrets: number
