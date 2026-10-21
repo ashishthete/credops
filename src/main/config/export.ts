@@ -1,4 +1,6 @@
-import { chmod, writeFile } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
+import { chmod, rename, rm, writeFile } from 'node:fs/promises'
+import { basename, dirname, join } from 'node:path'
 import {
   CONFIG_FORMAT,
   CONFIG_VERSION,
@@ -16,13 +18,16 @@ import {
   type ItemRef,
   type VaultRef,
 } from '../../shared/config-file'
+import { SENSITIVE_KEY } from '../../shared/deploy'
+import { stripRepoCredentials } from '../../shared/inventory'
 import type { DbEngine } from '../../shared/services'
 import type { AuditLog } from '../audit/audit-log'
 import type { Db } from '../db/connection'
 import type { VaultService } from '../vault/vault-service'
 
 // Only config is read: no secret value, key material or sealed column is ever selected, and release state,
-// history, known_hosts, snippets and the vaults themselves (referenced by name) stay out.
+// history, known_hosts, snippets and the vaults themselves (referenced by name) stay out. Secrets kept in plain
+// config columns are left out too: sensitive host env var values, repo URL credentials and refs to deleted secrets.
 
 type Row = Record<string, unknown>
 
@@ -45,8 +50,26 @@ function groups<T>(rows: Row[], owner: string, item: (r: Row) => T, key: (x: T) 
   return out
 }
 
-function readConfig(db: Db, now: () => Date): ConfigFile {
+function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: number } {
   const all = (sql: string): Row[] => db.prepare(sql).all() as Row[]
+  // Values left out of the file, counted for the user: never which ones.
+  let omitted = 0
+  const repoUrl = (v: unknown): string | null => {
+    const url = optStr(v)
+    if (url === null) return null
+    const clean = stripRepoCredentials(url)
+    if (clean !== url) omitted++
+    return clean
+  }
+  const envVars = (v: unknown): Record<string, string> => {
+    const vars = JSON.parse(str(v)) as Record<string, string>
+    for (const [k, value] of Object.entries(vars)) {
+      if (value === '' || !SENSITIVE_KEY.test(k)) continue
+      vars[k] = ''
+      omitted++
+    }
+    return vars
+  }
   const vaultName = new Map(all('SELECT id, name FROM vaults').map((r) => [str(r.id), str(r.name)]))
 
   // Secret refs: the become secrets and the secrets env templates name, keyed ref-N in (vault name, item name) order.
@@ -83,7 +106,7 @@ function readConfig(db: Db, now: () => Date): ConfigFile {
     color: str(r.color),
     icon: r.icon as ConfigProduct['icon'],
     description: str(r.description),
-    repoUrl: optStr(r.repo_url),
+    repoUrl: repoUrl(r.repo_url),
   }))
 
   const keyItem = new Map(all('SELECT id, vault_id, label FROM ssh_keys').map((r) => [str(r.id), { vaultName: vaultName.get(str(r.vault_id))!, itemName: str(r.label) }]))
@@ -110,7 +133,7 @@ function readConfig(db: Db, now: () => Date): ConfigFile {
     osIcon: r.os_icon as ConfigHost['osIcon'],
     notes: str(r.notes),
     keepaliveSec: optInt(r.keepalive_sec),
-    envVars: JSON.parse(str(r.env_vars)) as Record<string, string>,
+    envVars: envVars(r.env_vars),
     vaults: vaultRefs(hostVaults.get(str(r.id))),
   }))
 
@@ -158,13 +181,19 @@ function readConfig(db: Db, now: () => Date): ConfigFile {
   const deployVaults = groups(all('SELECT deployment_id, vault_id FROM deployment_vaults'), 'deployment_id', (r) => str(r.vault_id), (x) => x)
   // A ref to a secret that no longer exists exports blank: its local id means nothing elsewhere.
   const rewrite = (template: string | null): string | null =>
-    template === null ? null : template.replace(TEMPLATE_SECRET_REF, (_m, id: string) => (refOf.has(id) ? `\${secret:${refOf.get(id)}}` : ''))
+    template === null
+      ? null
+      : template.replace(TEMPLATE_SECRET_REF, (_m, id: string) => {
+          if (refOf.has(id)) return `\${secret:${refOf.get(id)}}`
+          omitted++
+          return ''
+        })
   const deployments: ConfigDeployment[] = deployRows.map((r) => ({
     id: str(r.id),
     environmentId: str(r.environment_id),
     hostId: str(r.host_id),
     name: str(r.name),
-    repoUrl: optStr(r.repo_url),
+    repoUrl: repoUrl(r.repo_url),
     repoPath: str(r.repo_path),
     defaultBranch: str(r.default_branch),
     composeFile: str(r.compose_file),
@@ -217,7 +246,7 @@ function readConfig(db: Db, now: () => Date): ConfigFile {
         }
   })
 
-  return {
+  const file: ConfigFile = {
     format: CONFIG_FORMAT,
     version: CONFIG_VERSION,
     exportedAt: now().toISOString(),
@@ -230,15 +259,19 @@ function readConfig(db: Db, now: () => Date): ConfigFile {
     deployments: byId(deployments),
     services: byId(services),
   }
+  return { file, omitted }
 }
 
-/** The whole config, read in one transaction so the parts agree with each other. */
-export function buildConfigExport(db: Db, now: () => Date): { file: ConfigFile; counts: ConfigCounts } {
+/**
+ * The whole config, read in one transaction so the parts agree with each other. `omitted` counts the secret
+ * values left out (sensitive env var values, repo URL credentials, refs to deleted secrets).
+ */
+export function buildConfigExport(db: Db, now: () => Date): { file: ConfigFile; counts: ConfigCounts; omitted: number } {
   // A deferred BEGIN: a read snapshot without taking the write lock.
   db.exec('BEGIN')
   try {
-    const file = readConfig(db, now)
-    return { file, counts: countConfig(file) }
+    const { file, omitted } = readConfig(db, now)
+    return { file, counts: countConfig(file), omitted }
   } finally {
     db.exec('COMMIT')
   }
@@ -253,19 +286,34 @@ export interface ConfigExportDeps {
   now: () => Date
 }
 
-/** Writes the export to `path` (0600) and audits counts only: never the path, an address or a name. */
-export async function exportConfig(deps: ConfigExportDeps, path: string): Promise<{ counts: ConfigCounts }> {
+/**
+ * Writes the export to `path` (0600) and audits counts only: never the path, an address or a name. The file is
+ * written to a temp file beside it and renamed over it, so a failure never leaves a partial or widened file.
+ */
+export async function exportConfig(deps: ConfigExportDeps, path: string): Promise<{ counts: ConfigCounts; omitted: number }> {
   deps.vault.assertUnlocked()
-  const { file, counts } = buildConfigExport(deps.db, deps.now)
-  const text = serializeConfig(file)
-  try {
-    await writeFile(path, text, { mode: 0o600 })
-    // `mode` only applies when the file is created: tighten an existing one too.
-    await chmod(path, 0o600)
-  } catch {
+  const failed = (message: string): Error => {
     deps.audit.append({ action: 'config.export', outcome: 'failure', targetType: 'config', targetLabel: 'config', details: {} })
-    throw new Error("Couldn't write the config file")
+    return new Error(message)
   }
-  deps.audit.append({ action: 'config.export', outcome: 'success', targetType: 'config', targetLabel: 'config', details: { counts } })
-  return { counts }
+  let built: ReturnType<typeof buildConfigExport>
+  try {
+    built = buildConfigExport(deps.db, deps.now)
+  } catch {
+    // A parser or SQLite message could quote stored text: none of it crosses IPC.
+    throw failed("Couldn't read the config")
+  }
+  const { file, counts, omitted } = built
+  const temp = join(dirname(path), `.${basename(path)}.${randomBytes(6).toString('hex')}.tmp`)
+  try {
+    await writeFile(temp, serializeConfig(file), { mode: 0o600, flag: 'wx' })
+    // `mode` is masked by the umask: make sure of it before the file takes the target's name.
+    await chmod(temp, 0o600)
+    await rename(temp, path)
+  } catch {
+    await rm(temp, { force: true }).catch(() => undefined)
+    throw failed("Couldn't write the config file")
+  }
+  deps.audit.append({ action: 'config.export', outcome: 'success', targetType: 'config', targetLabel: 'config', details: { counts, omitted } })
+  return { counts, omitted }
 }

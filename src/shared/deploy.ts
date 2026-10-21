@@ -34,6 +34,26 @@ export const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
 export const BREAK_LOCK_CONFIRM_MESSAGE = 'Type the host label to confirm'
 export const REDEPLOY_CONFIRM_MESSAGE = 'Nothing new to deploy. Confirm to redeploy the current commits'
 export const MAX_EVENTS_PAGE = 5000
+// Deployment field limits, shared by the store, the IPC validators and the config file reader.
+export const MAX_REPO_PATH = 1024
+export const MAX_GIT_REF_INPUT = 255
+export const MAX_COMPOSE_FILE_INPUT = 255
+export const MAX_COMPOSE_NAME = 63
+export const MAX_POSITION = 1_000_000
+export const HEALTH_STATUS_RANGE = [100, 599] as const
+export const HEALTH_TIMEOUT_RANGE = [5, 600] as const
+export const STEP_TIMEOUT_RANGE = [10, 3600] as const
+
+/** http(s) only, no credentials, no spaces, braces or control characters: the rule for health and service URLs. */
+export function isHttpUrl(url: string): boolean {
+  if (url.length === 0 || /[{}\s\u0000-\u001f]/.test(url)) return false
+  try {
+    const parsed = new URL(url)
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.username === '' && parsed.password === ''
+  } catch {
+    return false
+  }
+}
 export const MAX_RELEASE_NOTES = 20000
 
 // ---- Basic types ----
@@ -169,7 +189,8 @@ export type EnvLine =
   | { blank: true }
   | { key: string; value: { kind: 'text'; text: string } | { kind: 'secret'; secretId: string } }
 
-const SENSITIVE_KEY = /TOKEN|PASSWORD|PASSWD|SECRET|KEY|CREDENTIAL|PRIVATE/i
+/** Env names that hold a secret: their values never leave as plain text. */
+export const SENSITIVE_KEY = /TOKEN|PASSWORD|PASSWD|SECRET|KEY|CREDENTIAL|PRIVATE/i
 const SECRET_REF = /^\$\{secret:([^}]*)\}$/
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 

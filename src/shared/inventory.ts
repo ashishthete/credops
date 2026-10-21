@@ -20,6 +20,28 @@ export const MAX_NOTES = 4000
 export const MAX_DESCRIPTION = 1000
 export const MAX_URL = 2048
 export const REPO_URL = /^(https?:\/\/|ssh:\/\/|git@)\S+$/
+
+/** Scheme, userinfo and the rest of an http(s) or ssh:// URL that has userinfo; the userinfo ends at the authority's last @. */
+function splitUserinfo(url: string): { scheme: string; userinfo: string; rest: string } | null {
+  const m = /^(https?:\/\/|ssh:\/\/)([^/?#]*)/i.exec(url)
+  const at = m ? m[2].lastIndexOf('@') : -1
+  if (!m || at < 0) return null
+  return { scheme: m[1], userinfo: m[2].slice(0, at), rest: url.slice(m[1].length + at + 1) }
+}
+
+/** Credentials in a repo URL: any http(s) userinfo, or a password after an ssh user. `git@host:path` and `ssh://git@` carry none. */
+export function hasRepoCredentials(url: string): boolean {
+  const u = splitUserinfo(url)
+  return u !== null && (/^https?/i.test(u.scheme) || u.userinfo.includes(':'))
+}
+
+/** The repo URL without its credentials: http(s) userinfo goes whole, an ssh URL keeps its user. */
+export function stripRepoCredentials(url: string): string {
+  const u = splitUserinfo(url)
+  if (!u || !hasRepoCredentials(url)) return url
+  const user = /^ssh/i.test(u.scheme) ? u.userinfo.slice(0, u.userinfo.indexOf(':')) : ''
+  return `${u.scheme}${user ? `${user}@` : ''}${u.rest}`
+}
 export const MAX_JUMP_DEPTH = 8
 export const MAX_SSH_CONFIG_BYTES = 1024 * 1024
 export const MAX_LINKS = 64 // ids in any id list

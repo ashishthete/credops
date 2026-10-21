@@ -13,8 +13,8 @@ export function createConfigHandlers(
       deps.vault.assertUnlocked()
       const path = await deps.saveDialog()
       if (!path) return null
-      const { counts } = await exportConfig(deps, path)
-      return { path, counts }
+      const { counts, omitted } = await exportConfig(deps, path)
+      return { path, counts, omitted }
     },
   }
 }

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { HealthFrom } from '../../shared/deploy'
+import { isHttpUrl, type HealthFrom } from '../../shared/deploy'
 import { MAX_DESCRIPTION, MAX_NAME, MAX_URL } from '../../shared/inventory'
 import {
   COMPOSE_SERVICE,
@@ -435,14 +435,7 @@ export class ServiceStore {
     if (typeof raw !== 'string') throw new Error(URL_MESSAGE)
     const url = raw.trim()
     if (url === '') return null
-    if (url.length > MAX_URL || /[{}\s\u0000-\u001f]/.test(url)) throw new Error(URL_MESSAGE)
-    let parsed: URL
-    try {
-      parsed = new URL(url)
-    } catch {
-      throw new Error(URL_MESSAGE)
-    }
-    if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || parsed.username !== '' || parsed.password !== '') throw new Error(URL_MESSAGE)
+    if (url.length > MAX_URL || !isHttpUrl(url)) throw new Error(URL_MESSAGE)
     return url
   }
 }

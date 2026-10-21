@@ -261,7 +261,8 @@ export interface IpcContract {
   'containers:follow': { args: [hostId: string, environmentId: string | null, ref: string, tail: number]; result: string }
   'containers:unfollow': { args: [followId: string]; result: void }
   /** Asks where to save with a dialog in main: the renderer never sends a path. */
-  'config:export': { args: []; result: { path: string; counts: ConfigCounts } | null }
+  /** `omitted`: how many secret values were left out of the file. */
+  'config:export': { args: []; result: { path: string; counts: ConfigCounts; omitted: number } | null }
 }
 
 export type Channel = keyof IpcContract
