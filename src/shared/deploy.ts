@@ -430,7 +430,11 @@ export type RunEventBody =
    * have none, and the view then shows their steps' states.
    */
   | { type: 'task.done'; stepId: string; task: string; hostId: string | null; state: TaskState; rc: number | null; attempts: number | null; durationMs: number }
-  | { type: 'log'; stepId: string | null; hostId: string | null; stream: 'out' | 'err' | 'ansible'; line: string }
+  /**
+   * `task` is the Ansible task the line came from (redacted, as in its `task.done`), set on a task's own output.
+   * Streamed lines and lines from releases before it have none; they are only their step's.
+   */
+  | { type: 'log'; stepId: string | null; hostId: string | null; stream: 'out' | 'err' | 'ansible'; line: string; task?: string }
   | { type: 'log.truncated'; dropped: number }
   | { type: 'lock.busy'; hostId: string; holder: LockHolder; stale: boolean; text: string }
   | { type: 'rollback.started'; deploymentRunIds: string[] }

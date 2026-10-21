@@ -586,6 +586,29 @@ describe('fix round 1', () => {
     expect(JSON.stringify([skipped, un])).not.toContain('n4me-secret')
   })
 
+  it("a task's output lines carry its task name, redacted, so each task shows its own output", () => {
+    const tr = new EventTranslator({ plan: planFixture(), secrets: () => ['n4me-secret'], now: clock().now })
+    const tags = ['od_step=health', `od_run=${R1}`]
+    const out: RunEventBody[] = []
+    for (const [task, stdout] of [
+      ['health dep1 0', 'GET /a 200'],
+      ['health dep1 n4me-secret', 'GET /b?k=n4me-secret 503'],
+    ]) {
+      out.push(...tr.feed(JSON.stringify({ event: 'task_start', name: task, tags })))
+      out.push(...tr.feed(JSON.stringify({ event: 'ok', host: 'od-1', task, tags, no_log: false, rc: 0, stdout, truncated: ['stdout'] })))
+    }
+    const logs = of(out, 'log').filter((l) => l.stepId === `${R1}:health`)
+    expect(logs.map((l) => [l.task, l.line])).toEqual([
+      ['health dep1 0', 'GET /a 200'],
+      ['health dep1 0', 'Output of this step was cut (stdout)'],
+      ['health dep1 ‹redacted›', 'GET /b?k=‹redacted› 503'],
+      ['health dep1 ‹redacted›', 'Output of this step was cut (stdout)'],
+    ])
+    // the same name as the task's task.done, so the view can pair them
+    expect(of(out, 'task.done').map((t) => t.task)).toEqual(['health dep1 0', 'health dep1 ‹redacted›'])
+    expect(JSON.stringify(out)).not.toContain('n4me-secret')
+  })
+
   it('the plugin reports changed and attempts', () => {
     expect(CALLBACK_PLUGIN_SOURCE).toContain('"changed": bool(res.get("changed"))')
     expect(CALLBACK_PLUGIN_SOURCE).toContain('"attempts": res.get("attempts") if isinstance(res.get("attempts"), int) else None')

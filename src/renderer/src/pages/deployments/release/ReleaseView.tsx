@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { BREAK_LOCK_CONFIRM_MESSAGE, type ReleaseStatus, type StepKind } from '../../../../../shared/deploy'
 import { playbookSteps, type PlaybookPlay } from '../../../../../shared/playbook-steps'
 import { etaMs, type ChipState, type PipelineState } from '../../../deploy/pipeline'
@@ -51,24 +51,27 @@ function useStepHistory(envId: string | undefined, releaseId: string, on: boolea
 }
 
 /**
- * The stored playbook's tasks, for the step list. Read again as the status moves until there is one: a release
- * opened while ready has no playbook until it starts.
+ * The stored playbook's tasks, for the step list: the ones the release was opened with, else read once the status
+ * moves on here (a release opened while ready has no playbook until it starts).
  */
-function usePlays(releaseId: string, status: ReleaseStatus | undefined): PlaybookPlay[] {
-  const [plays, setPlays] = useState<PlaybookPlay[]>([])
-  const have = plays.length > 0
+function usePlays(releaseId: string, status: ReleaseStatus | undefined, opened: PlaybookPlay[] | undefined): PlaybookPlay[] {
+  const [read, setRead] = useState<PlaybookPlay[]>([])
+  const first = useRef<ReleaseStatus | undefined>(undefined)
+  const have = !!opened?.length || read.length > 0
   useEffect(() => {
-    if (have) return
+    if (!status) return
+    first.current ??= status
+    if (have || status === first.current) return
     let live = true
     void (async () => {
       const detail = await api.invoke('release:get', releaseId).catch(() => null)
-      if (live && detail?.playbook) setPlays(playbookSteps(detail.playbook))
+      if (live && detail?.playbook) setRead(playbookSteps(detail.playbook))
     })()
     return () => {
       live = false
     }
   }, [releaseId, status, have])
-  return plays
+  return opened?.length ? opened : read
 }
 
 /** Every chip with the label of the host it runs on (null for release-wide steps). */
@@ -140,7 +143,8 @@ export function ReleaseView({ releaseId }: { releaseId: string }) {
   const now = useNow(running)
   const steps = useStepHistory(envId, releaseId, running)
   const message = useAnnouncer(state)
-  const plays = usePlays(releaseId, status)
+  const plays = usePlays(releaseId, status, state?.plays)
+  const showLog = useCallback((stepId: string) => setFilter((f) => ({ ...f, stepId })), [])
 
   if (!summary || !state) return <p className="text-[12.5px] text-muted">Loading the release</p>
 
@@ -248,7 +252,7 @@ export function ReleaseView({ releaseId }: { releaseId: string }) {
         plays={plays}
         selected={filter.stepId ?? null}
         cancelling={cancelling && running}
-        onShowLog={(stepId) => setFilter((f) => ({ ...f, stepId }))}
+        onShowLog={showLog}
       />
 
       <section aria-label="All logs" className="flex min-h-0 flex-col gap-2">

@@ -1,6 +1,13 @@
 import { useMemo } from 'react'
-import { playbookSteps } from '../../../../../shared/playbook-steps'
+import { isHelperTask, playbookSteps, stepLabels, type PlaybookStep } from '../../../../../shared/playbook-steps'
 import { Button } from '../../../ui/Button'
+
+/** The tasks as the release view names them: helpers left out, a step's several tasks numbered. */
+function Tasks({ steps }: { steps: PlaybookStep[] }) {
+  const tasks = steps.filter((s) => !isHelperTask(s.name))
+  const labels = stepLabels(tasks)
+  return tasks.map((s, j) => <li key={`${s.kind}:${j}`}>{labels[j]}</li>)
+}
 
 /** The playbook a release will run: its steps per deployment on the left, the full text on the right. */
 export function PlaybookReview({ playbook, autoRollback, onSave }: { playbook: string | null; autoRollback: boolean; onSave: () => void }) {
@@ -19,13 +26,16 @@ export function PlaybookReview({ playbook, autoRollback, onSave }: { playbook: s
           {plays.map((play, i) => (
             <li key={i} className="flex flex-col gap-1.5">
               {plays.length > 1 && <span className="text-[11px] tracking-wide text-muted uppercase">Host {i + 1}</span>}
+              {play.steps.length > 0 && (
+                <ul className="flex flex-col gap-0.5 text-fg/85">
+                  <Tasks steps={play.steps} />
+                </ul>
+              )}
               {play.deployments.map((d) => (
                 <div key={d.runId ?? d.name} className="flex flex-col gap-0.5">
                   <span className="font-medium text-fg">{d.name}</span>
                   <ul className="flex flex-col gap-0.5 pl-2 text-fg/85">
-                    {d.steps.map((s, j) => (
-                      <li key={`${s.kind}:${j}`}>{s.label}</li>
-                    ))}
+                    <Tasks steps={d.steps} />
                     {d.rollback && <li className="text-muted">{autoRollback ? 'Roll back if a step fails' : 'Stop if a step fails'}</li>}
                   </ul>
                 </div>

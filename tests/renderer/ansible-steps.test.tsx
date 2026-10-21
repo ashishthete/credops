@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { initialPipeline, reducePipeline } from '../../src/renderer/src/deploy/pipeline'
 import { resetReleases } from '../../src/renderer/src/deploy/releases'
 import { taskRows, type TaskRow } from '../../src/renderer/src/deploy/task-rows'
@@ -43,9 +43,10 @@ function failingRun(): RunEventBody[] {
     task('host:h1:lock', 'lock od-1', 'ok'),
     task('host:h2:lock', 'lock od-2', 'ok'),
     ...['record', 'fetch', 'checkout', 'build', 'up'].map((k) => task(`r3:${k}`, `${k} site`, 'ok')),
-    task('r3:health', 'health site 0', 'ok', { attempts: 3 }),
-    { type: 'log', stepId: 'r3:health', hostId: 'h2', stream: 'out', line: 'probe https://site.example/up?token=‹redacted›' },
-    { type: 'log', stepId: 'r3:health', hostId: 'h2', stream: 'err', line: 'GET /up 503' },
+    { type: 'log', stepId: 'r3:health', hostId: 'h2', stream: 'out', line: 'GET /ready 200', task: 'health site 0' },
+    task('r3:health', 'health site 0', 'ok', { attempts: 3, durationMs: 61000 }),
+    { type: 'log', stepId: 'r3:health', hostId: 'h2', stream: 'out', line: 'probe https://site.example/up?token=‹redacted›', task: 'health site 1' },
+    { type: 'log', stepId: 'r3:health', hostId: 'h2', stream: 'err', line: 'GET /up 503', task: 'health site 1' },
     task('r3:health', 'health site 1', 'failed'),
     ...base.slice(at),
   ]
@@ -66,9 +67,10 @@ const brief = (rows: TaskRow[]) => rows.map((r) => `${r.label}|${r.name}|${r.sta
 describe('taskRows', () => {
   it('gives one row per Ansible task in playbook order, per host and deployment, with each task state', () => {
     const { hosts, release } = rowsOf(failingRun())
-    expect(hosts.map((h) => [h.hostLabel, h.runs.map((g) => g.title)])).toEqual([
-      ['app1', ['core: api and worker', 'web: whole checkout']],
-      ['app2', ['site: site']],
+    // deployments are named as the playbook review names them; the services come after
+    expect(hosts.map((h) => [h.hostLabel, h.runs.map((g) => [g.title, g.detail])])).toEqual([
+      ['app1', [['core', 'api and worker'], ['web', 'whole checkout']]],
+      ['app2', [['site', 'site']]],
     ])
     const site = hosts[1].runs[0].rows
     expect(brief(site)).toEqual([
@@ -77,12 +79,14 @@ describe('taskRows', () => {
       'Checkout|checkout site|ok',
       'Build|build site|ok',
       'Up|up site|ok',
-      'Health|health site 0|ok',
-      'Health|health site 1|failed',
+      'Health 1|health site 0|ok',
+      'Health 2|health site 1|failed',
       'Tag|tag site|pending',
     ])
-    expect(site[5]).toMatchObject({ attempts: 3, durationMs: 800 })
-    expect(site[6]).toMatchObject({ rc: 1, error: 'health check failed on app2', failure: true })
+    expect(site[5]).toMatchObject({ attempts: 3, durationMs: 61000, output: { taskKey: 'r3:health|health site 0' } })
+    expect(site[6]).toMatchObject({ rc: 1, error: 'health check failed on app2', failure: true, output: { taskKey: 'r3:health|health site 1' } })
+    // a step of one task shows its step's output
+    expect(site[3].output).toEqual({ stepId: 'r3:build' })
     // the lock prep helper is part of the lock row; unlock is not in the release playbook but still shows
     expect(brief(hosts[1].before)).toEqual(['Lock|lock od-2|ok'])
     expect(brief(hosts[1].after)).toEqual(['Unlock||pending'])
@@ -93,17 +97,26 @@ describe('taskRows', () => {
 
   it('while a step runs, its next task without a result is running and the rest wait', () => {
     const all = failingRun()
-    const { hosts } = rowsOf(all.slice(0, all.findIndex((e) => e.type === 'log')))
-    expect(brief(hosts[1].runs[0].rows).slice(5)).toEqual(['Health|health site 0|ok', 'Health|health site 1|running', 'Tag|tag site|pending'])
+    const { hosts } = rowsOf(all.slice(0, all.findIndex((e) => e.type === 'log' && e.task === 'health site 1')))
+    expect(brief(hosts[1].runs[0].rows).slice(5)).toEqual(['Health 1|health site 0|ok', 'Health 2|health site 1|running', 'Tag|tag site|pending'])
     expect(hosts[1].runs[0].rows[6].startedAt).not.toBeNull()
   })
 
   it('a release from before task events still lists the playbook tasks, with their steps states', () => {
     const { hosts } = rowsOf(healthFailure(false))
-    expect(brief(hosts[1].runs[0].rows).slice(4)).toEqual(['Up|up site|ok', 'Health|health site 0|failed', 'Health|health site 1|failed', 'Tag|tag site|pending'])
-    // only the first failed row of a step carries the failure panel
+    // the step's state goes on its first task; which later one failed is not known, so they show as not run
+    expect(brief(hosts[1].runs[0].rows).slice(4)).toEqual(['Up|up site|ok', 'Health 1|health site 0|failed', 'Health 2|health site 1|pending', 'Tag|tag site|pending'])
     expect(hosts[1].runs[0].rows.filter((r) => r.failure).map((r) => r.name)).toEqual(['health site 0'])
     expect(hosts[1].runs[0].rows[3].durationMs).toBe(1000)
+    // its lines carry no task, so the step's output is shown, said to be the whole step's
+    expect(hosts[1].runs[0].rows[5].output).toEqual({ stepId: 'r3:health', wholeStep: true })
+  })
+
+  it('a result whose name main redacted still pairs with its task, by its place in the step', () => {
+    const { hosts } = rowsOf([...healthFailure(false).slice(0, -3), task('r3:health', 'health ‹redacted› 0', 'ok'), task('r3:health', 'health ‹redacted› 1', 'failed')])
+    const rows = hosts[1].runs[0].rows
+    expect(brief(rows).slice(5, 7)).toEqual(['Health 1|health site 0|ok', 'Health 2|health site 1|failed'])
+    expect(rows[6].output).toEqual({ taskKey: 'r3:health|health ‹redacted› 1' })
   })
 
   it('without a stored playbook the rows come from the steps', () => {
@@ -160,31 +173,79 @@ describe('Ansible steps in the release view', () => {
     try {
       await view(failingRun(), detailWithPlaybook({ status: 'failed' }))
       const row = stepList().querySelector<HTMLElement>('[data-task="health site 1"]')!
-      expect(within(row).getByRole('button', { name: /health site 1/ })).toHaveAttribute('aria-expanded', 'true')
-      const panel = within(row).getByRole('region', { name: 'Health on app2 failed' })
-      expect(within(panel).getByText('Health on app2 failed: health check failed on app2')).toBeInTheDocument()
+      expect(within(row).getByRole('button', { name: /^Health 2 on app2: failed/ })).toHaveAttribute('aria-expanded', 'true')
+      const panel = within(row).getByRole('region', { name: 'Health 2 on app2 failed' })
+      expect(within(panel).getByText('Health 2 on app2 failed: health check failed on app2')).toBeInTheDocument()
       expect(within(panel).getByText('exit code 1')).toBeInTheDocument()
       expect(within(panel).getByText('probe https://site.example/up?token=‹redacted›')).toBeInTheDocument()
       expect(within(panel).getByText('GET /up 503')).toBeInTheDocument()
+      // only this task's output: the passing URL's line is its own row's
+      expect(within(panel).queryByText('GET /ready 200')).toBeNull()
+      expect(within(panel).queryByText('Output for the whole step')).toBeNull()
+      expect(seen.at(-1)!.lines).toEqual(['probe https://site.example/up?token=‹redacted›', 'GET /up 503'])
       expect(within(panel).getByRole('button', { name: 'Explain the failure' })).toBeInTheDocument()
       expect(seen.at(-1)).toMatchObject({ stepId: 'r3:health', error: 'health check failed on app2' })
       expect(document.body.textContent).not.toContain(SECRET)
       // the passing health task shows its attempts; it stays closed
       const first = stepList().querySelector<HTMLElement>('[data-task="health site 0"]')!
       expect(within(first).getByText('3 attempts')).toBeInTheDocument()
-      expect(within(first).getByRole('button', { name: /health site 0/ })).toHaveAttribute('aria-expanded', 'false')
+      // attempts and time are read out too
+      const toggle = within(first).getByRole('button', { name: 'Health 1 on app2: done, 3 attempts, 1:01' })
+      expect(toggle).toHaveAttribute('aria-expanded', 'false')
+      fireEvent.click(toggle)
+      expect(within(first).getByText('GET /ready 200')).toBeInTheDocument()
+      expect(within(first).queryByText('GET /up 503')).toBeNull()
       // one failure panel, inside its row
-      expect(screen.getAllByRole('region', { name: 'Health on app2 failed' })).toHaveLength(1)
+      expect(screen.getAllByRole('region', { name: 'Health 2 on app2 failed' })).toHaveLength(1)
+      // each host and deployment names its list
+      expect(within(stepList()).getByRole('heading', { name: 'app2' })).toBeInTheDocument()
+      expect(within(stepList()).getByRole('list', { name: 'site' })).toContainElement(row)
     } finally {
       off()
     }
+  })
+
+  it('a failed task is scrolled into view once', async () => {
+    const scroll = vi.fn()
+    const was = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = scroll
+    try {
+      const all = failingRun()
+      const at = all.findIndex((e) => e.type === 'task.done' && e.state === 'failed')
+      await view(all.slice(0, at), detailWithPlaybook({ status: 'running' }))
+      expect(scroll).not.toHaveBeenCalled()
+      act(() => emitBridgeEvent('deploy:event', events(all).slice(at)))
+      await flush()
+      expect(scroll).toHaveBeenCalledTimes(1)
+      expect(scroll.mock.contexts[0]).toBe(stepList().querySelector('[data-task="health site 1"]'))
+      expect(scroll).toHaveBeenCalledWith({ block: 'nearest' })
+    } finally {
+      Element.prototype.scrollIntoView = was
+    }
+  })
+
+  it('a release from before per-task output says its output is the whole step', async () => {
+    const old = healthFailure(false)
+    const at = old.findIndex((e) => e.type === 'step.failed')
+    await view([...old.slice(0, at), { type: 'log', stepId: 'r3:health', hostId: 'h2', stream: 'err', line: 'GET /up 503' }, ...old.slice(at)], detailWithPlaybook({ status: 'failed' }))
+    const panel = screen.getByRole('region', { name: 'Health 1 on app2 failed' })
+    expect(within(panel).getByText('Output for the whole step')).toBeInTheDocument()
+    expect(within(panel).getByText('GET /up 503')).toBeInTheDocument()
+  })
+
+  it('picking a step in the pipeline opens its first task', async () => {
+    await view(failingRun(), detailWithPlaybook({ status: 'failed' }))
+    fireEvent.click(document.querySelector<HTMLElement>('[data-step="r1:build"]')!)
+    expect(within(stepList()).getByRole('button', { name: /^Build on app1: done/, expanded: true })).toBeInTheDocument()
+    fireEvent.click(document.querySelector<HTMLElement>('[data-step="r3:health"]')!)
+    expect(within(stepList()).getByRole('button', { name: /^Health 1 on app2/ })).toHaveAttribute('aria-expanded', 'true')
   })
 
   it('clicking a row opens its output; Show in All logs filters the full log to that step', async () => {
     await view([...OK_RUN.slice(0, -1), task('r1:build', 'build core', 'changed'), OK_RUN.at(-1)!], detailWithPlaybook({ status: 'succeeded' }))
     const row = stepList().querySelector<HTMLElement>('[data-task="build core"]')!
     expect(row).toHaveAttribute('data-state', 'changed')
-    const toggle = within(row).getByRole('button', { name: /build core/ })
+    const toggle = within(row).getByRole('button', { name: /^Build on app1: changed/ })
     expect(within(row).queryByText('built')).toBeNull()
     fireEvent.click(toggle)
     expect(toggle).toHaveAttribute('aria-expanded', 'true')

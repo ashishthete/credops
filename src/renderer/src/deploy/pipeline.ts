@@ -8,6 +8,7 @@ import {
   type StepState,
   type TaskState,
 } from '../../../shared/deploy'
+import { playbookSteps, type PlaybookPlay } from '../../../shared/playbook-steps'
 import { listNames } from '../../../shared/services'
 
 export interface ChipState {
@@ -44,8 +45,9 @@ export interface LaneRun {
 }
 
 /** `<checkout>: <services>`, or `<checkout>: whole checkout`. */
-export const runLabel = (run: Pick<LaneRun, 'name' | 'services' | 'wholeCheckout'>) =>
-  `${run.name}: ${run.wholeCheckout || !run.services.length ? 'whole checkout' : listNames(run.services)}`
+/** What a run deploys: its services, or the whole checkout. */
+export const runServices = (run: Pick<LaneRun, 'services' | 'wholeCheckout'>) => (run.wholeCheckout || !run.services.length ? 'whole checkout' : listNames(run.services))
+export const runLabel = (run: Pick<LaneRun, 'name' | 'services' | 'wholeCheckout'>) => `${run.name}: ${runServices(run)}`
 
 export interface Lane {
   hostId: string
@@ -66,6 +68,8 @@ export interface PipelineState {
   lockBusy: { hostId: string; text: string; stale: boolean }[]
   /** Per step id, its tasks' results in arrival order; empty for releases from before `task.done`. */
   tasks: Record<string, TaskResult[]>
+  /** The stored release playbook's tasks, for the step list; empty until the release has one. */
+  plays: PlaybookPlay[]
   lastSeq: number
   /** An event arrived past `lastSeq + 1`; the store refetches from `lastSeq`. */
   gap: boolean
@@ -115,6 +119,7 @@ export function initialPipeline(detail: ReleaseDetail): PipelineState {
     version: { from: detail.previousVersion, to: detail.version },
     lockBusy: [],
     tasks: {},
+    plays: detail.playbook ? playbookSteps(detail.playbook) : [],
     lastSeq: 0,
     gap: false,
     result: null,

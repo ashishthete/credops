@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { generatePlaybook } from '../../src/main/deploy/generate'
-import { playbookSteps } from '../../src/shared/playbook-steps'
+import { isHelperTask, playbookSteps, stepLabels } from '../../src/shared/playbook-steps'
 import { planFixture } from './deploy-helpers'
 
 describe('playbookSteps', () => {
@@ -16,6 +16,15 @@ describe('playbookSteps', () => {
     expect(one.steps[2]).toEqual({ kind: 'fetch', label: 'Fetch', name: 'fetch dep1', stepId: `${one.runId}:fetch` })
     expect(one.rollback).toBe(true)
     expect(plays[1].deployments.map((d) => d.name)).toEqual(['dep3'])
+  })
+
+  it('a step of several tasks numbers them, as the review and the release view both show', () => {
+    const plan = planFixture()
+    plan.deployments[0].urls = [{ url: 'http://127.0.0.1:8080/up', from: 'host' }, { url: 'http://127.0.0.1:8080/ready', from: 'host' }]
+    const [play] = playbookSteps(generatePlaybook(plan))
+    const steps = play.deployments[0].steps
+    expect(stepLabels(steps).filter((l) => l.startsWith('Health'))).toEqual(['Health 1', 'Health 2'])
+    expect(stepLabels(play.steps.filter((s) => !isHelperTask(s.name)))).toEqual(['Lock'])
   })
 
   it('a rollback playbook lists its rollback steps', () => {

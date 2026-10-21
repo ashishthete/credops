@@ -397,6 +397,7 @@ export class EventTranslator {
   /** stdout / stderr into log events and markers. Returns the (raw, unredacted) lines for error context. */
   private splitOutput(e: ResultEvent, d: ReturnType<EventTranslator['describe']>, out: RunEventBody[]): string[] {
     const ctx: string[] = []
+    const task = e.task ? { task: this.line(e.task) } : {}
     const emit = (stream: 'out' | 'err', text: string | undefined): void => {
       if (!text) return
       for (const raw of text.split('\n')) {
@@ -414,12 +415,12 @@ export class EventTranslator {
           continue
         }
         ctx.push(l)
-        out.push({ type: 'log', stepId: d.stepId, hostId: d.hostId, stream, line: this.line(l) })
+        out.push({ type: 'log', stepId: d.stepId, hostId: d.hostId, stream, line: this.line(l), ...task })
       }
     }
     emit('out', e.stdout)
     emit('err', e.stderr)
-    if (e.truncated?.length) out.push({ type: 'log', stepId: d.stepId, hostId: d.hostId, stream: 'ansible', line: `Output of this step was cut (${e.truncated.join(', ')})` })
+    if (e.truncated?.length) out.push({ type: 'log', stepId: d.stepId, hostId: d.hostId, stream: 'ansible', line: `Output of this step was cut (${e.truncated.join(', ')})`, ...task })
     return ctx
   }
 

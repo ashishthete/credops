@@ -31,6 +31,22 @@ export interface PlaybookPlay {
 /** The lock's mkdir/touch helper: part of the lock step, not a step of its own (events and views skip it). */
 export const isHelperTask = (name: string): boolean => name.startsWith('lock prep ')
 
+/**
+ * What the review and the release view call each task: its step's label, numbered when the step has several
+ * tasks (`Health 1`, `Health 2`, one per URL). Helper tasks are left out before this.
+ */
+export function stepLabels(steps: Pick<PlaybookStep, 'stepId' | 'label'>[]): string[] {
+  const total = new Map<string, number>()
+  for (const s of steps) if (s.stepId) total.set(s.stepId, (total.get(s.stepId) ?? 0) + 1)
+  const seen = new Map<string, number>()
+  return steps.map((s) => {
+    if (!s.stepId || (total.get(s.stepId) ?? 0) < 2) return s.label
+    const n = (seen.get(s.stepId) ?? 0) + 1
+    seen.set(s.stepId, n)
+    return `${s.label} ${n}`
+  })
+}
+
 type Obj = Record<string, unknown>
 const isObj = (x: unknown): x is Obj => typeof x === 'object' && x !== null && !Array.isArray(x)
 

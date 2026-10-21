@@ -50,6 +50,15 @@ describe('LogBuffer', () => {
     expect(b.slice(0, 1, { stepId: 'r1:build' })[0]).toMatchObject({ stepId: 'r1:build', hostId: 'h1', runId: 'r1', stream: 'out' })
   })
 
+  it("filters by task: a task's own lines, which main tags with its name", () => {
+    const b = new LogBuffer()
+    const tagged = (line: string, task?: string): RunEvent => ({ ...log(line, 'r1:health', 'h1'), ...(task ? { task } : {}) }) as RunEvent
+    b.push([tagged('a', 'health core 0'), tagged('b', 'health core 1'), tagged('c'), tagged('d', 'health core 1')])
+    expect(texts(b, 0, 10, { taskKey: 'r1:health|health core 1' })).toEqual(['b', 'd'])
+    expect(texts(b, 0, 10, { taskKey: 'r1:health|health core 0' })).toEqual(['a'])
+    expect(texts(b, 0, 10, { stepId: 'r1:health' })).toEqual(['a', 'b', 'c', 'd'])
+  })
+
   it('filters stay right once the ring has dropped lines', () => {
     const b = new LogBuffer(3)
     b.push([log('a', 's1'), log('b', 's2'), log('c', 's1'), log('d', 's2'), log('e', 's1')])

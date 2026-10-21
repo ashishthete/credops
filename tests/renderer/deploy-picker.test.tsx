@@ -487,7 +487,7 @@ describe('stale preflight releases', () => {
     await previewCall.settle(0, PREVIEW)
     const steps = within(dialog).getByRole('list', { name: 'Playbook steps' })
     expect(within(steps).getByText('core')).toBeInTheDocument()
-    expect(within(steps).getAllByRole('listitem').map((li) => li.textContent)).toEqual(expect.arrayContaining(['Fetch', 'Build', 'Up', 'Health', 'Tag', 'Stop if a step fails']))
+    expect(within(steps).getAllByRole('listitem').map((li) => li.textContent)).toEqual(expect.arrayContaining(['Lock', 'Fetch', 'Build', 'Up', 'Health', 'Tag', 'Stop if a step fails']))
     expect(within(dialog).getByText(/"deployment core"/)).toBeInTheDocument()
     expect(calls(invoke, 'release:start')).toHaveLength(0)
     await user.click(within(dialog).getByRole('button', { name: 'Save as .yml…' }))

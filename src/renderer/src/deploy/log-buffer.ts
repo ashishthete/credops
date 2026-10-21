@@ -8,6 +8,8 @@ export interface LogFilter {
   stepId?: string | null
   hostId?: string | null
   runId?: string | null
+  /** `<stepId>|<task>`: one Ansible task's own lines (those main tagged with their task). */
+  taskKey?: string | null
 }
 
 export interface LogLine {
@@ -20,8 +22,8 @@ export interface LogLine {
   stream: 'out' | 'err' | 'ansible'
 }
 
-type Key = 'stepId' | 'hostId' | 'runId'
-const KEYS: Key[] = ['stepId', 'hostId', 'runId']
+type Key = 'stepId' | 'hostId' | 'runId' | 'taskKey'
+const KEYS: Key[] = ['stepId', 'hostId', 'runId', 'taskKey']
 
 /** A run's step ids are `<runId>:<kind>`; host and release steps belong to no run. */
 export function runOfStep(stepId: string | null): string | null {
@@ -52,8 +54,9 @@ export class LogBuffer {
   private step: (string | null)[] = []
   private host: (string | null)[] = []
   private run: (string | null)[] = []
+  private task: (string | null)[] = []
   private stream: LogLine['stream'][] = []
-  private index: Record<Key, Map<string, number[]>> = { stepId: new Map(), hostId: new Map(), runId: new Map() }
+  private index: Record<Key, Map<string, number[]>> = { stepId: new Map(), hostId: new Map(), runId: new Map(), taskKey: new Map() }
   private total = 0
   private truncated = 0
   private cache: { key: string; total: number; list: number[] } | null = null
@@ -84,11 +87,11 @@ export class LogBuffer {
   push(events: RunEvent[]): void {
     for (const e of events) {
       if (e.type === 'log.truncated') this.truncated += e.dropped
-      else if (e.type === 'log') this.add(e.line, e.stepId, e.hostId, e.stream)
+      else if (e.type === 'log') this.add(e.line, e.stepId, e.hostId, e.stream, e.task)
     }
   }
 
-  private add(line: string, stepId: string | null, hostId: string | null, stream: LogLine['stream']): void {
+  private add(line: string, stepId: string | null, hostId: string | null, stream: LogLine['stream'], task?: string): void {
     const abs = this.total++
     const at = abs % this.cap
     const runId = runOfStep(stepId)
@@ -97,8 +100,10 @@ export class LogBuffer {
     this.step[at] = stepId
     this.host[at] = hostId
     this.run[at] = runId
+    const taskKey = stepId && task ? `${stepId}|${task}` : null
+    this.task[at] = taskKey
     this.stream[at] = stream
-    const values = { stepId, hostId, runId }
+    const values = { stepId, hostId, runId, taskKey }
     for (const k of KEYS) {
       const v = values[k]
       if (v === null) continue
@@ -142,7 +147,7 @@ export class LogBuffer {
 
   private field(k: Key, abs: number): string | null {
     const at = abs % this.cap
-    return k === 'stepId' ? this.step[at] : k === 'hostId' ? this.host[at] : this.run[at]
+    return k === 'stepId' ? this.step[at] : k === 'hostId' ? this.host[at] : k === 'runId' ? this.run[at] : this.task[at]
   }
 
   count(filter: LogFilter): number {
