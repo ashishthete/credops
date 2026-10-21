@@ -9,12 +9,15 @@ export function Segmented<T extends string>({
   value,
   onChange,
   size = 'md',
+  controls,
 }: {
   label: string
   options: readonly { id: T; label: string; icon?: ReactNode }[]
   value: T
   onChange: (v: T) => void
   size?: 'sm' | 'md'
+  /** Id of the panel the choice shows, for aria-controls. */
+  controls?: string
 }) {
   const motionSafe = useMotionSafe()
   const id = useId()
@@ -46,6 +49,7 @@ export function Segmented<T extends string>({
             type="button"
             role="radio"
             aria-checked={checked}
+            aria-controls={controls}
             tabIndex={checked ? 0 : -1}
             onClick={() => onChange(o.id)}
             whileTap={motionSafe ? { scale: 0.95 } : undefined}

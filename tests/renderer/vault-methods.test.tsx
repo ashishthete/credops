@@ -17,7 +17,8 @@ const WIPED: UnlockResult = { ok: false, reason: 'pin-wiped', retryAfterMs: 0 }
 
 /**
  * A main process that only knows vault:status and the channels queued in `results` (one answer
- * per call, the last repeats). vault:unlockPin misses count down `pin.attemptsLeft`, as main does.
+ * per call, the last repeats). vault:unlockPin misses count down `pin.attemptsLeft`, and a wipe
+ * drops the PIN and sets resetRequired when nothing else is left, as main does.
  */
 function fakeVault(start: Partial<VaultStatus> = {}, results: Record<string, unknown[]> = {}) {
   const state = vaultStatus(start)
@@ -30,6 +31,10 @@ function fakeVault(start: Partial<VaultStatus> = {}, results: Record<string, unk
       const res = queue.length > 1 ? queue.shift() : queue[0]
       if (channel === 'vault:unlockPin' && (res as UnlockResult).ok === false) {
         state.pin = { ...state.pin, attemptsLeft: state.pin.attemptsLeft - 1 }
+      }
+      if ((res as UnlockResult).ok === false && (res as { reason: string }).reason === 'pin-wiped') {
+        state.pin = { enabled: false, attemptsLeft: 5 }
+        state.resetRequired = !state.hasPassword && state.quickUnlock !== 'touchId'
       }
       return res
     }
@@ -108,6 +113,7 @@ describe('setup', () => {
     expect(invoke).toHaveBeenCalledWith('vault:setup', { touchId: false, pin: '135792', password: undefined })
     await waitFor(() => expect(pin).toHaveValue(''))
     expect(confirm).toHaveValue('')
+    expect(document.body.textContent).not.toContain('135792')
   })
 
   it('a pasted PIN over 12 digits gets the format message', async () => {
@@ -160,6 +166,36 @@ describe('setup', () => {
     expect(screen.queryByText(PIN_ONLY)).not.toBeInTheDocument()
   })
 
+  it('collapsing the master password drops what was typed there', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderSetup()
+    await user.click(screen.getByRole('switch', { name: 'Touch ID' }))
+    await user.type(screen.getByLabelText('PIN'), '135792')
+    await user.type(screen.getByLabelText('Confirm PIN'), '135792')
+    const disclosure = screen.getByRole('button', { name: ADD_PASSWORD })
+    await user.click(disclosure)
+    await user.type(screen.getByLabelText('Master password'), 'correct horse')
+    expect(screen.queryByText(NO_RECOVERY)).not.toBeInTheDocument()
+    expect(screen.queryByText(PIN_ONLY)).not.toBeInTheDocument()
+    // Half typed: no confirmation yet.
+    expect(continueButton()).toBeDisabled()
+
+    await user.click(disclosure)
+    expect(disclosure).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByText(NO_RECOVERY)).toBeInTheDocument()
+    expect(screen.getByText(PIN_ONLY)).toBeInTheDocument()
+    expect(continueButton()).toBeEnabled()
+
+    await user.click(disclosure)
+    expect(screen.getByLabelText('Master password')).toHaveValue('')
+    expect(screen.getByText(NO_RECOVERY)).toBeInTheDocument()
+    expect(screen.getByText(PIN_ONLY)).toBeInTheDocument()
+    expect(continueButton()).toBeEnabled()
+
+    await user.click(continueButton())
+    expect(invoke).toHaveBeenCalledWith('vault:setup', { touchId: false, pin: '135792', password: undefined })
+  })
+
   it('sends SetupOptions', async () => {
     const user = userEvent.setup()
     const { invoke, onDone } = renderSetup()
@@ -186,7 +222,8 @@ describe('method chooser', () => {
     const methods = screen.getByRole('radiogroup', { name: 'Unlock method' })
     expect(within(methods).getAllByRole('radio').map((r) => r.textContent)).toEqual(['Touch ID', 'PIN'])
     expect(within(methods).getByRole('radio', { name: 'PIN' })).toHaveAttribute('aria-checked', 'true')
-    expect(screen.getByLabelText('PIN')).toBeInTheDocument()
+    const panel = document.getElementById(within(methods).getByRole('radio', { name: 'PIN' }).getAttribute('aria-controls')!)
+    expect(panel).toContainElement(screen.getByLabelText('PIN'))
     cleanup()
 
     renderUnlock({ ...ALL_METHODS, lastMethod: 'password' }, {}, false)
@@ -248,7 +285,7 @@ describe('method chooser', () => {
     await user.type(screen.getByLabelText('PIN'), '246810{Enter}')
     expect(await screen.findByText(copy)).toBeInTheDocument()
     expect(invoke).toHaveBeenCalledWith('vault:unlockPin', '246810')
-    expect(state.pin.enabled).toBe(true) // the fallback came from the status the card had
+    expect(state.pin.enabled).toBe(false)
     expect(screen.queryByLabelText('PIN')).not.toBeInTheDocument()
     if (tab === 'Password') {
       expect(screen.getByLabelText('Master password')).toBeInTheDocument()
@@ -259,9 +296,67 @@ describe('method chooser', () => {
       expect(invoke).not.toHaveBeenCalledWith('vault:unlockQuick')
     } else {
       expect(screen.queryByRole('button', { name: 'Forgot password?' })).not.toBeInTheDocument()
-      await user.click(screen.getByRole('button', { name: 'Erase vaults' }))
+      // Offered once main confirms the reset is due.
+      await user.click(await screen.findByRole('button', { name: 'Erase vaults' }))
       expect(onForgot).toHaveBeenCalledOnce()
     }
+    if (tab !== null) expect(screen.queryByRole('button', { name: 'Erase vaults' })).not.toBeInTheDocument()
+  })
+
+  it("offers the erase only when main's status says the reset is due", () => {
+    const nothing = { hasPassword: false, quickUnlock: 'off', pin: { enabled: false, attemptsLeft: 5 } } as const
+    renderUnlock({ ...nothing, resetRequired: false })
+    expect(screen.getByRole('alert')).toHaveTextContent('Your vaults stay locked until you erase them.')
+    expect(screen.queryByRole('button', { name: 'Erase vaults' })).not.toBeInTheDocument()
+    cleanup()
+
+    renderUnlock({ ...nothing, resetRequired: true })
+    expect(screen.getByRole('button', { name: 'Erase vaults' })).toBeInTheDocument()
+  })
+
+  it('a Touch ID-only vault whose Touch ID is unavailable at mount keeps a retry, never the erase', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderUnlock(
+      { quickUnlock: 'touchId', hasPassword: false, ...NO_TOUCH_ID },
+      { 'vault:unlockQuick': [{ ok: false, reason: 'unavailable', retryAfterMs: 0 }, { ok: true }] },
+    )
+    expect(screen.getByText("Touch ID isn't available right now.")).toBeInTheDocument()
+    const retry = screen.getByRole('button', { name: 'Unlock with Touch ID' })
+    expect(screen.queryByRole('button', { name: 'Erase vaults' })).not.toBeInTheDocument()
+    await act(() => new Promise((r) => setTimeout(r, 20)))
+    expect(invoke).not.toHaveBeenCalledWith('vault:unlockQuick')
+
+    await user.click(retry)
+    expect(invoke).toHaveBeenCalledWith('vault:unlockQuick')
+    expect(await screen.findByRole('button', { name: 'Unlock with Touch ID' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Erase vaults' })).not.toBeInTheDocument()
+  })
+
+  it('a PIN wipe while Touch ID is unavailable falls back to Touch ID, not the erase', async () => {
+    const user = userEvent.setup()
+    renderUnlock(
+      { quickUnlock: 'touchId', hasPassword: false, pin: { enabled: true, attemptsLeft: 1 }, lastMethod: 'touchId', ...NO_TOUCH_ID },
+      { 'vault:unlockPin': [WIPED] },
+    )
+    // Touch ID can't be used right now, so the card opens on the PIN.
+    expect(screen.getByRole('radio', { name: 'PIN' })).toHaveAttribute('aria-checked', 'true')
+    await user.type(screen.getByLabelText('PIN'), '246810{Enter}')
+    expect(await screen.findByText('Too many wrong PINs. Use Touch ID.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Unlock with Touch ID' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Erase vaults' })).not.toBeInTheDocument()
+  })
+
+  it('Touch ID unavailable, then a PIN wipe: the copy matches the Touch ID tab it offers', async () => {
+    const user = userEvent.setup()
+    renderUnlock(
+      { quickUnlock: 'touchId', hasPassword: false, pin: { enabled: true, attemptsLeft: 1 }, lastMethod: 'touchId' },
+      { 'vault:unlockQuick': [{ ok: false, reason: 'unavailable', retryAfterMs: 0 }], 'vault:unlockPin': [WIPED] },
+    )
+    expect(await screen.findByText("Touch ID isn't available right now. Use your PIN.")).toBeInTheDocument()
+    await user.type(screen.getByLabelText('PIN'), '246810{Enter}')
+    expect(await screen.findByText('Too many wrong PINs. Use Touch ID.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Unlock with Touch ID' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Erase vaults' })).not.toBeInTheDocument()
   })
 
   it('Touch ID unavailable sends a PIN user to the PIN, and keeps a Touch ID-only user on it', async () => {

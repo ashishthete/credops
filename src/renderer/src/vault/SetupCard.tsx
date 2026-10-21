@@ -148,8 +148,8 @@ function FactorSetup({ touchIdAvailable, onDone }: { touchIdAvailable: boolean; 
     if (!valid || busy) return
     const opts: SetupOptions = {
       touchId,
-      pin: pinEntered ? pinRef.current?.value : undefined,
-      password: pwEntered ? pwRef.current?.value : undefined,
+      pin: (pinEntered && pinRef.current?.value) || undefined,
+      password: (pwEntered && pwRef.current?.value) || undefined,
     }
     clearFields(pinRef, pinConfirmRef, pwRef, pwConfirmRef)
     setPin(EMPTY)
@@ -190,7 +190,11 @@ function FactorSetup({ touchIdAvailable, onDone }: { touchIdAvailable: boolean; 
         <button
           type="button"
           aria-expanded={pwOpen}
-          onClick={() => setPwOpen((o) => !o)}
+          onClick={() => {
+            // The fields unmount on collapse: whatever was typed there is gone, so is its measure.
+            if (pwOpen) setPw(EMPTY)
+            setPwOpen(!pwOpen)
+          }}
           className="flex items-center gap-1.5 self-start rounded px-1 text-[12.5px] font-medium text-fg/90 transition-colors duration-150 hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
         >
           <ChevronDown aria-hidden className={`size-3.5 transition-transform ${pwOpen ? '' : '-rotate-90'}`} />

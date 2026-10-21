@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { Fingerprint, Hash, KeyRound } from 'lucide-react'
-import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from 'react'
+import { useEffect, useId, useRef, useState, type CSSProperties, type FormEvent } from 'react'
 import { MAX_MASTER_PASSWORD, PIN_ATTEMPTS, type UnlockMethod, type VaultStatus } from '../../../shared/vault'
 import { api } from '../lib/api'
 import { Button } from '../ui/Button'
@@ -63,17 +63,20 @@ const METHOD_TABS = [
   { id: 'password', label: 'Password', icon: <KeyRound aria-hidden className="size-3.5" /> },
 ] as const
 
-// Only Touch ID: the prompt-less 'login' mode would let anyone at the Mac past the gate.
-const touchIdReady = (status: VaultStatus | null) =>
-  status?.quickUnlock === 'touchId' && status.quickUnlockAvailable.touchId
+// Only Touch ID: the prompt-less 'login' mode would let anyone at the Mac past the gate. Set up
+// is enough for its tab: a Touch ID that is unavailable right now gets a retry, never the erase.
+const touchIdSetUp = (status: VaultStatus | null) => status?.quickUnlock === 'touchId'
+
+const TOUCH_ID_UNAVAILABLE = "Touch ID isn't available right now."
 
 /**
  * What still opens the vaults once the PIN is wiped, read from the status the card had: the
- * password, else Touch ID, else nothing. The same order as main's wipe fallback.
+ * password, else Touch ID, else nothing. The same order as main's wipe fallback, except that
+ * Touch ID counts while it is set up, available or not, as main's resetRequired does.
  */
 export function pinWipeFallback(status: VaultStatus | null): 'password' | 'touchId' | 'none' {
   if (status?.hasPassword) return 'password'
-  return touchIdReady(status) ? 'touchId' : 'none'
+  return touchIdSetUp(status) ? 'touchId' : 'none'
 }
 
 /** Set up, but nothing left opens the vaults (status.resetRequired, say after a restart). */
@@ -107,20 +110,27 @@ export function UnlockCard({
 }) {
   const [quickGone, setQuickGone] = useState(false)
   const [pinWiped, setPinWiped] = useState(false)
+  // Main's word after a wipe, before the next status poll brings it.
+  const [resetAfterWipe, setResetAfterWipe] = useState(false)
   // The fixed line shown on the tab the user is sent to (Touch ID unavailable, PIN wiped).
   const [notice, setNotice] = useState<{ tab: UnlockMethod | 'none'; text: string } | null>(null)
 
   const has: Record<UnlockMethod, boolean> = {
-    touchId: touchIdReady(status) && !quickGone,
+    touchId: touchIdSetUp(status) && !quickGone,
     pin: !!status?.pin.enabled && !pinWiped,
     password: !!status?.hasPassword,
   }
+  const touchIdAvailable = !!status?.quickUnlockAvailable.touchId
   const tabs = METHOD_TABS.filter((t) => has[t.id])
-  const [picked, setPicked] = useState<UnlockMethod | null>(() =>
-    status?.lastMethod && has[status.lastMethod] ? status.lastMethod : (tabs[0]?.id ?? null),
-  )
+  const [picked, setPicked] = useState<UnlockMethod | null>(() => {
+    // Open on a method that works now: Touch ID only while available, unless it is all there is.
+    const usable = tabs.filter((t) => t.id !== 'touchId' || touchIdAvailable)
+    const last = status?.lastMethod
+    if (last && usable.some((t) => t.id === last)) return last
+    return (usable[0] ?? tabs[0])?.id ?? null
+  })
   // One automatic Touch ID try per mount, and only when its tab is the one the card opened on.
-  const autoTouchId = useRef(autoQuick && picked === 'touchId')
+  const autoTouchId = useRef(autoQuick && picked === 'touchId' && touchIdAvailable)
   // Shared by Touch ID and the password: main's throttle covers both.
   const [deadline, setDeadline] = useState(() => (status?.retryAfterMs ? Date.now() + status.retryAfterMs : 0))
   // A tab that went away (Touch ID unavailable, PIN wiped) falls back to the first one left.
@@ -135,29 +145,39 @@ export function UnlockCard({
     setNotice({ tab: next, text })
   }
   const noticeFor = (t: UnlockMethod) => (notice?.tab === t ? notice.text : null)
+  const resetRequired = !!status?.resetRequired || resetAfterWipe
+  const panelId = useId()
 
   const onQuickGone = () => {
     if (has.password || has.pin) setQuickGone(true)
     if (has.password) sendTo('password', "Touch ID isn't available right now. Use your master password.")
     else if (has.pin) sendTo('pin', "Touch ID isn't available right now. Use your PIN.")
     // The only way in: keep the tab to retry, never send a passing failure to the erase screen.
-    else sendTo('touchId', "Touch ID isn't available right now.")
+    else sendTo('touchId', TOUCH_ID_UNAVAILABLE)
   }
 
   const onPinWiped = () => {
     const fallback = pinWipeFallback(status)
     setPinWiped(true)
+    // Touch ID set aside as unavailable is the way in again: bring its tab back to retry.
+    if (fallback === 'touchId') setQuickGone(false)
     sendTo(fallback, WIPED_COPY[fallback])
+    // Only main says the reset is due; ask now rather than wait for the poll.
+    if (fallback === 'none') {
+      void refreshVaultStatus()
+        .then((s) => setResetAfterWipe(s.resetRequired))
+        .catch(() => {})
+    }
   }
 
   if (!tab) {
-    // Nothing set up opens the vaults any more: only the reset is left.
+    // Nothing set up opens the vaults any more. The reset is offered only once main says so.
     return (
       <div className="flex flex-col gap-4">
         <p role="alert" className="text-[12.5px] leading-5 text-err">
           {notice?.text ?? NOTHING_LEFT}
         </p>
-        {onForgot && <ForgotLink onClick={onForgot}>Erase vaults</ForgotLink>}
+        {onForgot && resetRequired && <ForgotLink onClick={onForgot}>Erase vaults</ForgotLink>}
       </div>
     )
   }
@@ -165,37 +185,39 @@ export function UnlockCard({
   return (
     <div className="flex flex-col gap-4">
       {tabs.length > 1 && (
-        <Segmented label="Unlock method" options={tabs} value={tab} onChange={select} />
+        <Segmented label="Unlock method" options={tabs} value={tab} onChange={select} controls={panelId} />
       )}
-      {tab === 'touchId' && (
-        <TouchIdTab
-          autoPrompt={autoTouchId}
-          deadline={deadline}
-          onThrottled={setDeadline}
-          notice={noticeFor('touchId')}
-          onUnlocked={onUnlocked}
-          onGone={onQuickGone}
-        />
-      )}
-      {tab === 'pin' && (
-        <PinTab
-          attemptsLeft={status?.pin.attemptsLeft ?? PIN_ATTEMPTS}
-          notice={noticeFor('pin')}
-          onUnlocked={onUnlocked}
-          onWrong={onWrong}
-          onWiped={onPinWiped}
-        />
-      )}
-      {tab === 'password' && (
-        <PasswordTab
-          deadline={deadline}
-          onThrottled={setDeadline}
-          notice={noticeFor('password')}
-          onUnlocked={onUnlocked}
-          onWrong={onWrong}
-          onForgot={onForgot}
-        />
-      )}
+      <div id={panelId} className="contents">
+        {tab === 'touchId' && (
+          <TouchIdTab
+            autoPrompt={autoTouchId}
+            deadline={deadline}
+            onThrottled={setDeadline}
+            notice={noticeFor('touchId') ?? (touchIdAvailable ? null : TOUCH_ID_UNAVAILABLE)}
+            onUnlocked={onUnlocked}
+            onGone={onQuickGone}
+          />
+        )}
+        {tab === 'pin' && (
+          <PinTab
+            attemptsLeft={status?.pin.attemptsLeft ?? PIN_ATTEMPTS}
+            notice={noticeFor('pin')}
+            onUnlocked={onUnlocked}
+            onWrong={onWrong}
+            onWiped={onPinWiped}
+          />
+        )}
+        {tab === 'password' && (
+          <PasswordTab
+            deadline={deadline}
+            onThrottled={setDeadline}
+            notice={noticeFor('password')}
+            onUnlocked={onUnlocked}
+            onWrong={onWrong}
+            onForgot={onForgot}
+          />
+        )}
+      </div>
     </div>
   )
 }
