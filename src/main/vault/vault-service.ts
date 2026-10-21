@@ -157,6 +157,8 @@ export class VaultService {
   private queue: Promise<unknown> = Promise.resolve()
   /** Asked before every unlock and setup; null until main fits it (and then a binding fails closed). */
   private gate: SignInGate | null = null
+  /** The Touch ID cache failed to read at the last Touch ID unlock; cleared once it reads or is rewritten. */
+  private touchIdUnreadable = false
 
   constructor(
     private readonly db: Db,
@@ -182,6 +184,7 @@ export class VaultService {
       pin: { enabled: s.pin_wrap !== null, attemptsLeft: Math.max(0, PIN_ATTEMPTS - s.pin_failed) },
       lastMethod: s.last_method,
       resetRequired: this.isSetUp() && !this.hasPassword() && !s.pin_wrap && !s.quick_unlock_blob,
+      touchIdNeedsReenable: this.touchIdUnreadable && s.quick_unlock === 'touchId',
       sso: this.ssoState(),
     }
   }
@@ -346,9 +349,12 @@ export class VaultService {
         kek = Buffer.from(this.quick!.keychain.decrypt(Buffer.from(blob, 'base64')), 'base64')
       } catch {
         // Unreadable may be a locked or briefly unavailable keychain: keep the cache. Only a blob that
-        // reads but no longer holds the KEK (cache-stale below) is a definitive invalidation.
+        // reads but no longer holds the KEK (cache-stale below) is a definitive invalidation. If it
+        // stays unreadable (a re-signed app, a Keychain reset), status asks the user to re-enable it.
+        this.touchIdUnreadable = mode === 'touchId'
         return fail('cache-unreadable', UNAVAILABLE)
       }
+      this.touchIdUnreadable = false
       if (epoch !== this.epoch) {
         kek.fill(0)
         return fail('cancelled', CANCELLED)
@@ -498,11 +504,13 @@ export class VaultService {
         throw new Error(NEED_FACTOR)
       }
       this.db.prepare("UPDATE vault_state SET quick_unlock = 'off', quick_unlock_blob = NULL WHERE id = 1").run()
+      this.touchIdUnreadable = false
     } else {
       if (!this.modeAvailable(mode)) throw new Error('quick unlock unavailable')
       this.db
         .prepare('UPDATE vault_state SET quick_unlock = ?, quick_unlock_blob = ? WHERE id = 1')
         .run(mode, this.cacheBlob(this.kek!))
+      this.touchIdUnreadable = false
     }
     this.audit.append({ action: 'vault.quickunlock', outcome: 'success', details: { mode } })
     return this.status()
@@ -672,6 +680,7 @@ export class VaultService {
       for (const fn of [...this.resetListeners]) this.runListener('reset', fn)
       let counts = { vaults: 0, items: 0, deployRefs: 0, managedEnvOff: 0, integrationRefs: 0 }
       let unbound = false
+      this.touchIdUnreadable = false
       this.tx(() => {
         const n = (sql: string): number => Number((this.db.prepare(sql).get() as { n: number }).n)
         counts.vaults = n('SELECT COUNT(*) AS n FROM vaults')
@@ -1239,6 +1248,7 @@ export class VaultService {
 
   private discardQuickUnlock(): void {
     this.db.prepare("UPDATE vault_state SET quick_unlock = 'off', quick_unlock_blob = NULL WHERE id = 1").run()
+    this.touchIdUnreadable = false
     this.audit.append({ action: 'vault.quickunlock', outcome: 'info', details: { mode: 'off', reason: 'discarded' } })
   }
 

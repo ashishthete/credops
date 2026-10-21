@@ -46,6 +46,7 @@ export function vaultStatus(over: Partial<VaultStatus> = {}): VaultStatus {
     pin: { enabled: false, attemptsLeft: 5 },
     lastMethod: null,
     resetRequired: false,
+    touchIdNeedsReenable: false,
     sso: { required: false },
     ...over,
   }

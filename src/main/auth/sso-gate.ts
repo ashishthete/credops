@@ -211,9 +211,12 @@ export class SsoGate implements SignInGate {
 
   /** Signs out of the Hub; the gate needs a new Microsoft sign-in, in this process and the next. */
   async signOut(): Promise<HubStatus> {
-    const s = await this.d.hub.signOut()
-    this.sessionDropped()
-    return s
+    try {
+      return await this.d.hub.signOut()
+    } finally {
+      // Even when the Hub call fails: forgetting is the safe side.
+      this.sessionDropped()
+    }
   }
 
   /** For a Hub sign-out that bypasses `signOut()`: forget every verification. */

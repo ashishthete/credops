@@ -83,7 +83,7 @@ export function SetupCard({ onDone }: { onDone?: (status: VaultStatus) => void }
     setBusy(true)
     setError(null)
     try {
-      const status = await api.invoke('vault:setup', password)
+      const status = await api.invoke('vault:setup', { password })
       // onDone runs first so the gate can hold its success step before the status opens it.
       onDone?.(status)
       vaultStatusStore.set(status)

@@ -57,6 +57,7 @@ import { hubFeedSync, LiveFeed, sleepUnlessAborted } from './hub/live'
 import { HubRunner, RoutingReleases } from './hub/runner'
 import { backoffMs } from './tunnels/backoff'
 import { HubPublisher, toHubIntegrations } from './hub/publish'
+import { createAuthHandlers } from './ipc/handlers/auth'
 import { createHubHandlers } from './ipc/handlers/hub'
 import { ReleaseService } from './deploy/release-service'
 import { DeployStore, dbSecretRefs } from './deploy/deploy-store'
@@ -452,7 +453,8 @@ if (!app.requestSingleInstanceLock()) {
         client: () => hub.client(),
         renew: () => hub.renew(),
         // The feed gave up on the session: make the status say so, which also stops the feed.
-        onSignedOut: () => void hub.signOut().catch(() => undefined),
+        // Through the gate, so the verification goes with the session.
+        onSignedOut: () => void ssoGate.signOut().catch(() => undefined),
         backoff: backoffMs,
         sleep: sleepUnlessAborted,
         push: {
@@ -701,6 +703,8 @@ if (!app.requestSingleInstanceLock()) {
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
           ...createOpsHandlers({ snippets, runs, containers }),
           ...hubHandlers,
+          // After the Hub handlers: replaces hub:signOut so the gate forgets the verification too.
+          ...createAuthHandlers({ vault: service, gate: ssoGate, hub }),
           // Bound vaults leave their Hub through the vault settings (hub:connect is guarded by beforeLink).
           'hub:unlink': () => {
             service.assertUnlocked()

@@ -122,7 +122,7 @@ describe('setup', () => {
     await user.type(confirm, 'correct horse')
     await waitFor(() => expect(screen.queryByText("Passwords don't match")).not.toBeInTheDocument())
     await user.click(create)
-    expect(invoke).toHaveBeenCalledWith('vault:setup', 'correct horse')
+    expect(invoke).toHaveBeenCalledWith('vault:setup', { password: 'correct horse' })
     // The fields are emptied once the password is handed off.
     await waitFor(() => expect(pw).toHaveValue(''))
     expect(confirm).toHaveValue('')
@@ -138,7 +138,7 @@ describe('setup', () => {
     const user = userEvent.setup()
     const { invoke } = fakeVault(
       { setUp: false },
-      { 'vault:setQuickUnlock': [vaultStatus({ unlocked: true, quickUnlock: 'touchId' })] },
+      { 'vault:setQuickUnlock': [{ ok: true, status: vaultStatus({ unlocked: true, quickUnlock: 'touchId' }) }] },
     )
     renderApp()
     await gate('Protect your vaults')
@@ -447,7 +447,7 @@ describe('settings', () => {
     const user = userEvent.setup()
     const { invoke } = fakeVault(
       { unlocked: true },
-      { 'vault:setQuickUnlock': [vaultStatus({ unlocked: true, quickUnlock: 'touchId' })] },
+      { 'vault:setQuickUnlock': [{ ok: true, status: vaultStatus({ unlocked: true, quickUnlock: 'touchId' }) }] },
     )
     render(<VaultSettingsDialog />)
     act(() => openVaultSettings())

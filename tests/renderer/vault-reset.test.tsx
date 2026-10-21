@@ -121,7 +121,7 @@ describe('forgot password', () => {
     await user.type(screen.getByLabelText('Master password'), 'a brand new password')
     await user.type(screen.getByLabelText('Confirm password'), 'a brand new password')
     await user.click(screen.getByRole('button', { name: 'Create master password' }))
-    expect(invoke).toHaveBeenCalledWith('vault:setup', 'a brand new password')
+    expect(invoke).toHaveBeenCalledWith('vault:setup', { password: 'a brand new password' })
     await gate('Your vaults are ready')
     await user.click(screen.getByRole('button', { name: /Continue|Not now/ }))
     expect(await screen.findByRole('navigation')).toBeInTheDocument()

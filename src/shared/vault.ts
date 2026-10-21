@@ -4,6 +4,8 @@ export const DEFAULT_VAULT_ID = '00000000-0000-4000-8000-000000000001'
 export const VAULT_LOCKED = 'vault locked'
 /** Thrown by reverify when its miss wiped the PIN; a coded error, so no caller can read it as success. */
 export const PIN_WIPED = 'pin wiped'
+/** A reverify that did not prove the user, for a change that needs one. */
+export const VERIFICATION_FAILED = 'verification failed'
 /** Typed by the user to confirm a forgotten-password reset, which erases every vault secret. */
 export const VAULT_RESET_CONFIRM = 'RESET'
 export const MIN_MASTER_PASSWORD = 8
@@ -49,8 +51,15 @@ export interface VaultStatus {
   lastMethod: UnlockMethod | null
   /** Set up, but nothing stored can open the vaults any more: only a reset gets back in. */
   resetRequired: boolean
+  /** Touch ID is on, but its Keychain cache failed to read at the last Touch ID unlock: offer to re-enable it. */
+  touchIdNeedsReenable: boolean
   sso: SsoState
 }
+/**
+ * A change that needed a reverify. A miss that wiped the PIN is a result rather than an error, so
+ * the renderer can match it (Electron rewraps error messages); `status` may already be locked.
+ */
+export type ProvenResult = { ok: true; status: VaultStatus } | { ok: false; reason: 'pin-wiped'; status: VaultStatus }
 export type UnlockResult =
   | { ok: true }
   | {

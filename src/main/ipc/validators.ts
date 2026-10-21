@@ -100,8 +100,10 @@ import {
   type KeyLinkInput,
   type SecretInput,
   type SecretPatch,
+  type SetupOptions,
   type VaultInput,
 } from '../../shared/vault'
+import type { ReverifyProof } from '../../shared/sso'
 import {
   MAX_EMAIL,
   MAX_GIT_REF,
@@ -136,6 +138,18 @@ export const asFilter: Check<AuditFilter> = v.object({
 
 // Length rules (minimum, strength) are the service's: its messages are the ones the user sees.
 const asPassword = v.str({ min: 1, max: MAX_MASTER_PASSWORD })
+// Well over MAX_PIN (preflight F31): a pasted 13 digits gets the vault's 'PIN must be 6-12 digits'.
+const asPin = v.str({ min: 1, max: 64 })
+export const asSetupOptions: Check<SetupOptions> = v.object({
+  password: v.optional(asPassword),
+  pin: v.optional(asPin),
+  touchId: v.optional(v.bool()),
+})
+export const asReverifyProof: Check<ReverifyProof> = v.tagged('method', {
+  password: v.object({ method: v.oneOf(['password'] as const), password: asPassword }),
+  pin: v.object({ method: v.oneOf(['pin'] as const), pin: asPin }),
+  touchId: v.object({ method: v.oneOf(['touchId'] as const) }),
+})
 const vaultName = v.str({ min: 1, max: MAX_VAULT_NAME, trim: true })
 const vaultColor = v.str({ pattern: VAULT_COLOR })
 
@@ -693,8 +707,9 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'audit:verify': args(),
   'audit:exportCsv': args(asFilter),
   'vault:status': args(),
-  'vault:setup': args(asPassword),
+  'vault:setup': args(asSetupOptions),
   'vault:unlock': args(asPassword),
+  'vault:unlockPin': args(asPin),
   'vault:unlockQuick': args(),
   'vault:lock': args(),
   'vault:changePassword': args(asPassword, asPassword),
@@ -702,10 +717,19 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'vault:create': args(asVaultInput),
   'vault:update': args(v.uuid(), asVaultPatch),
   'vault:delete': args(v.uuid()),
-  'vault:setQuickUnlock': args(v.oneOf(QUICK_UNLOCK_MODES)),
+  'vault:setQuickUnlock': args(v.oneOf(QUICK_UNLOCK_MODES), v.optional(asReverifyProof)),
   'vault:setAutoLock': args(v.oneOf(AUTO_LOCK_CHOICES)),
   // The service checks the word itself, so its message is the one the user sees.
   'vault:reset': args(v.str({ max: 64 })),
+  'vault:setPin': args(asPin, asReverifyProof),
+  'vault:clearPin': args(),
+  'vault:setPassword': args(asPassword, asReverifyProof),
+  'vault:removePassword': args(asPassword),
+  'auth:check': args(),
+  'auth:signIn': args(),
+  'auth:changeAccount': args(asReverifyProof),
+  'auth:disconnect': args(asReverifyProof),
+  'auth:signOut': args(),
   'secret:list': args(v.optional(v.uuid())),
   'secret:create': args(asSecretInput),
   'secret:update': args(v.uuid(), asSecretPatch),

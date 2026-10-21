@@ -90,7 +90,8 @@ function SettingsBody({ status, onWrong }: { status: VaultStatus | null; onWrong
     try {
       const next = await withUnlock(() => api.invoke('vault:setQuickUnlock', mode))
       if (next) {
-        vaultStatusStore.set(next)
+        // TODO(Task 10): turning Touch ID on needs a reverify proof (ReverifyDialog).
+        vaultStatusStore.set(next.status)
         toast({ title: mode === 'off' ? 'Quick unlock turned off' : `${MODE_LABELS[mode]} enabled`, tone: 'success' })
       }
     } catch (err) {

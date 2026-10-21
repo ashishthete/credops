@@ -1,6 +1,7 @@
 import type { ExplainSubject, Explanation, ReleaseNotesRequest, ReleaseNotesResult } from './ai'
 import type { AuditEvent, AuditFilter, ChainVerification } from './audit'
 import type { ConfigCounts, ImportPreview, ImportResult } from './config-file'
+import type { ReverifyProof } from './sso'
 import type {
   AccessTarget,
   GrantScope,
@@ -96,10 +97,12 @@ import type {
   KeyLinkInput,
   LocalKeyCandidate,
   LockReason,
+  ProvenResult,
   QuickUnlockMode,
   SecretInput,
   SecretMeta,
   SecretPatch,
+  SetupOptions,
   SshKeyMeta,
   UnlockResult,
   VaultInput,
@@ -134,8 +137,9 @@ export interface IpcContract {
   'audit:verify': { args: []; result: ChainVerification }
   'audit:exportCsv': { args: [filter: AuditFilter]; result: { path: string } | null }
   'vault:status': { args: []; result: VaultStatus }
-  'vault:setup': { args: [password: string]; result: VaultStatus }
+  'vault:setup': { args: [opts: SetupOptions]; result: VaultStatus }
   'vault:unlock': { args: [password: string]; result: UnlockResult }
+  'vault:unlockPin': { args: [pin: string]; result: UnlockResult }
   'vault:unlockQuick': { args: []; result: UnlockResult }
   'vault:lock': { args: []; result: void }
   'vault:changePassword': { args: [current: string, next: string]; result: UnlockResult }
@@ -143,9 +147,21 @@ export interface IpcContract {
   'vault:create': { args: [input: VaultInput]; result: VaultMeta }
   'vault:update': { args: [id: string, patch: Partial<VaultInput>]; result: VaultMeta }
   'vault:delete': { args: [id: string]; result: void }
-  'vault:setQuickUnlock': { args: [mode: QuickUnlockMode]; result: VaultStatus }
+  // Adding a way in (Touch ID, a PIN, a password) needs a reverify `proof`; turning one off does not.
+  'vault:setQuickUnlock': { args: [mode: QuickUnlockMode, proof?: ReverifyProof]; result: ProvenResult }
   'vault:setAutoLock': { args: [minutes: number | null]; result: VaultStatus }
   'vault:reset': { args: [confirm: string]; result: VaultStatus }
+  'vault:setPin': { args: [pin: string, proof: ReverifyProof]; result: ProvenResult }
+  'vault:clearPin': { args: []; result: VaultStatus }
+  'vault:setPassword': { args: [next: string, proof: ReverifyProof]; result: ProvenResult }
+  // `current` is the proof: it goes through the unlock throttle.
+  'vault:removePassword': { args: [current: string]; result: UnlockResult }
+  // Microsoft sign-in (SSO). A failed `proof` rejects with VERIFICATION_FAILED.
+  'auth:check': { args: []; result: VaultStatus }
+  'auth:signIn': { args: []; result: VaultStatus }
+  'auth:changeAccount': { args: [proof: ReverifyProof]; result: ProvenResult }
+  'auth:disconnect': { args: [proof: ReverifyProof]; result: ProvenResult }
+  'auth:signOut': { args: []; result: VaultStatus }
   'secret:list': { args: [vaultId?: string]; result: SecretMeta[] }
   'secret:create': { args: [input: SecretInput]; result: SecretMeta }
   'secret:update': { args: [id: string, patch: SecretPatch]; result: SecretMeta }
@@ -350,6 +366,7 @@ export const CHANNELS = [
   'vault:status',
   'vault:setup',
   'vault:unlock',
+  'vault:unlockPin',
   'vault:unlockQuick',
   'vault:lock',
   'vault:changePassword',
@@ -360,6 +377,15 @@ export const CHANNELS = [
   'vault:setQuickUnlock',
   'vault:setAutoLock',
   'vault:reset',
+  'vault:setPin',
+  'vault:clearPin',
+  'vault:setPassword',
+  'vault:removePassword',
+  'auth:check',
+  'auth:signIn',
+  'auth:changeAccount',
+  'auth:disconnect',
+  'auth:signOut',
   'secret:list',
   'secret:create',
   'secret:update',

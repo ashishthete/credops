@@ -239,7 +239,8 @@ function ReadyStep({ status, onContinue }: { status: VaultStatus; onContinue: ()
   const enableTouchId = async () => {
     setBusy(true)
     try {
-      vaultStatusStore.set(await api.invoke('vault:setQuickUnlock', 'touchId'))
+      // TODO(Task 8): setup now takes Touch ID itself; enabling it here needs a reverify proof.
+      vaultStatusStore.set((await api.invoke('vault:setQuickUnlock', 'touchId')).status)
       toast({ title: 'Touch ID enabled', tone: 'success' })
       onContinue()
     } catch (err) {

@@ -142,6 +142,31 @@ describe('quick unlock', () => {
     expect(await f.vault.unlockQuick()).toEqual({ ok: true })
   })
 
+  it('an unreadable Touch ID cache asks for a re-enable until Touch ID works again', async () => {
+    const f = await ready()
+    f.vault.setQuickUnlock('touchId')
+    f.vault.lock('manual')
+    expect(f.vault.status().touchIdNeedsReenable).toBe(false)
+    f.quick.keychain.decrypt.mockImplementationOnce(() => {
+      throw new Error('keychain reset')
+    })
+    await f.vault.unlockQuick()
+    expect(f.vault.status().touchIdNeedsReenable).toBe(true)
+    // Still true once unlocked another way; re-enabling rewrites the cache and clears it.
+    expect(await f.vault.unlock(PW)).toEqual({ ok: true })
+    expect(f.vault.status().touchIdNeedsReenable).toBe(true)
+    expect(f.vault.setQuickUnlock('touchId').touchIdNeedsReenable).toBe(false)
+    // A later Touch ID unlock that reads also clears it.
+    f.vault.lock('manual')
+    f.quick.keychain.decrypt.mockImplementationOnce(() => {
+      throw new Error('keychain locked')
+    })
+    await f.vault.unlockQuick()
+    expect(f.vault.status().touchIdNeedsReenable).toBe(true)
+    expect(await f.vault.unlockQuick()).toEqual({ ok: true })
+    expect(f.vault.status().touchIdNeedsReenable).toBe(false)
+  })
+
   it('a stale cache falls back to the password without counting a failure', async () => {
     const f = await ready()
     seedLogin(f)
