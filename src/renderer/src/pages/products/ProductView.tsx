@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { Layers, Link2, Lock, Network, Pencil, Plus, Trash2, Unlink } from 'lucide-react'
+import { Layers, Lock, Network, Pencil, Plus, Trash2 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import type { EnvironmentMeta, ProductMeta } from '../../../../shared/inventory'
@@ -12,8 +12,6 @@ import { plural, RowMenu } from '../../ui/common'
 import { EmptyState } from '../../ui/EmptyState'
 import { fast, spring, staggerDelay, useMotionSafe } from '../../ui/motion'
 import { ProductTile } from './ProductDialog'
-// regions-ui: one product per environment, read as a list until the Regions UI.
-import { productIdsOf } from '../../inventory/regions-stopgap'
 
 export const ROLE_LABEL = { app: 'App', db: 'Database', bastion: 'Bastion', other: 'Other' } as const
 export { ROLE_ORDER }
@@ -45,13 +43,10 @@ interface ProductViewProps {
   onNewEnvironment: () => void
   onEdit: () => void
   onDelete: () => void
-  /** Takes an environment out of this product; it stays in its other products. */
-  onRemoveEnvironment: (environmentId: string) => void
 }
 
-export function ProductView({ product, data, stagger, onOpen, onNewEnvironment, onEdit, onDelete, onRemoveEnvironment }: ProductViewProps) {
-  const envs = data.environments.filter((e) => productIdsOf(e).includes(product.id)).sort((a, b) => a.name.localeCompare(b.name))
-  const productName = new Map(data.products.map((p) => [p.id, p.name]))
+export function ProductView({ product, data, stagger, onOpen, onNewEnvironment, onEdit, onDelete }: ProductViewProps) {
+  const envs = data.environments.filter((e) => e.productId === product.id).sort((a, b) => a.name.localeCompare(b.name))
   const navigate = useNavigate()
 
   return (
@@ -87,21 +82,7 @@ export function ProductView({ product, data, stagger, onOpen, onNewEnvironment, 
         ) : (
           <ul className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-3">
             {envs.map((env, i) => (
-              <EnvironmentCard
-                key={env.id}
-                env={env}
-                index={i}
-                stagger={stagger}
-                others={productIdsOf(env).filter((id) => id !== product.id).map((id) => productName.get(id) ?? id)}
-                onOpen={() => onOpen(env.id)}
-                menu={
-                  <RowMenu
-                    label={`${env.name} options`}
-                    className="absolute top-3 right-3"
-                    items={[{ label: `Remove from ${product.name}`, icon: Unlink, run: () => onRemoveEnvironment(env.id) }]}
-                  />
-                }
-              />
+              <EnvironmentCard key={env.id} env={env} index={i} stagger={stagger} onOpen={() => onOpen(env.id)} />
             ))}
           </ul>
         )}
@@ -114,17 +95,12 @@ function EnvironmentCard({
   env,
   index,
   stagger,
-  others,
   onOpen,
-  menu,
 }: {
   env: EnvironmentMeta
   index: number
   stagger: boolean
-  others: string[]
   onOpen: () => void
-  /** Sits beside the card button, not inside it: a button can't hold another. */
-  menu: ReactNode
 }) {
   const motionSafe = useMotionSafe()
   const counts = ROLE_ORDER.map((role) => ({ role, n: env.hosts.filter((h) => h.role === role).length })).filter((c) => c.n)
@@ -141,7 +117,7 @@ function EnvironmentCard({
         whileHover={motionSafe ? { y: -2 } : undefined}
         whileTap={motionSafe ? { scale: 0.985 } : undefined}
         transition={spring}
-        className="group relative flex w-full flex-col gap-3 overflow-hidden rounded-xl border border-line bg-surface/60 p-4 pr-11 pl-5 text-left transition-[border-color,background-color] hover:border-muted/30 hover:bg-surface"
+        className="group relative flex w-full flex-col gap-3 overflow-hidden rounded-xl border border-line bg-surface/60 p-4 pl-5 text-left transition-[border-color,background-color] hover:border-muted/30 hover:bg-surface"
       >
         <span aria-hidden className="absolute inset-y-0 left-0 w-[3px]" style={{ background: env.color, boxShadow: `0 0 14px ${env.color}` }} />
         <span className="flex items-center gap-2">
@@ -161,17 +137,7 @@ function EnvironmentCard({
             </span>
           ))}
         </span>
-        {others.length > 0 && (
-          <span className="flex items-center gap-1.5 text-[12px] text-muted">
-            <Badge tone="info">
-              <Link2 aria-hidden className="size-3" />
-              Shared
-            </Badge>
-            <span className="truncate">with {others.join(', ')}</span>
-          </span>
-        )}
       </motion.button>
-      {menu}
     </motion.li>
   )
 }

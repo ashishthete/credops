@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { Check, ShieldCheck } from 'lucide-react'
+import { ShieldCheck } from 'lucide-react'
 import { useEffect, useId, useMemo, useState, type FormEvent } from 'react'
 import { DEFAULT_SSH_PORT, MAX_NAME, MAX_URL, parseEnvDomain, type EnvironmentMeta } from '../../../../shared/inventory'
 import { identityChoices } from '../../inventory/choices'
@@ -8,11 +8,9 @@ import { Button } from '../../ui/Button'
 import { ColorPicker, VAULT_COLORS } from '../../ui/common'
 import { Dialog } from '../../ui/Dialog'
 import { SelectField, TextField } from '../../ui/Field'
-import { fast, spring, useMotionSafe } from '../../ui/motion'
+import { spring, useMotionSafe } from '../../ui/motion'
 import { toast } from '../../ui/Toaster'
 import { EnvironmentNotifications } from './EnvironmentNotifications'
-// regions-ui: one product per environment, read as a list until the Regions UI.
-import { productIdsOf } from '../../inventory/regions-stopgap'
 
 const DEFAULT_COLOR = VAULT_COLORS.find((c) => c.name === 'Green')!.hex
 
@@ -28,20 +26,22 @@ interface EnvironmentDialogProps {
   open: boolean
   /** Edits this environment; creates a new one when absent. */
   environment?: EnvironmentMeta
-  /** Products a new environment starts in. */
-  productIds: string[]
+  /** The product a new environment starts in. */
+  productId?: string
+  /** Opened from that product: the product can't be changed here. */
+  productLocked?: boolean
   data: InventoryData
   corruptVaultIds: readonly string[]
   onClose: () => void
   onSaved: (environment: EnvironmentMeta, created: boolean) => void
 }
 
-export function EnvironmentDialog({ open, environment, productIds, data, corruptVaultIds, onClose, onSaved }: EnvironmentDialogProps) {
+export function EnvironmentDialog({ open, environment, productId, productLocked = false, data, corruptVaultIds, onClose, onSaved }: EnvironmentDialogProps) {
   const formId = useId()
   const [name, setName] = useState('')
   const [color, setColor] = useState<string>(DEFAULT_COLOR)
   const [isProtected, setProtected] = useState(false)
-  const [products, setProducts] = useState<string[]>([])
+  const [product, setProduct] = useState('')
   const [identityId, setIdentityId] = useState('')
   const [port, setPort] = useState('')
   const [jumpId, setJumpId] = useState('')
@@ -53,12 +53,12 @@ export function EnvironmentDialog({ open, environment, productIds, data, corrupt
     setName(environment?.name ?? '')
     setColor(environment?.color ?? DEFAULT_COLOR)
     setProtected(environment?.protected ?? false)
-    setProducts((environment ? productIdsOf(environment) : undefined) ?? productIds)
+    setProduct(environment?.productId ?? productId ?? '')
     setIdentityId(environment?.defaultIdentityId ?? '')
     setPort(environment?.defaultPort != null ? String(environment.defaultPort) : '')
     setJumpId(environment?.defaultJumpHostId ?? '')
     setDomain(environment?.domain ?? '')
-    // productIds is read when the dialog opens, not tracked while it is open.
+    // productId is read when the dialog opens, not tracked while it is open.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, environment])
 
@@ -73,7 +73,7 @@ export function EnvironmentDialog({ open, environment, productIds, data, corrupt
   const parsedPort = parsePort(port)
   const parsedDomain = domain.trim() ? parseEnvDomain(domain) : null
   const domainError = parsedDomain && !parsedDomain.ok ? parsedDomain.error : undefined
-  const valid = name.trim().length > 0 && !parsedPort.error && !domainError
+  const valid = name.trim().length > 0 && product !== '' && !parsedPort.error && !domainError
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -88,8 +88,7 @@ export function EnvironmentDialog({ open, environment, productIds, data, corrupt
         defaultIdentityId: identityId || null,
         defaultJumpHostId: jumpId || null,
         domain: domain.trim() || null,
-        // regions-ui: the dialog still edits a list; an environment takes the first.
-        productId: products[0] ?? '',
+        productId: product,
       },
       environment?.id,
     )
@@ -99,8 +98,6 @@ export function EnvironmentDialog({ open, environment, productIds, data, corrupt
       onSaved(saved, !environment)
     }
   }
-
-  const toggleProduct = (id: string) => setProducts((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]))
 
   return (
     <Dialog
@@ -129,17 +126,20 @@ export function EnvironmentDialog({ open, environment, productIds, data, corrupt
           </div>
           <Switch label="Protected" checked={isProtected} onChange={setProtected} />
         </div>
-        <div className="flex flex-col gap-1.5">
-          <span id={`${formId}-products`} className="text-[12.5px] font-medium text-fg/90">
-            Products
-          </span>
-          <div role="group" aria-labelledby={`${formId}-products`} className="flex flex-wrap gap-1.5">
-            {sortedProducts.map((p) => (
-              <ProductChip key={p.id} name={p.name} color={p.color} pressed={products.includes(p.id)} onToggle={() => toggleProduct(p.id)} />
-            ))}
-            {sortedProducts.length === 0 && <span className="text-[12px] text-muted">No products yet. It will sit under Unassigned.</span>}
-          </div>
-        </div>
+        <SelectField
+          label="Product"
+          value={product}
+          onChange={(e) => setProduct(e.target.value)}
+          disabled={productLocked}
+          hint={sortedProducts.length === 0 ? 'Create a product first.' : environment ? 'Moving it takes its hosts, checkouts and services along.' : undefined}
+        >
+          {product === '' && <option value="">Pick a product</option>}
+          {sortedProducts.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </SelectField>
         <TextField
           label="Domain or URL"
           hint="e.g. staging.example.com"
@@ -186,43 +186,6 @@ export function EnvironmentDialog({ open, environment, productIds, data, corrupt
       {/* Saves on its own: integrations belong to an existing environment. */}
       {environment && <EnvironmentNotifications environment={environment} />}
     </Dialog>
-  )
-}
-
-function ProductChip({ name, color, pressed, onToggle }: { name: string; color: string; pressed: boolean; onToggle: () => void }) {
-  const motionSafe = useMotionSafe()
-  return (
-    <motion.button
-      type="button"
-      aria-pressed={pressed}
-      onClick={onToggle}
-      whileTap={motionSafe ? { scale: 0.94 } : undefined}
-      transition={spring}
-      className={`inline-flex h-7 items-center gap-1.5 rounded-full px-2.5 text-[12.5px] font-medium transition-[background-color,box-shadow,color] ${
-        pressed ? 'text-fg' : 'text-muted shadow-[inset_0_0_0_1px_var(--border)] hover:text-fg'
-      }`}
-      style={
-        pressed
-          ? { background: `color-mix(in oklab, ${color} 16%, transparent)`, boxShadow: `inset 0 0 0 1px color-mix(in oklab, ${color} 45%, transparent)` }
-          : undefined
-      }
-    >
-      <span className="grid size-3 place-items-center">
-        {pressed ? (
-          <motion.span
-            initial={motionSafe ? { scale: 0.3, opacity: 0 } : { opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            transition={motionSafe ? spring : fast}
-            className="grid"
-          >
-            <Check aria-hidden className="size-3" strokeWidth={3} style={{ color }} />
-          </motion.span>
-        ) : (
-          <span aria-hidden className="size-2 rounded-full" style={{ background: color }} />
-        )}
-      </span>
-      {name}
-    </motion.button>
   )
 }
 
