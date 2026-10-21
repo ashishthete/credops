@@ -419,9 +419,12 @@ export class HubReleases {
   async retryVersion(user: HubUser, releaseId: string): Promise<void> {
     const { environmentId } = this.known(releaseId)
     this.allow(user, 'release.start', environmentId, this.deploymentsOf(releaseId), 'release.retry_version', releaseId)
+    // The retry runs again, so it holds the environment lock like any release: a freeze or another release refuses it.
+    this.d.locks.acquireRelease(environmentId, releaseId, { oid: user.oid, name: user.name })
     try {
       await this.service.retryVersion(releaseId, { actor: this.actorOf(user) })
     } catch (err) {
+      this.d.locks.releaseFor(releaseId)
       this.fail(err)
     }
   }

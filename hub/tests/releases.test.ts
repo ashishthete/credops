@@ -243,6 +243,59 @@ describe('hub releases', () => {
     expect(audits('deploy.lock_break').some((e) => e.outcome === 'success')).toBe(true)
   })
 
+  describe('retry version', () => {
+    // A release that deployed but whose version tag failed: failed, lock freed.
+    async function tagFailed() {
+      const t = await setup({ protectedEnv: false })
+      t.fr.on.version = (_p, _s, emit) => {
+        emit({ type: 'step.failed', stepId: 'release:version', error: 'tag already exists', durationMs: 1 })
+        return { exitCode: 2 }
+      }
+      const id = await ready(t.bob, { bump: 'minor' })
+      expect((await call(t.bob, 'POST', `/api/v1/releases/${id}/start`, {})).statusCode).toBe(204)
+      await hub.app.releases.whenIdle()
+      expect((await detail(t.bob, id)).status).toBe('failed')
+      expect(lockRows()).toEqual([])
+      t.fr.on.version = undefined
+      return { ...t, id }
+    }
+
+    it('is refused with 409 env_locked while the environment is frozen by someone else', async () => {
+      const { admin, bob, id } = await tagFailed()
+      expect((await call(admin, 'POST', `/api/v1/environments/${ENV_ID}/freeze`, { reason: 'migration' })).statusCode).toBeLessThan(300)
+      const res = await call(bob, 'POST', `/api/v1/releases/${id}/retry-version`)
+      expect(res.statusCode, res.body).toBe(409)
+      expect(res.json().error).toBe('env_locked')
+      expect((await detail(bob, id)).status).toBe('failed')
+    })
+
+    it('is refused with 409 env_locked while another release holds the lock', async () => {
+      const { admin, bob, id } = await tagFailed()
+      expect((await preflight(admin)).statusCode).toBe(201)
+      const res = await call(bob, 'POST', `/api/v1/releases/${id}/retry-version`)
+      expect(res.statusCode, res.body).toBe(409)
+      expect(res.json().error).toBe('env_locked')
+      expect((await detail(bob, id)).status).toBe('failed')
+    })
+
+    it('takes the lock for the retry and frees it when the release ends', async () => {
+      const { bob, id } = await tagFailed()
+      const res = await call(bob, 'POST', `/api/v1/releases/${id}/retry-version`)
+      expect(res.statusCode, res.body).toBe(204)
+      await hub.app.releases.whenIdle()
+      expect((await detail(bob, id)).status).toBe('succeeded')
+      expect(lockRows()).toEqual([])
+    })
+
+    it('a refused retry leaves the lock of the release that holds it', async () => {
+      const { bob } = await setup()
+      const id = await ready(bob)
+      const res = await call(bob, 'POST', `/api/v1/releases/${id}/retry-version`)
+      expect(res.statusCode).toBe(409)
+      expect(lockRows()).toMatchObject([{ release_id: id }])
+    })
+  })
+
   it('discard frees the lock of a ready release', async () => {
     const { bob } = await setup()
     const id = await ready(bob)
