@@ -21,6 +21,7 @@ import { CopyServicesDialog } from './services/CopyServicesDialog'
 import { ServiceLogs } from './services/ServiceLogs'
 import { ReleaseFlowSection } from './services/ReleaseFlowSection'
 import { ServicesSection } from './services/ServicesSection'
+import { RunbooksSection } from './RunbooksSection'
 
 interface EnvironmentViewProps {
   env: EnvironmentMeta
@@ -153,6 +154,8 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
         {settings && apps.length > 0 && (
           <ReleaseFlowSection services={apps} flow={settings.flow} onSave={(flow) => updateSettings(env.id, { flow })} />
         )}
+
+        {apps.length > 0 && <RunbooksSection environmentId={env.id} />}
 
         {groups.length === 0 ? (
           <div className="mt-6 flex flex-col items-center gap-2 rounded-xl border border-dashed border-line px-6 py-10 text-center">
