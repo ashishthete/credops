@@ -272,6 +272,24 @@ describe('NotificationDispatcher', () => {
     expect(JSON.stringify(t.rows())).not.toContain('SECRETPATH')
     expect(JSON.stringify(t.rows())).not.toContain('webhook.office.com')
   })
+
+  it('an operation sends a one-line summary when it ends, only when its runbook notifies', async () => {
+    const t = await setup()
+    const op = { name: 'Restart api' }
+    t.meta('op-1', { operation: op, options: { backup: false, notify: false, qa: false }, version: null, commits: [] })
+    for (const body of [{ type: 'run.started', kind: 'release', version: null }, { type: 'run.finished', status: 'succeeded' }, { type: 'run.finished', status: 'failed', error: 'x' }] as RunEventBody[]) {
+      await t.d.onRunEvent(t.ev('op-1', body))
+    }
+    expect(t.sink.calls).toEqual([])
+    t.meta('op-2', { operation: op, options: { backup: false, notify: true, qa: false }, version: null })
+    await t.d.onRunEvent(t.ev('op-2', { type: 'run.started', kind: 'release', version: null }))
+    expect(t.sink.calls).toEqual([])
+    await t.d.onRunEvent(t.ev('op-2', { type: 'run.finished', status: 'succeeded' }))
+    expect(t.sink.calls.sort()).toEqual(['macos:release.succeeded', 'teams:release.succeeded'])
+    expect(t.sink.facts[0]).toMatchObject({ title: 'Operation Restart api on staging', commitCount: 0, changes: [], version: null })
+    await t.d.onRunEvent(t.ev('op-2', { type: 'run.finished', status: 'failed', error: 'x' }))
+    expect(t.sink.facts.at(-1)).toMatchObject({ event: 'release.failed', title: 'Operation Restart api on staging' })
+  })
 })
 
 describe('finalize notify', () => {

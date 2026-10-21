@@ -15,6 +15,7 @@ import { maskDetail, maskEvents, maskPlaybook, maskSummary } from '../../deploy/
 import type { DeployStore } from '../../deploy/deploy-store'
 import type { ReleaseApi } from '../../hub/runner'
 import type { HubCatalog } from '../../hub/catalog'
+import type { RunbookStore } from '../../deploy/runbook-store'
 
 export const REVIEW_REQUIRED_MESSAGE = 'Review the playbook before you deploy.'
 
@@ -32,6 +33,7 @@ type DeployChannel =
   | 'deploy:savePlaybook'
   | 'release:savePlaybook'
   | 'release:preflight'
+  | 'release:preflightOperation'
   | 'release:start'
   | 'release:cancel'
   | 'release:rollback'
@@ -44,6 +46,9 @@ type DeployChannel =
   | 'release:events'
   | 'release:active'
   | 'release:latest'
+  | 'runbook:list'
+  | 'runbook:save'
+  | 'runbook:delete'
 
 export function createDeployHandlers(deps: {
   deploys: DeployStore
@@ -59,8 +64,14 @@ export function createDeployHandlers(deps: {
   lastReleases?: () => EnvLastRelease[]
   /** The vault's and Hub's secret values, masked out of a release's text before it leaves over IPC or to a file. */
   knownSecrets?: () => readonly string[]
+  /** An environment's runbooks; absent where the wiring has none. */
+  runbooks?: Pick<RunbookStore, 'list' | 'create' | 'update' | 'delete'>
 }): Pick<Handlers, DeployChannel> {
-  const { deploys, releases, tooling, catalog, published, playbookFile, lastReleases, knownSecrets } = deps
+  const { deploys, releases, tooling, catalog, published, playbookFile, lastReleases, knownSecrets, runbooks } = deps
+  const store = () => {
+    if (!runbooks) throw new DeployError('INVALID_STATE', 'Runbooks are not available')
+    return runbooks
+  }
   const secrets = () => knownSecrets?.() ?? []
   /** A release as `release:get` returns it, local or Hub, with its text masked again in main (see `maskDetail`). */
   const maskedDetail = async (id: string): Promise<ReleaseDetail> => maskDetail(await releases.detail(id), secrets())
@@ -90,6 +101,7 @@ export function createDeployHandlers(deps: {
     'deploy:applyBatch': (environmentId, batch) => deploys.applyBatch(environmentId, batch),
     'deploy:tooling': () => tooling(),
     'release:preflight': (request) => releases.preflight(request),
+    'release:preflightOperation': (request) => releases.preflightOperation(request),
     'deploy:previewPlaybook': async (id) => {
       const preview = await releases.previewPlaybook(id)
       reviewed.set(id, preview)
@@ -139,6 +151,9 @@ export function createDeployHandlers(deps: {
     'release:events': async (id, afterSeq, limit) => maskEvents(await releases.events(id, afterSeq, Math.min(limit ?? 1000, MAX_EVENTS_PAGE)), secrets()),
     'release:active': async () => (await releases.listActive()).map((r) => maskSummary(r, secrets())),
     'release:latest': () => lastReleases?.() ?? [],
+    'runbook:list': async (environmentId) => store().list(environmentId),
+    'runbook:save': async ({ id, ...input }) => (id ? store().update(id, input) : store().create(input)),
+    'runbook:delete': async (id) => store().delete(id),
   }
 }
 

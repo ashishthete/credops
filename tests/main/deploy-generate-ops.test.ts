@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 import { generatePlaybook } from '../../src/main/deploy/generate'
-import { generateOperation } from '../../src/main/deploy/generate-ops'
+import { generateOperation, operationSteps } from '../../src/main/deploy/generate-ops'
 import type { DeployPlan, PlanOperation } from '../../src/main/deploy/runner'
 import { LOG_TAIL_MAX } from '../../src/shared/ops'
 import { MAX_UNTIL_HOURS, validateRunbook, type BuiltinKind } from '../../src/shared/runbooks'
@@ -209,5 +209,38 @@ describe('operation playbook', () => {
     expect(() => validateRunbook({ ...input, items: [{ type: 'builtin', builtin: 'prune-images', untilHours: 0 }] }, o)).toThrow(/hours/)
     const text = generateOperation(opPlan(saved.items as PlanOperation['items']))
     expect(text).toContain(`until=${MAX_UNTIL_HOURS}h`)
+  })
+
+  it('a repeated built-in gets its own step key, in tags and stream prefixes', () => {
+    const block = parse(opPlan([bi('restart'), bi('logs'), bi('restart'), bi('restart')]))[0].tasks.filter((t) => t.block)[0]
+    const keys = block.block!.map(kindOf)
+    expect(keys).toEqual(['op_restart', 'op_logs', 'op_restart_2', 'op_restart_3'])
+    for (const k of keys) expect(k).toMatch(/^[a-z0-9_]{1,32}$/)
+    expect(cmdOf(block.block![2])).toContain('P="{{ d.run }}:op_restart_2"')
+  })
+
+  it('operationSteps lists each target\'s step rows under the playbook\'s keys, built-ins by name', () => {
+    const p = stepFixture(0, 'after_checkout', {}, { anchor: null, label: 'warm' })
+    const items: PlanOperation['items'] = [bi('prune-images'), bi('restart'), { type: 'step', step: p }, bi('restart'), bi('backup-db'), bi('pull-only')]
+    expect(operationSteps(items, true)).toEqual([
+      { key: 'op_prune_images', kind: 'op', label: 'Prune images' },
+      { key: 'op_restart', kind: 'op', label: 'Restart' },
+      { key: 'c_0', kind: 'custom', label: 'warm' },
+      { key: 'op_restart_2', kind: 'op', label: 'Restart' },
+      { key: 'backup', kind: 'backup', label: 'Backup DB' },
+      { key: 'fetch', kind: 'fetch', label: 'Fetch' },
+      { key: 'checkout', kind: 'checkout', label: 'Checkout' },
+    ])
+    // prune-images runs on a host's first target only
+    expect(operationSteps(items, false).map((x) => x.key)).not.toContain('op_prune_images')
+  })
+
+  it('backup-db and pull-only appear at most once', () => {
+    expect(() => generateOperation(opPlan([bi('backup-db'), bi('backup-db')], { targets: [{ runId: RUN1, services: [] }] }))).toThrow(/operation items/)
+    expect(() => generateOperation(opPlan([bi('pull-only'), bi('pull-only')]))).toThrow(/operation items/)
+    const o = { allowedSecretIds: new Set<string>(), serviceIds: ['s1'], serviceNames: ['web'] }
+    const input = { environmentId: 'e', name: 'twice', targetServiceIds: ['s1'], items: [{ type: 'builtin', builtin: 'pull-only' }, { type: 'builtin', builtin: 'pull-only' }] }
+    expect(() => validateRunbook(input, o)).toThrow(/once/)
+    expect(() => validateRunbook({ ...input, items: [{ type: 'builtin', builtin: 'restart' }, { type: 'builtin', builtin: 'restart' }] }, o)).not.toThrow()
   })
 })

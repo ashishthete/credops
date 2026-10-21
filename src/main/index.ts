@@ -60,6 +60,7 @@ import { createHubHandlers } from './ipc/handlers/hub'
 import { ReleaseService } from './deploy/release-service'
 import { DeployStore, dbSecretRefs } from './deploy/deploy-store'
 import { ServiceStore } from './deploy/service-store'
+import { RunbookStore } from './deploy/runbook-store'
 import { ServiceTunnels } from './deploy/service-tunnel'
 import { copyServices } from './deploy/service-copy'
 import { ReleaseStore } from './deploy/release-store'
@@ -295,6 +296,8 @@ if (!app.requestSingleInstanceLock()) {
       deploys.onChanged = (environmentId) => pushEvent(mainWindow, 'deploy:changed', { environmentId })
       const services = new ServiceStore({ db, audit: log, vault: service })
       services.onChanged = (environmentId) => pushEvent(mainWindow, 'deploy:changed', { environmentId })
+      const runbooks = new RunbookStore({ db, audit: log, vault: service })
+      runbooks.onChanged = (environmentId) => pushEvent(mainWindow, 'deploy:changed', { environmentId })
       const copyDeps = { db, deploys, services, audit: log, vault: service }
       const releaseStore = new ReleaseStore({ db })
       const importer = new SshImporter({
@@ -403,6 +406,7 @@ if (!app.requestSingleInstanceLock()) {
         deploys,
         services,
         releases: releaseStore,
+        runbooks,
         runner: localRunner,
         access,
         finalize: createFinalizeSteps({
@@ -658,6 +662,7 @@ if (!app.requestSingleInstanceLock()) {
             },
             lastReleases: () => release.latestPerEnvironment(),
             knownSecrets,
+            runbooks,
           }),
           ...createServiceHandlers({
             services,

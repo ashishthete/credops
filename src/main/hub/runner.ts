@@ -9,6 +9,8 @@ import type {
   ReleaseSummary,
   RunEvent,
 } from '../../shared/deploy'
+import { DeployError } from '../../shared/deploy-error'
+import type { OperationRequest } from '../../shared/runbooks'
 import type { AuditLog } from '../audit/audit-log'
 import type { ReleaseRunMeta } from '../deploy/finalize'
 import { HubError, type HubClient } from './client'
@@ -21,6 +23,8 @@ type Maybe<T> = T | Promise<T>
  */
 export interface ReleaseApi {
   preflight(req: PreflightRequest): Maybe<{ releaseId: string }>
+  /** A runbook operation's preflight: a `ready` row that `start` runs. */
+  preflightOperation(req: OperationRequest): Maybe<{ releaseId: string }>
   previewPlaybook(releaseId: string): Maybe<PlaybookPreview>
   start(releaseId: string, confirm?: ReleaseConfirm): Maybe<void>
   cancel(releaseId: string): Maybe<void>
@@ -66,6 +70,11 @@ export class HubRunner implements ReleaseApi {
     const res = await this.audited('preflight', null, envName, () => this.d.client().post<{ releaseId: string }>('/api/v1/releases/preflight', req))
     this.remember(res.releaseId, envName)
     return res
+  }
+
+  /** The Hub has no runbook route yet: an operation on a Hub environment is refused before anything is sent. */
+  preflightOperation(_req: OperationRequest): Promise<{ releaseId: string }> {
+    return Promise.reject(new DeployError('INVALID_STATE', 'Runbooks run on local environments only'))
   }
 
   /** A read: not audited, like `detail`. */
@@ -239,6 +248,9 @@ export class RoutingReleases implements ReleaseApi {
 
   async preflight(req: PreflightRequest): Promise<{ releaseId: string }> {
     return this.d.isHubEnv(req.environmentId) ? this.d.hub.preflight(req) : this.d.local.preflight(req)
+  }
+  async preflightOperation(req: OperationRequest): Promise<{ releaseId: string }> {
+    return this.d.isHubEnv(req.environmentId) ? this.d.hub.preflightOperation(req) : this.d.local.preflightOperation(req)
   }
   previewPlaybook(releaseId: string): Maybe<PlaybookPreview> {
     return this.pick(releaseId).previewPlaybook(releaseId)

@@ -1,9 +1,11 @@
 import { localAllowAll, type DeployAccess } from '../../src/main/deploy/access'
 import { noopFinalize, type FinalizeSteps } from '../../src/main/deploy/finalize'
 import { ReleaseService, type ReleaseServiceDeps } from '../../src/main/deploy/release-service'
+import { RunbookStore } from '../../src/main/deploy/runbook-store'
 import { resolveHost } from '../../src/main/inventory/resolve'
 import { SecretStore } from '../../src/main/vault/secret-store'
 import { DEFAULT_RELEASE_OPTIONS, type DeploymentMeta, type RunEvent } from '../../src/shared/deploy'
+import type { Runbook, RunbookInput } from '../../src/shared/runbooks'
 import type { AppServiceMeta } from '../../src/shared/services'
 import { makeDeployFixture, type DeployFixture } from './deploy-helpers'
 import { A, FakeRunner } from './fake-runner'
@@ -20,6 +22,7 @@ export const SECRET = 'sekret-value-1'
 export interface Rig {
   f: DeployFixture
   svc: ReleaseService
+  runbooks: RunbookStore
   runner: FakeRunner
   batches: RunEvent[][]
   states: string[]
@@ -48,11 +51,13 @@ export async function rig(
   const states: string[] = []
   const timers: (() => void)[] = []
   const setup = { access: over.access ?? localAllowAll, finalize: over.finalize ?? noopFinalize }
+  const runbooks = new RunbookStore({ db: f.db, audit: f.audit, vault: f.vault })
   const svc = new ReleaseService({
     db: f.db,
     deploys: f.deploys,
     services: f.services,
     releases: f.releases,
+    runbooks,
     runner,
     access: setup.access,
     finalize: setup.finalize,
@@ -72,7 +77,7 @@ export async function rig(
     now: over.now ?? (() => new Date(NOW)),
     clock: { setTimeout: (fn) => timers.push(fn) as unknown, clearTimeout: () => undefined },
   })
-  return { f, svc, runner, batches, states, timers, tick: () => timers.splice(0).forEach((t) => t()), valueCalls, failValue, setup }
+  return { f, svc, runbooks, runner, batches, states, timers, tick: () => timers.splice(0).forEach((t) => t()), valueCalls, failValue, setup }
 }
 
 export const dep = (r: Rig, name: string, over: Record<string, unknown> = {}) =>
@@ -99,6 +104,27 @@ export async function ready(
     bump: over.bump ?? 'none',
     options: DEFAULT_RELEASE_OPTIONS,
   })
+  for (let i = 0; i < 200 && r.svc.detail(releaseId).status === 'preflight'; i++) await new Promise((res) => setImmediate(res))
+  return releaseId
+}
+
+/** Saves a runbook on staging (or `environmentId`) over the given services; restart only unless `over` says otherwise. */
+export const runbook = (r: Rig, serviceIds: string[], over: Partial<RunbookInput> = {}): Runbook =>
+  r.runbooks.create({
+    environmentId: r.f.staging.id,
+    name: 'Bounce',
+    description: '',
+    targetServiceIds: serviceIds,
+    items: [{ type: 'builtin', builtin: 'restart' }],
+    params: [],
+    lock: true,
+    notify: false,
+    ...over,
+  })
+
+/** Preflights a run of `rb` (every target unless `serviceIds`) and waits for it to settle. */
+export async function opReady(r: Rig, rb: Runbook, params: Record<string, string> = {}, serviceIds = rb.targetServiceIds): Promise<string> {
+  const { releaseId } = await r.svc.preflightOperation({ environmentId: rb.environmentId, runbookId: rb.id, serviceIds, params })
   for (let i = 0; i < 200 && r.svc.detail(releaseId).status === 'preflight'; i++) await new Promise((res) => setImmediate(res))
   return releaseId
 }

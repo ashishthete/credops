@@ -31,6 +31,8 @@ export interface ReleaseRunMeta {
   finishedAt: string | null
   actor: Actor
   urls: string[]
+  /** Set for a runbook operation (only its name is read): it deploys nothing, so it gets no notes or QA. */
+  operation?: { name: string } | null
 }
 
 export interface FinalizeContext {

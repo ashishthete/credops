@@ -1089,3 +1089,60 @@ describe('parallel prepare build cleanup', () => {
     expect(out.filter((e) => e.type.startsWith('step.') || e.type === 'task.done' || e.type === 'deployment.updated')).toEqual([])
   })
 })
+
+describe('EventTranslator operations', () => {
+  const opPlan = (lock = true): DeployPlan => {
+    const base = planFixture()
+    return {
+      ...base,
+      kind: 'operation',
+      version: null,
+      deployments: base.deployments.slice(0, 2),
+      operation: {
+        runbookId: 'rb-1',
+        name: 'bounce',
+        lock,
+        items: [
+          { type: 'builtin', builtin: 'restart' },
+          { type: 'step', step: stepFixture(0, 'after_up', {}, { anchor: null, label: 'Warm cache' }) },
+          { type: 'builtin', builtin: 'restart' },
+          { type: 'builtin', builtin: 'backup-db' },
+        ],
+        targets: [{ runId: R1, services: [] }, { runId: R2, services: [] }],
+      },
+    }
+  }
+  const tagsOf = (kind: string, run: string): string[] => [`od_step=${kind}`, `od_run=${run}`]
+  const start = (tr: EventTranslator, kind: string, run: string, name = `${kind} x`): RunEventBody[] => tr.feed(JSON.stringify({ event: 'task_start', name, tags: tagsOf(kind, run) }))
+  const result = (tr: EventTranslator, kind: string, run: string, name = `${kind} x`): RunEventBody[] =>
+    tr.feed(JSON.stringify({ event: 'ok', host: 'od-1', task: name, tags: tagsOf(kind, run), rc: 0 }))
+
+  it('labels a built-in row by its name, a repeat under its own key, and a step by its label', () => {
+    const tr = new EventTranslator({ plan: opPlan(), secrets: () => [], now: clock().now })
+    const rows = [...start(tr, 'op_restart', R1), ...start(tr, 'c_0', R1), ...start(tr, 'op_restart_2', R1), ...start(tr, 'backup', R1)]
+    expect(of(rows, 'step.started').map((e) => [e.stepId, e.kind, e.name])).toEqual([
+      [`${R1}:op_restart`, 'op', 'Restart dep1'],
+      [`${R1}:c_0`, 'custom', 'Warm cache'],
+      [`${R1}:op_restart_2`, 'op', 'Restart dep1'],
+      [`${R1}:backup`, 'backup', 'Backup DB dep1'],
+    ])
+    expect(JSON.stringify(rows)).not.toContain('Operation')
+  })
+
+  it('a target runs from its first item and succeeds on its last', () => {
+    const tr = new EventTranslator({ plan: opPlan(), secrets: () => [], now: clock().now })
+    const first = start(tr, 'op_restart', R2)
+    expect(of(first, 'deployment.updated')).toEqual([{ type: 'deployment.updated', deploymentRunId: R2, status: 'running' }])
+    const out = [...result(tr, 'op_restart', R2), ...start(tr, 'c_0', R2), ...result(tr, 'c_0', R2), ...start(tr, 'op_restart_2', R2), ...result(tr, 'op_restart_2', R2)]
+    expect(of(out, 'deployment.updated').filter((e) => e.status === 'succeeded')).toEqual([])
+    const last = [...start(tr, 'backup', R2), ...result(tr, 'backup', R2)]
+    expect(of(last, 'deployment.updated').at(-1)).toEqual({ type: 'deployment.updated', deploymentRunId: R2, status: 'succeeded' })
+  })
+
+  it('a lock-free run shows no Lock row for its prep task', () => {
+    const tr = new EventTranslator({ plan: opPlan(false), secrets: () => [], now: clock().now })
+    const out = [...start(tr, 'lock', 'host:host-od-1', 'lock prep od-1'), ...result(tr, 'lock', 'host:host-od-1', 'lock prep od-1')]
+    expect(of(out, 'step.started')).toEqual([])
+    expect(of(out, 'step.done')).toEqual([])
+  })
+})

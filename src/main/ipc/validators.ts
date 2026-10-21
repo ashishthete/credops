@@ -1,4 +1,13 @@
 import { AUDIT_ACTIONS, type AuditFilter } from '../../shared/audit'
+import {
+  BUILTINS,
+  MAX_PARAMS,
+  MAX_RUNBOOK_DESCRIPTION,
+  MAX_RUNBOOK_NAME,
+  MAX_UNTIL_HOURS,
+  type OperationRequest,
+  type RunbookSaveInput,
+} from '../../shared/runbooks'
 import type { Channel, IpcContract } from '../../shared/ipc'
 import {
   HOST_ADDRESS,
@@ -381,7 +390,45 @@ export const asReleaseListFilter: Check<ReleaseListFilter> = v.object({
   environmentId: v.optional(v.uuid()),
   limit: v.optional(v.int({ min: 1, max: 200 })),
   before: v.optional(v.uuid()),
+  operations: v.optional(v.oneOf(['only', 'exclude'] as const)),
 }) as Check<ReleaseListFilter>
+
+// Runbooks. The shape only: the store owns the content rules (targets in the environment, a step's secrets, once-only
+// built-ins, a param's pattern), so a well-shaped but wrong runbook fails there with VALIDATION.
+const MAX_PARAM_VALUE = 1000
+const runbookItem = v.tagged('type', {
+  step: v.object({ type: v.oneOf(['step'] as const), step: stepBody }),
+  builtin: v.object({
+    type: v.oneOf(['builtin'] as const),
+    builtin: v.oneOf(BUILTINS),
+    tail: v.optional(v.int({ min: 1, max: LOG_TAIL_MAX })),
+    untilHours: v.optional(v.int({ min: 1, max: MAX_UNTIL_HOURS })),
+  }),
+})
+const runbookParam = v.object({
+  name: v.str({ pattern: VARIABLE_NAME }),
+  label: v.str({ min: 1, max: 64 }),
+  type: v.oneOf(['text', 'choice'] as const),
+  pattern: v.oneOf(['identifier', 'number', 'path', 'free'] as const),
+  choices: v.array(v.str({ min: 1, max: 100 }), 50),
+})
+export const asRunbookSaveInput: Check<RunbookSaveInput> = v.object({
+  id: v.optional(v.uuid()),
+  environmentId: v.uuid(),
+  name: v.str({ min: 1, max: MAX_RUNBOOK_NAME }),
+  description: v.str({ max: MAX_RUNBOOK_DESCRIPTION }),
+  targetServiceIds: v.array(v.uuid(), MAX_SERVICES, { min: 1 }),
+  items: v.array(runbookItem, MAX_STEPS_PER_CHECKOUT, { min: 1 }),
+  params: v.array(runbookParam, MAX_PARAMS),
+  lock: v.bool(),
+  notify: v.bool(),
+}) as Check<RunbookSaveInput>
+export const asOperationRequest: Check<OperationRequest> = v.object({
+  environmentId: v.uuid(),
+  runbookId: v.uuid(),
+  serviceIds: v.array(v.uuid(), MAX_SERVICES, { min: 1 }),
+  params: v.record(VARIABLE_NAME, v.str({ max: MAX_PARAM_VALUE }), { maxKeys: MAX_PARAMS }),
+}) as Check<OperationRequest>
 
 // Services. Each kind's shape has only its own keys, so a field of the other kind fails here; the store owns the
 // content rules (compose service, address, membership of the checkout).
@@ -848,6 +895,7 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'service:tunnelClose': args(v.uuid()),
   'service:tunnelSync': args(v.uuid()),
   'release:preflight': args(asPreflightRequest),
+  'release:preflightOperation': args(asOperationRequest),
   'deploy:previewPlaybook': args(v.uuid()),
   'deploy:savePlaybook': args(v.uuid(), v.str({ pattern: PLAYBOOK_SHA256 })),
   'release:savePlaybook': args(v.uuid()),
@@ -863,6 +911,9 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'release:events': args(v.uuid(), v.int({ min: 0, max: Number.MAX_SAFE_INTEGER }), v.optional(v.int({ min: 1, max: MAX_EVENTS_PAGE }))),
   'release:active': args(),
   'release:latest': args(),
+  'runbook:list': args(v.uuid()),
+  'runbook:save': args(asRunbookSaveInput),
+  'runbook:delete': args(v.uuid()),
   'hub:status': args(),
   'hub:connect': args(hubUrl),
   'hub:signIn': args(),

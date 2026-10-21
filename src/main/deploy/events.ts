@@ -19,6 +19,7 @@ import {
 import { isHelperTask } from '../../shared/playbook-steps'
 import { redact } from '../security/redact'
 import { planSteps, stepList } from './generate'
+import { operationSteps } from './generate-ops'
 import { withBase64Forms } from './mask'
 import { MARK, RC_BREAK_KEPT, RC_LOCK_BUSY, parseMarker, parsePfLine, parsePrev, parseStreamLine } from './markers'
 import type { DeployPlan, PlanDeployment, PlanHost, PlanStep, RunnerPreflight } from './runner'
@@ -66,6 +67,8 @@ type Desc = Ref & { stepId: string; hostId: string | null; deploymentRunId: stri
 type StepNote = { state: 'skipped' } | { state: 'warn'; rc: number }
 
 const CUSTOM_KEY = /^c_\d{1,3}$/
+/** A runbook built-in's key: `op_<builtin>`, with `_<n>` for a repeat (generate-ops.ts). */
+const OP_KEY = /^op_[a-z0-9_]{1,29}$/
 const STEP_KINDS = new Set<string>(Object.keys(STEP_LABEL))
 const cut = (s: string): string => (s.length > MAX_LOG_LINE ? `${s.slice(0, MAX_LOG_LINE - 7)} …(cut)` : s)
 
@@ -94,8 +97,10 @@ export class EventTranslator {
   private readonly hasWhen = new Set<string>()
   /** No_log custom steps with a `when` that returned ok with no marker yet, waiting for a late OD-SKIP. */
   private readonly pending: Active[] = []
-  /** `${run}:c_<n>` -> the PlanStep label. */
+  /** `${run}:c_<n>` -> the PlanStep label; `${run}:op_<..>` -> the built-in's name. */
   private readonly customLabel = new Map<string, string>()
+  /** Operation runs whose first step has started (that start is the run's start). */
+  private readonly opStarted = new Set<string>()
   /** Run id -> the key of the last step of its block. */
   private readonly lastKey = new Map<string, string>()
   /** Run id -> how many up tasks a flow gives it (one per services part); absent means one. */
@@ -114,6 +119,7 @@ export class EventTranslator {
   }
 
   private readSteps(plan: DeployPlan): void {
+    if (plan.kind === 'operation') return this.readOperation(plan)
     const flow = plan.kind === 'release' ? (plan.flow ?? null) : null
     for (const st of flow?.stages ?? []) {
       if (st.kind === 'step') {
@@ -141,6 +147,23 @@ export class EventTranslator {
       }
       const last = list.at(-1)
       if (last) this.lastKey.set(d.runId, last.key)
+    }
+  }
+
+  /** An operation's rows per target, as generate-ops tags them; a target succeeds on its last row. */
+  private readOperation(plan: DeployPlan): void {
+    const op = plan.operation
+    if (!op) return
+    const seenHost = new Set<string>()
+    for (const t of op.targets) {
+      const d = this.depByRun.get(t.runId)
+      if (!d) continue
+      const first = !seenHost.has(d.hostId)
+      seenHost.add(d.hostId)
+      const list = operationSteps(op.items, first)
+      for (const x of list) if (x.kind === 'custom' || x.kind === 'op') this.customLabel.set(`${t.runId}:${x.key}`, x.label)
+      const last = list.at(-1)
+      if (last) this.lastKey.set(t.runId, last.key)
     }
   }
 
@@ -255,6 +278,7 @@ export class EventTranslator {
   /** A task's `od_step` tag as a step: a built-in kind, or `c_<n>` for a custom step. */
   private ref(tagKind: string): Ref | null {
     if (CUSTOM_KEY.test(tagKind)) return { kind: 'custom', key: tagKind }
+    if (OP_KEY.test(tagKind)) return { kind: 'op', key: tagKind }
     return tagKind !== 'custom' && STEP_KINDS.has(tagKind) ? { kind: tagKind as StepKind, key: tagKind } : null
   }
 
@@ -277,7 +301,7 @@ export class EventTranslator {
     // a version tag is a release-level step: its failure never fails the deployment that is already up
     if (kind === 'version') return { ...r, stepId: 'release:version', hostId: null, deploymentRunId: null, name: STEP_LABEL.version, expected: this.versionTasks }
     const dep = this.depByRun.get(run)
-    const label = kind === 'custom' ? this.labelOf(run, r.key) : STEP_LABEL[kind]
+    const label = kind === 'custom' || kind === 'op' ? this.labelOf(run, r.key) : STEP_LABEL[kind]
     if (dep) {
       const expected = kind === 'health' ? Math.max(1, dep.urls.length) : kind === 'up' ? (this.ups.get(run) ?? 1) : 1
       return { ...r, stepId: `${run}:${r.key}`, hostId: dep.hostId, deploymentRunId: run, name: kind === 'custom' ? label : `${label} ${dep.name}`, expected }
@@ -328,7 +352,10 @@ export class EventTranslator {
     const a: Active = { startedAt: this.o.now(), stepId: d.stepId, kind: d.kind, key: d.key, deploymentRunId: d.deploymentRunId, hostId: d.hostId, seen: 0, expected: d.expected, done: false }
     this.active.set(this.akey(d), a)
     out.push({ type: 'step.started', stepId: d.stepId, kind: d.kind, name: d.kind === 'custom' ? this.line(d.name) : d.name, hostId: d.hostId, deploymentRunId: d.deploymentRunId })
-    if (d.deploymentRunId && (d.kind === 'record' || d.kind === 'rb_checkout')) {
+    // A release run starts at its record step; an operation's at its first step.
+    const opFirst = this.o.plan.kind === 'operation' && d.deploymentRunId !== null && !this.opStarted.has(d.deploymentRunId)
+    if (d.deploymentRunId && (d.kind === 'record' || d.kind === 'rb_checkout' || opFirst)) {
+      this.opStarted.add(d.deploymentRunId)
       out.push({ type: 'deployment.updated', deploymentRunId: d.deploymentRunId, status: 'running' })
     }
     return a
