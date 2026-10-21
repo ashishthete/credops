@@ -352,10 +352,10 @@ export function startReleaseSync(): () => void {
 /** A cancel of the release was sent from this window (`release:cancel` succeeded); cleared when it finishes. */
 export function markCancelling(id: string, on: boolean): void {
   if (isCancelling(id) === on) return
-  // The cancel's reply can come after the release already finished: then there is nothing left to cancel.
-  const s = releaseStore.get()
-  const status = s.byId[id]?.status
-  if (on && (s.pipelines[id]?.result || (status !== undefined && !ACTIVE.has(status)))) return
+  // The cancel's reply can come after the release already finished: then there is nothing left to cancel. The
+  // status decides, not a pipeline's result, which a retry of its version tag leaves from the run before.
+  const status = releaseStore.get().byId[id]?.status
+  if (on && status !== undefined && !ACTIVE.has(status)) return
   const { [id]: _was, ...rest } = cancels.get()
   cancels.set(on ? { ...rest, [id]: true } : rest)
 }

@@ -195,10 +195,15 @@ export function reducePipeline(s: PipelineState, events: RunEvent[]): PipelineSt
     d.lastSeq = ev.seq
     d.gap = false
     switch (ev.type) {
-      case 'run.started':
+      case 'run.started': {
         d.status = 'running'
         if (ev.version) d.version = { ...d.version, to: ev.version }
+        // Retry-tagging runs the finished release again under its id: its result and version tag start over.
+        d.result = null
+        const c = findChip('release:version')
+        if (c) Object.assign(c, { state: 'pending', startedAt: null, durationMs: null, error: null })
         break
+      }
       case 'preflight.done':
         d.status = ev.report.blocked ? 'blocked' : 'ready'
         break
