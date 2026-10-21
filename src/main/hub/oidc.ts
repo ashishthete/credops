@@ -86,6 +86,8 @@ export async function discover(authority: string, deps: { fetch: Fetch; signal?:
   const base = stripSlash(checkAuthority(authority).href)
   const res = await request(deps.fetch, `${base}/.well-known/openid-configuration`, undefined, deps.signal)
   const bad = new OidcError('discovery', 'The sign-in service returned an unusable configuration')
+  // The provider failing is not an unusable configuration: callers keep the session and retry.
+  if (res.status >= 500) throw new OidcError('network', 'The sign-in service is unavailable')
   if (!res.ok) throw bad
   let doc: unknown
   try {
@@ -241,7 +243,7 @@ async function tokenRequest(
       throw new OidcError('refresh_expired', 'Your sign-in has expired. Sign in again')
     }
     // The provider failing is not the person's sign-in failing: callers keep the session and retry.
-    if (res.status >= 500) throw new OidcError('network', 'The sign-in service is unavailable')
+    if (res.status >= 500 || res.status === 429) throw new OidcError('network', 'The sign-in service is unavailable')
     throw new OidcError(failure.code, failure.message)
   }
   const { access_token: access, refresh_token: refresh, expires_in: ttl } = body

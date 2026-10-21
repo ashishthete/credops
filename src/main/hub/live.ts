@@ -78,6 +78,8 @@ export class LiveFeed {
   private ctl: AbortController | null = null
   private readonly last = new Map<string, number>()
   private readonly notified = new Set<string>()
+  /** Releases whose terminal state was seen (capped): their late events are dropped, not pushed twice. */
+  private readonly finished = new Set<string>()
   private readonly listeners = new Set<(batch: RunEvent[]) => void>()
   private chain: Promise<void> = Promise.resolve()
 
@@ -107,6 +109,7 @@ export class LiveFeed {
     this.ctl = null
     this.last.clear()
     this.notified.clear()
+    this.finished.clear()
   }
 
   /** Resolves when everything received so far has been delivered. For tests. */
@@ -175,13 +178,21 @@ export class LiveFeed {
         const done = await this.d.client().get<ReleaseSummary>(`/api/v1/releases/${id}`)
         if (!signal.aborted) {
           this.state(done)
-          if (TERMINAL.has(done.status)) this.last.delete(id)
+          if (TERMINAL.has(done.status)) this.finish(id)
         }
       } catch (err) {
         if (!this.gone(err)) throw err
         this.forget(id)
       }
     }
+  }
+
+  /** A finished release: no catch-up later, and events straggling in behind its terminal state are ignored. */
+  private finish(id: string): void {
+    this.last.delete(id)
+    this.finished.delete(id)
+    this.finished.add(id)
+    if (this.finished.size > MAX_TRACKED) this.finished.delete(this.finished.values().next().value as string)
   }
 
   private gone(err: unknown): boolean {
@@ -191,6 +202,7 @@ export class LiveFeed {
   private forget(id: string): void {
     this.last.delete(id)
     this.notified.delete(id)
+    this.finished.delete(id)
   }
 
   private async frame(frame: { event: string; data: string }, signal: AbortSignal): Promise<void> {
@@ -208,13 +220,17 @@ export class LiveFeed {
       case 'release.state':
         this.state(msg.summary)
         if (TERMINAL.has(msg.summary.status)) {
-          // Its events are in before it is forgotten; a finished release needs no catch-up later.
-          try {
-            await this.backfill(msg.summary.id, signal)
-          } catch (err) {
-            if (!this.gone(err)) throw err
+          const id = msg.summary.id
+          // Only a release this client was showing needs its tail; an unseen one is not paged from seq 0.
+          if (this.last.has(id)) {
+            try {
+              await this.backfill(id, signal)
+            } catch (err) {
+              if (!this.gone(err)) throw err
+            }
           }
-          if (!signal.aborted) this.last.delete(msg.summary.id)
+          // Its events are in before it is forgotten; a late batch for it is dropped by `finished`.
+          if (!signal.aborted) this.finish(id)
         }
         break
       case 'lock.updated':
@@ -233,6 +249,7 @@ export class LiveFeed {
     for (const e of batch) {
       const id = e.runId
       this.d.track?.(id)
+      if (this.finished.has(id)) continue
       const last = this.last.get(id)
       if (last !== undefined && e.seq <= last) continue
       if (last !== undefined && e.seq > last + 1) {

@@ -261,6 +261,41 @@ describe('hub live feed', () => {
     expect(seqs(pushed.events)).toEqual([1, 2])
   })
 
+  it('events that straggle in after the terminal state are not pushed twice', async () => {
+    const log = new Map([[REL, Array.from({ length: 4 }, (_, i) => ev(REL, i + 1))]])
+    const { base } = await start({
+      log,
+      active: () => [],
+      live: [
+        (res) => {
+          res.write(frame(batch(REL, 1, 2)))
+          res.write(frame({ type: 'release.state', summary: summary(REL, 'succeeded') }))
+          res.write(frame(batch(REL, 3, 4)))
+        },
+      ],
+    })
+    const { feed, pushed } = make(base)
+    feed.start()
+    await vi.waitFor(() => expect(pushed.states.map((s) => s.status)).toEqual(['succeeded']))
+    await feed.idle()
+    expect(seqs(pushed.events)).toEqual([1, 2, 3, 4])
+  })
+
+  it('a terminal state for a release this client never tracked fetches no events', async () => {
+    const log = new Map([[OTHER, Array.from({ length: 50 }, (_, i) => ev(OTHER, i + 1))]])
+    const { base, seen } = await start({
+      log,
+      active: () => [],
+      live: [(res) => void res.write(frame({ type: 'release.state', summary: summary(OTHER, 'failed') }))],
+    })
+    const { feed, pushed } = make(base)
+    feed.start()
+    await vi.waitFor(() => expect(pushed.states.map((s) => s.status)).toEqual(['failed']))
+    await feed.idle()
+    expect(seen.events).toEqual([])
+    expect(pushed.events).toEqual([])
+  })
+
   it('401 renews once, then signs out', async () => {
     // A server whose first /live answers 401 session_expired; the retry streams.
     server = createServer((req, res) => {

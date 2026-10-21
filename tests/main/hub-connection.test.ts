@@ -200,6 +200,35 @@ describe('hub connection', () => {
     expect(row.refresh_enc).not.toBeNull()
   })
 
+  it('a Hub 5xx on the session exchange during renew keeps the session', async () => {
+    const conn = make()
+    await conn.connect(hubUrl)
+    await conn.signIn()
+    expireHubSessions()
+    const down: typeof fetch = async (input, init) => {
+      if (String(input).includes('/api/v1/session') && init?.method === 'POST') return new Response('down', { status: 502 })
+      return fetch(input, init)
+    }
+    const c2 = make({ fetch: down })
+    await expect(c2.renew()).rejects.toMatchObject({ code: 'unavailable' })
+    expect(c2.status()).toMatchObject({ signedIn: true })
+    const row = db.prepare('SELECT refresh_enc FROM hub_link').get() as { refresh_enc: Buffer | null }
+    expect(row.refresh_enc).not.toBeNull()
+  })
+
+  it('an Entra discovery 5xx or a token 429 during renew keeps the session', async () => {
+    const conn = make()
+    await conn.connect(hubUrl)
+    await conn.signIn()
+    for (const [match, status] of [['openid-configuration', 503], ['/token', 429]] as const) {
+      expireHubSessions()
+      const flaky: typeof fetch = async (input, init) => (String(input).includes(match) ? new Response('no', { status }) : fetch(input, init))
+      const c2 = make({ fetch: flaky })
+      await expect(c2.renew()).rejects.toMatchObject({ code: 'network' })
+      expect(c2.status()).toMatchObject({ signedIn: true })
+    }
+  })
+
   it('a refresh that fails on the network reports unreachable and keeps the session', async () => {
     const conn = make()
     await conn.connect(hubUrl)
