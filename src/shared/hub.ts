@@ -1,4 +1,6 @@
-import type { DeploymentMeta, ReleaseSummary, RunEvent, UseSudo } from './deploy'
+import type { DeploymentMeta, ReleaseFlow, ReleaseSummary, RunEvent, UseSudo } from './deploy'
+import type { Runbook } from './runbooks'
+import type { Step } from './steps'
 
 export const HUB_API_VERSION = 1
 export const DEFAULT_GROUP_ID = '00000000-0000-4000-8000-000000000001'
@@ -30,6 +32,8 @@ export interface HubMeta {
   name: string
   apiVersion: 1
   entra: { authority: string; clientId: string; scopes: string[]; redirectUri: string }
+  /** What this Hub accepts. An older Hub omits it, which a desktop reads as schema 1 and no playbook edits. */
+  capabilities: { manifestSchema: 2; playbookEdits: boolean }
 }
 
 export type HubErrorCode =
@@ -81,6 +85,9 @@ export const HUB_AUDIT_ACTIONS = [
   'release.cancel',
   'release.rollback',
   'release.discard',
+  'ops.run',
+  'ops.preflight',
+  'playbook.edited',
   'deploy.lock_break',
   'notify.sent',
   'notify.failed',
@@ -176,6 +183,8 @@ export type HubAction =
   | 'release.start'
   | 'release.rollback'
   | 'release.cancel'
+  | 'ops.run'
+  | 'playbook.edit'
   | 'lock.break'
   | 'env.lock'
   | 'admin'
@@ -253,10 +262,14 @@ export interface HubManifestService {
   hostId: string | null
   /** The host a db is reached through; null for a service. */
   viaHostId: string | null
+  /** Schema 2: a release leaves this service alone when no commit touches its checkout since its last deploy. */
+  skipUnchanged?: boolean
 }
 
 /** What an admin publishes: addresses, jump chains and pinned public host keys. Never a secret value. */
 export interface HubEnvManifest {
+  /** 1 (or absent) is the Phase 10b shape: hooks, no steps. The Hub migrates a schema-1 manifest's hooks to steps on read. */
+  schema?: 1 | 2
   environment: {
     id: string
     name: string
@@ -264,6 +277,10 @@ export interface HubEnvManifest {
     versioned: boolean
     autoRollback: boolean
     currentVersion: string | null
+    /** Schema 2. Absent: the defaults (parallel prepare on, cap 3, no flow). */
+    parallelPrepare?: boolean
+    prepareCap?: number
+    flow?: ReleaseFlow | null
   }
   hosts: {
     id: string
@@ -279,9 +296,11 @@ export interface HubEnvManifest {
   }[]
   /** Services of the environment: a `service` runs from a checkout, a `db` is reached through a via-host. Ids are the publisher's local UUIDs. */
   services: HubManifestService[]
-  deployments: Omit<DeploymentMeta, 'vaultIds' | 'steps' | 'createdAt' | 'updatedAt'>[]
+  deployments: (Omit<DeploymentMeta, 'vaultIds' | 'steps' | 'createdAt' | 'updatedAt'> & { steps?: Step[] })[]
   integrations: HubIntegrations
   requiredSecrets: { secretId: string; name: string; usedBy: string[] }[]
+  /** Schema 2: the environment's runbooks, by the publisher's ids. */
+  runbooks?: Omit<Runbook, 'environmentId' | 'createdAt' | 'updatedAt'>[]
 }
 
 /** What any signed-in person with a view grant sees: no addresses, hops or host keys. */

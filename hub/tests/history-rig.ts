@@ -1,5 +1,6 @@
 import { expect } from 'vitest'
 import { A, FakeRunner } from '../../tests/main/fake-runner'
+import type { HubConfig } from '../src/config'
 import type { HubEnvManifest } from '../../src/shared/hub'
 import { testHub, type TestHub } from './helpers'
 import { DEP_API, DEP_WEB, ENV_ID, HOST_ID, deployment, manifest } from './manifest'
@@ -46,9 +47,9 @@ export interface Rig {
   release: (token: string, serviceIds: string[]) => Promise<string>
 }
 
-export async function rig(): Promise<Rig> {
+export async function rig(config: Partial<HubConfig> = {}): Promise<Rig> {
   const fr = new FakeRunner()
-  const hub = await testHub({}, { runner: fr })
+  const hub = await testHub(config, { runner: fr })
   const call: Rig['call'] = (token, method, url, payload) =>
     hub.app.inject({ method, url, headers: { authorization: `Bearer ${token}` }, ...(payload === undefined ? {} : { payload: payload as object }) })
   const admin = (await hub.signIn(ADMIN)).token

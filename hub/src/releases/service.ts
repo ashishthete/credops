@@ -27,7 +27,7 @@ import type { EnvLocks } from '../locks'
 import type { Registry } from '../registry'
 import type { DeployKeys } from '../secrets/deploykeys'
 import type { SecretStore } from '../secrets/store'
-import { HubDeployAccess, hubAudit, hubDeploys, hubIdentities, hubInventory, hubResolve, hubSecrets, hubServices, hubVerify } from './adapters'
+import { HubDeployAccess, hubAudit, hubDeploys, hubIdentities, hubInventory, hubResolve, hubRunbooks, hubSecrets, hubServices, hubVerify } from './adapters'
 import { scopeDetail, scopeEvents, scopeSummary, visibleIn, type Visible } from './scope'
 
 /** Statuses after which a release holds no lock: it has ended, or it can never start. */
@@ -55,6 +55,21 @@ export interface HubReleasesDeps {
   heldSecrets?: () => string[]
   /** Where lock-release failures are reported; the message is already redacted. */
   log?: (message: string) => void
+}
+
+/** What the Hub asks of a runbook run: the services to run it on, with its param values. */
+export interface OperationRequest {
+  environmentId: string
+  runbookId: string
+  serviceIds: string[]
+  params: Record<string, string>
+}
+export type EditValidation = { ok: true; canonical: string; sha256: string } | { ok: false; errors: { line: number; message: string }[] }
+
+/** The ReleaseService methods the operation and edit routes call; they arrive with the operations and playbook-edit work on the service. */
+interface OpsApi {
+  preflightOperation(req: OperationRequest, ctx?: { actor: Actor }): Promise<{ releaseId: string }>
+  validateEdit(releaseId: string, text: string, ctx?: { actor: Actor }): EditValidation | Promise<EditValidation>
 }
 
 export const runRootOf = (config: HubConfig): string => config.runRoot ?? join(config.dataDir, 'runs')
@@ -337,7 +352,29 @@ export class HubReleases {
     throw err
   }
 
-  private selectedDeployments(req: PreflightRequest): string[] {
+  private ops(): OpsApi {
+    const s = this.service as unknown as Partial<OpsApi>
+    if (typeof s.preflightOperation !== 'function' || typeof s.validateEdit !== 'function') {
+      throw new HubHttpError(503, 'unavailable', 'This Hub build cannot run operations or validate playbook edits')
+    }
+    return s as OpsApi
+  }
+
+  /** The access action a release is started under: a runbook run is `ops.run`, a deploy `release.start`. */
+  private startAction(releaseId: string): HubAction {
+    return this.store.get(releaseId).operation ? 'ops.run' : 'release.start'
+  }
+
+  /** Editing a playbook needs the Hub setting and an admin. A refusal is audited like any other. */
+  private editGuard(user: HubUser, environmentId: string, attempted: string, releaseId: string): void {
+    if (this.d.config.allowPlaybookEdits !== true) {
+      this.deny(user, attempted, environmentId, 'edits_off', releaseId)
+      throw new HubHttpError(403, 'forbidden', 'Playbook editing is turned off on this Hub')
+    }
+    this.allow(user, 'playbook.edit', environmentId, [], attempted, releaseId)
+  }
+
+  private selectedDeployments(req: Pick<PreflightRequest, 'environmentId' | 'serviceIds' | 'checkoutIds'>): string[] {
     const m = this.d.registry.exists(req.environmentId) ? this.d.registry.get(req.environmentId) : null
     const byId = new Map<string, HubEnvManifest['services'][number]>((m?.services ?? []).map((s) => [s.id, s]))
     const ids = [...req.serviceIds.flatMap((id) => byId.get(id)?.deploymentId ?? []), ...(req.checkoutIds ?? [])]
@@ -362,6 +399,51 @@ export class HubReleases {
     return res
   }
 
+  /** Starts a runbook run: the same lock and typed-name rules as a release, unless the runbook only reads and takes no lock. */
+  async preflightOperation(user: HubUser, req: OperationRequest): Promise<{ releaseId: string }> {
+    this.allow(user, 'ops.run', req.environmentId, this.selectedDeployments(req), 'ops.preflight', null)
+    if (this.d.registry.nameOf(req.environmentId) === null) throw new HubHttpError(404, 'not_found', 'That environment is not published to this Hub')
+    const ops = this.ops()
+    let runbook
+    try {
+      runbook = hubRunbooks(this.d.db, this.d.registry).get(req.runbookId)
+    } catch {
+      throw new HubHttpError(404, 'not_found', 'That runbook was not found')
+    }
+    if (runbook.environmentId !== req.environmentId) throw new HubHttpError(404, 'not_found', 'That runbook was not found')
+    if (!runbook.lock) {
+      try {
+        return await ops.preflightOperation(req, { actor: this.actorOf(user) })
+      } catch (err) {
+        return this.fail(err, 'bad_request')
+      }
+    }
+    const provisional = this.d.ids()
+    this.d.locks.acquireRelease(req.environmentId, provisional, { oid: user.oid, name: user.name })
+    let res: { releaseId: string }
+    try {
+      res = await ops.preflightOperation(req, { actor: this.actorOf(user) })
+    } catch (err) {
+      this.d.locks.releaseFor(provisional)
+      return this.fail(err, 'bad_request')
+    }
+    this.bind(req.environmentId, provisional, res.releaseId)
+    return res
+  }
+
+  /** Checks an edited playbook without storing it. Only an admin on a Hub that allows edits. */
+  async validateEdit(user: HubUser, releaseId: string, text: string): Promise<EditValidation> {
+    const { environmentId } = this.known(releaseId)
+    this.reachable(user, releaseId, environmentId, 'playbook.edit')
+    this.editGuard(user, environmentId, 'playbook.edit', releaseId)
+    const ops = this.ops()
+    try {
+      return await ops.validateEdit(releaseId, text, { actor: this.actorOf(user) })
+    } catch (err) {
+      return this.fail(err, 'bad_request')
+    }
+  }
+
   /**
    * The playbook a start would run, for review on the desktop. Generating it writes nothing and takes no lock.
    * It is a read: a refusal writes no audit row (like `detail`, and like the desktop's own preview).
@@ -371,7 +453,7 @@ export class HubReleases {
     // A release the caller cannot view is unknown to them; one they view only part of is refused below.
     this.viewOf(user, releaseId)
     const deploymentIds = this.deploymentsOf(releaseId)
-    const decision = decide(user, this.d.directory.listGroups(), 'release.start', { environmentId, ...(deploymentIds.length ? { deploymentIds } : {}) })
+    const decision = decide(user, this.d.directory.listGroups(), this.startAction(releaseId), { environmentId, ...(deploymentIds.length ? { deploymentIds } : {}) })
     if (!decision.allowed) throw new HubHttpError(403, 'forbidden', refusal(decision, deploymentIds))
     try {
       return await this.service.previewPlaybook(releaseId, { actor: this.actorOf(user) })
@@ -383,9 +465,12 @@ export class HubReleases {
   async start(user: HubUser, releaseId: string, confirm: ReleaseConfirm): Promise<void> {
     const { environmentId } = this.known(releaseId)
     this.reachable(user, releaseId, environmentId, 'release.start')
-    this.allow(user, 'release.start', environmentId, this.deploymentsOf(releaseId), 'release.start', releaseId)
+    const operation = this.store.get(releaseId).operation
+    this.allow(user, operation ? 'ops.run' : 'release.start', environmentId, this.deploymentsOf(releaseId), operation ? 'ops.run' : 'release.start', releaseId)
+    if (confirm.editedPlaybook !== undefined) this.editGuard(user, environmentId, 'playbook.edit', releaseId)
     this.confirm(user, environmentId, confirm.typedName, 'release.start', releaseId)
-    this.holdsLock(environmentId, releaseId)
+    // A read-only runbook takes no environment lock, so there is none to hold.
+    if (!operation || operation.lock) this.holdsLock(environmentId, releaseId)
     try {
       await this.service.start(releaseId, confirm, { actor: this.actorOf(user) })
     } catch (err) {
@@ -511,13 +596,22 @@ export class HubReleases {
       scopes.set(e.id, { scope, unpublished: e.unpublished_at !== null })
       if (scope.all) whole.push(e.id)
       else {
-        parts.push(`(r.environment_id = ? AND EXISTS (SELECT 1 FROM deployment_runs d WHERE d.release_id = r.id AND d.deployment_id IN (${[...scope.deploymentIds].map(() => '?').join(', ')})))`)
-        args.push(e.id, ...scope.deploymentIds)
+        const ph = [...scope.deploymentIds].map(() => '?').join(', ')
+        // An operation is listed only when every checkout it targets is covered.
+        parts.push(
+          `(r.environment_id = ? AND EXISTS (SELECT 1 FROM deployment_runs d WHERE d.release_id = r.id AND d.deployment_id IN (${ph}))
+            AND (r.operation IS NULL OR NOT EXISTS (SELECT 1 FROM deployment_runs d2 WHERE d2.release_id = r.id AND (d2.deployment_id IS NULL OR d2.deployment_id NOT IN (${ph})))))`,
+        )
+        args.push(e.id, ...scope.deploymentIds, ...scope.deploymentIds)
       }
     }
     if (whole.length) parts.unshift(`r.environment_id IN (${whole.map(() => '?').join(', ')})`)
     if (parts.length === 0) return []
-    const where = [`(${parts.join(' OR ')})`, ...(filter.before !== undefined ? ['r.id < ?'] : [])]
+    const where = [
+      `(${parts.join(' OR ')})`,
+      ...(filter.before !== undefined ? ['r.id < ?'] : []),
+      ...(filter.operations === 'only' ? ['r.operation IS NOT NULL'] : filter.operations === 'exclude' ? ['r.operation IS NULL'] : []),
+    ]
     const rows = this.d.db
       .prepare(`SELECT r.id, r.environment_id FROM releases r WHERE ${where.join(' AND ')} ORDER BY r.id DESC LIMIT ?`)
       .all(...whole, ...args, ...(filter.before !== undefined ? [filter.before] : []), limit) as { id: string; environment_id: string }[]

@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import type { PlaybookPreview, PreflightRequest, ReleaseConfirm, ReleaseDetail, ReleaseSummary, RunEvent } from '../../../src/shared/deploy'
 import type { makeAuth } from '../auth/plugin'
-import type { HubReleases } from '../releases/service'
+import type { HubReleases, OperationRequest } from '../releases/service'
 
 const UUID = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 const idParams = { type: 'object', required: ['id'], properties: { id: { type: 'string', pattern: UUID } } } as const
@@ -12,6 +12,16 @@ const confirmBody = {
     typedName: { type: 'string', maxLength: 200 },
     redeploy: { type: 'boolean' },
     playbookSha256: { type: 'string', pattern: '^[0-9a-f]{64}$' },
+  },
+} as const
+
+const startBody = {
+  ...confirmBody,
+  properties: {
+    ...confirmBody.properties,
+    editedPlaybook: { type: 'string', maxLength: 500_000 },
+    // Skip-unchanged is decided at preview and start, so the services to keep are named here, not in the preflight options.
+    forceServiceIds: { type: 'array', maxItems: 500, items: { type: 'string', pattern: UUID } },
   },
 } as const
 
@@ -48,9 +58,39 @@ export function registerReleases(app: FastifyInstance, deps: { releases: HubRele
     async (req, reply) => reply.code(201).send(await releases.preflight(req.user, req.body)),
   )
 
+  app.post<{ Body: OperationRequest }>(
+    '/api/v1/releases/preflight-operation',
+    {
+      onRequest,
+      schema: {
+        body: {
+          type: 'object',
+          required: ['environmentId', 'runbookId', 'serviceIds', 'params'],
+          additionalProperties: false,
+          properties: {
+            environmentId: { type: 'string', pattern: UUID },
+            runbookId: { type: 'string', pattern: UUID },
+            serviceIds: { type: 'array', maxItems: 500, items: { type: 'string', pattern: UUID } },
+            params: { type: 'object', maxProperties: 10, additionalProperties: { type: 'string', maxLength: 1000 } },
+          },
+        },
+      },
+    },
+    async (req, reply) => reply.code(201).send(await releases.preflightOperation(req.user, req.body)),
+  )
+
+  app.post<{ Params: { id: string }; Body: { text: string } }>(
+    '/api/v1/releases/:id/validate-edit',
+    {
+      onRequest,
+      schema: { params: idParams, body: { type: 'object', required: ['text'], additionalProperties: false, properties: { text: { type: 'string', maxLength: 500_000 } } } },
+    },
+    async (req) => releases.validateEdit(req.user, req.params.id, req.body.text),
+  )
+
   app.post<{ Params: { id: string }; Body: ReleaseConfirm | null }>(
     '/api/v1/releases/:id/start',
-    { onRequest, schema: { params: idParams, body: confirmBody } },
+    { onRequest, schema: { params: idParams, body: startBody } },
     async (req, reply) => {
       // playbookSha256 is checked when sent but not required: older desktops don't send it. The desktop
       // refuses a start from its UI without one.
@@ -100,7 +140,7 @@ export function registerReleases(app: FastifyInstance, deps: { releases: HubRele
     return done(reply).send()
   })
 
-  app.get<{ Querystring: { environmentId?: string; limit?: number; before?: string } }>(
+  app.get<{ Querystring: { environmentId?: string; limit?: number; before?: string; operations?: 'only' | 'exclude' } }>(
     '/api/v1/releases',
     {
       onRequest,
@@ -112,6 +152,7 @@ export function registerReleases(app: FastifyInstance, deps: { releases: HubRele
             environmentId: { type: 'string', pattern: UUID },
             limit: { type: 'integer', minimum: 1, maximum: 200 },
             before: { type: 'string', maxLength: 64 },
+            operations: { enum: ['only', 'exclude'] },
           },
         },
       },
