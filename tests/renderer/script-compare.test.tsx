@@ -10,8 +10,8 @@ import type { DeploymentMeta } from '../../src/shared/deploy'
 import type { QaWorkflow } from '../../src/shared/settings'
 import { deploymentMeta, envSettings, environment, host, mockBridge, product, toolingOk } from './helpers'
 
-const alpha = environment({ id: 'e1', name: 'alpha', productIds: ['p1'], hosts: [{ hostId: 'h1', role: 'app' }] })
-const prod = environment({ id: 'e2', name: 'live', protected: true, productIds: ['p1'], hosts: [{ hostId: 'h1', role: 'app' }] })
+const alpha = environment({ id: 'e1', name: 'alpha', productId: 'p1', hosts: [{ hostId: 'h1', role: 'app' }] })
+const prod = environment({ id: 'e2', name: 'live', protected: true, productId: 'p1', hosts: [{ hostId: 'h1', role: 'app' }] })
 const QA: QaWorkflow = { repo: 'acme/qa', workflow: 'playwright.yml', ref: 'main' }
 
 const compatible = (over: Partial<DeploymentMeta> & { id: string }) =>

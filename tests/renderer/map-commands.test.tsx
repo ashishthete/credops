@@ -12,8 +12,8 @@ import { clearToasts } from '../../src/renderer/src/ui/Toaster'
 import { defaultVault, environment, host, mockBridge, product } from './helpers'
 
 const platform = product({ id: 'p1', name: 'Platform' })
-const prod = environment({ id: 'e1', name: 'prod', productIds: ['p1'], hosts: [{ hostId: 'h1', role: 'app' }] })
-const stage = environment({ id: 'e2', name: 'stage', productIds: ['p1'], hosts: [{ hostId: 'h1', role: 'app' }, { hostId: 'h2', role: 'db' }] })
+const prod = environment({ id: 'e1', name: 'prod', productId: 'p1', hosts: [{ hostId: 'h1', role: 'app' }] })
+const stage = environment({ id: 'e2', name: 'stage', productId: 'p1', hosts: [{ hostId: 'h1', role: 'app' }, { hostId: 'h2', role: 'db' }] })
 const hosts = [host({ id: 'h1', label: 'web' }), host({ id: 'h2', label: 'pg' })]
 
 const flush = () => act(async () => {})

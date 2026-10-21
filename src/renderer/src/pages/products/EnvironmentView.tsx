@@ -5,8 +5,9 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import { DEFAULT_SSH_PORT, type EnvironmentMeta } from '../../../../shared/inventory'
 import type { AppServiceMeta } from '../../../../shared/services'
-import { startDeploySync } from '../../deploy/store'
+import { startDeploySync, useDeployments, useServices } from '../../deploy/store'
 import { sourceLabel } from '../../inventory/choices'
+import { regionOfHost, regionsOfEnvironment } from '../../inventory/regions'
 import { openEnvironmentDomain, type InventoryData } from '../../inventory/store'
 import type { NodeKey } from '../../inventory/tree'
 import { showEnvironmentOnMapPath } from '../../map/commands'
@@ -15,6 +16,7 @@ import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
 import { RowMenu } from '../../ui/common'
 import { fast, spring, staggerDelay, useMotionSafe } from '../../ui/motion'
+import { RegionChip } from '../../ui/RegionChip'
 import { GlowDot, PaneHeader, ROLE_LABEL, ROLE_ORDER } from './ProductView'
 import { DeployWizard } from '../deployments/release/DeployWizard'
 import { CopyServicesDialog } from './services/CopyServicesDialog'
@@ -30,11 +32,9 @@ interface EnvironmentViewProps {
   onNewHost: () => void
   onEdit: () => void
   onDelete: () => void
-  /** Set when viewed under a product: takes the environment out of that product only. */
-  removeFrom?: { productName: string; run: () => void }
 }
 
-export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onNewHost, onEdit, onDelete, removeFrom }: EnvironmentViewProps) {
+export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onNewHost, onEdit, onDelete }: EnvironmentViewProps) {
   const motionSafe = useMotionSafe()
   const { connect } = useConnect()
   const navigate = useNavigate()
@@ -49,6 +49,15 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
   const jump = env.defaultJumpHostId ? hostById.get(env.defaultJumpHostId) : undefined
   const inherited = sourceLabel('environment', env.name)
   const appDefault = sourceLabel('global')
+  // Derived from the hosts it runs on: members, checkout hosts and db via-hosts.
+  const checkouts = useDeployments(env.id)
+  const services = useServices(env.id)
+  const regions = regionsOfEnvironment(data, env.id, checkouts, services)
+  // Per-host chips only where they tell hosts apart.
+  const regionChip = (hostId: string) => {
+    const region = regions.length > 1 ? regionOfHost(data, hostId) : undefined
+    return region && <RegionChip region={region} />
+  }
 
   const groups = ROLE_ORDER.map((role) => ({
     role,
@@ -71,11 +80,15 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
                 Protected
               </Badge>
             )}
-            {env.productIds.length > 1 && (
-              <Badge tone="info">
-                <Link2 aria-hidden className="size-3" />
-                Shared
-              </Badge>
+            {regions.length > 1 ? (
+              <span aria-label={`Regions: ${regions.map((r) => r.code).join(', ')}`} className="flex items-center gap-1.5 text-[12px] text-muted">
+                Regions:
+                {regions.map((r) => (
+                  <RegionChip key={r.id} region={r} />
+                ))}
+              </span>
+            ) : (
+              regions.length === 1 && <RegionChip region={regions[0]!} />
             )}
           </>
         }
@@ -90,13 +103,7 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
             <Button size="sm" variant="ghost" icon={<Network aria-hidden className="size-3.5" />} onClick={() => navigate(showEnvironmentOnMapPath(env.id))}>
               Show on map
             </Button>
-            <RowMenu
-              label={`${env.name} options`}
-              items={[
-                ...(removeFrom ? [{ label: `Remove from ${removeFrom.productName}`, icon: Unlink, run: removeFrom.run }] : []),
-                { label: 'Delete', icon: Trash2, run: onDelete, danger: true },
-              ]}
-            />
+            <RowMenu label={`${env.name} options`} items={[{ label: 'Delete', icon: Trash2, run: onDelete, danger: true }]} />
           </>
         }
       />
@@ -180,9 +187,10 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
                         {h.address}
                         {h.port != null ? `:${h.port}` : ''}
                       </span>
-                      {h.environments.length > 1 && (
-                        <Link2 aria-label="Shared" className="ml-auto size-3 shrink-0 text-muted" strokeWidth={2.2} />
-                      )}
+                      <span className="ml-auto flex shrink-0 items-center gap-2">
+                        {regionChip(h.id)}
+                        {h.environments.length > 1 && <Link2 aria-label="Shared" className="size-3 shrink-0 text-muted" strokeWidth={2.2} />}
+                      </span>
                     </button>
                     <div className="absolute top-1/2 right-2 flex -translate-y-1/2 items-center gap-1">
                       <button

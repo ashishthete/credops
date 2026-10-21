@@ -35,7 +35,7 @@ const type = (d: HTMLElement, label: string, value: string) => fireEvent.change(
 
 function setup(tunnels: TunnelMeta[] = [], runtime: TunnelRuntime[] = [], results: Record<string, unknown> = {}) {
   const invoke = mockBridge(results)
-  inventoryStore.set({ products: [], environments: [prod, stage], hosts: [db, web], identities: [], vaults: [] })
+  inventoryStore.set({ products: [], environments: [prod, stage], hosts: [db, web], identities: [], vaults: [], regions: [] })
   tunnelStore.set({ tunnels, runtime: Object.fromEntries(runtime.map((r) => [r.id, r])), loaded: true })
   render(
     <MemoryRouter initialEntries={['/tunnels']}>

@@ -12,6 +12,7 @@ import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import { makeDeployFixture, type DeployFixture } from './deploy-helpers'
 import { auditRows } from './vault-helpers'
 import { generateKey } from './ssh-server'
+import { PRODUCT, REGION } from './inventory-helpers'
 
 const SUDO_PW = 'sudo-pw-plaintext-9'
 
@@ -25,7 +26,7 @@ async function setup() {
   const dir = mkdtempSync(join(tmpdir(), 'opsdeck-pub-'))
   onTestFinished(() => rmSync(dir, { recursive: true, force: true }))
   const knownHosts = new KnownHostStore(f.db, f.vault, f.audit, { knownHostsPath: join(dir, 'known_hosts') })
-  const bastion = f.hosts.create({ label: 'bastion', address: '203.0.113.9', port: 2222 })
+  const bastion = f.hosts.create({ regionId: REGION, label: 'bastion', address: '203.0.113.9', port: 2222 })
   f.hosts.update(f.host.id, { jumpHostId: bastion.id })
   f.envs.putHost(f.prod.id, bastion.id, 'bastion')
   const clipboard = { async writeText(): Promise<void> {}, async readText(): Promise<string> { return '' } }
@@ -72,6 +73,18 @@ describe('buildManifest', () => {
     expect(m.requiredSecrets.map((s) => s.name).sort()).toEqual(['envsecret', 'sudo'])
   })
 
+  it("carries the environment's product and each host's region", async () => {
+    const { f, deps, trust } = await setup()
+    trust('203.0.113.9', 2222)
+    trust('10.0.0.7', 22)
+    const eu = f.regions.create({ code: 'eu-west', displayName: 'EU West' })
+    f.hosts.update(f.host.id, { regionId: eu.id })
+    f.products.update(PRODUCT, { name: 'Shop' })
+    const m = await buildManifest(f.prod.id, deps)
+    expect(m.environment.product).toEqual({ id: PRODUCT, name: 'Shop' })
+    expect(m.hosts.map((h) => h.region)).toEqual([{ code: 'eu-west', displayName: 'EU West' }])
+  })
+
   it('refuses a hop with no pinned key', async () => {
     const { f, deps, trust } = await setup()
     trust('10.0.0.7', 22)
@@ -109,7 +122,7 @@ describe('buildManifest', () => {
     trust('203.0.113.9', 2222)
     trust('10.0.0.7', 22)
     trust('10.0.0.50', 22)
-    const via = f.hosts.create({ label: 'jump2', address: '10.0.0.50', port: 22 })
+    const via = f.hosts.create({ regionId: REGION, label: 'jump2', address: '10.0.0.50', port: 22 })
     f.envs.putHost(f.prod.id, via.id, 'db')
     f.services.create({ kind: 'db', environmentId: f.prod.id, name: 'main-db', dbEngine: 'postgres', dbAddress: '10.0.0.9', viaHostId: via.id })
     const m = await buildManifest(f.prod.id, deps)

@@ -4,6 +4,7 @@ import { ROLE_LABEL } from '../pages/products/ProductView'
 import { TUNNEL_TYPE, TunnelStateWord, TunnelSwitch } from '../pages/tunnels/TunnelCard'
 import { useTunnel } from '../tunnels/store'
 import { Button } from '../ui/Button'
+import { RegionChip } from '../ui/RegionChip'
 import type { EnvironmentNodeData, HostNodeData, MapGraph } from './graph'
 import { REACH_TEXT, useHostPresence } from './presence'
 
@@ -26,7 +27,8 @@ interface Group {
 /**
  * The map as a table: one row group per environment, one row per host placement, in the map's order.
  * The same graph the canvas draws, so a filter or search shapes both alike; what the canvas says by
- * frame and line (the group's products, a host's jump) the table says in words.
+ * frame and line (the group's product, a host's jump) the table says in words. A host's region is a column rather
+ * than a grouping, so the rows keep the map's order; the toolbar's Region filter narrows them.
  */
 export function MapList({ graph, onConnect, onSelect }: MapListProps) {
   const groups = useMemo(() => {
@@ -64,7 +66,7 @@ export function MapList({ graph, onConnect, onSelect }: MapListProps) {
         <caption className="sr-only">Hosts by environment</caption>
         <thead className="bg-surface-2/60">
           <tr>
-            {['Host', 'Address', 'Role', 'Reachability', 'Sessions', 'Tunnels'].map((h) => (
+            {['Host', 'Region', 'Address', 'Role', 'Reachability', 'Sessions', 'Tunnels'].map((h) => (
               <th key={h} scope="col" className={HEAD}>
                 {h}
               </th>
@@ -77,7 +79,7 @@ export function MapList({ graph, onConnect, onSelect }: MapListProps) {
         {groups.length === 0 ? (
           <tbody>
             <tr>
-              <td colSpan={7} className={`${CELL} py-8 text-center text-muted`}>
+              <td colSpan={8} className={`${CELL} py-8 text-center text-muted`}>
                 No hosts match.
               </td>
             </tr>
@@ -86,14 +88,14 @@ export function MapList({ graph, onConnect, onSelect }: MapListProps) {
           groups.map((g) => (
             <tbody key={g.id}>
               <tr>
-                <th colSpan={7} scope="rowgroup" className="border-t border-line bg-surface/60 px-3 py-1.5 text-left text-[12px] font-semibold text-fg">
+                <th colSpan={8} scope="rowgroup" className="border-t border-line bg-surface/60 px-3 py-1.5 text-left text-[12px] font-semibold text-fg">
                   <span className="flex items-center gap-2">
                     <span aria-hidden className="size-2 shrink-0 rounded-full" style={{ background: g.data.color }} />
                     {g.data.name}
-                    {g.data.productNames.length > 0 && (
+                    {g.data.productName && (
                       <span className="font-normal text-muted">
                         <span className="sr-only">, </span>
-                        {g.data.productNames.join(', ')}
+                        {g.data.productName}
                       </span>
                     )}
                   </span>
@@ -127,6 +129,7 @@ const HostRow = memo(function HostRow({ id, d, tunnelIds, via, onConnect, onSele
       <th scope="row" className={`${CELL} border-t border-line text-left font-semibold text-fg`}>
         {d.label}
       </th>
+      <td className={`${CELL} border-t border-line`}>{d.region ? <RegionChip region={d.region} /> : <span className="text-muted">Unknown</span>}</td>
       <td className={`${CELL} border-t border-line font-mono text-[11.5px] text-muted`}>
         {d.address}
         {via && <span className="font-sans"> via {via}</span>}

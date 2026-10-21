@@ -11,7 +11,7 @@ import { MAX_IMPORT_ALIASES } from '../../src/shared/inventory'
 import { MAX_TUNNELS } from '../../src/shared/tunnels'
 import { DEFAULT_VAULT_ID, VAULT_LOCKED } from '../../src/shared/vault'
 import { stubHandlers } from './ipc-helpers'
-import { makeImporter, makeInventory, type InventoryFixture } from './inventory-helpers'
+import { makeImporter, makeInventory, type InventoryFixture, PRODUCT, REGION } from './inventory-helpers'
 import { auditRows } from './vault-helpers'
 
 const FIX = join(__dirname, '../fixtures/ssh')
@@ -26,7 +26,7 @@ async function withConfig(text: string): Promise<InventoryFixture & { privateKey
   return { ...f, privateKey }
 }
 
-const prodEnv = (f: InventoryFixture) => f.envs.create({ name: 'prod', color: '#cc3333' }).id
+const prodEnv = (f: InventoryFixture) => f.envs.create({ productId: PRODUCT, name: 'prod', color: '#cc3333' }).id
 
 const counts = (f: InventoryFixture) =>
   Object.fromEntries(
@@ -66,7 +66,7 @@ describe('SshImporter.preview', () => {
 
   it('marks existing hosts by case-insensitive label', async () => {
     const f = await withConfig(fixture('basic.conf'))
-    const h = f.hosts.create({ label: 'BASTION', address: '52.1.2.3' })
+    const h = f.hosts.create({ regionId: REGION, label: 'BASTION', address: '52.1.2.3' })
     const p = await makeImporter(f).preview()
     expect(p.candidates.find((c) => c.alias === 'bastion')!.existingHostId).toBe(h.id)
   })
@@ -110,6 +110,7 @@ describe('SshImporter.import', () => {
     const f = await withConfig(fixture('basic.conf'))
     const prod = prodEnv(f)
     const r = await makeImporter(f).import({
+      regionId: REGION,
       vaultId: DEFAULT_VAULT_ID,
       aliases: ['web-1', 'db-1', 'bastion'],
       environmentId: prod,
@@ -150,7 +151,7 @@ describe('SshImporter.import', () => {
   it('import creates tunnels for forwards', async () => {
     const f = await withConfig(fixture('basic.conf'))
     const prod = prodEnv(f)
-    const r = await makeImporter(f).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web-1', 'db-1'], environmentId: prod })
+    const r = await makeImporter(f).import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['web-1', 'db-1'], environmentId: prod })
     expect(r.tunnelsCreated).toBe(3)
     const id = (l: string) => r.created.find((h) => h.label === l)!.id
     const ts = f.tunnels.list()
@@ -167,19 +168,19 @@ describe('SshImporter.import', () => {
   it('imports into an environment as app unless a role is given', async () => {
     const f = await withConfig(fixture('basic.conf'))
     const prod = prodEnv(f)
-    const r = await makeImporter(f).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'], environmentId: prod })
+    const r = await makeImporter(f).import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'], environmentId: prod })
     expect(r.created[0].environments).toEqual([{ environmentId: prod, role: 'app' }])
   })
 
   it('gives existing-host tunnels the environment only when the host is a member', async () => {
     const f = await withConfig(fixture('basic.conf'))
     const prod = prodEnv(f)
-    const other = f.envs.create({ name: 'stage', color: '#33cc33' }).id
+    const other = f.envs.create({ productId: PRODUCT, name: 'stage', color: '#33cc33' }).id
     const imp = makeImporter(f)
-    await imp.import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web-1', 'db-1'], environmentId: prod, forwards: false })
-    const member = await imp.import({ vaultId: DEFAULT_VAULT_ID, aliases: ['db-1'], environmentId: prod })
+    await imp.import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['web-1', 'db-1'], environmentId: prod, forwards: false })
+    const member = await imp.import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['db-1'], environmentId: prod })
     expect(member.tunnelsCreated).toBe(1)
-    const nonMember = await imp.import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'], environmentId: other })
+    const nonMember = await imp.import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'], environmentId: other })
     expect(nonMember.tunnelsCreated).toBe(2)
     const byLabel = Object.fromEntries(f.tunnels.list().map((t) => [t.label, t.environmentId]))
     expect(byLabel).toEqual({ 'db-1 L 5433': prod, 'web-1 R 9000': null, 'web-1 SOCKS 1080': null })
@@ -188,18 +189,18 @@ describe('SshImporter.import', () => {
   it('stops at MAX_TUNNELS with a count-aware warning', async () => {
     const fill = async (n: number) => {
       const f = await withConfig(fixture('basic.conf'))
-      const filler = f.hosts.create({ label: 'filler', address: '10.9.9.9' })
+      const filler = f.hosts.create({ regionId: REGION, label: 'filler', address: '10.9.9.9' })
       for (let i = 0; i < n; i++) f.tunnels.create({ label: `t${i}`, hostId: filler.id, type: 'D', bindPort: 20000 + i })
       return f
     }
     const one = await fill(MAX_TUNNELS - 1)
-    const r1 = await makeImporter(one).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'] })
+    const r1 = await makeImporter(one).import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'] })
     expect(r1.tunnelsCreated).toBe(1)
     expect(r1.warnings).toContain('Tunnel limit reached; 1 forward skipped')
     expect(one.tunnels.list()).toHaveLength(MAX_TUNNELS)
 
     const full = await fill(MAX_TUNNELS)
-    const r2 = await makeImporter(full).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web-1', 'db-1'] })
+    const r2 = await makeImporter(full).import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['web-1', 'db-1'] })
     expect(r2.created).toHaveLength(2)
     expect(r2.tunnelsCreated).toBe(0)
     expect(r2.warnings).toContain('Tunnel limit reached; 3 forwards skipped')
@@ -207,7 +208,7 @@ describe('SshImporter.import', () => {
 
   it('forwards: false creates none', async () => {
     const f = await withConfig(fixture('basic.conf'))
-    const r = await makeImporter(f).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web-1', 'db-1'], forwards: false })
+    const r = await makeImporter(f).import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['web-1', 'db-1'], forwards: false })
     expect(r.tunnelsCreated).toBe(0)
     expect(f.tunnels.list()).toEqual([])
   })
@@ -215,18 +216,18 @@ describe('SshImporter.import', () => {
   it('re-import adds forwards to an existing host without duplicates', async () => {
     const f = await withConfig(fixture('basic.conf'))
     const imp = makeImporter(f)
-    await imp.import({ vaultId: DEFAULT_VAULT_ID, aliases: ['db-1'], forwards: false })
-    const again = await imp.import({ vaultId: DEFAULT_VAULT_ID, aliases: ['db-1'] })
+    await imp.import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['db-1'], forwards: false })
+    const again = await imp.import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['db-1'] })
     expect(again.skipped).toEqual([{ alias: 'db-1', reason: 'exists' }])
     expect(again.tunnelsCreated).toBe(1)
-    const third = await imp.import({ vaultId: DEFAULT_VAULT_ID, aliases: ['db-1'] })
+    const third = await imp.import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['db-1'] })
     expect(third.tunnelsCreated).toBe(0)
     expect(f.tunnels.list()).toHaveLength(1)
   })
 
   it('bad forward becomes a warning, not a failure', async () => {
     const f = await withConfig('Host a\n  HostName 10.0.0.1\n  LocalForward /tmp/s localhost:1\n  LocalForward nonsense\n  RemoteForward 9000\n  LocalForward 5000 db:80\n')
-    const r = await makeImporter(f).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['a'] })
+    const r = await makeImporter(f).import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['a'] })
     expect(r.created).toHaveLength(1)
     expect(r.tunnelsCreated).toBe(1)
     expect(r.warnings).toEqual([
@@ -240,7 +241,7 @@ describe('SshImporter.import', () => {
     const f = await withConfig(fixture('basic.conf'))
     const prod = prodEnv(f)
     const imp = makeImporter(f)
-    const req = { vaultId: DEFAULT_VAULT_ID, aliases: ['web-1', 'db-1', 'bastion'], environmentId: prod }
+    const req = { vaultId: DEFAULT_VAULT_ID, regionId: REGION, aliases: ['web-1', 'db-1', 'bastion'], environmentId: prod }
     await imp.import(req)
     const before = counts(f)
     const r = await imp.import(req)
@@ -257,9 +258,9 @@ describe('SshImporter.import', () => {
   it('re-creates a host renamed by hand, reusing its key and identity', async () => {
     const f = await withConfig(fixture('basic.conf'))
     const imp = makeImporter(f)
-    const first = await imp.import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'] })
+    const first = await imp.import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'] })
     f.hosts.update(first.created[0].id, { label: 'web-1-renamed' })
-    const r = await imp.import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'] })
+    const r = await imp.import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'] })
     expect(r.created.map((h) => h.label)).toEqual(['web-1'])
     expect(r).toMatchObject({ keysLinked: 0, identitiesCreated: 0 })
     expect(r.created[0].identityId).toBe(first.created[0].identityId)
@@ -267,8 +268,8 @@ describe('SshImporter.import', () => {
 
   it('jumps to an existing host by label', async () => {
     const f = await withConfig(fixture('basic.conf'))
-    const bastion = f.hosts.create({ label: 'Bastion', address: '52.1.2.3' })
-    const r = await makeImporter(f).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['db-1', 'bastion'] })
+    const bastion = f.hosts.create({ regionId: REGION, label: 'Bastion', address: '52.1.2.3' })
+    const r = await makeImporter(f).import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['db-1', 'bastion'] })
     expect(r.created.map((h) => h.label)).toEqual(['db-1'])
     expect(r.created[0].jumpHostId).toBe(bastion.id)
     expect(r.skipped).toEqual([{ alias: 'bastion', reason: 'exists' }])
@@ -276,7 +277,7 @@ describe('SshImporter.import', () => {
 
   it('skips a jump loop with a warning', async () => {
     const f = await withConfig('Host a\n  HostName 10.0.0.1\n  ProxyJump b\nHost b\n  HostName 10.0.0.2\n  ProxyJump a\n')
-    const r = await makeImporter(f).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['a', 'b'] })
+    const r = await makeImporter(f).import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['a', 'b'] })
     expect(r.created).toHaveLength(2)
     const [a, b] = r.created
     expect(a.jumpHostId).toBe(b.id)
@@ -290,7 +291,7 @@ describe('SshImporter.import', () => {
     const evil = (await imp.preview()).candidates.find((c) => c.alias === 'evil')!
     expect(evil.valid).toBe(false)
     expect(evil.warnings).toContain("address isn't a plain hostname or IP; skipped")
-    const r = await imp.import({ vaultId: DEFAULT_VAULT_ID, aliases: ['evil'] })
+    const r = await imp.import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['evil'] })
     expect(r.skipped).toEqual([{ alias: 'evil', reason: 'invalid' }])
     expect(r.created).toEqual([])
     expect(counts(f).hosts).toBe(0)
@@ -301,21 +302,21 @@ describe('SshImporter.import', () => {
     const imp = makeImporter(f)
     const c = (await imp.preview()).candidates[0]
     expect(c.valid).toBe(false)
-    const r = await imp.import({ vaultId: DEFAULT_VAULT_ID, aliases: ['-oProxyCommand=x'] })
+    const r = await imp.import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['-oProxyCommand=x'] })
     expect(r.skipped).toEqual([{ alias: '-oProxyCommand=x', reason: 'invalid' }])
     expect(counts(f).hosts).toBe(0)
   })
 
   it('skips the later of two aliases that differ only by case', async () => {
     const f = await withConfig('Host Web\n  HostName 10.0.0.1\nHost web\n  HostName 10.0.0.2\n')
-    const r = await makeImporter(f).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web', 'Web'] })
+    const r = await makeImporter(f).import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['web', 'Web'] })
     expect(r.created.map((h) => h.label)).toEqual(['Web'])
     expect(r.skipped).toEqual([{ alias: 'web', reason: 'invalid' }])
   })
 
   it('reports unknown aliases as not-found', async () => {
     const f = await withConfig(fixture('basic.conf'))
-    const r = await makeImporter(f).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['nope'] })
+    const r = await makeImporter(f).import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['nope'] })
     expect(r.skipped).toEqual([{ alias: 'nope', reason: 'not-found' }])
     expect(r.created).toEqual([])
   })
@@ -323,7 +324,7 @@ describe('SshImporter.import', () => {
   it('needs unlock', async () => {
     const f = await withConfig(fixture('basic.conf'))
     f.vault.lock('manual')
-    await expect(makeImporter(f).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'] })).rejects.toThrow(VAULT_LOCKED)
+    await expect(makeImporter(f).import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'] })).rejects.toThrow(VAULT_LOCKED)
     expect(counts(f)).toMatchObject({ hosts: 0, ssh_keys: 0, identities: 0 })
   })
 
@@ -333,7 +334,7 @@ describe('SshImporter.import', () => {
     onTestFinished(() => rmSync(outside, { recursive: true, force: true }))
     writeFileSync(join(outside, 'key'), generateEd25519('x').privateKey, { mode: 0o600 })
     symlinkSync(join(outside, 'key'), join(f.sshDir, 'escape'))
-    const r = await makeImporter(f).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'] })
+    const r = await makeImporter(f).import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'] })
     expect(r.keysLinked).toBe(0)
     expect(f.keys.list()).toEqual([])
     expect(r.warnings.some((w) => w.includes('outside'))).toBe(true)
@@ -344,7 +345,7 @@ describe('SshImporter.import', () => {
   it("falls back to agent auth when a key can't be linked", async () => {
     const f = await withConfig('Host web-1\n  HostName 10.0.0.5\n  User deploy\n  IdentityFile ~/.ssh/broken\n')
     writeFileSync(join(f.sshDir, 'broken'), 'not a key', { mode: 0o600 })
-    const r = await makeImporter(f).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'] })
+    const r = await makeImporter(f).import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'] })
     expect(r.keysLinked).toBe(0)
     expect(r.created).toHaveLength(1)
     expect(r.warnings.some((w) => w.includes('broken') && w.includes('agent'))).toBe(true)
@@ -352,7 +353,7 @@ describe('SshImporter.import', () => {
 
   it('makes no identity when an entry has neither User nor IdentityFile', async () => {
     const f = await withConfig('Host plain\n  HostName 10.0.0.9\n')
-    const r = await makeImporter(f).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['plain'] })
+    const r = await makeImporter(f).import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['plain'] })
     expect(r.identitiesCreated).toBe(0)
     expect(r.created[0]).toMatchObject({ identityId: null, vaultIds: [] })
   })
@@ -388,7 +389,7 @@ describe('SshImporter.import', () => {
       expect(by.get(a)).toMatchObject({ valid: true, user: null, identityFile: null })
       expect(by.get(a)!.warnings).toContain("User isn't a plain username; the host inherits an identity")
     }
-    const r = await imp.import({ vaultId: DEFAULT_VAULT_ID, aliases: ['opt-user', 'sep-user', 'fmt-user'] })
+    const r = await imp.import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['opt-user', 'sep-user', 'fmt-user'] })
     expect(r.created.map((h) => h.identityId)).toEqual([null, null, null])
     expect(r).toMatchObject({ identitiesCreated: 0, keysLinked: 0 })
     expect(f.identities.list()).toEqual([])
@@ -398,23 +399,23 @@ describe('SshImporter.import', () => {
     const f = await withConfig('Host web\n  HostName 10.0.0.1\n  User deploy\nHost api\n  HostName 10.0.0.2\n  User deploy\n')
     const create = f.identities.create.bind(f.identities)
     f.identities.create = (input) => {
-      if (!f.hosts.list().some((h) => h.label === 'WEB')) f.hosts.create({ label: 'WEB', address: '10.9.9.9' })
+      if (!f.hosts.list().some((h) => h.label === 'WEB')) f.hosts.create({ regionId: REGION, label: 'WEB', address: '10.9.9.9' })
       return create(input)
     }
-    const r = await makeImporter(f).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web', 'api'] })
+    const r = await makeImporter(f).import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['web', 'api'] })
     expect(r.created.map((h) => h.label)).toEqual(['api'])
     expect(r.skipped).toEqual([{ alias: 'web', reason: 'exists' }])
   })
 
   it('imports without a jump host deleted after the preview', async () => {
     const f = await withConfig('Host db\n  HostName 10.0.0.1\n  User deploy\n  ProxyJump gate\n')
-    const gate = f.hosts.create({ label: 'gate', address: '10.0.0.254' })
+    const gate = f.hosts.create({ regionId: REGION, label: 'gate', address: '10.0.0.254' })
     const create = f.identities.create.bind(f.identities)
     f.identities.create = (input) => {
       f.hosts.delete(gate.id)
       return create(input)
     }
-    const r = await makeImporter(f).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['db'] })
+    const r = await makeImporter(f).import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['db'] })
     expect(r.created).toHaveLength(1)
     expect(r.created[0].jumpHostId).toBeNull()
     expect(r.warnings).toContain("db: jump host gate wasn't imported; set it by hand")
@@ -425,13 +426,13 @@ describe('SshImporter.import', () => {
     f.identities.create = () => {
       throw new Error('database is locked')
     }
-    await expect(makeImporter(f).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web'] })).rejects.toThrow('database is locked')
+    await expect(makeImporter(f).import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['web'] })).rejects.toThrow('database is locked')
     expect(counts(f).hosts).toBe(0)
   })
 
   it('keeps secrets out of audit and results', async () => {
     const f = await withConfig(fixture('basic.conf'))
-    const r = await makeImporter(f).import({ vaultId: DEFAULT_VAULT_ID, aliases: ['web-1', 'db-1', 'bastion'] })
+    const r = await makeImporter(f).import({ regionId: REGION, vaultId: DEFAULT_VAULT_ID, aliases: ['web-1', 'db-1', 'bastion'] })
     expect(auditRows(f.db)).not.toContain('BEGIN OPENSSH')
     expect(JSON.stringify(r)).not.toContain('BEGIN OPENSSH')
     expect(JSON.stringify(await makeImporter(f).preview())).not.toContain('BEGIN OPENSSH')
@@ -459,7 +460,8 @@ describe('sshconfig IPC', () => {
     const { call } = await ipc()
     const p = (await call('sshconfig:preview')) as { candidates: unknown[] }
     expect(p.candidates).toHaveLength(3)
-    const r = await call('sshconfig:import', { vaultId: DEFAULT_VAULT_ID, aliases: ['bastion'] })
+    await expect(call('sshconfig:import', { vaultId: DEFAULT_VAULT_ID, aliases: ['bastion'] })).rejects.toThrow(/regionId/)
+    const r = await call('sshconfig:import', { vaultId: DEFAULT_VAULT_ID, regionId: REGION, aliases: ['bastion'] })
     expect(r).toMatchObject({ created: [{ label: 'bastion' }] })
   })
 

@@ -16,6 +16,7 @@ import {
   type StepKind,
   type VersionBump,
 } from '../../shared/deploy'
+import type { RegionRef } from '../../shared/inventory'
 import type { Db } from '../db/connection'
 import { inTransaction } from '../db/tx'
 import { uuidv7 } from './uuidv7'
@@ -25,6 +26,8 @@ export interface ReleaseStoreDeps {
   now?: () => Date
   /** Cap on `log` events per release; later ones are dropped with a single `log.truncated`. */
   maxEvents?: number
+  /** The database has the desktop's hosts and regions, so detail() lists a release's regions. The Hub's has neither. */
+  regions?: boolean
 }
 
 export interface NewRelease {
@@ -159,6 +162,7 @@ export class ReleaseStore {
   private readonly db: Db
   private readonly now: () => Date
   private readonly maxEvents: number
+  private readonly withRegions: boolean
   /** Logs dropped since the last `log.truncated`, per release; flushed with the next non-log event. */
   private readonly dropped = new Map<string, number>()
 
@@ -166,6 +170,7 @@ export class ReleaseStore {
     this.db = deps.db
     this.now = deps.now ?? (() => new Date())
     this.maxEvents = deps.maxEvents ?? MAX_EVENTS_PER_RELEASE
+    this.withRegions = deps.regions ?? false
   }
 
   /** Joins the caller's transaction when one is open, otherwise runs `fn` in its own. */
@@ -234,7 +239,19 @@ export class ReleaseStore {
       runs,
       preflight,
       lastSeq: last.s ?? 0,
+      ...(this.withRegions ? { regions: this.regions(id) } : {}),
     }
+  }
+
+  /** A checkout's region is its host's (src/shared/regions.ts): the distinct regions of the runs' hosts, by code. */
+  private regions(id: string): RegionRef[] {
+    return this.db
+      .prepare(
+        `SELECT DISTINCT g.id, g.code, g.display_name AS displayName FROM deployment_runs d
+         JOIN hosts h ON h.id = d.host_id JOIN regions g ON g.id = h.region_id
+         WHERE d.release_id = ? ORDER BY g.code`,
+      )
+      .all(id) as unknown as RegionRef[]
   }
 
   /** Newest first. `before` is a release id to page from. */

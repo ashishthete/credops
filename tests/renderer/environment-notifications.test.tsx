@@ -198,7 +198,7 @@ describe('settings palette', () => {
   }
   it('palette registers settings and per-env test commands', async () => {
     const invoke = bridge()
-    inventoryStore.set({ products: [], environments: [environment({ id: ENV, name: 'staging' })], hosts: [], identities: [], vaults: [] })
+    inventoryStore.set({ products: [], environments: [environment({ id: ENV, name: 'staging' })], hosts: [], identities: [], vaults: [], regions: [] })
     const { unmount } = render(
       <MemoryRouter>
         <Host />

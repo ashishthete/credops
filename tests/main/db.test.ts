@@ -96,13 +96,11 @@ describe('vault schema', () => {
 })
 
 describe('migration versions', () => {
-  // Version 8 is Phase 9's and merges from another branch, so this branch alone may skip it.
-  it('are strictly increasing and unique, skipping only other branches\' versions 8, 12 and 13', () => {
+  // Version 13 is playbook-ops' and merges from another branch, so this branch alone may skip it.
+  it('are strictly increasing and unique, skipping only playbook-ops\' version 13', () => {
     const versions = migrations.map((m) => m.version)
     expect(versions).toEqual([...new Set(versions)].sort((a, b) => a - b))
-    // 8 is Phase 9's, 12 is regions' and 13 is playbook-ops'; each merges from another branch.
-    const rest = versions.filter((v) => v !== 8 && v !== 12 && v !== 13)
-    expect(rest).toEqual([1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 14])
+    expect(versions.filter((v) => v !== 13)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14])
   })
 })
 
@@ -110,7 +108,8 @@ describe('hub schema', () => {
   it('migration 10 adds a nullable, range-checked qa_wait_minutes', () => {
     const db = openDatabase(':memory:')
     expect(migrations.find((m) => m.version === 10)?.name).toBe('qa_wait_minutes')
-    db.exec("INSERT INTO environments(id,name,color,created_at,updated_at) VALUES ('e','e','#000','t','t')")
+    db.exec("INSERT INTO products(id,name,color,icon,created_at,updated_at) VALUES ('p','p','#000','i','t','t')")
+    db.exec("INSERT INTO environments(id,name,color,product_id,created_at,updated_at) VALUES ('e','e','#000','p','t','t')")
     const ins = (n: number | null) => db.prepare("INSERT OR REPLACE INTO environment_integrations(environment_id,updated_at,qa_wait_minutes) VALUES ('e','t',?)").run(n)
     ins(null)
     ins(5)

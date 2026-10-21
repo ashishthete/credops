@@ -16,7 +16,7 @@ const PRODUCTS = ['Shop', 'Billing', 'Search']
 const ENVS = ['dev', 'qa', 'staging', 'prod']
 // 12 environments: p<i>-<env>, four per product, each on its own host.
 const envs = PRODUCTS.flatMap((_, p) =>
-  ENVS.map((name, i) => environment({ id: `p${p}-${name}`, name: `${PRODUCTS[p].toLowerCase()}-${name}`, protected: name === 'prod', hosts: [{ hostId: `h${p}${i}`, role: 'app' }] })),
+  ENVS.map((name, i) => environment({ id: `p${p}-${name}`, name: `${PRODUCTS[p].toLowerCase()}-${name}`, productId: `p${p}`, protected: name === 'prod', hosts: [{ hostId: `h${p}${i}`, role: 'app' }] })),
 )
 const products = PRODUCTS.map((name, p) => product({ id: `p${p}`, name, environmentIds: ENVS.map((e) => `p${p}-${e}`) }))
 const hosts = PRODUCTS.flatMap((_, p) => ENVS.map((e, i) => host({ id: `h${p}${i}`, label: `${PRODUCTS[p].toLowerCase()}-${e}-1` })))
@@ -117,6 +117,16 @@ describe('deployments environment list', () => {
     resetDeploy()
     resetLatest()
     clearToasts()
+  })
+
+  it("groups each environment under its one product, after the product's own order, with no 'No product' group", async () => {
+    // p1-x isn't in Billing's environmentIds yet: its productId still places it, after the listed ones.
+    const extra = environment({ id: 'p1-x', name: 'billing-x', productId: 'p1' })
+    world({ 'env:list': [extra, ...envs] })
+    await open()
+    const billing = await screen.findByRole('group', { name: 'Billing' })
+    expect(rowNames(billing)).toEqual(['p1-dev', 'p1-qa', 'p1-staging', 'p1-prod', 'p1-x'])
+    expect(screen.queryByRole('group', { name: 'No product' })).not.toBeInTheDocument()
   })
 
   it('lists 12 environments grouped by product, with hosts, services and the last release', async () => {

@@ -11,7 +11,7 @@ import {
   type VaultRef,
 } from '../../shared/config-file'
 import { SENSITIVE_KEY } from '../../shared/deploy'
-import { stripRepoCredentials } from '../../shared/inventory'
+import { UNASSIGNED_PRODUCT, stripRepoCredentials } from '../../shared/inventory'
 import type { AuditLog } from '../audit/audit-log'
 import type { Db } from '../db/connection'
 import { inTransaction } from '../db/tx'
@@ -21,6 +21,7 @@ import { ServiceStore } from '../deploy/service-store'
 import { EnvironmentStore } from '../inventory/environment-store'
 import { HostStore } from '../inventory/host-store'
 import { ProductStore } from '../inventory/product-store'
+import { RegionStore } from '../inventory/region-store'
 import { TunnelStore } from '../tunnels/tunnel-store'
 import { IdentityStore } from '../vault/identity-store'
 import type { KeyStore } from '../vault/key-store'
@@ -29,6 +30,7 @@ import type { VaultService } from '../vault/vault-service'
 export type { ImportAction, ImportItem, ImportPreview, ImportResult } from '../../shared/config-file'
 
 export const CHANGED_MESSAGE = 'The config changed since the preview; open the file again'
+export const REGION_MESSAGE = 'Choose a region for the imported hosts'
 
 type Counts = Record<ImportAction, number>
 type Kind = keyof ConfigCounts
@@ -45,6 +47,7 @@ const NO_VAULT = { assertUnlocked() {}, onLock() {}, isCorrupt: () => false, isU
 
 function stores(db: Db) {
   return {
+    regions: new RegionStore(db, NO_VAULT, NO_AUDIT),
     products: new ProductStore(db, NO_VAULT, NO_AUDIT),
     identities: new IdentityStore(db, NO_VAULT, {} as KeyStore, NO_AUDIT),
     hosts: new HostStore(db, NO_VAULT, NO_AUDIT),
@@ -65,10 +68,10 @@ const lineKey = (line: string, i: number): string => /^\s*(?:export\s+)?([A-Za-z
  * runs it inside a transaction it rolls back, applyImport inside the one it commits, so both see the same result.
  * Matching is by id, then by name within the parent; nothing missing from the file is deleted, unlinked or changed.
  */
-function run(db: Db, file: ConfigFile): Plan {
+function run(db: Db, file: ConfigFile, regionId?: string): Plan {
   let at = ''
   try {
-    return runEach(db, file, (where) => (at = where))
+    return runEach(db, file, (where) => (at = where), regionId)
   } catch (e) {
     // A row the stores refuse: say which one, keeping the error's own type and code.
     if (e instanceof Error && at) e.message = `${at}: ${e.message}`
@@ -76,17 +79,26 @@ function run(db: Db, file: ConfigFile): Plan {
   }
 }
 
-function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan {
+/** `regionId`: where a version 1 file's new hosts go. Without it a stand-in region takes them, which only a dry run may keep. */
+function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regionId?: string): Plan {
   const s = stores(db)
   const items: ImportItem[] = []
   const needsSecret: ImportNeedsSecret[] = []
   const counts: Counts = { add: 0, update: 0, unchanged: 0, skip: 0 }
-  const item = (kind: Kind, id: string, name: string, action: ImportAction, extra: { reason?: string; fields?: string[] } = {}) => {
+  const item = (kind: Kind, id: string, name: string, action: ImportAction, extra: { reason?: string; fields?: string[]; notes?: string[] } = {}) => {
     counts[action]++
-    items.push({ kind, id, name, action, ...(extra.reason ? { reason: extra.reason } : {}), ...(action === 'update' ? { fields: extra.fields } : {}) })
+    items.push({
+      kind,
+      id,
+      name,
+      action,
+      ...(extra.reason ? { reason: extra.reason } : {}),
+      ...(action === 'update' ? { fields: extra.fields } : {}),
+      ...(extra.notes?.length ? { notes: extra.notes } : {}),
+    })
   }
-  const done = (kind: Kind, id: string, name: string, added: boolean, fields: string[]) =>
-    item(kind, id, name, added ? 'add' : fields.length > 0 ? 'update' : 'unchanged', { fields })
+  const done = (kind: Kind, id: string, name: string, added: boolean, fields: string[], notes?: string[]) =>
+    item(kind, id, name, added ? 'add' : fields.length > 0 ? 'update' : 'unchanged', { fields, notes })
   const need = (kind: Kind, name: string, field: string, reason?: string) => needsSecret.push({ kind, name, field, ...(reason ? { reason } : {}) })
 
   const ids = (sql: string, ...params: (string | null)[]): string[] => (db.prepare(sql).all(...params) as { id: string }[]).map((r) => r.id)
@@ -94,6 +106,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
 
   // file id -> local id; null when the object was skipped.
   const map = {
+    regions: new Map<string, string | null>(),
     identities: new Map<string, string | null>(),
     products: new Map<string, string | null>(),
     hosts: new Map<string, string | null>(),
@@ -176,6 +189,30 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
   const IDENTITY_REACH = ['username', 'auth', 'sshKeyId']
   const reaches = (fields: string[], which: string[]) => fields.some((f) => which.includes(f))
 
+  // ---- regions: matched by id, then by code ----
+  for (const x of file.regions) {
+    setAt(`Region ${x.code}`)
+    const local = exists('regions', x.id) ? x.id : (ids('SELECT id FROM regions WHERE code = ?', x.code)[0] ?? null)
+    if (local === null) {
+      s.regions.insertInTx({ code: x.code, provider: x.provider, displayName: x.displayName }, x.id)
+      map.regions.set(x.id, x.id)
+      done('regions', x.id, x.code, true, [])
+      continue
+    }
+    const next = s.regions.updateInTx(local, { code: x.code, provider: x.provider, displayName: x.displayName })
+    map.regions.set(x.id, local)
+    done('regions', local, x.code, false, next?.fields ?? [])
+  }
+  let needsRegion = false
+  let standIn: string | null = null
+  /** The region a version 1 file's new host goes in. */
+  const v1Region = (): string => {
+    needsRegion = true
+    if (regionId !== undefined) return regionId
+    standIn ??= s.regions.insertInTx({ code: `import-${Date.now().toString(36)}`, displayName: 'Import' })
+    return standIn
+  }
+
   // ---- identities ----
   for (const x of file.identities) {
     setAt(`Identity ${x.label}`)
@@ -241,12 +278,12 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
     const next = s.products.updateInTx(local, { name: x.name, color: x.color, icon: x.icon, description: x.description, repoUrl })
     map.products.set(x.id, local)
     // Environment pages show their products.
-    if (next && next.fields.length > 0) for (const e of ids('SELECT environment_id AS id FROM product_environments WHERE product_id = ?', local)) touchOnly(e)
+    if (next && next.fields.length > 0) for (const e of ids('SELECT id FROM environments WHERE product_id = ?', local)) touchOnly(e)
     done('products', local, x.name, false, next?.fields ?? [])
   }
 
   // ---- hosts: written without jump hosts first, so a jump host later in the file exists when it is set ----
-  const hostRows: { x: ConfigFile['hosts'][number]; local: string; added: boolean; fields: string[] }[] = []
+  const hostRows: { x: ConfigFile['hosts'][number]; local: string; added: boolean; fields: string[]; notes: string[] }[] = []
   for (const x of file.hosts) {
     setAt(`Host ${x.label}`)
     const local = exists('hosts', x.id) ? x.id : (ids('SELECT id FROM hosts WHERE label = ?', x.label)[0] ?? null)
@@ -271,6 +308,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
         {
           label: x.label,
           address: x.address,
+          regionId: x.regionId === null ? v1Region() : map.regions.get(x.regionId)!,
           port: x.port,
           identityId: identityId ?? null,
           jumpHostId: null,
@@ -284,9 +322,12 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
         x.id,
       )
       map.hosts.set(x.id, x.id)
-      hostRows.push({ x, local: x.id, added: true, fields: [] })
+      hostRows.push({ x, local: x.id, added: true, fields: [], notes: [] })
       continue
     }
+    // An existing host stays in its own region: moving it is the user's call.
+    const here = (db.prepare('SELECT region_id FROM hosts WHERE id = ?').get(local) as { region_id: string }).region_id
+    const notes = x.regionId !== null && map.regions.get(x.regionId) !== here ? ['region not changed'] : []
     const next = s.hosts.updateInTx(local, {
       label: x.label,
       address: x.address,
@@ -302,7 +343,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
     if (reaches(fields, HOST_REACH)) guardHost(local)
     if (s.hosts.addVaultsInTx(local, vaultIdsHere).length > 0) fields.push('vaults')
     map.hosts.set(x.id, local)
-    hostRows.push({ x, local, added: false, fields })
+    hostRows.push({ x, local, added: false, fields, notes })
   }
   for (const h of hostRows) {
     setAt(`Host ${h.x.label}`)
@@ -314,27 +355,47 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
       guardHost(h.local)
     }
   }
-  for (const h of hostRows) done('hosts', h.local, h.x.label, h.added, h.fields)
+  for (const h of hostRows) done('hosts', h.local, h.x.label, h.added, h.fields, h.notes)
 
-  // ---- environments and their links ----
+  let unassigned: string | null = null
+  /** A version 1 environment with no product goes in Unassigned: the one here, or a new one. */
+  const unassignedProduct = (): string => {
+    if (unassigned !== null) return unassigned
+    unassigned = ids('SELECT id FROM products WHERE name = ?', UNASSIGNED_PRODUCT.name)[0] ?? null
+    if (unassigned === null) {
+      unassigned = s.products.insertInTx({ ...UNASSIGNED_PRODUCT, description: '', repoUrl: null })
+      done('products', unassigned, UNASSIGNED_PRODUCT.name, true, [])
+    }
+    return unassigned
+  }
+  const fileProduct = new Map(file.products.map((p) => [p.id, p.name]))
+  /** What a version 1 environment's product links became. */
+  const v1Notes = (envId: string, kept: string | null): string[] => {
+    const was = file.fromV1?.productIds[envId]
+    if (!was) return []
+    if (kept === null) return ['no product: put in Unassigned']
+    const removed = was.filter((p) => p !== kept).map((p) => fileProduct.get(p)!)
+    return removed.length > 0 ? [`kept ${fileProduct.get(kept)!}, removed ${removed.join(', ')}`] : []
+  }
+
+  // ---- environments and their links: matched by id, then by name within the product ----
   for (const x of file.environments) {
     setAt(`Environment ${x.name}`)
+    const productId = x.productId === null ? unassignedProduct() : map.products.get(x.productId)!
     let local: string | null = exists('environments', x.id) ? x.id : null
-    if (local === null) {
-      const found = ids('SELECT id FROM environments WHERE name = ? COLLATE NOCASE', x.name)
-      if (found.length > 1) {
-        map.environments.set(x.id, null)
-        item('environments', x.id, x.name, 'skip', { reason: ambiguous(found.length) })
-        continue
-      }
-      local = found[0] ?? null
-    }
+    if (local === null) local = ids('SELECT id FROM environments WHERE product_id = ? AND name = ? COLLATE NOCASE', productId, x.name)[0] ?? null
     const defaultIdentityId = ref(map.identities, x.defaultIdentityId)
     if (defaultIdentityId === undefined) need('environments', x.name, 'defaultIdentityId')
     const defaultJumpHostId = ref(map.hosts, x.defaultJumpHostId) ?? null
-    const productIds = x.productIds.map((p) => map.products.get(p)).filter((p): p is string => typeof p === 'string')
     const added = local === null
     const fields: string[] = []
+    // An existing environment stays in its own product: moving it is the user's call (and may be refused for the Hub).
+    const notes =
+      local === null
+        ? v1Notes(x.id, x.productId)
+        : (db.prepare('SELECT product_id FROM environments WHERE id = ?').get(local) as { product_id: string }).product_id !== productId
+          ? ['product not changed']
+          : []
     if (local === null) {
       local = s.envs.insertInTx(
         {
@@ -345,7 +406,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
           defaultPort: x.defaultPort,
           defaultJumpHostId,
           domain: x.domain,
-          productIds,
+          productId,
         },
         x.id,
       )
@@ -360,7 +421,6 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
         domain: x.domain,
       })
       fields.push(...(next?.fields ?? []))
-      if (s.envs.addProductsInTx(local, productIds).length > 0) fields.push('productIds')
     }
     fields.push(...s.deploys.updateSettingsInTx(local, { versioned: x.versioned, autoRollback: x.autoRollback }))
     let hostsChanged = false
@@ -371,7 +431,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
     if (hostsChanged && !added) fields.push('hosts')
     map.environments.set(x.id, local)
     if (added || fields.length > 0) touch(local)
-    done('environments', local, x.name, added, fields)
+    done('environments', local, x.name, added, fields, notes)
   }
 
   // ---- tunnels ----
@@ -574,7 +634,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
     .filter((e): e is { id: string; name: string; protected: number } => e !== undefined && e.protected === 1)
     .map((e) => e.name)
     .sort()
-  return { items, counts, needsSecret, protectedEnvironments, environmentIds: [...new Set([...touched, ...reloaded])].sort() }
+  return { items, counts, needsSecret, protectedEnvironments, needsRegion, environmentIds: [...new Set([...touched, ...reloaded])].sort() }
 }
 
 /** What importing `file` would do, without changing anything: the writes run in a transaction that is rolled back. */
@@ -604,13 +664,19 @@ export interface ImportDeps {
 
 /**
  * Applies `file` all or nothing: the plan is recomputed inside the transaction and must match the preview's counts,
- * and every existing protected environment it changes must be named in `typedNames`. One `config.import` audit with
+ * every existing protected environment it changes must be named in `typedNames`, and a version 1 file that adds
+ * hosts needs `regionId`. One `config.import` audit with
  * counts only, after COMMIT, then `onChanged` with the environments it changed. Running tunnels aren't restarted.
  */
-export function applyImport(deps: ImportDeps, file: ConfigFile, opts: { typedNames: string[]; expected: ImportPreview['counts'] }): ImportResult {
+export function applyImport(
+  deps: ImportDeps,
+  file: ConfigFile,
+  opts: { typedNames: string[]; expected: ImportPreview['counts']; regionId?: string },
+): ImportResult {
   deps.vault.assertUnlocked()
   const plan = inTransaction(deps.db, () => {
-    const p = run(deps.db, file)
+    const p = run(deps.db, file, opts.regionId)
+    if (p.needsRegion && opts.regionId === undefined) throw new Error(REGION_MESSAGE)
     if (IMPORT_ACTIONS.some((a) => p.counts[a] !== opts.expected[a])) throw new Error(CHANGED_MESSAGE)
     const missing = p.protectedEnvironments.find((name) => !opts.typedNames.includes(name))
     if (missing !== undefined) throw new DeployError('CONFIRM_REQUIRED', `Type ${missing} to update this protected environment`)

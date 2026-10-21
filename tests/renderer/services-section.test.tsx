@@ -12,7 +12,7 @@ import { ConfirmDialog, type ConfirmRequest } from '../../src/renderer/src/ui/co
 import { Toaster, clearToasts } from '../../src/renderer/src/ui/Toaster'
 import type { ServiceMeta } from '../../src/shared/services'
 import type { TunnelState } from '../../src/shared/tunnels'
-import { appService, dbService, deploymentMeta, environment, host, mockBridge, tunnelMeta, tunnelRuntime } from './helpers'
+import { appService, dbService, deploymentMeta, environment, host, mockBridge, REGION, tunnelMeta, tunnelRuntime } from './helpers'
 
 // framer-motion caches matchMedia, so reduced motion is driven through its hook directly.
 const reduced = vi.hoisted(() => ({ on: false }))
@@ -296,6 +296,39 @@ describe('services section', () => {
     // app1 holds the most checkouts? Both hold one; the tie goes to the lower label.
     expect(within(dialog).getByRole('option', { name: 'App host (app1)' })).toBeInTheDocument()
     expect(within(dialog).getByLabelText('Local port')).toHaveAttribute('placeholder', 'Picked on first open')
+  })
+
+  it('the via-host select groups hosts by region', async () => {
+    const user = userEvent.setup()
+    const us = { ...REGION, id: 'region-2', code: 'us-east-1', displayName: 'US East' }
+    world({ 'host:list': [host({ id: 'h1', label: 'app1' }), host({ id: 'h2', label: 'app2', regionId: us.id })], 'region:list': [REGION, us] })
+    await mount()
+    await waitFor(() => group('core'))
+    await user.click(within(section()).getByRole('button', { name: 'Services options' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Add database' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Add database' })
+    const groups = [...within(dialog).getByLabelText('Via host').querySelectorAll('optgroup')].map((g) => [g.label, [...g.querySelectorAll('option')].map((o) => o.textContent)])
+    expect(groups).toEqual([
+      ['test-1', ['app1']],
+      ['us-east-1', ['app2']],
+    ])
+  })
+
+  it('rows carry a region chip only when the environment spans several', async () => {
+    const us = { ...REGION, id: 'region-2', code: 'us-east-1', displayName: 'US East' }
+    world({ 'host:list': [host({ id: 'h1', label: 'app1' }), host({ id: 'h2', label: 'app2', regionId: us.id })], 'region:list': [REGION, us] })
+    await mount()
+    await waitFor(() => group('core'))
+    expect(within(row('site')).getByText('us-east-1')).toBeInTheDocument()
+    expect(within(row('api')).getByText('test-1')).toBeInTheDocument()
+    expect(within(row('main-db')).getByText('test-1')).toBeInTheDocument()
+  })
+
+  it('one region, no row chips', async () => {
+    world()
+    await mount()
+    await waitFor(() => group('core'))
+    expect(within(section()).queryByText('test-1')).not.toBeInTheDocument()
   })
 
   it('declining the restart prompt shows Route changed; restart to apply', async () => {

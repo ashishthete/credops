@@ -14,7 +14,7 @@ import { connectChain } from '../../src/main/ssh/connect'
 import { KnownHostStore } from '../../src/main/ssh/known-hosts'
 import { PromptBroker } from '../../src/main/ssh/prompts'
 import { wireVaultHooks } from '../../src/main/vault/hooks'
-import { makeInventory } from './inventory-helpers'
+import { makeInventory, PRODUCT, REGION } from './inventory-helpers'
 import { startServer, type ServerOpts } from './ssh-server'
 import { TUNNEL_USER } from './tunnel-helpers'
 
@@ -204,15 +204,16 @@ export async function makeRunSetup(deps: Partial<RunManagerDeps> = {}) {
   const ids: Record<string, string> = {}
   for (const h of [...STAGING_HOSTS, ...PROD_HOSTS]) {
     ids[h.label] = f.hosts.create({
+      regionId: REGION,
       label: h.label,
       address: '127.0.0.1',
       port: server.port,
       envVars: { OD_HOST: h.label, MARKER: marker },
     }).id
   }
-  const staging = f.envs.create({ name: 'staging', color: '#aabbcc' })
+  const staging = f.envs.create({ productId: PRODUCT, name: 'staging', color: '#aabbcc' })
   for (const h of STAGING_HOSTS) f.envs.putHost(staging.id, ids[h.label]!, h.role)
-  const prod = f.envs.create({ name: 'prod', color: '#cc0000', protected: true })
+  const prod = f.envs.create({ productId: PRODUCT, name: 'prod', color: '#cc0000', protected: true })
   for (const h of PROD_HOSTS) f.envs.putHost(prod.id, ids[h.label]!, h.role)
 
   const waitFor = <T>(fn: () => T, timeout = 15_000): Promise<T> => vi.waitFor(fn, { timeout, interval: 5 })

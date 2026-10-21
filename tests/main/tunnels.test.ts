@@ -28,7 +28,7 @@ import { TunnelManager, type TunnelManagerDeps } from '../../src/main/tunnels/ma
 import { startDynamic } from '../../src/main/tunnels/socks5'
 import { TunnelStore } from '../../src/main/tunnels/tunnel-store'
 import { wireVaultHooks, type VaultHookTargets } from '../../src/main/vault/hooks'
-import { makeInventory } from './inventory-helpers'
+import { makeInventory, PRODUCT, REGION } from './inventory-helpers'
 import { generateKey, startServer, type ServerOpts, type TestServer } from './ssh-server'
 import { TUNNEL_USER, echoServer, manualTimers, type EchoServer } from './tunnel-helpers'
 import { auditRows } from './vault-helpers'
@@ -165,7 +165,7 @@ async function setup(opts: SetupOpts = {}) {
   /** A host row that dials `srv`, whose host key is trusted unless `trust` is false. */
   const host = (srv: TestServer, trust = true): string => {
     if (trust) knownHosts.trust('127.0.0.1', srv.port, srv.hostKeyType, srv.hostKeyBase64)
-    return f.hosts.create({ label: `host-${++hostN}`, address: '127.0.0.1', port: srv.port }).id
+    return f.hosts.create({ regionId: REGION, label: `host-${++hostN}`, address: '127.0.0.1', port: srv.port }).id
   }
   const tunnel = (hostId: string, over: Partial<TunnelInput> = {}) =>
     store.create({ label: 'db', hostId, type: 'L', bindPort: 0, targetHost: '127.0.0.1', targetPort: 1, ...over })
@@ -669,7 +669,7 @@ describe('TunnelManager', () => {
     const srv = await server()
     const echo = await target()
     const hostId = t.host(srv)
-    t.hosts.create({ label: 'behind', address: '10.0.0.9', port: 22, jumpHostId: hostId })
+    t.hosts.create({ regionId: REGION, label: 'behind', address: '10.0.0.9', port: 22, jumpHostId: hostId })
     const tun = t.tunnel(hostId, { targetPort: echo.port })
     t.manager.start(tun.id)
     const up = await t.waitState(tun.id, 'up')
@@ -677,6 +677,7 @@ describe('TunnelManager', () => {
       hosts: t.hosts,
       environments: t.envs,
       products: t.products,
+      regions: t.regions,
       resolve: vi.fn(),
       tunnels: t.manager,
       openExternal: vi.fn(),
@@ -695,7 +696,7 @@ describe('TunnelManager', () => {
     const srv = await server()
     const echo = await target()
     const hostId = t.host(srv)
-    const env = t.envs.create({ name: 'staging', color: '#aabbcc' })
+    const env = t.envs.create({ productId: PRODUCT, name: 'staging', color: '#aabbcc' })
     t.envs.putHost(env.id, hostId, 'db')
     const tun = t.tunnel(hostId, { targetPort: echo.port, environmentId: env.id })
     t.manager.start(tun.id)
@@ -717,7 +718,7 @@ describe('TunnelManager', () => {
     const srv = await server()
     const echo = await target()
     const hostId = t.host(srv)
-    const env = t.envs.create({ name: 'staging', color: '#aabbcc' })
+    const env = t.envs.create({ productId: PRODUCT, name: 'staging', color: '#aabbcc' })
     t.envs.putHost(env.id, hostId, 'db')
     const tun = t.tunnel(hostId, { targetPort: echo.port, environmentId: env.id })
     t.manager.start(tun.id)
@@ -735,7 +736,7 @@ describe('TunnelManager', () => {
     const srv = await server()
     const echo = await target()
     const hostId = t.host(srv)
-    const env = t.envs.create({ name: 'staging', color: '#aabbcc' })
+    const env = t.envs.create({ productId: PRODUCT, name: 'staging', color: '#aabbcc' })
     t.envs.putHost(env.id, hostId, 'db')
     const tun = t.tunnel(hostId, { targetPort: echo.port, environmentId: env.id })
     t.manager.start(tun.id)
@@ -807,7 +808,7 @@ describe('TunnelManager', () => {
 
   it('running limit', async () => {
     const t = await setup({ deps: { connect: () => new Promise(() => {}) } })
-    const hostId = t.hosts.create({ label: 'h', address: '127.0.0.1', port: 22 }).id
+    const hostId = t.hosts.create({ regionId: REGION, label: 'h', address: '127.0.0.1', port: 22 }).id
     const ids = Array.from({ length: 65 }, (_, i) => t.tunnel(hostId, { label: `t${i}` }).id)
     for (const id of ids.slice(0, 64)) t.manager.start(id)
     let err: unknown

@@ -11,6 +11,7 @@ import {
   MAX_LINKS,
   MAX_NAME,
   MAX_NOTES,
+  MAX_PROVIDER,
   MAX_TAG,
   MAX_TAGS,
   MAX_URL,
@@ -28,6 +29,8 @@ import {
   type HostPatch,
   type ProductInput,
   type ProductPatch,
+  type RegionInput,
+  type RegionPatch,
   type SshImportRequest,
 } from '../../shared/inventory'
 import {
@@ -246,6 +249,7 @@ const membership = v.object({ environmentId: v.uuid(), role: v.oneOf(HOST_ROLES)
 export const asHostInput: Check<HostInput> = v.object({
   label: hostLabel,
   address: hostAddress,
+  regionId: v.uuid(),
   port: v.optional(hostPort),
   identityId: v.optional(nullableId),
   jumpHostId: v.optional(nullableId),
@@ -261,6 +265,7 @@ export const asHostInput: Check<HostInput> = v.object({
 export const asHostPatch: Check<HostPatch> = v.object({
   label: v.optional(hostLabel),
   address: v.optional(hostAddress),
+  regionId: v.optional(v.uuid()),
   port: v.optional(hostPort),
   identityId: v.optional(nullableId),
   jumpHostId: v.optional(nullableId),
@@ -530,7 +535,7 @@ export const asEnvironmentInput: Check<EnvironmentInput> = v.object({
   defaultPort: v.optional(envPort),
   defaultJumpHostId: v.optional(nullableId),
   domain: v.optional(envDomain),
-  productIds: v.optional(idList),
+  productId: v.uuid(),
 }) as Check<EnvironmentInput>
 
 export const asEnvironmentPatch: Check<EnvironmentPatch> = v.object({
@@ -563,9 +568,26 @@ export const asProductPatch: Check<ProductPatch> = v.object({
   repoUrl,
 }) as Check<ProductPatch>
 
+// The store lowercases the code; either case is accepted here.
+const regionCode = v.str({ pattern: /^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/, trim: true })
+const regionProvider = v.str({ max: MAX_PROVIDER })
+
+export const asRegionInput: Check<RegionInput> = v.object({
+  code: regionCode,
+  provider: v.optional(regionProvider),
+  displayName: envName,
+}) as Check<RegionInput>
+
+export const asRegionPatch: Check<RegionPatch> = v.object({
+  code: v.optional(regionCode),
+  provider: v.optional(regionProvider),
+  displayName: v.optional(envName),
+}) as Check<RegionPatch>
+
 // Aliases only: the importer re-reads the config itself, so no config text crosses IPC.
 export const asSshImportRequest: Check<SshImportRequest> = v.object({
   vaultId: v.uuid(),
+  regionId: v.uuid(),
   aliases: v.array(v.str({ min: 1, max: MAX_LABEL }), MAX_IMPORT_ALIASES),
   environmentId: v.optional(v.uuid()),
   role: v.optional(v.oneOf(HOST_ROLES)),
@@ -761,13 +783,19 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'env:update': args(v.uuid(), asEnvironmentPatch),
   'env:delete': args(v.uuid()),
   'env:openDomain': args(v.uuid()),
-  'env:setProducts': args(v.uuid(), idList),
+  'env:setProduct': args(v.uuid(), v.uuid()),
   'env:putHost': args(v.uuid(), v.uuid(), v.oneOf(HOST_ROLES)),
   'env:removeHost': args(v.uuid(), v.uuid()),
   'product:list': args(),
   'product:create': args(asProductInput),
   'product:update': args(v.uuid(), asProductPatch),
   'product:delete': args(v.uuid()),
+  'region:list': args(),
+  'region:create': args(asRegionInput),
+  'region:update': args(v.uuid(), asRegionPatch),
+  'region:delete': args(v.uuid()),
+  'region:upgradeReport': args(),
+  'region:dismissUpgradeReport': args(),
   'sshconfig:preview': args(),
   'sshconfig:import': args(asSshImportRequest),
   'ssh:open': args(asOpenSshRequest),
@@ -888,6 +916,9 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'containers:unfollow': args(v.uuid()),
   'config:export': args(),
   'config:importOpen': args(),
-  'config:importApply': args(importToken, v.object({ typedNames: v.array(v.str({ max: MAX_NAME, pattern: NO_NUL }), MAX_TYPED_NAMES) })),
+  'config:importApply': args(
+    importToken,
+    v.object({ typedNames: v.array(v.str({ max: MAX_NAME, pattern: NO_NUL }), MAX_TYPED_NAMES), regionId: v.optional(v.uuid()) }),
+  ),
   'config:importDiscard': args(importToken),
 }

@@ -16,6 +16,7 @@ import type {
   EnvironmentMeta,
   HostMeta,
   ProductMeta,
+  RegionMeta,
   ResolvedHost,
   SshImportCandidate,
   SshImportPreview,
@@ -23,7 +24,7 @@ import type {
 } from '../../src/shared/inventory'
 import type { SessionMeta } from '../../src/shared/ssh'
 import { DEFAULT_VAULT_ID, VAULT_LOCKED, type VaultMeta } from '../../src/shared/vault'
-import { defaultVault, environment, host, mockBridge, product, vaultStatus } from './helpers'
+import { REGION, defaultVault, environment, host, mockBridge, product, vaultStatus } from './helpers'
 import { resetFakeXterm } from './terminal-fakes'
 
 // framer-motion caches matchMedia, so reduced motion is driven through useMotionSafe (F18).
@@ -59,6 +60,7 @@ interface World {
   unlocked: boolean
   vaults: VaultMeta[]
   corruptVaultIds: string[]
+  regions: RegionMeta[]
 }
 
 function candidate(over: Partial<SshImportCandidate> & { alias: string }): SshImportCandidate {
@@ -81,7 +83,7 @@ function candidate(over: Partial<SshImportCandidate> & { alias: string }): SshIm
 function world(over: Partial<World> = {}): World {
   return {
     products: [product({ id: 'acme', name: 'Acme', environmentIds: ['prod'] })],
-    environments: [environment({ id: 'prod', name: 'prod', color: '#ef5b5b', productIds: ['acme'], hosts: [{ hostId: 'api1', role: 'app' }] })],
+    environments: [environment({ id: 'prod', name: 'prod', color: '#ef5b5b', productId: 'acme', hosts: [{ hostId: 'api1', role: 'app' }] })],
     hosts: [
       host({ id: 'api1', label: 'api-1', address: '10.0.0.5', tags: ['api'], environments: [{ environmentId: 'prod', role: 'app' }] }),
       host({ id: 'db1', label: 'db-1', address: '10.0.0.9', tags: ['db'] }),
@@ -102,6 +104,7 @@ function world(over: Partial<World> = {}): World {
     unlocked: true,
     vaults: [defaultVault],
     corruptVaultIds: [],
+    regions: [REGION],
     ...over,
   }
 }
@@ -144,6 +147,32 @@ function renderApp(w: World, path = '/hosts', { strict = false } = {}) {
         return w.environments
       case 'host:list':
         return w.hosts
+      case 'region:list':
+        return w.regions.map((r) => ({ ...r, hostCount: w.hosts.filter((h) => h.regionId === r.id).length }))
+      case 'region:create': {
+        const input = args[0] as Pick<RegionMeta, 'code' | 'displayName' | 'provider'>
+        if (w.regions.some((r) => r.code === input.code)) throw new Error('a region with that code already exists')
+        const r = { ...REGION, ...input, id: `region-${input.code}`, hostCount: 0 }
+        w.regions = [...w.regions, r]
+        return r
+      }
+      case 'region:update': {
+        const [id, patch] = args as [string, Partial<RegionMeta>]
+        w.regions = w.regions.map((r) => (r.id === id ? { ...r, ...patch } : r))
+        return w.regions.find((r) => r.id === id)
+      }
+      case 'region:delete': {
+        const r = w.regions.find((x) => x.id === args[0])!
+        const n = w.hosts.filter((h) => h.regionId === r.id).length
+        if (n) throw new Error(`${r.code} still has ${n === 1 ? 'a host' : `${n} hosts`}: move ${n === 1 ? 'it' : 'them'} to another region first`)
+        w.regions = w.regions.filter((x) => x !== r)
+        return null
+      }
+      case 'host:create': {
+        const created = host({ id: `new-${w.hosts.length}`, ...(args[0] as Partial<HostMeta> & { label: string }) })
+        w.hosts = [...w.hosts, created]
+        return created
+      }
       case 'host:resolve': {
         const h = w.hosts.find((x) => x.id === args[0])
         return h ? outside(h.id, h.address) : null
@@ -169,6 +198,7 @@ function renderApp(w: World, path = '/hosts', { strict = false } = {}) {
             id: `imported-${alias}`,
             label: alias,
             address: w.preview.candidates.find((c) => c.alias === alias)!.hostName,
+            regionId: req.regionId,
             environments: req.environmentId ? [{ environmentId: req.environmentId, role: req.role ?? 'other' }] : [],
           }),
         )
@@ -328,7 +358,7 @@ describe('hosts page', () => {
     await user.selectOptions(within(dialog).getByLabelText('Role'), 'app')
     await user.click(within(dialog).getByRole('button', { name: 'Import 1 host' }))
 
-    expect(invoke).toHaveBeenCalledWith('sshconfig:import', { vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'], environmentId: 'prod', role: 'app' })
+    expect(invoke).toHaveBeenCalledWith('sshconfig:import', { regionId: REGION.id, vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'], environmentId: 'prod', role: 'app' })
     expect(await within(dialog).findByText('Imported 1 host')).toBeInTheDocument()
     expect(within(dialog).getByText('3 port forwards will become tunnels')).toBeInTheDocument()
 
@@ -347,7 +377,7 @@ describe('hosts page', () => {
     expect(box).toBeChecked()
     await user.click(box)
     await user.click(within(dialog).getByRole('button', { name: 'Import 1 host' }))
-    expect(invoke).toHaveBeenCalledWith('sshconfig:import', { vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'], forwards: false })
+    expect(invoke).toHaveBeenCalledWith('sshconfig:import', { regionId: REGION.id, vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'], forwards: false })
     expect(await within(dialog).findByText('Imported 1 host')).toBeInTheDocument()
   })
 
@@ -479,7 +509,7 @@ describe('hosts page', () => {
     await user.type(await screen.findByLabelText('Master password'), 'correct horse{Enter}')
     const imports = () => invoke.mock.calls.filter(([c]) => c === 'sshconfig:import')
     await waitFor(() => expect(imports()).toHaveLength(2))
-    expect(imports()[1]).toEqual(['sshconfig:import', { vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'] }])
+    expect(imports()[1]).toEqual(['sshconfig:import', { regionId: REGION.id, vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'] }])
     expect(await screen.findByText('Imported 1 host, 3 tunnels')).toBeInTheDocument()
     await waitFor(() => expect(rowNames()).toContain('web-1'))
   })
@@ -576,5 +606,211 @@ describe('hosts page', () => {
     renderApp(world())
     await waitFor(() => expect(rowNames()).toEqual(['api-1', 'db-1', 'edge']))
     for (const row of within(hostList()).getAllByRole('option')) expect(row.closest('li')?.style.transform ?? '').toBe('')
+  })
+})
+
+describe('hosts page regions', () => {
+  const EU: RegionMeta = { ...REGION, id: 'region-eu', code: 'eu-west-1', displayName: 'Ireland', provider: 'aws' }
+  /** api-1 and edge in test-1, db-1 in eu-west-1. */
+  const twoRegions = (over: Partial<World> = {}) => {
+    const w = world({ regions: [REGION, EU], ...over })
+    w.hosts = w.hosts.map((h) => (h.id === 'db1' ? { ...h, regionId: EU.id } : h))
+    return w
+  }
+  const group = (code: string) => within(hostList()).getByRole('group', { name: code })
+  const groupNames = () => within(hostList()).queryAllByRole('group').map((g) => g.getAttribute('aria-label'))
+
+  it('groups hosts under their region, by code, with counts, and folds a group away', async () => {
+    const user = userEvent.setup()
+    renderApp(twoRegions())
+    await waitFor(() => expect(groupNames()).toEqual(['eu-west-1', 'test-1']))
+    expect(rowNames()).toEqual(['db-1', 'api-1', 'edge'])
+    expect(within(group('test-1')).getAllByRole('option').map((o) => o.getAttribute('aria-label'))).toEqual(['api-1', 'edge'])
+    const header = within(group('test-1')).getByRole('button', { name: 'test-1, 2 hosts' })
+    expect(header).toHaveAttribute('aria-expanded', 'true')
+
+    await user.click(header)
+    expect(header).toHaveAttribute('aria-expanded', 'false')
+    expect(rowNames()).toEqual(['db-1'])
+    await user.click(header)
+    await waitFor(() => expect(rowNames()).toEqual(['db-1', 'api-1', 'edge']))
+  })
+
+  it('arrow keys follow the grouped order', async () => {
+    const user = userEvent.setup()
+    renderApp(twoRegions())
+    await user.click(await screen.findByRole('option', { name: 'db-1' }))
+    await user.keyboard('{ArrowDown}')
+    expect(where).toBe('/hosts?host=api1')
+    expect(screen.getByRole('option', { name: 'api-1' })).toHaveFocus()
+  })
+
+  it('filters by region, and search matches region code and name', async () => {
+    const user = userEvent.setup()
+    renderApp(twoRegions())
+    await waitFor(() => expect(rowNames()).toEqual(['db-1', 'api-1', 'edge']))
+    const filter = screen.getByRole('combobox', { name: 'Region' })
+    await user.selectOptions(filter, EU.id)
+    await waitFor(() => expect(rowNames()).toEqual(['db-1']))
+    expect(groupNames()).toEqual(['eu-west-1'])
+    await user.selectOptions(filter, '')
+
+    const search = screen.getByRole('searchbox', { name: 'Search hosts' })
+    await user.type(search, 'ireland')
+    await waitFor(() => expect(rowNames()).toEqual(['db-1']))
+    await user.clear(search)
+    await user.type(search, 'test-1')
+    await waitFor(() => expect(rowNames()).toEqual(['api-1', 'edge']))
+  })
+
+  it('the region filter only shows once there is more than one region', async () => {
+    renderApp(world())
+    await waitFor(() => expect(rowNames()).toEqual(['api-1', 'db-1', 'edge']))
+    expect(screen.queryByRole('combobox', { name: 'Region' })).not.toBeInTheDocument()
+  })
+
+  it("a new host from a region group's + starts in that region", async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderApp(twoRegions())
+    await screen.findByRole('option', { name: 'db-1' })
+    await user.click(within(group('eu-west-1')).getByRole('button', { name: 'New host in eu-west-1' }))
+    const dialog = await screen.findByRole('dialog', { name: 'New host' })
+    expect(within(dialog).getByLabelText('Region')).toHaveValue(EU.id)
+    await user.type(within(dialog).getByLabelText('Label'), 'db-2')
+    await user.type(within(dialog).getByLabelText('Address'), '10.0.0.10')
+    await user.click(within(dialog).getByRole('button', { name: 'Create host' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('host:create', expect.objectContaining({ label: 'db-2', regionId: EU.id })))
+  })
+
+  it('a new host with no region in view waits for one to be picked', async () => {
+    const user = userEvent.setup()
+    renderApp(twoRegions(), '/hosts?action=new')
+    const dialog = await screen.findByRole('dialog', { name: 'New host' })
+    await user.type(within(dialog).getByLabelText('Label'), 'web-9')
+    await user.type(within(dialog).getByLabelText('Address'), '10.0.0.11')
+    // The first row is selected, so its region is the guess.
+    await waitFor(() => expect(within(dialog).getByLabelText('Region')).toHaveValue(EU.id))
+  })
+
+  it('Regions… lists every region with its provider and host count', async () => {
+    const user = userEvent.setup()
+    renderApp(twoRegions())
+    await screen.findByRole('option', { name: 'db-1' })
+    await user.click(screen.getByRole('button', { name: 'Regions…' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Regions' })
+    const rows = within(within(dialog).getByRole('list', { name: 'Regions' })).getAllByRole('listitem')
+    expect(rows.map((r) => r.getAttribute('aria-label'))).toEqual(['eu-west-1', 'test-1'])
+    expect(rows[0]).toHaveTextContent('Ireland')
+    expect(rows[0]).toHaveTextContent('aws')
+    expect(rows[0]).toHaveTextContent('1 host')
+    expect(rows[1]).toHaveTextContent('2 hosts')
+  })
+
+  it('creates and edits a region, and shows main refusing a duplicate code', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderApp(twoRegions())
+    await screen.findByRole('option', { name: 'db-1' })
+    await user.click(screen.getByRole('button', { name: 'Regions…' }))
+    const list = await screen.findByRole('dialog', { name: 'Regions' })
+
+    await user.click(within(list).getByRole('button', { name: 'New region' }))
+    let form = await screen.findByRole('dialog', { name: 'New region' })
+    await user.type(within(form).getByLabelText('Code'), 'EU-WEST-1')
+    await user.type(within(form).getByLabelText('Display name'), 'Dublin')
+    await user.click(within(form).getByRole('button', { name: 'Create region' }))
+    expect(await within(form).findByRole('alert')).toHaveTextContent('a region with that code already exists')
+
+    await user.clear(within(form).getByLabelText('Code'))
+    await user.type(within(form).getByLabelText('Code'), 'us-east-1')
+    await user.type(within(form).getByLabelText('Provider'), 'aws')
+    await user.click(within(form).getByRole('button', { name: 'Create region' }))
+    expect(invoke).toHaveBeenCalledWith('region:create', { code: 'us-east-1', displayName: 'Dublin', provider: 'aws' })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New region' })).not.toBeInTheDocument())
+    expect(await within(list).findByRole('listitem', { name: 'us-east-1' })).toHaveTextContent('0 hosts')
+
+    await user.click(within(list).getByRole('button', { name: 'Edit us-east-1' }))
+    form = await screen.findByRole('dialog', { name: 'Edit us-east-1' })
+    expect(within(form).getByLabelText('Display name')).toHaveValue('Dublin')
+    await user.clear(within(form).getByLabelText('Display name'))
+    await user.type(within(form).getByLabelText('Display name'), 'N. Virginia')
+    await user.click(within(form).getByRole('button', { name: 'Save' }))
+    expect(invoke).toHaveBeenCalledWith('region:update', 'region-us-east-1', { code: 'us-east-1', displayName: 'N. Virginia', provider: 'aws' })
+    expect(await within(list).findByText('N. Virginia')).toBeInTheDocument()
+  })
+
+  it("refuses to delete a region a host is in, with main's reason, and deletes an empty one", async () => {
+    const user = userEvent.setup()
+    const w = twoRegions()
+    w.regions = [...w.regions, { ...REGION, id: 'region-empty', code: 'ap-south-1', displayName: 'Mumbai' }]
+    renderApp(w)
+    await screen.findByRole('option', { name: 'db-1' })
+    await user.click(screen.getByRole('button', { name: 'Regions…' }))
+    const list = await screen.findByRole('dialog', { name: 'Regions' })
+
+    await user.click(within(list).getByRole('button', { name: 'Delete test-1' }))
+    let confirm = await screen.findByRole('dialog', { name: 'Delete test-1?' })
+    await user.click(within(confirm).getByRole('button', { name: 'Delete region' }))
+    expect(await within(confirm).findByRole('alert')).toHaveTextContent('test-1 still has 2 hosts: move them to another region first')
+    expect(within(list).getByRole('listitem', { name: 'test-1' })).toBeInTheDocument()
+    await user.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+
+    await user.click(within(list).getByRole('button', { name: 'Delete ap-south-1' }))
+    confirm = await screen.findByRole('dialog', { name: 'Delete ap-south-1?' })
+    await user.click(within(confirm).getByRole('button', { name: 'Delete region' }))
+    await waitFor(() => expect(within(list).queryByRole('listitem', { name: 'ap-south-1' })).not.toBeInTheDocument())
+  })
+
+  it('the palette opens Manage regions from anywhere', async () => {
+    renderApp(world(), '/audit')
+    await waitFor(() => expect(commandStore.get().some((c) => c.title === 'Manage regions')).toBe(true))
+    act(() => commandStore.get().find((c) => c.title === 'Manage regions')!.run())
+    expect(await screen.findByRole('dialog', { name: 'Regions' })).toBeInTheDocument()
+    expect(where).toBe('/hosts')
+  })
+
+  it("the palette's Connect names the host's region", async () => {
+    renderApp(twoRegions())
+    await waitFor(() => expect(commandStore.get().some((c) => c.title === 'Connect to db-1 · eu-west-1')).toBe(true))
+  })
+
+  it('ssh import with several regions waits for one, and New region… makes one without leaving', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderApp(twoRegions())
+    await screen.findByRole('option', { name: 'api-1' })
+    await user.click(screen.getByRole('button', { name: 'Import from ~/.ssh/config' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Import from ~/.ssh/config' })
+    await user.click(await within(dialog).findByRole('checkbox', { name: 'web-1' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Next' }))
+    const region = within(dialog).getByLabelText('Region')
+    expect(region).toHaveValue('')
+    expect(within(dialog).getByRole('button', { name: 'Import 1 host' })).toBeDisabled()
+
+    await user.selectOptions(region, 'New region…')
+    const form = await screen.findByRole('dialog', { name: 'New region' })
+    await user.type(within(form).getByLabelText('Code'), 'us-east-1')
+    await user.type(within(form).getByLabelText('Display name'), 'Virginia')
+    await user.click(within(form).getByRole('button', { name: 'Create region' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New region' })).not.toBeInTheDocument())
+    // Still on the import's second step, with the new region picked.
+    await waitFor(() => expect(within(dialog).getByLabelText('Region')).toHaveValue('region-us-east-1'))
+    await user.click(within(dialog).getByRole('button', { name: 'Import 1 host' }))
+    expect(invoke).toHaveBeenCalledWith('sshconfig:import', expect.objectContaining({ regionId: 'region-us-east-1', aliases: ['web-1'] }))
+  })
+
+  it('cancelling New region… keeps the choice as it was', async () => {
+    const user = userEvent.setup()
+    renderApp(twoRegions())
+    await screen.findByRole('option', { name: 'api-1' })
+    await user.click(screen.getByRole('button', { name: 'Import from ~/.ssh/config' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Import from ~/.ssh/config' })
+    await user.click(await within(dialog).findByRole('checkbox', { name: 'web-1' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Next' }))
+    await user.selectOptions(within(dialog).getByLabelText('Region'), EU.id)
+    await user.selectOptions(within(dialog).getByLabelText('Region'), 'New region…')
+    const form = await screen.findByRole('dialog', { name: 'New region' })
+    await user.click(within(form).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New region' })).not.toBeInTheDocument())
+    expect(within(dialog).getByLabelText('Region')).toHaveValue(EU.id)
+    expect(screen.getByRole('dialog', { name: 'Import from ~/.ssh/config' })).toBeInTheDocument()
   })
 })

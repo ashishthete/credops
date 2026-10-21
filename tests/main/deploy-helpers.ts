@@ -5,7 +5,7 @@ import { ServiceStore } from '../../src/main/deploy/service-store'
 import type { DeploymentInput } from '../../src/shared/deploy'
 import { SecretStore } from '../../src/main/vault/secret-store'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
-import { makeInventory, type InventoryFixture } from './inventory-helpers'
+import { makeInventory, type InventoryFixture, PRODUCT, REGION } from './inventory-helpers'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Client } from 'ssh2'
@@ -32,9 +32,9 @@ export type DeployFixture = InventoryFixture & {
 /** Inventory plus env staging, protected env prod, host app1 in both, a vault secret, and the deploy stores. */
 export async function makeDeployFixture(opts: { maxEvents?: number } = {}): Promise<DeployFixture> {
   const f = await makeInventory()
-  const staging = f.envs.create({ name: 'staging', color: '#112233' })
-  const prod = f.envs.create({ name: 'prod', color: '#aa0000', protected: true })
-  const host = f.hosts.create({ label: 'app1', address: '10.0.0.7' })
+  const staging = f.envs.create({ productId: PRODUCT, name: 'staging', color: '#112233' })
+  const prod = f.envs.create({ productId: PRODUCT, name: 'prod', color: '#aa0000', protected: true })
+  const host = f.hosts.create({ regionId: REGION, label: 'app1', address: '10.0.0.7' })
   f.envs.putHost(staging.id, host.id, 'app')
   f.envs.putHost(prod.id, host.id, 'app')
   const clipboard = { async writeText(): Promise<void> {}, async readText(): Promise<string> { return '' } }
@@ -43,7 +43,7 @@ export async function makeDeployFixture(opts: { maxEvents?: number } = {}): Prom
   const changed: string[] = []
   const deploys = new DeployStore({ db: f.db, audit: f.audit, vault: f.vault, secrets: dbSecretRefs(f.db) })
   deploys.onChanged = (environmentId) => changed.push(environmentId)
-  const releases = new ReleaseStore({ db: f.db, maxEvents: opts.maxEvents })
+  const releases = new ReleaseStore({ db: f.db, maxEvents: opts.maxEvents, regions: true })
   const services = new ServiceStore({ db: f.db, audit: f.audit, vault: f.vault })
   services.onChanged = (environmentId) => changed.push(environmentId)
   return {

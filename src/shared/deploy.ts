@@ -1,5 +1,7 @@
 // Imported by the renderer: keep runtime code to plain constants and pure functions (no node or electron imports).
 
+import type { RegionRef } from './inventory'
+
 // ---- Limits ----
 export const MAX_DEPLOYMENTS = 512
 export const MAX_URLS = 8
@@ -527,6 +529,11 @@ export interface ReleaseDetail extends ReleaseSummary {
   runs: DeploymentRunMeta[]
   preflight: PreflightReport | null
   lastSeq: number
+  /**
+   * The regions of the hosts its checkouts run on, ordered by code: what the confirm step shows. Set by the desktop;
+   * a Hub release leaves it out.
+   */
+  regions?: RegionRef[]
 }
 
 /**

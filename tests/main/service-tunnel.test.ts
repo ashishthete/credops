@@ -8,6 +8,7 @@ import type { DbServiceMeta } from '../../src/shared/services'
 import { TUNNEL_LIMIT, type TunnelMeta, type TunnelRuntime, type TunnelState } from '../../src/shared/tunnels'
 import { makeDeployFixture } from './deploy-helpers'
 import { manualTimers } from './tunnel-helpers'
+import { REGION } from './inventory-helpers'
 
 const runtime = (id: string, state: TunnelState, over: Partial<TunnelRuntime> = {}): TunnelRuntime => ({
   id,
@@ -141,7 +142,7 @@ describe('ServiceTunnels', () => {
 
   it('via-host gone falls back to the default app host, else asks for one', async () => {
     const t = await setup()
-    const h2 = t.hosts.create({ label: 'bastion', address: '10.0.0.8' })
+    const h2 = t.hosts.create({ regionId: REGION, label: 'bastion', address: '10.0.0.8' })
     t.envs.putHost(t.staging.id, h2.id, 'app')
     const d = t.db({ viaHostId: h2.id })
     expect(t.st.viaHost(t.svc(d.id))).toBe(h2.id)
@@ -150,7 +151,7 @@ describe('ServiceTunnels', () => {
     await t.st.open(d.id)
     expect(t.tunnels.get(t.svc(d.id).tunnelId!).hostId).toBe(t.host.id)
     // A db-role member is no default via-host: with no app host left, the user picks one.
-    const h3 = t.hosts.create({ label: 'pg1', address: '10.0.0.9' })
+    const h3 = t.hosts.create({ regionId: REGION, label: 'pg1', address: '10.0.0.9' })
     t.envs.putHost(t.staging.id, h3.id, 'db')
     t.envs.removeHost(t.staging.id, t.host.id)
     expect(() => t.st.viaHost(t.svc(d.id))).toThrow(new Error('Pick a via-host for main-db; this environment has no app host'))

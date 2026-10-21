@@ -47,14 +47,14 @@ const prod = environment({
   id: 'e1',
   name: 'Prod',
   protected: true,
-  productIds: ['p1'],
+  productId: 'p1',
   defaultJumpHostId: 'h1',
   hosts: [
     { hostId: 'h1', role: 'bastion' },
     { hostId: 'h2', role: 'db' },
   ],
 })
-const stage = environment({ id: 'e2', name: 'Stage', productIds: ['p1'], hosts: [{ hostId: 'h1', role: 'app' }] })
+const stage = environment({ id: 'e2', name: 'Stage', productId: 'p1', hosts: [{ hostId: 'h1', role: 'app' }] })
 const ops = { ...defaultVault, id: 'v2', name: 'Ops vault', isDefault: false }
 const hosts = [
   host({ id: 'h1', label: 'web', address: '10.0.0.5', identityId: 'i1', notes: NOTES, envVars: { TOKEN: ENV_VALUE }, vaultIds: ['v2'] }),
@@ -139,6 +139,7 @@ describe('map detail panel', () => {
     expect(p).toHaveTextContent('Ops vault')
     expect(p).toHaveTextContent('Not checked')
     expect(p).toHaveTextContent('0 sessions')
+    expect(within(p).getByText('test-1')).toHaveAttribute('title', 'Test')
     expect(document.activeElement).toBe(within(p).getByRole('button', { name: 'Connect' }))
     expect(node('e:e1/h:h1')).toHaveClass('selected')
   })
@@ -228,6 +229,8 @@ describe('map detail panel', () => {
     expect(p).toHaveTextContent('Web')
     expect(p).toHaveTextContent('2 hosts')
     expect(p).toHaveTextContent('Bastion 1 · Database 1')
+    // Its regions come from its hosts.
+    expect(within(within(p).getByRole('list', { name: 'Regions' })).getByText('test-1')).toBeInTheDocument()
     await click(within(p).getByRole('button', { name: 'Filter to this environment' }))
     // ?env=e1 scopes the map to Prod alone.
     expect(node('e:e2')).toBeNull()

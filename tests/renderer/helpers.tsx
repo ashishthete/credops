@@ -1,7 +1,7 @@
 import { vi } from 'vitest'
 import type { AuditEvent } from '../../src/shared/audit'
 import type { DeploymentMeta, EnvDeploySettings, Tooling } from '../../src/shared/deploy'
-import type { EnvironmentMeta, HostMeta, ProductMeta } from '../../src/shared/inventory'
+import type { EnvironmentMeta, HostMeta, ProductMeta, RegionMeta } from '../../src/shared/inventory'
 import type { AppServiceMeta, DbServiceMeta } from '../../src/shared/services'
 import type { AppInfo } from '../../src/shared/ipc'
 import type { SessionMeta } from '../../src/shared/ssh'
@@ -85,7 +85,7 @@ export function environment(over: Partial<EnvironmentMeta> & { id: string; name:
     defaultPort: null,
     defaultJumpHostId: null,
     domain: null,
-    productIds: [],
+    productId: 'none',
     hosts: [],
     createdAt: STAMP,
     updatedAt: STAMP,
@@ -93,8 +93,20 @@ export function environment(over: Partial<EnvironmentMeta> & { id: string; name:
   }
 }
 
+/** The one region mockBridge lists by default; host() puts hosts in it. */
+export const REGION: RegionMeta = {
+  id: 'region-1',
+  code: 'test-1',
+  provider: '',
+  displayName: 'Test',
+  hostCount: 0,
+  createdAt: STAMP,
+  updatedAt: STAMP,
+}
+
 export function host(over: Partial<HostMeta> & { id: string; label: string }): HostMeta {
   return {
+    regionId: REGION.id,
     address: `${over.label}.example.com`,
     port: null,
     identityId: null,
@@ -122,6 +134,7 @@ export function mockBridge(results: Record<string, unknown> = {}) {
     if (channel === 'vault:list') return [defaultVault]
     if (channel === 'secret:list' || channel === 'key:list' || channel === 'identity:list') return []
     if (channel === 'product:list' || channel === 'env:list' || channel === 'host:list') return []
+    if (channel === 'region:list') return [REGION]
     if (channel === 'tunnel:list' || channel === 'tunnel:status') return []
     if (channel === 'runs:list' || channel === 'snippets:list') return []
     if (channel === 'deploy:list' || channel === 'service:list') return []

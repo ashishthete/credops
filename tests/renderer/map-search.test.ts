@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { InventoryData } from '../../src/renderer/src/inventory/store'
 import { buildGraph } from '../../src/renderer/src/map/graph'
 import { searchGraph } from '../../src/renderer/src/map/search'
-import { environment, host, product } from './helpers'
+import { environment, host, product, REGION } from './helpers'
 
 const data: InventoryData = {
   products: [product({ id: 'p1', name: 'Web' })],
@@ -10,14 +10,14 @@ const data: InventoryData = {
     environment({
       id: 'e1',
       name: 'Prod',
-      productIds: ['p1'],
+      productId: 'p1',
       hosts: [
         { hostId: 'h1', role: 'app' },
         { hostId: 'h2', role: 'db' },
         { hostId: 'h3', role: 'app' },
       ],
     }),
-    environment({ id: 'e2', name: 'Stage', productIds: ['p1'], hosts: [{ hostId: 'h1', role: 'app' }] }),
+    environment({ id: 'e2', name: 'Stage', productId: 'p1', hosts: [{ hostId: 'h1', role: 'app' }] }),
   ],
   hosts: [
     host({ id: 'h1', label: 'api-gateway', address: '10.0.0.5', tags: ['frontend'] }),
@@ -26,10 +26,16 @@ const data: InventoryData = {
   ],
   identities: [],
   vaults: [],
+  regions: [REGION],
 }
 const graph = buildGraph({ data, tunnels: [], scope: { kind: 'all' } })
 
 describe('searchGraph', () => {
+  it("matches hosts by their region's code and display name", () => {
+    expect([...searchGraph(graph, 'test-1').matches].sort()).toEqual(['e:e1/h:h1', 'e:e1/h:h2', 'e:e1/h:h3', 'e:e2/h:h1'])
+    expect(searchGraph(graph, 'Test').matches).toContain('e:e1/h:h3')
+  })
+
   it('matches hosts by label, address and tag', () => {
     expect(searchGraph(graph, 'worker').matches).toEqual(['e:e1/h:h3'])
     expect(searchGraph(graph, '10.0.0.5').matches).toEqual(['e:e1/h:h1', 'e:e2/h:h1'])

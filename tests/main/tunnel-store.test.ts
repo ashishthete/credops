@@ -3,11 +3,11 @@ import { asTunnelInput, asTunnelPatch } from '../../src/main/ipc/validators'
 import { TunnelStore } from '../../src/main/tunnels/tunnel-store'
 import { MAX_TUNNELS, isLoopback, type TunnelInput } from '../../src/shared/tunnels'
 import { auditRows } from './vault-helpers'
-import { makeInventory } from './inventory-helpers'
+import { makeInventory, PRODUCT, REGION } from './inventory-helpers'
 
 async function setup() {
   const f = await makeInventory()
-  const host = f.hosts.create({ label: 'db-1', address: '10.0.0.5' })
+  const host = f.hosts.create({ regionId: REGION, label: 'db-1', address: '10.0.0.5' })
   const store = new TunnelStore({ db: f.db, audit: f.audit, vault: f.vault })
   const input = (over: Partial<TunnelInput> = {}): TunnelInput => ({
     label: 'db',
@@ -65,7 +65,7 @@ describe('TunnelStore', () => {
 
   it('environment must contain the host', async () => {
     const { f, host, store, input } = await setup()
-    const env = f.envs.create({ name: 'prod', color: '#aabbcc' })
+    const env = f.envs.create({ productId: PRODUCT, name: 'prod', color: '#aabbcc' })
     expect(() => store.create(input({ environmentId: env.id }))).toThrow('host is not in that environment')
     f.envs.putHost(env.id, host.id, 'db')
     expect(store.create(input({ environmentId: env.id })).environmentId).toBe(env.id)
@@ -73,8 +73,8 @@ describe('TunnelStore', () => {
 
   it('taking the host out of the environment moves its tunnels to host-only', async () => {
     const { f, host, store, input } = await setup()
-    const env = f.envs.create({ name: 'prod', color: '#aabbcc' })
-    const other = f.envs.create({ name: 'staging', color: '#aabbcc' })
+    const env = f.envs.create({ productId: PRODUCT, name: 'prod', color: '#aabbcc' })
+    const other = f.envs.create({ productId: PRODUCT, name: 'staging', color: '#aabbcc' })
     f.envs.putHost(env.id, host.id, 'db')
     f.envs.putHost(other.id, host.id, 'db')
     const inEnv = store.create(input({ label: 'in prod', environmentId: env.id }))
@@ -119,7 +119,7 @@ describe('TunnelStore', () => {
 
   it('lists by label, finds the same tunnel and lists per host', async () => {
     const { f, host, store, input } = await setup()
-    const other = f.hosts.create({ label: 'web', address: '10.0.0.6' })
+    const other = f.hosts.create({ regionId: REGION, label: 'web', address: '10.0.0.6' })
     store.create(input({ label: 'b' }))
     store.create(input({ label: 'A', hostId: other.id }))
     expect(store.list().map((t) => t.label)).toEqual(['A', 'b'])

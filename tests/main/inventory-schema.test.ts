@@ -8,11 +8,19 @@ import { makeVault } from './vault-helpers'
 
 const NOW = '2026-01-01T00:00:00.000Z'
 
+/** Hosts need a region and environments a product: `r0` and `p0`. */
+function withParents<T extends ReturnType<typeof openDatabase>>(db: T): T {
+  db.prepare("INSERT INTO regions(id, code, display_name, created_at, updated_at) VALUES ('r0', 'test-1', 'Test', ?, ?)").run(NOW, NOW)
+  db.prepare("INSERT INTO products(id, name, color, icon, created_at, updated_at) VALUES ('p0', 'Fixture', '#112233', 'boxes', ?, ?)").run(NOW, NOW)
+  return db
+}
+const testDb = () => withParents(openDatabase(':memory:'))
+
 describe('inventory schema', () => {
   it('migrates to the latest version', () => {
-    const db = openDatabase(':memory:')
+    const db = testDb()
     expect(currentVersion(db)).toBe(migrations.at(-1)!.version)
-    for (const t of ['products', 'hosts', 'environments', 'product_environments', 'environment_hosts', 'host_vaults']) {
+    for (const t of ['regions', 'products', 'hosts', 'environments', 'environment_hosts', 'host_vaults']) {
       expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(t)).toBeDefined()
     }
   })
@@ -20,16 +28,17 @@ describe('inventory schema', () => {
   it('fk fallbacks', async () => {
     const f = makeVault()
     await f.vault.setup({ password: 'correct horse', touchId: true })
+    withParents(f.db)
     const keys = new KeyStore(f.db, f.vault, f.audit, { sshDir: '/nonexistent-opsdeck-test', clipboard: { writeText: () => undefined, readText: () => '' }, defaultComment: 'tester@box' })
     const ids = new IdentityStore(f.db, f.vault, keys, f.audit)
     const ops = f.vault.createVault({ name: 'Ops', color: '#112233' })
     const identity = ids.create({ vaultId: ops.id, label: 'deploy', username: 'deploy', auth: 'agent' })
 
     f.db
-      .prepare('INSERT INTO hosts(id, label, address, identity_id, created_at, updated_at) VALUES (?,?,?,?,?,?)')
+      .prepare("INSERT INTO hosts(region_id, id, label, address, identity_id, created_at, updated_at) VALUES ('r0', ?,?,?,?,?,?)")
       .run('h1', 'web-1', '10.0.0.1', identity.id, NOW, NOW)
     f.db
-      .prepare('INSERT INTO environments(id, name, color, default_identity_id, created_at, updated_at) VALUES (?,?,?,?,?,?)')
+      .prepare("INSERT INTO environments(product_id, id, name, color, default_identity_id, created_at, updated_at) VALUES ('p0', ?,?,?,?,?,?)")
       .run('e1', 'prod', '#aabbcc', identity.id, NOW, NOW)
     f.db.prepare('INSERT INTO host_vaults(host_id, vault_id) VALUES (?, ?)').run('h1', ops.id)
 
@@ -42,16 +51,16 @@ describe('inventory schema', () => {
     expect(f.db.prepare('SELECT COUNT(*) AS n FROM host_vaults').get()).toEqual({ n: 0 })
 
     f.db
-      .prepare('INSERT INTO hosts(id, label, address, created_at, updated_at) VALUES (?,?,?,?,?)')
+      .prepare("INSERT INTO hosts(region_id, id, label, address, created_at, updated_at) VALUES ('r0', ?,?,?,?,?)")
       .run('j1', 'bastion', '10.0.0.9', NOW, NOW)
     f.db.prepare('UPDATE environments SET default_jump_host_id = ? WHERE id = ?').run('j1', 'e1')
     expect(() => f.db.prepare('DELETE FROM hosts WHERE id = ?').run('j1')).toThrow(/FOREIGN KEY/i)
   })
 
   it('role and port checks', () => {
-    const db = openDatabase(':memory:')
+    const db = testDb()
     const host = (id: string, port: number | null): void => {
-      db.prepare('INSERT INTO hosts(id, label, address, port, created_at, updated_at) VALUES (?,?,?,?,?,?)').run(
+      db.prepare("INSERT INTO hosts(region_id, id, label, address, port, created_at, updated_at) VALUES ('r0', ?,?,?,?,?,?)").run(
         id,
         id,
         'a',
@@ -61,7 +70,7 @@ describe('inventory schema', () => {
       )
     }
     host('h1', 22)
-    db.prepare('INSERT INTO environments(id, name, color, created_at, updated_at) VALUES (?,?,?,?,?)').run(
+    db.prepare("INSERT INTO environments(product_id, id, name, color, created_at, updated_at) VALUES ('p0', ?,?,?,?,?)").run(
       'e1',
       'prod',
       '#aabbcc',
@@ -76,11 +85,11 @@ describe('inventory schema', () => {
   })
 
   it('migration 4 adds keepalive, env vars and known_hosts', () => {
-    const db = openDatabase(':memory:')
+    const db = testDb()
     const cols = (db.prepare('PRAGMA table_info(hosts)').all() as { name: string }[]).map((c) => c.name)
     expect(cols).toEqual(expect.arrayContaining(['keepalive_sec', 'env_vars']))
     const insert = (id: string, keepalive: number): void => {
-      db.prepare('INSERT INTO hosts(id, label, address, keepalive_sec, created_at, updated_at) VALUES (?,?,?,?,?,?)').run(
+      db.prepare("INSERT INTO hosts(region_id, id, label, address, keepalive_sec, created_at, updated_at) VALUES ('r0', ?,?,?,?,?,?)").run(
         id,
         id,
         'a',
@@ -101,14 +110,14 @@ describe('inventory schema', () => {
   })
 
   it('migration 5 adds tunnels with checks and cascades', () => {
-    const db = openDatabase(':memory:')
+    const db = testDb()
     const cols = (db.prepare('PRAGMA table_info(tunnels)').all() as { name: string }[]).map((c) => c.name)
     expect(cols).toEqual([
       'id', 'label', 'host_id', 'environment_id', 'type', 'bind_address', 'bind_port', 'target_host',
       'target_port', 'auto_start', 'auto_reconnect', 'created_at', 'updated_at',
     ])
-    db.prepare('INSERT INTO hosts(id, label, address, created_at, updated_at) VALUES (?,?,?,?,?)').run('h1', 'web', '10.0.0.1', NOW, NOW)
-    db.prepare('INSERT INTO environments(id, name, color, created_at, updated_at) VALUES (?,?,?,?,?)').run('e1', 'prod', '#aabbcc', NOW, NOW)
+    db.prepare("INSERT INTO hosts(region_id, id, label, address, created_at, updated_at) VALUES ('r0', ?,?,?,?,?)").run('h1', 'web', '10.0.0.1', NOW, NOW)
+    db.prepare("INSERT INTO environments(product_id, id, name, color, created_at, updated_at) VALUES ('p0', ?,?,?,?,?)").run('e1', 'prod', '#aabbcc', NOW, NOW)
     const insert = db.prepare(
       `INSERT INTO tunnels(id, label, host_id, environment_id, type, bind_port, target_host, target_port, created_at, updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,?)`,
@@ -128,8 +137,8 @@ describe('migration 7 (deployments)', () => {
     (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((r) => r.name)
 
   function seed(db: ReturnType<typeof openDatabase>): void {
-    db.prepare('INSERT INTO hosts(id, label, address, created_at, updated_at) VALUES (?,?,?,?,?)').run('h1', 'web', '10.0.0.1', NOW, NOW)
-    db.prepare('INSERT INTO environments(id, name, color, created_at, updated_at) VALUES (?,?,?,?,?)').run('e1', 'prod', '#aabbcc', NOW, NOW)
+    db.prepare("INSERT INTO hosts(region_id, id, label, address, created_at, updated_at) VALUES ('r0', ?,?,?,?,?)").run('h1', 'web', '10.0.0.1', NOW, NOW)
+    db.prepare("INSERT INTO environments(product_id, id, name, color, created_at, updated_at) VALUES ('p0', ?,?,?,?,?)").run('e1', 'prod', '#aabbcc', NOW, NOW)
   }
   const dep = (db: ReturnType<typeof openDatabase>, extra = '', vals: (string | number)[] = []): void => {
     db.prepare(
@@ -138,7 +147,7 @@ describe('migration 7 (deployments)', () => {
   }
 
   it('adds deployment tables, checks, cascades and the append-only trigger', () => {
-    const db = openDatabase(':memory:')
+    const db = testDb()
     expect(migrations.some((m) => m.version === 7 && m.name === 'deployments')).toBe(true)
     expect(cols(db, 'deployments')).toEqual([
       'id', 'name', 'environment_id', 'host_id', 'repo_url', 'compose_project', 'repo_path', 'default_branch', 'compose_file', 'deploy_tag',
@@ -181,7 +190,7 @@ describe('migration 7 (deployments)', () => {
   }
 
   it('migration 7 creates services and no apps table', () => {
-    const db = openDatabase(':memory:')
+    const db = testDb()
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = 'apps'").get()).toBeUndefined()
     expect(cols(db, 'services')).toEqual([
       'id', 'environment_id', 'name', 'kind', 'position', 'description', 'deployment_id', 'compose_service', 'url',
@@ -204,14 +213,14 @@ describe('migration 7 (deployments)', () => {
   })
 
   it('a db row with compose_service violates the kind CHECK', () => {
-    const db = openDatabase(':memory:')
+    const db = testDb()
     seed(db)
     expect(() => svc(db, 'pg', 'kind, db_engine, db_address, db_port, compose_service', ['db', 'postgres', 'db', 5432, 'pg'])).toThrow(/CHECK/)
     expect(() => svc(db, 'esg', 'kind, compose_service, url_check_from, db_engine', ['service', 'esg', 'mac', 'redis'])).toThrow(/CHECK/)
   })
 
   it('compose_service is unique per checkout', () => {
-    const db = openDatabase(':memory:')
+    const db = testDb()
     seed(db)
     dep(db)
     const app = 'kind, deployment_id, compose_service, url_check_from'
@@ -223,7 +232,7 @@ describe('migration 7 (deployments)', () => {
   })
 
   it('deleting a checkout sets services.deployment_id null', () => {
-    const db = openDatabase(':memory:')
+    const db = testDb()
     seed(db)
     dep(db)
     svc(db, 'esg', 'kind, deployment_id, compose_service, url_check_from', ['service', 'd1', 'esg', 'mac'])
@@ -232,7 +241,7 @@ describe('migration 7 (deployments)', () => {
   })
 
   it('deleting a host cascades to its deployments', () => {
-    const db = openDatabase(':memory:')
+    const db = testDb()
     seed(db)
     dep(db)
     db.prepare('DELETE FROM hosts WHERE id = ?').run('h1')
@@ -263,7 +272,7 @@ describe('migration 8 (notifications)', () => {
     (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((r) => r.name)
 
   it('notifications migration adds settings, integrations and log', () => {
-    const db = openDatabase(':memory:')
+    const db = testDb()
     expect(currentVersion(db)).toBeGreaterThanOrEqual(8)
     expect(migrations.some((m) => m.version === 8 && m.name === 'notifications')).toBe(true)
     expect(cols(db, 'settings')).toEqual(['key', 'value', 'updated_at'])
@@ -273,8 +282,8 @@ describe('migration 8 (notifications)', () => {
     ])
     expect(cols(db, 'notification_log')).toEqual(['id', 'at', 'source_type', 'source_id', 'event', 'channel', 'status', 'detail'])
 
-    db.prepare('INSERT INTO environments(id, name, color, created_at, updated_at) VALUES (?,?,?,?,?)').run('e1', 'prod', '#aabbcc', NOW, NOW)
-    db.prepare('INSERT INTO environments(id, name, color, created_at, updated_at) VALUES (?,?,?,?,?)').run('e2', 'uat', '#aabbcc', NOW, NOW)
+    db.prepare("INSERT INTO environments(product_id, id, name, color, created_at, updated_at) VALUES ('p0', ?,?,?,?,?)").run('e1', 'prod', '#aabbcc', NOW, NOW)
+    db.prepare("INSERT INTO environments(product_id, id, name, color, created_at, updated_at) VALUES ('p0', ?,?,?,?,?)").run('e2', 'uat', '#aabbcc', NOW, NOW)
     const vault = db.prepare('SELECT id FROM vaults LIMIT 1').get() as { id: string } | undefined
     const vaultId = vault?.id ?? 'v1'
     if (!vault) {

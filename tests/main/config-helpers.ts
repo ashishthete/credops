@@ -3,6 +3,7 @@ import { SecretStore } from '../../src/main/vault/secret-store'
 import { SnippetStore } from '../../src/main/ops/snippet-store'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import { makeDeployFixture, type DeployFixture } from './deploy-helpers'
+import { REGION } from './inventory-helpers'
 
 /** Fixture secret values: none of them may appear anywhere in an export. */
 export const SECRET_VALUES = {
@@ -67,9 +68,9 @@ export async function makeConfigFixture(): Promise<ConfigFixture> {
   })
 
   const product = f.products.create({ name: 'Shop', color: '#3366ff', icon: 'rocket', description: 'The shop', repoUrl: 'git@example.com:shop.git' })
-  f.envs.setProducts(f.staging.id, [product.id])
+  f.envs.setProduct(f.staging.id, product.id)
   f.envs.update(f.staging.id, { defaultIdentityId: keyIdentity.id, defaultPort: 2222, domain: 'staging.example.com' })
-  const bastion = f.hosts.create({ label: 'bastion', address: 'bastion.example.com', port: 22, tags: ['edge', 'ssh'], osIcon: 'linux' })
+  const bastion = f.hosts.create({ regionId: REGION, label: 'bastion', address: 'bastion.example.com', port: 22, tags: ['edge', 'ssh'], osIcon: 'linux' })
   f.envs.putHost(f.staging.id, bastion.id, 'bastion')
   f.hosts.update(f.host.id, {
     jumpHostId: bastion.id,
