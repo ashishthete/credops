@@ -611,3 +611,41 @@ export function parseConfigFile(text: string): { ok: true; file: ConfigFile } | 
   }
   return { ok: true, file }
 }
+
+// ---- Import ----
+
+export type ImportAction = 'add' | 'update' | 'unchanged' | 'skip'
+export const IMPORT_ACTIONS: readonly ImportAction[] = ['add', 'update', 'unchanged', 'skip']
+
+/** One object in the file and what the import does with it; `id` is the local id it lands on (the file's for an add). */
+export interface ImportItem {
+  kind: keyof ConfigCounts
+  id: string
+  name: string
+  action: ImportAction
+  reason?: string
+  /** For an update: the fields that differ. */
+  fields?: string[]
+}
+
+/** A field the import leaves unset because the secret (or the object holding one) isn't here; `reason` says why when it isn't plain. */
+export interface ImportNeedsSecret {
+  kind: keyof ConfigCounts
+  name: string
+  field: string
+  reason?: string
+}
+
+export interface ImportPreview {
+  token: string
+  items: ImportItem[]
+  counts: Record<ImportAction, number>
+  needsSecret: ImportNeedsSecret[]
+  /** Existing protected environments the import changes: each name must be typed to confirm. */
+  protectedEnvironments: string[]
+}
+
+export interface ImportResult {
+  counts: Record<ImportAction, number>
+  needsSecret: ImportNeedsSecret[]
+}

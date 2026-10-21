@@ -574,6 +574,17 @@ if (!app.requestSingleInstanceLock()) {
                 : await dialog.showSaveDialog(opts)
               return res.canceled ? undefined : res.filePath
             },
+            openDialog: async () => {
+              const opts: Electron.OpenDialogOptions = { properties: ['openFile'], filters: [{ name: 'JSON', extensions: ['json'] }] }
+              const res = mainWindow
+                ? await dialog.showOpenDialog(mainWindow, opts)
+                : await dialog.showOpenDialog(opts)
+              return res.canceled ? undefined : res.filePaths[0]
+            },
+            // Open environment pages reload; running tunnels aren't restarted.
+            onImported: (environmentIds) => {
+              for (const environmentId of environmentIds) pushEvent(mainWindow, 'deploy:changed', { environmentId })
+            },
           }),
         },
         (url) => isTrustedSender(url, { devServerUrl, rendererFile }),

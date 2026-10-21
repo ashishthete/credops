@@ -35,28 +35,7 @@ export class EnvironmentStore {
 
   create(input: EnvironmentInput): EnvironmentMeta {
     this.vault.assertUnlocked()
-    const id = inTransaction(this.db, () => {
-      const name = checkName(input.name, 'environment name', MAX_NAME)
-      const color = checkColor(input.color, 'environment')
-      const identityId = this.checkIdentity(input.defaultIdentityId)
-      const port = input.defaultPort == null ? null : checkPort(input.defaultPort)
-      const jumpHostId = this.checkJump(input.defaultJumpHostId)
-      const domain = checkDomain(input.domain)
-      const productIds = this.checkProducts(input.productIds ?? [])
-      this.checkNamesFree(name, productIds)
-      const newId = randomUUID()
-      const ts = new Date().toISOString()
-      this.db
-        .prepare(
-          `INSERT INTO environments(id, name, color, protected, default_identity_id, default_port, default_jump_host_id, domain, created_at, updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?)`,
-        )
-        .run(newId, name, color, input.protected ? 1 : 0, identityId, port, jumpHostId, domain, ts, ts)
-      for (const p of productIds) {
-        this.db.prepare('INSERT INTO product_environments(product_id, environment_id) VALUES (?,?)').run(p, newId)
-      }
-      return newId
-    })
+    const id = inTransaction(this.db, () => this.insertInTx(input))
     const meta = environmentMeta(this.db, id)
     this.audit.append({
       action: 'environment.create',
@@ -72,35 +51,7 @@ export class EnvironmentStore {
   /** `undefined` keeps a field; `null` clears the three defaults so hosts inherit from the global fallback. */
   update(id: string, patch: EnvironmentPatch): EnvironmentMeta {
     this.vault.assertUnlocked()
-    const next = inTransaction(this.db, () => {
-      const before = environmentMeta(this.db, id)
-      const name = patch.name === undefined ? before.name : checkName(patch.name, 'environment name', MAX_NAME)
-      if (name !== before.name) this.checkNamesFree(name, before.productIds, id)
-      const color = patch.color === undefined ? before.color : checkColor(patch.color, 'environment')
-      const isProtected = patch.protected === undefined ? before.protected : patch.protected === true
-      const identityId = patch.defaultIdentityId === undefined ? before.defaultIdentityId : this.checkIdentity(patch.defaultIdentityId)
-      const port =
-        patch.defaultPort === undefined ? before.defaultPort : patch.defaultPort === null ? null : checkPort(patch.defaultPort)
-      const jumpHostId = patch.defaultJumpHostId === undefined ? before.defaultJumpHostId : this.checkJump(patch.defaultJumpHostId)
-      const domain = patch.domain === undefined ? before.domain : checkDomain(patch.domain)
-      const fields = [
-        name !== before.name && 'name',
-        color !== before.color && 'color',
-        isProtected !== before.protected && 'protected',
-        identityId !== before.defaultIdentityId && 'defaultIdentityId',
-        port !== before.defaultPort && 'defaultPort',
-        jumpHostId !== before.defaultJumpHostId && 'defaultJumpHostId',
-        domain !== before.domain && 'domain',
-      ].filter(Boolean)
-      if (fields.length === 0) return null
-      this.db
-        .prepare(
-          `UPDATE environments SET name = ?, color = ?, protected = ?, default_identity_id = ?, default_port = ?,
-            default_jump_host_id = ?, domain = ?, updated_at = ? WHERE id = ?`,
-        )
-        .run(name, color, isProtected ? 1 : 0, identityId, port, jumpHostId, domain, new Date().toISOString(), id)
-      return { name, fields }
-    })
+    const next = inTransaction(this.db, () => this.updateInTx(id, patch))
     if (next === null) return environmentMeta(this.db, id)
     this.audit.append({
       action: 'environment.update',
@@ -111,6 +62,87 @@ export class EnvironmentStore {
       details: { fields: next.fields },
     })
     return environmentMeta(this.db, id)
+  }
+
+  /** create() without the transaction, the unlock check or the audit: for a caller's own transaction (config import). */
+  insertInTx(input: EnvironmentInput, id: string = randomUUID()): string {
+    const name = checkName(input.name, 'environment name', MAX_NAME)
+    const color = checkColor(input.color, 'environment')
+    const identityId = this.checkIdentity(input.defaultIdentityId)
+    const port = input.defaultPort == null ? null : checkPort(input.defaultPort)
+    const jumpHostId = this.checkJump(input.defaultJumpHostId)
+    const domain = checkDomain(input.domain)
+    const productIds = this.checkProducts(input.productIds ?? [])
+    this.checkNamesFree(name, productIds)
+    const ts = new Date().toISOString()
+    this.db
+      .prepare(
+        `INSERT INTO environments(id, name, color, protected, default_identity_id, default_port, default_jump_host_id, domain, created_at, updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(id, name, color, input.protected ? 1 : 0, identityId, port, jumpHostId, domain, ts, ts)
+    for (const p of productIds) {
+      this.db.prepare('INSERT INTO product_environments(product_id, environment_id) VALUES (?,?)').run(p, id)
+    }
+    return id
+  }
+
+  /** update() without the transaction, the unlock check or the audit; null when nothing changed. */
+  updateInTx(id: string, patch: EnvironmentPatch): { name: string; fields: string[] } | null {
+    const before = environmentMeta(this.db, id)
+    const name = patch.name === undefined ? before.name : checkName(patch.name, 'environment name', MAX_NAME)
+    if (name !== before.name) this.checkNamesFree(name, before.productIds, id)
+    const color = patch.color === undefined ? before.color : checkColor(patch.color, 'environment')
+    const isProtected = patch.protected === undefined ? before.protected : patch.protected === true
+    const identityId = patch.defaultIdentityId === undefined ? before.defaultIdentityId : this.checkIdentity(patch.defaultIdentityId)
+    const port =
+      patch.defaultPort === undefined ? before.defaultPort : patch.defaultPort === null ? null : checkPort(patch.defaultPort)
+    const jumpHostId = patch.defaultJumpHostId === undefined ? before.defaultJumpHostId : this.checkJump(patch.defaultJumpHostId)
+    const domain = patch.domain === undefined ? before.domain : checkDomain(patch.domain)
+    const fields = [
+      name !== before.name && 'name',
+      color !== before.color && 'color',
+      isProtected !== before.protected && 'protected',
+      identityId !== before.defaultIdentityId && 'defaultIdentityId',
+      port !== before.defaultPort && 'defaultPort',
+      jumpHostId !== before.defaultJumpHostId && 'defaultJumpHostId',
+      domain !== before.domain && 'domain',
+    ].filter((f): f is string => typeof f === 'string')
+    if (fields.length === 0) return null
+    this.db
+      .prepare(
+        `UPDATE environments SET name = ?, color = ?, protected = ?, default_identity_id = ?, default_port = ?,
+          default_jump_host_id = ?, domain = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(name, color, isProtected ? 1 : 0, identityId, port, jumpHostId, domain, new Date().toISOString(), id)
+    return { name, fields }
+  }
+
+  /** Links the products the environment doesn't have yet (never unlinks); no transaction and no audit. Returns the added ids. */
+  addProductsInTx(id: string, productIds: string[]): string[] {
+    const before = environmentMeta(this.db, id)
+    const added = this.checkProducts(productIds).filter((p) => !before.productIds.includes(p))
+    if (added.length === 0) return []
+    this.checkNamesFree(before.name, added, id)
+    for (const p of added) this.db.prepare('INSERT INTO product_environments(product_id, environment_id) VALUES (?,?)').run(p, id)
+    this.db.prepare('UPDATE environments SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), id)
+    return added
+  }
+
+  /** putHost() without the transaction, the unlock check or the audit; false when the host already has that role. */
+  putHostInTx(id: string, hostId: string, role: HostRole): boolean {
+    if (!(HOST_ROLES as readonly string[]).includes(role)) throw new Error('host role is not allowed')
+    const before = environmentMeta(this.db, id)
+    hostRow(this.db, hostId)
+    if (before.hosts.find((h) => h.hostId === hostId)?.role === role) return false
+    this.db
+      .prepare(
+        `INSERT INTO environment_hosts(environment_id, host_id, role) VALUES (?,?,?)
+          ON CONFLICT(environment_id, host_id) DO UPDATE SET role = excluded.role`,
+      )
+      .run(id, hostId, role)
+    this.db.prepare('UPDATE environments SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), id)
+    return true
   }
 
   /** Removes the environment and its links; hosts and products stay. */

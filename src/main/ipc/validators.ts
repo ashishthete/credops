@@ -609,6 +609,9 @@ const runCommand = v.tagged('kind', {
 })
 // The typed environment name; compared exactly, so not trimmed.
 const confirmName = v.optional(v.str({ max: MAX_NAME, pattern: NO_NUL }))
+const importToken = v.str({ pattern: /^[0-9a-f]{32}$/ })
+/** One per protected environment a preview can list. */
+const MAX_TYPED_NAMES = 1000
 
 export const asRunRequest: Check<RunRequest> = v.object({
   target: runTarget,
@@ -759,4 +762,7 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'containers:follow': args(v.uuid(), nullableId, containerRef, logTail),
   'containers:unfollow': args(v.uuid()),
   'config:export': args(),
+  'config:importOpen': args(),
+  'config:importApply': args(importToken, v.object({ typedNames: v.array(v.str({ max: MAX_NAME }), MAX_TYPED_NAMES) })),
+  'config:importDiscard': args(importToken),
 }

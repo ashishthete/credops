@@ -138,7 +138,7 @@ export class TunnelStore {
    * Validates and writes a tunnel; no transaction and no audit, so a caller (the ssh-config importer)
    * can batch several inside its own `inTransaction` and call `auditCreated` after commit.
    */
-  insertInTx(input: TunnelInput): string {
+  insertInTx(input: TunnelInput, id: string = this.ids()): string {
     const f = this.validate({
       label: input.label,
       hostId: input.hostId,
@@ -153,7 +153,6 @@ export class TunnelStore {
     })
     const count = (this.db.prepare('SELECT COUNT(*) AS n FROM tunnels').get() as { n: number }).n
     if (count >= MAX_TUNNELS) throw new Error(`too many tunnels (${MAX_TUNNELS})`)
-    const id = this.ids()
     const ts = this.now().toISOString()
     this.db
       .prepare(
@@ -196,43 +195,7 @@ export class TunnelStore {
   update(id: string, patch: TunnelPatch): TunnelMeta {
     this.vault.assertUnlocked()
     const before = this.get(id)
-    const changed = inTransaction(this.db, () => {
-      const merged: Fields = {
-        label: patch.label ?? before.label,
-        hostId: patch.hostId ?? before.hostId,
-        environmentId: patch.environmentId === undefined ? before.environmentId : patch.environmentId,
-        type: patch.type ?? before.type,
-        bindAddress: patch.bindAddress ?? before.bindAddress,
-        bindPort: patch.bindPort ?? before.bindPort,
-        targetHost: patch.targetHost === undefined ? before.targetHost : patch.targetHost,
-        targetPort: patch.targetPort === undefined ? before.targetPort : patch.targetPort,
-        autoStart: patch.autoStart ?? before.autoStart,
-        autoReconnect: patch.autoReconnect ?? before.autoReconnect,
-      }
-      const f = this.validate(merged)
-      const fields = FIELDS.filter((k) => f[k] !== before[k])
-      if (fields.length === 0) return null
-      this.db
-        .prepare(
-          `UPDATE tunnels SET label = ?, host_id = ?, environment_id = ?, type = ?, bind_address = ?, bind_port = ?,
-            target_host = ?, target_port = ?, auto_start = ?, auto_reconnect = ?, updated_at = ? WHERE id = ?`,
-        )
-        .run(
-          f.label,
-          f.hostId,
-          f.environmentId,
-          f.type,
-          f.bindAddress,
-          f.bindPort,
-          f.targetHost,
-          f.targetPort,
-          f.autoStart ? 1 : 0,
-          f.autoReconnect ? 1 : 0,
-          this.now().toISOString(),
-          id,
-        )
-      return fields
-    })
+    const changed = inTransaction(this.db, () => this.updateInTx(id, patch))
     const after = this.get(id)
     if (changed === null) return after
     this.onChanged?.(before, after)
@@ -245,6 +208,49 @@ export class TunnelStore {
       details: { fields: changed },
     })
     return after
+  }
+
+  /**
+   * update() without the transaction, the unlock check, the audit or onChanged (so a running tunnel isn't
+   * restarted); null when nothing changed.
+   */
+  updateInTx(id: string, patch: TunnelPatch): (keyof Fields)[] | null {
+    const before = this.get(id)
+    const merged: Fields = {
+      label: patch.label ?? before.label,
+      hostId: patch.hostId ?? before.hostId,
+      environmentId: patch.environmentId === undefined ? before.environmentId : patch.environmentId,
+      type: patch.type ?? before.type,
+      bindAddress: patch.bindAddress ?? before.bindAddress,
+      bindPort: patch.bindPort ?? before.bindPort,
+      targetHost: patch.targetHost === undefined ? before.targetHost : patch.targetHost,
+      targetPort: patch.targetPort === undefined ? before.targetPort : patch.targetPort,
+      autoStart: patch.autoStart ?? before.autoStart,
+      autoReconnect: patch.autoReconnect ?? before.autoReconnect,
+    }
+    const f = this.validate(merged)
+    const fields = FIELDS.filter((k) => f[k] !== before[k])
+    if (fields.length === 0) return null
+    this.db
+      .prepare(
+        `UPDATE tunnels SET label = ?, host_id = ?, environment_id = ?, type = ?, bind_address = ?, bind_port = ?,
+          target_host = ?, target_port = ?, auto_start = ?, auto_reconnect = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(
+        f.label,
+        f.hostId,
+        f.environmentId,
+        f.type,
+        f.bindAddress,
+        f.bindPort,
+        f.targetHost,
+        f.targetPort,
+        f.autoStart ? 1 : 0,
+        f.autoReconnect ? 1 : 0,
+        this.now().toISOString(),
+        id,
+      )
+    return fields
   }
 
   delete(id: string): void {

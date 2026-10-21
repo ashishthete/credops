@@ -243,7 +243,7 @@ describe('config export', () => {
   it('config.export audit carries counts only', async () => {
     const f = await makeConfigFixture()
     const path = tmpPath()
-    const h = createConfigHandlers({ ...exportDeps(f), saveDialog: async () => path })
+    const h = createConfigHandlers({ ...exportDeps(f), openDialog: async () => undefined, saveDialog: async () => path })
     const res = await h['config:export']()
     expect(res).toEqual({ path, counts: { products: 1, identities: 2, hosts: 2, environments: 2, tunnels: 1, deployments: 1, services: 2 }, omitted: 0 })
     const [e] = f.audit.list({ actions: ['config.export'] })
@@ -257,7 +257,7 @@ describe('config export', () => {
 
   it('a cancelled save writes nothing and audits nothing', async () => {
     const f = await makeConfigFixture()
-    const h = createConfigHandlers({ ...exportDeps(f), saveDialog: async () => undefined })
+    const h = createConfigHandlers({ ...exportDeps(f), openDialog: async () => undefined, saveDialog: async () => undefined })
     expect(await h['config:export']()).toBeNull()
     expect(f.audit.list({ actions: ['config.export'] })).toEqual([])
   })
@@ -267,7 +267,7 @@ describe('config export', () => {
     f.vault.lock('manual')
     const path = tmpPath()
     let asked = false
-    const h = createConfigHandlers({ ...exportDeps(f), saveDialog: async () => ((asked = true), path) })
+    const h = createConfigHandlers({ ...exportDeps(f), openDialog: async () => undefined, saveDialog: async () => ((asked = true), path) })
     await expect(h['config:export']()).rejects.toThrow(VAULT_LOCKED)
     expect(asked).toBe(false)
     await expect(exportConfig(exportDeps(f), path)).rejects.toThrow(VAULT_LOCKED)

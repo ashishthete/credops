@@ -1,6 +1,6 @@
 import type { ExplainSubject, Explanation, ReleaseNotesRequest, ReleaseNotesResult } from './ai'
 import type { AuditEvent, AuditFilter, ChainVerification } from './audit'
-import type { ConfigCounts } from './config-file'
+import type { ConfigCounts, ImportPreview, ImportResult } from './config-file'
 import type {
   EnvironmentInput,
   EnvironmentMeta,
@@ -263,6 +263,11 @@ export interface IpcContract {
   /** Asks where to save with a dialog in main: the renderer never sends a path. */
   /** `omitted`: how many secret values were left out of the file. */
   'config:export': { args: []; result: { path: string; counts: ConfigCounts; omitted: number } | null }
+  /** Asks which file with a dialog in main and previews it; the file stays in main under the token. */
+  'config:importOpen': { args: []; result: ImportPreview | { errors: string[] } | null }
+  /** `typedNames`: the protected environments the user typed to confirm. */
+  'config:importApply': { args: [token: string, opts: { typedNames: string[] }]; result: ImportResult }
+  'config:importDiscard': { args: [token: string]; result: void }
 }
 
 export type Channel = keyof IpcContract
@@ -405,6 +410,9 @@ export const CHANNELS = [
   'containers:follow',
   'containers:unfollow',
   'config:export',
+  'config:importOpen',
+  'config:importApply',
+  'config:importDiscard',
 ] as const satisfies readonly Channel[]
 
 // Fails typecheck if IpcContract gains a channel that CHANNELS does not list.

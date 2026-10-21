@@ -32,22 +32,7 @@ export class ProductStore {
 
   create(input: ProductInput): ProductMeta {
     this.vault.assertUnlocked()
-    const id = inTransaction(this.db, () => {
-      const name = this.uniqueName(checkName(input.name, 'product name', MAX_NAME))
-      const color = checkColor(input.color, 'product')
-      const icon = this.checkIcon(input.icon)
-      const description = this.checkDescription(input.description ?? '')
-      const repoUrl = this.checkRepoUrl(input.repoUrl ?? null)
-      const newId = randomUUID()
-      const ts = new Date().toISOString()
-      this.db
-        .prepare(
-          `INSERT INTO products(id, name, color, icon, description, repo_url, created_at, updated_at)
-            VALUES (?,?,?,?,?,?,?,?)`,
-        )
-        .run(newId, name, color, icon, description, repoUrl, ts, ts)
-      return newId
-    })
+    const id = inTransaction(this.db, () => this.insertInTx(input))
     const meta = productMeta(this.db, id)
     this.audit.append({
       action: 'product.create',
@@ -59,31 +44,27 @@ export class ProductStore {
     return meta
   }
 
+  /** create() without the transaction, the unlock check or the audit: for a caller's own transaction (config import). */
+  insertInTx(input: ProductInput, id: string = randomUUID()): string {
+    const name = this.uniqueName(checkName(input.name, 'product name', MAX_NAME))
+    const color = checkColor(input.color, 'product')
+    const icon = this.checkIcon(input.icon)
+    const description = this.checkDescription(input.description ?? '')
+    const repoUrl = this.checkRepoUrl(input.repoUrl ?? null)
+    const ts = new Date().toISOString()
+    this.db
+      .prepare(
+        `INSERT INTO products(id, name, color, icon, description, repo_url, created_at, updated_at)
+          VALUES (?,?,?,?,?,?,?,?)`,
+      )
+      .run(id, name, color, icon, description, repoUrl, ts, ts)
+    return id
+  }
+
   /** `undefined` keeps a field; `null` clears repoUrl. */
   update(id: string, patch: ProductPatch): ProductMeta {
     this.vault.assertUnlocked()
-    const next = inTransaction(this.db, () => {
-      const before = productMeta(this.db, id)
-      const name = patch.name === undefined ? before.name : this.uniqueName(checkName(patch.name, 'product name', MAX_NAME), id)
-      const color = patch.color === undefined ? before.color : checkColor(patch.color, 'product')
-      const icon = patch.icon === undefined ? before.icon : this.checkIcon(patch.icon)
-      const description = patch.description === undefined ? before.description : this.checkDescription(patch.description)
-      const repoUrl = patch.repoUrl === undefined ? before.repoUrl : this.checkRepoUrl(patch.repoUrl)
-      const fields = [
-        name !== before.name && 'name',
-        color !== before.color && 'color',
-        icon !== before.icon && 'icon',
-        description !== before.description && 'description',
-        repoUrl !== before.repoUrl && 'repoUrl',
-      ].filter(Boolean)
-      if (fields.length === 0) return null
-      this.db
-        .prepare(
-          'UPDATE products SET name = ?, color = ?, icon = ?, description = ?, repo_url = ?, updated_at = ? WHERE id = ?',
-        )
-        .run(name, color, icon, description, repoUrl, new Date().toISOString(), id)
-      return { name, fields }
-    })
+    const next = inTransaction(this.db, () => this.updateInTx(id, patch))
     if (next === null) return productMeta(this.db, id)
     this.audit.append({
       action: 'product.update',
@@ -94,6 +75,28 @@ export class ProductStore {
       details: { fields: next.fields },
     })
     return productMeta(this.db, id)
+  }
+
+  /** update() without the transaction, the unlock check or the audit; null when nothing changed. */
+  updateInTx(id: string, patch: ProductPatch): { name: string; fields: string[] } | null {
+    const before = productMeta(this.db, id)
+    const name = patch.name === undefined ? before.name : this.uniqueName(checkName(patch.name, 'product name', MAX_NAME), id)
+    const color = patch.color === undefined ? before.color : checkColor(patch.color, 'product')
+    const icon = patch.icon === undefined ? before.icon : this.checkIcon(patch.icon)
+    const description = patch.description === undefined ? before.description : this.checkDescription(patch.description)
+    const repoUrl = patch.repoUrl === undefined ? before.repoUrl : this.checkRepoUrl(patch.repoUrl)
+    const fields = [
+      name !== before.name && 'name',
+      color !== before.color && 'color',
+      icon !== before.icon && 'icon',
+      description !== before.description && 'description',
+      repoUrl !== before.repoUrl && 'repoUrl',
+    ].filter((f): f is string => typeof f === 'string')
+    if (fields.length === 0) return null
+    this.db
+      .prepare('UPDATE products SET name = ?, color = ?, icon = ?, description = ?, repo_url = ?, updated_at = ? WHERE id = ?')
+      .run(name, color, icon, description, repoUrl, new Date().toISOString(), id)
+    return { name, fields }
   }
 
   /** Removes the product and its links only; its environments stay (unassigned if this was their last product). */

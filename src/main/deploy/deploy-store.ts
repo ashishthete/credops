@@ -179,7 +179,7 @@ export class DeployStore {
    * Validates and writes a deployment, adding its host to the environment when needed; no transaction, no audit
    * and no `onChanged`, so a caller (copy to another environment) can batch several inside its own `inTransaction`.
    */
-  insertInTx(input: DeploymentInput): string {
+  insertInTx(input: DeploymentInput, id: string = this.ids()): string {
     const f = this.validate(
       {
         name: input.name,
@@ -211,7 +211,6 @@ export class DeployStore {
     )
     const n = (this.db.prepare('SELECT COUNT(*) AS n FROM deployments').get() as { n: number }).n
     if (n >= MAX_DEPLOYMENTS) throw new Error(`too many deployments (${MAX_DEPLOYMENTS})`)
-    const id = this.ids()
     const ts = this.now().toISOString()
     this.db
       .prepare(
@@ -232,6 +231,16 @@ export class DeployStore {
   /** `undefined` keeps a field; `null` clears the nullable ones. The environment and host never change. */
   update(id: string, patch: DeploymentPatch): DeploymentMeta {
     this.vault.assertUnlocked()
+    const fields = inTransaction(this.db, () => this.updateInTx(id, patch))
+    const after = this.get(id)
+    if (fields.length === 0) return after
+    this.audit.append({ action: 'deploy.update', outcome: 'success', targetType: 'deployment', targetId: id, targetLabel: after.name, details: { fields } })
+    this.onChanged?.(after.environmentId)
+    return after
+  }
+
+  /** update() without the transaction, the unlock check, the audit or `onChanged`; the changed field names. */
+  updateInTx(id: string, patch: DeploymentPatch): (keyof Fields)[] {
     const before = this.get(id)
     if (
       (patch.environmentId !== undefined && patch.environmentId !== before.environmentId) ||
@@ -239,57 +248,50 @@ export class DeployStore {
     ) {
       throw new Error(MOVE_MESSAGE)
     }
-    const fields = inTransaction(this.db, () => {
-      const pick = <K extends keyof Fields>(k: K): Fields[K] => (patch[k as keyof DeploymentPatch] === undefined ? before[k] : (patch[k as keyof DeploymentPatch] as Fields[K]))
-      const merged: Fields = {
-        name: pick('name'),
-        environmentId: before.environmentId,
-        hostId: before.hostId,
-        repoUrl: pick('repoUrl'),
-        composeProject: pick('composeProject'),
-        repoPath: pick('repoPath'),
-        defaultBranch: pick('defaultBranch'),
-        composeFile: pick('composeFile'),
-        deployTag: pick('deployTag'),
-        position: pick('position'),
-        urls: pick('urls'),
-        healthStatus: pick('healthStatus'),
-        healthTimeoutSec: pick('healthTimeoutSec'),
-        dbBackup: pick('dbBackup'),
-        backupDir: pick('backupDir'),
-        preHook: pick('preHook'),
-        postHook: pick('postHook'),
-        buildTimeoutSec: pick('buildTimeoutSec'),
-        composeTimeoutSec: pick('composeTimeoutSec'),
-        useSudo: pick('useSudo'),
-        becomeSecretId: pick('becomeSecretId'),
-        managedEnv: pick('managedEnv'),
-        envTemplate: pick('envTemplate'),
-        vaultIds: pick('vaultIds'),
-      }
-      const f = this.validate(merged, id)
-      const changed = FIELDS.filter((k) => !same(f[k], before[k]))
-      if (changed.length === 0) return changed
-      this.db
-        .prepare(
-          `UPDATE deployments SET name = ?, repo_url = ?, compose_project = ?, repo_path = ?, default_branch = ?, compose_file = ?, deploy_tag = ?,
-            position = ?, urls = ?, health_status = ?, health_timeout_sec = ?, db_backup = ?, backup_dir = ?, pre_hook = ?,
-            post_hook = ?, build_timeout_sec = ?, compose_timeout_sec = ?, use_sudo = ?, become_secret_id = ?, managed_env = ?,
-            env_template = ?, updated_at = ? WHERE id = ?`,
-        )
-        .run(
-          f.name, f.repoUrl, f.composeProject, f.repoPath, f.defaultBranch, f.composeFile, f.deployTag, f.position, JSON.stringify(f.urls),
-          f.healthStatus, f.healthTimeoutSec, f.dbBackup ? 1 : 0, f.backupDir, f.preHook, f.postHook, f.buildTimeoutSec,
-          f.composeTimeoutSec, f.useSudo, f.becomeSecretId, f.managedEnv ? 1 : 0, f.envTemplate, this.now().toISOString(), id,
-        )
-      if (changed.includes('vaultIds')) this.setVaults(id, f.vaultIds)
-      return changed
-    })
-    const after = this.get(id)
-    if (fields.length === 0) return after
-    this.audit.append({ action: 'deploy.update', outcome: 'success', targetType: 'deployment', targetId: id, targetLabel: after.name, details: { fields } })
-    this.onChanged?.(after.environmentId)
-    return after
+    const pick = <K extends keyof Fields>(k: K): Fields[K] => (patch[k as keyof DeploymentPatch] === undefined ? before[k] : (patch[k as keyof DeploymentPatch] as Fields[K]))
+    const merged: Fields = {
+      name: pick('name'),
+      environmentId: before.environmentId,
+      hostId: before.hostId,
+      repoUrl: pick('repoUrl'),
+      composeProject: pick('composeProject'),
+      repoPath: pick('repoPath'),
+      defaultBranch: pick('defaultBranch'),
+      composeFile: pick('composeFile'),
+      deployTag: pick('deployTag'),
+      position: pick('position'),
+      urls: pick('urls'),
+      healthStatus: pick('healthStatus'),
+      healthTimeoutSec: pick('healthTimeoutSec'),
+      dbBackup: pick('dbBackup'),
+      backupDir: pick('backupDir'),
+      preHook: pick('preHook'),
+      postHook: pick('postHook'),
+      buildTimeoutSec: pick('buildTimeoutSec'),
+      composeTimeoutSec: pick('composeTimeoutSec'),
+      useSudo: pick('useSudo'),
+      becomeSecretId: pick('becomeSecretId'),
+      managedEnv: pick('managedEnv'),
+      envTemplate: pick('envTemplate'),
+      vaultIds: pick('vaultIds'),
+    }
+    const f = this.validate(merged, id)
+    const changed = FIELDS.filter((k) => !same(f[k], before[k]))
+    if (changed.length === 0) return changed
+    this.db
+      .prepare(
+        `UPDATE deployments SET name = ?, repo_url = ?, compose_project = ?, repo_path = ?, default_branch = ?, compose_file = ?, deploy_tag = ?,
+          position = ?, urls = ?, health_status = ?, health_timeout_sec = ?, db_backup = ?, backup_dir = ?, pre_hook = ?,
+          post_hook = ?, build_timeout_sec = ?, compose_timeout_sec = ?, use_sudo = ?, become_secret_id = ?, managed_env = ?,
+          env_template = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(
+        f.name, f.repoUrl, f.composeProject, f.repoPath, f.defaultBranch, f.composeFile, f.deployTag, f.position, JSON.stringify(f.urls),
+        f.healthStatus, f.healthTimeoutSec, f.dbBackup ? 1 : 0, f.backupDir, f.preHook, f.postHook, f.buildTimeoutSec,
+        f.composeTimeoutSec, f.useSudo, f.becomeSecretId, f.managedEnv ? 1 : 0, f.envTemplate, this.now().toISOString(), id,
+      )
+    if (changed.includes('vaultIds')) this.setVaults(id, f.vaultIds)
+    return changed
   }
 
   delete(id: string): void {
@@ -351,20 +353,7 @@ export class DeployStore {
     if (patch.currentVersion !== undefined && patch.currentVersion !== null && !VERSION.test(patch.currentVersion)) {
       throw new Error('version must look like v1.2.3')
     }
-    const fields = inTransaction(this.db, () => {
-      const before = this.settings(environmentId)
-      const next = {
-        versioned: patch.versioned ?? before.versioned,
-        autoRollback: patch.autoRollback ?? before.autoRollback,
-        currentVersion: patch.currentVersion === undefined ? before.currentVersion : patch.currentVersion,
-      }
-      const changed = (['versioned', 'autoRollback', 'currentVersion'] as const).filter((k) => next[k] !== before[k])
-      if (changed.length === 0) return changed
-      this.db
-        .prepare('UPDATE environments SET versioned = ?, auto_rollback = ?, current_version = ?, updated_at = ? WHERE id = ?')
-        .run(next.versioned ? 1 : 0, next.autoRollback ? 1 : 0, next.currentVersion, this.now().toISOString(), environmentId)
-      return changed
-    })
+    const fields = inTransaction(this.db, () => this.updateSettingsInTx(environmentId, patch))
     if (fields.length === 0) return this.settings(environmentId)
     this.audit.append({
       action: 'deploy.settings',
@@ -376,6 +365,22 @@ export class DeployStore {
     })
     this.onChanged?.(environmentId)
     return this.settings(environmentId)
+  }
+
+  /** updateSettings() without the transaction, the unlock check, the audit or `onChanged`; the changed field names. */
+  updateSettingsInTx(environmentId: string, patch: EnvDeploySettingsPatch): ('versioned' | 'autoRollback' | 'currentVersion')[] {
+    const before = this.settings(environmentId)
+    const next = {
+      versioned: patch.versioned ?? before.versioned,
+      autoRollback: patch.autoRollback ?? before.autoRollback,
+      currentVersion: patch.currentVersion === undefined ? before.currentVersion : patch.currentVersion,
+    }
+    const changed = (['versioned', 'autoRollback', 'currentVersion'] as const).filter((k) => next[k] !== before[k])
+    if (changed.length === 0) return changed
+    this.db
+      .prepare('UPDATE environments SET versioned = ?, auto_rollback = ?, current_version = ?, updated_at = ? WHERE id = ?')
+      .run(next.versioned ? 1 : 0, next.autoRollback ? 1 : 0, next.currentVersion, this.now().toISOString(), environmentId)
+    return changed
   }
 
   /** Always null: the compose file lives on the host. Exists so Phase 9's AI context compiles. */

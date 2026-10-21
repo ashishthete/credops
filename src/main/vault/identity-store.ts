@@ -108,6 +108,21 @@ export class IdentityStore {
 
   create(input: IdentityInput): IdentityMeta {
     this.vault.assertUnlocked()
+    const id = this.insertInTx(input)
+    const meta = toMeta(this.row(id))
+    this.audit.append({
+      action: 'identity.create',
+      outcome: 'success',
+      targetType: 'identity',
+      targetId: id,
+      targetLabel: meta.label,
+      details: { auth: meta.auth },
+    })
+    return meta
+  }
+
+  /** create() without the unlock check or the audit: for a caller's own transaction (config import). */
+  insertInTx(input: IdentityInput, id: string = randomUUID()): string {
     this.assertUsable(input.vaultId)
     const label = checkText(input.label, 'identity label', MAX_LABEL)
     const username = checkUsername(input.username)
@@ -115,7 +130,6 @@ export class IdentityStore {
     const sshKeyId = this.checkKey(input.vaultId, auth, input.sshKeyId)
     if (auth !== 'password' && input.password !== undefined) throw new Error('a password is only for password auth')
     if (auth === 'password' && input.password === undefined) throw new Error('password auth needs a password')
-    const id = randomUUID()
     const enc =
       auth === 'password' ? this.vault.seal(input.vaultId, passwordAad(id), checkPassword(input.password!)) : null
     const ts = new Date().toISOString()
@@ -126,15 +140,7 @@ export class IdentityStore {
       )
       .run(id, input.vaultId, label, username, auth, sshKeyId, enc, ts, ts)
     if (enc !== null) this.refreshKnown()
-    this.audit.append({
-      action: 'identity.create',
-      outcome: 'success',
-      targetType: 'identity',
-      targetId: id,
-      targetLabel: label,
-      details: { auth },
-    })
-    return toMeta(this.row(id))
+    return id
   }
 
   /**
@@ -143,6 +149,21 @@ export class IdentityStore {
    */
   update(id: string, patch: IdentityPatch): IdentityMeta {
     this.vault.assertUnlocked()
+    const next = this.updateInTx(id, patch)
+    if (next === null) return toMeta(this.row(id))
+    this.audit.append({
+      action: 'identity.update',
+      outcome: 'success',
+      targetType: 'identity',
+      targetId: id,
+      targetLabel: next.label,
+      details: { fields: next.fields },
+    })
+    return toMeta(this.row(id))
+  }
+
+  /** update() without the unlock check or the audit; null when nothing changed. */
+  updateInTx(id: string, patch: IdentityPatch): { label: string; fields: string[] } | null {
     const before = this.row(id)
     this.assertUsable(before.vault_id)
     const label = patch.label === undefined ? before.label : checkText(patch.label, 'identity label', MAX_LABEL)
@@ -167,8 +188,8 @@ export class IdentityStore {
       auth !== before.auth && 'auth',
       sshKeyId !== before.ssh_key_id && 'sshKeyId',
       (patch.password !== undefined || (enc === null && before.password_enc !== null)) && 'password',
-    ].filter(Boolean)
-    if (fields.length === 0) return toMeta(before)
+    ].filter((f): f is string => typeof f === 'string')
+    if (fields.length === 0) return null
     this.db
       .prepare(
         `UPDATE identities SET label = ?, username = ?, auth = ?, ssh_key_id = ?, password_enc = ?, updated_at = ?
@@ -176,15 +197,7 @@ export class IdentityStore {
       )
       .run(label, username, auth, sshKeyId, enc, new Date().toISOString(), id)
     if (enc !== before.password_enc) this.refreshKnown()
-    this.audit.append({
-      action: 'identity.update',
-      outcome: 'success',
-      targetType: 'identity',
-      targetId: id,
-      targetLabel: label,
-      details: { fields },
-    })
-    return toMeta(this.row(id))
+    return { label, fields }
   }
 
   delete(id: string): void {
