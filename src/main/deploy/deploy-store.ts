@@ -4,7 +4,6 @@ import {
   COMPOSE_FILE,
   COMPOSE_PROJECT,
   GIT_REF,
-  MAX_APPS,
   MAX_DEPLOYMENTS,
   MAX_ENV_TEMPLATE,
   MAX_HOOK,
@@ -13,9 +12,6 @@ import {
   REPO_PATH,
   VERSION,
   parseEnvTemplate,
-  type AppInput,
-  type AppMeta,
-  type AppPatch,
   type DeploymentInput,
   type DeploymentMeta,
   type DeploymentPatch,
@@ -24,7 +20,7 @@ import {
   type HealthUrl,
   type UseSudo,
 } from '../../shared/deploy'
-import { MAX_NAME } from '../../shared/inventory'
+import { MAX_NAME, REPO_URL } from '../../shared/inventory'
 import type { AuditLog } from '../audit/audit-log'
 import type { Db } from '../db/connection'
 import { inTransaction } from '../db/tx'
@@ -58,7 +54,8 @@ interface DeploymentRow {
   name: string
   environment_id: string
   host_id: string
-  app_id: string | null
+  repo_url: string | null
+  compose_project: string | null
   repo_path: string
   default_branch: string
   compose_file: string
@@ -81,22 +78,12 @@ interface DeploymentRow {
   updated_at: string
 }
 
-interface AppRow {
-  id: string
-  environment_id: string
-  host_id: string
-  name: string
-  compose_project: string | null
-  description: string
-  created_at: string
-  updated_at: string
-}
-
 type Fields = Omit<DeploymentMeta, 'id' | 'createdAt' | 'updatedAt'>
 
 const FIELDS = [
   'name',
-  'appId',
+  'repoUrl',
+  'composeProject',
   'repoPath',
   'defaultBranch',
   'composeFile',
@@ -124,7 +111,7 @@ const MOVE_MESSAGE = 'a deployment cannot move to another environment or host; r
 const REORDER_MESSAGE = "ids must be exactly the environment's deployments"
 
 /**
- * Apps, deployments and the per-environment deploy settings. Every write is audited by labels and field
+ * Deployments (checkouts) and the per-environment deploy settings. Every write is audited by labels and field
  * names only (no paths, URLs, hooks or secret values), appended after COMMIT; secrets are references.
  */
 export class DeployStore {
@@ -145,114 +132,6 @@ export class DeployStore {
     this.secrets = deps.secrets
     this.now = deps.now ?? (() => new Date())
     this.ids = deps.ids ?? randomUUID
-  }
-
-  // ---- apps ----
-
-  listApps(environmentId?: string): AppMeta[] {
-    const order = 'ORDER BY name COLLATE NOCASE, id'
-    const rows = (
-      environmentId === undefined
-        ? this.db.prepare(`SELECT * FROM apps ${order}`).all()
-        : this.db.prepare(`SELECT * FROM apps WHERE environment_id = ? ${order}`).all(environmentId)
-    ) as unknown as AppRow[]
-    return rows.map(appMeta)
-  }
-
-  getApp(id: string): AppMeta {
-    const row = this.db.prepare('SELECT * FROM apps WHERE id = ?').get(id) as AppRow | undefined
-    if (!row) throw new Error('app not found')
-    return appMeta(row)
-  }
-
-  createApp(input: AppInput): AppMeta {
-    this.vault.assertUnlocked()
-    const id = inTransaction(this.db, () => {
-      const f = this.validateApp({
-        environmentId: input.environmentId,
-        hostId: input.hostId,
-        name: input.name,
-        composeProject: input.composeProject ?? null,
-        description: input.description ?? '',
-      }, null)
-      const n = (this.db.prepare('SELECT COUNT(*) AS n FROM apps').get() as { n: number }).n
-      if (n >= MAX_APPS) throw new Error(`too many apps (${MAX_APPS})`)
-      const id = this.ids()
-      const ts = this.now().toISOString()
-      this.db
-        .prepare('INSERT INTO apps(id, environment_id, host_id, name, compose_project, description, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)')
-        .run(id, f.environmentId, f.hostId, f.name, f.composeProject, f.description, ts, ts)
-      return id
-    })
-    const app = this.getApp(id)
-    this.audit.append({
-      action: 'app.create',
-      outcome: 'success',
-      targetType: 'app',
-      targetId: id,
-      targetLabel: app.name,
-      details: this.labels(app.environmentId, app.hostId),
-    })
-    this.onChanged?.(app.environmentId)
-    return app
-  }
-
-  updateApp(id: string, patch: AppPatch): AppMeta {
-    this.vault.assertUnlocked()
-    const before = this.getApp(id)
-    const fields = inTransaction(this.db, () => {
-      const f = this.validateApp(
-        {
-          environmentId: before.environmentId,
-          hostId: before.hostId,
-          name: patch.name ?? before.name,
-          composeProject: patch.composeProject === undefined ? before.composeProject : patch.composeProject,
-          description: patch.description ?? before.description,
-        },
-        id,
-      )
-      const changed = (['name', 'composeProject', 'description'] as const).filter((k) => f[k] !== before[k])
-      if (changed.length === 0) return changed
-      this.db
-        .prepare('UPDATE apps SET name = ?, compose_project = ?, description = ?, updated_at = ? WHERE id = ?')
-        .run(f.name, f.composeProject, f.description, this.now().toISOString(), id)
-      return changed
-    })
-    const after = this.getApp(id)
-    if (fields.length === 0) return after
-    this.audit.append({ action: 'app.update', outcome: 'success', targetType: 'app', targetId: id, targetLabel: after.name, details: { fields } })
-    this.onChanged?.(after.environmentId)
-    return after
-  }
-
-  deleteApp(id: string): void {
-    this.vault.assertUnlocked()
-    const before = this.getApp(id)
-    inTransaction(this.db, () => this.db.prepare('DELETE FROM apps WHERE id = ?').run(id))
-    this.audit.append({
-      action: 'app.delete',
-      outcome: 'success',
-      targetType: 'app',
-      targetId: id,
-      targetLabel: before.name,
-      details: this.labels(before.environmentId, before.hostId),
-    })
-    this.onChanged?.(before.environmentId)
-  }
-
-  private validateApp(f: { environmentId: string; hostId: string; name: string; composeProject: string | null; description: string }, selfId: string | null) {
-    const name = checkText(f.name, 'app name', MAX_NAME)
-    this.checkMembership(f.environmentId, f.hostId)
-    const composeProject = f.composeProject === null ? null : f.composeProject.trim()
-    if (composeProject !== null && !COMPOSE_PROJECT.test(composeProject)) {
-      throw new Error('compose project must be letters, digits, dashes, dots or underscores')
-    }
-    if (typeof f.description !== 'string' || f.description.length > 1000) throw new Error('description must be at most 1000 characters')
-    const dup = this.db
-      .prepare('SELECT id FROM apps WHERE environment_id = ? AND host_id = ? AND name = ? COLLATE NOCASE')
-      .get(f.environmentId, f.hostId, name) as { id: string } | undefined
-    if (dup && dup.id !== selfId) throw new Error(`an app named "${name}" already exists on that host`)
-    return { environmentId: f.environmentId, hostId: f.hostId, name, composeProject, description: f.description }
   }
 
   // ---- deployments ----
@@ -277,54 +156,7 @@ export class DeployStore {
 
   create(input: DeploymentInput): DeploymentMeta {
     this.vault.assertUnlocked()
-    const id = inTransaction(this.db, () => {
-      const f = this.validate(
-        {
-          name: input.name,
-          environmentId: input.environmentId,
-          hostId: input.hostId,
-          appId: input.appId ?? null,
-          repoPath: input.repoPath,
-          defaultBranch: input.defaultBranch,
-          composeFile: input.composeFile ?? 'docker-compose.yml',
-          deployTag: input.deployTag,
-          position: input.position ?? this.nextPosition(input.environmentId),
-          urls: input.urls ?? [],
-          healthStatus: input.healthStatus ?? 200,
-          healthTimeoutSec: input.healthTimeoutSec ?? 60,
-          dbBackup: input.dbBackup ?? false,
-          backupDir: input.backupDir ?? null,
-          preHook: input.preHook ?? null,
-          postHook: input.postHook ?? null,
-          buildTimeoutSec: input.buildTimeoutSec ?? 300,
-          composeTimeoutSec: input.composeTimeoutSec ?? 120,
-          useSudo: input.useSudo ?? 'auto',
-          becomeSecretId: input.becomeSecretId ?? null,
-          managedEnv: input.managedEnv ?? false,
-          envTemplate: input.envTemplate ?? null,
-          vaultIds: input.vaultIds ?? [],
-        },
-        null,
-      )
-      const n = (this.db.prepare('SELECT COUNT(*) AS n FROM deployments').get() as { n: number }).n
-      if (n >= MAX_DEPLOYMENTS) throw new Error(`too many deployments (${MAX_DEPLOYMENTS})`)
-      const id = this.ids()
-      const ts = this.now().toISOString()
-      this.db
-        .prepare(
-          `INSERT INTO deployments(id, name, environment_id, host_id, app_id, repo_path, default_branch, compose_file, deploy_tag,
-            position, urls, health_status, health_timeout_sec, db_backup, backup_dir, pre_hook, post_hook, build_timeout_sec,
-            compose_timeout_sec, use_sudo, become_secret_id, managed_env, env_template, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-        )
-        .run(
-          id, f.name, f.environmentId, f.hostId, f.appId, f.repoPath, f.defaultBranch, f.composeFile, f.deployTag,
-          f.position, JSON.stringify(f.urls), f.healthStatus, f.healthTimeoutSec, f.dbBackup ? 1 : 0, f.backupDir, f.preHook,
-          f.postHook, f.buildTimeoutSec, f.composeTimeoutSec, f.useSudo, f.becomeSecretId, f.managedEnv ? 1 : 0, f.envTemplate, ts, ts,
-        )
-      this.setVaults(id, f.vaultIds)
-      return id
-    })
+    const id = inTransaction(this.db, () => this.insertInTx(input))
     const d = this.get(id)
     this.audit.append({
       action: 'deploy.create',
@@ -332,10 +164,64 @@ export class DeployStore {
       targetType: 'deployment',
       targetId: id,
       targetLabel: d.name,
-      details: this.labels(d.environmentId, d.hostId),
+      details: this.labels(d.environmentId),
     })
     this.onChanged?.(d.environmentId)
     return d
+  }
+
+  /**
+   * Validates and writes a deployment, adding its host to the environment when needed; no transaction, no audit
+   * and no `onChanged`, so a caller (copy to another environment) can batch several inside its own `inTransaction`.
+   */
+  insertInTx(input: DeploymentInput): string {
+    const f = this.validate(
+      {
+        name: input.name,
+        environmentId: input.environmentId,
+        hostId: input.hostId,
+        repoUrl: input.repoUrl ?? null,
+        composeProject: input.composeProject ?? null,
+        repoPath: input.repoPath,
+        defaultBranch: input.defaultBranch,
+        composeFile: input.composeFile ?? 'docker-compose.yml',
+        deployTag: input.deployTag,
+        position: input.position ?? this.nextPosition(input.environmentId),
+        urls: input.urls ?? [],
+        healthStatus: input.healthStatus ?? 200,
+        healthTimeoutSec: input.healthTimeoutSec ?? 60,
+        dbBackup: input.dbBackup ?? false,
+        backupDir: input.backupDir ?? null,
+        preHook: input.preHook ?? null,
+        postHook: input.postHook ?? null,
+        buildTimeoutSec: input.buildTimeoutSec ?? 300,
+        composeTimeoutSec: input.composeTimeoutSec ?? 120,
+        useSudo: input.useSudo ?? 'auto',
+        becomeSecretId: input.becomeSecretId ?? null,
+        managedEnv: input.managedEnv ?? false,
+        envTemplate: input.envTemplate ?? null,
+        vaultIds: input.vaultIds ?? [],
+      },
+      null,
+    )
+    const n = (this.db.prepare('SELECT COUNT(*) AS n FROM deployments').get() as { n: number }).n
+    if (n >= MAX_DEPLOYMENTS) throw new Error(`too many deployments (${MAX_DEPLOYMENTS})`)
+    const id = this.ids()
+    const ts = this.now().toISOString()
+    this.db
+      .prepare(
+        `INSERT INTO deployments(id, name, environment_id, host_id, repo_url, compose_project, repo_path, default_branch, compose_file, deploy_tag,
+          position, urls, health_status, health_timeout_sec, db_backup, backup_dir, pre_hook, post_hook, build_timeout_sec,
+          compose_timeout_sec, use_sudo, become_secret_id, managed_env, env_template, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(
+        id, f.name, f.environmentId, f.hostId, f.repoUrl, f.composeProject, f.repoPath, f.defaultBranch, f.composeFile, f.deployTag,
+        f.position, JSON.stringify(f.urls), f.healthStatus, f.healthTimeoutSec, f.dbBackup ? 1 : 0, f.backupDir, f.preHook,
+        f.postHook, f.buildTimeoutSec, f.composeTimeoutSec, f.useSudo, f.becomeSecretId, f.managedEnv ? 1 : 0, f.envTemplate, ts, ts,
+      )
+    this.setVaults(id, f.vaultIds)
+    return id
   }
 
   /** `undefined` keeps a field; `null` clears the nullable ones. The environment and host never change. */
@@ -354,7 +240,8 @@ export class DeployStore {
         name: pick('name'),
         environmentId: before.environmentId,
         hostId: before.hostId,
-        appId: pick('appId'),
+        repoUrl: pick('repoUrl'),
+        composeProject: pick('composeProject'),
         repoPath: pick('repoPath'),
         defaultBranch: pick('defaultBranch'),
         composeFile: pick('composeFile'),
@@ -380,13 +267,13 @@ export class DeployStore {
       if (changed.length === 0) return changed
       this.db
         .prepare(
-          `UPDATE deployments SET name = ?, app_id = ?, repo_path = ?, default_branch = ?, compose_file = ?, deploy_tag = ?,
+          `UPDATE deployments SET name = ?, repo_url = ?, compose_project = ?, repo_path = ?, default_branch = ?, compose_file = ?, deploy_tag = ?,
             position = ?, urls = ?, health_status = ?, health_timeout_sec = ?, db_backup = ?, backup_dir = ?, pre_hook = ?,
             post_hook = ?, build_timeout_sec = ?, compose_timeout_sec = ?, use_sudo = ?, become_secret_id = ?, managed_env = ?,
             env_template = ?, updated_at = ? WHERE id = ?`,
         )
         .run(
-          f.name, f.appId, f.repoPath, f.defaultBranch, f.composeFile, f.deployTag, f.position, JSON.stringify(f.urls),
+          f.name, f.repoUrl, f.composeProject, f.repoPath, f.defaultBranch, f.composeFile, f.deployTag, f.position, JSON.stringify(f.urls),
           f.healthStatus, f.healthTimeoutSec, f.dbBackup ? 1 : 0, f.backupDir, f.preHook, f.postHook, f.buildTimeoutSec,
           f.composeTimeoutSec, f.useSudo, f.becomeSecretId, f.managedEnv ? 1 : 0, f.envTemplate, this.now().toISOString(), id,
         )
@@ -410,7 +297,7 @@ export class DeployStore {
       targetType: 'deployment',
       targetId: id,
       targetLabel: before.name,
-      details: this.labels(before.environmentId, before.hostId),
+      details: this.labels(before.environmentId),
     })
     this.onChanged?.(before.environmentId)
   }
@@ -511,7 +398,8 @@ export class DeployStore {
       name: r.name,
       environmentId: r.environment_id,
       hostId: r.host_id,
-      appId: r.app_id,
+      repoUrl: r.repo_url,
+      composeProject: r.compose_project,
       repoPath: r.repo_path,
       defaultBranch: r.default_branch,
       composeFile: r.compose_file,
@@ -551,30 +439,25 @@ export class DeployStore {
     return (this.db.prepare('SELECT name FROM environments WHERE id = ?').get(environmentId) as { name: string } | undefined)?.name ?? ''
   }
 
-  private labels(environmentId: string, hostId: string): { environment: string; host: string } {
-    const host = (this.db.prepare('SELECT label FROM hosts WHERE id = ?').get(hostId) as { label: string } | undefined)?.label ?? ''
-    return { environment: this.envName(environmentId), host }
+  /** Audit details name the environment only: host ids and labels never reach the audit log. */
+  private labels(environmentId: string): { environment: string } {
+    return { environment: this.envName(environmentId) }
   }
 
-  private checkMembership(environmentId: string, hostId: string): void {
+  /** A checkout's host joins its environment as an `app` host when it isn't a member yet; a member keeps its role. */
+  private ensureMembership(environmentId: string, hostId: string): void {
     if (!this.db.prepare('SELECT 1 FROM hosts WHERE id = ?').get(hostId)) throw new Error('host not found')
     if (!this.db.prepare('SELECT 1 FROM environments WHERE id = ?').get(environmentId)) throw new Error('environment not found')
-    if (!this.db.prepare('SELECT 1 FROM environment_hosts WHERE environment_id = ? AND host_id = ?').get(environmentId, hostId)) {
-      throw new Error("host isn't in that environment")
-    }
+    this.db.prepare("INSERT OR IGNORE INTO environment_hosts(environment_id, host_id, role) VALUES (?, ?, 'app')").run(environmentId, hostId)
   }
 
-  /** Checks every rule on a fully merged deployment. Messages name the rule, never the value. */
+  /**
+   * Checks every rule on a fully merged deployment. Messages name the rule, never the value. Runs inside the write
+   * transaction: it adds the host to the environment, which a later failing rule rolls back.
+   */
   private validate(f: Fields, selfId: string | null): Fields {
     const name = checkText(f.name, 'deployment name', MAX_NAME)
-    this.checkMembership(f.environmentId, f.hostId)
-    if (f.appId !== null) {
-      const app = this.db.prepare('SELECT host_id, environment_id FROM apps WHERE id = ?').get(f.appId) as
-        | { host_id: string; environment_id: string }
-        | undefined
-      if (!app || app.host_id !== f.hostId) throw new Error("app isn't on that host")
-      if (app.environment_id !== f.environmentId) throw new Error("app isn't in that environment")
-    }
+    this.ensureMembership(f.environmentId, f.hostId)
     const dup = this.db
       .prepare('SELECT id FROM deployments WHERE environment_id = ? AND name = ? COLLATE NOCASE')
       .get(f.environmentId, name) as { id: string } | undefined
@@ -585,6 +468,16 @@ export class DeployStore {
     if (typeof f.defaultBranch !== 'string' || !GIT_REF.test(f.defaultBranch)) throw new Error("branch isn't a valid git branch name")
     if (typeof f.deployTag !== 'string' || !GIT_REF.test(f.deployTag)) throw new Error("deploy tag isn't a valid git tag name")
     if (typeof f.composeFile !== 'string' || !COMPOSE_FILE.test(f.composeFile)) throw new Error('compose file must be a relative path inside the repo')
+    const repoUrl = this.checkBlankable(
+      f.repoUrl,
+      'repository URL must be an http(s), ssh:// or git@ URL without spaces',
+      (u) => u.length <= MAX_URL && REPO_URL.test(u),
+    )
+    const composeProject = this.checkBlankable(
+      f.composeProject,
+      'compose project must be letters, digits, dashes, dots or underscores',
+      (p) => COMPOSE_PROJECT.test(p),
+    )
 
     const urls = this.checkUrls(f.urls)
     this.checkInt(f.healthStatus, 100, 599, 'health status')
@@ -627,7 +520,8 @@ export class DeployStore {
       name,
       environmentId: f.environmentId,
       hostId: f.hostId,
-      appId: f.appId,
+      repoUrl,
+      composeProject,
       repoPath: f.repoPath,
       defaultBranch: f.defaultBranch,
       composeFile: f.composeFile,
@@ -648,6 +542,13 @@ export class DeployStore {
       envTemplate,
       vaultIds,
     }
+  }
+
+  /** A blank string clears the field. `rule` names the rule, never the value. */
+  private checkBlankable(raw: string | null, rule: string, ok: (v: string) => boolean): string | null {
+    if (raw === null || raw === undefined) return null
+    if (typeof raw !== 'string' || (raw.trim() !== '' && !ok(raw))) throw new Error(rule)
+    return raw.trim() === '' ? null : raw
   }
 
   private checkInt(n: number, min: number, max: number, what: string): void {
@@ -676,18 +577,5 @@ export class DeployStore {
       if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || parsed.username !== '' || parsed.password !== '') throw bad
       return { url: u.url, from: u.from }
     })
-  }
-}
-
-function appMeta(r: AppRow): AppMeta {
-  return {
-    id: r.id,
-    environmentId: r.environment_id,
-    hostId: r.host_id,
-    name: r.name,
-    composeProject: r.compose_project,
-    description: r.description,
-    createdAt: r.created_at,
-    updatedAt: r.updated_at,
   }
 }

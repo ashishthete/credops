@@ -1,4 +1,5 @@
 import type { AuditEvent, AuditFilter, ChainVerification } from './audit'
+import type { ConfigCounts } from './config-file'
 import type {
   AccessTarget,
   GrantScope,
@@ -45,9 +46,6 @@ import type {
   SnippetMeta,
 } from './ops'
 import type {
-  AppInput,
-  AppMeta,
-  AppPatch,
   DeploymentInput,
   DeploymentMeta,
   Tooling,
@@ -62,6 +60,7 @@ import type {
   ReleaseSummary,
   RunEvent as DeployRunEvent,
 } from './deploy'
+import type { CopyServicesRequest, CopyServicesResult, ServiceInput, ServiceMeta, ServicePatch, ServiceUpdateResult } from './services'
 import type { TunnelEvent, TunnelInput, TunnelMeta, TunnelPatch, TunnelRuntime, TunnelStats } from './tunnels'
 import type {
   KnownHostMeta,
@@ -191,10 +190,6 @@ export interface IpcContract {
   'tunnel:start': { args: [id: string]; result: TunnelRuntime }
   'tunnel:stop': { args: [id: string]; result: void }
   'tunnel:status': { args: []; result: TunnelRuntime[] }
-  'app:list': { args: [environmentId?: string]; result: AppMeta[] }
-  'app:create': { args: [input: AppInput]; result: AppMeta }
-  'app:update': { args: [id: string, patch: AppPatch]; result: AppMeta }
-  'app:delete': { args: [id: string]; result: void }
   'deploy:list': { args: [environmentId?: string]; result: DeploymentMeta[] }
   'deploy:create': { args: [input: DeploymentInput]; result: DeploymentMeta }
   // The environment and host are fixed at creation: a patch that names either is rejected.
@@ -252,6 +247,22 @@ export interface IpcContract {
   'hub:freeze': { args: [environmentId: string, reason: string, hours: number | null]; result: HubEnvLock }
   // typedName is the exact environment name, needed to lift someone else's freeze on a protected environment.
   'hub:unfreeze': { args: [environmentId: string, typedName: string | null]; result: void }
+  // Writes emit `deploy:changed`. `tunnelRestartNeeded` says a running db tunnel still uses the old target.
+  'service:list': { args: [environmentId?: string]; result: ServiceMeta[] }
+  'service:create': { args: [input: ServiceInput]; result: ServiceMeta }
+  'service:update': { args: [id: string, patch: ServicePatch]; result: ServiceUpdateResult }
+  'service:delete': { args: [id: string, opts: { deleteTunnel: boolean }]; result: void }
+  'service:reorder': { args: [environmentId: string, ids: string[]]; result: void }
+  // One transaction and one `services.copy` audit; name conflicts come back in `skipped`.
+  'service:copy': { args: [req: CopyServicesRequest]; result: CopyServicesResult }
+  // A kind `service` with a checkout: `docker compose logs -f` streamed as `containers:logs`; stop it with `containers:unfollow`.
+  'service:logs': { args: [id: string, tail: number]; result: string }
+  // Opens the stored URL in the browser; refused when the service has none.
+  'service:open': { args: [id: string]; result: void }
+  // A db service's Phase 5 tunnel: open creates it on first use and starts it; sync applies a changed route.
+  'service:tunnelOpen': { args: [id: string]; result: TunnelRuntime }
+  'service:tunnelClose': { args: [id: string]; result: void }
+  'service:tunnelSync': { args: [id: string]; result: TunnelRuntime | null }
   'snippets:list': { args: []; result: SnippetMeta[] }
   'snippets:create': { args: [input: SnippetInput]; result: SnippetMeta }
   'snippets:update': { args: [id: string, input: SnippetInput]; result: SnippetMeta }
@@ -273,6 +284,8 @@ export interface IpcContract {
   // Returns the followId; lines arrive as containers:logs events.
   'containers:follow': { args: [hostId: string, environmentId: string | null, ref: string, tail: number]; result: string }
   'containers:unfollow': { args: [followId: string]; result: void }
+  /** Asks where to save with a dialog in main: the renderer never sends a path. */
+  'config:export': { args: []; result: { path: string; counts: ConfigCounts } | null }
 }
 
 export type Channel = keyof IpcContract
@@ -353,10 +366,6 @@ export const CHANNELS = [
   'tunnel:start',
   'tunnel:stop',
   'tunnel:status',
-  'app:list',
-  'app:create',
-  'app:update',
-  'app:delete',
   'deploy:list',
   'deploy:create',
   'deploy:update',
@@ -408,6 +417,17 @@ export const CHANNELS = [
   'hub:locks',
   'hub:freeze',
   'hub:unfreeze',
+  'service:list',
+  'service:create',
+  'service:update',
+  'service:delete',
+  'service:reorder',
+  'service:copy',
+  'service:logs',
+  'service:open',
+  'service:tunnelOpen',
+  'service:tunnelClose',
+  'service:tunnelSync',
   'snippets:list',
   'snippets:create',
   'snippets:update',
@@ -423,6 +443,7 @@ export const CHANNELS = [
   'containers:logs',
   'containers:follow',
   'containers:unfollow',
+  'config:export',
 ] as const satisfies readonly Channel[]
 
 // Fails typecheck if IpcContract gains a channel that CHANNELS does not list.

@@ -20,14 +20,15 @@ describe('DeployStore', () => {
       useSudo: 'auto',
       dbBackup: false,
       managedEnv: false,
-      appId: null,
+      repoUrl: null,
+      composeProject: null,
       vaultIds: [],
       position: 0,
     })
     expect(f.deploys.get(d.id)).toEqual(d)
     expect(f.deploys.list(f.staging.id)).toEqual([d])
     const [e] = f.audit.list({ actions: ['deploy.create'] })
-    expect(e).toMatchObject({ targetType: 'deployment', targetId: d.id, targetLabel: 'api', details: { environment: 'staging', host: 'app1' } })
+    expect(e).toMatchObject({ targetType: 'deployment', targetId: d.id, targetLabel: 'api', details: { environment: 'staging' } })
     expect(auditRows(f.db)).not.toContain('/srv')
     expect(f.changed).toEqual([f.staging.id])
   })
@@ -64,27 +65,75 @@ describe('DeployStore', () => {
     expect(f.deploys.list()).toEqual([])
   })
 
-  it('checks the host is in the environment and the app is on the host', async () => {
+  it('a checkout on a non-member host adds it as an app host', async () => {
     const f = await makeDeployFixture()
     const other = f.hosts.create({ label: 'lonely', address: '10.0.0.8' })
-    expect(() => f.deploys.create(f.input({ hostId: other.id }))).toThrow("host isn't in that environment")
-    const other2 = f.hosts.create({ label: 'app2', address: '10.0.0.9' })
-    f.envs.putHost(f.staging.id, other2.id, 'app')
-    const app = f.deploys.createApp({ environmentId: f.staging.id, hostId: other2.id, name: 'shop' })
-    expect(() => f.deploys.create(f.input({ appId: app.id }))).toThrow("app isn't on that host")
-    expect(f.deploys.create(f.input({ appId: app.id, hostId: other2.id })).appId).toBe(app.id)
-    f.deploys.deleteApp(app.id)
-    expect(f.deploys.list()[0].appId).toBeNull()
+    const role = (hostId: string) =>
+      (f.db.prepare('SELECT role FROM environment_hosts WHERE environment_id = ? AND host_id = ?').get(f.staging.id, hostId) as { role: string } | undefined)?.role
+    expect(role(other.id)).toBeUndefined()
+    const d = f.deploys.create(f.input({ hostId: other.id }))
+    expect(d.hostId).toBe(other.id)
+    expect(role(other.id)).toBe('app')
+    // An existing membership keeps its role.
+    f.envs.putHost(f.staging.id, f.host.id, 'db')
+    f.deploys.create(f.input({ name: 'worker' }))
+    expect(role(f.host.id)).toBe('db')
+    // Removed after the checkout was saved: an update puts it back.
+    f.db.prepare('DELETE FROM environment_hosts WHERE environment_id = ? AND host_id = ?').run(f.staging.id, other.id)
+    f.deploys.update(d.id, { name: 'api2' })
+    expect(role(other.id)).toBe('app')
+    // A failed save adds nothing.
+    const third = f.hosts.create({ label: 'third', address: '10.0.0.10' })
+    expect(() => f.deploys.create(f.input({ name: 'bad', hostId: third.id, repoPath: 'relative' }))).toThrow()
+    expect(role(third.id)).toBeUndefined()
+    expect(() => f.deploys.create(f.input({ hostId: '00000000-0000-4000-8000-000000000000' }))).toThrow('host not found')
   })
 
-  it("rejects an app from another environment on the same host", async () => {
+  it('checkout stores repoUrl and composeProject', async () => {
     const f = await makeDeployFixture()
-    const prodApp = f.deploys.createApp({ environmentId: f.prod.id, hostId: f.host.id, name: 'shop' })
-    expect(() => f.deploys.create(f.input({ appId: prodApp.id }))).toThrow("app isn't in that environment")
+    const d = f.deploys.create(f.input({ repoUrl: 'git@github.com:acme/webapp.git', composeProject: 'webapp_stg' }))
+    expect(d).toMatchObject({ repoUrl: 'git@github.com:acme/webapp.git', composeProject: 'webapp_stg' })
+    expect(f.deploys.get(d.id)).toEqual(d)
+    const u = f.deploys.update(d.id, { repoUrl: 'https://github.com/acme/webapp', composeProject: null })
+    expect(u).toMatchObject({ repoUrl: 'https://github.com/acme/webapp', composeProject: null })
+    const [e] = f.audit.list({ actions: ['deploy.update'] })
+    expect((e.details as { fields: string[] }).fields.sort()).toEqual(['composeProject', 'repoUrl'])
+    expect(f.deploys.update(d.id, { repoUrl: 'ssh://git@host/acme.git' }).repoUrl).toBe('ssh://git@host/acme.git')
+    expect(f.deploys.update(d.id, { repoUrl: '  ' }).repoUrl).toBeNull()
+    expect(auditRows(f.db)).not.toContain('github.com')
+  })
+
+  it('bad repoUrl and composeProject are refused', async () => {
+    const f = await makeDeployFixture()
+    const bad: [Partial<ReturnType<typeof f.input>>, string][] = [
+      [{ repoUrl: 'ftp://x/y' }, 'repository URL must be an http(s), ssh:// or git@ URL without spaces'],
+      [{ repoUrl: 'git@host:a b' }, 'repository URL must be an http(s), ssh:// or git@ URL without spaces'],
+      [{ repoUrl: 'https://' + 'x'.repeat(2048) }, 'repository URL must be an http(s), ssh:// or git@ URL without spaces'],
+      [{ composeProject: '--rm' }, 'compose project must be letters, digits, dashes, dots or underscores'],
+      [{ composeProject: 'x;rm' }, 'compose project must be letters, digits, dashes, dots or underscores'],
+      [{ composeProject: 'a b' }, 'compose project must be letters, digits, dashes, dots or underscores'],
+    ]
+    for (const [over, msg] of bad) expect(() => f.deploys.create(f.input(over)), JSON.stringify(over).slice(0, 60)).toThrow(msg)
+    expect(f.deploys.list()).toEqual([])
     const d = f.deploys.create(f.input())
-    expect(() => f.deploys.update(d.id, { appId: prodApp.id })).toThrow("app isn't in that environment")
-    const ok = f.deploys.createApp({ environmentId: f.staging.id, hostId: f.host.id, name: 'shop' })
-    expect(f.deploys.update(d.id, { appId: ok.id }).appId).toBe(ok.id)
+    expect(() => f.deploys.update(d.id, { composeProject: '-p' })).toThrow('compose project must be letters')
+  })
+
+  it('deploy.* audit details carry the environment name and no host label', async () => {
+    const f = await makeDeployFixture()
+    const d = f.deploys.create(f.input())
+    f.deploys.update(d.id, { name: 'api2' })
+    f.deploys.reorder(f.staging.id, [d.id])
+    f.deploys.delete(d.id)
+    const evs = f.audit.list({ actions: ['deploy.create', 'deploy.update', 'deploy.delete'] })
+    expect(evs.map((e) => e.action).sort()).toEqual(['deploy.create', 'deploy.delete', 'deploy.update'])
+    for (const e of evs) {
+      expect(e.details).not.toHaveProperty('host')
+      expect(JSON.stringify(e.details)).not.toContain('app1')
+      expect(JSON.stringify(e.details)).not.toContain(f.host.id)
+    }
+    expect(evs.find((e) => e.action === 'deploy.create')!.details).toEqual({ environment: 'staging' })
+    expect(evs.find((e) => e.action === 'deploy.delete')!.details).toEqual({ environment: 'staging' })
   })
 
   it('vault order is not a change and is not audited', async () => {
@@ -193,7 +242,7 @@ describe('DeployStore', () => {
     const d = f.deploys.create(f.input())
     f.deploys.delete(d.id)
     expect(f.deploys.list()).toEqual([])
-    expect(f.audit.list({ actions: ['deploy.delete'] })[0]).toMatchObject({ targetLabel: 'api', details: { environment: 'staging', host: 'app1' } })
+    expect(f.audit.list({ actions: ['deploy.delete'] })[0]).toMatchObject({ targetLabel: 'api', details: { environment: 'staging' } })
     expect(() => f.deploys.get(d.id)).toThrow('deployment not found')
   })
 
@@ -226,24 +275,6 @@ describe('DeployStore', () => {
     expect(f.changed).toContain(f.staging.id)
   })
 
-  it('apps: create, update, delete, unique per host and audited', async () => {
-    const f = await makeDeployFixture()
-    const a = f.deploys.createApp({ environmentId: f.staging.id, hostId: f.host.id, name: 'shop', composeProject: 'shop_stg', description: 'the shop' })
-    expect(f.deploys.listApps(f.staging.id)).toEqual([a])
-    expect(f.deploys.listApps(f.prod.id)).toEqual([])
-    expect(() => f.deploys.createApp({ environmentId: f.staging.id, hostId: f.host.id, name: 'SHOP' })).toThrow(
-      'an app named "SHOP" already exists on that host',
-    )
-    expect(() => f.deploys.createApp({ environmentId: f.staging.id, hostId: f.host.id, name: 'x', composeProject: 'bad name;' })).toThrow(
-      'compose project must be letters, digits, dashes, dots or underscores',
-    )
-    const u = f.deploys.updateApp(a.id, { composeProject: null, description: 'd2' })
-    expect(u).toMatchObject({ composeProject: null, description: 'd2' })
-    f.deploys.deleteApp(a.id)
-    expect(f.deploys.listApps()).toEqual([])
-    expect(f.audit.list({ actions: ['app.create', 'app.update', 'app.delete'] })).toHaveLength(3)
-  })
-
   it('composeSnippet is always null', async () => {
     const f = await makeDeployFixture()
     expect(f.deploys.composeSnippet('x')).toBeNull()
@@ -259,7 +290,6 @@ describe('DeployStore', () => {
     expect(() => f.deploys.delete(d.id)).toThrow(/locked/i)
     expect(() => f.deploys.reorder(f.staging.id, [d.id])).toThrow(/locked/i)
     expect(() => f.deploys.updateSettings(f.staging.id, { versioned: true })).toThrow(/locked/i)
-    expect(() => f.deploys.createApp({ environmentId: f.staging.id, hostId: f.host.id, name: 'a' })).toThrow(/locked/i)
   })
 
   it('IPC validators reject bad shapes naming the path', async () => {

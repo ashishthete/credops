@@ -1,4 +1,6 @@
-import { BACKUP_DIR, COMPOSE_FILE, GIT_REF, MAX_URL, REPO_PATH, RUNS_SUBDIR, VERSION } from '../../shared/deploy'
+import { BACKUP_DIR, COMPOSE_FILE, COMPOSE_PROJECT, GIT_REF, MAX_URL, REPO_PATH, RUNS_SUBDIR, VERSION } from '../../shared/deploy'
+import { MAX_SERVICES } from '../../shared/services'
+import { checkComposeServices, composeCommand } from './compose'
 import { ALIAS, B64, b64, lockJson, need, sanitizeIdent } from './quote'
 import type { DeployPlan, PlanDeployment, PlanHost } from './runner'
 
@@ -11,7 +13,9 @@ export type { SshConfigOptions } from './ssh-files'
  *
  * Injection rules. Every user-derived value is either (a) rejected here unless it matches the shared
  * validators, or (b) carried as base64 (hooks, lock content). Shell commands then read values only
- * through `{{ d.<field> | quote }}`; task names never carry user text.
+ * through `{{ d.<field> | quote }}`, except compose command lines and commit bases, which are built here
+ * from validated values: compose lines shJoin-quoted (none can hold a brace), commit bases SHA-checked hex
+ * inserted unquoted. Task names never carry user text.
  */
 
 type Task = Record<string, unknown>
@@ -61,6 +65,16 @@ function dVars(d: PlanDeployment, kind: DeployPlan['kind']): Record<string, unkn
     need(u.from === 'host' || u.from === 'mac', 'health source')
   }
   if (kind === 'rollback') need(d.previousCommit !== null && SHA.test(d.previousCommit), 'previous commit')
+  need(d.composeProject === null || COMPOSE_PROJECT.test(d.composeProject), 'compose project')
+  if (d.services !== null) {
+    need(Array.isArray(d.services) && d.services.length >= 1 && d.services.length <= MAX_SERVICES, 'service list')
+    checkComposeServices(d.services)
+  }
+  const bases = d.commitBases
+  need(
+    typeof bases?.tag === 'boolean' && Array.isArray(bases.shas) && bases.shas.length <= MAX_SERVICES && bases.shas.every((x) => typeof x === 'string' && SHA.test(x)),
+    'commit bases',
+  )
   return {
     run: d.runId,
     name: sanitizeIdent(d.name) || 'deployment',
@@ -256,10 +270,16 @@ function hookTask(kind: 'pre_hook' | 'post_hook', d: PlanDeployment): Task {
   })
 }
 
+const composeOf = (d: PlanDeployment) => ({ composeFile: d.composeFile, composeProject: d.composeProject })
+
+/**
+ * Build and up, for the whole checkout or for its selected services; a rollback uses the same form as the
+ * release. A partial up takes --no-deps, so services that were not selected are never recreated.
+ */
 function composeTask(kind: 'build' | 'up' | 'rb_build' | 'rb_up', d: PlanDeployment): Task {
-  const verb = kind.endsWith('build') ? 'build' : 'up -d'
-  // docker compose reads the project's .env itself; the file is never sourced.
-  const body = `docker compose -f {{ d.compose | quote }} ${verb}`
+  const sub = kind.endsWith('build') ? ['build'] : d.services !== null ? ['up', '-d', '--no-deps'] : ['up', '-d']
+  // docker compose reads the project's .env itself; the file is never sourced. Become is Ansible's: no sudo here.
+  const body = composeCommand(composeOf(d), sub, d.services ?? [])
   return sh(nm(kind, d), kind, runOf(d), streamed(kind, body), {
     timeout: kind.endsWith('build') ? clampSec(d.buildTimeoutSec, 'build timeout') : clampSec(d.composeTimeoutSec, 'compose timeout'),
     chdir: IN_REPO,
@@ -427,7 +447,13 @@ function preflightTasks(plan: DeployPlan, d: PlanDeployment): Task[] {
       'if git show-ref --verify --quiet "refs/remotes/origin/$B"; then v=1; else v=0; fi',
       'echo "OD-PF branch fetched=$f exists=$v"',
     ].join('\n')),
-    pf(d, 'compose', ['C={{ d.compose | quote }}', 'if [ -f "$C" ]; then echo "OD-PF compose exists=1"; else echo "OD-PF compose exists=0"; fi'].join('\n')),
+    pf(d, 'compose', [
+      'C={{ d.compose | quote }}',
+      'if [ -f "$C" ]; then',
+      `  s=$(${composeCommand(composeOf(d), ['config', '--services'], [], { sudo: 'auto' })} 2>/dev/null | base64 | tr -d '\\n')`,
+      '  echo "OD-PF compose exists=1 services_b64=$s"',
+      'else echo "OD-PF compose exists=0"; fi',
+    ].join('\n')),
     pf(d, 'disk', ['a=$(df -Pk . | awk \'NR==2 {print $4}\')', 'echo "OD-PF disk avail_kb=${a:-0}"'].join('\n')),
     pf(d, 'tag', [
       'T={{ d.tag | quote }}',
@@ -435,21 +461,59 @@ function preflightTasks(plan: DeployPlan, d: PlanDeployment): Task[] {
       'if [ "$ok" = 0 ]; then echo "OD-PF tag exists=unknown commit="; elif [ -n "$c" ]; then echo "OD-PF tag exists=1 commit=$c"; else echo "OD-PF tag exists=0 commit="; fi',
     ].join('\n')),
   )
+  // Partial checkouts only: --no-deps won't start what the selection depends on, so preflight warns.
+  if (d.services !== null)
+    out.push(pf(d, 'deps', [
+      `c=$(${composeCommand(composeOf(d), ['config', '--no-interpolate', '--format', 'json'], [], { sudo: 'auto' })} 2>/dev/null | base64 | tr -d '\\n')`,
+      `p=$(${composeCommand(composeOf(d), ['ps', '--status', 'running', '--format', 'json'], [], { sudo: 'auto' })} 2>/dev/null | base64 | tr -d '\\n')`,
+      'echo "OD-PF deps config_b64=$c ps_b64=$p"',
+    ].join('\n')))
   if (plan.version !== null)
     out.push(pf(d, 'version-tag', ['V={{ od.version | quote }}', 'if git rev-parse -q --verify "refs/tags/$V" >/dev/null; then echo "OD-PF version-tag exists=1"; else echo "OD-PF version-tag exists=0"; fi'].join('\n')))
-  out.push(
-    pf(d, 'commits', [
+  out.push(pf(d, 'commits', commitsCmd(d)))
+  return out
+}
+
+/**
+ * The commits to deploy. With commit bases, the range starts at their merge-base (plus the tag's commit when
+ * `tag`), so a service deployed further back shows its commits too; when merge-base fails, or there are no
+ * bases, it is the tag range: tag commit..origin/<branch>, or all of origin/<branch> on a first deploy.
+ */
+function commitsCmd(d: PlanDeployment): string {
+  const { shas, tag } = d.commitBases
+  const LOG = [
+    '  out=$(git log --no-merges --max-count=501 --pretty=tformat:%H%x1f%s%x1f%an%x1f%aI%x1e "$R" 2>/dev/null | base64 | tr -d \'\\n\')',
+    '  echo "OD-PF commits log_b64=$out"',
+  ]
+  const TAG_RANGE = '  if [ -n "$c" ] && git cat-file -e "$c^{commit}" 2>/dev/null; then R="$c..origin/$B"; X="$c"; else R="origin/$B"; X=""; fi'
+  // shas are SHA-validated in dVars: plain hex words, safe unquoted.
+  const base = shas.join(' ')
+  if (shas.length === 0 || tag) {
+    return [
       'T={{ d.tag | quote }}',
       'B={{ d.branch | quote }}',
       REMOTE_TAG,
       'if [ "$ok" = 0 ]; then echo "OD-PF commits unknown"; else',
-      '  if [ -n "$c" ] && git cat-file -e "$c^{commit}" 2>/dev/null; then R="$c..origin/$B"; else R="origin/$B"; fi',
-      '  out=$(git log --no-merges --max-count=501 --pretty=tformat:%H%x1f%s%x1f%an%x1f%aI%x1e "$R" 2>/dev/null | base64 | tr -d \'\\n\')',
-      '  echo "OD-PF commits log_b64=$out"',
+      TAG_RANGE,
+      // $X is the tag commit or empty, and unquoted on purpose so an empty one drops out.
+      ...(shas.length ? [`  if M=$(git merge-base --octopus ${base} $X 2>/dev/null) && [ -n "$M" ]; then R="$M..origin/$B"; fi`] : []),
+      ...LOG,
       'fi',
-    ].join('\n')),
-  )
-  return out
+    ].join('\n')
+  }
+  return [
+    'T={{ d.tag | quote }}',
+    'B={{ d.branch | quote }}',
+    `if M=$(git merge-base --octopus ${base} 2>/dev/null) && [ -n "$M" ]; then ok=1; R="$M..origin/$B"; else`,
+    REMOTE_TAG,
+    '  if [ "$ok" = 1 ]; then',
+    TAG_RANGE,
+    '  fi',
+    'fi',
+    'if [ "$ok" = 0 ]; then echo "OD-PF commits unknown"; else',
+    ...LOG,
+    'fi',
+  ].join('\n')
 }
 
 function taskPreflightLock(h: PlanHost): Task {

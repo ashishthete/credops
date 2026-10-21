@@ -1,4 +1,5 @@
 import {
+  COMPOSE_SERVICE,
   type CommitInfo,
   DISK_WARN_KB,
   LOCK_STALE_MS,
@@ -16,7 +17,7 @@ import {
 } from '../../shared/deploy'
 import { redact } from '../security/redact'
 import { MARK, RC_BREAK_KEPT, RC_LOCK_BUSY, parseMarker, parsePfLine, parsePrev, parseStreamLine } from './markers'
-import type { DeployPlan, PlanDeployment, PlanHost } from './runner'
+import type { DeployPlan, PlanDeployment, PlanHost, RunnerPreflight } from './runner'
 
 export { parseStreamLine }
 
@@ -81,7 +82,7 @@ export class EventTranslator {
   preflightOutput(): Record<string, string> {
     return Object.fromEntries([...this.pf].map(([k, v]) => [k, v.join('\n')]))
   }
-  /** Runs whose preflight output the plugin cut at its cap. */
+  /** Runs whose preflight commits output the plugin cut at its cap. */
   preflightCut(): string[] {
     return [...this.pfCut]
   }
@@ -420,7 +421,10 @@ export class EventTranslator {
   // ---- preflight
   private collectPreflight(run: string, e: ResultEvent): void {
     if (e.no_log) return
-    if (e.truncated?.includes('stdout')) this.pfCut.add(run)
+    // only the commit list reads the cut flag, so a cut in another check (the deps config can be large)
+    // must not mark it; a task whose check can't be read counts as possibly the commits one
+    const check = /^preflight (\S+)/.exec(e.task ?? '')?.[1]
+    if (e.truncated?.includes('stdout') && (check === undefined || check === 'commits')) this.pfCut.add(run)
     if (typeof e.stdout === 'string' && e.stdout) {
       const list = this.pf.get(run) ?? []
       list.push(e.stdout)
@@ -472,6 +476,50 @@ function decodeCommits(b64: string, deploymentId: string, cutOff: boolean, red: 
   return { commits, cut: cutOff }
 }
 
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+
+/**
+ * For each selected service, the services it depends on that are neither running nor selected (an up of
+ * the selection starts those itself). `configJson` is `docker compose config --format json`; `psJson` is
+ * `docker compose ps --status running --format json`, an array or one object per line. Throws on input it
+ * can't read; only services with something missing are returned.
+ */
+export function parseDeps(configJson: string, psJson: string, selected: string[]): { service: string; missing: string[] }[] {
+  const config: unknown = JSON.parse(configJson)
+  if (!isObj(config) || !isObj(config.services)) throw new Error('compose config has no services')
+  const services = config.services
+  const ps = psJson.trim()
+  const rows: unknown[] = !ps ? [] : ps.startsWith('[') ? (JSON.parse(ps) as unknown[]) : ps.split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l) as unknown)
+  if (!Array.isArray(rows)) throw new Error('compose ps is not a list')
+  const running = new Set(rows.flatMap((r) => (isObj(r) && typeof r.Service === 'string' ? [r.Service] : [])))
+  const chosen = new Set(selected)
+  const out: { service: string; missing: string[] }[] = []
+  for (const service of selected) {
+    const svc = services[service]
+    const dep = isObj(svc) ? svc.depends_on : undefined
+    // A one-shot dependency (a migrations job) has exited by design, so it never counts as not running.
+    const names = Array.isArray(dep)
+      ? dep.filter((x): x is string => typeof x === 'string')
+      : isObj(dep)
+        ? Object.keys(dep).filter((n) => !(isObj(dep[n]) && dep[n].condition === 'service_completed_successfully'))
+        : []
+    // Names come from the host's compose file; anything that isn't a service name is dropped.
+    const missing = names.filter((n) => COMPOSE_SERVICE.test(n) && !running.has(n) && !chosen.has(n))
+    if (missing.length) out.push({ service, missing })
+  }
+  return out
+}
+
+/** "a", "a and b", "a, b and c". */
+const andList = (xs: string[]): string => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`)
+
+/** The compose file's services from `services_b64`; null when absent, empty or any name is not a service name. */
+function decodeServices(b64: string | undefined): string[] | null {
+  if (!b64) return null
+  const names = Buffer.from(b64, 'base64').toString('utf8').split('\n').map((l) => l.trim()).filter(Boolean)
+  return names.length && names.every((n) => COMPOSE_SERVICE.test(n)) ? names : null
+}
+
 export interface ParsePreflightOptions {
   now: number
   /** Run keys whose output the callback plugin cut (EventTranslator.preflightCut()). */
@@ -483,10 +531,11 @@ export interface ParsePreflightOptions {
  * Builds the preflight report from the OD-PF lines of each run's stdout. A check whose lines are missing is
  * never reported as clean: a missing repo blocks, and anything else that printed nothing blocks as "no result".
  */
-export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, string>, o: ParsePreflightOptions): Omit<PreflightReport, 'releaseId'> {
+export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, string>, o: ParsePreflightOptions): RunnerPreflight {
   const checks: PreflightCheck[] = []
   const commits: PreflightReport['commits'] = {}
   const dockerModes: Record<string, DockerMode> = {}
+  const composeServices: PreflightReport['composeServices'] = Object.fromEntries(plan.deployments.map((d) => [d.deploymentId, null]))
   const locks: PreflightReport['locks'] = {}
   const red = (s: string): string => redact(s, o.secrets ?? [])
   const cutRuns = new Set(o.cut ?? [])
@@ -562,7 +611,26 @@ export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, str
       const cp = get('compose')
       if (!cp) noResult('compose', 'The compose check')
       else if (cp.exists !== '1') add('compose', 'block', `compose file ${d.composeFile} not found in ${d.repoPath}`)
-      else add('compose', 'ok', `${d.composeFile} exists`)
+      else {
+        add('compose', 'ok', `${d.composeFile} exists`)
+        composeServices[d.deploymentId] = decodeServices(cp.services_b64)
+        // partial checkouts: a warning for what --no-deps leaves stopped, never a block
+        if (d.services !== null) {
+          const dp = get('deps')
+          let found: { service: string; missing: string[] }[] | null = null
+          try {
+            if (dp?.config_b64) found = parseDeps(Buffer.from(dp.config_b64, 'base64').toString('utf8'), Buffer.from(dp.ps_b64 ?? '', 'base64').toString('utf8'), d.services)
+          } catch {
+            found = null
+          }
+          if (found === null) add('deps', 'warn', `Couldn't check compose dependencies on ${hl}`)
+          else
+            for (const f of found) {
+              const one = f.missing.length === 1
+              add('deps', 'warn', `${f.service} depends on ${andList(f.missing)}, which ${one ? "isn't" : "aren't"} running. --no-deps won't start ${one ? 'it' : 'them'}`)
+            }
+        }
+      }
 
       const disk = get('disk')
       const kb = disk ? Number(disk.avail_kb) : NaN
@@ -603,7 +671,8 @@ export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, str
         if (truncated > 0) add('commits', 'warn', `the commit list is not complete (at least ${truncated} more not shown); showing the newest ${list.length}`)
       }
       commitsTotal += list.length
-      commits[d.deploymentId] = { commits: list, hiddenPairs: hidden, truncated, firstDeploy, head: newest }
+      const tagCommit = tag?.exists === '1' && tag.commit && /^[0-9a-f]{40}$/.test(tag.commit) ? tag.commit : null
+      commits[d.deploymentId] = { commits: list, hiddenPairs: hidden, truncated, firstDeploy, head: newest, tagCommit }
     }
   }
 
@@ -645,5 +714,5 @@ export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, str
     }
   }
 
-  return { checks, commits, dockerModes, locks, commitsTotal, blocked: checks.some((c) => c.level === 'block') }
+  return { checks, commits, dockerModes, composeServices, locks, commitsTotal, blocked: checks.some((c) => c.level === 'block') }
 }

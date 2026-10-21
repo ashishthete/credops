@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { homedir, hostname, userInfo } from 'node:os'
 import {
@@ -19,8 +20,11 @@ import { AuditLog } from './audit/audit-log'
 import { openDatabase, type Db } from './db/connection'
 import { createAppHandlers } from './ipc/handlers/app'
 import { createAuditHandlers } from './ipc/handlers/audit'
+import { createConfigHandlers } from './ipc/handlers/config'
+import { CONFIG_FILE_NAME } from '../shared/config-file'
 import { createIdentityHandlers } from './ipc/handlers/identities'
 import { createDeployHandlers } from './ipc/handlers/deploy'
+import { createServiceHandlers } from './ipc/handlers/services'
 import { detectTools } from './deploy/tooling'
 import { startPrivateAgent, type ChildLike } from './deploy/agent'
 import { prepareHosts } from './deploy/hostkeys'
@@ -35,6 +39,9 @@ import { createHubHandlers } from './ipc/handlers/hub'
 import { noopFinalize } from './deploy/finalize'
 import { ReleaseService } from './deploy/release-service'
 import { DeployStore, dbSecretRefs } from './deploy/deploy-store'
+import { ServiceStore } from './deploy/service-store'
+import { ServiceTunnels } from './deploy/service-tunnel'
+import { copyServices } from './deploy/service-copy'
 import { ReleaseStore } from './deploy/release-store'
 import { createTunnelHandlers } from './ipc/handlers/tunnels'
 import { createOpsHandlers } from './ipc/handlers/ops'
@@ -79,6 +86,18 @@ import { appMenuTemplate, devRendererUrl, dropOnRendererReset, forwardVaultLocks
 if (!app.isPackaged) app.setPath('userData', `${app.getPath('userData')}-dev`)
 
 const devServerUrl = devRendererUrl(app.isPackaged, process.env)
+
+/** A port free on 127.0.0.1 right now: bind port 0, read what the OS gave, close. */
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer()
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address()
+      server.close(() => (addr !== null && typeof addr === 'object' ? resolve(addr.port) : reject(new Error('no free port on 127.0.0.1'))))
+    })
+  })
+}
 const CLIPBOARD_QUIT_WAIT_MS = 500
 
 let mainWindow: BrowserWindow | null = null
@@ -188,6 +207,9 @@ if (!app.requestSingleInstanceLock()) {
       const snippets = new SnippetStore({ db, audit: log, vault: service })
       const deploys = new DeployStore({ db, audit: log, vault: service, secrets: dbSecretRefs(db) })
       deploys.onChanged = (environmentId) => pushEvent(mainWindow, 'deploy:changed', { environmentId })
+      const services = new ServiceStore({ db, audit: log, vault: service })
+      services.onChanged = (environmentId) => pushEvent(mainWindow, 'deploy:changed', { environmentId })
+      const copyDeps = { db, deploys, services, audit: log, vault: service }
       const releaseStore = new ReleaseStore({ db })
       const importer = new SshImporter({
         db,
@@ -290,6 +312,7 @@ if (!app.requestSingleInstanceLock()) {
       const release = new ReleaseService({
         db,
         deploys,
+        services,
         releases: releaseStore,
         runner: localRunner,
         access,
@@ -378,20 +401,29 @@ if (!app.requestSingleInstanceLock()) {
         emit: (event, payload) => pushEvent(mainWindow, event, payload),
       })
       containerService = containers
+      const serviceTunnels = new ServiceTunnels({
+        services,
+        tunnels,
+        manager: runner,
+        environments: () => envStore.list(),
+        deploys,
+        hostLabel: (hostId) => hostMeta(inventoryDb, hostId).label,
+        freePort,
+      })
       tunnels.onRemoved = (id) => runner.removed(id)
       tunnels.onChanged = (before, after) => runner.changed(before, after)
       // On lock, in this order: sessions fail their dials and tunnels mark theirs to pause (both keep
       // what is connected); runs end their queued and dialling hosts as `locked` while running
       // commands finish; exec links fail their dials as `locked` and close idle links; then every
       // prompt left is cancelled. Runs go before links so each dial a run aborts is already marked
-      // `locked` for that host. Separate listeners, so one failing never skips the others. Quit
-      // (before-quit) stops tunnels, closes sessions, cancels runs (writing their run.finish), stops
-      // container log follows, closes exec links, and only then locks the vault. Container follows
-      // have no lock listener: one already open keeps streaming through a lock (new calls are
-      // refused while locked), like a connected session.
+      // `locked` for that host. Every log follow (container and compose) stops and says the vault
+      // locked; a new one waits for unlock. Separate listeners, so one failing never
+      // skips the others. Quit (before-quit) stops tunnels, closes sessions, cancels runs (writing
+      // their run.finish), stops container log follows, closes exec links, and only then locks the vault.
       service.onLock(() => manager.vaultLocked())
       service.onLock(() => runner.vaultLocked())
       service.onLock(() => runs.vaultLocked())
+      service.onLock(() => containers.vaultLocked())
       service.onLock(() => links.vaultLocked())
       service.onLock(() => prompts.cancelAll())
       // Resumes paused tunnels; the first unlock also auto-starts.
@@ -448,9 +480,30 @@ if (!app.requestSingleInstanceLock()) {
           ...createSshImportHandlers(importer),
           ...createTunnelHandlers({ store: tunnels, manager: runner }),
           ...createDeployHandlers({ deploys, releases: release, tooling: () => detectTools(toolDeps) }),
+          ...createServiceHandlers({
+            services,
+            copy: (req) => copyServices(copyDeps, req),
+            deploys,
+            containers,
+            tunnels: serviceTunnels,
+            openExternal: (url) => shell.openExternal(url),
+          }),
           ...createSessionHandlers({ sessions: manager, prompts, knownHosts }),
           ...createOpsHandlers({ snippets, runs, containers }),
           ...createHubHandlers({ conn: hub, vault: service, audit: log, catalog: hubCatalog, publisher: hubPublisher, onLocksChanged: () => pushEvent(mainWindow, 'hub:locks', {}) }),
+          ...createConfigHandlers({
+            db,
+            vault: service,
+            audit: log,
+            now: () => new Date(),
+            saveDialog: async () => {
+              const opts: Electron.SaveDialogOptions = { defaultPath: CONFIG_FILE_NAME, filters: [{ name: 'JSON', extensions: ['json'] }] }
+              const res = mainWindow
+                ? await dialog.showSaveDialog(mainWindow, opts)
+                : await dialog.showSaveDialog(opts)
+              return res.canceled ? undefined : res.filePath
+            },
+          }),
         },
         (url) => isTrustedSender(url, { devServerUrl, rendererFile }),
         { validators: VALIDATORS, knownSecrets },

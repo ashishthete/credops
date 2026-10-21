@@ -4,7 +4,8 @@ import { matchSshConfig } from '../../src/main/inventory/ssh-config'
 import { generateAnsibleCfg, generateInventory, generateKnownHosts, generatePlaybook, generateSshConfig, knownHostsToken, socketPathFits } from '../../src/main/deploy/generate'
 import { b64, lockJson, sanitizeIdent } from '../../src/main/deploy/quote'
 import type { DeployPlan, PlanKind } from '../../src/main/deploy/runner'
-import { FIX, planFixture } from './deploy-helpers'
+import { MAX_SERVICES } from '../../src/shared/services'
+import { FIX, planFixture, shellWords } from './deploy-helpers'
 
 type Task = Record<string, unknown> & { block?: Task[]; rescue?: Task[]; tags?: string[]; no_log?: boolean }
 type Play = Record<string, unknown> & { hosts: string; tasks: Task[]; vars: Record<string, unknown> }
@@ -20,6 +21,13 @@ function every(tasks: Task[], inherited = false): { t: Task; noLog: boolean }[] 
     const nl = inherited || t.no_log === true
     return t.block || t.rescue ? [...every(t.block ?? [], nl), ...every(t.rescue ?? [], nl)] : [{ t, noLog: nl }]
   })
+}
+/** The `docker …` words of a compose step, up to the end of its line. */
+const dockerWords = (cmd: string): string[] => {
+  const w = shellWords(cmd)
+  const at = w.indexOf('docker')
+  const end = w.indexOf(';', at)
+  return w.slice(at, end < 0 ? undefined : end)
 }
 const cmdOf = (t: Task): string => {
   const m = (t['ansible.builtin.shell'] ?? t['ansible.builtin.command'] ?? t['ansible.builtin.uri']) as { cmd?: string } | undefined
@@ -98,7 +106,7 @@ describe('release playbook', () => {
   it('streams build, up, hooks and backup into stream.log with a run:kind prefix', () => {
     const ps = plays(planFixture())
     const build = cmdOf(flat(ps[0].tasks).find((t) => step(t) === 'build')!)
-    expect(build).toContain('docker compose -f {{ d.compose | quote }} build')
+    expect(dockerWords(build)).toEqual(['docker', 'compose', '-f', FIX.compose, 'build'])
     expect(build).not.toContain('sed ')
     expect(build).toContain('while IFS= read -r l')
     expect(build).toContain("printf '%s\\t%s\\n' \"$P\" \"$l\"")
@@ -106,7 +114,7 @@ describe('release playbook', () => {
     expect(build).toContain('${PIPESTATUS[0]}')
     expect(build).toContain('tail -n 40')
     const up = cmdOf(flat(ps[0].tasks).find((t) => step(t) === 'up')!)
-    expect(up).toContain('docker compose -f {{ d.compose | quote }} up -d')
+    expect(dockerWords(up)).toEqual(['docker', 'compose', '-f', FIX.compose, 'up', '-d'])
     const pre = cmdOf(flat(ps[0].tasks).find((t) => step(t) === 'pre_hook')!)
     expect(pre).toContain('| base64 -d | bash -e')
     const backup = cmdOf(flat(ps[0].tasks).find((t) => step(t) === 'backup')!)
@@ -233,6 +241,7 @@ describe('user values', () => {
     expect(d.split(b).length - 1).toBe(1)
   })
 
+  // The compose file, project and services are validated and shJoin-quoted at generate time (deploy-compose tests).
   it('repo path, branch and tag appear in commands only inside d.<field> | quote', () => {
     const plan = planFixture()
     for (const kind of ['release', 'rollback', 'preflight', 'version'] as PlanKind[]) {
@@ -240,7 +249,7 @@ describe('user values', () => {
       for (const play of plays(p)) for (const { t } of every(play.tasks)) {
         const c = JSON.stringify(Object.values(t).filter((v) => typeof v === 'object' && v !== null))
         const bare = c.replace(/\{\{ d\.[a-z_]+(?:\[\d+\](?:\.[a-z]+)?)? \| quote \}\}/g, '')
-        for (const lit of [FIX.branch, FIX.tag, FIX.compose, ...plan.deployments.map((d) => d.repoPath)]) {
+        for (const lit of [FIX.branch, FIX.tag, ...plan.deployments.map((d) => d.repoPath)]) {
           const withoutChdir = bare.replace(/"chdir":"\{\{ [^}]+\}\}"/g, '')
           expect(withoutChdir, `${kind} leaks ${lit}`).not.toContain(lit)
         }
@@ -685,6 +694,118 @@ describe('.env is never sourced', () => {
         const c = cmdOf(t)
         expect(c, kind).not.toMatch(/(^|[\s;&|(])(source|\.)\s+(\.\/)?\.env\b/)
         expect(c, kind).not.toContain('set -a')
+      }
+  })
+})
+
+describe('compose service lists', () => {
+  const A = 'a'.repeat(40)
+  const B = 'b'.repeat(40)
+  const taskOf = (plan: DeployPlan, kind: string, dep = 0): Task => {
+    const runId = plan.deployments[dep].runId
+    return plays(plan).flatMap((p) => flat(p.tasks)).find((t) => step(t) === kind && t.tags!.includes(`od_run=${runId}`))!
+  }
+  const partial = (kind: PlanKind, over: Partial<DeployPlan['deployments'][number]> = {}): DeployPlan => {
+    const plan = planFixture({ kind })
+    Object.assign(plan.deployments[0], { services: ['web', 'api'], ...over })
+    return plan
+  }
+  const pfTask = (plan: DeployPlan, check: string, dep = 0): Task | undefined =>
+    plays(plan).flatMap((p) => every(p.tasks).map((x) => x.t)).find((t) => t.name === `preflight ${check} ${plan.deployments[dep].name}`)
+
+  it('whole checkout builds and ups with no service list', () => {
+    const plan = planFixture()
+    expect(dockerWords(cmdOf(taskOf(plan, 'build')))).toEqual(['docker', 'compose', '-f', FIX.compose, 'build'])
+    expect(dockerWords(cmdOf(taskOf(plan, 'up')))).toEqual(['docker', 'compose', '-f', FIX.compose, 'up', '-d'])
+  })
+
+  it('partial selection builds the list and ups with --no-deps in the given order', () => {
+    const plan = partial('release', { services: ['worker', 'web'] })
+    expect(dockerWords(cmdOf(taskOf(plan, 'build')))).toEqual(['docker', 'compose', '-f', FIX.compose, 'build', 'worker', 'web'])
+    expect(dockerWords(cmdOf(taskOf(plan, 'up')))).toEqual(['docker', 'compose', '-f', FIX.compose, 'up', '-d', '--no-deps', 'worker', 'web'])
+    // the other checkouts stay whole; become stays Ansible's, so no sudo in the string
+    expect(dockerWords(cmdOf(taskOf(plan, 'up', 1)))).toEqual(['docker', 'compose', '-f', FIX.compose, 'up', '-d'])
+    expect(cmdOf(taskOf(plan, 'up'))).not.toContain('sudo')
+  })
+
+  it('rollback rebuilds in the same form the release used', () => {
+    const plan = partial('rollback')
+    expect(dockerWords(cmdOf(taskOf(plan, 'rb_build')))).toEqual(['docker', 'compose', '-f', FIX.compose, 'build', 'web', 'api'])
+    expect(dockerWords(cmdOf(taskOf(plan, 'rb_up')))).toEqual(['docker', 'compose', '-f', FIX.compose, 'up', '-d', '--no-deps', 'web', 'api'])
+    const whole = planFixture({ kind: 'rollback' })
+    expect(dockerWords(cmdOf(taskOf(whole, 'rb_up')))).toEqual(['docker', 'compose', '-f', FIX.compose, 'up', '-d'])
+  })
+
+  it('-p appears in build, up, rb_build and rb_up only when composeProject is set', () => {
+    for (const kind of ['release', 'rollback'] as PlanKind[]) {
+      const steps = kind === 'release' ? ['build', 'up'] : ['rb_build', 'rb_up']
+      const set = partial(kind, { composeProject: 'shop_prod' })
+      for (const k of steps) {
+        const w = dockerWords(cmdOf(taskOf(set, k)))
+        expect(w.slice(0, 6)).toEqual(['docker', 'compose', '-f', FIX.compose, '-p', 'shop_prod'])
+        expect(w.filter((x) => x === '-p')).toHaveLength(1)
+        expect(dockerWords(cmdOf(taskOf(set, k, 1)))).not.toContain('-p')
+      }
+    }
+  })
+
+  it('a service named --rm is refused by the generator', () => {
+    for (const kind of ['release', 'rollback', 'preflight'] as PlanKind[]) {
+      expect(() => generatePlaybook(partial(kind, { services: ['web', '--rm'] }))).toThrow(/compose service/)
+      expect(() => generatePlaybook(partial(kind, { services: ['web', 'web'] }))).toThrow(/compose service/)
+      expect(() => generatePlaybook(partial(kind, { services: [] }))).toThrow(/service list/)
+      expect(() => generatePlaybook(partial(kind, { services: Array.from({ length: MAX_SERVICES + 1 }, (_, i) => `s${i}`) }))).toThrow(/service list/)
+      expect(() => generatePlaybook(partial(kind, { composeProject: '-p x' }))).toThrow(/compose project/)
+    }
+  })
+
+  it('deps check is emitted for partial checkouts only', () => {
+    const plan = partial('preflight')
+    const deps = pfTask(plan, 'deps')!
+    const w = shellWords(cmdOf(deps).replace(/\{\{[^}]*\}\}/g, 'x'))
+    expect(w).toContain('OD-PF deps config_b64=$c ps_b64=$p')
+    const at = (seq: string[]): boolean => w.some((_, i) => seq.every((x, j) => w[i + j] === x))
+    expect(at(['compose', '-f', FIX.compose, 'config', '--no-interpolate', '--format', 'json'])).toBe(true)
+    expect(at(['compose', '-f', FIX.compose, 'ps', '--status', 'running', '--format', 'json'])).toBe(true)
+    expect(at(['D=sudo -n docker'])).toBe(true)
+    for (const dep of [1, 2]) expect(pfTask(plan, 'deps', dep)).toBeUndefined()
+    expect(pfTask(planFixture({ kind: 'preflight' }), 'deps')).toBeUndefined()
+    // the compose check lists the file's services for every checkout
+    for (const dep of [0, 1, 2]) {
+      const cw = shellWords(cmdOf(pfTask(plan, 'compose', dep)!).replace(/\{\{[^}]*\}\}/g, 'x'))
+      expect(cw).toContain('OD-PF compose exists=1 services_b64=$s')
+      expect(cw.join(' ')).toContain(`compose -f ${FIX.compose} config --services`)
+    }
+  })
+
+  it('commits range uses merge-base of the service bases when given', () => {
+    const words = (plan: DeployPlan): string[] => shellWords(cmdOf(pfTask(plan, 'commits')!).replace(/\{\{[^}]*\}\}/g, 'x'))
+    const seq = (w: string[], s: string[]): boolean => w.some((_, i) => s.every((x, j) => w[i + j] === x))
+    const tag = words(partial('preflight', { commitBases: { shas: [A, B], tag: true } }))
+    expect(seq(tag, ['M=$(git', 'merge-base', '--octopus', A, B, '$X', '2>/dev/null)'])).toBe(true)
+    expect(tag).toContain('R=$M..origin/$B')
+    // the tag range stays as the fallback
+    expect(tag).toContain('R=$c..origin/$B')
+    const noTag = words(partial('preflight', { commitBases: { shas: [A], tag: false } }))
+    expect(seq(noTag, ['M=$(git', 'merge-base', '--octopus', A, '2>/dev/null)'])).toBe(true)
+    expect(noTag).not.toContain('$X')
+    expect(noTag).toContain('R=$c..origin/$B')
+    // no shas: today's tag logic, no merge-base
+    expect(words(planFixture({ kind: 'preflight' }))).not.toContain('merge-base')
+    expect(() => generatePlaybook(partial('preflight', { commitBases: { shas: ['HEAD'], tag: true } }))).toThrow(/commit bases/)
+    expect(() => generatePlaybook(partial('preflight', { commitBases: { shas: [`${A};id`], tag: true } }))).toThrow(/commit bases/)
+  })
+
+  it.each(['preflight', 'release', 'rollback'] as PlanKind[])('%s with services, a project and commit bases parses with bash -n (parse only)', (kind) => {
+    const plan = partial(kind, { composeProject: 'shop', commitBases: { shas: [A, B], tag: true } })
+    plan.deployments[1].commitBases = { shas: [A], tag: false }
+    for (const p of plays(plan))
+      for (const { t } of every(p.tasks)) {
+        const cmd = cmdOf(t).replace(/\{\{[^}]*\}\}/g, 'x')
+        if (!cmd) continue
+        const r = spawnSync('/bin/bash', ['-n'], { input: cmd, encoding: 'utf8' })
+        expect(r.stderr, `${kind}: ${cmd}`).toBe('')
+        expect(r.status).toBe(0)
       }
   })
 })

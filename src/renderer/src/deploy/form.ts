@@ -1,6 +1,7 @@
 import {
   BACKUP_DIR,
   COMPOSE_FILE,
+  COMPOSE_PROJECT,
   GIT_REF,
   MAX_ENV_TEMPLATE,
   MAX_HOOK,
@@ -13,13 +14,14 @@ import {
   type HealthUrl,
   type UseSudo,
 } from '../../../shared/deploy'
-import { MAX_NAME } from '../../../shared/inventory'
+import { MAX_NAME, REPO_URL } from '../../../shared/inventory'
 import { DEFAULT_VAULT_ID } from '../../../shared/vault'
 
 export interface DeploymentForm {
   name: string
   hostId: string
-  appId: string
+  repoUrl: string
+  composeProject: string
   repoPath: string
   defaultBranch: string
   composeFile: string
@@ -46,7 +48,8 @@ export function blankForm(hostId = ''): DeploymentForm {
   return {
     name: '',
     hostId,
-    appId: '',
+    repoUrl: '',
+    composeProject: '',
     repoPath: '',
     defaultBranch: 'main',
     composeFile: 'docker-compose.yml',
@@ -72,7 +75,8 @@ export function formFrom(d: DeploymentMeta): DeploymentForm {
   return {
     name: d.name,
     hostId: d.hostId,
-    appId: d.appId ?? '',
+    repoUrl: d.repoUrl ?? '',
+    composeProject: d.composeProject ?? '',
     repoPath: d.repoPath,
     defaultBranch: d.defaultBranch,
     composeFile: d.composeFile,
@@ -127,6 +131,10 @@ export function checkForm(f: DeploymentForm): { errors: Partial<Record<FormField
   if (!GIT_REF.test(f.defaultBranch)) errors.defaultBranch = `A branch name uses ${REF_RULE}`
   if (!GIT_REF.test(f.deployTag)) errors.deployTag = `A tag name uses ${REF_RULE}`
   if (!COMPOSE_FILE.test(f.composeFile)) errors.composeFile = 'Use a relative path (letters, digits and . _ / -), with no ".."'
+  const repoUrl = f.repoUrl.trim()
+  if (repoUrl && (repoUrl.length > MAX_URL || !REPO_URL.test(repoUrl))) errors.repoUrl = 'Use an http(s), ssh:// or git@ URL, with no spaces'
+  const project = f.composeProject.trim()
+  if (project && !COMPOSE_PROJECT.test(project)) errors.composeProject = 'A compose project uses letters, digits and . _ -, and starts with a letter or digit'
   if (f.dbBackup && !BACKUP_DIR.test(f.backupDir)) errors.backupDir = 'Use an absolute path for backups (letters, digits and . _ @ + / -), with no ".." or "//"'
   const status = rangeError('The status', f.healthStatus, 100, 599)
   if (status) errors.healthStatus = status
@@ -163,7 +171,8 @@ export function toInput(f: DeploymentForm, environmentId: string, position?: num
     name: f.name.trim(),
     environmentId,
     hostId: f.hostId,
-    appId: f.appId || null,
+    repoUrl: f.repoUrl.trim() || null,
+    composeProject: f.composeProject.trim() || null,
     repoPath: f.repoPath,
     defaultBranch: f.defaultBranch,
     deployTag: f.deployTag,

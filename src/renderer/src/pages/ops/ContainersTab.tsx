@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { useSearchParams } from 'react-router'
 import type { ContainerAction, ContainerMeta } from '../../../../shared/ops'
 import { useInventory } from '../../inventory/store'
+import { api } from '../../lib/api'
 import { runProtection } from '../../ops/protect'
 import { containerAction, containerKey, containerStore, loadContainers } from '../../ops/containers'
 import { useConnect } from '../../terminal/connect'
@@ -17,7 +18,7 @@ import { Switch } from '../../ui/Switch'
 import { toast } from '../../ui/Toaster'
 import { vaultStatusStore } from '../../vault/status'
 import { ContainerRow } from './containers/ContainerRow'
-import { LogsDrawer } from './containers/LogsDrawer'
+import { LogsDrawer, type LogsTarget } from './containers/LogsDrawer'
 
 const STANDALONE = 'standalone'
 const REFRESH_MS = 10_000
@@ -127,6 +128,7 @@ export function ContainersTab() {
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   const [logs, setLogs] = useState<{ hostId: string; environmentId: string | null; ref: string } | null>(null)
 
+  const logsTarget = useMemo(() => (logs ? containerLogs(logs) : null), [logs])
   const shown = useMemo(() => {
     const q = filter.trim().toLowerCase()
     return (list?.containers ?? []).filter(
@@ -284,8 +286,17 @@ export function ContainersTab() {
         )}
       </div>
 
-      <LogsDrawer target={logs} onClose={() => setLogs(null)} />
+      <LogsDrawer target={logsTarget} onClose={() => setLogs(null)} />
       <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
     </div>
   )
+}
+
+/** One container's logs: a tail snapshot, with a Follow switch for the live stream. */
+function containerLogs({ hostId, environmentId, ref }: { hostId: string; environmentId: string | null; ref: string }): LogsTarget {
+  return {
+    title: `Logs of ${ref}`,
+    snapshot: (tail) => api.invoke('containers:logs', hostId, environmentId, ref, tail),
+    follow: (tail) => api.invoke('containers:follow', hostId, environmentId, ref, tail),
+  }
 }

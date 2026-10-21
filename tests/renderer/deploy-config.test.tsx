@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -7,7 +7,7 @@ import { inventoryStore, loadInventory } from '../../src/renderer/src/inventory/
 import { DeploymentsPage } from '../../src/renderer/src/pages/deployments/DeploymentsPage'
 import { Toaster, clearToasts } from '../../src/renderer/src/ui/Toaster'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
-import { appMeta, defaultVault, deploymentMeta, envSettings, environment, host, mockBridge, product, toolingOk } from './helpers'
+import { appService, defaultVault, deploymentMeta, envSettings, environment, host, emitBridgeEvent, mockBridge, product, toolingOk } from './helpers'
 
 // framer-motion caches matchMedia, so reduced motion is driven through its hook directly.
 const reduced = vi.hoisted(() => ({ on: false }))
@@ -76,6 +76,19 @@ describe('deployments page', () => {
     expect(screen.getByTestId('current-version')).toHaveTextContent('v1.2.0')
   })
 
+  it('Deploy… opens the service picker with nothing ticked', async () => {
+    world({
+      'deploy:list': [deploymentMeta({ id: 'd1', name: 'core', environmentId: 'e1', hostId: 'h1' })],
+      'service:list': [appService({ id: 's1', name: 'api', environmentId: 'e1', deploymentId: 'd1' })],
+    })
+    const user = userEvent.setup()
+    await open()
+    await user.click(await screen.findByRole('button', { name: 'Deploy…' }))
+    const wizard = await screen.findByRole('dialog', { name: 'Deploy to staging' })
+    expect(within(wizard).getByRole('checkbox', { name: 'api' })).not.toBeChecked()
+    expect(within(wizard).getByRole('button', { name: 'Run preflight' })).toBeDisabled()
+  })
+
   it('shows the empty state for an environment with no deployments', async () => {
     const user = userEvent.setup()
     world()
@@ -83,7 +96,7 @@ describe('deployments page', () => {
     expect(await screen.findByText('No deployments in staging yet')).toBeInTheDocument()
     // The header's button and the empty state's action both open it.
     await user.click(screen.getAllByRole('button', { name: 'New deployment' })[1])
-    expect(await screen.findByRole('dialog', { name: 'New deployment' })).toBeInTheDocument()
+    expect(await screen.findByRole('dialog', { name: 'New checkout' })).toBeInTheDocument()
   })
 
   it('create dialog validates repo path and branch inline and submits', async () => {
@@ -94,7 +107,7 @@ describe('deployments page', () => {
     await open()
     await screen.findByText('No deployments in staging yet')
     await user.click(screen.getAllByRole('button', { name: 'New deployment' })[0])
-    const dialog = await screen.findByRole('dialog', { name: 'New deployment' })
+    const dialog = await screen.findByRole('dialog', { name: 'New checkout' })
     const create = within(dialog).getByRole('button', { name: 'Create deployment' })
     expect(create).toBeDisabled()
 
@@ -126,9 +139,11 @@ describe('deployments page', () => {
       defaultBranch: 'main',
       deployTag: 'deployed-staging',
       composeFile: 'docker-compose.yml',
+      repoUrl: null,
+      composeProject: null,
       envTemplate: null,
     })
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New deployment' })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New checkout' })).not.toBeInTheDocument())
   })
 
   it('env template shows secret chips by name and blocks a plain DB_PASSWORD', async () => {
@@ -147,7 +162,7 @@ describe('deployments page', () => {
     })
     await open()
     await user.click(await screen.findByRole('button', { name: 'Edit' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Edit deployment' })
+    const dialog = await screen.findByRole('dialog', { name: 'Edit checkout' })
     const chips = await within(dialog).findAllByTestId('secret-chip')
     expect(chips.map((c) => c.textContent)).toEqual(['Stripe key'])
     // The reference id is not shown, and no secret value was ever requested.
@@ -263,22 +278,34 @@ describe('deployments page', () => {
     expect(screen.queryByRole('listitem', { name: 'api' })).not.toBeInTheDocument()
   })
 
-  it('shows an app on its card and edits it', async () => {
+  it('checkout dialog has Repository URL and Compose project and no app picker', async () => {
     const user = userEvent.setup()
     const invoke = world({
-      'deploy:list': [deploymentMeta({ id: 'd1', name: 'api', appId: 'a1' })],
-      'app:list': [appMeta({ id: 'a1', name: 'Storefront', hostId: 'h1' })],
-      'app:update': appMeta({ id: 'a1', name: 'Shop front', hostId: 'h1' }),
+      'deploy:list': [deploymentMeta({ id: 'd1', name: 'api', repoUrl: 'git@github.com:acme/api.git', composeProject: 'api_stg' })],
+      'deploy:update': deploymentMeta({ id: 'd1', name: 'api' }),
     })
     await open()
-    await user.click(await screen.findByRole('button', { name: 'Edit app Storefront' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Edit app' })
-    const name = within(dialog).getByLabelText('Name')
-    await user.clear(name)
-    await user.type(name, 'Shop front')
+    await user.click(await screen.findByRole('button', { name: 'Edit' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Edit checkout' })
+    expect(within(dialog).queryByLabelText('App')).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: /app/i })).not.toBeInTheDocument()
+    const repo = within(dialog).getByLabelText('Repository URL')
+    const project = within(dialog).getByLabelText('Compose project')
+    expect(repo).toHaveValue('git@github.com:acme/api.git')
+    expect(project).toHaveValue('api_stg')
+    await user.clear(repo)
+    await user.type(repo, 'ftp://x')
+    expect(within(dialog).getByText(/Use an http\(s\), ssh:\/\/ or git@ URL/)).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled()
+    await user.clear(repo)
+    await user.type(repo, 'https://github.com/acme/api')
+    await user.clear(project)
+    await user.type(project, '--rm')
+    expect(within(dialog).getByText(/A compose project uses/)).toBeInTheDocument()
+    await user.clear(project)
     await user.click(within(dialog).getByRole('button', { name: 'Save' }))
-    await waitFor(() => expect(calls(invoke, 'app:update')).toHaveLength(1))
-    expect(calls(invoke, 'app:update')[0].slice(1)).toEqual(['a1', { name: 'Shop front', composeProject: null, description: '' }])
+    await waitFor(() => expect(calls(invoke, 'deploy:update')).toHaveLength(1))
+    expect(calls(invoke, 'deploy:update')[0][2]).toEqual({ repoUrl: 'https://github.com/acme/api', composeProject: null })
   })
 
   it('saves a corrected current version', async () => {
@@ -311,5 +338,18 @@ describe('deployments page', () => {
     for (const li of screen.getAllByRole('listitem')) {
       expect(li.getAttribute('style') ?? '').not.toMatch(/transform/)
     }
+  })
+
+  it('a burst of deploy:changed events shares one refetch', async () => {
+    const invoke = world({ 'deploy:list': [deploymentMeta({ id: 'd1', name: 'api', position: 0 })] })
+    await open()
+    await screen.findByText('api')
+    const before = calls(invoke, 'deploy:list').length
+    act(() => {
+      for (let i = 0; i < 5; i++) emitBridgeEvent('deploy:changed', { environmentId: 'e1' })
+    })
+    await waitFor(() => expect(calls(invoke, 'deploy:list').length).toBe(before + 1))
+    await new Promise((r) => setTimeout(r, 250))
+    expect(calls(invoke, 'deploy:list').length).toBe(before + 1)
   })
 })

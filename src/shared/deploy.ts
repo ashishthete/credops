@@ -2,7 +2,6 @@
 
 // ---- Limits ----
 export const MAX_DEPLOYMENTS = 512
-export const MAX_APPS = 512
 export const MAX_URLS = 8
 export const MAX_HOOK = 4000
 export const MAX_ENV_TEMPLATE = 32768
@@ -26,6 +25,8 @@ export const GIT_REF = /^(?!.*\.\.)(?!.*\/\/)(?!\/)(?!.*\/$)(?!.*\.lock$)(?!-)[A
 export const COMPOSE_FILE = /^(?!\/)(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,200}$/
 export const VERSION = /^v\d+\.\d+\.\d+$/
 export const COMPOSE_PROJECT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/
+/** A service name inside a compose file: the same rule, so it can never look like an option or carry shell syntax. */
+export const COMPOSE_SERVICE = COMPOSE_PROJECT
 export const MAX_URL = 2048
 export const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
 
@@ -44,31 +45,13 @@ export interface HealthUrl {
   from: HealthFrom
 }
 
-export interface AppMeta {
-  id: string
-  environmentId: string
-  hostId: string
-  name: string
-  composeProject: string | null
-  description: string
-  createdAt: string
-  updatedAt: string
-}
-export interface AppInput {
-  environmentId: string
-  hostId: string
-  name: string
-  composeProject?: string | null
-  description?: string
-}
-export type AppPatch = Partial<Omit<AppInput, 'environmentId' | 'hostId'>>
-
 export interface DeploymentMeta {
   id: string
   name: string
   environmentId: string
   hostId: string
-  appId: string | null
+  repoUrl: string | null
+  composeProject: string | null
   repoPath: string
   defaultBranch: string
   composeFile: string
@@ -100,7 +83,8 @@ export interface DeploymentInput {
   repoPath: string
   defaultBranch: string
   deployTag: string
-  appId?: string | null
+  repoUrl?: string | null
+  composeProject?: string | null
   composeFile?: string
   position?: number
   urls?: HealthUrl[]
@@ -334,7 +318,7 @@ export function lockHolderText(h: LockHolder, _now: number): string {
 
 // ---- Preflight ----
 export interface PreflightCheck {
-  /** tools, docker, repo, clean, branch, compose, disk, lock, tag, version-tag, reachable, auth or ansible */
+  /** tools, docker, repo, clean, branch, compose, deps, disk, lock, tag, version-tag, reachable, auth or ansible */
   id: string
   deploymentId: string | null
   hostId: string
@@ -348,9 +332,24 @@ export interface PreflightReport {
   checks: PreflightCheck[]
   commits: Record<
     string,
-    { commits: CommitInfo[]; hiddenPairs: number; truncated: number; firstDeploy: boolean; head: string | null }
+    /** `tagCommit`: the deploy tag's commit on origin, null on a first deploy. */
+    { commits: CommitInfo[]; hiddenPairs: number; truncated: number; firstDeploy: boolean; head: string | null; tagCommit: string | null }
   >
   dockerModes: Record<string, DockerMode>
+  /** Per deployment: the compose file's services (`docker compose config --services`), null when unknown. */
+  composeServices: Record<string, string[] | null>
+  /**
+   * Per deployment: the compose services classed as databases, which a release never restarts.
+   * Task 15 owns filling it, from image-based classification in main; the renderer never guesses from names.
+   * Absent until then, and the picker shows no database rows.
+   */
+  composeDatabases?: Record<string, string[] | null>
+  /**
+   * Per service in the selection: `since` is its last deployed commit, else the deploy tag's commit; `count` is
+   * how many commits of its checkout's list (newest first) come before `since`. `known` is false when `since`
+   * is not in the list, and then `count` is the list length.
+   */
+  serviceCommits: Record<string, { since: string | null; count: number; known: boolean }>
   locks: Record<string, { holder: LockHolder; stale: boolean; raw: string } | null>
   commitsTotal: number
   blocked: boolean
@@ -416,6 +415,10 @@ export interface ReleaseSummary {
   finishedAt: string | null
   deploymentCount: number
   hostCount: number
+  /** The services this release was confirmed for; a rollback release names the services it rolls back. */
+  serviceIds: string[]
+  /** The run entries: every service the release deploys, including a whole checkout's. */
+  serviceCount: number
   error: string | null
 }
 
@@ -437,6 +440,10 @@ export interface DeploymentRunMeta {
   startedAt: string | null
   finishedAt: string | null
   steps: { stepId: string; kind: StepKind; state: StepState; startedAt: string | null; finishedAt: string | null; error?: string }[]
+  /** The selected services this run deploys, with their commits. */
+  services: RunService[]
+  /** True when the run rebuilds the whole checkout (`services` null in the plan). */
+  wholeCheckout: boolean
 }
 
 export interface ReleaseDetail extends ReleaseSummary {
@@ -449,9 +456,25 @@ export interface ReleaseDetail extends ReleaseSummary {
   lastSeq: number
 }
 
+/**
+ * One service of a run. At preflight `previousCommit` and `previousReleaseId` are its last deployed commit and
+ * release (Start refuses when either has moved since) and `deployedCommit` is null.
+ */
+export interface RunService {
+  id: string
+  name: string
+  composeService: string
+  previousCommit: string | null
+  previousReleaseId: string | null
+  deployedCommit: string | null
+}
+
 export interface PreflightRequest {
   environmentId: string
-  deploymentIds: string[]
+  /** App services to deploy; the checkouts they belong to are the ones planned. */
+  serviceIds: string[]
+  /** Checkouts with no services, each deployed whole; refused for a checkout that has services. */
+  checkoutIds?: string[]
   bump: VersionBump
   options: ReleaseOptions
   releaseNotes?: string

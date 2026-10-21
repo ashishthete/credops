@@ -52,8 +52,6 @@ import {
   MAX_URL as MAX_HEALTH_URL,
   MAX_URLS,
   VERSION,
-  type AppInput,
-  type AppPatch,
   type DeploymentInput,
   type DeploymentPatch,
   type BreakLockConfirm,
@@ -90,6 +88,7 @@ import {
   type SecretPatch,
   type VaultInput,
 } from '../../shared/vault'
+import { MAX_SERVICES, type CopyServicesRequest, type ServiceInput, type ServicePatch } from '../../shared/services'
 import { MAX_PRIVATE_KEY_BYTES } from '../vault/openssh'
 import { InvalidArgs, args, v, type ArgsValidator, type Check } from './validate'
 
@@ -234,7 +233,8 @@ const deployName = v.str({ min: 1, max: MAX_NAME, trim: true })
 const deployPath = v.str({ min: 1, max: 1024 })
 const healthUrl = v.object({ url: v.str({ min: 1, max: MAX_HEALTH_URL }), from: v.oneOf(['host', 'mac'] as const) })
 const deployFields = {
-  appId: v.optional(nullableId),
+  repoUrl: v.nullable(v.str({ max: MAX_URL })),
+  composeProject: v.nullable(v.str({ max: 63 })),
   repoPath: deployPath,
   defaultBranch: v.str({ min: 1, max: 255 }),
   deployTag: v.str({ min: 1, max: 255 }),
@@ -255,15 +255,12 @@ const deployFields = {
   envTemplate: v.nullable(v.str({ max: MAX_ENV_TEMPLATE })),
   vaultIds: v.array(v.uuid(), MAX_LINKS),
 }
-const { appId: _appId, ...deployRest } = deployFields
-void _appId
-const deployOptional = Object.fromEntries(Object.entries(deployRest).map(([k, c]) => [k, v.optional(c as Check<unknown>)]))
+const deployOptional = Object.fromEntries(Object.entries(deployFields).map(([k, c]) => [k, v.optional(c as Check<unknown>)]))
 
 export const asDeploymentInput: Check<DeploymentInput> = v.object({
   name: deployName,
   environmentId: v.uuid(),
   hostId: v.uuid(),
-  appId: v.optional(nullableId),
   ...deployOptional,
   repoPath: deployPath,
   defaultBranch: deployFields.defaultBranch,
@@ -272,7 +269,6 @@ export const asDeploymentInput: Check<DeploymentInput> = v.object({
 // The environment and host are fixed at creation: they are not keys here, so a move fails validation.
 export const asDeploymentPatch: Check<DeploymentPatch> = v.object({
   name: v.optional(deployName),
-  appId: v.optional(nullableId),
   ...deployOptional,
 }) as Check<DeploymentPatch>
 export const asEnvDeploySettingsPatch: Check<EnvDeploySettingsPatch> = v.object({
@@ -282,7 +278,8 @@ export const asEnvDeploySettingsPatch: Check<EnvDeploySettingsPatch> = v.object(
 }) as Check<EnvDeploySettingsPatch>
 export const asPreflightRequest: Check<PreflightRequest> = v.object({
   environmentId: v.uuid(),
-  deploymentIds: v.array(v.uuid(), MAX_DEPLOYMENTS, { min: 1 }),
+  serviceIds: v.array(v.uuid(), MAX_SERVICES),
+  checkoutIds: v.optional(v.array(v.uuid(), MAX_DEPLOYMENTS)),
   bump: v.oneOf(['major', 'minor', 'patch', 'none'] as const),
   options: v.object({ backup: v.bool(), notify: v.bool(), qa: v.bool() }),
   releaseNotes: v.optional(v.str({ max: MAX_RELEASE_NOTES })),
@@ -297,21 +294,73 @@ export const asReleaseListFilter: Check<ReleaseListFilter> = v.object({
   limit: v.optional(v.int({ min: 1, max: 200 })),
   before: v.optional(v.uuid()),
 }) as Check<ReleaseListFilter>
-const appName = v.str({ min: 1, max: MAX_NAME, trim: true })
-const composeProject = v.nullable(v.str({ min: 1, max: 63 }))
-const appDescription = v.str({ max: 1000 })
-export const asAppInput: Check<AppInput> = v.object({
+
+// Services. Each kind's shape has only its own keys, so a field of the other kind fails here; the store owns the
+// content rules (compose service, address, membership of the checkout).
+const serviceCommon = {
   environmentId: v.uuid(),
-  hostId: v.uuid(),
-  name: appName,
-  composeProject: v.optional(composeProject),
-  description: v.optional(appDescription),
-}) as Check<AppInput>
-export const asAppPatch: Check<AppPatch> = v.object({
-  name: v.optional(appName),
-  composeProject: v.optional(composeProject),
-  description: v.optional(appDescription),
-}) as Check<AppPatch>
+  name: deployName,
+  description: v.optional(v.str({ max: MAX_DESCRIPTION })),
+}
+const servicePort = v.int({ min: 1, max: 65535 })
+const appServiceFields = {
+  deploymentId: nullableId,
+  composeService: v.str({ min: 1, max: 63 }),
+  url: v.nullable(v.str({ max: MAX_URL })),
+  urlCheckFrom: v.oneOf(['mac', 'host'] as const),
+}
+const dbServiceFields = {
+  dbEngine: v.oneOf(['postgres', 'mysql', 'mongodb', 'redis', 'other'] as const),
+  dbAddress: v.str({ min: 1, max: MAX_ADDRESS }),
+  dbPort: servicePort,
+  viaHostId: nullableId,
+  localPort: v.nullable(servicePort),
+}
+export const asServiceInput: Check<ServiceInput> = v.tagged('kind', {
+  service: v.object({
+    kind: v.oneOf(['service'] as const),
+    ...serviceCommon,
+    deploymentId: nullableId,
+    composeService: v.optional(appServiceFields.composeService),
+    url: v.optional(appServiceFields.url),
+    urlCheckFrom: v.optional(appServiceFields.urlCheckFrom),
+  }),
+  db: v.object({
+    kind: v.oneOf(['db'] as const),
+    ...serviceCommon,
+    dbEngine: dbServiceFields.dbEngine,
+    dbAddress: dbServiceFields.dbAddress,
+    dbPort: v.optional(dbServiceFields.dbPort),
+    viaHostId: v.optional(dbServiceFields.viaHostId),
+    localPort: v.optional(dbServiceFields.localPort),
+  }),
+}) as Check<ServiceInput>
+// The patch can't know the kind: both kinds' keys are allowed here and the store refuses the other kind's. The kind
+// and environment are not keys, so changing them fails validation.
+export const asServicePatch: Check<ServicePatch> = v.object({
+  name: v.optional(deployName),
+  description: serviceCommon.description,
+  ...Object.fromEntries(Object.entries({ ...appServiceFields, ...dbServiceFields }).map(([k, c]) => [k, v.optional(c as Check<unknown>)])),
+}) as Check<ServicePatch>
+
+export const asCopyServicesRequest: Check<CopyServicesRequest> = v.object({
+  sourceEnvironmentId: v.uuid(),
+  targetEnvironmentId: v.uuid(),
+  checkouts: v.array(
+    v.object({
+      deploymentId: v.uuid(),
+      branch: deployFields.defaultBranch,
+      repoPath: deployPath,
+      hostId: v.uuid(),
+      deployTag: deployFields.deployTag,
+    }),
+    MAX_DEPLOYMENTS,
+  ),
+  dbs: v.array(
+    v.object({ serviceId: v.uuid(), dbAddress: dbServiceFields.dbAddress, dbPort: servicePort, viaHostId: nullableId }),
+    MAX_SERVICES,
+  ),
+}) as Check<CopyServicesRequest>
 
 const tunnelBindAddress = v.str({ min: 1, max: MAX_BIND_ADDRESS, pattern: BIND_ADDRESS, trim: true })
 const tunnelBindPort = v.int({ min: 0, max: 65535 })
@@ -608,10 +657,6 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'tunnel:start': args(v.uuid()),
   'tunnel:stop': args(v.uuid()),
   'tunnel:status': args(),
-  'app:list': args(v.optional(v.uuid())),
-  'app:create': args(asAppInput),
-  'app:update': args(v.uuid(), asAppPatch),
-  'app:delete': args(v.uuid()),
   'deploy:list': args(v.optional(v.uuid())),
   'deploy:create': args(asDeploymentInput),
   'deploy:update': args(v.uuid(), asDeploymentPatch),
@@ -620,6 +665,17 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'deploy:settings': args(v.uuid()),
   'deploy:updateSettings': args(v.uuid(), asEnvDeploySettingsPatch),
   'deploy:tooling': args(),
+  'service:list': args(v.optional(v.uuid())),
+  'service:create': args(asServiceInput),
+  'service:update': args(v.uuid(), asServicePatch),
+  'service:delete': args(v.uuid(), v.object({ deleteTunnel: v.bool() })),
+  'service:reorder': args(v.uuid(), v.array(v.uuid(), MAX_SERVICES)),
+  'service:copy': args(asCopyServicesRequest),
+  'service:logs': args(v.uuid(), logTail),
+  'service:open': args(v.uuid()),
+  'service:tunnelOpen': args(v.uuid()),
+  'service:tunnelClose': args(v.uuid()),
+  'service:tunnelSync': args(v.uuid()),
   'release:preflight': args(asPreflightRequest),
   'release:start': args(v.uuid(), asReleaseConfirm),
   'release:cancel': args(v.uuid()),
@@ -678,4 +734,5 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'containers:logs': args(v.uuid(), nullableId, containerRef, logTail),
   'containers:follow': args(v.uuid(), nullableId, containerRef, logTail),
   'containers:unfollow': args(v.uuid()),
+  'config:export': args(),
 }

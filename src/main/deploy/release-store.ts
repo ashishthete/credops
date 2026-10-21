@@ -10,6 +10,7 @@ import {
   type ReleaseStatus,
   type ReleaseSummary,
   type RunEvent,
+  type RunService,
   type RunEventBody,
   type StepKind,
   type VersionBump,
@@ -36,6 +37,8 @@ export interface NewRelease {
   rollbackOf: string | null
   options: ReleaseOptions
   triggeredBy: string
+  /** The services the release was confirmed for (releases.service_ids). */
+  serviceIds: string[]
 }
 
 export interface ReleaseStatusExtra {
@@ -58,6 +61,8 @@ export interface RunPlan {
   position: number
   branch: string
   steps: { stepId: string; kind: StepKind }[]
+  services: RunService[]
+  wholeCheckout: boolean
 }
 
 export interface RunPatch {
@@ -86,6 +91,7 @@ interface ReleaseRow {
   redeploy: number
   rollback_of: string | null
   options: string
+  service_ids: string
   release_notes: string | null
   error: string | null
   playbook: string | null
@@ -95,6 +101,7 @@ interface ReleaseRow {
   finished_at: string | null
   deployment_count: number
   host_count: number
+  service_count: number
 }
 
 interface RunRow {
@@ -115,6 +122,8 @@ interface RunRow {
   backup_file: string | null
   started_at: string | null
   finished_at: string | null
+  services: string
+  whole_checkout: number
 }
 
 interface EventRow {
@@ -127,7 +136,9 @@ interface EventRow {
 
 const SELECT = `SELECT r.*, e.name AS environment_name,
   (SELECT COUNT(*) FROM deployment_runs d WHERE d.release_id = r.id) AS deployment_count,
-  (SELECT COUNT(DISTINCT d.host_id) FROM deployment_runs d WHERE d.release_id = r.id) AS host_count
+  (SELECT COUNT(DISTINCT d.host_id) FROM deployment_runs d WHERE d.release_id = r.id) AS host_count,
+  (SELECT COUNT(*) FROM deployment_runs d, json_each(CASE WHEN json_valid(d.services) AND json_type(d.services) = 'array' THEN d.services ELSE '[]' END) j
+    WHERE d.release_id = r.id AND j.type = 'object') AS service_count
   FROM releases r JOIN environments e ON e.id = r.environment_id`
 
 /**
@@ -157,11 +168,12 @@ export class ReleaseStore {
     this.db
       .prepare(
         `INSERT INTO releases(id, environment_id, kind, status, version, previous_version, version_bump, redeploy,
-          rollback_of, options, triggered_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+          rollback_of, options, service_ids, triggered_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         id, input.environmentId, input.kind, input.status, input.version, input.previousVersion, input.versionBump,
-        input.redeploy ? 1 : 0, input.rollbackOf, JSON.stringify(input.options), input.triggeredBy, this.now().toISOString(),
+        input.redeploy ? 1 : 0, input.rollbackOf, JSON.stringify(input.options), JSON.stringify(input.serviceIds), input.triggeredBy,
+        this.now().toISOString(),
       )
     return this.get(id)
   }
@@ -201,7 +213,9 @@ export class ReleaseStore {
     const pf = this.db
       .prepare("SELECT payload FROM run_events WHERE release_id = ? AND type = 'preflight.done' ORDER BY seq DESC LIMIT 1")
       .get(id) as { payload: string } | undefined
-    const preflight = pf ? ((JSON.parse(pf.payload) as { report: PreflightReport }).report ?? null) : null
+    const stored = pf ? ((JSON.parse(pf.payload) as { report: PreflightReport | undefined }).report ?? null) : null
+    // Reports stored before services lack these maps.
+    const preflight = stored ? { ...stored, composeServices: stored.composeServices ?? {}, serviceCommits: stored.serviceCommits ?? {} } : null
     return {
       ...summary(r),
       options: JSON.parse(r.options) as ReleaseOptions,
@@ -242,16 +256,59 @@ export class ReleaseStore {
     this.row(releaseId)
     return this.transaction(() => {
       const ins = this.db.prepare(
-        `INSERT INTO deployment_runs(id, release_id, deployment_id, deployment_name, host_id, host_label, position, branch, steps, status)
-         VALUES (?,?,?,?,?,?,?,?,?, 'pending')`,
+        `INSERT INTO deployment_runs(id, release_id, deployment_id, deployment_name, host_id, host_label, position, branch, steps,
+           services, whole_checkout, status)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?, 'pending')`,
       )
       return plans.map((p) => {
         const id = uuidv7()
         const steps = p.steps.map((s) => ({ stepId: s.stepId, kind: s.kind, state: 'pending' as const, startedAt: null, finishedAt: null }))
-        ins.run(id, releaseId, p.deploymentId, p.deploymentName, p.hostId, p.hostLabel, p.position, p.branch, JSON.stringify(steps))
+        ins.run(
+          id, releaseId, p.deploymentId, p.deploymentName, p.hostId, p.hostLabel, p.position, p.branch, JSON.stringify(steps),
+          JSON.stringify(p.services), p.wholeCheckout ? 1 : 0,
+        )
         return runMeta(this.db.prepare('SELECT * FROM deployment_runs WHERE id = ?').get(id) as unknown as RunRow)
       })
     })
+  }
+
+  setRunServices(runId: string, services: RunService[]): void {
+    const res = this.db.prepare('UPDATE deployment_runs SET services = ? WHERE id = ?').run(JSON.stringify(services), runId)
+    if (res.changes === 0) throw new Error('deployment run not found')
+  }
+
+  /** Each service → the newest started release (either kind) with a run that lists it. */
+  latestTouching(serviceIds: string[]): Map<string, string> {
+    const out = new Map<string, string>()
+    if (serviceIds.length === 0) return out
+    const rows = this.db
+      .prepare(
+        `SELECT j.value ->> '$.id' AS service_id, MAX(r.id) AS release_id
+         FROM releases r JOIN deployment_runs d ON d.release_id = r.id, json_each(d.services) j
+         WHERE r.started_at IS NOT NULL AND j.value ->> '$.id' IN (SELECT value FROM json_each(?))
+         GROUP BY service_id`,
+      )
+      .all(JSON.stringify(serviceIds)) as { service_id: string; release_id: string }[]
+    for (const r of rows) out.set(r.service_id, r.release_id)
+    return out
+  }
+
+  /**
+   * The newest started release before `beforeReleaseId` whose run for the service succeeded, with the commit it
+   * deployed. A rollback release's runs end `rolled_back` when they succeed; a release that was rolled back no longer counts.
+   */
+  previousTouching(serviceId: string, beforeReleaseId: string): { releaseId: string; commit: string | null } | null {
+    const row = this.db
+      .prepare(
+        `SELECT r.id AS release_id, j.value ->> '$.deployedCommit' AS commit_sha
+         FROM releases r JOIN deployment_runs d ON d.release_id = r.id, json_each(d.services) j
+         WHERE r.started_at IS NOT NULL AND r.id < ? AND j.value ->> '$.id' = ?
+           AND ((r.kind = 'release' AND r.status <> 'rolled_back' AND d.status = 'succeeded' AND d.rolled_back = 0)
+             OR (r.kind = 'rollback' AND d.status = 'rolled_back'))
+         ORDER BY r.id DESC LIMIT 1`,
+      )
+      .get(beforeReleaseId, serviceId) as { release_id: string; commit_sha: string | null } | undefined
+    return row ? { releaseId: row.release_id, commit: row.commit_sha } : null
   }
 
   updateRun(runId: string, patch: RunPatch): void {
@@ -379,6 +436,8 @@ function summary(r: ReleaseRow): ReleaseSummary {
     finishedAt: r.finished_at,
     deploymentCount: r.deployment_count,
     hostCount: r.host_count,
+    serviceIds: serviceIds(r.service_ids),
+    serviceCount: r.service_count,
     error: r.error,
   }
 }
@@ -402,5 +461,39 @@ function runMeta(r: RunRow): DeploymentRunMeta {
     startedAt: r.started_at,
     finishedAt: r.finished_at,
     steps: JSON.parse(r.steps) as DeploymentRunMeta['steps'],
+    services: runServices(r.services),
+    wholeCheckout: r.whole_checkout === 1,
   }
+}
+
+/** A release's stored service ids, keeping only strings; anything else (bad JSON, not an array) reads as none. */
+function serviceIds(json: string): string[] {
+  let raw: unknown
+  try {
+    raw = JSON.parse(json)
+  } catch {
+    return []
+  }
+  return Array.isArray(raw) ? raw.filter((v): v is string => typeof v === 'string') : []
+}
+
+/** A run's stored services, keeping only well-formed entries; anything else (old rows, bad JSON) reads as none. */
+function runServices(json: string): RunService[] {
+  let raw: unknown
+  try {
+    raw = JSON.parse(json)
+  } catch {
+    return []
+  }
+  if (!Array.isArray(raw)) return []
+  const str = (v: unknown): v is string => typeof v === 'string'
+  const opt = (v: unknown): v is string | null => v === null || typeof v === 'string'
+  return raw.flatMap((e: unknown) => {
+    if (typeof e !== 'object' || e === null) return []
+    const o = e as Record<string, unknown>
+    // An entry stored before previousReleaseId existed reads it as null.
+    const previousReleaseId = o.previousReleaseId === undefined ? null : o.previousReleaseId
+    if (!str(o.id) || !str(o.name) || !str(o.composeService) || !opt(o.previousCommit) || !opt(previousReleaseId) || !opt(o.deployedCommit)) return []
+    return [{ id: o.id, name: o.name, composeService: o.composeService, previousCommit: o.previousCommit, previousReleaseId, deployedCommit: o.deployedCommit }]
+  })
 }

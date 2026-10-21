@@ -3,6 +3,7 @@ import type { ReleaseService } from '../../src/main/deploy/release-service'
 import { createDeployHandlers } from '../../src/main/ipc/handlers/deploy'
 import { VALIDATORS } from '../../src/main/ipc/validators'
 import { MAX_EVENTS_PAGE } from '../../src/shared/deploy'
+import { MAX_SERVICES } from '../../src/shared/services'
 
 const ID = '0190a1b2-c3d4-7e5f-8a6b-1234567890ab'
 const check = (channel: string, args: unknown[]): unknown => (VALIDATORS as Record<string, (a: unknown[]) => unknown>)[channel](args)
@@ -10,7 +11,8 @@ const OPTS = { backup: true, notify: false, qa: false }
 
 describe('release:* validators', () => {
   it('accept well-formed arguments', () => {
-    expect(() => check('release:preflight', [{ environmentId: ID, deploymentIds: [ID], bump: 'minor', options: OPTS }])).not.toThrow()
+    expect(() => check('release:preflight', [{ environmentId: ID, serviceIds: [ID], bump: 'minor', options: OPTS }])).not.toThrow()
+    expect(() => check('release:preflight', [{ environmentId: ID, serviceIds: [], checkoutIds: [ID], bump: 'minor', options: OPTS }])).not.toThrow()
     expect(() => check('release:start', [ID, { typedName: 'prod', redeploy: true }])).not.toThrow()
     expect(() => check('release:break-lock', [ID, ID, { typedLabel: 'app1' }])).not.toThrow()
     expect(() => check('release:list', [{ environmentId: ID, limit: 10 }])).not.toThrow()
@@ -19,12 +21,15 @@ describe('release:* validators', () => {
   })
 
   const bad: [string, unknown[], RegExp][] = [
-    ['release:preflight', [{ environmentId: 'x', deploymentIds: [ID], bump: 'minor', options: OPTS }], /environmentId/],
-    ['release:preflight', [{ environmentId: ID, deploymentIds: [], bump: 'minor', options: OPTS }], /deploymentIds/],
-    ['release:preflight', [{ environmentId: ID, deploymentIds: ['nope'], bump: 'minor', options: OPTS }], /deploymentIds/],
-    ['release:preflight', [{ environmentId: ID, deploymentIds: [ID], bump: 'huge', options: OPTS }], /bump/],
-    ['release:preflight', [{ environmentId: ID, deploymentIds: [ID], bump: 'none', options: { backup: 1, notify: false, qa: false } }], /options/],
-    ['release:preflight', [{ environmentId: ID, deploymentIds: [ID], bump: 'none', options: OPTS, releaseNotes: 5 }], /releaseNotes/],
+    ['release:preflight', [{ environmentId: 'x', serviceIds: [ID], bump: 'minor', options: OPTS }], /environmentId/],
+    ['release:preflight', [{ environmentId: ID, bump: 'minor', options: OPTS }], /serviceIds/],
+    ['release:preflight', [{ environmentId: ID, serviceIds: ['nope'], bump: 'minor', options: OPTS }], /serviceIds/],
+    ['release:preflight', [{ environmentId: ID, serviceIds: [], checkoutIds: ['nope'], bump: 'minor', options: OPTS }], /checkoutIds/],
+    ['release:preflight', [{ environmentId: ID, serviceIds: Array(MAX_SERVICES + 1).fill(ID), bump: 'minor', options: OPTS }], /serviceIds/],
+    ['release:preflight', [{ environmentId: ID, serviceIds: [ID], deploymentIds: [ID], bump: 'minor', options: OPTS }], /deploymentIds/],
+    ['release:preflight', [{ environmentId: ID, serviceIds: [ID], bump: 'huge', options: OPTS }], /bump/],
+    ['release:preflight', [{ environmentId: ID, serviceIds: [ID], bump: 'none', options: { backup: 1, notify: false, qa: false } }], /options/],
+    ['release:preflight', [{ environmentId: ID, serviceIds: [ID], bump: 'none', options: OPTS, releaseNotes: 5 }], /releaseNotes/],
     ['release:preflight', ['x'], /./],
     ['release:start', ['x', {}], /./],
     ['release:start', [ID, { typedName: 5 }], /typedName/],

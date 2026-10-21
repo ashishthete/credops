@@ -12,13 +12,19 @@ import { HostsPage } from '../pages/hosts/HostsPage'
 import { MapPage } from '../pages/map/MapPage'
 import { OpsPage } from '../pages/ops/OpsPage'
 import { DeploymentsPage } from '../pages/deployments/DeploymentsPage'
+import { ReleasePage } from '../pages/deployments/ReleasePage'
 import { ProductsPage } from '../pages/products/ProductsPage'
+import { SettingsPage } from '../pages/settings/SettingsPage'
 import { KnownHostsDialog, closeKnownHosts, openKnownHosts } from '../pages/terminals/KnownHostsDialog'
 import { PromptHost } from '../pages/terminals/PromptHost'
 import { TerminalDeck } from '../pages/terminals/TerminalDeck'
 import { TunnelsPage } from '../pages/tunnels/TunnelsPage'
 import { VaultsPage } from '../pages/vaults/VaultsPage'
 import { resetOps, startOpsSync } from '../ops/runs'
+import { resetReleases, startReleaseSync } from '../deploy/releases'
+import { resetDeploy, startDeploySync } from '../deploy/store'
+import { useDeployCommands } from '../deploy/commands'
+import { ServiceLogsHost } from '../pages/products/services/ServiceLogs'
 import { disposeAll } from '../terminal/registry'
 import { resetSessions, startSessionSync } from '../terminal/sessions'
 import { InsertHost } from '../pages/ops/InsertHost'
@@ -41,6 +47,7 @@ export function AppShell() {
   useMapCommands()
   useOpsCommands()
   useHubCommands()
+  useDeployCommands()
   // The shell mounts only while unlocked, so every unlock reloads (F22).
   useEffect(() => {
     void loadInventory()
@@ -61,17 +68,24 @@ export function AppShell() {
     const stopTunnels = startTunnelSync()
     const stopOps = startOpsSync()
     const stopHub = startHubSync()
+    const stopReleases = startReleaseSync()
+    // The map's service chips and the palette's deploy commands need the services and checkouts.
+    const stopDeploy = startDeploySync()
     return () => {
       stop()
       stopTunnels()
       stopOps()
       stopHub()
+      stopReleases()
+      stopDeploy()
       disposeAll()
       // Events stop while unmounted (the vault locked); the next mount's session list is the truth.
       resetSessions()
       resetTunnels()
       resetOps()
       resetHub()
+      resetReleases()
+      resetDeploy()
       closeKnownHosts()
     }
   }, [])
@@ -95,6 +109,7 @@ export function AppShell() {
           <Routes location={location}>
             <Route path="/" element={<Navigate to={SECTIONS[0].path} replace />} />
             <Route path="/deployments" element={<DeploymentsPage />} />
+            <Route path="/deployments/release/:id" element={<ReleasePage />} />
             <Route path="/products" element={<ProductsPage />} />
             {/* The deck below draws this page; it stays mounted so terminals survive navigation. */}
             <Route path="/terminals" element={null} />
@@ -107,6 +122,7 @@ export function AppShell() {
             <Route path="/ops/:tab" element={<OpsPage />} />
             <Route path="/hub" element={<HubPage />} />
             <Route path="/audit" element={<AuditPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<Navigate to={SECTIONS[0].path} replace />} />
           </Routes>
         </motion.div>
@@ -114,6 +130,7 @@ export function AppShell() {
       </main>
       <PromptHost />
       <InsertHost />
+      <ServiceLogsHost />
       <KnownHostsDialog />
     </div>
   )

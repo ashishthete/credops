@@ -46,6 +46,15 @@ export interface PlanDeployment {
   previousCommit: string | null
   /** Preflight walks the docker ladder by this setting. */
   useSudo: UseSudo
+  /** `-p` for every compose command; null lets compose name the project after the directory. */
+  composeProject: string | null
+  /** Compose services to build and up (with --no-deps), in position order; null means the whole checkout. */
+  services: string[] | null
+  /**
+   * Preflight lists commits from the merge-base of these (each selected service's last deployed commit, plus
+   * the deploy tag's commit when `tag`) to origin/<branch>. No shas: the tag range alone.
+   */
+  commitBases: { shas: string[]; tag: boolean }
 }
 
 export type PlanKind = 'preflight' | 'release' | 'rollback' | 'version' | 'unlock' | 'break-lock'
@@ -83,7 +92,7 @@ export interface RunOutcome {
   signal: string | null
   cancelled: boolean
   /** Set for preflight plans. */
-  preflight?: Omit<PreflightReport, 'releaseId'>
+  preflight?: RunnerPreflight
   failedDeploymentRunIds: string[]
   /** Deployment runs whose checkout step started, so a rollback has something to undo. */
   reachedCheckout: string[]
@@ -102,3 +111,6 @@ export interface DeployRunner {
   cancel(runId: string): void
   onEvent(fn: (releaseId: string, body: RunEventBody) => void): () => void
 }
+
+/** What a runner reports from preflight; the release service adds `serviceCommits` from its selection. */
+export type RunnerPreflight = Omit<PreflightReport, 'releaseId' | 'serviceCommits'>
