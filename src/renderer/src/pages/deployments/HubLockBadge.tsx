@@ -1,7 +1,7 @@
 import { Lock, Snowflake } from 'lucide-react'
 import { useState } from 'react'
 import { FREEZE_DEFAULT_HOURS, FREEZE_MAX_HOURS, MAX_FREEZE_REASON } from '../../../../shared/hub'
-import { freezeEnvironment, unfreezeEnvironment, useHub } from '../../hub/store'
+import { freezeEnvironment, isHubAdmin, unfreezeEnvironment, useHub } from '../../hub/store'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
 import { ConfirmDialog, type ConfirmRequest } from '../../ui/common'
@@ -15,6 +15,8 @@ export function HubLockBadge({ environmentId, name, guarded }: { environmentId: 
   const { locks, status } = useHub()
   const lock = locks[environmentId]
   const me = status.linked ? (status.user?.oid ?? null) : null
+  // Only the holder or an admin can lift; anyone else would get a server error.
+  const canLift = lock?.holder.oid === me || isHubAdmin(status)
   const [freezing, setFreezing] = useState(false)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
 
@@ -54,7 +56,7 @@ export function HubLockBadge({ environmentId, name, guarded }: { environmentId: 
           Freeze…
         </Button>
       )}
-      {lock?.kind === 'manual' && (
+      {lock?.kind === 'manual' && canLift && (
         <Button size="sm" variant="ghost" onClick={lift}>
           Lift freeze
         </Button>
@@ -70,7 +72,7 @@ function FreezeDialog({ open, name, environmentId, onClose }: { open: boolean; n
   const [hours, setHours] = useState(String(FREEZE_DEFAULT_HOURS))
   const [busy, setBusy] = useState(false)
   const n = Number(hours)
-  const valid = Number.isFinite(n) && n > 0 && n <= FREEZE_MAX_HOURS
+  const valid = reason.trim() !== '' && Number.isInteger(n) && n > 0 && n <= FREEZE_MAX_HOURS
   const submit = async () => {
     setBusy(true)
     const lock = await freezeEnvironment(environmentId, reason.trim(), n)

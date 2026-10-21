@@ -109,8 +109,10 @@ function EnvSecrets({ env, vault }: { env: HubCatalogEnv; vault: SecretMeta[] })
   const [list, reload] = useList(id)
   const [busy, setBusy] = useState(false)
   const missing = list?.missing[id] ?? []
-  const set = list?.secrets ?? []
-  const teams = set.find((s) => s.kind === 'teams_webhook')
+  // The Hub lists the global integration secrets with every environment's; only this environment's own belong here.
+  const own = (list?.secrets ?? []).filter((s) => s.environmentId === id)
+  const set = own.filter((s) => s.kind === 'env' || s.kind === 'become')
+  const teams = own.find((s) => s.kind === 'teams_webhook')
 
   const upload = async (secretIds?: string[]) => {
     setBusy(true)
@@ -130,7 +132,7 @@ function EnvSecrets({ env, vault }: { env: HubCatalogEnv; vault: SecretMeta[] })
         <ListSkeleton />
       ) : (
         <ul className="mt-2 flex flex-col gap-1.5">
-          {set.filter((s) => s.kind !== 'teams_webhook').map((s) => (
+          {set.map((s) => (
             <li key={s.id} className="flex items-center justify-between text-[13px] text-fg">
               <span>{s.name}</span>
               <Badge tone="success">{`Set · ${s.updatedBy} · ${when(s.updatedAt)}`}</Badge>

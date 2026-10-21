@@ -46,7 +46,12 @@ const group = (over: Partial<HubGroup> = {}): HubGroup => ({ id: 'g-ops', name: 
 const calls = (invoke: ReturnType<typeof mockBridge>, channel: string) => (invoke.mock.calls as unknown[][]).filter((c) => c[0] === channel)
 
 const secretList: HubSecretList = {
-  secrets: [{ id: 'sec1', environmentId: 'e1', name: 'DB_PASSWORD', kind: 'env', updatedBy: 'ada@corp.example', updatedAt: STAMP }],
+  secrets: [
+    { id: 'sec1', environmentId: 'e1', name: 'DB_PASSWORD', kind: 'env', updatedBy: 'ada@corp.example', updatedAt: STAMP },
+    // The Hub returns the global integration secrets with every environment's list.
+    { id: 'glob1', environmentId: null, name: 'SENDGRID_API_KEY', kind: 'sendgrid_api_key', updatedBy: 'ada@corp.example', updatedAt: STAMP },
+    { id: 'other1', environmentId: 'e9', name: 'QA_ONLY', kind: 'env', updatedBy: 'ada@corp.example', updatedAt: STAMP },
+  ],
   missing: { e1: [{ secretId: 'req-2', name: 'API_TOKEN' }] },
 }
 
@@ -93,9 +98,11 @@ describe('hub admin panels', () => {
   afterEach(cleanup)
 
   it('secrets panel never renders a value and has no reveal control', async () => {
-    const invoke = await renderHub({ 'hub:secrets': { ...secretList, secrets: [{ ...secretList.secrets[0], value: VALUE }] } }, 'Secrets')
+    const invoke = await renderHub({ 'hub:secrets': { ...secretList, secrets: secretList.secrets.map((m, i) => (i === 0 ? { ...m, value: VALUE } : m)) } }, 'Secrets')
     const panel = await screen.findByRole('region', { name: 'Secrets for staging' })
     expect(await within(panel).findByText('DB_PASSWORD')).toBeInTheDocument()
+    expect(within(panel).queryByText('SENDGRID_API_KEY')).not.toBeInTheDocument()
+    expect(within(panel).queryByText('QA_ONLY')).not.toBeInTheDocument()
     expect(within(panel).getByText(/Set · ada@corp.example/)).toBeInTheDocument()
     expect(within(panel).getByText('API_TOKEN')).toBeInTheDocument()
     expect(within(panel).getAllByText('Missing')).toHaveLength(2)

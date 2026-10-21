@@ -109,14 +109,39 @@ describe('team deployments', () => {
   })
 
   it('a release lock reads Releasing and a local env published to the Hub gets the chip', async () => {
-    await open(
+    const invoke = await open(
       { 'hub:catalog': [teamEnv({ id: 'e1', name: 'staging', protected: false })], 'hub:locks': [lock({ environmentId: 'e1', kind: 'release', releaseId: REL, reason: null, expiresAt: null })] },
       '/deployments?env=e1',
     )
     expect(await screen.findByText('Releasing — Bob')).toBeInTheDocument()
     expect(screen.getByText('Published to Hub')).toBeInTheDocument()
-    // A live lock event updates the badge.
+    // A live lock event re-fetches the locks and updates the badge.
+    const before = calls(invoke, 'hub:locks').length
+    invoke.mockImplementation(async (channel: string) => (channel === 'hub:locks' ? [] : null))
     await act(async () => emitBridgeEvent('hub:locks', undefined))
+    await waitFor(() => expect(calls(invoke, 'hub:locks').length).toBeGreaterThan(before))
+    await waitFor(() => expect(screen.queryByText('Releasing — Bob')).not.toBeInTheDocument())
+  })
+
+  it('a team environment that arrives after the first deploy load becomes deployable', async () => {
+    const invoke = await open({ 'hub:catalog': [], 'deploy:list': [] }, '/deployments?env=e1')
+    expect(screen.queryByRole('group', { name: 'Team (Hub)' })).not.toBeInTheDocument()
+    // The catalog arrives over HTTP after sign-in; main now lists its deployments in deploy:list.
+    const arrived = deploymentMeta({ id: 'hd1', name: 'core', environmentId: 'hub-prod', hostId: 'hh1' })
+    invoke.mockImplementation(async (channel: string) => {
+      if (channel === 'hub:catalog') return [teamEnv()]
+      if (channel === 'hub:locks') return []
+      if (channel === 'deploy:list') return [arrived]
+      if (channel === 'deploy:settings') return envSettings()
+      if (channel === 'hub:status') return status()
+      if (channel === 'service:list') return []
+      return null
+    })
+    await act(async () => emitBridgeEvent('hub:catalog', undefined))
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'prod-eu' }))
+    expect(await screen.findByRole('region', { name: 'eu-app1' })).toBeInTheDocument()
+    expect(screen.queryByText(/No deployments in/)).not.toBeInTheDocument()
   })
 
   it('a pending user sees the pending empty state in place of team environments', async () => {
@@ -171,7 +196,7 @@ describe('team deployments', () => {
 
   it('lifting another\'s freeze on a protected env needs the typed name', async () => {
     const user = userEvent.setup()
-    const invoke = await open({ 'hub:locks': [lock()], 'hub:unfreeze': null })
+    const invoke = await open({ 'hub:status': status({ role: 'admin' as never }), 'hub:locks': [lock()], 'hub:unfreeze': null })
     await user.click(await screen.findByRole('button', { name: 'Lift freeze' }))
     const confirm = await screen.findByRole('dialog', { name: "Lift Bob's freeze on prod-eu?" })
     const ok = within(confirm).getByRole('button', { name: 'Lift freeze' })
@@ -197,6 +222,28 @@ describe('team deployments', () => {
     await user.type(within(dialog).getByLabelText('Reason'), 'release window')
     await user.click(within(dialog).getByRole('button', { name: 'Freeze' }))
     await waitFor(() => expect(calls(invoke2, 'hub:freeze')[0].slice(1)).toEqual(['hub-prod', 'release window', 4]))
+  })
+
+  it('Lift freeze is offered only to the holder or an admin', async () => {
+    await open({ 'hub:locks': [lock()] })
+    expect(await screen.findByText(/Frozen by Bob/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Lift freeze' })).not.toBeInTheDocument()
+  })
+
+  it('Freeze needs a reason and whole hours', async () => {
+    const user = userEvent.setup()
+    await open()
+    await user.click(await screen.findByRole('button', { name: 'Freeze…' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Freeze prod-eu' })
+    const go = within(dialog).getByRole('button', { name: 'Freeze' })
+    expect(go).toBeDisabled()
+    await user.type(within(dialog).getByLabelText('Reason'), '   ')
+    expect(go).toBeDisabled()
+    await user.type(within(dialog).getByLabelText('Reason'), 'window')
+    expect(go).toBeEnabled()
+    await user.clear(within(dialog).getByLabelText('Hours'))
+    await user.type(within(dialog).getByLabelText('Hours'), '1.5')
+    expect(go).toBeDisabled()
   })
 
   it('reduced motion renders with no transforms', async () => {

@@ -106,13 +106,8 @@ export async function refreshCatalog(): Promise<void> {
 }
 
 function lockMap(catalog: HubCatalogEnv[], locks?: HubEnvLock[] | null): Record<string, HubEnvLock> {
-  const out: Record<string, HubEnvLock> = {}
-  for (const e of catalog) if (e.lock) out[e.environment.id] = e.lock
-  if (locks) {
-    for (const k of Object.keys(out)) delete out[k]
-    for (const l of locks) out[l.environmentId] = l
-  }
-  return out
+  if (locks) return Object.fromEntries(locks.map((l) => [l.environmentId, l]))
+  return Object.fromEntries(catalog.flatMap((e) => (e.lock ? [[e.environment.id, e.lock] as const] : [])))
 }
 
 /** Refetches only the locks (a lock was taken or lifted). */
@@ -155,11 +150,22 @@ export async function refreshAdmin(): Promise<void> {
   }
 }
 
+/** Refetches only the publishable environments (the catalog changed, people and groups did not). */
+async function refreshAdminEnvs(): Promise<void> {
+  const mine = adminLoad
+  try {
+    const adminEnvs = await api.invoke('hub:adminEnvironments')
+    if (mine === adminLoad && adminEnvs) patch({ adminEnvs })
+  } catch {
+    // The next full admin refresh carries it too.
+  }
+}
+
 function startSync(): () => void {
   const offState = api.on('hub:state', setStatus)
   const offCatalog = api.on('hub:catalog', () => {
     void refreshCatalog()
-    if (isHubAdmin(hubStore.get().status)) void refreshAdmin()
+    if (isHubAdmin(hubStore.get().status)) void refreshAdminEnvs()
   })
   const offLocks = api.on('hub:locks', () => void refreshLocks())
   void loadHub()

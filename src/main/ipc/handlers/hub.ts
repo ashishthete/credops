@@ -124,7 +124,14 @@ export function createHubHandlers(deps: {
     'hub:unpublish': (environmentId) => publisher.unpublish(environmentId),
     // Secrets: the publisher reads values from the vault in main and audits `hub.secret.set`.
     // Names, kinds and timestamps, plus which required secrets are still missing; never a value.
-    'hub:secrets': (environmentId) => conn.client().get<HubSecretList>(`${ADMIN}/secrets`, environmentId ? { environmentId } : undefined),
+    'hub:secrets': async (environmentId) => {
+      const got = await conn.client().get<HubSecretList>(`${ADMIN}/secrets`, environmentId ? { environmentId } : undefined)
+      // Project to the known fields: a field the Hub adds later does not reach the renderer.
+      return {
+        secrets: got.secrets.map((s) => ({ id: s.id, environmentId: s.environmentId, name: s.name, kind: s.kind, updatedBy: s.updatedBy, updatedAt: s.updatedAt })),
+        missing: Object.fromEntries(Object.entries(got.missing).map(([k, v]) => [k, v.map((m) => ({ secretId: m.secretId, name: m.name }))])),
+      }
+    },
     'hub:uploadSecrets': (environmentId, secretIds) => publisher.uploadSecrets(environmentId, secretIds),
     'hub:setIntegrationSecret': (environmentId, kind, secretId) => publisher.setIntegrationSecret(environmentId, kind, secretId),
     'hub:deleteSecret': (id, environmentId) =>

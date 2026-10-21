@@ -91,18 +91,29 @@ export function startDeploySync(): () => void {
     // loadDeploy also refreshes every cached environment's settings (the current version moves after a release).
     const pending = new Set<string>()
     let timer: ReturnType<typeof setTimeout> | null = null
-    const off = api.on('deploy:changed', ({ environmentId }) => {
-      pending.add(environmentId)
+    let all = false
+    const flush = () => {
       timer ??= setTimeout(() => {
         timer = null
-        const ids = [...pending]
+        const ids = all ? undefined : [...pending]
+        all = false
         pending.clear()
         void loadDeploy(ids)
       }, SYNC_DEBOUNCE_MS)
+    }
+    const off = api.on('deploy:changed', ({ environmentId }) => {
+      pending.add(environmentId)
+      flush()
+    })
+    // deploy:list also carries the Hub's environments, which arrive (or go) when the catalog does.
+    const offCatalog = api.on('hub:catalog', () => {
+      all = true
+      flush()
     })
     void loadDeploy()
     stopSync = () => {
       off()
+      offCatalog()
       if (timer) clearTimeout(timer)
     }
   }

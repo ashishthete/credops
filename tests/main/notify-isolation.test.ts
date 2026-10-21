@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ReleaseRunMeta } from '../../src/main/deploy/finalize'
 import { NotificationDispatcher } from '../../src/main/notify/dispatcher'
 import type { NotificationSink } from '../../src/main/notify/sink'
+import type { ReleaseService } from '../../src/main/deploy/release-service'
+import type { ReleaseApi } from '../../src/main/hub/runner'
 import { wireLocalNotify } from '../../src/main/notify/wire-local'
 import { IntegrationStore } from '../../src/main/settings/integration-store'
 import { SettingsStore } from '../../src/main/settings/settings-store'
@@ -22,6 +24,9 @@ function source() {
     emit: (batch: RunEvent[]) => fns.forEach((fn) => fn(batch)),
   }
 }
+
+/** The wiring takes the nominal local service; a scripted source stands in for it. */
+const asLocal = (s: { onEvent: ReleaseService['onEvent'] }): ReleaseService => s as unknown as ReleaseService
 
 async function rig() {
   const f = await makeDeployFixture()
@@ -73,7 +78,7 @@ describe('desktop notification isolation (decision 11)', () => {
     const { sink, dispatcher, onRun, failed } = await rig()
     const local = source()
     const hub = source()
-    wireLocalNotify(local, dispatcher)
+    wireLocalNotify(asLocal(local), dispatcher)
 
     // The Hub's own stream is not the local service's: nothing it carries is a desktop notification.
     hub.emit([failed('hub-rel')])
@@ -95,9 +100,17 @@ describe('desktop notification isolation (decision 11)', () => {
     const { sink, dispatcher, onRun, failed } = await rig()
     const local = source()
     const hub = source()
-    wireLocalNotify({ onEvent: (fn) => { const a = local.onEvent(fn); const b = hub.onEvent(fn); return () => { a(); b() } } }, dispatcher)
+    wireLocalNotify(asLocal({ onEvent: (fn) => { const a = local.onEvent(fn); const b = hub.onEvent(fn); return () => { a(); b() } } }), dispatcher)
     hub.emit([failed('hub-rel')])
     await vi.waitFor(() => expect(onRun).toHaveBeenCalled())
     await vi.waitFor(() => expect(sink.macos).toHaveBeenCalled())
+  })
+
+  it('the routing ReleaseApi is rejected by the type, so index.ts cannot wire it', async () => {
+    const { dispatcher } = await rig()
+    const routed = source() as unknown as ReleaseApi
+    // @ts-expect-error ReleaseService is nominal (private members); the routing API also carries Hub releases.
+    const off = wireLocalNotify(routed, dispatcher)
+    off()
   })
 })

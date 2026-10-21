@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useState, type DragEvent, type Keyboar
 import { useSearchParams } from 'react-router'
 import type { DeploymentMeta } from '../../../../shared/deploy'
 import type { HubCatalogEnv } from '../../../../shared/hub'
-import type { EnvironmentMeta } from '../../../../shared/inventory'
 import { deleteDeployment, loadSettings, reorderDeployments, startDeploySync, useDeploy, useDeployments } from '../../deploy/store'
 import { PendingNotice } from '../hub/shared'
 import { startHubSync, useHub } from '../../hub/store'
@@ -335,7 +334,7 @@ function EnvPicker({ data, selected, onSelect, team }: { data: NonNullable<Retur
           </span>
           <div className="flex gap-0.5 rounded-lg border border-line bg-surface/60 p-0.5">
             {team.map((c) => (
-              <EnvPill key={c.environment.id} env={{ id: c.environment.id, name: c.environment.name, color: '' } as EnvironmentMeta} on={c.environment.id === selected} onSelect={onSelect} />
+              <EnvPill key={c.environment.id} env={{ id: c.environment.id, name: c.environment.name, hub: true }} on={c.environment.id === selected} onSelect={onSelect} />
             ))}
           </div>
         </div>
@@ -344,7 +343,7 @@ function EnvPicker({ data, selected, onSelect, team }: { data: NonNullable<Retur
   )
 }
 
-function EnvPill({ env, on, onSelect }: { env: EnvironmentMeta; on: boolean; onSelect: (id: string) => void }) {
+function EnvPill({ env, on, onSelect }: { env: { id: string; name: string; color?: string; hub?: boolean }; on: boolean; onSelect: (id: string) => void }) {
   return (
     <button
       type="button"
@@ -354,7 +353,7 @@ function EnvPill({ env, on, onSelect }: { env: EnvironmentMeta; on: boolean; onS
         on ? 'bg-white/[0.08] text-fg shadow-[inset_0_0_0_1px_var(--border)]' : 'text-muted hover:text-fg'
       }`}
     >
-      <span aria-hidden className="size-1.5 rounded-full" style={{ background: env.color }} />
+      {env.hub ? <Cloud aria-hidden className="size-3" /> : <span aria-hidden className="size-1.5 rounded-full" style={{ background: env.color }} />}
       {env.name}
     </button>
   )
