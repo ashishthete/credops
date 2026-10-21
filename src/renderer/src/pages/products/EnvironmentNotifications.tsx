@@ -266,6 +266,7 @@ export function EnvironmentNotifications({ environment }: { environment: Environ
         placeholder={String(QA_WAIT_DEFAULT_MIN)}
         value={waitMinutes}
         error={waitError}
+        disabled={!saved || !qaWait || qaBlank}
         inputMode="numeric"
         spellCheck={false}
         onChange={(e) => setWaitMinutes(e.target.value)}

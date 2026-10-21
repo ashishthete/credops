@@ -91,8 +91,26 @@ describe('EnvironmentNotifications', () => {
     expect(rows[1]).toHaveTextContent('SendGrid rejected the key')
   })
 
+  it('the wait field only works where it has an effect: QA configured and "Wait for the QA result" on', async () => {
+    const off = { ...blank(ENV), qa: { repo: 'acme/qa', workflow: 'qa.yml', ref: 'main' }, qaOnDeploy: true, qaWait: false, updatedAt: TS }
+    bridge(environment({ id: ENV, name: 'staging' }), off)
+    renderSection()
+    const s = section()
+    const field = await waitFor(() => within(s).getByLabelText('Wait up to (minutes)'))
+    expect(field).toBeDisabled()
+    fireEvent.click(within(s).getByRole('switch', { name: 'Wait for result' }))
+    expect(field).toBeEnabled()
+  })
+
+  it('the wait field is disabled while the QA workflow is blank', async () => {
+    const blankQa = { ...blank(ENV), qa: null, qaOnDeploy: false, qaWait: true, updatedAt: TS }
+    bridge(environment({ id: ENV, name: 'staging' }), blankQa)
+    renderSection()
+    expect(await waitFor(() => within(section()).getByLabelText('Wait up to (minutes)'))).toBeDisabled()
+  })
+
   it('QA wait time is optional, validated 5..180, and saved with the workflow (row 46)', async () => {
-    const saved = { ...blank(ENV), qa: { repo: 'acme/qa', workflow: 'qa.yml', ref: 'main' }, updatedAt: TS }
+    const saved = { ...blank(ENV), qa: { repo: 'acme/qa', workflow: 'qa.yml', ref: 'main' }, qaOnDeploy: true, qaWait: true, updatedAt: TS }
     const invoke = bridge(environment({ id: ENV, name: 'staging' }), saved)
     renderSection()
     const s = section()
