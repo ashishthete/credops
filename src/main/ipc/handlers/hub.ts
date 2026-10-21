@@ -123,8 +123,8 @@ export function createHubHandlers(deps: {
     'hub:publish': (environmentId) => publisher.publish(environmentId),
     'hub:unpublish': (environmentId) => publisher.unpublish(environmentId),
     // Secrets: the publisher reads values from the vault in main and audits `hub.secret.set`.
-    'hub:secrets': async (environmentId) =>
-      (await conn.client().get<HubSecretList>(`${ADMIN}/secrets`, environmentId ? { environmentId } : undefined)).secrets,
+    // Names, kinds and timestamps, plus which required secrets are still missing; never a value.
+    'hub:secrets': (environmentId) => conn.client().get<HubSecretList>(`${ADMIN}/secrets`, environmentId ? { environmentId } : undefined),
     'hub:uploadSecrets': (environmentId, secretIds) => publisher.uploadSecrets(environmentId, secretIds),
     'hub:setIntegrationSecret': (environmentId, kind, secretId) => publisher.setIntegrationSecret(environmentId, kind, secretId),
     'hub:deleteSecret': (id, environmentId) =>

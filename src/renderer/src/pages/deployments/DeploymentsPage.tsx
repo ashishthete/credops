@@ -1,10 +1,13 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { Copy, ExternalLink, GripVertical, Pencil, Plus, Rocket, TriangleAlert, Trash2 } from 'lucide-react'
+import { Cloud, Copy, ExternalLink, GripVertical, Pencil, Plus, Rocket, TriangleAlert, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState, type DragEvent, type KeyboardEvent } from 'react'
 import { useSearchParams } from 'react-router'
 import type { DeploymentMeta } from '../../../../shared/deploy'
+import type { HubCatalogEnv } from '../../../../shared/hub'
 import type { EnvironmentMeta } from '../../../../shared/inventory'
 import { deleteDeployment, loadSettings, reorderDeployments, startDeploySync, useDeploy, useDeployments } from '../../deploy/store'
+import { PendingNotice } from '../hub/shared'
+import { startHubSync, useHub } from '../../hub/store'
 import { useInventory } from '../../inventory/store'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
@@ -14,6 +17,7 @@ import { useMotionSafe } from '../../ui/motion'
 import { Segmented } from '../../ui/Segmented'
 import { Skeleton } from '../../ui/Skeleton'
 import { toast } from '../../ui/Toaster'
+import { HubLockBadge } from './HubLockBadge'
 import { DeploymentDialog, type DeploymentRequest } from './DeploymentDialog'
 import { EnvDeploySettings } from './EnvDeploySettings'
 import { DeployWizard } from './release/DeployWizard'
@@ -49,14 +53,23 @@ export function DeploymentsPage() {
   const [deploying, setDeploying] = useState(false)
 
   useEffect(() => startDeploySync(), [])
+  useEffect(() => startHubSync(), [])
+  const hub = useHub()
+  const pending = hub.status.linked && hub.status.signedIn && hub.status.user?.status === 'pending'
 
   const environments = inventory?.environments
   const wanted = params.get('env')
+  // Team environments this machine holds no copy of (published ones that are also local show under their product).
+  const teamEnvs = useMemo(() => hub.catalog.filter((c) => !environments?.some((e) => e.id === c.environment.id)), [hub.catalog, environments])
+  const hubEnv = teamEnvs.find((c) => c.environment.id === wanted) ?? (environments && !environments.length ? teamEnvs[0] : undefined)
   const env = useMemo(() => {
-    if (!environments?.length) return undefined
+    if (hubEnv || !environments?.length) return undefined
     return environments.find((e) => e.id === wanted) ?? environments[0]
-  }, [environments, wanted])
-  const envId = env?.id ?? null
+  }, [environments, wanted, hubEnv])
+  const envId = env?.id ?? hubEnv?.environment.id ?? null
+  const publishedLocal = !!env && hub.catalog.some((c) => c.environment.id === env.id)
+  const envName = env?.name ?? hubEnv?.environment.name ?? ''
+  const envProtected = env?.protected ?? hubEnv?.environment.protected ?? false
   useEffect(() => {
     if (envId) void loadSettings(envId)
   }, [envId])
@@ -86,7 +99,8 @@ export function DeploymentsPage() {
   const select = useCallback((id: string) => setParam('env', id), [setParam])
 
   const groups = useMemo<HostGroup[]>(() => {
-    const hosts = new Map(inventory?.hosts.map((h) => [h.id, h]))
+    const hosts = new Map<string, { label: string; address?: string }>(inventory?.hosts.map((h) => [h.id, h]))
+    for (const h of hubEnv?.hosts ?? []) if (!hosts.has(h.id)) hosts.set(h.id, { label: h.label })
     const byHost = new Map<string, HostGroup>()
     for (const d of deployments) {
       const h = hosts.get(d.hostId)
@@ -95,7 +109,7 @@ export function DeploymentsPage() {
       g.items.push(d)
     }
     return [...byHost.values()]
-  }, [deployments, inventory])
+  }, [deployments, inventory, hubEnv])
 
   const move = useCallback(
     (id: string, to: { before: string } | { step: -1 | 1 }) => {
@@ -124,7 +138,7 @@ export function DeploymentsPage() {
 
   const askDelete = useCallback(
     (d: DeploymentMeta) => {
-      const guarded = env?.protected ? env.name : undefined
+      const guarded = envProtected ? envName : undefined
       setConfirm({
         title: `Delete ${d.name}?`,
         description: guarded
@@ -135,7 +149,7 @@ export function DeploymentsPage() {
         run: () => deleteDeployment(d.id),
       })
     },
-    [env],
+    [envProtected, envName],
   )
 
   const newDeployment = () => envId && setDialog({ kind: 'new', environmentId: envId })
@@ -146,18 +160,21 @@ export function DeploymentsPage() {
       <header className="app-drag flex h-16 shrink-0 items-end justify-between gap-4 px-8 pb-3">
         <div className="flex min-w-0 items-baseline gap-3">
           <h1 className="text-[19px] font-semibold tracking-tight text-fg">Deployments</h1>
-          {loaded && env && deployments.length > 0 && (
+          {loaded && envId && deployments.length > 0 && (
             <p className="truncate text-[12.5px] text-muted tabular-nums">{plural(deployments.length, 'deployment')}</p>
           )}
         </div>
-        {env && (
+        {envId && (
           <div className="flex items-center gap-2">
+            {(publishedLocal || hubEnv) && <HubLockBadge environmentId={envId} name={envName} guarded={envProtected} />}
             <Button size="sm" variant="ghost" icon={<Rocket aria-hidden className="size-3.5" />} disabled={!deployments.length} onClick={() => setDeploying(true)}>
               Deploy…
             </Button>
-            <Button size="sm" icon={<Plus aria-hidden className="size-3.5" />} onClick={newDeployment}>
-              New deployment
-            </Button>
+            {env && (
+              <Button size="sm" icon={<Plus aria-hidden className="size-3.5" />} onClick={newDeployment}>
+                New deployment
+              </Button>
+            )}
           </div>
         )}
       </header>
@@ -165,32 +182,44 @@ export function DeploymentsPage() {
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-8 pb-10">
         {tooling && tooling.ansibleStatus !== 'ok' && <ToolingBanner problems={tooling.problems} missing={tooling.ansibleStatus === 'missing'} />}
 
-        {inventory && !env ? (
-          <EmptyState icon={Rocket} title="No environments yet" text="Deployments run in an environment. Create one on the Products page first." />
+        {inventory && !envId ? (
+          <>
+            {pending && <PendingNotice />}
+            {!pending && <EmptyState icon={Rocket} title="No environments yet" text="Deployments run in an environment. Create one on the Products page first." />}
+          </>
         ) : (
           <>
-            {inventory && env && <EnvPicker data={inventory} selected={env.id} onSelect={select} />}
-            {env && <EnvDeploySettings settings={currentSettings} />}
-            {env && (
+            {inventory && envId && <EnvPicker data={inventory} selected={envId} onSelect={select} team={teamEnvs} />}
+            {pending && <PendingNotice />}
+            {publishedLocal && (
+              <div>
+                <Badge tone="success">
+                  <Cloud aria-hidden className="size-3" />
+                  Published to Hub
+                </Badge>
+              </div>
+            )}
+            {envId && <EnvDeploySettings settings={currentSettings} />}
+            {envId && (
               <div>
                 <Segmented size="sm" label="View" options={TABS} value={tab} onChange={(t) => setParam('tab', t === 'checkouts' ? null : t)} />
               </div>
             )}
 
-            {env && tab === 'history' ? (
-              <ReleaseHistory key={env.id} environmentId={env.id} />
+            {envId && tab === 'history' ? (
+              <ReleaseHistory key={envId} environmentId={envId} />
             ) : !loaded || !inventory ? (
               <div data-testid="deployments-loading" className="flex flex-col gap-3 pt-2">
                 {Array.from({ length: 3 }, (_, i) => (
                   <Skeleton key={i} className="h-[92px] rounded-[14px]" />
                 ))}
               </div>
-            ) : env && deployments.length === 0 ? (
+            ) : envId && deployments.length === 0 ? (
               <EmptyState
                 icon={Rocket}
-                title={`No deployments in ${env.name} yet`}
+                title={`No deployments in ${envName} yet`}
                 text="A deployment is a git checkout on one of this environment's hosts, brought up with Docker Compose."
-                action={{ label: 'New deployment', run: newDeployment }}
+                action={env ? { label: 'New deployment', run: newDeployment } : undefined}
               />
             ) : (
               // Keyed by environment: switching swaps the list at once, with nothing animating out.
@@ -212,6 +241,7 @@ export function DeploymentsPage() {
                             first={i === 0}
                             last={i === g.items.length - 1}
                             onMove={move}
+                            readOnly={!env}
                             onEdit={() => setDialog({ kind: 'edit', id: d.id })}
                             onDelete={() => askDelete(d)}
                           />
@@ -273,7 +303,7 @@ function ToolingBanner({ problems, missing }: { problems: string[]; missing: boo
   )
 }
 
-function EnvPicker({ data, selected, onSelect }: { data: NonNullable<ReturnType<typeof useInventory>>; selected: string; onSelect: (id: string) => void }) {
+function EnvPicker({ data, selected, onSelect, team }: { data: NonNullable<ReturnType<typeof useInventory>>; selected: string; onSelect: (id: string) => void; team: HubCatalogEnv[] }) {
   const groups = useMemo(() => {
     const byId = new Map(data.environments.map((e) => [e.id, e]))
     const placed = new Set<string>()
@@ -297,6 +327,19 @@ function EnvPicker({ data, selected, onSelect }: { data: NonNullable<ReturnType<
           </div>
         </div>
       ))}
+      {team.length > 0 && (
+        <div role="group" aria-label="Team (Hub)" className="flex items-center gap-2">
+          <span className="flex items-center gap-1 text-[11.5px] font-medium text-muted">
+            <Cloud aria-hidden className="size-3" />
+            Team (Hub)
+          </span>
+          <div className="flex gap-0.5 rounded-lg border border-line bg-surface/60 p-0.5">
+            {team.map((c) => (
+              <EnvPill key={c.environment.id} env={{ id: c.environment.id, name: c.environment.name, color: '' } as EnvironmentMeta} on={c.environment.id === selected} onSelect={onSelect} />
+            ))}
+          </div>
+        </div>
+      )}
     </nav>
   )
 }
@@ -325,11 +368,13 @@ interface CardProps {
   onMove: (id: string, to: { before: string } | { step: -1 | 1 }) => void
   onEdit: () => void
   onDelete: () => void
+  /** Team environments are changed only where they are published from. */
+  readOnly?: boolean
 }
 
 const DRAG_TYPE = 'application/x-opsdeck-deployment'
 
-function DeploymentCard({ deployment: d, index, first, last, onMove, onEdit, onDelete }: CardProps) {
+function DeploymentCard({ deployment: d, index, first, last, onMove, onEdit, onDelete, readOnly }: CardProps) {
   const motionSafe = useMotionSafe()
   const [over, setOver] = useState(false)
 
@@ -363,7 +408,7 @@ function DeploymentCard({ deployment: d, index, first, last, onMove, onEdit, onD
     >
       {/* The native drag handlers sit on a plain element: framer-motion's own onDragStart means something else. */}
       <div
-        draggable
+        draggable={!readOnly}
         onDragStart={onDragStart}
         onDragOver={(e) => {
           if (e.dataTransfer.types.includes(DRAG_TYPE)) {
@@ -383,7 +428,7 @@ function DeploymentCard({ deployment: d, index, first, last, onMove, onEdit, onD
         aria-label={`Reorder ${d.name}`}
         aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
         title="Drag, or press Alt with the up or down arrow"
-        disabled={first && last}
+        disabled={(first && last) || readOnly}
         className="mt-0.5 grid size-6 shrink-0 cursor-grab place-items-center rounded-md text-muted/70 transition-colors hover:bg-white/6 hover:text-fg disabled:cursor-default disabled:opacity-30"
       >
         <GripVertical aria-hidden className="size-4" />
@@ -408,12 +453,14 @@ function DeploymentCard({ deployment: d, index, first, last, onMove, onEdit, onD
           <Badge tone="info">{plural(d.urls.length, 'URL')}</Badge>
         </div>
       </div>
-      <div className="flex shrink-0 items-center gap-1">
-        <Button size="sm" variant="ghost" icon={<Pencil aria-hidden className="size-3.5" />} onClick={onEdit}>
-          Edit
-        </Button>
-        <RowMenu label={`${d.name} options`} items={[{ label: 'Delete', icon: Trash2, run: onDelete, danger: true }]} />
-      </div>
+      {!readOnly && (
+        <div className="flex shrink-0 items-center gap-1">
+          <Button size="sm" variant="ghost" icon={<Pencil aria-hidden className="size-3.5" />} onClick={onEdit}>
+            Edit
+          </Button>
+          <RowMenu label={`${d.name} options`} items={[{ label: 'Delete', icon: Trash2, run: onDelete, danger: true }]} />
+        </div>
+      )}
       </div>
     </motion.li>
   )

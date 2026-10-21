@@ -130,7 +130,7 @@ describe('hub handlers', () => {
       del: vi.fn(async () => undefined),
     }
     const t = setup(client)
-    await expect(t.call('hub:secrets', null)).resolves.toEqual([meta])
+    await expect(t.call('hub:secrets', null)).resolves.toEqual({ secrets: [meta], missing: {} })
     expect(client.get).toHaveBeenCalledWith('/api/v1/admin/secrets', undefined)
     await expect(t.call('hub:deployKey', UUID, false)).resolves.toEqual({ publicKey: 'ssh-ed25519 AAA c', fingerprint: 'SHA256:x' })
     expect(client.post).toHaveBeenCalledWith(`/api/v1/admin/environments/${UUID}/deploy-key`)

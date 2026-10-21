@@ -35,6 +35,7 @@ import { ExplainMemory, type ExplainSources } from './ai/explain'
 import { releaseNotesFinalizeStep, type NotesDeps } from './ai/release-notes'
 import { MacNotifier } from './notify/macos'
 import { LocalSink } from './notify/sink'
+import { wireLocalNotify } from './notify/wire-local'
 import { NotificationDispatcher } from './notify/dispatcher'
 import { createFinalizeSteps } from './notify/finalize'
 import { QaDispatcher, qaFinalizeStep } from './notify/qa'
@@ -420,9 +421,7 @@ if (!app.requestSingleInstanceLock()) {
       })
       releaseService = release
       service.onLock(() => release.vaultLocked())
-      release.onEvent((batch) => {
-        for (const e of batch) void notifyDispatcher.onRunEvent(e)
-      })
+      wireLocalNotify(release, notifyDispatcher)
       // Startup recovery lives here (Task 7 must not add a second call): a release left preflight, running or
       // rolling back by a quit can never finish, so mark it failed (and audit it) before anything reads it.
       release.recoverInterrupted()

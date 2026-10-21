@@ -3,6 +3,7 @@ import { bumpVersion, BREAK_LOCK_CONFIRM_MESSAGE, type VersionBump } from '../..
 import { pickerGroups, selectionRequest, type PickerGroup } from '../../../deploy/picker'
 import { closeRelease, openRelease, startReleaseSync, usePreflight } from '../../../deploy/releases'
 import { loadSettings, startDeploySync, useDeploy, useDeployments, useServices } from '../../../deploy/store'
+import { useHub } from '../../../hub/store'
 import { useInventory } from '../../../inventory/store'
 import { api } from '../../../lib/api'
 import { Button } from '../../../ui/Button'
@@ -51,7 +52,10 @@ type Step = 'pick' | 'preflight' | 'confirm' | 'started'
 /** Pick services, run preflight, confirm and start a release, on one surface. */
 export function DeployWizard({ environmentId, preselect, onClose }: { environmentId: string; preselect: string[]; onClose: () => void }) {
   const data = useInventory()
-  const env = data?.environments.find((e) => e.id === environmentId)
+  const { catalog } = useHub()
+  // A Hub environment this machine doesn't hold comes from the team catalog, with the same protected rule.
+  const hubEnv = catalog.find((c) => c.environment.id === environmentId)?.environment
+  const env = data?.environments.find((e) => e.id === environmentId) ?? (hubEnv ? { name: hubEnv.name, protected: hubEnv.protected, color: undefined } : undefined)
   const checkouts = useDeployments(environmentId)
   const services = useServices(environmentId)
   const settings = useDeploy().settings[environmentId]

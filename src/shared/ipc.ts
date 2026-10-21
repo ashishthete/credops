@@ -11,6 +11,7 @@ import type {
   HubDeployKey,
   HubEnvLock,
   HubSecretKind,
+  HubSecretList,
   HubSecretMeta,
   HubDecision,
   HubGroup,
@@ -251,7 +252,7 @@ export interface IpcContract {
   'hub:unpublish': { args: [environmentId: string]; result: void }
   'hub:adminEnvironments': { args: []; result: HubCatalogEnv[] }
   // Shared secrets. No channel takes or returns a value: uploads read the local vault in main.
-  'hub:secrets': { args: [environmentId: string | null]; result: HubSecretMeta[] }
+  'hub:secrets': { args: [environmentId: string | null]; result: HubSecretList }
   'hub:uploadSecrets': { args: [environmentId: string, secretIds?: string[]]; result: { uploaded: number } }
   'hub:setIntegrationSecret': { args: [environmentId: string | null, kind: HubSecretKind, secretId: string]; result: void }
   // environmentId: the environment whose copy to remove; null for a Hub-wide integration secret.

@@ -1,17 +1,15 @@
 import { Check, Pencil, Plus, ShieldCheck, Trash2, X } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
-import type { GrantScope, HubGroup } from '../../../../shared/hub'
+import type { HubGroup } from '../../../../shared/hub'
 import { addGrant, addMembers, createGroup, deleteGroup, removeGrant, removeMember, renameGroup, useHub } from '../../hub/store'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
 import { ConfirmDialog, plural, type ConfirmRequest } from '../../ui/common'
 import { EmptyState } from '../../ui/EmptyState'
 import { TextField } from '../../ui/Field'
+import { GrantPicker, grantLabel, useGrantEnvs } from './GrantPicker'
 import { ListSkeleton } from './shared'
 
-// 10a offers only "all environments"; 10b adds the environment and deployment pickers.
-const ALL: GrantScope = { kind: 'all' }
-const scopeLabel = (s: GrantScope) => (s.kind === 'all' ? 'All environments' : s.kind === 'environment' ? 'One environment' : 'One deployment')
 
 export function GroupsPanel() {
   const { groups, adminLoaded } = useHub()
@@ -48,6 +46,8 @@ export function GroupsPanel() {
 
 function GroupCard({ group: g, onDelete }: { group: HubGroup; onDelete: (r: ConfirmRequest) => void }) {
   const { users } = useHub()
+  const envs = useGrantEnvs()
+  const scopeLabel = (s: HubGroup['grants'][number]['scope']) => grantLabel(s, envs)
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState(g.name)
   const [pick, setPick] = useState('')
@@ -165,14 +165,7 @@ function GroupCard({ group: g, onDelete }: { group: HubGroup; onDelete: (r: Conf
           </li>
         ))}
       </ul>
-      <div className="mt-2 flex items-center gap-2">
-        <select aria-label={`Grant scope for ${g.name}`} className="h-7 rounded-md border border-line bg-surface-2/60 px-2 text-[12.5px] text-fg" defaultValue="all">
-          <option value="all">All environments</option>
-        </select>
-        <Button size="sm" variant="ghost" aria-label={`Add grant to ${g.name}`} onClick={() => void addGrant(g.id, ALL)}>
-          Add grant
-        </Button>
-      </div>
+      <GrantPicker groupName={g.name} onAdd={(scope) => addGrant(g.id, scope)} />
     </article>
   )
 }

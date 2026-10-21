@@ -7,14 +7,18 @@ import { fast, useMotionSafe } from '../../ui/motion'
 import { Skeleton } from '../../ui/Skeleton'
 import { PaneHeader } from '../products/ProductView'
 import { ConnectCard } from './ConnectCard'
+import { EnvironmentsPanel } from './EnvironmentsPanel'
 import { GroupsPanel } from './GroupsPanel'
 import { HubAuditPanel } from './HubAuditPanel'
 import { PeoplePanel } from './PeoplePanel'
+import { SecretsPanel } from './SecretsPanel'
 
 const ALL_TABS = [
   { id: 'overview', label: 'Overview', admin: false },
   { id: 'people', label: 'People', admin: true },
   { id: 'groups', label: 'Groups', admin: true },
+  { id: 'environments', label: 'Environments', admin: true },
+  { id: 'secrets', label: 'Secrets', admin: true },
   { id: 'audit', label: 'Audit', admin: true },
 ] as const
 type TabId = (typeof ALL_TABS)[number]['id']
@@ -78,6 +82,10 @@ export function HubPage() {
           <PeoplePanel />
         ) : current === 'groups' ? (
           <GroupsPanel />
+        ) : current === 'environments' ? (
+          <EnvironmentsPanel onOpenSecrets={() => setTab('secrets')} />
+        ) : current === 'secrets' ? (
+          <SecretsPanel />
         ) : current === 'audit' ? (
           <HubAuditPanel />
         ) : (

@@ -1,12 +1,11 @@
-import { LogIn, LogOut, Unplug, UserCheck } from 'lucide-react'
+import { LogIn, LogOut, Unplug } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 import { cancelSignIn, connectHub, signInHub, signOutHub, unlinkHub, useHub } from '../../hub/store'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
 import { ConfirmDialog, plural, type ConfirmRequest } from '../../ui/common'
-import { EmptyState } from '../../ui/EmptyState'
 import { TextField } from '../../ui/Field'
-import { roleLabel } from './shared'
+import { PendingNotice, roleLabel } from './shared'
 import { useHubGroupNames } from './names'
 
 /** Connect, sign-in, waiting, signed-in and pending states of the Hub link. */
@@ -116,13 +115,7 @@ export function ConnectCard() {
             Sign out
           </Button>
         </div>
-        {u.status === 'pending' && (
-          <EmptyState
-            icon={UserCheck}
-            title="Waiting for a Hub admin"
-            text="You're signed in, but not in any group yet. A Hub admin needs to add you — until then you won't see any team deployments."
-          />
-        )}
+        {u.status === 'pending' && <PendingNotice />}
         {u.status === 'disabled' && (
           <p role="alert" className="text-[12.5px] text-err">
             Your access to this Hub is turned off. Ask a Hub admin.
