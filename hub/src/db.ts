@@ -61,6 +61,14 @@ CREATE TABLE deployments(id TEXT PRIMARY KEY, environment_id TEXT NOT NULL REFER
   position INTEGER NOT NULL, meta TEXT NOT NULL);
 `
 
+// The Hub keeps no notion of apps: a deployment is a checkout, and its services come with the manifest.
+const SERVICES = `
+DROP TABLE apps;
+ALTER TABLE deployments DROP COLUMN app_id;
+CREATE TABLE services(id TEXT PRIMARY KEY, environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('service','db')), name TEXT NOT NULL, meta TEXT NOT NULL);
+`
+
 const SECRETS = `
 CREATE TABLE hub_secrets(id TEXT NOT NULL, environment_id TEXT REFERENCES environments(id) ON DELETE CASCADE,
   name TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('env','become','teams_webhook','sendgrid_api_key','github_token','anthropic_api_key')),
@@ -90,6 +98,7 @@ export const HUB_MIGRATIONS: Migration[] = [
   { version: 2, name: 'registry', up: REGISTRY },
   { version: 3, name: 'secrets', up: SECRETS },
   { version: 4, name: 'locks', up: LOCKS },
+  { version: 5, name: 'services', up: SERVICES },
 ]
 
 export function openHubDb(file: string): HubDb {

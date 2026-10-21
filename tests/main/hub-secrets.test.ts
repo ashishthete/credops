@@ -31,6 +31,7 @@ async function setup(opts: { locked?: boolean } = {}) {
     db: f.db,
     envs: f.envs,
     deploys: f.deploys,
+    services: f.services,
     knownHosts,
     secrets,
     values: secrets,

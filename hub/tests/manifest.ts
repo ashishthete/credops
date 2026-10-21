@@ -15,7 +15,8 @@ export function deployment(id: string, name: string, over: Record<string, unknow
     name,
     environmentId: ENV_ID,
     hostId: HOST_ID,
-    appId: null,
+    repoUrl: null,
+    composeProject: null,
     repoPath: `/srv/${name}`,
     defaultBranch: 'main',
     composeFile: 'docker-compose.yml',
@@ -56,7 +57,7 @@ export function manifest(over: Partial<HubEnvManifest> = {}): HubEnvManifest {
         knownHosts: [KEY_LINE],
       },
     ],
-    apps: [],
+    services: [],
     deployments: [
       deployment(DEP_WEB, 'web', { envTemplate: `DB_PASSWORD=\${secret:${SECRET_DB}}\n`, becomeSecretId: SECRET_SUDO }),
       deployment(DEP_API, 'api', { position: 1 }),

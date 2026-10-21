@@ -6,8 +6,8 @@ import {
   BACKUP_DIR,
   COMPOSE_FILE,
   COMPOSE_PROJECT,
+  COMPOSE_SERVICE,
   GIT_REF,
-  MAX_APPS,
   MAX_DEPLOYMENTS,
   MAX_ENV_TEMPLATE,
   MAX_HOOK,
@@ -17,7 +17,8 @@ import {
   REPO_PATH,
   VERSION,
 } from '../../src/shared/deploy'
-import { MAX_JUMP_DEPTH } from '../../src/shared/inventory'
+import { hasRepoCredentials, MAX_JUMP_DEPTH, REPO_URL } from '../../src/shared/inventory'
+import { MAX_SERVICES } from '../../src/shared/services'
 import {
   MAX_MANIFEST_BYTES,
   type HubActor,
@@ -119,7 +120,7 @@ function sortManifest(m: HubEnvManifest): HubEnvManifest {
   return {
     ...m,
     hosts: [...m.hosts].sort(byLabel),
-    apps: [...m.apps].sort((a, b) => cmp(a.name, b.name) || cmp(a.id, b.id)),
+    services: [...m.services].sort((a, b) => cmp(a.name, b.name) || cmp(a.id, b.id)),
     deployments: [...m.deployments].sort((a, b) => a.position - b.position || cmp(a.name, b.name) || cmp(a.id, b.id)),
     requiredSecrets: [...m.requiredSecrets].sort((a, b) => cmp(a.name, b.name) || cmp(a.secretId, b.secretId)),
   }
@@ -168,21 +169,6 @@ export function readManifest(input: unknown): HubEnvManifest {
     }
   })
 
-  const appIds = new Set<string>()
-  const apps = arr(m.apps, '/apps', MAX_APPS).map((raw, i): HubEnvManifest['apps'][number] => {
-    const p = `/apps/${i}`
-    const a = obj(raw, p)
-    const id = uuid(a.id, `${p}/id`)
-    if (appIds.has(id)) bad(`invalid manifest: ${p}/id is duplicated`)
-    appIds.add(id)
-    return {
-      id,
-      name: str(a.name, `${p}/name`),
-      composeProject: nullable(a.composeProject, (x) => match(x, `${p}/composeProject`, COMPOSE_PROJECT, 'a compose project name')),
-      description: typeof a.description === 'string' && a.description.length <= 1000 ? a.description : bad(`invalid manifest: ${p}/description must be text of at most 1000 characters`),
-    }
-  })
-
   const depIds = new Set<string>()
   const deployments = arr(m.deployments, '/deployments', MAX_DEPLOYMENTS).map((raw, i): HubEnvManifest['deployments'][number] => {
     const p = `/deployments/${i}`
@@ -193,8 +179,6 @@ export function readManifest(input: unknown): HubEnvManifest {
     if (d.environmentId !== environment.id) bad(`invalid manifest: ${p}/environmentId must be the environment`)
     const hostId = uuid(d.hostId, `${p}/hostId`)
     if (!hostIds.has(hostId)) bad(`invalid manifest: ${p}/hostId is not one of the manifest hosts`)
-    const appId = nullable(d.appId, (x) => uuid(x, `${p}/appId`))
-    if (appId !== null && !appIds.has(appId)) bad(`invalid manifest: ${p}/appId is not one of the manifest apps`)
     const urls = arr(d.urls, `${p}/urls`, MAX_URLS).map((u, j) => {
       const o = obj(u, `${p}/urls/${j}`)
       const url = str(o.url, `${p}/urls/${j}/url`, MAX_URL)
@@ -220,7 +204,12 @@ export function readManifest(input: unknown): HubEnvManifest {
       name: str(d.name, `${p}/name`),
       environmentId: environment.id,
       hostId,
-      appId,
+      repoUrl: nullable(d.repoUrl, (x): string => {
+        // The messages never carry the URL: it may hold a token.
+        const url = typeof x === 'string' && x.length <= MAX_URL && REPO_URL.test(x) ? x : bad(`invalid manifest: ${p}/repoUrl must be an http(s), ssh:// or git@ repository URL`)
+        return hasRepoCredentials(url) ? bad(`invalid manifest: ${p}/repoUrl must not contain credentials`) : url
+      }),
+      composeProject: nullable(d.composeProject, (x) => match(x, `${p}/composeProject`, COMPOSE_PROJECT, 'a compose project name')),
       repoPath: match(d.repoPath, `${p}/repoPath`, REPO_PATH, 'an absolute path'),
       defaultBranch: match(d.defaultBranch, `${p}/defaultBranch`, GIT_REF, 'a branch name'),
       composeFile: match(d.composeFile, `${p}/composeFile`, COMPOSE_FILE, 'a relative path'),
@@ -242,6 +231,32 @@ export function readManifest(input: unknown): HubEnvManifest {
     }
   })
 
+  const depHost = new Map(deployments.map((d) => [d.id, d.hostId]))
+  const serviceIds = new Set<string>()
+  const services = arr(m.services, '/services', MAX_SERVICES).map((raw, i): HubEnvManifest['services'][number] => {
+    const p = `/services/${i}`
+    const s = obj(raw, p)
+    const id = uuid(s.id, `${p}/id`)
+    if (serviceIds.has(id)) bad(`invalid manifest: ${p}/id is duplicated`)
+    serviceIds.add(id)
+    const kind = oneOf(s.kind, `${p}/kind`, ['service', 'db'] as const)
+    const deploymentId = nullable(s.deploymentId, (x) => uuid(x, `${p}/deploymentId`))
+    const hostId = nullable(s.hostId, (x) => uuid(x, `${p}/hostId`))
+    const viaHostId = nullable(s.viaHostId, (x) => uuid(x, `${p}/viaHostId`))
+    const composeService = nullable(s.composeService, (x) => match(x, `${p}/composeService`, COMPOSE_SERVICE, 'a compose service name'))
+    const name = str(s.name, `${p}/name`)
+    if (kind === 'db') {
+      if (composeService !== null || deploymentId !== null || hostId !== null) bad(`invalid manifest: ${p} is a db and has no compose service, checkout or host`)
+      return { id, name, kind, composeService, deploymentId, hostId, viaHostId }
+    }
+    if (viaHostId !== null) bad(`invalid manifest: ${p}/viaHostId is only for a db`)
+    if (deploymentId === null ? hostId !== null : hostId !== depHost.get(deploymentId)) {
+      bad(`invalid manifest: ${p}/hostId must be its checkout's host (and null without a checkout)`)
+    }
+    if (deploymentId !== null && !depIds.has(deploymentId)) bad(`invalid manifest: ${p}/deploymentId is not one of the manifest deployments`)
+    return { id, name, kind, composeService, deploymentId, hostId, viaHostId }
+  })
+
   const secretIds = new Set<string>()
   const requiredSecrets = arr(m.requiredSecrets, '/requiredSecrets', 4096).map((raw, i): HubEnvManifest['requiredSecrets'][number] => {
     const p = `/requiredSecrets/${i}`
@@ -257,7 +272,7 @@ export function readManifest(input: unknown): HubEnvManifest {
     if (refs.some((r) => !secretIds.has(r))) bad(`invalid manifest: /deployments/${i} uses a secret that is not in requiredSecrets`)
   })
 
-  const canonical = sortManifest({ environment, hosts, apps, deployments, integrations: readIntegrations(m.integrations), requiredSecrets })
+  const canonical = sortManifest({ environment, hosts, services, deployments, integrations: readIntegrations(m.integrations), requiredSecrets })
   if (Buffer.byteLength(JSON.stringify(canonical)) > MAX_MANIFEST_BYTES) bad('invalid manifest: it is larger than the limit')
   return canonical
 }
@@ -289,14 +304,14 @@ interface HostRow {
 interface DepRow {
   id: string
   host_id: string
-  app_id: string | null
   name: string
   position: number
   meta: string
 }
-interface AppRow {
+interface ServiceRow {
   id: string
   name: string
+  kind: string
   meta: string
 }
 
@@ -410,23 +425,23 @@ export class Registry {
         this.guardForeign('hosts', h.id, env.id)
         putHost.run(h.id, env.id, h.label, h.address, h.port, h.username, JSON.stringify(h.hops), JSON.stringify(h.knownHosts), h.useSudo)
       }
-      const putApp = this.db.prepare(
-        `INSERT INTO apps(id, environment_id, name, meta) VALUES (?,?,?,?)
-         ON CONFLICT(id) DO UPDATE SET environment_id = excluded.environment_id, name = excluded.name, meta = excluded.meta`,
+      const putService = this.db.prepare(
+        `INSERT INTO services(id, environment_id, kind, name, meta) VALUES (?,?,?,?,?)
+         ON CONFLICT(id) DO UPDATE SET environment_id = excluded.environment_id, kind = excluded.kind, name = excluded.name, meta = excluded.meta`,
       )
-      for (const a of manifest.apps) {
-        this.guardForeign('apps', a.id, env.id)
-        putApp.run(a.id, env.id, a.name, JSON.stringify({ composeProject: a.composeProject, description: a.description }))
+      for (const s of manifest.services) {
+        this.guardForeign('services', s.id, env.id)
+        putService.run(s.id, env.id, s.kind, s.name, JSON.stringify({ composeService: s.composeService, deploymentId: s.deploymentId, hostId: s.hostId, viaHostId: s.viaHostId }))
       }
       const putDep = this.db.prepare(
-        `INSERT INTO deployments(id, environment_id, host_id, app_id, name, position, meta) VALUES (?,?,?,?,?,?,?)
-         ON CONFLICT(id) DO UPDATE SET environment_id = excluded.environment_id, host_id = excluded.host_id, app_id = excluded.app_id,
+        `INSERT INTO deployments(id, environment_id, host_id, name, position, meta) VALUES (?,?,?,?,?,?)
+         ON CONFLICT(id) DO UPDATE SET environment_id = excluded.environment_id, host_id = excluded.host_id,
            name = excluded.name, position = excluded.position, meta = excluded.meta`,
       )
       for (const d of manifest.deployments) {
         this.guardForeign('deployments', d.id, env.id)
-        const { id, name, hostId, appId, position, environmentId: _e, ...meta } = d
-        putDep.run(id, env.id, hostId, appId, name, position, JSON.stringify(meta))
+        const { id, name, hostId, position, environmentId: _e, ...meta } = d
+        putDep.run(id, env.id, hostId, name, position, JSON.stringify(meta))
       }
 
       const keep = (ids: string[]): string => (ids.length ? ids.map(() => '?').join(',') : "''")
@@ -438,8 +453,8 @@ export class Registry {
       this.db.prepare(`DELETE FROM deployments WHERE environment_id = ? AND id NOT IN (${keep(depIds)})`).run(env.id, ...depIds)
       const hostIds = manifest.hosts.map((h) => h.id)
       this.db.prepare(`DELETE FROM hosts WHERE environment_id = ? AND id NOT IN (${keep(hostIds)})`).run(env.id, ...hostIds)
-      const appIds = manifest.apps.map((a) => a.id)
-      this.db.prepare(`DELETE FROM apps WHERE environment_id = ? AND id NOT IN (${keep(appIds)})`).run(env.id, ...appIds)
+      const serviceIds = manifest.services.map((s) => s.id)
+      this.db.prepare(`DELETE FROM services WHERE environment_id = ? AND id NOT IN (${keep(serviceIds)})`).run(env.id, ...serviceIds)
 
       this.opts.audit.append({
         action: 'env.publish',
@@ -457,8 +472,8 @@ export class Registry {
     return result
   }
 
-  /** A host, app or deployment id that belongs to another environment is never taken over. */
-  private guardForeign(table: 'hosts' | 'apps' | 'deployments', id: string, environmentId: string): void {
+  /** A host, service or deployment id that belongs to another environment is never taken over. */
+  private guardForeign(table: 'hosts' | 'services' | 'deployments', id: string, environmentId: string): void {
     const r = this.db.prepare(`SELECT environment_id FROM ${table} WHERE id = ?`).get(id) as { environment_id: string } | undefined
     if (r && r.environment_id !== environmentId) throw new HubHttpError(409, 'conflict', 'An id in the manifest belongs to another environment')
   }
@@ -508,12 +523,12 @@ export class Registry {
         knownHosts: JSON.parse(h.known_hosts),
       }),
     )
-    const apps = (this.db.prepare('SELECT * FROM apps WHERE environment_id = ? ORDER BY name COLLATE NOCASE, id').all(r.id) as unknown as AppRow[]).map(
-      (a): HubEnvManifest['apps'][number] => ({ id: a.id, name: a.name, ...(JSON.parse(a.meta) as { composeProject: string | null; description: string }) }),
+    const services = (this.db.prepare('SELECT * FROM services WHERE environment_id = ? ORDER BY name COLLATE NOCASE, id').all(r.id) as unknown as ServiceRow[]).map(
+      (s): HubEnvManifest['services'][number] => ({ id: s.id, name: s.name, kind: s.kind as 'service' | 'db', ...(JSON.parse(s.meta) as Omit<HubEnvManifest['services'][number], 'id' | 'name' | 'kind'>) }),
     )
     const deployments = (this.db.prepare('SELECT * FROM deployments WHERE environment_id = ? ORDER BY position, name COLLATE NOCASE, id').all(r.id) as unknown as DepRow[]).map(
       (d) =>
-        ({ id: d.id, name: d.name, environmentId: r.id, hostId: d.host_id, appId: d.app_id, position: d.position, ...JSON.parse(d.meta) }) as HubEnvManifest['deployments'][number],
+        ({ id: d.id, name: d.name, environmentId: r.id, hostId: d.host_id, repoUrl: null, composeProject: null, position: d.position, ...JSON.parse(d.meta) }) as HubEnvManifest['deployments'][number],
     )
     return sortManifest({
       environment: {
@@ -525,7 +540,7 @@ export class Registry {
         currentVersion: r.current_version,
       },
       hosts,
-      apps,
+      services,
       deployments,
       integrations: stored.integrations,
       requiredSecrets: stored.requiredSecrets,
@@ -537,12 +552,12 @@ export class Registry {
     return this.manifestOf(this.envRow(id))
   }
 
-  private entry(r: EnvRow, m: HubEnvManifest, view: { hosts: HubEnvManifest['hosts']; apps: HubEnvManifest['apps']; deployments: HubEnvManifest['deployments'] }): HubCatalogEnv {
+  private entry(r: EnvRow, m: HubEnvManifest, view: { hosts: HubEnvManifest['hosts']; services: HubEnvManifest['services']; deployments: HubEnvManifest['deployments'] }): HubCatalogEnv {
     const present = this.secretIdsPresent(r.id)
     return {
       environment: m.environment,
       hosts: view.hosts.map((h) => ({ id: h.id, label: h.label })),
-      apps: view.apps,
+      services: view.services,
       deployments: view.deployments,
       missingSecrets: m.requiredSecrets.filter((s) => !present.has(s.secretId)).length,
       deployKey: this.deployKey(r.id),
@@ -564,7 +579,7 @@ export class Registry {
     })
   }
 
-  /** What `user` may see: environments they can view, with only the deployments (and their hosts and apps) they can view. */
+  /** What `user` may see: environments they can view, with only the deployments (and their hosts and services) they can view. */
   catalogFor(user: HubUser): HubCatalogEnv[] {
     const groups = this.opts.directory.listGroups()
     const out: HubCatalogEnv[] = []
@@ -577,8 +592,9 @@ export class Registry {
         continue
       }
       const hostIds = new Set(visible.map((d) => d.hostId))
-      const appIds = new Set(visible.flatMap((d) => (d.appId ? [d.appId] : [])))
-      out.push(this.entry(r, m, { hosts: m.hosts.filter((h) => hostIds.has(h.id)), apps: m.apps.filter((a) => appIds.has(a.id)), deployments: visible }))
+      const depIds = new Set(visible.map((d) => d.id))
+      // A service is visible when its checkout is; db services and services without a checkout need the whole environment.
+      out.push(this.entry(r, m, { hosts: m.hosts.filter((h) => hostIds.has(h.id)), services: m.services.filter((s) => s.deploymentId !== null && depIds.has(s.deploymentId)), deployments: visible }))
     }
     return out
   }

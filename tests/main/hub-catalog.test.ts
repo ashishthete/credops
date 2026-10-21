@@ -5,7 +5,7 @@ import type { HubCatalogEnv, HubStatus } from '../../src/shared/hub'
 const env = (id: string): HubCatalogEnv => ({
   environment: { id, name: 'prod', protected: false, versioned: false, autoRollback: false, currentVersion: null },
   hosts: [],
-  apps: [],
+  services: [],
   deployments: [],
   missingSecrets: 0,
   deployKey: null,

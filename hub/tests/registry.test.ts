@@ -85,6 +85,48 @@ describe('environment registry', () => {
     expect(hub.db.prepare('SELECT COUNT(*) AS n FROM environments').get()).toEqual({ n: 0 })
   })
 
+  it('refuses a repository URL with credentials without echoing or storing it', async () => {
+    const { admin } = await setup()
+    const url = 'https://ghp_secrettoken123@github.com/acme/web.git'
+    const r = await put(admin, manifest({ deployments: [deployment(DEP_WEB, 'web', { repoUrl: url })], requiredSecrets: [] }))
+    expect(r.statusCode).toBe(400)
+    expect(r.body).not.toContain('ghp_secrettoken123')
+    expect(hub.db.prepare('SELECT COUNT(*) AS n FROM environments').get()).toEqual({ n: 0 })
+    const dump = JSON.stringify([hub.db.prepare('SELECT * FROM audit').all(), hub.db.prepare('SELECT * FROM deployments').all()])
+    expect(dump).not.toContain('ghp_secrettoken123')
+    const ok = await put(admin, manifest({ deployments: [deployment(DEP_WEB, 'web', { repoUrl: 'git@github.com:acme/web.git', composeProject: 'web' })], requiredSecrets: [] }))
+    expect(ok.statusCode).toBe(200)
+  })
+
+  it('validates services and shows them with their checkout', async () => {
+    const { admin, bob } = await setup()
+    const base = manifest()
+    const host = base.hosts[0].id
+    const SVC = 'c1111111-1111-4111-8111-111111111111'
+    const DB = 'c2222222-2222-4222-8222-222222222222'
+    const svc = (over: object) => ({ id: SVC, name: 'web', kind: 'service', composeService: 'web', deploymentId: DEP_API, hostId: host, viaHostId: null, ...over })
+    const dbs = { id: DB, name: 'main-db', kind: 'db', composeService: null, deploymentId: null, hostId: null, viaHostId: host }
+    const withServices = (services: unknown[]) => ({ ...base, services }) as HubEnvManifest
+    for (const bad of [
+      [svc({ deploymentId: 'd9999999-9999-4999-8999-999999999999' })],
+      [svc({ hostId: null })],
+      [svc({ composeService: 'Bad Name' })],
+      [svc({ viaHostId: host })],
+      [svc({}), svc({})],
+      [{ ...dbs, deploymentId: DEP_API }],
+    ]) {
+      expect((await put(admin, withServices(bad))).statusCode).toBe(400)
+    }
+    expect((await put(admin, withServices([svc({}), dbs]))).statusCode).toBe(200)
+
+    const g = await bobInGroup(admin)
+    await call(admin, 'POST', `/api/v1/admin/groups/${g}/grants`, { scope: { kind: 'deployment', environmentId: ENV_ID, deploymentId: DEP_API } })
+    const cat = (await call(bob, 'GET', '/api/v1/catalog')).json() as { services: { id: string }[] }[]
+    expect(cat[0].services.map((x) => x.id)).toEqual([SVC])
+    const full = (await call(admin, 'GET', '/api/v1/catalog')).json() as { services: { id: string }[] }[]
+    expect(full[0].services.map((x) => x.id).sort()).toEqual([SVC, DB])
+  })
+
   it('rejects an env template ref not in requiredSecrets', async () => {
     const { admin } = await setup()
     const m = manifest({ requiredSecrets: [] })
@@ -127,8 +169,8 @@ describe('environment registry', () => {
 
     // A failing republish leaves the previous state untouched.
     const before = JSON.stringify(hub.db.prepare('SELECT * FROM deployments ORDER BY id').all())
-    hub.db.exec('CREATE TRIGGER boom BEFORE INSERT ON apps BEGIN SELECT RAISE(ABORT, \'boom\'); END')
-    const withApp = manifest({ apps: [{ id: 'b1111111-1111-4111-8111-111111111111', name: 'shop', composeProject: null, description: '' }], deployments: [deployment(DEP_WEB, 'web')], requiredSecrets: [] })
+    hub.db.exec('CREATE TRIGGER boom BEFORE INSERT ON services BEGIN SELECT RAISE(ABORT, \'boom\'); END')
+    const withApp = manifest({ services: [{ id: 'b1111111-1111-4111-8111-111111111111', name: 'shop', kind: 'db', composeService: null, deploymentId: null, hostId: null, viaHostId: null }], deployments: [deployment(DEP_WEB, 'web')], requiredSecrets: [] })
     expect((await put(admin, withApp)).statusCode).toBe(500)
     expect(JSON.stringify(hub.db.prepare('SELECT * FROM deployments ORDER BY id').all())).toBe(before)
     expect(hub.db.prepare("SELECT COUNT(*) AS n FROM deployments WHERE environment_id NOT IN (SELECT id FROM environments)").get()).toEqual({ n: 0 })

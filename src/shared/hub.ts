@@ -237,6 +237,20 @@ export const EMPTY_HUB_INTEGRATIONS: HubIntegrations = {
 }
 
 /** What an admin publishes: addresses, jump chains and pinned public host keys. Never a secret value. */
+export interface HubManifestService {
+  id: string
+  name: string
+  kind: 'service' | 'db'
+  /** Compose service name; null for a db. */
+  composeService: string | null
+  /** The checkout a `service` runs from; null for a db or a service without one. */
+  deploymentId: string | null
+  /** The checkout's host for a `service` with a checkout; null otherwise. */
+  hostId: string | null
+  /** The host a db is reached through; null for a service. */
+  viaHostId: string | null
+}
+
 export interface HubEnvManifest {
   environment: {
     id: string
@@ -258,7 +272,8 @@ export interface HubEnvManifest {
     /** OpenSSH known_hosts lines, public keys only. */
     knownHosts: string[]
   }[]
-  apps: { id: string; name: string; composeProject: string | null; description: string }[]
+  /** Services of the environment: a `service` runs from a checkout, a `db` is reached through a via-host. Ids are the publisher's local UUIDs. */
+  services: HubManifestService[]
   deployments: Omit<DeploymentMeta, 'vaultIds' | 'createdAt' | 'updatedAt'>[]
   integrations: HubIntegrations
   requiredSecrets: { secretId: string; name: string; usedBy: string[] }[]
@@ -278,7 +293,7 @@ export interface HubEnvLock {
 export interface HubCatalogEnv {
   environment: HubEnvManifest['environment']
   hosts: { id: string; label: string }[]
-  apps: HubEnvManifest['apps']
+  services: HubEnvManifest['services']
   deployments: HubEnvManifest['deployments']
   missingSecrets: number
   deployKey: { fingerprint: string } | null

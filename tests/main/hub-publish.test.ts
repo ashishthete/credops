@@ -41,6 +41,7 @@ async function setup() {
     db: f.db,
     envs: f.envs,
     deploys: f.deploys,
+    services: f.services,
     knownHosts,
     secrets,
     resolve: (hostId: string, environmentId: string) => resolveHost(f.db, hostId, environmentId, { localUser: 'tester' }),
@@ -83,6 +84,47 @@ describe('buildManifest', () => {
     const id = f.identities.create({ vaultId: DEFAULT_VAULT_ID, label: 'pw', username: 'ops', auth: 'password', password: 'x' })
     f.hosts.update(f.host.id, { identityId: id.id })
     await expect(buildManifest(f.prod.id, deps)).rejects.toThrow('Deploys need key or agent auth; "app1" uses a password')
+  })
+
+  it('carries services: checkout host for a service, via-host for a db', async () => {
+    const { f, deps, trust } = await setup()
+    trust('203.0.113.9', 2222)
+    trust('10.0.0.7', 22)
+    const dep = f.deploys.list(f.prod.id)[0]
+    const web = f.services.create({ kind: 'service', environmentId: f.prod.id, name: 'web', deploymentId: dep.id, composeService: 'web' })
+    const loose = f.services.create({ kind: 'service', environmentId: f.prod.id, name: 'loose', deploymentId: null })
+    const db = f.services.create({ kind: 'db', environmentId: f.prod.id, name: 'main-db', dbEngine: 'postgres', dbAddress: '10.0.0.9', viaHostId: f.host.id })
+    const m = await buildManifest(f.prod.id, deps)
+    const byName = Object.fromEntries(m.services.map((s) => [s.name, s]))
+    expect(byName.web).toEqual({ id: web.id, name: 'web', kind: 'service', composeService: 'web', deploymentId: dep.id, hostId: f.host.id, viaHostId: null })
+    expect(byName.loose).toMatchObject({ id: loose.id, deploymentId: null, hostId: null })
+    expect(byName['main-db']).toEqual({ id: db.id, name: 'main-db', kind: 'db', composeService: null, deploymentId: null, hostId: null, viaHostId: f.host.id })
+    expect(m.deployments[0]).toHaveProperty('composeProject')
+    expect(m.deployments[0]).toHaveProperty('repoUrl')
+  })
+
+  it('a repository URL with credentials is never published or echoed', async () => {
+    const { f, deps, trust } = await setup()
+    trust('203.0.113.9', 2222)
+    trust('10.0.0.7', 22)
+    const dep = f.deploys.list(f.prod.id)[0]
+    const url = 'https://ghp_secrettoken123@github.com/acme/web.git'
+    f.db.prepare('UPDATE deployments SET repo_url = ? WHERE id = ?').run(url, dep.id)
+    const err = await buildManifest(f.prod.id, deps).then(
+      () => null,
+      (e: Error) => e,
+    )
+    expect(err?.message).toContain(`"${dep.name}"`)
+    expect(err?.message).not.toContain('ghp_secrettoken123')
+    expect(err?.message).not.toContain('github.com')
+    const put = vi.fn(async () => ({ manifestHash: 'x', missingSecrets: [] }))
+    const pub = new HubPublisher({ ...deps, audit: f.audit, vault: f.vault, client: () => ({ put: put as never, del: vi.fn() }), hubId: () => 'hub-1' })
+    await expect(pub.publish(f.prod.id)).rejects.toThrow(/embedded credentials/)
+    expect(put).not.toHaveBeenCalled()
+    expect(JSON.stringify(auditRows(f.db))).not.toContain('ghp_secrettoken123')
+    // A plain URL, and an ssh user without a password, publish and ride in the manifest.
+    f.db.prepare('UPDATE deployments SET repo_url = ? WHERE id = ?').run('git@github.com:acme/web.git', dep.id)
+    expect((await buildManifest(f.prod.id, deps)).deployments[0].repoUrl).toBe('git@github.com:acme/web.git')
   })
 
   it('manifest contains no secret values', async () => {

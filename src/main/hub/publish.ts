@@ -9,11 +9,12 @@ import {
   type HubSecretKind,
   type HubSecretList,
 } from '../../shared/hub'
-import type { ResolvedHost } from '../../shared/inventory'
+import { hasRepoCredentials, type ResolvedHost } from '../../shared/inventory'
 import type { SecretMeta } from '../../shared/vault'
 import type { Db } from '../db/connection'
 import { passwordMessage } from '../deploy/hostkeys'
 import type { DeployStore } from '../deploy/deploy-store'
+import type { ServiceStore } from '../deploy/service-store'
 import type { EnvironmentStore } from '../inventory/environment-store'
 import type { KnownHostStore } from '../ssh/known-hosts'
 import { uuidv7 } from '../deploy/uuidv7'
@@ -26,7 +27,8 @@ const ADMIN_SECRETS = '/api/v1/admin/secrets'
 export interface ManifestDeps {
   db: Db
   envs: Pick<EnvironmentStore, 'get'>
-  deploys: Pick<DeployStore, 'list' | 'listApps' | 'settings'>
+  deploys: Pick<DeployStore, 'list' | 'settings'>
+  services: Pick<ServiceStore, 'list'>
   knownHosts: Pick<KnownHostStore, 'pinned'>
   secrets: { list(): SecretMeta[] }
   resolve: (hostId: string, environmentId: string) => ResolvedHost
@@ -66,7 +68,13 @@ export async function buildManifest(environmentId: string, deps: ManifestDeps): 
   const env = deps.envs.get(environmentId)
   const settings = deps.deploys.settings(environmentId)
   const deployments = deps.deploys.list(environmentId)
-  const apps = deps.deploys.listApps(environmentId)
+  // A URL with credentials is never published, and its text is never echoed: the error names the checkout only.
+  for (const d of deployments) {
+    if (d.repoUrl && hasRepoCredentials(d.repoUrl)) {
+      throw new Error(`Checkout "${d.name}" has a repository URL with embedded credentials; remove them (use a deploy key) and publish again`)
+    }
+  }
+  const hostOf = new Map(deployments.map((d) => [d.id, d.hostId]))
   const labelOf = deps.db.prepare('SELECT label FROM hosts WHERE id = ?')
 
   const hostIds = [...new Set(deployments.map((d) => d.hostId))]
@@ -109,7 +117,11 @@ export async function buildManifest(environmentId: string, deps: ManifestDeps): 
       currentVersion: settings.currentVersion,
     },
     hosts,
-    apps: apps.map((a) => ({ id: a.id, name: a.name, composeProject: a.composeProject, description: a.description })),
+    services: deps.services.list(environmentId).map((s): HubEnvManifest['services'][number] =>
+      s.kind === 'service'
+        ? { id: s.id, name: s.name, kind: 'service', composeService: s.composeService, deploymentId: s.deploymentId, hostId: s.deploymentId ? (hostOf.get(s.deploymentId) ?? null) : null, viaHostId: null }
+        : { id: s.id, name: s.name, kind: 'db', composeService: null, deploymentId: null, hostId: null, viaHostId: s.viaHostId },
+    ),
     deployments: deployments.map(({ vaultIds: _v, createdAt: _c, updatedAt: _u, ...d }) => d),
     integrations: deps.integrations?.(environmentId) ?? EMPTY_HUB_INTEGRATIONS,
     requiredSecrets: secretUsage(environmentId, deps).map(({ secretId, name, usedBy }) => ({ secretId, name, usedBy })),
