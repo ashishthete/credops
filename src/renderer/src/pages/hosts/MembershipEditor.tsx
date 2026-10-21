@@ -1,13 +1,12 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { ChevronDown, Lock, Plus, Unlink } from 'lucide-react'
-import { useRef } from 'react'
+import { ChevronDown, Globe2, Lock, Plus, Unlink, X } from 'lucide-react'
+import { useRef, useState } from 'react'
 import { HOST_ROLES, type EnvironmentMeta, type HostMeta, type HostRole } from '../../../../shared/inventory'
+import { regionHintText } from '../../inventory/regions'
 import { inv, type InventoryData } from '../../inventory/store'
 import { useMenuPopover } from '../../ui/common'
 import { exitFast, fast, spring, useMotionSafe } from '../../ui/motion'
 import { ROLE_LABEL } from '../products/ProductView'
-// regions-ui: one product per environment, read as a list until the Regions UI.
-import { productIdsOf } from '../../inventory/regions-stopgap'
 
 interface MembershipEditorProps {
   host: HostMeta
@@ -20,7 +19,7 @@ interface MembershipEditorProps {
 export function MembershipEditor({ host, data, onRemove }: MembershipEditorProps) {
   const motionSafe = useMotionSafe()
   const productName = new Map(data.products.map((p) => [p.id, p.name]))
-  const where = (e: EnvironmentMeta) => productIdsOf(e).map((id) => productName.get(id)).filter(Boolean).join(', ')
+  const where = (e: EnvironmentMeta) => productName.get(e.productId) ?? ''
   const rows = host.environments
     .flatMap((m) => {
       const env = data.environments.find((e) => e.id === m.environmentId)
@@ -30,6 +29,15 @@ export function MembershipEditor({ host, data, onRemove }: MembershipEditorProps
   const joined = new Set(host.environments.map((m) => m.environmentId))
   const list = useRef<HTMLUListElement>(null)
   const available = data.environments.filter((e) => !joined.has(e.id)).sort((a, b) => a.name.localeCompare(b.name))
+  // Joining an environment in a region it doesn't use yet is allowed, but worth a word; the hint says it once.
+  const [hint, setHint] = useState<{ hostId: string; text: string } | null>(null)
+
+  const add = async (e: EnvironmentMeta) => {
+    // Worked out before the add, while the environment's regions are still the ones it had.
+    const text = regionHintText(data, e.id, host)
+    setHint(null)
+    if ((await inv.putHost(e.id, host.id, e.defaultJumpHostId === host.id ? 'bastion' : 'app')) && text) setHint({ hostId: host.id, text })
+  }
 
   return (
     <div className="flex flex-col gap-2">
@@ -80,7 +88,16 @@ export function MembershipEditor({ host, data, onRemove }: MembershipEditorProps
           ))}
         </AnimatePresence>
       </ul>
-      {available.length > 0 && <AddMenu envs={available} where={where} anchor={() => list.current} onPick={(e) => void inv.putHost(e.id, host.id, e.defaultJumpHostId === host.id ? 'bastion' : 'app')} />}
+      {hint?.hostId === host.id && (
+        <p role="status" className="flex items-start gap-2 rounded-lg bg-warn/8 px-2.5 py-2 text-[12px] leading-[18px] text-fg/85">
+          <Globe2 aria-hidden className="mt-0.5 size-3.5 shrink-0 text-warn" />
+          <span className="min-w-0 flex-1">{hint.text}</span>
+          <button type="button" aria-label="Dismiss" onClick={() => setHint(null)} className="grid size-5 shrink-0 place-items-center rounded text-muted hover:bg-white/[0.06] hover:text-fg">
+            <X aria-hidden className="size-3" />
+          </button>
+        </p>
+      )}
+      {available.length > 0 && <AddMenu envs={available} where={where} anchor={() => list.current} onPick={(e) => void add(e)} />}
     </div>
   )
 }

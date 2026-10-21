@@ -17,6 +17,7 @@ import { toast } from '../../ui/Toaster'
 import { useVaultStatus } from '../../vault/status'
 import { withUnlock } from '../../vault/unlock'
 import { ROLE_LABEL } from '../products/ProductView'
+import { RegionSelect } from './RegionDialog'
 
 type Step = 'preview' | 'where' | 'done'
 
@@ -46,6 +47,7 @@ export function ImportDialog({ open, onClose, onImported }: ImportDialogProps) {
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [chosen, setChosen] = useState<Set<string>>(new Set())
   const [vaultId, setVaultId] = useState(DEFAULT_VAULT_ID)
+  const [regionId, setRegionId] = useState('')
   const [environmentId, setEnvironmentId] = useState('')
   const [role, setRole] = useState<HostRole>('app')
   const [withForwards, setWithForwards] = useState(true)
@@ -79,6 +81,7 @@ export function ImportDialog({ open, onClose, onImported }: ImportDialogProps) {
     setStep('preview')
     setChosen(new Set())
     setVaultId(DEFAULT_VAULT_ID)
+    setRegionId('')
     setEnvironmentId('')
     setRole('app')
     setWithForwards(true)
@@ -97,6 +100,9 @@ export function ImportDialog({ open, onClose, onImported }: ImportDialogProps) {
       .sort((a, b) => Number(b.isDefault) - Number(a.isDefault) || a.name.localeCompare(b.name))
   }, [data, status])
   const vault = vaults.some((v) => v.id === vaultId) ? vaultId : (vaults[0]?.id ?? '')
+  // Only a lone region is a safe guess; with several, the user says which.
+  const regions = data?.regions ?? []
+  const region = regionId || (regions.length === 1 ? regions[0].id : '')
   const environments = useMemo(() => [...(data?.environments ?? [])].sort((a, b) => a.name.localeCompare(b.name)), [data])
 
   const candidates = preview?.candidates ?? []
@@ -107,6 +113,7 @@ export function ImportDialog({ open, onClose, onImported }: ImportDialogProps) {
   const run = async () => {
     setBusy(true)
     const res = await inv.importSshConfig({
+      regionId: region,
       vaultId: vault,
       aliases,
       ...(environmentId ? { environmentId, role } : {}),
@@ -142,7 +149,7 @@ export function ImportDialog({ open, onClose, onImported }: ImportDialogProps) {
         <Button variant="ghost" disabled={busy} onClick={() => setStep('preview')}>
           Back
         </Button>
-        <Button loading={busy} disabled={!vault} onClick={() => void run()}>
+        <Button loading={busy} disabled={!vault || !region} onClick={() => void run()}>
           {`Import ${plural(aliases.length, 'host')}`}
         </Button>
       </>
@@ -177,6 +184,7 @@ export function ImportDialog({ open, onClose, onImported }: ImportDialogProps) {
                 </option>
               ))}
             </SelectField>
+            <RegionSelect value={region} onChange={setRegionId} hint="Every host this import creates goes in it." />
             <div className="grid grid-cols-[1fr_160px] gap-3">
               <SelectField label="Environment" value={environmentId} onChange={(e) => setEnvironmentId(e.target.value)}>
                 <option value="">No environment</option>

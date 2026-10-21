@@ -2,6 +2,7 @@ import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { inventoryStore, loadInventory } from '../../src/renderer/src/inventory/store'
 import { ImportConfigDialog } from '../../src/renderer/src/pages/settings/ImportConfigDialog'
 import { SettingsPage } from '../../src/renderer/src/pages/settings/SettingsPage'
 import { Toaster, clearToasts } from '../../src/renderer/src/ui/Toaster'
@@ -41,6 +42,7 @@ function renderDialog(p: ImportPreview | { errors: string[] } = preview, onClose
 
 afterEach(() => {
   act(() => clearToasts())
+  inventoryStore.set(null)
 })
 
 describe('import config dialog', () => {
@@ -127,13 +129,33 @@ describe('import config dialog', () => {
     expect(await screen.findByText('Imported: 3 added, 2 updated; 2 need a secret')).toBeInTheDocument()
   })
 
-  it("a version 1 file's hosts go in the first region", async () => {
-    // regions-ui: until the dialog lets the user pick one.
+  it("a version 1 file's hosts go in the only region there is", async () => {
     const invoke = mockBridge({ 'config:importApply': { counts: { add: 1, update: 0, unchanged: 0, skip: 0 }, needsSecret: [] } })
+    await loadInventory()
     renderDialog({ ...preview, needsSecret: [], protectedEnvironments: [], needsRegion: true })
+    expect(screen.getByLabelText('Put new hosts in region')).toHaveValue(REGION.id)
     await userEvent.click(screen.getByRole('button', { name: 'Import' }))
     expect(await screen.findByText('Imported: 1 added, 0 updated')).toBeInTheDocument()
     expect(invoke).toHaveBeenCalledWith('config:importApply', TOKEN, { typedNames: [], regionId: REGION.id })
+  })
+
+  it('with several regions, a version 1 file waits for the user to pick one', async () => {
+    const other = { ...REGION, id: 'region-2', code: 'eu-west-1', displayName: 'Ireland' }
+    const invoke = mockBridge({ 'region:list': [REGION, other], 'config:importApply': { counts: { add: 1, update: 0, unchanged: 0, skip: 0 }, needsSecret: [] } })
+    await loadInventory()
+    renderDialog({ ...preview, needsSecret: [], protectedEnvironments: [], needsRegion: true })
+    const select = screen.getByLabelText('Put new hosts in region')
+    expect(select).toHaveValue('')
+    expect(screen.getByRole('button', { name: 'Import' })).toBeDisabled()
+    await userEvent.selectOptions(select, 'region-2')
+    await userEvent.click(screen.getByRole('button', { name: 'Import' }))
+    expect(invoke).toHaveBeenCalledWith('config:importApply', TOKEN, { typedNames: [], regionId: 'region-2' })
+  })
+
+  it('a file that names its regions asks for none', () => {
+    mockBridge()
+    renderDialog({ ...preview, needsRegion: false })
+    expect(screen.queryByLabelText('Put new hosts in region')).not.toBeInTheDocument()
   })
 
   it('a clean import toasts without the secret note', async () => {

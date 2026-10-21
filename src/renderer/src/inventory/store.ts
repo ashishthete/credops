@@ -138,32 +138,26 @@ const ENV_KEYS = ['name', 'color', 'protected', 'defaultIdentityId', 'defaultPor
 const deleted = async (fn: () => Promise<unknown>, title: string) =>
   (await attempt(title, async () => (await fn(), true))) === true
 
-/**
- * regions-ui: the region new hosts go in until the dialogs let the user pick one: the first by code. With none, the
- * user is told to create one, as main would.
- */
-export async function defaultRegionId(): Promise<string> {
-  const [first] = await api.invoke('region:list')
-  if (!first) throw new Error('Create a region before adding hosts')
-  return first.id
-}
-
 /** Main reads the stored value and opens it; the renderer sends only the id. */
 export async function openEnvironmentDomain(id: string): Promise<void> {
   await attempt("Couldn't open the domain", () => api.invoke('env:openDomain', id))
 }
 
 export const inv = {
-  async saveRegion(input: RegionInput, id?: string): Promise<RegionMeta | undefined> {
-    const row = await attempt("Couldn't save the region", () =>
-      id ? api.invoke('region:update', id, input satisfies RegionPatch) : api.invoke('region:create', input),
+  /** `onError` takes main's message instead of a toast, for a form that shows it inline. */
+  async saveRegion(input: RegionInput, id?: string, onError?: (message: string) => void): Promise<RegionMeta | undefined> {
+    const row = await attempt(
+      "Couldn't save the region",
+      () => (id ? api.invoke('region:update', id, input satisfies RegionPatch) : api.invoke('region:create', input)),
+      onError,
     )
     if (row) patchStore((d) => ({ regions: upsert(d.regions, row) }))
     return row
   },
 
-  async deleteRegion(id: string): Promise<boolean> {
-    const ok = await deleted(() => api.invoke('region:delete', id), "Couldn't delete the region")
+  /** Main refuses while a host uses the region; `onError` takes its message instead of a toast. */
+  async deleteRegion(id: string, onError?: (message: string) => void): Promise<boolean> {
+    const ok = (await attempt("Couldn't delete the region", async () => (await api.invoke('region:delete', id), true), onError)) === true
     if (ok) patchStore((d) => ({ regions: d.regions.filter((r) => r.id !== id) }))
     return ok
   },
@@ -256,11 +250,10 @@ export const inv = {
    * Create sends everything; edit sends changed fields only and routes vault links to setHostVaults.
    * `base` is the host the edit started from (defaults to the stored one), so others' changes aren't undone.
    */
-  // regions-ui: regionId is optional here until the host dialogs pick one; a new host without one goes in defaultRegionId().
-  async saveHost(input: Omit<HostInput, 'regionId'> & { regionId?: string }, id?: string, base?: HostMeta): Promise<HostMeta | undefined> {
+  async saveHost(input: HostInput, id?: string, base?: HostMeta): Promise<HostMeta | undefined> {
     let updated = false
     const row = await attempt("Couldn't save the host", async () => {
-      if (!id) return api.invoke('host:create', { ...input, regionId: input.regionId ?? (await defaultRegionId()) })
+      if (!id) return api.invoke('host:create', input)
       const current = base ?? inventoryStore.get()?.hosts.find((h) => h.id === id)
       const patch = diff<HostPatch>(input, current, HOST_KEYS)
       let saved = current
@@ -296,11 +289,8 @@ export const inv = {
   },
 
   /** Imports hosts from ~/.ssh/config, then reloads everything (it can add hosts, identities and keys). */
-  // regions-ui: regionId is optional here until the import dialog picks one.
-  async importSshConfig(req: Omit<SshImportRequest, 'regionId'> & { regionId?: string }): Promise<SshImportResult | undefined> {
-    const result = await attempt("Couldn't import from ~/.ssh/config", async () =>
-      api.invoke('sshconfig:import', { ...req, regionId: req.regionId ?? (await defaultRegionId()) }),
-    )
+  async importSshConfig(req: SshImportRequest): Promise<SshImportResult | undefined> {
+    const result = await attempt("Couldn't import from ~/.ssh/config", () => api.invoke('sshconfig:import', req))
     if (result) await reloadInventory()
     return result
   },

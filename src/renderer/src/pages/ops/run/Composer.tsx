@@ -2,8 +2,9 @@ import { motion } from 'framer-motion'
 import { Minus, Play, Plus, Search, ShieldAlert, ShieldCheck } from 'lucide-react'
 import { useSearchParams } from 'react-router'
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
-import { HOST_ROLES, type HostRole } from '../../../../../shared/inventory'
+import { HOST_ROLES, type HostRole, type RegionMeta } from '../../../../../shared/inventory'
 import { DEFAULT_CONCURRENCY, DEFAULT_RUN_TIMEOUT_SEC, DESTRUCTIVE_PATTERN, MAX_CONCURRENCY, type RunRequest } from '../../../../../shared/ops'
+import { hostsByRegion } from '../../../inventory/regions'
 import { useInventory } from '../../../inventory/store'
 import { api } from '../../../lib/api'
 import { runProtection } from '../../../ops/protect'
@@ -13,6 +14,7 @@ import { Button } from '../../../ui/Button'
 import { attempt, plural, type ConfirmRequest } from '../../../ui/common'
 import { SelectField, TextAreaField, TextField } from '../../../ui/Field'
 import { fast, spring, useMotionSafe } from '../../../ui/motion'
+import { RegionChip } from '../../../ui/RegionChip'
 import { Segmented } from '../../../ui/Segmented'
 import { isMac } from '../../../ui/shortcuts'
 import { confirmFor, launch } from './launch'
@@ -220,7 +222,7 @@ export function Composer({ onConfirm }: { onConfirm: (req: ConfirmRequest) => vo
             {env && <RoleChips value={role} counts={roleCounts} onChange={setRole} />}
           </>
         ) : (
-          <HostChecklist hosts={hosts} picked={picked} onChange={setPicked} />
+          <HostChecklist hosts={hosts} regions={inv?.regions ?? []} picked={picked} onChange={setPicked} />
         )}
         {targetMode === 'hosts' && (
           <SelectField label="Environment context" hint="Optional: run as part of an environment" value={contextId} onChange={(e) => setContextId(e.target.value)}>
@@ -393,18 +395,33 @@ function RoleChips({ value, counts, onChange }: { value: Role; counts: Record<Ro
 
 function HostChecklist({
   hosts,
+  regions,
   picked,
   onChange,
 }: {
-  hosts: readonly { id: string; label: string; tags: string[] }[]
+  hosts: readonly { id: string; label: string; tags: string[]; regionId: string }[]
+  regions: readonly RegionMeta[]
   picked: ReadonlySet<string>
   onChange: (s: ReadonlySet<string>) => void
 }) {
   const [query, setQuery] = useState('')
   const [tag, setTag] = useState('')
+  const [regionId, setRegionId] = useState('')
   const tags = useMemo(() => [...new Set(hosts.flatMap((h) => h.tags))].sort((a, b) => a.localeCompare(b)), [hosts])
+  // Region by region, like every host picker; the filter only shows once there is more than one to choose.
+  const groups = useMemo(() => hostsByRegion(regions, hosts), [regions, hosts])
+  const used = groups.flatMap((g) => g.region ?? [])
   const q = query.trim().toLowerCase()
-  const shown = hosts.filter((h) => (!tag || h.tags.includes(tag)) && (!q || h.label.toLowerCase().includes(q)))
+  const shown = groups.flatMap((g) =>
+    g.hosts
+      .filter(
+        (h) =>
+          (!tag || h.tags.includes(tag)) &&
+          (!regionId || h.regionId === regionId) &&
+          (!q || h.label.toLowerCase().includes(q) || !!g.region?.code.includes(q)),
+      )
+      .map((h) => ({ ...h, region: g.region })),
+  )
   const toggle = (id: string) => {
     const next = new Set(picked)
     if (next.has(id)) next.delete(id)
@@ -438,6 +455,21 @@ function HostChecklist({
             </option>
           ))}
         </select>
+        {used.length > 1 && (
+          <select
+            aria-label="Region"
+            value={regionId}
+            onChange={(e) => setRegionId(e.target.value)}
+            className="h-8 max-w-32 rounded-lg border border-line bg-surface/60 px-2 font-mono text-[12.5px] text-fg focus:border-accent/50 focus:outline-none"
+          >
+            <option value="">Any region</option>
+            {used.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.code}
+              </option>
+            ))}
+          </select>
+        )}
       </div>
       <div role="group" aria-label="Hosts to run on" className="flex max-h-52 flex-col overflow-y-auto rounded-lg border border-line/70 bg-surface/40 py-1">
         {shown.length === 0 && <p className="px-3 py-2 text-[12px] text-muted">No hosts match</p>}
@@ -445,6 +477,7 @@ function HostChecklist({
           <label key={h.id} className="flex h-7 shrink-0 cursor-pointer items-center gap-2.5 px-3 text-[12.5px] text-fg/90 hover:bg-white/[0.03]">
             <input type="checkbox" checked={picked.has(h.id)} onChange={() => toggle(h.id)} className="size-3.5 accent-(--accent)" />
             <span className="truncate">{h.label}</span>
+            {h.region && <RegionChip region={h.region} className="ml-auto" />}
           </label>
         ))}
       </div>

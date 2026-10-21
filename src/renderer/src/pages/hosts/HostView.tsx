@@ -1,14 +1,17 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { Boxes, Cable, Check, Layers, Network, Play, Pencil, SquareTerminal, StickyNote, Trash2, Vault, X } from 'lucide-react'
-import { useRef, useState, type ReactNode } from 'react'
+import { Boxes, Cable, Check, Globe2, Layers, Network, Play, Pencil, SquareTerminal, StickyNote, Trash2, Vault, X } from 'lucide-react'
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import type { EnvironmentMeta, HostMeta } from '../../../../shared/inventory'
+import { regionById } from '../../inventory/regions'
 import { inv, inventoryStore, useInventory, type InventoryData } from '../../inventory/store'
 import { showHostOnMapPath } from '../../map/commands'
 import { useConnect } from '../../terminal/connect'
 import { Button } from '../../ui/Button'
 import { ConfirmDialog, RowMenu, useMenuPopover, type ConfirmRequest } from '../../ui/common'
+import { Dialog } from '../../ui/Dialog'
 import { exitFast, fast, spring, useMotionSafe } from '../../ui/motion'
+import { RegionChip } from '../../ui/RegionChip'
 import { Skeleton } from '../../ui/Skeleton'
 import { toast } from '../../ui/Toaster'
 import { useVaultStatus } from '../../vault/status'
@@ -17,6 +20,7 @@ import { ConnectionCard } from './ConnectionCard'
 import { HostDialog, OS_META } from './HostDialog'
 import { HostTunnels } from './HostTunnels'
 import { MembershipEditor } from './MembershipEditor'
+import { RegionSelect } from './RegionDialog'
 
 interface HostViewProps {
   hostId: string
@@ -29,6 +33,7 @@ interface HostViewProps {
 export function HostView({ hostId, environmentId, onDeleted }: HostViewProps) {
   const data = useInventory()
   const [editing, setEditing] = useState(false)
+  const [moving, setMoving] = useState(false)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   const [context, setContext] = useState<string | null>(environmentId ?? null)
   const { connect } = useConnect()
@@ -46,6 +51,7 @@ export function HostView({ hostId, environmentId, onDeleted }: HostViewProps) {
   if (!host) return null
 
   const { icon: OsIcon, label: osLabel } = OS_META[host.osIcon]
+  const region = regionById(data.regions, host.regionId)
   const protectedEnv = data.environments.find((e) => e.protected && e.hosts.some((m) => m.hostId === host.id))
 
   const askDelete = () => {
@@ -112,6 +118,7 @@ export function HostView({ hostId, environmentId, onDeleted }: HostViewProps) {
               label={`${host.label} options`}
               items={[
                 { label: 'Edit', icon: Pencil, run: () => setEditing(true) },
+                { label: 'Change region…', icon: Globe2, run: () => setMoving(true) },
                 { label: 'Show on map', icon: Network, run: () => navigate(showHostOnMapPath(host.id)) },
                 { label: 'Delete', icon: Trash2, run: askDelete, danger: true },
               ]}
@@ -120,6 +127,13 @@ export function HostView({ hostId, environmentId, onDeleted }: HostViewProps) {
         }
       />
       <div className="min-h-0 flex-1 overflow-y-auto px-8 pt-2 pb-8">
+        <div className="mb-3 flex items-center gap-2 text-[12.5px] text-muted">
+          {region ? <RegionChip region={region} /> : <span>Unknown region</span>}
+          {region?.displayName && region.displayName !== region.code && <span className="truncate">{region.displayName}</span>}
+          <Button size="sm" variant="ghost" onClick={() => setMoving(true)}>
+            Change region…
+          </Button>
+        </div>
         {host.tags.length > 0 && (
           <ul aria-label="Tags" className="mb-4 flex flex-wrap gap-1">
             {host.tags.map((t) => (
@@ -158,8 +172,56 @@ export function HostView({ hostId, environmentId, onDeleted }: HostViewProps) {
         onClose={() => setEditing(false)}
         onSaved={() => setEditing(false)}
       />
+      <ChangeRegionDialog open={moving} host={host} onClose={() => setMoving(false)} />
       <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
     </>
+  )
+}
+
+/** Moves a host to another region, or a new one made on the spot. */
+function ChangeRegionDialog({ open, host, onClose }: { open: boolean; host: HostMeta; onClose: () => void }) {
+  const formId = useId()
+  const [regionId, setRegionId] = useState(host.regionId)
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    if (open) setRegionId(host.regionId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!regionId || regionId === host.regionId || busy) return
+    setBusy(true)
+    const saved = await inv.saveHost({ label: host.label, address: host.address, regionId }, host.id)
+    setBusy(false)
+    if (saved) {
+      const code = inventoryStore.get()?.regions.find((r) => r.id === regionId)?.code
+      toast({ title: code ? `Moved ${host.label} to ${code}` : `Moved ${host.label}`, tone: 'success' })
+      onClose()
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={`Change ${host.label}'s region`}
+      width={420}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button type="submit" form={formId} disabled={!regionId || regionId === host.regionId} loading={busy}>
+            Move host
+          </Button>
+        </>
+      }
+    >
+      <form id={formId} onSubmit={(e) => void submit(e)} noValidate>
+        <RegionSelect value={regionId} onChange={setRegionId} />
+      </form>
+    </Dialog>
   )
 }
 

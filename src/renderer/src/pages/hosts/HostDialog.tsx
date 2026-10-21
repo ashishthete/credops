@@ -16,7 +16,8 @@ import {
 } from '../../../../shared/inventory'
 import { DEFAULT_VAULT_ID, MAX_LABEL } from '../../../../shared/vault'
 import { identityChoices, jumpHostChoices, sourceLabel } from '../../inventory/choices'
-import { inv, useInventory } from '../../inventory/store'
+import { hostsByRegion, regionsOfEnvironment } from '../../inventory/regions'
+import { inv, useInventory, type InventoryData } from '../../inventory/store'
 import { Button } from '../../ui/Button'
 import { Dialog } from '../../ui/Dialog'
 import { SelectField, TextAreaField, TextField } from '../../ui/Field'
@@ -24,6 +25,7 @@ import { exitFast, fast, spring, useMotionSafe } from '../../ui/motion'
 import { toast } from '../../ui/Toaster'
 import { useVaultStatus } from '../../vault/status'
 import { HostAdvanced, advancedFrom, checkAdvanced, type AdvancedState } from './HostAdvanced'
+import { RegionSelect } from './RegionDialog'
 
 export const OS_META: Record<OsIcon, { label: string; icon: LucideIcon }> = {
   linux: { label: 'Linux', icon: SquareTerminal },
@@ -47,25 +49,40 @@ function addressError(text: string): string | undefined {
   return undefined
 }
 
+/**
+ * The region a new host starts in: the region group it was asked for in, else the only region of the environment
+ * it's being added to, else the only region there is. Any doubt (several candidates) leaves the choice to the user.
+ */
+function presetRegion(data: InventoryData | null, regionId: string | undefined, environmentId: string | undefined): string {
+  if (!data) return ''
+  if (regionId && data.regions.some((r) => r.id === regionId)) return regionId
+  const candidates = environmentId ? regionsOfEnvironment(data, environmentId) : []
+  if (candidates.length) return candidates.length === 1 ? candidates[0].id : ''
+  return data.regions.length === 1 ? data.regions[0].id : ''
+}
+
 interface HostDialogProps {
   open: boolean
   /** Edits this host; creates a new one when absent. */
   host?: HostMeta
   /** A new host starts in this environment, with this role. */
   presetEnvironment?: Membership
+  /** A new host starts in this region, e.g. the region group "New host" was clicked in. */
+  presetRegionId?: string
   /** The environment the host is being looked at from; blank fields say what they inherit there. */
   contextEnvironmentId?: string
   onClose: () => void
   onSaved: (host: HostMeta, created: boolean) => void
 }
 
-export function HostDialog({ open, host, presetEnvironment, contextEnvironmentId, onClose, onSaved }: HostDialogProps) {
+export function HostDialog({ open, host, presetEnvironment, presetRegionId, contextEnvironmentId, onClose, onSaved }: HostDialogProps) {
   const formId = useId()
   const data = useInventory()
   const status = useVaultStatus()
   const [label, setLabel] = useState('')
   const [address, setAddress] = useState('')
   const [port, setPort] = useState('')
+  const [regionId, setRegionId] = useState('')
   const [identityId, setIdentityId] = useState('')
   const [jumpId, setJumpId] = useState('')
   const [tags, setTags] = useState<string[]>([])
@@ -82,6 +99,7 @@ export function HostDialog({ open, host, presetEnvironment, contextEnvironmentId
     setLabel(host?.label ?? '')
     setAddress(host?.address ?? '')
     setPort(host?.port != null ? String(host.port) : '')
+    setRegionId(host?.regionId ?? '')
     setIdentityId(host?.identityId ?? '')
     setJumpId(host?.jumpHostId ?? '')
     setTags(host?.tags ?? [])
@@ -101,10 +119,8 @@ export function HostDialog({ open, host, presetEnvironment, contextEnvironmentId
       .map((group) => ({ group, entries: all.filter((g) => g.group === group).flatMap((g) => g.identities.map((i) => ({ i, vault: g.vault }))) }))
       .filter((g) => g.entries.length)
   }, [data, linkedVaultIds, corruptIds])
-  const jumpHosts = useMemo(
-    () => jumpHostChoices(data?.hosts ?? [], host?.id ?? null).filter((h) => h.id !== host?.id).sort((a, b) => a.label.localeCompare(b.label)),
-    [data, host],
-  )
+  const jumpHosts = useMemo(() => jumpHostChoices(data?.hosts ?? [], host?.id ?? null).filter((h) => h.id !== host?.id), [data, host])
+  const jumpGroups = useMemo(() => hostsByRegion(data?.regions ?? [], jumpHosts), [data, jumpHosts])
 
   // What a blank field falls back to: the context environment's default, or, with no context, the one
   // default every environment agrees on. When they disagree there is no single answer to show.
@@ -128,10 +144,13 @@ export function HostDialog({ open, host, presetEnvironment, contextEnvironmentId
   const knownIdentity = !identityId || groups.some((g) => g.entries.some((x) => x.i.id === identityId))
   const knownJump = !jumpId || jumpHosts.some((h) => h.id === jumpId)
 
+  // Until the user picks one, a new host's region follows the preset, which may only be known once the inventory loads.
+  const region = regionId || (host ? '' : presetRegion(data, presetRegionId, presetEnvironment?.environmentId))
+
   const parsedPort = parsePort(port)
   const addrError = addressError(address)
   const advCheck = checkAdvanced(adv)
-  const valid = label.trim().length > 0 && address.trim().length > 0 && !addrError && !parsedPort.error && advCheck.valid
+  const valid = label.trim().length > 0 && address.trim().length > 0 && !!region && !addrError && !parsedPort.error && advCheck.valid
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -140,6 +159,7 @@ export function HostDialog({ open, host, presetEnvironment, contextEnvironmentId
     const fields = {
       label: label.trim(),
       address: address.trim(),
+      regionId: region,
       port: parsedPort.value,
       identityId: identityId || null,
       jumpHostId: jumpId || null,
@@ -208,6 +228,7 @@ export function HostDialog({ open, host, presetEnvironment, contextEnvironmentId
             className="font-mono tabular-nums"
           />
         </div>
+        <RegionSelect value={region} onChange={setRegionId} />
         <SelectField label="Identity" value={identityId} onChange={(e) => setIdentityId(e.target.value)}>
           <option value="">{inheritLabel((e) => e.defaultIdentityId)}</option>
           {groups.map((g) => (
@@ -227,10 +248,14 @@ export function HostDialog({ open, host, presetEnvironment, contextEnvironmentId
         </SelectField>
         <SelectField label="Jump host" value={jumpId} onChange={(e) => setJumpId(e.target.value)}>
           <option value="">{inheritLabel((e) => e.defaultJumpHostId)}</option>
-          {jumpHosts.map((h) => (
-            <option key={h.id} value={h.id}>
-              {h.label}
-            </option>
+          {jumpGroups.map((g) => (
+            <optgroup key={g.hosts[0].regionId} label={g.region?.code ?? 'Unknown region'}>
+              {g.hosts.map((h) => (
+                <option key={h.id} value={h.id}>
+                  {h.label}
+                </option>
+              ))}
+            </optgroup>
           ))}
           {!knownJump && (
             <option value={jumpId} disabled>

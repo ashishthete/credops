@@ -2,14 +2,16 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { FileDown, Plus, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { useSearchParams } from 'react-router'
-import type { EnvironmentMeta } from '../../../../shared/inventory'
+import type { EnvironmentMeta, RegionMeta } from '../../../../shared/inventory'
 import type { TunnelMeta, TunnelState } from '../../../../shared/tunnels'
+import { regionById } from '../../inventory/regions'
 import { useInventory } from '../../inventory/store'
 import { tunnelStore } from '../../tunnels/store'
 import { Button } from '../../ui/Button'
 import { ConfirmDialog } from '../../ui/common'
 import { EmptyState } from '../../ui/EmptyState'
 import { exitFast, fast, spring, useMotionSafe } from '../../ui/motion'
+import { RegionChip } from '../../ui/RegionChip'
 import { Skeleton } from '../../ui/Skeleton'
 import { ImportDialog } from '../hosts/ImportDialog'
 import { isRunning, TunnelCard } from './TunnelCard'
@@ -36,6 +38,7 @@ interface Group {
   hostId: string
   label: string
   address?: string
+  region?: RegionMeta
   environments: EnvironmentMeta[]
   tunnels: TunnelMeta[]
 }
@@ -67,7 +70,14 @@ export function TunnelsPage() {
     for (const t of [...tunnels].sort((a, b) => a.label.localeCompare(b.label))) {
       if (!test(stateOf(t.id))) continue
       const h = hosts.get(t.hostId)
-      const group = byHost.get(t.hostId) ?? { hostId: t.hostId, label: h?.label ?? 'Unknown host', address: h?.address, environments: [], tunnels: [] }
+      const group = byHost.get(t.hostId) ?? {
+        hostId: t.hostId,
+        label: h?.label ?? 'Unknown host',
+        address: h?.address,
+        region: h && regionById(inventory?.regions ?? [], h.regionId),
+        environments: [],
+        tunnels: [],
+      }
       byHost.set(t.hostId, group)
       group.tunnels.push(t)
       const env = t.environmentId ? envs.get(t.environmentId) : undefined
@@ -260,6 +270,7 @@ function HostGroup({ group, envById, onEdit, onDuplicate, onDelete }: HostGroupP
     >
       <div className="mb-2.5 flex items-center gap-2.5">
         <h2 className="text-[12.5px] font-semibold tracking-tight text-fg/90">{group.label}</h2>
+        {group.region && <RegionChip region={group.region} />}
         {group.environments.map((e) => (
           <span
             key={e.id}

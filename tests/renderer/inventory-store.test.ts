@@ -86,7 +86,7 @@ describe('inventory store', () => {
       return base(channel, ...(args as []))
     })
     await loadInventory()
-    await expect(inv.saveHost({ label: 'new', address: 'new.example.com' })).resolves.toMatchObject({ id: 'N' })
+    await expect(inv.saveHost({ label: 'new', address: 'new.example.com', regionId: REGION.id })).resolves.toMatchObject({ id: 'N' })
     expect(creates).toBe(2)
     expect(inventoryStore.get()!.hosts.map((x) => x.id)).toEqual(['N'])
   })
@@ -102,7 +102,7 @@ describe('inventory store', () => {
       return base(channel, ...(args as []))
     })
     await loadInventory()
-    await inv.saveHost({ label: 'h', address: h.address, port: null, vaultIds: ['v1', 'v2'], environments: [] }, 'H')
+    await inv.saveHost({ label: 'h', address: h.address, regionId: REGION.id, port: null, vaultIds: ['v1', 'v2'], environments: [] }, 'H')
     expect(invoke).toHaveBeenCalledWith('host:update', 'H', { port: null })
     expect(invoke).toHaveBeenCalledWith('host:setVaults', 'H', ['v1', 'v2'])
     expect(inventoryStore.get()!.hosts[0].vaultIds).toEqual(['v1', 'v2'])
@@ -122,22 +122,33 @@ describe('inventory store', () => {
       return base(channel, ...(args as []))
     })
     await loadInventory()
-    await expect(inv.saveHost({ label: 'h', address: hosts[0].address, port: 2222, vaultIds: ['v2'] }, 'H')).resolves.toBeUndefined()
+    await expect(inv.saveHost({ label: 'h', address: hosts[0].address, regionId: REGION.id, port: 2222, vaultIds: ['v2'] }, 'H')).resolves.toBeUndefined()
     expect(inventoryStore.get()!.hosts[0].port).toBe(2222)
     await expect(inv.saveEnvironment({ name: 'e2', color: envs[0].color, productId: 'p2' }, 'E')).resolves.toBeUndefined()
     expect(inventoryStore.get()!.environments[0].name).toBe('e2')
   })
 
-  it('a new host goes in the first region, and is refused when there is none', async () => {
-    // regions-ui: until the host dialogs pick a region.
-    const invoke = mockBridge({ 'host:create': host({ id: 'N', label: 'n' }) })
+  it('a new host goes in the region the caller names, never one the store picks', async () => {
+    const invoke = mockBridge({ 'host:create': host({ id: 'N', label: 'n', regionId: 'r2' }), 'sshconfig:import': { created: [], skipped: [], tunnelsCreated: 0 } })
     await loadInventory()
-    await inv.saveHost({ label: 'n', address: 'n.example.com', vaultIds: [] })
-    expect(invoke).toHaveBeenCalledWith('host:create', { label: 'n', address: 'n.example.com', vaultIds: [], regionId: REGION.id })
-    invoke.mockClear()
-    const none = mockBridge({ 'region:list': [] })
-    await expect(inv.saveHost({ label: 'n', address: 'n.example.com', vaultIds: [] })).resolves.toBeUndefined()
-    expect(none).not.toHaveBeenCalledWith('host:create', expect.anything())
+    await inv.saveHost({ label: 'n', address: 'n.example.com', regionId: 'r2', vaultIds: [] })
+    expect(invoke).toHaveBeenCalledWith('host:create', { label: 'n', address: 'n.example.com', regionId: 'r2', vaultIds: [] })
+    await inv.importSshConfig({ regionId: 'r2', vaultId: 'v', aliases: ['a'] })
+    expect(invoke).toHaveBeenCalledWith('sshconfig:import', { regionId: 'r2', vaultId: 'v', aliases: ['a'] })
+  })
+
+  it("deleting a region a host still uses hands main's refusal to the caller", async () => {
+    const invoke = mockBridge()
+    const base = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'region:delete') throw new Error('test-1 still has a host: move it to another region first')
+      return base(channel, ...(args as []))
+    })
+    await loadInventory()
+    const refusals: string[] = []
+    await expect(inv.deleteRegion(REGION.id, (m) => refusals.push(m))).resolves.toBe(false)
+    expect(refusals).toEqual(['test-1 still has a host: move it to another region first'])
+    expect(inventoryStore.get()!.regions.map((r) => r.id)).toEqual([REGION.id])
   })
 
   it('an edit that changes the product moves the environment', async () => {
@@ -175,7 +186,7 @@ describe('inventory store', () => {
     await loadInventory()
     slow = true
     const stale = loadInventory()
-    await inv.saveHost({ label: 'new', address: h.address }, 'H')
+    await inv.saveHost({ label: 'new', address: h.address, regionId: REGION.id }, 'H')
     expect(inventoryStore.get()!.hosts[0].label).toBe('new')
     release()
     await stale
