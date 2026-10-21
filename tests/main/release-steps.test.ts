@@ -252,6 +252,31 @@ describe('skip unchanged', () => {
     expect((r.f.services.get(worker.id) as AppServiceMeta).lastDeployedCommit).toBe(C)
   })
 
+  it('the hash binds the skip set itself: the same playbook text with a different skip set does not match', async () => {
+    const { r, worker, id } = await shop({ skip: true })
+    const p1 = await r.svc.previewPlaybook(id)
+    expect(p1.skippedServiceIds).toEqual([worker.id])
+    // The same skipped service, recorded at another commit: the plan (which leaves worker out) is unchanged.
+    // (run_events is append-only: a later preflight.done carries the changed report)
+    const row = r.f.db.prepare("SELECT payload FROM run_events WHERE release_id = ? AND type = 'preflight.done' ORDER BY seq DESC LIMIT 1").get(id) as { payload: string }
+    const ev = JSON.parse(row.payload)
+    ev.report.serviceCommits[worker.id] = { ...ev.report.serviceCommits[worker.id], since: E }
+    const { s } = r.f.db.prepare('SELECT MAX(seq) AS s FROM run_events WHERE release_id = ?').get(id) as { s: number }
+    r.f.db
+      .prepare("INSERT INTO run_events(id, release_id, seq, at, type, payload) VALUES (?, ?, ?, ?, 'preflight.done', ?)")
+      .run(`ev-${s + 1}`, id, s + 1, '2026-10-18T00:00:00Z', JSON.stringify(ev))
+    expect(r.svc.detail(id).preflight?.serviceCommits[worker.id]).toMatchObject({ since: E, skippable: true })
+    const p2 = await r.svc.previewPlaybook(id)
+    expect(p2.skippedServiceIds).toEqual([worker.id])
+    expect(p2.playbook).toBe(p1.playbook)
+    expect(p2.sha256).not.toBe(p1.sha256)
+    expect((await fail(r.svc.start(id, { playbookSha256: p1.sha256 }))).message).toBe(PLAYBOOK_CHANGED_MESSAGE)
+    expect(r.svc.detail(id).status).toBe('ready')
+    await r.svc.start(id, { playbookSha256: p2.sha256 })
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).status).toBe('succeeded')
+  })
+
   it('a forced service deploys with its checkout', async () => {
     const { r, worker, id } = await shop({ skip: true })
     const p = await r.svc.previewPlaybook(id, undefined, [worker.id])
