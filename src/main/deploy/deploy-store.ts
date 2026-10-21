@@ -30,7 +30,7 @@ import {
   type UseSudo,
 } from '../../shared/deploy'
 import { DeployError } from '../../shared/deploy-error'
-import { MAX_STEPS_PER_CHECKOUT, validateStep, type Step } from '../../shared/steps'
+import { MAX_FLOW_STAGES, MAX_STEPS_PER_CHECKOUT, validateStep, type Step } from '../../shared/steps'
 import { isProd } from '../../shared/script-parity'
 import { MAX_NAME, REPO_URL, REPO_URL_CREDENTIALS_MSG, hasRepoCredentials, isParsableRepoUrl } from '../../shared/inventory'
 import type { AuditLog } from '../audit/audit-log'
@@ -121,7 +121,6 @@ const FIELDS = [
 
 const SETTINGS_FIELDS = ['versioned', 'autoRollback', 'currentVersion', 'parallelPrepare', 'prepareCap', 'flow'] as const
 type SettingsField = (typeof SETTINGS_FIELDS)[number]
-const MAX_FLOW_STAGES = 50
 
 const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
 
@@ -134,6 +133,21 @@ const REORDER_MESSAGE = "ids must be exactly the environment's deployments"
  * Deployments (checkouts) and the per-environment deploy settings. Every write is audited by labels and field
  * names only (no paths, URLs, hooks or secret values), appended after COMMIT; secrets are references.
  */
+/**
+ * The secrets a runbook or flow step may use: those in the vaults of the environment's checkouts (or of one checkout).
+ * Secrets of other environments' vaults are never allowed.
+ */
+export function stepSecretIds(db: Db, environmentId: string, deploymentId: string | null = null): Set<string> {
+  const rows = db
+    .prepare(
+      `SELECT s.id FROM secrets s WHERE s.vault_id IN (
+         SELECT dv.vault_id FROM deployment_vaults dv JOIN deployments d ON d.id = dv.deployment_id
+         WHERE d.environment_id = ? AND (? IS NULL OR d.id = ?))`,
+    )
+    .all(environmentId, deploymentId, deploymentId) as { id: string }[]
+  return new Set(rows.map((r) => r.id))
+}
+
 export class DeployStore {
   /** Set by the wiring: called after every committed config mutation, so open pages refetch. */
   onChanged?: (environmentId: string) => void
@@ -683,7 +697,6 @@ export class DeployStore {
         deployment_id: string | null
       }[]).map((r) => [r.id, r]),
     )
-    const secretIds = new Set((this.db.prepare('SELECT id FROM secrets').all() as { id: string }[]).map((r) => r.id))
     const stageIds = new Set<string>()
     const stages = flow.stages.map((st: FlowStage): FlowStage => {
       if (st.kind === 'services') {
@@ -695,7 +708,8 @@ export class DeployStore {
       if (st.kind !== 'step' || typeof st.serviceId !== 'string' || !services.has(st.serviceId)) return bad('a flow step names a service that is not in this environment')
       const checkout = services.get(st.serviceId)?.deployment_id
       const names = [...services.values()].filter((s) => s.deployment_id === checkout).map((s) => s.compose_service)
-      const step = validateStep(st.step, { allowedSecretIds: secretIds, serviceNames: names, body: true })
+      const allowed = stepSecretIds(this.db, environmentId, checkout ?? null)
+      const step = validateStep(st.step, { allowedSecretIds: allowed, serviceNames: names, body: true })
       if (stageIds.has(step.id)) return bad('flow step ids must be unique')
       stageIds.add(step.id)
       return { kind: 'step', serviceId: st.serviceId, step }

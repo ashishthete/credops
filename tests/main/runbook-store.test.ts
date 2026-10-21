@@ -3,6 +3,8 @@ import { RunbookStore } from '../../src/main/deploy/runbook-store'
 import type { RunbookInput } from '../../src/shared/runbooks'
 import { makeDeployFixture } from './deploy-helpers'
 import { auditRows } from './vault-helpers'
+import { SecretStore } from '../../src/main/vault/secret-store'
+import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 
 const ACTOR = { osUser: 'ana', machine: 'mbp' }
 
@@ -90,5 +92,22 @@ describe('RunbookStore', () => {
     f.db.exec('PRAGMA foreign_keys = ON')
     f.db.prepare('DELETE FROM environments WHERE id = ?').run(f.staging.id)
     expect((f.db.prepare('SELECT COUNT(*) AS n FROM runbooks').get() as { n: number }).n).toBe(0)
+  })
+
+  it('limits step secrets to the vaults of the environment\'s checkouts', async () => {
+    const f = await setup()
+    const clipboard = { async writeText(): Promise<void> {}, async readText(): Promise<string> { return '' } }
+    const secrets = new SecretStore(f.db, f.vault, f.audit, { clipboard })
+    const foreign = f.vault.createVault({ name: 'ProdOnly', color: '#112233' })
+    const prodSecret = secrets.create({ vaultId: foreign.id, name: 'prodtoken', kind: 'env', value: 'prod-value-1' })
+    const dep = (over: object) => ({ name: 'x', environmentId: f.staging.id, hostId: f.host.id, repoPath: '/srv/a', defaultBranch: 'main', deployTag: 'deploy_staging', ...over })
+    f.deploys.create(dep({ name: 'prodapp', environmentId: f.prod.id, vaultIds: [foreign.id] }))
+    f.deploys.create(dep({ name: 'stagingvault', vaultIds: [DEFAULT_VAULT_ID] }))
+    const withSecret = (secretId: string) =>
+      f.input({
+        items: [{ type: 'step', step: { id: 'c_1', name: 'x', run: 'shell', service: null, script: 'echo', cwd: null, sudo: 'docker', timeoutSec: 60, onFailure: 'stop', when: { kind: 'always' }, secrets: [{ envName: 'TOKEN', secretId }] } }],
+      })
+    expect(() => f.store.create(withSecret(prodSecret.id), ACTOR)).toThrow(/secret/)
+    expect(f.store.create(withSecret(f.secretId), ACTOR).items).toHaveLength(1)
   })
 })

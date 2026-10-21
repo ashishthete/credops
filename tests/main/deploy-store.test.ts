@@ -467,4 +467,23 @@ describe('DeployStore steps and playbook settings', () => {
     expect(() => f.deploys.updateSettings(f.staging.id, { flow: { onFailure: 'stop-all', stages: [{ kind: 'services', serviceIds: ['nope'] }] } })).toThrow(/not in this environment/)
     expect(f.deploys.settings(f.staging.id).prepareCap).toBe(3)
   })
+
+  it('limits flow step secrets to the vaults of the target service\'s checkout', async () => {
+    const f = await makeDeployFixture()
+    const d = f.deploys.create(f.input({ vaultIds: [] }))
+    const s = f.services.create({ kind: 'service', environmentId: f.staging.id, name: 'web', deploymentId: d.id })
+    const flowWith = (secretId: string) => ({
+      onFailure: 'stop-all' as const,
+      stages: [
+        {
+          kind: 'step' as const,
+          serviceId: s.id,
+          step: { id: 'c_1', name: 'x', run: 'shell' as const, service: null, script: 'echo', cwd: null, sudo: 'docker' as const, timeoutSec: 60, onFailure: 'stop' as const, when: { kind: 'always' as const }, secrets: [{ envName: 'TOKEN', secretId }] },
+        },
+      ],
+    })
+    expect(() => f.deploys.updateSettings(f.staging.id, { flow: flowWith(f.secretId) })).toThrow(/secret/)
+    f.deploys.update(d.id, { vaultIds: [DEFAULT_VAULT_ID] })
+    expect(f.deploys.updateSettings(f.staging.id, { flow: flowWith(f.secretId) }).flow).not.toBeNull()
+  })
 })

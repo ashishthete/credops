@@ -43,6 +43,8 @@ export function deniedEnvName(name: string): boolean {
 export const WHEN_PATH = /^[A-Za-z0-9._/*-]{1,200}$/
 export const MAX_STEPS_PER_CHECKOUT = 20
 export const MAX_STEP_SCRIPT = 16000
+/** Most stages in a release flow. */
+export const MAX_FLOW_STAGES = 50
 export const MAX_WHEN_PATHS = 20
 const MAX_STEP_SECRETS = 10
 /** The same rule the playbook generator applies to idents. */

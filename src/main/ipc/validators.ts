@@ -118,6 +118,15 @@ import {
 import { MAX_SERVICES, type CopyServicesRequest, type ServiceInput, type ServicePatch } from '../../shared/services'
 import { MAX_PRIVATE_KEY_BYTES } from '../vault/openssh'
 import { MAX_COMMANDS, MAX_NOTES_SUBJECT, type ExplainSubject, type ReleaseNotesRequest } from '../../shared/ai'
+import {
+  ENV_NAME,
+  MAX_FLOW_STAGES,
+  MAX_STEPS_PER_CHECKOUT,
+  MAX_STEP_SCRIPT,
+  MAX_WHEN_PATHS,
+  STEP_ANCHORS,
+  WHEN_PATH,
+} from '../../shared/steps'
 import { InvalidArgs, args, v, type ArgsValidator, type Check } from './validate'
 
 const OUTCOMES = ['success', 'failure', 'denied', 'info'] as const
@@ -268,6 +277,38 @@ const deployName = v.str({ min: 1, max: MAX_NAME, trim: true })
 const deployPath = v.str({ min: 1, max: MAX_REPO_PATH })
 const range = ([min, max]: readonly [number, number]) => v.int({ min, max })
 const healthUrl = v.object({ url: v.str({ min: 1, max: MAX_HEALTH_URL }), from: v.oneOf(['host', 'mac'] as const) })
+// Steps and flows. Shapes and bounds only: the stores own the content rules (names, env deny list, secret scope).
+const MAX_EDITED_PLAYBOOK = 256 * 1024
+const stepWhen = v.tagged('kind', {
+  always: v.object({ kind: v.oneOf(['always'] as const) }),
+  changed: v.object({ kind: v.oneOf(['changed'] as const) }),
+  paths: v.object({ kind: v.oneOf(['paths'] as const), paths: v.array(v.str({ min: 1, max: 200, pattern: WHEN_PATH }), MAX_WHEN_PATHS) }),
+})
+const stepBodyFields = {
+  id: v.str({ min: 1, max: 32 }),
+  name: v.str({ min: 1, max: MAX_NAME }),
+  run: v.oneOf(['shell', 'compose-exec'] as const),
+  service: v.nullable(v.str({ min: 1, max: MAX_COMPOSE_NAME })),
+  script: v.str({ min: 1, max: MAX_STEP_SCRIPT }),
+  cwd: v.nullable(deployPath),
+  sudo: v.oneOf(['docker', 'yes', 'no'] as const),
+  timeoutSec: range(STEP_TIMEOUT_RANGE),
+  onFailure: v.oneOf(['stop', 'continue'] as const),
+  when: stepWhen,
+  secrets: v.array(v.object({ envName: v.str({ pattern: ENV_NAME }), secretId: v.uuid() }), 10),
+}
+const stepBody = v.object(stepBodyFields)
+const stepCheck = v.object({ ...stepBodyFields, anchor: v.oneOf(STEP_ANCHORS), alsoOnRollback: v.bool() })
+const releaseFlow = v.object({
+  onFailure: v.oneOf(['stop-all', 'continue-other-hosts'] as const),
+  stages: v.array(
+    v.tagged('kind', {
+      services: v.object({ kind: v.oneOf(['services'] as const), serviceIds: v.array(v.uuid(), MAX_SERVICES) }),
+      step: v.object({ kind: v.oneOf(['step'] as const), serviceId: v.uuid(), step: stepBody }),
+    }),
+    MAX_FLOW_STAGES,
+  ),
+})
 const deployFields = {
   repoUrl: v.nullable(noRepoCredentials(v.str({ max: MAX_URL }))),
   composeProject: v.nullable(v.str({ max: MAX_COMPOSE_NAME })),
@@ -290,6 +331,7 @@ const deployFields = {
   managedEnv: v.bool(),
   envTemplate: v.nullable(v.str({ max: MAX_ENV_TEMPLATE })),
   vaultIds: v.array(v.uuid(), MAX_LINKS),
+  steps: v.array(stepCheck, MAX_STEPS_PER_CHECKOUT),
 }
 const deployOptional = Object.fromEntries(Object.entries(deployFields).map(([k, c]) => [k, v.optional(c as Check<unknown>)]))
 
@@ -311,6 +353,9 @@ export const asEnvDeploySettingsPatch: Check<EnvDeploySettingsPatch> = v.object(
   versioned: v.optional(v.bool()),
   autoRollback: v.optional(v.bool()),
   currentVersion: v.optional(v.nullable(v.str({ max: 64, pattern: VERSION }))),
+  parallelPrepare: v.optional(v.bool()),
+  prepareCap: v.optional(v.int({ min: 1, max: 8 })),
+  flow: v.optional(v.nullable(releaseFlow)),
 }) as Check<EnvDeploySettingsPatch>
 export const asDeployBatch: Check<DeployBatch> = v.object({
   settings: v.optional(asEnvDeploySettingsPatch),
@@ -328,6 +373,7 @@ export const asReleaseConfirm: Check<ReleaseConfirm> = v.object({
   typedName: v.optional(v.str({ max: MAX_NAME })),
   redeploy: v.optional(v.bool()),
   playbookSha256: v.optional(v.str({ pattern: PLAYBOOK_SHA256 })),
+  editedPlaybook: v.optional(v.str({ max: MAX_EDITED_PLAYBOOK })),
 }) as Check<ReleaseConfirm>
 export const asBreakLockConfirm: Check<BreakLockConfirm> = v.object({ typedLabel: v.str({ max: MAX_NAME }) }) as Check<BreakLockConfirm>
 export const asReleaseListFilter: Check<ReleaseListFilter> = v.object({
@@ -349,6 +395,7 @@ const appServiceFields = {
   composeService: v.str({ min: 1, max: MAX_COMPOSE_NAME }),
   url: v.nullable(v.str({ max: MAX_URL })),
   urlCheckFrom: v.oneOf(['mac', 'host'] as const),
+  skipUnchanged: v.bool(),
 }
 const dbServiceFields = {
   dbEngine: v.oneOf(['postgres', 'mysql', 'mongodb', 'redis', 'other'] as const),
@@ -365,6 +412,7 @@ export const asServiceInput: Check<ServiceInput> = v.tagged('kind', {
     composeService: v.optional(appServiceFields.composeService),
     url: v.optional(appServiceFields.url),
     urlCheckFrom: v.optional(appServiceFields.urlCheckFrom),
+    skipUnchanged: v.optional(appServiceFields.skipUnchanged),
   }),
   db: v.object({
     kind: v.oneOf(['db'] as const),

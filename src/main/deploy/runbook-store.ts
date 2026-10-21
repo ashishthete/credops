@@ -5,6 +5,7 @@ import type { Actor } from '../../shared/deploy'
 import type { AuditLog } from '../audit/audit-log'
 import type { Db } from '../db/connection'
 import { inTransaction } from '../db/tx'
+import { stepSecretIds } from './deploy-store'
 
 export interface RunbookStoreDeps {
   db: Db
@@ -107,9 +108,8 @@ export class RunbookStore {
     const env = typeof input?.environmentId === 'string' ? input.environmentId : ''
     if (!this.db.prepare('SELECT 1 FROM environments WHERE id = ?').get(env)) throw new Error('environment not found')
     const services = this.db.prepare("SELECT id, compose_service FROM services WHERE environment_id = ? AND kind = 'service'").all(env) as { id: string; compose_service: string }[]
-    const secrets = this.db.prepare('SELECT id FROM secrets').all() as { id: string }[]
     return validateRunbook(input, {
-      allowedSecretIds: new Set(secrets.map((s) => s.id)),
+      allowedSecretIds: stepSecretIds(this.db, env),
       serviceIds: services.map((s) => s.id),
       serviceNames: [...new Set(services.map((s) => s.compose_service))],
     })
