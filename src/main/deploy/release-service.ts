@@ -1229,16 +1229,17 @@ export class ReleaseService {
   }
 
   /**
-   * Manual rollback only while every service it rebuilds is still where this release left it: no later release has
-   * deployed it, and its record is on this release when this release recorded it, or on the release it was on before
-   * when this release's run did not. A rollback moves the record back to the release before the one it undid, so after
-   * rolling back R2, R1 can be rolled back too.
+   * Manual rollback only while every service it rebuilds is still where this release left it: no later release or
+   * rollback has deployed it, other than a rollback of a release newer than this one, and its record is on this release
+   * when this release recorded it, or on the release it was on before when this release's run did not. Rolling back R2
+   * moves the record back to R1, so R1 can be rolled back next; rolling back R1 blocks a later R2.
    */
   private assertStillCurrent(src: ReleaseDetail, eligible: DeploymentRunMeta[]): void {
     const entries = [...eligible].reverse().flatMap((run) => run.services.map((e) => ({ e, recorded: run.status === 'succeeded' && !run.rolledBack && e.deployedCommit !== null })))
     const now = new Map(this.d.services.list(src.environmentId).flatMap((s) => (s.kind === 'service' ? [[s.id, s.lastReleaseId] as const] : [])))
-    // A later release deploy counts even when it reported no commit and so left the record alone.
-    const later = this.d.releases.latestTouching(entries.map(({ e }) => e.id), 'release')
+    // A later deploy blocks even when the record matches: one that reported no commit left the record alone, and a
+    // rollback of an earlier release put it back where this release expects it.
+    const later = this.d.releases.latestTouching(entries.map(({ e }) => e.id), src.id)
     // Services in run order, though the rollback walks the runs last first, grouped by the release each is on now.
     const moved = new Map<string | null, string[]>()
     for (const { e, recorded } of entries) {

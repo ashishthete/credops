@@ -186,16 +186,21 @@ migration 7 in place (see Migration below).
    - runs `build`/`up` in the same form the release used.
 
    A manual rollback is allowed only if every service it would rebuild is
-   still where the release left it. That means two things. No later release
-   left the service deployed (one that failed or was rolled back does not
-   count). And the service's `last_release_id` is this release (or, when this
-   release's run for it did not record a commit, the release it was on
-   before). A rollback sets `last_release_id` back to the release before the
-   one it undid, so "the new release failed, roll back one more" works whether
-   the newer release was rolled back automatically or by hand, and rolling
-   back the same release twice is refused. Otherwise the rollback is refused
-   and the refusal names each service and the release it is now on; a release
-   already rolled back says so. On rollback, each service's
+   still where the release left it. That means two things.
+   - No later release or rollback left the service deployed. A release that
+     failed or was rolled back does not count. A rollback of a release newer
+     than this one does not count either, since it moved the service back
+     towards this release. Any other rollback does count, so after rolling back
+     R1, a later failed R2 can't be rolled back onto R1's commit.
+   - The service's `last_release_id` is this release (or, when this release's
+     run for it did not record a commit, the release it was on before).
+
+   Otherwise the rollback is refused, and the refusal names each service and
+   the release it is now on; a release already rolled back says so. A
+   rollback sets `last_release_id` back to the release before the one it
+   undid, so "the new release failed, roll back one more" works whether the
+   newer release was rolled back automatically or by hand, and rolling back
+   the same release twice is refused. On rollback, each service's
    `last_deployed_commit` is set to the commit the rollback checked out for
    its checkout (the run's previous commit), not each service's own stored
    previous commit: the whole checkout moves together, so siblings that had

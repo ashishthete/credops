@@ -1193,6 +1193,36 @@ describe('per-service record', () => {
     expect(r.runner.kinds.filter((k) => k === 'rollback')).toHaveLength(2)
   })
 
+  it('with auto-rollback off, rolling back R1 blocks rolling back the later failed R2, record or none', async () => {
+    for (const recorded of [true, false]) {
+      const { r, esg } = await platformRig()
+      r.f.deploys.updateSettings(r.f.staging.id, { autoRollback: false })
+      // With a record, R0 put esg at A; without, esg was never recorded and the host is at A.
+      if (recorded) await release(r, [esg.id], C, A)
+      const fail = async (previous: string, deployed: string) => {
+        const id = await ready(r, [], { serviceIds: [esg.id] })
+        r.runner.on.release = (plan) => {
+          const [x] = runIds(plan)
+          return { exitCode: 2, failedDeploymentRunIds: [x], reachedCheckout: [x], commits: { [x]: { previous, deployed } } }
+        }
+        await r.svc.start(id, {})
+        await r.svc.whenIdle()
+        expect(r.svc.detail(id).status).toBe('failed')
+        return id
+      }
+      const r1 = await fail(A, B)
+      const r2 = await fail(B, C)
+      const { releaseId: rb1 } = await r.svc.rollback(r1, {})
+      await r.svc.whenIdle()
+      expect(r.svc.detail(rb1).status).toBe('succeeded')
+      // R2's previous commit is R1's failed one: rolling R2 back now would put it back.
+      const err = await r.svc.rollback(r2, {}).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(DeployError)
+      expect((err as DeployError).message).toBe(`Can't roll back: esg is now on release ${rb1.slice(0, 8)}`)
+      expect(r.runner.kinds.filter((k) => k === 'rollback')).toHaveLength(1)
+    }
+  })
+
   it('rollback restores last_deployed_commit to the commit it checked out', async () => {
     const { r, esg, pay } = await platformRig()
     const r0 = await release(r, [esg.id], C, A)
