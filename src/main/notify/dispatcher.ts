@@ -37,9 +37,11 @@ export interface DispatcherDeps {
   integrations: Pick<IntegrationStore, 'forEnvironment'>
   settings: Pick<SettingsStore, 'get'>
   vault: { isUnlocked(): boolean }
-  audit: AuditLog
+  audit: Pick<AuditLog, 'append'>
   runs: { runMeta(releaseId: string, status?: ReleaseStatus): ReleaseRunMeta }
   tunnels: { get(id: string): Pick<TunnelMeta, 'label' | 'hostId' | 'environmentId'> }
+  /** How an environment appears on a card; the default reads the app's `environments` table (the Hub has no color). */
+  environment?: (id: string, fallbackName: string | null) => NotificationFacts['environment']
   now?: () => Date
   ids?: () => string
   knownSecrets?: () => readonly string[]
@@ -228,6 +230,7 @@ export class NotificationDispatcher {
   }
 
   private environment(id: string, fallbackName: string | null): NotificationFacts['environment'] {
+    if (this.d.environment) return this.d.environment(id, fallbackName)
     const row = this.d.db.prepare('SELECT name, color, protected FROM environments WHERE id = ?').get(id) as
       | { name: string; color: string; protected: number }
       | undefined
