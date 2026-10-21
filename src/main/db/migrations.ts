@@ -265,6 +265,13 @@ CREATE TABLE hub_env_links(
   hub_id TEXT NOT NULL, published_at TEXT NOT NULL, manifest_hash TEXT NOT NULL);
 `,
   },
+  {
+    version: 10,
+    name: 'qa_wait_minutes',
+    up: `
+ALTER TABLE environment_integrations ADD COLUMN qa_wait_minutes INTEGER CHECK (qa_wait_minutes IS NULL OR (qa_wait_minutes BETWEEN 5 AND 180));
+`,
+  },
 ]
 
 const ENSURE_TABLE = `CREATE TABLE IF NOT EXISTS schema_migrations(

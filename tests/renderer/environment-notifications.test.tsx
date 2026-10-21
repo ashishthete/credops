@@ -91,6 +91,27 @@ describe('EnvironmentNotifications', () => {
     expect(rows[1]).toHaveTextContent('SendGrid rejected the key')
   })
 
+  it('QA wait time is optional, validated 5..180, and saved with the workflow (row 46)', async () => {
+    const saved = { ...blank(ENV), qa: { repo: 'acme/qa', workflow: 'qa.yml', ref: 'main' }, updatedAt: TS }
+    const invoke = bridge(environment({ id: ENV, name: 'staging' }), saved)
+    renderSection()
+    const s = section()
+    const field = await waitFor(() => within(s).getByLabelText('Wait up to (minutes)'))
+    expect(field).toHaveValue('')
+    expect(field).toHaveAttribute('placeholder', '45')
+    const save = within(s).getByRole('button', { name: 'Save notifications' })
+    for (const bad of ['4', '181', '1.5', 'abc']) {
+      fireEvent.change(field, { target: { value: bad } })
+      expect(save, bad).toBeDisabled()
+    }
+    fireEvent.change(field, { target: { value: '10' } })
+    expect(save).toBeEnabled()
+    fireEvent.click(save)
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('integration:update', ENV, expect.objectContaining({ qa: { repo: 'acme/qa', workflow: 'qa.yml', ref: 'main', waitMinutes: 10 } })),
+    )
+  })
+
   it('send test card calls notify:test for this environment', async () => {
     const invoke = bridge(environment({ id: ENV, name: 'staging' }), { ...blank(ENV), teamsWebhookSecretId: HOOK, updatedAt: TS })
     renderSection()

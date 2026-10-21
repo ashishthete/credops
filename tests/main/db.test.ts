@@ -106,9 +106,21 @@ describe('migration versions', () => {
 })
 
 describe('hub schema', () => {
+  it('migration 10 adds a nullable, range-checked qa_wait_minutes', () => {
+    const db = openDatabase(':memory:')
+    expect(migrations.find((m) => m.version === 10)?.name).toBe('qa_wait_minutes')
+    db.exec("INSERT INTO environments(id,name,color,created_at,updated_at) VALUES ('e','e','#000','t','t')")
+    const ins = (n: number | null) => db.prepare("INSERT OR REPLACE INTO environment_integrations(environment_id,updated_at,qa_wait_minutes) VALUES ('e','t',?)").run(n)
+    ins(null)
+    ins(5)
+    ins(180)
+    expect(() => ins(4)).toThrow(/CHECK constraint failed/)
+    expect(() => ins(181)).toThrow(/CHECK constraint failed/)
+  })
+
   it('migration 9 creates hub_link and hub_env_links', () => {
     const db = openDatabase(':memory:')
-    expect(currentVersion(db)).toBe(9)
+    expect(currentVersion(db)).toBeGreaterThanOrEqual(9)
     expect(migrations.find((m) => m.version === 9)?.name).toBe('hub')
     const insert = (id: number, enc: unknown, exp: unknown) =>
       db

@@ -10,6 +10,8 @@ import {
   MAX_RECIPIENTS,
   NOTIFY_EVENTS,
   PROD_LIKE,
+  QA_WAIT_DEFAULT_MIN,
+  QA_WAIT_RANGE,
   type EnvironmentIntegrations,
   type EnvironmentIntegrationsPatch,
   type NotificationRecord,
@@ -138,6 +140,7 @@ export function EnvironmentNotifications({ environment }: { environment: Environ
   const [ref, setRef] = useState('')
   const [qaOnDeploy, setQaOnDeploy] = useState(false)
   const [qaWait, setQaWait] = useState(false)
+  const [waitMinutes, setWaitMinutes] = useState('')
   const [busy, setBusy] = useState<'save' | 'test' | null>(null)
   const to = useRecipients(saved?.emailTo ?? EMPTY)
   const cc = useRecipients(saved?.emailCc ?? EMPTY)
@@ -165,6 +168,7 @@ export function EnvironmentNotifications({ environment }: { environment: Environ
     // Never set up: QA after deploy starts on, except on prod-like environments.
     setQaOnDeploy(saved.qa === null && saved.updatedAt === null ? !prodLike : saved.qaOnDeploy)
     setQaWait(saved.qaWait)
+    setWaitMinutes(saved.qa?.waitMinutes === undefined ? '' : String(saved.qa.waitMinutes))
   }, [saved, prodLike])
 
   const qaBlank = !repo.trim() && !workflow.trim() && !ref.trim()
@@ -172,7 +176,13 @@ export function EnvironmentNotifications({ environment }: { environment: Environ
   const workflowError =
     workflow.trim() && !GITHUB_WORKFLOW.test(workflow.trim()) ? 'A workflow file (qa.yml) or a numeric id.' : !qaBlank && !workflow.trim() ? 'Needed for QA.' : undefined
   const refError = ref.trim().length > MAX_GIT_REF ? 'That ref is too long.' : !qaBlank && !ref.trim() ? 'Needed for QA.' : undefined
-  const valid = !!saved && to.valid && cc.valid && !repoError && !workflowError && !refError
+  const waitText = waitMinutes.trim()
+  const waitValue = waitText === '' ? undefined : Number(waitText)
+  const waitError =
+    waitValue !== undefined && (!Number.isInteger(waitValue) || waitValue < QA_WAIT_RANGE[0] || waitValue > QA_WAIT_RANGE[1])
+      ? `Whole minutes, ${QA_WAIT_RANGE[0]} to ${QA_WAIT_RANGE[1]}.`
+      : undefined
+  const valid = !!saved && to.valid && cc.valid && !repoError && !workflowError && !refError && !waitError
 
   const toggle = (k: NotifyEventKey) => setEvents((ev) => (ev.includes(k) ? ev.filter((x) => x !== k) : [...ev, k]))
 
@@ -184,7 +194,7 @@ export function EnvironmentNotifications({ environment }: { environment: Environ
       teamsWebhookSecretId: webhook,
       emailTo: to.value,
       emailCc: cc.value,
-      qa: qaBlank ? null : { repo: repo.trim(), workflow: workflow.trim(), ref: ref.trim() },
+      qa: qaBlank ? null : { repo: repo.trim(), workflow: workflow.trim(), ref: ref.trim(), ...(waitValue !== undefined ? { waitMinutes: waitValue } : {}) },
       qaOnDeploy,
       qaWait,
     }
@@ -251,6 +261,16 @@ export function EnvironmentNotifications({ environment }: { environment: Environ
         <span>Wait for the QA result before finishing</span>
         <Switch label="Wait for result" checked={qaWait} onChange={setQaWait} disabled={!saved || !qaOnDeploy} />
       </div>
+      <TextField
+        label="Wait up to (minutes)"
+        placeholder={String(QA_WAIT_DEFAULT_MIN)}
+        value={waitMinutes}
+        error={waitError}
+        inputMode="numeric"
+        spellCheck={false}
+        onChange={(e) => setWaitMinutes(e.target.value)}
+        className="font-mono"
+      />
       <div className="flex justify-end">
         <Button size="sm" loading={busy === 'save'} disabled={!valid} onClick={() => void save()}>
           Save notifications

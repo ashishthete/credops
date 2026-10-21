@@ -107,6 +107,7 @@ import {
   MAX_NOTIFY_LOG,
   NOTIFY_EVENTS,
   NOTIFY_SOURCES,
+  QA_WAIT_RANGE,
   type EnvironmentIntegrationsPatch,
   type NotifyLogFilter,
   type NotifyTestTarget,
@@ -396,7 +397,7 @@ export const asIntegrationPatch: Check<EnvironmentIntegrationsPatch> = v.object(
   emailCc: v.optional(recipients),
   qaOnDeploy: v.optional(v.bool()),
   qa: v.optional(
-    v.nullable(v.object({ repo: v.str({ min: 1, max: 201 }), workflow: v.str({ min: 1, max: 210 }), ref: v.str({ max: MAX_GIT_REF + 10 }) })),
+    v.nullable(v.object({ repo: v.str({ min: 1, max: 201 }), workflow: v.str({ min: 1, max: 210 }), ref: v.str({ max: MAX_GIT_REF + 10 }), waitMinutes: v.optional(range(QA_WAIT_RANGE)) })),
   ),
   qaWait: v.optional(v.bool()),
 }) as Check<EnvironmentIntegrationsPatch>

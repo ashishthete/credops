@@ -8,6 +8,7 @@ import {
   MAX_RECIPIENTS,
   NOTIFY_EVENTS,
   PROD_LIKE,
+  QA_WAIT_RANGE,
   type EnvironmentIntegrations,
   type EnvironmentIntegrationsPatch,
   type NotifyEventKey,
@@ -30,6 +31,7 @@ interface Row {
   qa_workflow: string | null
   qa_ref: string | null
   qa_wait: number
+  qa_wait_minutes: number | null
   updated_at: string
 }
 
@@ -98,7 +100,10 @@ export class IntegrationStore {
       emailTo: strings(row.email_to),
       emailCc: strings(row.email_cc),
       qaOnDeploy: row.qa_on_deploy === 1,
-      qa: row.qa_repo !== null && row.qa_workflow !== null ? { repo: row.qa_repo, workflow: row.qa_workflow, ref: row.qa_ref ?? 'main' } : null,
+      qa:
+        row.qa_repo !== null && row.qa_workflow !== null
+          ? { repo: row.qa_repo, workflow: row.qa_workflow, ref: row.qa_ref ?? 'main', ...(row.qa_wait_minutes !== null ? { waitMinutes: row.qa_wait_minutes } : {}) }
+          : null,
       qaWait: row.qa_wait === 1,
       updatedAt: row.updated_at,
     }
@@ -133,11 +138,11 @@ export class IntegrationStore {
       this.db
         .prepare(
           `INSERT INTO environment_integrations(environment_id, notify_events, teams_webhook_secret_id, email_to, email_cc,
-             qa_on_deploy, qa_repo, qa_workflow, qa_ref, qa_wait, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+             qa_on_deploy, qa_repo, qa_workflow, qa_ref, qa_wait, qa_wait_minutes, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(environment_id) DO UPDATE SET notify_events = excluded.notify_events,
              teams_webhook_secret_id = excluded.teams_webhook_secret_id, email_to = excluded.email_to, email_cc = excluded.email_cc,
              qa_on_deploy = excluded.qa_on_deploy, qa_repo = excluded.qa_repo, qa_workflow = excluded.qa_workflow,
-             qa_ref = excluded.qa_ref, qa_wait = excluded.qa_wait, updated_at = excluded.updated_at`,
+             qa_ref = excluded.qa_ref, qa_wait = excluded.qa_wait, qa_wait_minutes = excluded.qa_wait_minutes, updated_at = excluded.updated_at`,
         )
         .run(
           environmentId,
@@ -150,6 +155,7 @@ export class IntegrationStore {
           f.qa?.workflow ?? null,
           f.qa?.ref ?? null,
           f.qaWait ? 1 : 0,
+          f.qa?.waitMinutes ?? null,
           this.now().toISOString(),
         )
     })
@@ -225,5 +231,10 @@ function checkQa(qa: QaWorkflow): QaWorkflow {
   if (ref.length > MAX_GIT_REF || /[\s\u0000-\u001f\u007f~^:?*[\\]|\.\.|@\{/.test(ref) || ref.startsWith('-')) {
     throw new Error('ref must be a branch, tag or commit')
   }
-  return { repo, workflow, ref }
+  const w = qa.waitMinutes
+  if (w === undefined || w === null) return { repo, workflow, ref }
+  if (typeof w !== 'number' || !Number.isInteger(w) || w < QA_WAIT_RANGE[0] || w > QA_WAIT_RANGE[1]) {
+    throw new Error(`wait time must be ${QA_WAIT_RANGE[0]}-${QA_WAIT_RANGE[1]} whole minutes`)
+  }
+  return { repo, workflow, ref, waitMinutes: w }
 }

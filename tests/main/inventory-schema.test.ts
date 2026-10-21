@@ -269,7 +269,7 @@ describe('migration 8 (notifications)', () => {
     expect(cols(db, 'settings')).toEqual(['key', 'value', 'updated_at'])
     expect(cols(db, 'environment_integrations')).toEqual([
       'environment_id', 'notify_events', 'teams_webhook_secret_id', 'email_to', 'email_cc', 'qa_on_deploy',
-      'qa_repo', 'qa_workflow', 'qa_ref', 'qa_wait', 'updated_at',
+      'qa_repo', 'qa_workflow', 'qa_ref', 'qa_wait', 'updated_at', 'qa_wait_minutes',
     ])
     expect(cols(db, 'notification_log')).toEqual(['id', 'at', 'source_type', 'source_id', 'event', 'channel', 'status', 'detail'])
 
