@@ -23,6 +23,8 @@ import { useMotionSafe } from '../../ui/motion'
 import { useShortcut } from '../../ui/shortcuts'
 import { Skeleton } from '../../ui/Skeleton'
 import { ROLE_LABEL } from '../products/ProductView'
+// regions-ui: one product per environment, read as a list until the Regions UI.
+import { productIdsOf } from '../../inventory/regions-stopgap'
 
 const FIT_MS = 300
 const FIT_PADDING = 0.15
@@ -52,7 +54,7 @@ function filterParams(productId: string, environmentId: string, current: URLSear
   out.delete('env')
   const env = data.environments.find((e) => e.id === environmentId)
   if (productId) out.set('product', productId)
-  if (env && (!productId || env.productIds.includes(productId))) out.set('env', env.id)
+  if (env && (!productId || productIdsOf(env).includes(productId))) out.set('env', env.id)
   return out
 }
 
@@ -203,7 +205,7 @@ function MapBody() {
   const environmentId = data?.environments.some((e) => e.id === params.get('env')) ? params.get('env')! : ''
   const products = useMemo(() => [...(data?.products ?? [])].sort((a, b) => byName(a.name, b.name)), [data])
   const environments = useMemo(
-    () => (data?.environments ?? []).filter((e) => !productId || e.productIds.includes(productId)).sort((a, b) => byName(a.name, b.name)),
+    () => (data?.environments ?? []).filter((e) => !productId || productIdsOf(e).includes(productId)).sort((a, b) => byName(a.name, b.name)),
     [data, productId],
   )
   const setFilter = useCallback(

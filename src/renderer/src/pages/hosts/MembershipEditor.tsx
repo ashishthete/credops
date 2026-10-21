@@ -6,6 +6,8 @@ import { inv, type InventoryData } from '../../inventory/store'
 import { useMenuPopover } from '../../ui/common'
 import { exitFast, fast, spring, useMotionSafe } from '../../ui/motion'
 import { ROLE_LABEL } from '../products/ProductView'
+// regions-ui: one product per environment, read as a list until the Regions UI.
+import { productIdsOf } from '../../inventory/regions-stopgap'
 
 interface MembershipEditorProps {
   host: HostMeta
@@ -18,7 +20,7 @@ interface MembershipEditorProps {
 export function MembershipEditor({ host, data, onRemove }: MembershipEditorProps) {
   const motionSafe = useMotionSafe()
   const productName = new Map(data.products.map((p) => [p.id, p.name]))
-  const where = (e: EnvironmentMeta) => e.productIds.map((id) => productName.get(id)).filter(Boolean).join(', ')
+  const where = (e: EnvironmentMeta) => productIdsOf(e).map((id) => productName.get(id)).filter(Boolean).join(', ')
   const rows = host.environments
     .flatMap((m) => {
       const env = data.environments.find((e) => e.id === m.environmentId)

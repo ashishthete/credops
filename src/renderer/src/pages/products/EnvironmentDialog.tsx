@@ -11,6 +11,8 @@ import { SelectField, TextField } from '../../ui/Field'
 import { fast, spring, useMotionSafe } from '../../ui/motion'
 import { toast } from '../../ui/Toaster'
 import { EnvironmentNotifications } from './EnvironmentNotifications'
+// regions-ui: one product per environment, read as a list until the Regions UI.
+import { productIdsOf } from '../../inventory/regions-stopgap'
 
 const DEFAULT_COLOR = VAULT_COLORS.find((c) => c.name === 'Green')!.hex
 
@@ -51,7 +53,7 @@ export function EnvironmentDialog({ open, environment, productIds, data, corrupt
     setName(environment?.name ?? '')
     setColor(environment?.color ?? DEFAULT_COLOR)
     setProtected(environment?.protected ?? false)
-    setProducts(environment?.productIds ?? productIds)
+    setProducts((environment ? productIdsOf(environment) : undefined) ?? productIds)
     setIdentityId(environment?.defaultIdentityId ?? '')
     setPort(environment?.defaultPort != null ? String(environment.defaultPort) : '')
     setJumpId(environment?.defaultJumpHostId ?? '')
@@ -86,7 +88,8 @@ export function EnvironmentDialog({ open, environment, productIds, data, corrupt
         defaultIdentityId: identityId || null,
         defaultJumpHostId: jumpId || null,
         domain: domain.trim() || null,
-        productIds: products,
+        // regions-ui: the dialog still edits a list; an environment takes the first.
+        productId: products[0] ?? '',
       },
       environment?.id,
     )

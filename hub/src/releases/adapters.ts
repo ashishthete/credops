@@ -128,7 +128,7 @@ export function hubInventory(db: HubDb, registry: Registry): ReleaseInventory {
       const name = registry.nameOf(id)
       if (name === null) throw new Error('environment not found')
       const row = db.prepare('SELECT protected FROM environments WHERE id = ?').get(id) as { protected: number }
-      return { id, name, protected: row.protected === 1, productIds: [] }
+      return { id, name, protected: row.protected === 1, productId: null }
     },
     hostLabel: (hostId) => {
       const row = db.prepare('SELECT label FROM hosts WHERE id = ?').get(hostId) as { label: string } | undefined

@@ -78,12 +78,12 @@ vi.mock('../../src/renderer/src/map/layout', async (importOriginal) => {
 
 const web = product({ id: 'p1', name: 'Web', color: '#5b8cff' })
 const shop = product({ id: 'p2', name: 'Shop', color: '#f0a020' })
-// Prod belongs to both products: Web (first by id) is its primary, Shop a secondary membership.
+// Prod belongs to Web; Shop has no environments.
 const prod = environment({
   id: 'e1',
   name: 'Prod',
   color: '#ef5b5b',
-  productIds: ['p1', 'p2'],
+  productId: 'p1',
   defaultJumpHostId: 'h1',
   hosts: [
     { hostId: 'h1', role: 'bastion' },
@@ -296,15 +296,12 @@ describe('map edges', () => {
     expect(edge('j:e:e1/h:h1>e:e1/h:h2')!.querySelector('[data-marker="jump"]')).not.toBeNull()
   })
 
-  it('secondary membership edges are dotted', async () => {
+  it("a membership edge is solid in its product's color", async () => {
     await renderMap()
     const primary = pathOf('m:p1>e:e1')
-    const secondary = pathOf('m:p2>e:e1')
     expect(primary).not.toHaveAttribute('stroke-dasharray')
     expect(primary.style.stroke).toBe('rgb(91, 140, 255)')
-    expect(secondary).toHaveAttribute('stroke-dasharray', '1 4')
-    expect(secondary.style.stroke).toBe('rgb(240, 160, 32)')
-    expect(secondary.style.opacity).toBe('0.4')
+    expect(edge('m:p2>e:e1')).toBeNull()
   })
 
   it('tunnel and jump edges draw above the group frames, memberships below', async () => {

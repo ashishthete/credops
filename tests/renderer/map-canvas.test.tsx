@@ -41,7 +41,7 @@ const prod = environment({
   id: 'e1',
   name: 'Prod',
   color: '#ef5b5b',
-  productIds: ['p1'],
+  productId: 'p1',
   hosts: [
     { hostId: 'h1', role: 'app' },
     { hostId: 'h2', role: 'db' },

@@ -20,6 +20,8 @@ import { DeployWizard } from '../deployments/release/DeployWizard'
 import { CopyServicesDialog } from './services/CopyServicesDialog'
 import { ServiceLogs } from './services/ServiceLogs'
 import { ServicesSection } from './services/ServicesSection'
+// regions-ui: one product per environment, read as a list until the Regions UI.
+import { productIdsOf } from '../../inventory/regions-stopgap'
 
 interface EnvironmentViewProps {
   env: EnvironmentMeta
@@ -71,7 +73,7 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
                 Protected
               </Badge>
             )}
-            {env.productIds.length > 1 && (
+            {productIdsOf(env).length > 1 && (
               <Badge tone="info">
                 <Link2 aria-hidden className="size-3" />
                 Shared

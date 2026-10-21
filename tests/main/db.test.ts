@@ -109,7 +109,8 @@ describe('hub schema', () => {
   it('migration 10 adds a nullable, range-checked qa_wait_minutes', () => {
     const db = openDatabase(':memory:')
     expect(migrations.find((m) => m.version === 10)?.name).toBe('qa_wait_minutes')
-    db.exec("INSERT INTO environments(id,name,color,created_at,updated_at) VALUES ('e','e','#000','t','t')")
+    db.exec("INSERT INTO products(id,name,color,icon,created_at,updated_at) VALUES ('p','p','#000','i','t','t')")
+    db.exec("INSERT INTO environments(id,name,color,product_id,created_at,updated_at) VALUES ('e','e','#000','p','t','t')")
     const ins = (n: number | null) => db.prepare("INSERT OR REPLACE INTO environment_integrations(environment_id,updated_at,qa_wait_minutes) VALUES ('e','t',?)").run(n)
     ins(null)
     ins(5)

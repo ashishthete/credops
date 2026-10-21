@@ -119,6 +119,7 @@ export class SshImporter {
         const id = hosts.insertInTx({
           label: c.alias,
           address: c.hostName,
+          regionId: req.regionId,
           port: c.port,
           identityId,
           vaultIds: identityId ? [req.vaultId] : [],
@@ -209,6 +210,8 @@ export class SshImporter {
     const { db, vault } = this.deps
     if (!db.prepare('SELECT 1 FROM vaults WHERE id = ?').get(req.vaultId)) throw new Error('vault not found')
     if (vault.isCorrupt(req.vaultId)) throw new Error('vault key is corrupt')
+    if (typeof req.regionId !== 'string' || req.regionId === '') throw new Error('imported hosts need a region')
+    if (!db.prepare('SELECT 1 FROM regions WHERE id = ?').get(req.regionId)) throw new Error('region not found')
     if (req.environmentId !== undefined && !db.prepare('SELECT 1 FROM environments WHERE id = ?').get(req.environmentId)) {
       throw new Error('environment not found')
     }

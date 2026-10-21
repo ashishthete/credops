@@ -17,14 +17,14 @@ const prod = environment({
   name: 'Prod',
   color: '#ef5b5b',
   protected: true,
-  productIds: ['p1', 'p2'],
+  productId: 'p1',
   hosts: [
     { hostId: 'h3', role: 'bastion' },
     { hostId: 'h1', role: 'app' },
     { hostId: 'h2', role: 'db' },
   ],
 })
-const stage = environment({ id: 'e2', name: 'Stage', productIds: ['p1'], hosts: [{ hostId: 'h1', role: 'app' }] })
+const stage = environment({ id: 'e2', name: 'Stage', productId: 'p1', hosts: [{ hostId: 'h1', role: 'app' }] })
 const hosts = [
   host({ id: 'h1', label: 'web', address: '10.0.0.5', jumpHostId: 'h3', vaultIds: [] }),
   host({ id: 'h2', label: 'pg', osIcon: 'linux' }),
@@ -99,7 +99,7 @@ describe('map page', () => {
     // Children sit inside their group: React Flow positions them relative to the parent.
     expect(node('e:e1')).toHaveTextContent('Prod')
     expect(node('e:e1')).toHaveTextContent('3 hosts')
-    expect(node('e:e1')).toHaveTextContent('also in Billing')
+    expect(node('e:e1')).not.toHaveTextContent('also in')
     expect(within(node('e:e1')!).getByLabelText('Protected')).toBeInTheDocument()
   })
 

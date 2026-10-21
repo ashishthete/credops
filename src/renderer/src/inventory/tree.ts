@@ -1,5 +1,7 @@
 import type { EnvironmentMeta, HostMeta, HostRole } from '../../../shared/inventory'
 import type { InventoryData } from './store'
+// regions-ui: one product per environment, read as a list until the Regions UI.
+import { productIdsOf } from './regions-stopgap'
 
 /** 'p:<id>', 'p:<id>/e:<id>', 'p:<id>/e:<id>/h:<id>', 'u', 'u/e:<id>', 'u/e:<id>/h:<id>', 'u/h:<id>' */
 export type NodeKey = string
@@ -25,8 +27,8 @@ export interface TreeRow {
 
 /** Where an environment sits in the tree: under `preferProduct` if it's one of its products, else its first by id. */
 export function environmentKey(env: EnvironmentMeta, preferProduct?: string): NodeKey {
-  if (env.productIds.length === 0) return `u/e:${env.id}`
-  const productId = preferProduct && env.productIds.includes(preferProduct) ? preferProduct : [...env.productIds].sort()[0]
+  if (productIdsOf(env).length === 0) return `u/e:${env.id}`
+  const productId = preferProduct && productIdsOf(env).includes(preferProduct) ? preferProduct : [...productIdsOf(env)].sort()[0]
   return `p:${productId}/e:${env.id}`
 }
 
@@ -51,7 +53,7 @@ export function buildTree(data: InventoryData, expanded: ReadonlySet<NodeKey>): 
   const rows: TreeRow[] = []
 
   // A host shows once under every placement of every environment it belongs to (or once if it has none).
-  const placements = (envId: string) => Math.max(1, envById.get(envId)?.productIds.length ?? 1)
+  const placements = (envId: string) => Math.max(1, (envById.has(envId) ? productIdsOf(envById.get(envId)!) : []).length || 1)
   const hostAppearances = (h: HostMeta) =>
     h.environments.length ? h.environments.reduce((n, m) => n + placements(m.environmentId), 0) : 1
 
@@ -71,8 +73,8 @@ export function buildTree(data: InventoryData, expanded: ReadonlySet<NodeKey>): 
     h.environments.flatMap((m) => {
       const env = envById.get(m.environmentId)
       if (!env) return []
-      if (env.productIds.length === 0) return [{ key: `u/e:${env.id}`, label: `Unassigned › ${env.name}` }]
-      return env.productIds.map((pid) => ({ key: `p:${pid}/e:${env.id}`, label: `${productName.get(pid) ?? pid} › ${env.name}` }))
+      if (productIdsOf(env).length === 0) return [{ key: `u/e:${env.id}`, label: `Unassigned › ${env.name}` }]
+      return productIdsOf(env).map((pid) => ({ key: `p:${pid}/e:${env.id}`, label: `${productName.get(pid) ?? pid} › ${env.name}` }))
     })
 
   const push = (row: Omit<TreeRow, 'expandable' | 'expanded'>, canOpen = row.childCount > 0) => {
@@ -108,13 +110,13 @@ export function buildTree(data: InventoryData, expanded: ReadonlySet<NodeKey>): 
 
   for (const p of [...data.products].sort((a, b) => byName(a.name, b.name))) {
     const key = `p:${p.id}`
-    const envIds = data.environments.filter((e) => e.productIds.includes(p.id)).sort((a, b) => byName(a.name, b.name)).map((e) => e.id)
+    const envIds = data.environments.filter((e) => productIdsOf(e).includes(p.id)).sort((a, b) => byName(a.name, b.name)).map((e) => e.id)
     if (push({ key, kind: 'product', id: p.id, depth: 0, parentKey: null, label: p.name, color: p.color, sharedCount: 0, childCount: envIds.length })) {
       envIds.forEach((id) => addEnv(key, id))
     }
   }
 
-  const looseEnvs = data.environments.filter((e) => e.productIds.length === 0).sort((a, b) => byName(a.name, b.name))
+  const looseEnvs = data.environments.filter((e) => productIdsOf(e).length === 0).sort((a, b) => byName(a.name, b.name))
   const looseHosts = data.hosts.filter((h) => h.environments.length === 0).sort((a, b) => byName(a.label, b.label))
   if (looseEnvs.length + looseHosts.length) {
     const open = push({

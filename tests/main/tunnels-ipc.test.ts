@@ -10,7 +10,7 @@ import { TunnelStore } from '../../src/main/tunnels/tunnel-store'
 import type { Handlers } from '../../src/shared/ipc'
 import type { TunnelRuntime } from '../../src/shared/tunnels'
 import { VAULT_LOCKED } from '../../src/shared/vault'
-import { makeInventory } from './inventory-helpers'
+import { makeInventory, REGION } from './inventory-helpers'
 import { stubHandlers } from './ipc-helpers'
 
 type Fn = (e: IpcMainInvokeEvent, ...a: unknown[]) => unknown
@@ -67,7 +67,7 @@ describe('tunnel IPC', () => {
   it('tunnel:start while locked rejects with VAULT_LOCKED', async () => {
     const f = await makeInventory()
     const store = new TunnelStore({ db: f.db, audit: f.audit, vault: f.vault })
-    const hostId = f.hosts.create({ label: 'h', address: '127.0.0.1', port: 22 }).id
+    const hostId = f.hosts.create({ regionId: REGION, label: 'h', address: '127.0.0.1', port: 22 }).id
     const tun = store.create({ label: 'db', hostId, type: 'L', bindPort: 0, targetHost: '127.0.0.1', targetPort: 1 })
     const emit = vi.fn()
     const manager = new TunnelManager({
@@ -96,7 +96,7 @@ describe('tunnel IPC', () => {
 
   it('host:delete stops that host’s tunnels first', async () => {
     const f = await makeInventory()
-    const hostId = f.hosts.create({ label: 'h', address: '127.0.0.1', port: 22 }).id
+    const hostId = f.hosts.create({ regionId: REGION, label: 'h', address: '127.0.0.1', port: 22 }).id
     const order: string[] = []
     const tunnels = {
       stopForHost: vi.fn((id: string, reason: string) => {
@@ -109,7 +109,7 @@ describe('tunnel IPC', () => {
       return deleteHost(id)
     })
     const call = register(
-      createInventoryHandlers({ hosts: f.hosts, environments: f.envs, products: f.products, resolve: vi.fn(), tunnels, openExternal: vi.fn() }),
+      createInventoryHandlers({ hosts: f.hosts, environments: f.envs, products: f.products, regions: f.regions, resolve: vi.fn(), tunnels, openExternal: vi.fn() }),
     )
     await call('host:delete', hostId)
     expect(order).toEqual(['stop host deleted', 'delete'])
@@ -117,11 +117,11 @@ describe('tunnel IPC', () => {
 
   it('a refused host:delete stops no tunnels', async () => {
     const f = await makeInventory()
-    const jump = f.hosts.create({ label: 'jump', address: '127.0.0.1', port: 22 }).id
-    f.hosts.create({ label: 'behind', address: '10.0.0.9', port: 22, jumpHostId: jump })
+    const jump = f.hosts.create({ regionId: REGION, label: 'jump', address: '127.0.0.1', port: 22 }).id
+    f.hosts.create({ regionId: REGION, label: 'behind', address: '10.0.0.9', port: 22, jumpHostId: jump })
     const tunnels = { stopForHost: vi.fn() }
     const call = register(
-      createInventoryHandlers({ hosts: f.hosts, environments: f.envs, products: f.products, resolve: vi.fn(), tunnels, openExternal: vi.fn() }),
+      createInventoryHandlers({ hosts: f.hosts, environments: f.envs, products: f.products, regions: f.regions, resolve: vi.fn(), tunnels, openExternal: vi.fn() }),
     )
     await expect(call('host:delete', jump)).rejects.toThrow('host is the jump host for behind')
     f.vault.lock('manual')

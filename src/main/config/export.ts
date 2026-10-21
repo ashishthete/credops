@@ -13,6 +13,7 @@ import {
   type ConfigHost,
   type ConfigIdentity,
   type ConfigProduct,
+  type ConfigRegion,
   type ConfigService,
   type ConfigTunnel,
   type ItemRef,
@@ -121,6 +122,13 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: numbe
       (v) => v.vaultName,
     )
 
+  const regions: ConfigRegion[] = all('SELECT id, code, provider, display_name FROM regions').map((r) => ({
+    id: str(r.id),
+    code: str(r.code),
+    provider: str(r.provider),
+    displayName: str(r.display_name),
+  }))
+
   const products: ConfigProduct[] = all('SELECT id, name, color, icon, description, repo_url FROM products').map((r) => ({
     id: str(r.id),
     name: str(r.name),
@@ -142,11 +150,12 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: numbe
 
   const hostVaults = groups(all('SELECT host_id, vault_id FROM host_vaults'), 'host_id', (r) => str(r.vault_id), (x) => x)
   const hosts: ConfigHost[] = all(
-    'SELECT id, label, address, port, identity_id, jump_host_id, tags, os_icon, notes, keepalive_sec, env_vars FROM hosts',
+    'SELECT id, label, address, region_id, port, identity_id, jump_host_id, tags, os_icon, notes, keepalive_sec, env_vars FROM hosts',
   ).map((r) => ({
     id: str(r.id),
     label: str(r.label),
     address: str(r.address),
+    regionId: str(r.region_id),
     port: optInt(r.port),
     identityId: optStr(r.identity_id),
     jumpHostId: optStr(r.jump_host_id),
@@ -158,7 +167,6 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: numbe
     vaults: vaultRefs(hostVaults.get(str(r.id))),
   }))
 
-  const envProducts = groups(all('SELECT product_id, environment_id FROM product_environments'), 'environment_id', (r) => str(r.product_id), (x) => x)
   const envHosts = groups(
     all('SELECT environment_id, host_id, role FROM environment_hosts'),
     'environment_id',
@@ -166,8 +174,8 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: numbe
     (x) => x.hostId,
   )
   const environments: ConfigEnvironment[] = all(
-    `SELECT id, name, color, protected, default_identity_id, default_port, default_jump_host_id, versioned, auto_rollback, domain
-     FROM environments`,
+    `SELECT id, name, color, protected, default_identity_id, default_port, default_jump_host_id, versioned, auto_rollback, domain,
+       product_id FROM environments`,
   ).map((r) => ({
     id: str(r.id),
     name: str(r.name),
@@ -179,7 +187,7 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: numbe
     versioned: bool(r.versioned),
     autoRollback: bool(r.auto_rollback),
     domain: optStr(r.domain),
-    productIds: envProducts.get(str(r.id)) ?? [],
+    productId: str(r.product_id),
     hosts: envHosts.get(str(r.id)) ?? [],
   }))
 
@@ -288,6 +296,7 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: numbe
     version: CONFIG_VERSION,
     exportedAt: now().toISOString(),
     secretRefs,
+    regions: byId(regions),
     products: byId(products),
     identities: byId(identities),
     hosts: byId(hosts),

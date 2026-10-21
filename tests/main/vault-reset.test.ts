@@ -9,7 +9,7 @@ import { DEFAULT_VAULT_ID, VAULT_RESET_CONFIRM } from '../../src/shared/vault'
 import { parseEnvTemplate } from '../../src/shared/deploy'
 import { SETTINGS } from '../../src/shared/settings'
 import { makeDeployFixture } from './deploy-helpers'
-import { makeInventory, type InventoryFixture } from './inventory-helpers'
+import { makeInventory, type InventoryFixture, REGION } from './inventory-helpers'
 import { auditRows, makeVault } from './vault-helpers'
 
 const PW = 'correct horse'
@@ -61,15 +61,16 @@ async function seeded(): Promise<Seeded> {
     password: ID_PASSWORD,
   })
   const product = f.products.create({ name: 'Shop', color: '#112233', icon: 'boxes' })
-  const env = f.envs.create({ name: 'prod', color: '#445566', defaultIdentityId: pwId.id, productIds: [product.id] })
+  const env = f.envs.create({ name: 'prod', color: '#445566', defaultIdentityId: pwId.id, productId: product.id })
   const host = f.hosts.create({
+    regionId: REGION,
     label: 'web-1',
     address: '10.0.0.1',
     identityId: keyed.id,
     vaultIds: [DEFAULT_VAULT_ID, other.id],
     environments: [{ environmentId: env.id, role: 'app' }],
   })
-  const plain = f.hosts.create({ label: 'web-2', address: '10.0.0.2' })
+  const plain = f.hosts.create({ regionId: REGION, label: 'web-2', address: '10.0.0.2' })
   f.tunnels.create({ label: 'pg', hostId: host.id, type: 'L', bindPort: 15432, targetHost: 'localhost', targetPort: 5432 })
   f.vault.setQuickUnlock('touchId')
   f.vault.lock('manual')
@@ -173,7 +174,7 @@ describe('VaultService.reset', () => {
     expect(host).toMatchObject({ label: 'web-1', address: '10.0.0.1', identityId: null })
     expect([...host.vaultIds].sort()).toEqual([DEFAULT_VAULT_ID, otherVaultId].sort())
     expect(f.hosts.list().find((h) => h.id === plainHostId)?.label).toBe('web-2')
-    expect(f.envs.list().find((e) => e.id === envId)).toMatchObject({ name: 'prod', defaultIdentityId: null, productIds: [productId] })
+    expect(f.envs.list().find((e) => e.id === envId)).toMatchObject({ name: 'prod', defaultIdentityId: null, productId })
     expect(f.products.list().find((p) => p.id === productId)?.name).toBe('Shop')
     expect(count(f, 'environment_hosts')).toBe(1)
     expect(count(f, 'tunnels')).toBe(1)

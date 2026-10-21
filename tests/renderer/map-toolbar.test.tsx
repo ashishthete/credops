@@ -53,14 +53,14 @@ const billing = product({ id: 'pB', name: 'Billing' })
 const prod = environment({
   id: 'e1',
   name: 'Prod',
-  productIds: ['pA'],
+  productId: 'pA',
   hosts: [
     { hostId: 'h1', role: 'app' },
     { hostId: 'h2', role: 'db' },
   ],
 })
-const stage = environment({ id: 'e2', name: 'Stage', productIds: ['pA'], hosts: [{ hostId: 'h1', role: 'app' }] })
-const ledger = environment({ id: 'e3', name: 'Ledger', productIds: ['pB'], hosts: [{ hostId: 'h4', role: 'app' }] })
+const stage = environment({ id: 'e2', name: 'Stage', productId: 'pA', hosts: [{ hostId: 'h1', role: 'app' }] })
+const ledger = environment({ id: 'e3', name: 'Ledger', productId: 'pB', hosts: [{ hostId: 'h4', role: 'app' }] })
 const hosts = [
   host({ id: 'h1', label: 'web-1', address: '10.0.0.5', tags: ['frontend'] }),
   host({ id: 'h2', label: 'pg', address: 'db.internal' }),

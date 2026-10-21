@@ -4,6 +4,8 @@ import type { ServiceMeta } from '../../../shared/services'
 import type { TunnelMeta, TunnelType } from '../../../shared/tunnels'
 import type { InventoryData } from '../inventory/store'
 import { byName, compareHosts, UNASSIGNED_COLOR } from '../inventory/tree'
+// regions-ui: one product per environment, read as a list until the Regions UI.
+import { productIdsOf } from '../inventory/regions-stopgap'
 
 export type MapScope = { kind: 'all' } | { kind: 'product'; productId: string } | { kind: 'environment'; environmentId: string }
 
@@ -159,18 +161,18 @@ export function buildGraph({
   const scopedEnvs =
     scope.kind === 'all' ? data.environments
     : scope.kind === 'environment' ? data.environments.filter((e) => e.id === scope.environmentId)
-    : data.environments.filter((e) => e.productIds.includes(scope.productId))
+    : data.environments.filter((e) => productIdsOf(e).includes(scope.productId))
   const productIds = new Set(
     scope.kind === 'all' ? data.products.map((p) => p.id)
     : scope.kind === 'product' ? [scope.productId]
-    : scopedEnvs.flatMap((e) => e.productIds),
+    : scopedEnvs.flatMap((e) => productIdsOf(e)),
   )
   const scopedProducts = data.products.filter((p) => productIds.has(p.id)).sort((a, b) => byName(a.name, b.name))
   const productRank = new Map(scopedProducts.map((p, i) => [p.id, i]))
 
   // Each environment sits once, under its primary product (first by id among the products in scope).
   const groups: Group[] = scopedEnvs.map((env) => {
-    const inScope = env.productIds.filter((id) => productRank.has(id))
+    const inScope = productIdsOf(env).filter((id) => productRank.has(id))
     const primaryProductId = inScope.length ? [...inScope].sort()[0] : null
     return { id: `e:${env.id}`, env, primaryProductId }
   })
@@ -197,7 +199,7 @@ export function buildGraph({
       id: `p:${p.id}`,
       data: {
         kind: 'product', productId: p.id, name: p.name, color: p.color, icon: p.icon,
-        environmentCount: scopedEnvs.filter((e) => e.productIds.includes(p.id)).length,
+        environmentCount: scopedEnvs.filter((e) => productIdsOf(e).includes(p.id)).length,
       },
     })
   }
@@ -216,7 +218,7 @@ export function buildGraph({
         ? {
             kind: 'environment', environmentId: g.env.id, name: g.env.name, color: g.env.color, protected: g.env.protected,
             hostCount: members.length,
-            productNames: g.env.productIds.flatMap((id) => productById.get(id)?.name ?? []).sort(byName),
+            productNames: productIdsOf(g.env).flatMap((id) => productById.get(id)?.name ?? []).sort(byName),
           }
         : { kind: 'environment', environmentId: null, name: 'Unassigned', color: UNASSIGNED_COLOR, protected: false, hostCount: members.length, productNames: [] },
     })
@@ -234,7 +236,7 @@ export function buildGraph({
       ;(placementsByHost[host.id] ??= []).push(id)
     }
     if (g.env && g.primaryProductId !== null) {
-      for (const productId of g.env.productIds.filter((pid) => productRank.has(pid)).sort()) {
+      for (const productId of productIdsOf(g.env).filter((pid) => productRank.has(pid)).sort()) {
         edges.push({
           id: `m:${productId}>${g.id}`, source: `p:${productId}`, target: g.id,
           data: { kind: 'membership', primary: productId === g.primaryProductId },

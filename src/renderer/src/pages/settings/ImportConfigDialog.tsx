@@ -2,7 +2,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronRight, KeyRound } from 'lucide-react'
 import { useState } from 'react'
 import { IMPORT_ACTIONS, type ImportAction, type ImportItem, type ImportPreview, type ImportNeedsSecret } from '../../../../shared/config-file'
-import { reloadInventory } from '../../inventory/store'
+import { defaultRegionId, reloadInventory } from '../../inventory/store'
 import { api } from '../../lib/api'
 import { loadTunnels } from '../../tunnels/store'
 import { Button } from '../../ui/Button'
@@ -14,6 +14,7 @@ import { toast } from '../../ui/Toaster'
 
 const ACTION_LABEL: Record<ImportAction, string> = { add: 'Add', update: 'Update', unchanged: 'Unchanged', skip: 'Skip' }
 const KIND_LABEL: Record<ImportItem['kind'], string> = {
+  regions: 'Region',
   products: 'Product',
   identities: 'Identity',
   hosts: 'Host',
@@ -72,8 +73,12 @@ function PreviewDialog({ preview, onClose }: { preview: ImportPreview; onClose: 
   const apply = async () => {
     setBusy(true)
     try {
-      const res = await attempt("Couldn't import the config", () =>
-        api.invoke('config:importApply', preview.token, { typedNames: preview.protectedEnvironments.filter((n) => typed[n] === n) }),
+      const res = await attempt("Couldn't import the config", async () =>
+        api.invoke('config:importApply', preview.token, {
+          typedNames: preview.protectedEnvironments.filter((n) => typed[n] === n),
+          // regions-ui: a version 1 file's hosts go in the default region until the dialog lets the user pick one.
+          ...(preview.needsRegion ? { regionId: await defaultRegionId() } : {}),
+        }),
       )
       if (!res) return
       const n = res.needsSecret.length

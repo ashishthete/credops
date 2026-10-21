@@ -23,7 +23,7 @@ import type {
 } from '../../src/shared/inventory'
 import type { SessionMeta } from '../../src/shared/ssh'
 import { DEFAULT_VAULT_ID, VAULT_LOCKED, type VaultMeta } from '../../src/shared/vault'
-import { defaultVault, environment, host, mockBridge, product, vaultStatus } from './helpers'
+import { REGION, defaultVault, environment, host, mockBridge, product, vaultStatus } from './helpers'
 import { resetFakeXterm } from './terminal-fakes'
 
 // framer-motion caches matchMedia, so reduced motion is driven through useMotionSafe (F18).
@@ -81,7 +81,7 @@ function candidate(over: Partial<SshImportCandidate> & { alias: string }): SshIm
 function world(over: Partial<World> = {}): World {
   return {
     products: [product({ id: 'acme', name: 'Acme', environmentIds: ['prod'] })],
-    environments: [environment({ id: 'prod', name: 'prod', color: '#ef5b5b', productIds: ['acme'], hosts: [{ hostId: 'api1', role: 'app' }] })],
+    environments: [environment({ id: 'prod', name: 'prod', color: '#ef5b5b', productId: 'acme', hosts: [{ hostId: 'api1', role: 'app' }] })],
     hosts: [
       host({ id: 'api1', label: 'api-1', address: '10.0.0.5', tags: ['api'], environments: [{ environmentId: 'prod', role: 'app' }] }),
       host({ id: 'db1', label: 'db-1', address: '10.0.0.9', tags: ['db'] }),
@@ -328,7 +328,7 @@ describe('hosts page', () => {
     await user.selectOptions(within(dialog).getByLabelText('Role'), 'app')
     await user.click(within(dialog).getByRole('button', { name: 'Import 1 host' }))
 
-    expect(invoke).toHaveBeenCalledWith('sshconfig:import', { vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'], environmentId: 'prod', role: 'app' })
+    expect(invoke).toHaveBeenCalledWith('sshconfig:import', { regionId: REGION.id, vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'], environmentId: 'prod', role: 'app' })
     expect(await within(dialog).findByText('Imported 1 host')).toBeInTheDocument()
     expect(within(dialog).getByText('3 port forwards will become tunnels')).toBeInTheDocument()
 
@@ -347,7 +347,7 @@ describe('hosts page', () => {
     expect(box).toBeChecked()
     await user.click(box)
     await user.click(within(dialog).getByRole('button', { name: 'Import 1 host' }))
-    expect(invoke).toHaveBeenCalledWith('sshconfig:import', { vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'], forwards: false })
+    expect(invoke).toHaveBeenCalledWith('sshconfig:import', { regionId: REGION.id, vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'], forwards: false })
     expect(await within(dialog).findByText('Imported 1 host')).toBeInTheDocument()
   })
 
@@ -479,7 +479,7 @@ describe('hosts page', () => {
     await user.type(await screen.findByLabelText('Master password'), 'correct horse{Enter}')
     const imports = () => invoke.mock.calls.filter(([c]) => c === 'sshconfig:import')
     await waitFor(() => expect(imports()).toHaveLength(2))
-    expect(imports()[1]).toEqual(['sshconfig:import', { vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'] }])
+    expect(imports()[1]).toEqual(['sshconfig:import', { regionId: REGION.id, vaultId: DEFAULT_VAULT_ID, aliases: ['web-1'] }])
     expect(await screen.findByText('Imported 1 host, 3 tunnels')).toBeInTheDocument()
     await waitFor(() => expect(rowNames()).toContain('web-1'))
   })

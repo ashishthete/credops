@@ -4,6 +4,8 @@ import { useConnect } from '../terminal/connect'
 import { registerCommand, registerCommands } from '../ui/commands'
 import { useInventory } from './store'
 import { environmentKey } from './tree'
+// regions-ui: one product per environment, read as a list until the Regions UI.
+import { productIdsOf } from './regions-stopgap'
 
 /** `/hosts?action=…` opens one of the Hosts page's dialogs, so these commands work from any page. */
 export type HostsAction = 'new' | 'import'
@@ -67,7 +69,7 @@ export function useInventoryCommands(): void {
         run: go(`/hosts?host=${encodeURIComponent(h.id)}`),
       })),
       ...data.environments.map((e) => {
-        const products = e.productIds.flatMap((id) => productName.get(id) ?? []).sort((a, b) => a.localeCompare(b))
+        const products = productIdsOf(e).flatMap((id) => productName.get(id) ?? []).sort((a, b) => a.localeCompare(b))
         return {
           id: `environments.go.${e.id}`,
           title: `Go to ${e.name} · ${products.length ? products.join(', ') : 'Unassigned'}`,

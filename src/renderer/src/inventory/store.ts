@@ -132,6 +132,16 @@ const ENV_KEYS = ['name', 'color', 'protected', 'defaultIdentityId', 'defaultPor
 const deleted = async (fn: () => Promise<unknown>, title: string) =>
   (await attempt(title, async () => (await fn(), true))) === true
 
+/**
+ * regions-ui: the region new hosts go in until the dialogs let the user pick one: the first by code. With none, the
+ * user is told to create one, as main would.
+ */
+export async function defaultRegionId(): Promise<string> {
+  const [first] = await api.invoke('region:list')
+  if (!first) throw new Error('Create a region before adding hosts')
+  return first.id
+}
+
 /** Main reads the stored value and opens it; the renderer sends only the id. */
 export async function openEnvironmentDomain(id: string): Promise<void> {
   await attempt("Couldn't open the domain", () => api.invoke('env:openDomain', id))
@@ -155,7 +165,7 @@ export const inv = {
     return ok
   },
 
-  /** Create sends everything; edit sends changed fields only and routes product links to setProducts. */
+  /** Create sends everything; edit sends changed fields only and routes a product change to setProduct. */
   async saveEnvironment(input: EnvironmentInput, id?: string): Promise<EnvironmentMeta | undefined> {
     let updated = false
     const row = await attempt("Couldn't save the environment", async () => {
@@ -167,8 +177,8 @@ export const inv = {
         saved = await api.invoke('env:update', id, patch)
         updated = true
       }
-      if (input.productIds && !(current && sameSet(input.productIds, current.productIds))) {
-        saved = await api.invoke('env:setProducts', id, input.productIds)
+      if (current && input.productId !== current.productId) {
+        saved = await api.invoke('env:setProduct', id, input.productId)
       }
       return saved!
     })
@@ -176,7 +186,7 @@ export const inv = {
       patchStore((d) => ({ environments: upsert(d.environments, row) }))
       await refresh('products')
     } else if (updated) {
-      // The edit saved but the product links didn't; show what was saved.
+      // The edit saved but the product move didn't; show what was saved.
       await refresh('environments')
     }
     return row
@@ -193,8 +203,8 @@ export const inv = {
     return ok
   },
 
-  async setEnvironmentProducts(id: string, productIds: string[]): Promise<EnvironmentMeta | undefined> {
-    const row = await attempt("Couldn't update the environment's products", () => api.invoke('env:setProducts', id, productIds))
+  async setEnvironmentProduct(id: string, productId: string): Promise<EnvironmentMeta | undefined> {
+    const row = await attempt("Couldn't move the environment", () => api.invoke('env:setProduct', id, productId))
     if (row) {
       patchStore((d) => ({ environments: upsert(d.environments, row) }))
       await refresh('products')
@@ -226,10 +236,11 @@ export const inv = {
    * Create sends everything; edit sends changed fields only and routes vault links to setHostVaults.
    * `base` is the host the edit started from (defaults to the stored one), so others' changes aren't undone.
    */
-  async saveHost(input: HostInput, id?: string, base?: HostMeta): Promise<HostMeta | undefined> {
+  // regions-ui: regionId is optional here until the host dialogs pick one; a new host without one goes in defaultRegionId().
+  async saveHost(input: Omit<HostInput, 'regionId'> & { regionId?: string }, id?: string, base?: HostMeta): Promise<HostMeta | undefined> {
     let updated = false
     const row = await attempt("Couldn't save the host", async () => {
-      if (!id) return api.invoke('host:create', input)
+      if (!id) return api.invoke('host:create', { ...input, regionId: input.regionId ?? (await defaultRegionId()) })
       const current = base ?? inventoryStore.get()?.hosts.find((h) => h.id === id)
       const patch = diff<HostPatch>(input, current, HOST_KEYS)
       let saved = current
@@ -264,8 +275,11 @@ export const inv = {
   },
 
   /** Imports hosts from ~/.ssh/config, then reloads everything (it can add hosts, identities and keys). */
-  async importSshConfig(req: SshImportRequest): Promise<SshImportResult | undefined> {
-    const result = await attempt("Couldn't import from ~/.ssh/config", () => api.invoke('sshconfig:import', req))
+  // regions-ui: regionId is optional here until the import dialog picks one.
+  async importSshConfig(req: Omit<SshImportRequest, 'regionId'> & { regionId?: string }): Promise<SshImportResult | undefined> {
+    const result = await attempt("Couldn't import from ~/.ssh/config", async () =>
+      api.invoke('sshconfig:import', { ...req, regionId: req.regionId ?? (await defaultRegionId()) }),
+    )
     if (result) await reloadInventory()
     return result
   },

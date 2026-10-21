@@ -57,7 +57,8 @@ import { ToolingError } from './tooling'
 
 /** What the service reads about the inventory. Locally it is the app database; the Hub answers from its registry. */
 export interface ReleaseInventory {
-  environment(id: string): Pick<EnvironmentMeta, 'id' | 'name' | 'protected' | 'productIds'>
+  /** `productId` is null where the inventory has no products (the Hub). */
+  environment(id: string): Pick<EnvironmentMeta, 'id' | 'name' | 'protected'> & { productId: string | null }
   hostLabel(hostId: string): string
   productName(productId: string): string
   /** Every environment the hosts belong to, for the typed-name rule. */
@@ -961,7 +962,7 @@ export class ReleaseService {
   runMeta(releaseId: string, status?: ReleaseStatus, ctx?: CallCtx): ReleaseRunMeta {
     const d = this.d.releases.detail(releaseId)
     const env = this.inv.environment(d.environmentId)
-    const productId = env.productIds[0] ?? null
+    const productId = env.productId
     const urls: string[] = []
     for (const r of d.runs) {
       if (r.deploymentId === null) continue

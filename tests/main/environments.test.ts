@@ -5,7 +5,7 @@ import { registerHandlers } from '../../src/main/ipc/register'
 import { VALIDATORS } from '../../src/main/ipc/validators'
 import { VAULT_LOCKED } from '../../src/shared/vault'
 import { stubHandlers } from './ipc-helpers'
-import { inventoryHandlers, makeInventory, type InventoryFixture } from './inventory-helpers'
+import { inventoryHandlers, makeInventory, type InventoryFixture, PRODUCT, REGION } from './inventory-helpers'
 
 const COLOR = '#336699'
 const prod = (f: InventoryFixture, name: string) => f.products.create({ name, color: COLOR, icon: 'boxes' })
@@ -18,9 +18,9 @@ const actions = (f: InventoryFixture, action: string) =>
 describe('EnvironmentStore and ProductStore', () => {
   it('domain round-trips as entered and clears', async () => {
     const f = await makeInventory()
-    const e = f.envs.create({ name: 'staging', color: COLOR, domain: 'Staging.Example.com' })
+    const e = f.envs.create({ productId: PRODUCT, name: 'staging', color: COLOR, domain: 'Staging.Example.com' })
     expect(e.domain).toBe('Staging.Example.com')
-    expect(f.envs.create({ name: 'plain', color: COLOR }).domain).toBeNull()
+    expect(f.envs.create({ productId: PRODUCT, name: 'plain', color: COLOR }).domain).toBeNull()
     expect(f.envs.update(e.id, { domain: 'https://staging.example.com/app' }).domain).toBe('https://staging.example.com/app')
     expect(f.envs.update(e.id, {}).domain).toBe('https://staging.example.com/app')
     expect(f.envs.update(e.id, { domain: null }).domain).toBeNull()
@@ -34,7 +34,7 @@ describe('EnvironmentStore and ProductStore', () => {
 
   it('domain is validated in the store', async () => {
     const f = await makeInventory()
-    const e = f.envs.create({ name: 'staging', color: COLOR })
+    const e = f.envs.create({ productId: PRODUCT, name: 'staging', color: COLOR })
     const events = f.audit.list({ limit: 1000 }).length
     const bad: [string, string][] = [
       ['ftp://x.example.com', 'Use an http:// or https:// URL'],
@@ -44,53 +44,49 @@ describe('EnvironmentStore and ProductStore', () => {
     for (const [domain, message] of bad) {
       expect(() => f.envs.update(e.id, { domain })).toThrow(message)
     }
-    expect(() => f.envs.create({ name: 'other', color: COLOR, domain: 'ftp://x.example.com' })).toThrow('Use an http:// or https:// URL')
+    expect(() => f.envs.create({ productId: PRODUCT, name: 'other', color: COLOR, domain: 'ftp://x.example.com' })).toThrow('Use an http:// or https:// URL')
     expect(f.envs.list().map((x) => x.name)).toEqual(['staging'])
     expect(f.envs.get(e.id).domain).toBeNull()
     expect(f.audit.list({ limit: 1000 }).length).toBe(events)
   })
 
-  it('shared environment across products', async () => {
+  it('an environment is in exactly one product', async () => {
     const f = await makeInventory()
     const a = prod(f, 'Acme')
-    const b = prod(f, 'Essentials')
-    const env = f.envs.create({ name: 'analytics-db', color: COLOR, productIds: [a.id, b.id] })
-    expect(f.products.list().map((p) => p.environmentIds)).toEqual([[env.id], [env.id]])
-    f.products.delete(a.id)
-    expect(f.envs.list()[0]!.productIds).toEqual([b.id])
-    expect(actions(f, 'product.delete')[0]!.details).toEqual({ environments: 1 })
+    const env = f.envs.create({ name: 'analytics-db', color: COLOR, productId: a.id })
+    expect(env.productId).toBe(a.id)
+    expect(f.products.list().find((p) => p.id === a.id)!.environmentIds).toEqual([env.id])
+    expect(actions(f, 'environment.create')[0]!.details).toEqual({ productId: a.id })
+    expect(() => f.envs.create({ name: 'x', color: COLOR, productId: '' })).toThrow('an environment needs a product')
+    expect(() => f.envs.create({ name: 'x', color: COLOR, productId: randomUUID() })).toThrow('product not found')
   })
 
-  it('environments left without a product stay listed', async () => {
+  it('a product with environments cannot be deleted', async () => {
     const f = await makeInventory()
     const a = prod(f, 'A')
-    const env = f.envs.create({ name: 'prod', color: COLOR, productIds: [a.id] })
-    f.products.delete(a.id)
-    expect(f.envs.list()).toEqual([expect.objectContaining({ id: env.id, productIds: [] })])
+    const env = f.envs.create({ name: 'prod', color: COLOR, productId: a.id })
+    f.envs.create({ name: 'staging', color: COLOR, productId: a.id })
+    expect(() => f.products.delete(a.id)).toThrow('A still has 2 environments: move or delete them first')
+    f.envs.delete(env.id)
+    expect(() => f.products.delete(a.id)).toThrow('A still has an environment: move or delete it first')
+    expect(actions(f, 'product.delete')).toHaveLength(0)
+    const empty = prod(f, 'Empty')
+    f.products.delete(empty.id)
+    expect(actions(f, 'product.delete')).toHaveLength(1)
   })
 
   it('per-product unique names', async () => {
     const f = await makeInventory()
     const a = prod(f, 'Acme')
     const b = prod(f, 'Essentials')
-    f.envs.create({ name: 'prod', color: COLOR, productIds: [a.id] })
-    const prodB = f.envs.create({ name: 'prod', color: COLOR, productIds: [b.id] })
-    expect(() => f.envs.setProducts(prodB.id, [a.id, b.id])).toThrow(/product Acme already has an environment named prod/)
-    const staging = f.envs.create({ name: 'staging', color: COLOR, productIds: [a.id] })
+    f.envs.create({ name: 'prod', color: COLOR, productId: a.id })
+    const prodB = f.envs.create({ name: 'prod', color: COLOR, productId: b.id })
+    expect(() => f.envs.setProduct(prodB.id, a.id)).toThrow(/product Acme already has an environment named prod/)
+    const staging = f.envs.create({ name: 'staging', color: COLOR, productId: a.id })
     expect(() => f.envs.update(staging.id, { name: 'PROD' })).toThrow(/product Acme already has an environment named prod/)
-    expect(() => f.envs.create({ name: 'Prod', color: COLOR, productIds: [a.id] })).toThrow(/already has an environment/)
+    expect(() => f.envs.create({ name: 'Prod', color: COLOR, productId: a.id })).toThrow(/already has an environment/)
     expect(f.envs.list()).toHaveLength(3)
     expect(f.envs.update(staging.id, { name: 'Staging' }).name).toBe('Staging')
-  })
-
-  it('renaming a shared environment checks every product it is in', async () => {
-    const f = await makeInventory()
-    const a = prod(f, 'Acme')
-    const b = prod(f, 'Essentials')
-    f.envs.create({ name: 'reports', color: COLOR, productIds: [b.id] })
-    const shared = f.envs.create({ name: 'analytics', color: COLOR, productIds: [a.id, b.id] })
-    expect(() => f.envs.update(shared.id, { name: 'Reports' })).toThrow(/product Essentials already has an environment named reports/)
-    expect(f.envs.list().find((e) => e.id === shared.id)!.name).toBe('analytics')
   })
 
   it('product names are unique', async () => {
@@ -107,9 +103,9 @@ describe('EnvironmentStore and ProductStore', () => {
 
   it('shared links are independent', async () => {
     const f = await makeInventory()
-    const h = f.hosts.create({ label: 'H', address: 'h.example.com' })
-    const p = f.envs.create({ name: 'prod', color: COLOR })
-    const s = f.envs.create({ name: 'staging', color: COLOR })
+    const h = f.hosts.create({ regionId: REGION, label: 'H', address: 'h.example.com' })
+    const p = f.envs.create({ productId: PRODUCT, name: 'prod', color: COLOR })
+    const s = f.envs.create({ productId: PRODUCT, name: 'staging', color: COLOR })
     f.envs.putHost(p.id, h.id, 'db')
     f.envs.putHost(s.id, h.id, 'app')
     f.envs.removeHost(s.id, h.id)
@@ -119,8 +115,8 @@ describe('EnvironmentStore and ProductStore', () => {
 
   it('role changes are audited once', async () => {
     const f = await makeInventory()
-    const h = f.hosts.create({ label: 'H', address: 'h.example.com' })
-    const p = f.envs.create({ name: 'prod', color: COLOR })
+    const h = f.hosts.create({ regionId: REGION, label: 'H', address: 'h.example.com' })
+    const p = f.envs.create({ productId: PRODUCT, name: 'prod', color: COLOR })
     f.envs.putHost(p.id, h.id, 'db')
     f.envs.putHost(p.id, h.id, 'db')
     expect(actions(f, 'environment.host')).toHaveLength(1)
@@ -135,12 +131,12 @@ describe('EnvironmentStore and ProductStore', () => {
 
   it('defaults validate', async () => {
     const f = await makeInventory()
-    expect(() => f.envs.create({ name: 'e', color: COLOR, defaultJumpHostId: randomUUID() })).toThrow(/host not found/)
-    expect(() => f.envs.create({ name: 'e', color: COLOR, defaultIdentityId: randomUUID() })).toThrow(/identity not found/)
-    expect(() => f.envs.create({ name: 'e', color: COLOR, defaultPort: 70000 })).toThrow(/port/)
+    expect(() => f.envs.create({ productId: PRODUCT, name: 'e', color: COLOR, defaultJumpHostId: randomUUID() })).toThrow(/host not found/)
+    expect(() => f.envs.create({ productId: PRODUCT, name: 'e', color: COLOR, defaultIdentityId: randomUUID() })).toThrow(/identity not found/)
+    expect(() => f.envs.create({ productId: PRODUCT, name: 'e', color: COLOR, defaultPort: 70000 })).toThrow(/port/)
     const id = f.makeIdentity()
-    const h = f.hosts.create({ label: 'J', address: 'j.example.com' })
-    const e = f.envs.create({ name: 'e', color: COLOR, defaultIdentityId: id.id, defaultPort: 2200, defaultJumpHostId: h.id })
+    const h = f.hosts.create({ regionId: REGION, label: 'J', address: 'j.example.com' })
+    const e = f.envs.create({ productId: PRODUCT, name: 'e', color: COLOR, defaultIdentityId: id.id, defaultPort: 2200, defaultJumpHostId: h.id })
     expect(e).toMatchObject({ defaultIdentityId: id.id, defaultPort: 2200, defaultJumpHostId: h.id })
     expect(f.envs.update(e.id, { defaultPort: null, defaultJumpHostId: null }))
       .toMatchObject({ defaultPort: null, defaultJumpHostId: null, defaultIdentityId: id.id })
@@ -150,45 +146,55 @@ describe('EnvironmentStore and ProductStore', () => {
   it('delete keeps hosts', async () => {
     const f = await makeInventory()
     const a = prod(f, 'A')
-    const h = f.hosts.create({ label: 'H', address: 'h.example.com' })
-    const p = f.envs.create({ name: 'prod', color: COLOR, productIds: [a.id] })
-    const s = f.envs.create({ name: 'staging', color: COLOR })
+    const h = f.hosts.create({ regionId: REGION, label: 'H', address: 'h.example.com' })
+    const p = f.envs.create({ name: 'prod', color: COLOR, productId: a.id })
+    const s = f.envs.create({ productId: PRODUCT, name: 'staging', color: COLOR })
     f.envs.putHost(p.id, h.id, 'db')
     f.envs.putHost(s.id, h.id, 'app')
     f.envs.delete(p.id)
     expect(f.hosts.list()[0]!.environments).toEqual([{ environmentId: s.id, role: 'app' }])
-    expect(actions(f, 'environment.delete')[0]!.details).toEqual({ hosts: 1, products: 1 })
-    expect(f.products.list()[0]!.environmentIds).toEqual([])
+    expect(actions(f, 'environment.delete')[0]!.details).toEqual({ hosts: 1, productId: a.id })
+    expect(f.products.list().find((x) => x.id === a.id)!.environmentIds).toEqual([])
   })
 
-  it('setProducts audits the difference', async () => {
+  it('setProduct moves the environment and audits from and to', async () => {
     const f = await makeInventory()
     const a = prod(f, 'A')
     const b = prod(f, 'B')
-    const e = f.envs.create({ name: 'prod', color: COLOR, productIds: [a.id] })
-    f.envs.setProducts(e.id, [a.id])
-    expect(actions(f, 'environment.products')).toHaveLength(0)
-    f.envs.setProducts(e.id, [b.id])
-    expect(actions(f, 'environment.products')[0]!.details).toEqual({ added: [b.id], removed: [a.id] })
-    expect(() => f.envs.setProducts(e.id, [randomUUID()])).toThrow(/product not found/)
+    const e = f.envs.create({ name: 'prod', color: COLOR, productId: a.id })
+    f.envs.setProduct(e.id, a.id)
+    expect(actions(f, 'environment.product')).toHaveLength(0)
+    expect(f.envs.setProduct(e.id, b.id).productId).toBe(b.id)
+    expect(actions(f, 'environment.product')[0]!.details).toEqual({ from: a.id, to: b.id })
+    expect(() => f.envs.setProduct(e.id, randomUUID())).toThrow(/product not found/)
+  })
+
+  it('setProduct is refused while the environment is published to the Hub', async () => {
+    const f = await makeInventory()
+    const b = prod(f, 'B')
+    const e = f.envs.create({ name: 'prod', color: COLOR, productId: PRODUCT })
+    f.db.prepare("INSERT INTO hub_env_links(environment_id, hub_id, published_at, manifest_hash) VALUES (?, 'hub-env', 'now', 'h')").run(e.id)
+    expect(() => f.envs.setProduct(e.id, b.id)).toThrow('this environment is published to the Hub: unpublish it, move it, then publish it again')
+    expect(f.envs.get(e.id).productId).toBe(PRODUCT)
+    expect(actions(f, 'environment.product')).toHaveLength(0)
   })
 
   it('locked writes refused, reads fine', async () => {
     const f = await makeInventory()
     const a = prod(f, 'A')
-    const e = f.envs.create({ name: 'prod', color: COLOR })
+    const e = f.envs.create({ productId: PRODUCT, name: 'prod', color: COLOR })
     f.vault.lock('manual')
-    expect(() => f.envs.create({ name: 'x', color: COLOR })).toThrow(VAULT_LOCKED)
+    expect(() => f.envs.create({ productId: PRODUCT, name: 'x', color: COLOR })).toThrow(VAULT_LOCKED)
     expect(() => f.products.create({ name: 'x', color: COLOR, icon: 'leaf' })).toThrow(VAULT_LOCKED)
     expect(() => f.envs.update(e.id, { name: 'y' })).toThrow(VAULT_LOCKED)
     expect(() => f.envs.delete(e.id)).toThrow(VAULT_LOCKED)
-    expect(() => f.envs.setProducts(e.id, [a.id])).toThrow(VAULT_LOCKED)
+    expect(() => f.envs.setProduct(e.id, a.id)).toThrow(VAULT_LOCKED)
     expect(() => f.envs.putHost(e.id, randomUUID(), 'app')).toThrow(VAULT_LOCKED)
     expect(() => f.envs.removeHost(e.id, randomUUID())).toThrow(VAULT_LOCKED)
     expect(() => f.products.update(a.id, { name: 'z' })).toThrow(VAULT_LOCKED)
     expect(() => f.products.delete(a.id)).toThrow(VAULT_LOCKED)
     expect(f.envs.list()).toHaveLength(1)
-    expect(f.products.list()).toHaveLength(1)
+    expect(f.products.list()).toHaveLength(2)
   })
 })
 
@@ -207,20 +213,23 @@ describe('environment and product IPC', () => {
     const rejects = async (c: string, ...a: unknown[]): Promise<void> => {
       await expect(call(c, ...a)).rejects.toThrow(/invalid arguments/)
     }
-    await rejects('env:create', { name: 'e', color: COLOR, defaultPort: 70000 })
-    await rejects('env:create', { name: 'e', color: 'red' })
-    await rejects('env:create', { name: 'e', color: COLOR, extra: 1 })
+    await rejects('env:create', { name: 'e', color: COLOR, productId: PRODUCT, defaultPort: 70000 })
+    await rejects('env:create', { name: 'e', color: 'red', productId: PRODUCT })
+    await rejects('env:create', { name: 'e', color: COLOR, productId: PRODUCT, extra: 1 })
+    await rejects('env:create', { name: 'e', color: COLOR })
     await rejects('env:update', randomUUID(), { productIds: [] })
+    await rejects('env:update', randomUUID(), { productId: PRODUCT })
+    await rejects('env:setProduct', randomUUID(), 'nope')
     await rejects('env:putHost', randomUUID(), randomUUID(), 'root')
     await rejects('product:create', { name: 'p', color: COLOR, icon: 'skull' })
     await rejects('product:create', { name: 'p', color: COLOR, icon: 'leaf', repoUrl: 'javascript:x' })
-    const ok = (await call('env:create', { name: 'e', color: COLOR, defaultPort: null })) as { name: string }
+    const ok = (await call('env:create', { name: 'e', color: COLOR, productId: PRODUCT, defaultPort: null })) as { name: string }
     expect(ok.name).toBe('e')
     const missing = randomUUID()
     for (const [c, ...a] of [
       ['env:update', missing, { name: 'x' }],
       ['env:delete', missing],
-      ['env:setProducts', missing, []],
+      ['env:setProduct', missing, PRODUCT],
       ['env:putHost', missing, randomUUID(), 'app'],
       ['env:removeHost', missing, randomUUID()],
     ] as [string, ...unknown[]][]) {
@@ -242,14 +251,14 @@ describe('environment and product IPC', () => {
     )
     const ev = { senderFrame: { url: 'file:///ok' } } as IpcMainInvokeEvent
     const call = (c: string, ...a: unknown[]) => Promise.resolve(registered.get(c)!(ev, ...a))
-    const env = f.envs.create({ name: 'staging', color: COLOR, domain: raw ? null : domain })
+    const env = f.envs.create({ productId: PRODUCT, name: 'staging', color: COLOR, domain: raw ? null : domain })
     if (raw) f.db.prepare('UPDATE environments SET domain = ? WHERE id = ?').run(domain, env.id)
     return { f, env, openExternal, call }
   }
 
   it('rejects a bad domain at the boundary', async () => {
     const { call, env } = await openSetup(null)
-    const err = await call('env:create', { name: 'e', color: COLOR, domain: 'ftp://x.example.com' }).catch((e: Error) => e)
+    const err = await call('env:create', { name: 'e', color: COLOR, productId: PRODUCT, domain: 'ftp://x.example.com' }).catch((e: Error) => e)
     expect((err as Error).message).toMatch(/invalid arguments/)
     expect((err as Error).message).toContain('domain')
     expect((err as Error).message).not.toContain('ftp')

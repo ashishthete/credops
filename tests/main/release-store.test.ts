@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { uuidv7Time } from '../../src/main/deploy/uuidv7'
 import { DEFAULT_RELEASE_OPTIONS, type PreflightReport, type RunEventBody, type RunService } from '../../src/shared/deploy'
+import { ReleaseStore } from '../../src/main/deploy/release-store'
 import { makeDeployFixture } from './deploy-helpers'
+import { REGION } from './inventory-helpers'
 
 const log = (line: string): RunEventBody => ({ type: 'log', stepId: null, hostId: null, stream: 'out', line })
 
@@ -116,6 +118,23 @@ describe('ReleaseStore', () => {
     const old = { releaseId: r.id, checks: [], commits: {}, dockerModes: {}, locks: {}, commitsTotal: 0, blocked: false }
     f.releases.appendEvents(r.id, [{ type: 'preflight.done', report: old as unknown as PreflightReport }])
     expect(f.releases.detail(r.id).preflight).toEqual({ ...old, composeServices: {}, serviceCommits: {} })
+  })
+
+  it("detail lists the distinct regions of its runs' hosts, by code", async () => {
+    const { f, d, r } = await release()
+    expect(f.releases.detail(r.id).regions).toEqual([])
+    const eu = f.regions.create({ code: 'eu-west-1', displayName: 'Ireland' })
+    const other = f.hosts.create({ regionId: eu.id, label: 'app2', address: '10.0.0.8' })
+    const run = (hostId: string, position: number) => ({
+      deploymentId: d.id, deploymentName: 'api', hostId, hostLabel: 'h', position, branch: 'main', steps: [], services: [], wholeCheckout: true,
+    })
+    f.releases.createRuns(r.id, [run(f.host.id, 0), run(other.id, 1), run(other.id, 2)])
+    expect(f.releases.detail(r.id).regions).toEqual([
+      { id: eu.id, code: 'eu-west-1', displayName: 'Ireland' },
+      { id: REGION, code: 'test-1', displayName: 'Test' },
+    ])
+    // The Hub's database has no regions: its store leaves them out.
+    expect(new ReleaseStore({ db: f.db }).detail(r.id)).not.toHaveProperty('regions')
   })
 
   it('detail joins runs with parsed steps and commits', async () => {

@@ -49,24 +49,24 @@ interface World {
   hosts: HostMeta[]
 }
 
-/** Acme holds prod (protected, web-1 as app) and staging; analytics-db is shared with Essentials. */
+/** Acme holds prod (protected, web-1 as app), staging and analytics-db; Essentials is empty. */
 function world(): World {
   return {
     products: [
       product({ id: 'acme', name: 'Acme', environmentIds: ['analytics', 'prod', 'staging'] }),
-      product({ id: 'essentials', name: 'Essentials', color: '#2fbf71', environmentIds: ['analytics'] }),
+      product({ id: 'essentials', name: 'Essentials', color: '#2fbf71', environmentIds: [] }),
     ],
     environments: [
-      environment({ id: 'analytics', name: 'analytics-db', productIds: ['acme', 'essentials'] }),
+      environment({ id: 'analytics', name: 'analytics-db', productId: 'acme' }),
       environment({
         id: 'prod',
         name: 'prod',
         color: '#ef5b5b',
         protected: true,
-        productIds: ['acme'],
+        productId: 'acme',
         hosts: [{ hostId: 'web1', role: 'app' }],
       }),
-      environment({ id: 'staging', name: 'staging', color: '#f2a93b', productIds: ['acme'] }),
+      environment({ id: 'staging', name: 'staging', color: '#f2a93b', productId: 'acme' }),
     ],
     hosts: [host({ id: 'web1', label: 'web-1', environments: [{ environmentId: 'prod', role: 'app' }] })],
   }
@@ -104,7 +104,7 @@ function renderPage(w: World = world(), extra: Record<string, unknown> = {}) {
         return p
       }
       case 'env:create': {
-        const input = args[0] as { name: string; productIds: string[] }
+        const input = args[0] as { name: string; productId: string }
         const e = environment({ id: 'new-env', ...input })
         w.environments = [...w.environments, e]
         return e
@@ -143,12 +143,12 @@ function renderPage(w: World = world(), extra: Record<string, unknown> = {}) {
         w.hosts = w.hosts.map((h) => (h.id === hostId ? { ...h, environments: h.environments.filter((m) => m.environmentId !== envId) } : h))
         return w.environments.find((e) => e.id === envId)
       }
-      case 'env:setProducts': {
-        const [envId, productIds] = args as [string, string[]]
-        w.environments = w.environments.map((e) => (e.id === envId ? { ...e, productIds } : e))
+      case 'env:setProduct': {
+        const [envId, productId] = args as [string, string]
+        w.environments = w.environments.map((e) => (e.id === envId ? { ...e, productId } : e))
         w.products = w.products.map((p) => ({
           ...p,
-          environmentIds: productIds.includes(p.id)
+          environmentIds: p.id === productId
             ? [...new Set([...p.environmentIds, envId])]
             : p.environmentIds.filter((id) => id !== envId),
         }))
@@ -206,7 +206,6 @@ describe('products page', () => {
     const acme = await screen.findByRole('treeitem', { name: 'Acme' })
     expect(acme).toHaveAttribute('aria-expanded', 'true')
     expect(acme).toHaveAttribute('aria-level', '1')
-    expect(within(item('analytics-db')).getByText('Shared')).toBeInTheDocument()
     expect(item('prod')).toHaveAttribute('aria-level', '2')
 
     const all = new Set(['p:acme', 'p:essentials', 'p:acme/e:prod'])
@@ -215,7 +214,7 @@ describe('products page', () => {
 
     await user.click(chevron(acme))
     expect(acme).toHaveAttribute('aria-expanded', 'false')
-    expect(items().map((el) => el.getAttribute('aria-label'))).toEqual(['Acme', 'Essentials', 'analytics-db'])
+    expect(items().map((el) => el.getAttribute('aria-label'))).toEqual(['Acme', 'Essentials'])
   })
 
   it('keyboard navigation', async () => {
@@ -251,7 +250,7 @@ describe('products page', () => {
 
     await user.keyboard('{End}')
     const last = items().at(-1)!
-    expect(last).toHaveAttribute('aria-label', 'analytics-db')
+    expect(last).toHaveAttribute('aria-label', 'Essentials')
     expect(last).toHaveFocus()
     expect(last).toHaveAttribute('aria-selected', 'true')
 
@@ -260,11 +259,11 @@ describe('products page', () => {
     expect(item('Acme')).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('protected and shared state is in the row description', async () => {
+  it('protected state is in the row description', async () => {
     renderPage()
     await screen.findByRole('treeitem', { name: 'Acme' })
     expect(item('prod')).toHaveAccessibleDescription('Environment prod. Protected')
-    expect(item('analytics-db')).toHaveAccessibleDescription('Environment analytics-db. No hosts. Shared')
+    expect(item('analytics-db')).toHaveAccessibleDescription('Environment analytics-db. No hosts')
     expect(item('staging')).toHaveAccessibleDescription('Environment staging. No hosts')
   })
 
@@ -280,7 +279,6 @@ describe('products page', () => {
     const user = userEvent.setup()
     const w = world()
     w.products = w.products.filter((p) => p.id !== 'essentials')
-    w.environments = w.environments.map((e) => ({ ...e, productIds: e.productIds.filter((id) => id !== 'essentials') }))
     const { invoke } = renderPage(w)
     await screen.findByRole('treeitem', { name: 'Acme' })
     await user.click(screen.getAllByRole('button', { name: 'New product' })[0])
@@ -351,7 +349,7 @@ describe('products page', () => {
         defaultIdentityId: 'id-deploy',
         defaultJumpHostId: null,
         domain: null,
-        productIds: ['acme'],
+        productId: 'acme',
       }),
     )
   })
@@ -495,7 +493,8 @@ describe('products page', () => {
     expect(item('Essentials')).toHaveAttribute('data-drop-target', 'true')
     expect(item('Acme')).not.toHaveAttribute('data-drop-target')
     fireEvent.drop(item('Essentials'), { dataTransfer: dataTransfer() })
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:setProducts', 'staging', ['acme', 'essentials']))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:setProduct', 'staging', 'essentials'))
+    expect(await screen.findByText('Moved staging to Essentials')).toBeInTheDocument()
   })
 
   it('a drop in flight blocks further drops', async () => {
@@ -579,40 +578,15 @@ describe('products page', () => {
     await waitFor(() => expect(screen.queryByRole('treeitem', { name: 'prod' })).not.toBeInTheDocument())
   })
 
-  it('deleting a shared environment names its other products', async () => {
-    const user = userEvent.setup()
-    renderPage()
-    await screen.findByRole('treeitem', { name: 'Acme' })
-    await user.click(item('analytics-db', 0))
-    await screen.findByRole('heading', { name: 'analytics-db', level: 2 })
-    await user.click(screen.getByRole('button', { name: 'analytics-db options' }))
-    await user.click(screen.getByRole('menuitem', { name: 'Delete' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Delete analytics-db?' })
-    expect(dialog).toHaveTextContent('Essentials')
-  })
-
-  it('removes a shared environment from one product only', async () => {
-    const user = userEvent.setup()
-    const { invoke } = renderPage()
-    await screen.findByRole('treeitem', { name: 'Acme' })
-    await user.click(item('analytics-db', 0))
-    await screen.findByRole('heading', { name: 'analytics-db', level: 2 })
-    await user.click(screen.getByRole('button', { name: 'analytics-db options' }))
-    await user.click(screen.getByRole('menuitem', { name: 'Remove from Acme' }))
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:setProducts', 'analytics', ['essentials']))
-    expect(invoke).not.toHaveBeenCalledWith('env:delete', expect.anything())
-    await waitFor(() => expect(screen.getAllByRole('treeitem', { name: 'analytics-db' })).toHaveLength(1))
-    await waitFor(() => expect(new URLSearchParams(where.split('?')[1]).get('node')).toBe('p:essentials/e:analytics'))
-  })
-
   it("removes an environment from the product's card menu", async () => {
     const user = userEvent.setup()
     const { invoke } = renderPage()
     await screen.findByRole('heading', { name: 'Acme', level: 2 })
     await user.click(screen.getByRole('button', { name: 'staging options' }))
     await user.click(screen.getByRole('menuitem', { name: 'Remove from Acme' }))
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:setProducts', 'staging', []))
-    expect(await screen.findByText('Moved staging to Unassigned')).toBeInTheDocument()
+    // regions-ui: an environment's only product can't be taken away; the Regions UI drops this action.
+    expect(await screen.findByText('staging needs a product')).toBeInTheDocument()
+    expect(invoke).not.toHaveBeenCalledWith('env:setProduct', expect.anything(), expect.anything())
   })
 
   it('environment view groups hosts and shows defaults', async () => {
@@ -780,15 +754,15 @@ describe('products page', () => {
         environment({
           id: 'stage',
           name: 'Stage',
-          productIds: ['ent'],
+          productId: 'ent',
           hosts: [
             { hostId: 'alpha', role: 'app' },
             { hostId: 'uat2', role: 'db' },
             { hostId: 'jump', role: 'bastion' },
           ],
         }),
-        environment({ id: 'uat', name: 'UAT', productIds: ['ent'], hosts: [{ hostId: 'alpha', role: 'db' }] }),
-        environment({ id: 'alpha', name: 'alpha', productIds: ['ess'], hosts: [{ hostId: 'alpha', role: 'app' }] }),
+        environment({ id: 'uat', name: 'UAT', productId: 'ent', hosts: [{ hostId: 'alpha', role: 'db' }] }),
+        environment({ id: 'alpha', name: 'alpha', productId: 'ess', hosts: [{ hostId: 'alpha', role: 'app' }] }),
       ],
       hosts: [
         host({

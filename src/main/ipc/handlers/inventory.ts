@@ -3,6 +3,7 @@ import type { Handlers } from '../../../shared/ipc'
 import type { EnvironmentStore } from '../../inventory/environment-store'
 import type { HostStore } from '../../inventory/host-store'
 import type { ProductStore } from '../../inventory/product-store'
+import type { RegionStore } from '../../inventory/region-store'
 import type { TunnelManager } from '../../tunnels/manager'
 
 type InventoryChannel =
@@ -17,25 +18,32 @@ type InventoryChannel =
   | 'env:update'
   | 'env:delete'
   | 'env:openDomain'
-  | 'env:setProducts'
+  | 'env:setProduct'
   | 'env:putHost'
   | 'env:removeHost'
   | 'product:list'
   | 'product:create'
   | 'product:update'
   | 'product:delete'
+  | 'region:list'
+  | 'region:create'
+  | 'region:update'
+  | 'region:delete'
+  | 'region:upgradeReport'
+  | 'region:dismissUpgradeReport'
 
 export function createInventoryHandlers(deps: {
   hosts: HostStore
   environments: EnvironmentStore
   products: ProductStore
+  regions: RegionStore
   resolve: (hostId: string, environmentId?: string) => ResolvedHost
   /** A deleted host's tunnels are stopped first, so their stop is audited before the host goes. */
   tunnels?: Pick<TunnelManager, 'stopForHost'>
   /** `shell.openExternal`, injected so nothing under test opens a browser. */
   openExternal: (url: string) => Promise<void>
 }): Pick<Handlers, InventoryChannel> {
-  const { hosts, environments, products, resolve, tunnels, openExternal } = deps
+  const { hosts, environments, products, regions, resolve, tunnels, openExternal } = deps
   return {
     'host:list': () => hosts.list(),
     'host:create': (input) => hosts.create(input),
@@ -63,12 +71,18 @@ export function createInventoryHandlers(deps: {
       if (!/^https?:\/\//i.test(url)) throw cannot
       await openExternal(url)
     },
-    'env:setProducts': (id, productIds) => environments.setProducts(id, productIds),
+    'env:setProduct': (id, productId) => environments.setProduct(id, productId),
     'env:putHost': (id, hostId, role) => environments.putHost(id, hostId, role),
     'env:removeHost': (id, hostId) => environments.removeHost(id, hostId),
     'product:list': () => products.list(),
     'product:create': (input) => products.create(input),
     'product:update': (id, patch) => products.update(id, patch),
     'product:delete': (id) => products.delete(id),
+    'region:list': () => regions.list(),
+    'region:create': (input) => regions.create(input),
+    'region:update': (id, patch) => regions.update(id, patch),
+    'region:delete': (id) => regions.delete(id),
+    'region:upgradeReport': () => regions.upgradeReport(),
+    'region:dismissUpgradeReport': () => regions.dismissUpgradeReport(),
   }
 }

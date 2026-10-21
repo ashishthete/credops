@@ -11,7 +11,7 @@ import { Toaster } from '../../src/renderer/src/ui/Toaster'
 import { vaultStatusStore } from '../../src/renderer/src/vault/status'
 import type { HostMeta, ResolvedHost } from '../../src/shared/inventory'
 import { DEFAULT_VAULT_ID, type IdentityMeta, type SshKeyMeta, type VaultMeta } from '../../src/shared/vault'
-import { defaultVault, environment, host, mockBridge, tunnelMeta, tunnelRuntime, vaultStatus } from './helpers'
+import { REGION, defaultVault, environment, host, mockBridge, tunnelMeta, tunnelRuntime, vaultStatus } from './helpers'
 
 // framer-motion caches matchMedia, so reduced motion is driven through useMotionSafe (F18).
 const motion = vi.hoisted(() => ({ safe: true }))
@@ -809,6 +809,7 @@ describe('HostDialog', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Create host' }))
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith('host:create', {
+        regionId: REGION.id,
         label: 'db-2',
         address: '10.0.0.9',
         port: null,

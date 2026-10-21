@@ -7,12 +7,12 @@ import { defaultVault, environment, host, product } from './helpers'
 
 const data = (): InventoryData => ({
   products: [
-    product({ id: 'p2', name: 'Essentials', environmentIds: ['shared'] }),
+    product({ id: 'p2', name: 'Essentials', environmentIds: [] }),
     product({ id: 'p1', name: 'Acme', environmentIds: ['shared', 'prod'] }),
   ],
   environments: [
-    environment({ id: 'prod', name: 'prod', productIds: ['p1'], hosts: [{ hostId: 'web', role: 'app' }, { hostId: 'bast', role: 'bastion' }] }),
-    environment({ id: 'shared', name: 'analytics-db', productIds: ['p1', 'p2'] }),
+    environment({ id: 'prod', name: 'prod', productId: 'p1', hosts: [{ hostId: 'web', role: 'app' }, { hostId: 'bast', role: 'bastion' }] }),
+    environment({ id: 'shared', name: 'analytics-db', productId: 'p1' }),
   ],
   hosts: [
     host({ id: 'web', label: 'web-1', environments: [{ environmentId: 'prod', role: 'app' }] }),
@@ -23,7 +23,7 @@ const data = (): InventoryData => ({
   vaults: [],
 })
 
-const all = new Set(['p:p1', 'p:p2', 'p:p1/e:prod', 'p:p1/e:shared', 'p:p2/e:shared', 'u'])
+const all = new Set(['p:p1', 'p:p2', 'p:p1/e:prod', 'p:p1/e:shared', 'u'])
 
 const HINT = 'No hosts — drag one here'
 
@@ -32,9 +32,8 @@ describe('inventory tree', () => {
     const d = data()
     const rows = buildTree(d, all)
     expect(rows.map((r) => r.label)).toEqual([
-      'Acme', 'analytics-db', HINT, 'prod', 'bastion', 'web-1', 'Essentials', 'analytics-db', HINT, 'Unassigned', 'orphan',
+      'Acme', 'analytics-db', HINT, 'prod', 'bastion', 'web-1', 'Essentials', 'Unassigned', 'orphan',
     ])
-    expect(rows.filter((r) => r.label === 'analytics-db').map((r) => r.sharedCount)).toEqual([1, 1])
   })
 
   it('collapsed hides children', () => {

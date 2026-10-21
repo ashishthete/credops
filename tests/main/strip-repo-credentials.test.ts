@@ -28,7 +28,7 @@ const repoUrls = (db: DatabaseSync, t: string): unknown[] =>
 describe('migration 11: strip saved repo credentials', () => {
   it('removes userinfo, keeps the rest, audits the count only', () => {
     const db = seeded()
-    migrate(db)
+    migrate(db, migrations.filter((m) => m.version <= 11))
     expect(repoUrls(db, 'products')).toEqual([
       'https://github.com/acme/app.git',
       'https://github.com/acme/tok.git?x=1#f',
@@ -46,10 +46,10 @@ describe('migration 11: strip saved repo credentials', () => {
 
   it('is idempotent', () => {
     const db = seeded()
-    migrate(db)
+    migrate(db, migrations.filter((m) => m.version <= 11))
     const before = [repoUrls(db, 'products'), repoUrls(db, 'deployments')]
     expect(stripSavedRepoCredentials(db)).toBe(0)
-    migrate(db)
+    migrate(db, migrations.filter((m) => m.version <= 11))
     expect([repoUrls(db, 'products'), repoUrls(db, 'deployments')]).toEqual(before)
     expect(db.prepare('SELECT COUNT(*) AS n FROM audit_events').get()).toEqual({ n: 1 })
   })

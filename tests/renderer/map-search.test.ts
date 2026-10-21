@@ -10,14 +10,14 @@ const data: InventoryData = {
     environment({
       id: 'e1',
       name: 'Prod',
-      productIds: ['p1'],
+      productId: 'p1',
       hosts: [
         { hostId: 'h1', role: 'app' },
         { hostId: 'h2', role: 'db' },
         { hostId: 'h3', role: 'app' },
       ],
     }),
-    environment({ id: 'e2', name: 'Stage', productIds: ['p1'], hosts: [{ hostId: 'h1', role: 'app' }] }),
+    environment({ id: 'e2', name: 'Stage', productId: 'p1', hosts: [{ hostId: 'h1', role: 'app' }] }),
   ],
   hosts: [
     host({ id: 'h1', label: 'api-gateway', address: '10.0.0.5', tags: ['frontend'] }),

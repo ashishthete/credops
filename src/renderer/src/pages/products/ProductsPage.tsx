@@ -21,6 +21,8 @@ import { EnvironmentView } from './EnvironmentView'
 import { InventoryTree } from './InventoryTree'
 import { ProductDialog } from './ProductDialog'
 import { PaneHeader, ProductView } from './ProductView'
+// regions-ui: one product per environment, read as a list until the Regions UI.
+import { productIdsOf } from '../../inventory/regions-stopgap'
 
 /** Every node of the fully expanded tree: the expandable ones, and all keys. */
 function everyNode(data: InventoryData): { expandable: Set<NodeKey>; all: Set<NodeKey> } {
@@ -145,7 +147,7 @@ export function ProductsPage() {
   const canDrop = (drag: TreeRow, target: TreeRow) => {
     if (dropping) return false
     if (drag.kind === 'host' && target.kind === 'environment') return !env(target.id)?.hosts.some((h) => h.hostId === drag.id)
-    if (drag.kind === 'environment' && target.kind === 'product') return !env(drag.id)?.productIds.includes(target.id)
+    if (drag.kind === 'environment' && target.kind === 'product') return !(env(drag.id) ? productIdsOf(env(drag.id)!) : []).includes(target.id)
     return false
   }
 
@@ -163,9 +165,10 @@ export function ProductsPage() {
     whileDropping(async () => {
       const e = env(from.id)
       if (!e) return
-      if (await inv.setEnvironmentProducts(e.id, [...e.productIds, target.id])) {
+      // regions-ui: a drop moves the environment; the Regions UI words this as a move.
+      if (await inv.setEnvironmentProduct(e.id, target.id)) {
         expand(target.key)
-        toast({ title: `Added ${from.label} to ${target.label}`, tone: 'success' })
+        toast({ title: `Moved ${from.label} to ${target.label}`, tone: 'success' })
       }
     })
 
@@ -183,7 +186,7 @@ export function ProductsPage() {
 
   const askDeleteEnvironment = (e: EnvironmentMeta, key: NodeKey) => {
     // A shared environment is one record, so deleting it here takes it out of every product.
-    const others = e.productIds.filter((id) => id !== selectionFromKey(key).productId).map(productName)
+    const others = productIdsOf(e).filter((id) => id !== selectionFromKey(key).productId).map(productName)
     setConfirm({
       title: `Delete ${e.name}?`,
       description: others.length
@@ -202,8 +205,13 @@ export function ProductsPage() {
 
   /** Takes the environment out of one product; it stays in the others, or moves to Unassigned. */
   const removeFromProduct = async (e: EnvironmentMeta, productId: string) => {
-    const rest = e.productIds.filter((id) => id !== productId)
-    const row = await inv.setEnvironmentProducts(e.id, rest)
+    const rest = productIdsOf(e).filter((id) => id !== productId)
+    // regions-ui: an environment needs a product, so its only one can't be taken away; the Regions UI drops this action.
+    if (rest.length === 0) {
+      toast({ title: `${e.name} needs a product`, description: 'Move it to another product instead.', tone: 'error' })
+      return
+    }
+    const row = await inv.setEnvironmentProduct(e.id, rest[0]!)
     if (!row) return
     toast({ title: rest.length ? `Removed ${e.name} from ${productName(productId)}` : `Moved ${e.name} to Unassigned`, tone: 'success' })
     if (sel.environmentId === e.id && sel.productId === productId) {
@@ -255,10 +263,10 @@ export function ProductsPage() {
           onSelect={select}
           onRemoveHost={(id) => askRemoveHost(e, id)}
           onNewHost={() => openDialog({ kind: 'host', presetEnvironment: { environmentId: e.id, role: 'app' }, envKey: selected })}
-          onEdit={() => openDialog({ kind: 'environment', environment: e, productIds: e.productIds })}
+          onEdit={() => openDialog({ kind: 'environment', environment: e, productIds: productIdsOf(e) })}
           onDelete={() => askDeleteEnvironment(e, selected)}
           removeFrom={
-            sel.productId && e.productIds.includes(sel.productId)
+            sel.productId && productIdsOf(e).includes(sel.productId)
               ? { productName: productName(sel.productId), run: () => void removeFromProduct(e, sel.productId!) }
               : undefined
           }
@@ -287,7 +295,7 @@ export function ProductsPage() {
         />
       )
     }
-    const loose = data.environments.filter((e) => e.productIds.length === 0).length
+    const loose = data.environments.filter((e) => productIdsOf(e).length === 0).length
     const looseHosts = data.hosts.filter((h) => h.environments.length === 0).length
     return (
       <>

@@ -12,6 +12,8 @@ import { plural, RowMenu } from '../../ui/common'
 import { EmptyState } from '../../ui/EmptyState'
 import { fast, spring, staggerDelay, useMotionSafe } from '../../ui/motion'
 import { ProductTile } from './ProductDialog'
+// regions-ui: one product per environment, read as a list until the Regions UI.
+import { productIdsOf } from '../../inventory/regions-stopgap'
 
 export const ROLE_LABEL = { app: 'App', db: 'Database', bastion: 'Bastion', other: 'Other' } as const
 export { ROLE_ORDER }
@@ -48,7 +50,7 @@ interface ProductViewProps {
 }
 
 export function ProductView({ product, data, stagger, onOpen, onNewEnvironment, onEdit, onDelete, onRemoveEnvironment }: ProductViewProps) {
-  const envs = data.environments.filter((e) => e.productIds.includes(product.id)).sort((a, b) => a.name.localeCompare(b.name))
+  const envs = data.environments.filter((e) => productIdsOf(e).includes(product.id)).sort((a, b) => a.name.localeCompare(b.name))
   const productName = new Map(data.products.map((p) => [p.id, p.name]))
   const navigate = useNavigate()
 
@@ -90,7 +92,7 @@ export function ProductView({ product, data, stagger, onOpen, onNewEnvironment, 
                 env={env}
                 index={i}
                 stagger={stagger}
-                others={env.productIds.filter((id) => id !== product.id).map((id) => productName.get(id) ?? id)}
+                others={productIdsOf(env).filter((id) => id !== product.id).map((id) => productName.get(id) ?? id)}
                 onOpen={() => onOpen(env.id)}
                 menu={
                   <RowMenu

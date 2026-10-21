@@ -9,7 +9,7 @@ import { VAULT_LOCKED } from '../../src/shared/vault'
 import { vaultStatusStore } from '../../src/renderer/src/vault/status'
 import { loadTunnels, tunnelStore } from '../../src/renderer/src/tunnels/store'
 import type { EnvironmentMeta, HostMeta } from '../../src/shared/inventory'
-import { environment, host, mockBridge, tunnelMeta, vaultStatus } from './helpers'
+import { REGION, environment, host, mockBridge, tunnelMeta, vaultStatus } from './helpers'
 
 beforeEach(() => {
   inventoryStore.set(null)
@@ -110,7 +110,7 @@ describe('inventory store', () => {
 
   it('a failed link change after a saved edit re-reads that list', async () => {
     let hosts: HostMeta[] = [host({ id: 'H', label: 'h', port: 22, vaultIds: ['v1'] })]
-    let envs: EnvironmentMeta[] = [environment({ id: 'E', name: 'e', productIds: ['p1'] })]
+    let envs: EnvironmentMeta[] = [environment({ id: 'E', name: 'e', productId: 'p1' })]
     const invoke = mockBridge()
     const base = invoke.getMockImplementation()!
     invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
@@ -118,14 +118,43 @@ describe('inventory store', () => {
       if (channel === 'env:list') return envs
       if (channel === 'host:update') return (hosts = [{ ...hosts[0], port: 2222 }])[0]
       if (channel === 'env:update') return (envs = [{ ...envs[0], name: 'e2' }])[0]
-      if (channel === 'host:setVaults' || channel === 'env:setProducts') throw new Error('link failed')
+      if (channel === 'host:setVaults' || channel === 'env:setProduct') throw new Error('link failed')
       return base(channel, ...(args as []))
     })
     await loadInventory()
     await expect(inv.saveHost({ label: 'h', address: hosts[0].address, port: 2222, vaultIds: ['v2'] }, 'H')).resolves.toBeUndefined()
     expect(inventoryStore.get()!.hosts[0].port).toBe(2222)
-    await expect(inv.saveEnvironment({ name: 'e2', color: envs[0].color, productIds: ['p2'] }, 'E')).resolves.toBeUndefined()
+    await expect(inv.saveEnvironment({ name: 'e2', color: envs[0].color, productId: 'p2' }, 'E')).resolves.toBeUndefined()
     expect(inventoryStore.get()!.environments[0].name).toBe('e2')
+  })
+
+  it('a new host goes in the first region, and is refused when there is none', async () => {
+    // regions-ui: until the host dialogs pick a region.
+    const invoke = mockBridge({ 'host:create': host({ id: 'N', label: 'n' }) })
+    await loadInventory()
+    await inv.saveHost({ label: 'n', address: 'n.example.com', vaultIds: [] })
+    expect(invoke).toHaveBeenCalledWith('host:create', { label: 'n', address: 'n.example.com', vaultIds: [], regionId: REGION.id })
+    invoke.mockClear()
+    const none = mockBridge({ 'region:list': [] })
+    await expect(inv.saveHost({ label: 'n', address: 'n.example.com', vaultIds: [] })).resolves.toBeUndefined()
+    expect(none).not.toHaveBeenCalledWith('host:create', expect.anything())
+  })
+
+  it('an edit that changes the product moves the environment', async () => {
+    let envs: EnvironmentMeta[] = [environment({ id: 'E', name: 'e', productId: 'p1' })]
+    const invoke = mockBridge()
+    const base = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'env:list') return envs
+      if (channel === 'env:setProduct') return (envs = [{ ...envs[0], productId: args[1] as string }])[0]
+      return base(channel, ...(args as []))
+    })
+    await loadInventory()
+    await inv.saveEnvironment({ name: 'e', color: envs[0].color, productId: 'p1' }, 'E')
+    expect(invoke).not.toHaveBeenCalledWith('env:setProduct', expect.anything(), expect.anything())
+    await inv.saveEnvironment({ name: 'e', color: envs[0].color, productId: 'p2' }, 'E')
+    expect(invoke).toHaveBeenCalledWith('env:setProduct', 'E', 'p2')
+    expect(inventoryStore.get()!.environments[0].productId).toBe('p2')
   })
 
   it("a load that started before a write doesn't undo it", async () => {

@@ -103,18 +103,21 @@ export class ProductStore {
     return { name, fields }
   }
 
-  /** Removes the product and its links only; its environments stay (unassigned if this was their last product). */
+  /** Refused while the product has environments: every environment belongs to one product. */
   delete(id: string): void {
     this.vault.assertUnlocked()
     const before = productMeta(this.db, id)
-    inTransaction(this.db, () => this.db.prepare('DELETE FROM products WHERE id = ?').run(id))
+    inTransaction(this.db, () => {
+      const n = (this.db.prepare('SELECT COUNT(*) AS n FROM environments WHERE product_id = ?').get(id) as { n: number }).n
+      if (n > 0) throw new Error(`${before.name} still has ${n === 1 ? 'an environment' : `${n} environments`}: move or delete ${n === 1 ? 'it' : 'them'} first`)
+      this.db.prepare('DELETE FROM products WHERE id = ?').run(id)
+    })
     this.audit.append({
       action: 'product.delete',
       outcome: 'success',
       targetType: 'product',
       targetId: id,
       targetLabel: before.name,
-      details: { environments: before.environmentIds.length },
     })
   }
 

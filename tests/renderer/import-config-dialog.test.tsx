@@ -6,7 +6,7 @@ import { ImportConfigDialog } from '../../src/renderer/src/pages/settings/Import
 import { SettingsPage } from '../../src/renderer/src/pages/settings/SettingsPage'
 import { Toaster, clearToasts } from '../../src/renderer/src/ui/Toaster'
 import type { ImportPreview } from '../../src/shared/config-file'
-import { mockBridge } from './helpers'
+import { REGION, mockBridge } from './helpers'
 
 const TOKEN = '0123456789abcdef0123456789abcdef'
 
@@ -26,6 +26,7 @@ const preview: ImportPreview = {
     { kind: 'deployments', name: 'api', field: 'becomeSecret' },
   ],
   protectedEnvironments: ['prod', 'live'],
+  needsRegion: false,
 }
 
 function renderDialog(p: ImportPreview | { errors: string[] } = preview, onClose = vi.fn()) {
@@ -124,6 +125,15 @@ describe('import config dialog', () => {
     renderDialog({ ...preview, protectedEnvironments: [] })
     await userEvent.click(screen.getByRole('button', { name: 'Import' }))
     expect(await screen.findByText('Imported: 3 added, 2 updated; 2 need a secret')).toBeInTheDocument()
+  })
+
+  it("a version 1 file's hosts go in the first region", async () => {
+    // regions-ui: until the dialog lets the user pick one.
+    const invoke = mockBridge({ 'config:importApply': { counts: { add: 1, update: 0, unchanged: 0, skip: 0 }, needsSecret: [] } })
+    renderDialog({ ...preview, needsSecret: [], protectedEnvironments: [], needsRegion: true })
+    await userEvent.click(screen.getByRole('button', { name: 'Import' }))
+    expect(await screen.findByText('Imported: 1 added, 0 updated')).toBeInTheDocument()
+    expect(invoke).toHaveBeenCalledWith('config:importApply', TOKEN, { typedNames: [], regionId: REGION.id })
   })
 
   it('a clean import toasts without the secret note', async () => {
