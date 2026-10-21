@@ -5,9 +5,25 @@ import { generatePlaybook } from '../../src/main/deploy/generate'
 import type { DeployPlan } from '../../src/main/deploy/runner'
 import { planFixture } from './deploy-helpers'
 
-export type GoldenName = 'release-hooks' | 'release-plain' | 'rollback' | 'preflight' | 'version' | 'unlock'
-const NAMES: GoldenName[] = ['release-hooks', 'release-plain', 'rollback', 'preflight', 'version', 'unlock']
+export type GoldenName = 'release-hooks' | 'release-plain' | 'rollback' | 'preflight' | 'version' | 'unlock' | 'release-services' | 'preflight-services'
+const NAMES: GoldenName[] = ['release-hooks', 'release-plain', 'rollback', 'preflight', 'version', 'unlock', 'release-services', 'preflight-services']
 const DIR = join(__dirname, 'fixtures/playbook-golden')
+
+/** Selected compose services with a project name, commit bases and no previous commit (the alpha shape). */
+function withServices(base: DeployPlan): DeployPlan {
+  return {
+    ...base,
+    deployments: base.deployments.map((d, i) => ({
+      ...d,
+      preHookB64: null,
+      postHookB64: null,
+      previousCommit: null,
+      composeProject: 'alpha-stack',
+      services: i === 0 ? ['api', 'worker'] : ['web'],
+      commitBases: i === 0 ? { shas: ['d'.repeat(40), 'e'.repeat(40)], tag: false } : { shas: ['f'.repeat(40)], tag: true },
+    })),
+  }
+}
 
 export function goldenPlan(name: GoldenName): DeployPlan {
   const base = planFixture()
@@ -24,6 +40,10 @@ export function goldenPlan(name: GoldenName): DeployPlan {
       return { ...base, kind: 'version', version: 'v1.2.0' }
     case 'unlock':
       return { ...base, kind: 'unlock' }
+    case 'release-services':
+      return withServices(base)
+    case 'preflight-services':
+      return withServices({ ...base, kind: 'preflight' })
   }
 }
 

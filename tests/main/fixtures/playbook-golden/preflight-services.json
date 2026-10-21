@@ -1,0 +1,621 @@
+[
+  {
+    "name": "preflight od-1",
+    "hosts": "od-1",
+    "gather_facts": false,
+    "strategy": "linear",
+    "vars": {
+      "od": {
+        "rel": "0190a1b2-c3d4-7e5f-8a6b-1234567890ab",
+        "env": "prod_east",
+        "lock_repos": [
+          "/srv/apps/alpha1",
+          "/srv/apps/alpha2"
+        ],
+        "lock_b64": "eyJyZWxlYXNlSWQiOiIwMTkwYTFiMi1jM2Q0LTdlNWYtOGE2Yi0xMjM0NTY3ODkwYWIiLCJ1c2VyIjoiYW5hIiwibWFjaGluZSI6Im1icCIsImVudmlyb25tZW50IjoicHJvZCBlYXN0IiwidmVyc2lvbiI6InYxLjIuMyIsInN0YXJ0ZWRBdCI6IjIwMjYtMTAtMTlUMTA6MDA6MDAuMDAwWiJ9",
+        "version": "v1.2.3"
+      },
+      "s": "{{ lookup('env','OPSDECK_SECRETS') | default('{}', true) | from_json }}",
+      "ansible_become_password": "{{ (s.become_1 | b64decode) if s.become_1 is defined else omit }}"
+    },
+    "tasks": [
+      {
+        "name": "preflight lock od-1",
+        "ansible.builtin.shell": {
+          "cmd": "for r in {{ od.lock_repos | map('quote') | join(' ') }}; do\n  f=\"$r/.opsdeck-deploy.lock\"\n  if [ -f \"$f\" ]; then echo \"OD-PF lock repo=$r held=1 raw_b64=$(base64 < \"$f\" | tr -d '\\n')\"; else echo \"OD-PF lock repo=$r held=0 raw_b64=\"; fi\ndone",
+          "executable": "/bin/bash",
+          "chdir": "/"
+        },
+        "timeout": 60,
+        "tags": [
+          "od_step=preflight",
+          "od_run=host:host-od-1"
+        ],
+        "failed_when": false
+      },
+      {
+        "name": "deployment dep1",
+        "vars": {
+          "d": {
+            "run": "0190a1b2-c3d4-7e5f-8a6b-000000000001",
+            "name": "dep1",
+            "repo": "/srv/apps/alpha1",
+            "branch": "release-2026",
+            "compose": "deploy/compose.yml",
+            "tag": "deploy_prod_x",
+            "prev": "",
+            "health_status": 200,
+            "health_timeout": 60,
+            "backup_dir": "/var/backups/app",
+            "backup_label": "alpha",
+            "pre_hook": "",
+            "post_hook": "",
+            "urls": [
+              {
+                "url": "https://app.example.com/health",
+                "from": "mac"
+              }
+            ]
+          }
+        },
+        "block": [
+          {
+            "name": "preflight tools dep1",
+            "ansible.builtin.shell": {
+              "cmd": "miss=\"\"\nfor t in git docker curl pg_dump; do command -v \"$t\" >/dev/null 2>&1 || miss=\"$miss,$t\"; done\necho \"OD-PF tools missing=${miss#,}\"",
+              "executable": "/bin/bash"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight docker dep1",
+            "ansible.builtin.shell": {
+              "cmd": "docker info >/dev/null 2>&1 && p=ok || p=fail\nsudo -n docker info >/dev/null 2>&1 && s=ok || s=fail\necho \"OD-PF docker plain=$p sudo=$s mode=sudo-password use=auto\"",
+              "executable": "/bin/bash"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight docker-become dep1",
+            "ansible.builtin.shell": {
+              "cmd": "if docker info >/dev/null 2>&1; then echo \"OD-PF docker become=ok\"; else echo \"OD-PF docker become=fail\"; fi",
+              "executable": "/bin/bash"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"
+            ],
+            "become": true,
+            "failed_when": false
+          },
+          {
+            "name": "preflight repo dep1",
+            "ansible.builtin.shell": {
+              "cmd": "R={{ d.repo | quote }}\nif [ -d \"$R/.git\" ]; then echo \"OD-PF repo exists=1 git=1\"; elif [ -d \"$R\" ]; then echo \"OD-PF repo exists=1 git=0\"; else echo \"OD-PF repo exists=0 git=0\"; fi",
+              "executable": "/bin/bash"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight clean dep1",
+            "ansible.builtin.shell": {
+              "cmd": "git update-index -q --refresh\nif git diff-index --quiet HEAD --; then echo \"OD-PF clean ok=1\"; else echo \"OD-PF clean ok=0 files=$(git status --porcelain --untracked-files=no 2>/dev/null | wc -l | tr -d ' ')\"; fi",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight fetch dep1",
+            "ansible.builtin.shell": {
+              "cmd": "B={{ d.branch | quote }}\nif git fetch --force --tags origin \"refs/heads/$B:refs/remotes/origin/$B\" >/dev/null 2>&1; then f=1; else f=0; fi\nif git show-ref --verify --quiet \"refs/remotes/origin/$B\"; then v=1; else v=0; fi\necho \"OD-PF branch fetched=$f exists=$v\"",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight compose dep1",
+            "ansible.builtin.shell": {
+              "cmd": "C={{ d.compose | quote }}\nif [ -f \"$C\" ]; then\n  s=$(if docker info >/dev/null 2>&1; then D=docker; else D='sudo -n docker'; fi && $D compose '-f' deploy/compose.yml '-p' alpha-stack config '--services' 2>/dev/null | base64 | tr -d '\\n')\n  echo \"OD-PF compose exists=1 services_b64=$s\"\nelse echo \"OD-PF compose exists=0\"; fi",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight disk dep1",
+            "ansible.builtin.shell": {
+              "cmd": "a=$(df -Pk . | awk 'NR==2 {print $4}')\necho \"OD-PF disk avail_kb=${a:-0}\"",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight tag dep1",
+            "ansible.builtin.shell": {
+              "cmd": "T={{ d.tag | quote }}\nif o=$(git ls-remote origin \"refs/tags/$T\" \"refs/tags/$T^{}\" 2>/dev/null); then ok=1; c=$(echo \"$o\" | awk 'END {print $1}'); else ok=0; c=\"\"; fi\nif [ \"$ok\" = 0 ]; then echo \"OD-PF tag exists=unknown commit=\"; elif [ -n \"$c\" ]; then echo \"OD-PF tag exists=1 commit=$c\"; else echo \"OD-PF tag exists=0 commit=\"; fi",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight deps dep1",
+            "ansible.builtin.shell": {
+              "cmd": "c=$(if docker info >/dev/null 2>&1; then D=docker; else D='sudo -n docker'; fi && $D compose '-f' deploy/compose.yml '-p' alpha-stack config '--no-interpolate' '--format' json 2>/dev/null | base64 | tr -d '\\n')\np=$(if docker info >/dev/null 2>&1; then D=docker; else D='sudo -n docker'; fi && $D compose '-f' deploy/compose.yml '-p' alpha-stack ps '--status' running '--format' json 2>/dev/null | base64 | tr -d '\\n')\necho \"OD-PF deps config_b64=$c ps_b64=$p\"",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight version-tag dep1",
+            "ansible.builtin.shell": {
+              "cmd": "V={{ od.version | quote }}\nif git rev-parse -q --verify \"refs/tags/$V\" >/dev/null; then echo \"OD-PF version-tag exists=1\"; else echo \"OD-PF version-tag exists=0\"; fi",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight commits dep1",
+            "ansible.builtin.shell": {
+              "cmd": "T={{ d.tag | quote }}\nB={{ d.branch | quote }}\nif M=$(git merge-base --octopus dddddddddddddddddddddddddddddddddddddddd eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee 2>/dev/null) && [ -n \"$M\" ]; then ok=1; R=\"$M..origin/$B\"; else\nif o=$(git ls-remote origin \"refs/tags/$T\" \"refs/tags/$T^{}\" 2>/dev/null); then ok=1; c=$(echo \"$o\" | awk 'END {print $1}'); else ok=0; c=\"\"; fi\n  if [ \"$ok\" = 1 ]; then\n  if [ -n \"$c\" ] && git cat-file -e \"$c^{commit}\" 2>/dev/null; then R=\"$c..origin/$B\"; X=\"$c\"; else R=\"origin/$B\"; X=\"\"; fi\n  fi\nfi\nif [ \"$ok\" = 0 ]; then echo \"OD-PF commits unknown\"; else\n  out=$(git log --no-merges --max-count=501 --pretty=tformat:%H%x1f%s%x1f%an%x1f%aI%x1e \"$R\" 2>/dev/null | base64 | tr -d '\\n')\n  echo \"OD-PF commits log_b64=$out\"\nfi",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"
+            ],
+            "failed_when": false
+          }
+        ],
+        "rescue": []
+      },
+      {
+        "name": "deployment dep2",
+        "vars": {
+          "d": {
+            "run": "0190a1b2-c3d4-7e5f-8a6b-000000000002",
+            "name": "dep2",
+            "repo": "/srv/apps/alpha2",
+            "branch": "release-2026",
+            "compose": "deploy/compose.yml",
+            "tag": "deploy_prod_x",
+            "prev": "",
+            "health_status": 200,
+            "health_timeout": 60,
+            "backup_dir": "",
+            "backup_label": "",
+            "pre_hook": "",
+            "post_hook": "",
+            "urls": [
+              {
+                "url": "http://127.0.0.1:8080/up",
+                "from": "host"
+              }
+            ]
+          }
+        },
+        "block": [
+          {
+            "name": "preflight tools dep2",
+            "ansible.builtin.shell": {
+              "cmd": "miss=\"\"\nfor t in git docker curl; do command -v \"$t\" >/dev/null 2>&1 || miss=\"$miss,$t\"; done\necho \"OD-PF tools missing=${miss#,}\"",
+              "executable": "/bin/bash"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight docker dep2",
+            "ansible.builtin.shell": {
+              "cmd": "docker info >/dev/null 2>&1 && p=ok || p=fail\nsudo -n docker info >/dev/null 2>&1 && s=ok || s=fail\necho \"OD-PF docker plain=$p sudo=$s mode=sudo use=auto\"",
+              "executable": "/bin/bash"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight repo dep2",
+            "ansible.builtin.shell": {
+              "cmd": "R={{ d.repo | quote }}\nif [ -d \"$R/.git\" ]; then echo \"OD-PF repo exists=1 git=1\"; elif [ -d \"$R\" ]; then echo \"OD-PF repo exists=1 git=0\"; else echo \"OD-PF repo exists=0 git=0\"; fi",
+              "executable": "/bin/bash"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight clean dep2",
+            "ansible.builtin.shell": {
+              "cmd": "git update-index -q --refresh\nif git diff-index --quiet HEAD --; then echo \"OD-PF clean ok=1\"; else echo \"OD-PF clean ok=0 files=$(git status --porcelain --untracked-files=no 2>/dev/null | wc -l | tr -d ' ')\"; fi",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight fetch dep2",
+            "ansible.builtin.shell": {
+              "cmd": "B={{ d.branch | quote }}\nif git fetch --force --tags origin \"refs/heads/$B:refs/remotes/origin/$B\" >/dev/null 2>&1; then f=1; else f=0; fi\nif git show-ref --verify --quiet \"refs/remotes/origin/$B\"; then v=1; else v=0; fi\necho \"OD-PF branch fetched=$f exists=$v\"",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight compose dep2",
+            "ansible.builtin.shell": {
+              "cmd": "C={{ d.compose | quote }}\nif [ -f \"$C\" ]; then\n  s=$(if docker info >/dev/null 2>&1; then D=docker; else D='sudo -n docker'; fi && $D compose '-f' deploy/compose.yml '-p' alpha-stack config '--services' 2>/dev/null | base64 | tr -d '\\n')\n  echo \"OD-PF compose exists=1 services_b64=$s\"\nelse echo \"OD-PF compose exists=0\"; fi",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight disk dep2",
+            "ansible.builtin.shell": {
+              "cmd": "a=$(df -Pk . | awk 'NR==2 {print $4}')\necho \"OD-PF disk avail_kb=${a:-0}\"",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight tag dep2",
+            "ansible.builtin.shell": {
+              "cmd": "T={{ d.tag | quote }}\nif o=$(git ls-remote origin \"refs/tags/$T\" \"refs/tags/$T^{}\" 2>/dev/null); then ok=1; c=$(echo \"$o\" | awk 'END {print $1}'); else ok=0; c=\"\"; fi\nif [ \"$ok\" = 0 ]; then echo \"OD-PF tag exists=unknown commit=\"; elif [ -n \"$c\" ]; then echo \"OD-PF tag exists=1 commit=$c\"; else echo \"OD-PF tag exists=0 commit=\"; fi",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight deps dep2",
+            "ansible.builtin.shell": {
+              "cmd": "c=$(if docker info >/dev/null 2>&1; then D=docker; else D='sudo -n docker'; fi && $D compose '-f' deploy/compose.yml '-p' alpha-stack config '--no-interpolate' '--format' json 2>/dev/null | base64 | tr -d '\\n')\np=$(if docker info >/dev/null 2>&1; then D=docker; else D='sudo -n docker'; fi && $D compose '-f' deploy/compose.yml '-p' alpha-stack ps '--status' running '--format' json 2>/dev/null | base64 | tr -d '\\n')\necho \"OD-PF deps config_b64=$c ps_b64=$p\"",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight version-tag dep2",
+            "ansible.builtin.shell": {
+              "cmd": "V={{ od.version | quote }}\nif git rev-parse -q --verify \"refs/tags/$V\" >/dev/null; then echo \"OD-PF version-tag exists=1\"; else echo \"OD-PF version-tag exists=0\"; fi",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight commits dep2",
+            "ansible.builtin.shell": {
+              "cmd": "T={{ d.tag | quote }}\nB={{ d.branch | quote }}\nif o=$(git ls-remote origin \"refs/tags/$T\" \"refs/tags/$T^{}\" 2>/dev/null); then ok=1; c=$(echo \"$o\" | awk 'END {print $1}'); else ok=0; c=\"\"; fi\nif [ \"$ok\" = 0 ]; then echo \"OD-PF commits unknown\"; else\n  if [ -n \"$c\" ] && git cat-file -e \"$c^{commit}\" 2>/dev/null; then R=\"$c..origin/$B\"; X=\"$c\"; else R=\"origin/$B\"; X=\"\"; fi\n  if M=$(git merge-base --octopus ffffffffffffffffffffffffffffffffffffffff $X 2>/dev/null) && [ -n \"$M\" ]; then R=\"$M..origin/$B\"; fi\n  out=$(git log --no-merges --max-count=501 --pretty=tformat:%H%x1f%s%x1f%an%x1f%aI%x1e \"$R\" 2>/dev/null | base64 | tr -d '\\n')\n  echo \"OD-PF commits log_b64=$out\"\nfi",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"
+            ],
+            "failed_when": false
+          }
+        ],
+        "rescue": []
+      }
+    ]
+  },
+  {
+    "name": "preflight od-2",
+    "hosts": "od-2",
+    "gather_facts": false,
+    "strategy": "linear",
+    "vars": {
+      "od": {
+        "rel": "0190a1b2-c3d4-7e5f-8a6b-1234567890ab",
+        "env": "prod_east",
+        "lock_repos": [
+          "/srv/apps/alpha3"
+        ],
+        "lock_b64": "eyJyZWxlYXNlSWQiOiIwMTkwYTFiMi1jM2Q0LTdlNWYtOGE2Yi0xMjM0NTY3ODkwYWIiLCJ1c2VyIjoiYW5hIiwibWFjaGluZSI6Im1icCIsImVudmlyb25tZW50IjoicHJvZCBlYXN0IiwidmVyc2lvbiI6InYxLjIuMyIsInN0YXJ0ZWRBdCI6IjIwMjYtMTAtMTlUMTA6MDA6MDAuMDAwWiJ9",
+        "version": "v1.2.3"
+      },
+      "s": "{{ lookup('env','OPSDECK_SECRETS') | default('{}', true) | from_json }}"
+    },
+    "tasks": [
+      {
+        "name": "preflight lock od-2",
+        "ansible.builtin.shell": {
+          "cmd": "for r in {{ od.lock_repos | map('quote') | join(' ') }}; do\n  f=\"$r/.opsdeck-deploy.lock\"\n  if [ -f \"$f\" ]; then echo \"OD-PF lock repo=$r held=1 raw_b64=$(base64 < \"$f\" | tr -d '\\n')\"; else echo \"OD-PF lock repo=$r held=0 raw_b64=\"; fi\ndone",
+          "executable": "/bin/bash",
+          "chdir": "/"
+        },
+        "timeout": 60,
+        "tags": [
+          "od_step=preflight",
+          "od_run=host:host-od-2"
+        ],
+        "failed_when": false
+      },
+      {
+        "name": "deployment dep3",
+        "vars": {
+          "d": {
+            "run": "0190a1b2-c3d4-7e5f-8a6b-000000000003",
+            "name": "dep3",
+            "repo": "/srv/apps/alpha3",
+            "branch": "release-2026",
+            "compose": "deploy/compose.yml",
+            "tag": "deploy_prod_x",
+            "prev": "",
+            "health_status": 200,
+            "health_timeout": 60,
+            "backup_dir": "",
+            "backup_label": "",
+            "pre_hook": "",
+            "post_hook": "",
+            "urls": []
+          }
+        },
+        "block": [
+          {
+            "name": "preflight tools dep3",
+            "ansible.builtin.shell": {
+              "cmd": "miss=\"\"\nfor t in git docker curl; do command -v \"$t\" >/dev/null 2>&1 || miss=\"$miss,$t\"; done\necho \"OD-PF tools missing=${miss#,}\"",
+              "executable": "/bin/bash"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight docker dep3",
+            "ansible.builtin.shell": {
+              "cmd": "docker info >/dev/null 2>&1 && p=ok || p=fail\nsudo -n docker info >/dev/null 2>&1 && s=ok || s=fail\necho \"OD-PF docker plain=$p sudo=$s mode=plain use=auto\"",
+              "executable": "/bin/bash"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight repo dep3",
+            "ansible.builtin.shell": {
+              "cmd": "R={{ d.repo | quote }}\nif [ -d \"$R/.git\" ]; then echo \"OD-PF repo exists=1 git=1\"; elif [ -d \"$R\" ]; then echo \"OD-PF repo exists=1 git=0\"; else echo \"OD-PF repo exists=0 git=0\"; fi",
+              "executable": "/bin/bash"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight clean dep3",
+            "ansible.builtin.shell": {
+              "cmd": "git update-index -q --refresh\nif git diff-index --quiet HEAD --; then echo \"OD-PF clean ok=1\"; else echo \"OD-PF clean ok=0 files=$(git status --porcelain --untracked-files=no 2>/dev/null | wc -l | tr -d ' ')\"; fi",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight fetch dep3",
+            "ansible.builtin.shell": {
+              "cmd": "B={{ d.branch | quote }}\nif git fetch --force --tags origin \"refs/heads/$B:refs/remotes/origin/$B\" >/dev/null 2>&1; then f=1; else f=0; fi\nif git show-ref --verify --quiet \"refs/remotes/origin/$B\"; then v=1; else v=0; fi\necho \"OD-PF branch fetched=$f exists=$v\"",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight compose dep3",
+            "ansible.builtin.shell": {
+              "cmd": "C={{ d.compose | quote }}\nif [ -f \"$C\" ]; then\n  s=$(if docker info >/dev/null 2>&1; then D=docker; else D='sudo -n docker'; fi && $D compose '-f' deploy/compose.yml '-p' alpha-stack config '--services' 2>/dev/null | base64 | tr -d '\\n')\n  echo \"OD-PF compose exists=1 services_b64=$s\"\nelse echo \"OD-PF compose exists=0\"; fi",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight disk dep3",
+            "ansible.builtin.shell": {
+              "cmd": "a=$(df -Pk . | awk 'NR==2 {print $4}')\necho \"OD-PF disk avail_kb=${a:-0}\"",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight tag dep3",
+            "ansible.builtin.shell": {
+              "cmd": "T={{ d.tag | quote }}\nif o=$(git ls-remote origin \"refs/tags/$T\" \"refs/tags/$T^{}\" 2>/dev/null); then ok=1; c=$(echo \"$o\" | awk 'END {print $1}'); else ok=0; c=\"\"; fi\nif [ \"$ok\" = 0 ]; then echo \"OD-PF tag exists=unknown commit=\"; elif [ -n \"$c\" ]; then echo \"OD-PF tag exists=1 commit=$c\"; else echo \"OD-PF tag exists=0 commit=\"; fi",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight deps dep3",
+            "ansible.builtin.shell": {
+              "cmd": "c=$(if docker info >/dev/null 2>&1; then D=docker; else D='sudo -n docker'; fi && $D compose '-f' deploy/compose.yml '-p' alpha-stack config '--no-interpolate' '--format' json 2>/dev/null | base64 | tr -d '\\n')\np=$(if docker info >/dev/null 2>&1; then D=docker; else D='sudo -n docker'; fi && $D compose '-f' deploy/compose.yml '-p' alpha-stack ps '--status' running '--format' json 2>/dev/null | base64 | tr -d '\\n')\necho \"OD-PF deps config_b64=$c ps_b64=$p\"",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight version-tag dep3",
+            "ansible.builtin.shell": {
+              "cmd": "V={{ od.version | quote }}\nif git rev-parse -q --verify \"refs/tags/$V\" >/dev/null; then echo \"OD-PF version-tag exists=1\"; else echo \"OD-PF version-tag exists=0\"; fi",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"
+            ],
+            "failed_when": false
+          },
+          {
+            "name": "preflight commits dep3",
+            "ansible.builtin.shell": {
+              "cmd": "T={{ d.tag | quote }}\nB={{ d.branch | quote }}\nif o=$(git ls-remote origin \"refs/tags/$T\" \"refs/tags/$T^{}\" 2>/dev/null); then ok=1; c=$(echo \"$o\" | awk 'END {print $1}'); else ok=0; c=\"\"; fi\nif [ \"$ok\" = 0 ]; then echo \"OD-PF commits unknown\"; else\n  if [ -n \"$c\" ] && git cat-file -e \"$c^{commit}\" 2>/dev/null; then R=\"$c..origin/$B\"; X=\"$c\"; else R=\"origin/$B\"; X=\"\"; fi\n  if M=$(git merge-base --octopus ffffffffffffffffffffffffffffffffffffffff $X 2>/dev/null) && [ -n \"$M\" ]; then R=\"$M..origin/$B\"; fi\n  out=$(git log --no-merges --max-count=501 --pretty=tformat:%H%x1f%s%x1f%an%x1f%aI%x1e \"$R\" 2>/dev/null | base64 | tr -d '\\n')\n  echo \"OD-PF commits log_b64=$out\"\nfi",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 60,
+            "tags": [
+              "od_step=preflight",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"
+            ],
+            "failed_when": false
+          }
+        ],
+        "rescue": []
+      }
+    ]
+  }
+]
