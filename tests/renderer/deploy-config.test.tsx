@@ -19,8 +19,8 @@ vi.mock('framer-motion', async (importOriginal) => ({
 const SECRET_ID = '0190a5c2-7d3e-7000-8000-000000000001'
 const MISSING = `Ansible isn't installed. Install it with "brew install ansible" (or "pipx install ansible-core"), then try again.`
 
-const staging = environment({ id: 'e1', name: 'staging', hosts: [{ hostId: 'h1', role: 'app' }, { hostId: 'h2', role: 'app' }] })
-const prod = environment({ id: 'e2', name: 'prod', protected: true, hosts: [{ hostId: 'h1', role: 'app' }] })
+const staging = environment({ id: 'e1', name: 'staging', productId: 'p1', hosts: [{ hostId: 'h1', role: 'app' }, { hostId: 'h2', role: 'app' }] })
+const prod = environment({ id: 'e2', name: 'prod', productId: 'p1', protected: true, hosts: [{ hostId: 'h1', role: 'app' }] })
 
 const world = (extra: Record<string, unknown> = {}) =>
   mockBridge({

@@ -89,7 +89,7 @@ export function DeploymentsPage() {
   const publishedLocal = !!env && hub.catalog.some((c) => c.environment.id === env.id)
   const envName = env?.name ?? hubEnv?.environment.name ?? ''
   const envProtected = env?.protected ?? hubEnv?.environment.protected ?? false
-  const productName = hubEnv ? TEAM_GROUP : (inventory?.products.find((p) => env && p.environmentIds.includes(env.id))?.name ?? 'No product')
+  const productName = hubEnv ? TEAM_GROUP : (inventory?.products.find((p) => p.id === env?.productId)?.name ?? '')
   useEffect(() => {
     if (envId) void loadSettings(envId)
   }, [envId])
