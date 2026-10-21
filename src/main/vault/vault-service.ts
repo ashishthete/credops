@@ -15,6 +15,8 @@ import {
   type VaultMeta,
   type VaultStatus,
 } from '../../shared/vault'
+import { parseEnvTemplate, stripEnvSecretRefs } from '../../shared/deploy'
+import { SETTINGS } from '../../shared/settings'
 import type { AuditLog } from '../audit/audit-log'
 import type { Db } from '../db/connection'
 import { inTransaction } from '../db/tx'
@@ -329,11 +331,13 @@ export class VaultService {
   }
 
   /**
-   * Fires after a reset has committed, before reset() resolves: whatever the old password guarded
-   * and outlives a lock (live sessions, tunnels) must be gone before the gate opens on setup.
-   * Synchronous on purpose: reset() does not wait for a promise, so teardown can't be deferred.
+   * Fires once a reset is confirmed, just before the erase: whatever the old password guarded and
+   * outlives a lock (live sessions, tunnels, running deploys) is stopped before its secrets go, and
+   * is gone before the gate opens on setup. Synchronous on purpose: reset() does not wait for a
+   * promise, so teardown can't be deferred past the erase. An erase that then fails leaves
+   * everything stopped and the secrets as they were.
    */
-  onReset(fn: () => void): () => void {
+  onBeforeReset(fn: () => void): () => void {
     this.resetListeners.add(fn)
     return () => this.resetListeners.delete(fn)
   }
@@ -405,8 +409,9 @@ export class VaultService {
   /**
    * The forgotten-password way out: erases every secret, key and identity in every vault, unkeys
    * the vaults (so the next step is setup) and turns quick unlock off. Vault names and the
-   * inventory stay; its references to identities are cleared. Only while locked: an unlocked user
-   * changes the password instead. The audit log is kept.
+   * inventory stay; its references to identities, and deploy and integration references to
+   * secrets, are cleared. Only while locked: an unlocked user changes the password instead. The
+   * audit log is kept.
    */
   reset(confirm: string): Promise<VaultStatus> {
     return this.serial(async () => {
@@ -414,13 +419,13 @@ export class VaultService {
       if (this.kek) throw new Error('vaults are unlocked: change the master password in settings instead')
       // Never set up: nothing to erase, and nothing worth an audit row.
       if (!this.isSetUp()) return this.status()
-      let counts = { vaults: 0, items: 0 }
+      for (const fn of [...this.resetListeners]) this.runListener('reset', fn)
+      let counts = { vaults: 0, items: 0, deployRefs: 0, managedEnvOff: 0, integrationRefs: 0 }
       this.tx(() => {
         const n = (sql: string): number => Number((this.db.prepare(sql).get() as { n: number }).n)
-        counts = {
-          vaults: n('SELECT COUNT(*) AS n FROM vaults'),
-          items: n('SELECT (SELECT COUNT(*) FROM secrets) + (SELECT COUNT(*) FROM ssh_keys) + (SELECT COUNT(*) FROM identities) AS n'),
-        }
+        counts.vaults = n('SELECT COUNT(*) AS n FROM vaults')
+        counts.items = n('SELECT (SELECT COUNT(*) FROM secrets) + (SELECT COUNT(*) FROM ssh_keys) + (SELECT COUNT(*) FROM identities) AS n')
+        const changed = (sql: string, ...args: (string | number)[]): number => Number(this.db.prepare(sql).run(...args).changes)
         const ts = this.now().toISOString()
         // Inventory that points at identities: cleared, not deleted (the FKs say SET NULL; done
         // explicitly so it holds with foreign_keys off too, and so updated_at moves).
@@ -428,6 +433,27 @@ export class VaultService {
         this.db
           .prepare('UPDATE environments SET default_identity_id = NULL, updated_at = ? WHERE default_identity_id IS NOT NULL')
           .run(ts)
+        // Deploy and integration settings that point at secrets: cleared too, so none dangles (done
+        // explicitly, as above). An env template with secret references keeps its keys with those
+        // values emptied, and its managed .env goes off, so a deploy before the secrets are linked
+        // again leaves the host's .env alone. The audit row gets the counts, never the ids.
+        counts.deployRefs = changed('UPDATE deployments SET become_secret_id = NULL, updated_at = ? WHERE become_secret_id IS NOT NULL', ts)
+        const templates = this.db
+          .prepare("SELECT id, env_template FROM deployments WHERE env_template LIKE '%${secret:%'")
+          .all() as { id: string; env_template: string }[]
+        const strip = this.db.prepare('UPDATE deployments SET env_template = ?, managed_env = 0, updated_at = ? WHERE id = ?')
+        for (const t of templates) {
+          if (parseEnvTemplate(t.env_template).secretIds.length === 0) continue
+          strip.run(stripEnvSecretRefs(t.env_template), ts, t.id)
+          counts.deployRefs++
+          counts.managedEnvOff++
+        }
+        counts.integrationRefs = changed(
+          'UPDATE environment_integrations SET teams_webhook_secret_id = NULL, updated_at = ? WHERE teams_webhook_secret_id IS NOT NULL',
+          ts,
+        )
+        const keys = [SETTINGS.aiApiKeySecretId, SETTINGS.sendgridApiKeySecretId, SETTINGS.githubTokenSecretId]
+        counts.integrationRefs += changed(`DELETE FROM settings WHERE key IN (${keys.map(() => '?').join(', ')})`, ...keys)
         // Identities reference keys, so they go first.
         for (const table of ['identities', 'ssh_keys', 'secrets']) this.db.prepare(`DELETE FROM ${table}`).run()
         this.db.prepare('UPDATE vaults SET wrapped_key = NULL, kdf_params = NULL, updated_at = ?').run(ts)
@@ -448,7 +474,6 @@ export class VaultService {
       this.keys.clear()
       this.corrupt = []
       this.known.clear()
-      for (const fn of [...this.resetListeners]) this.runListener('reset', fn)
       return this.status()
     })
   }
