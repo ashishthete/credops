@@ -15,11 +15,14 @@ import {
   type DeploymentRunMeta,
   type DeploymentRunStatus,
   type DockerMode,
+  EDIT_INVALID_MESSAGE,
   PLAYBOOK_CHANGED_MESSAGE,
   PREPARE_FAILED_MESSAGE,
+  ROLLBACK_GENERATED_NOTE,
   PREPARE_FETCH_FAILED_MESSAGE,
   REVIEW_EXPIRED_MESSAGE,
   REVIEW_TTL_MS,
+  type PlaybookEditResult,
   type PlaybookPreview,
   type PreflightCheck,
   type PreflightReport,
@@ -60,7 +63,7 @@ import type { RunbookStore } from './runbook-store'
 import { generateInventory } from './ssh-files'
 import { withBase64Forms } from './mask'
 import { ToolingError } from './tooling'
-import { type EditError, validateEditedPlaybook } from './playbook-validate'
+import { validateEditedPlaybook } from './playbook-validate'
 
 /* The release lifecycle: preflight, start, rollback, versioning, locks. It owns the stream (run.started /
    run.finished / preflight.done), the access and confirmation boundaries and the secrets' lifetime; the runner
@@ -511,7 +514,7 @@ export class ReleaseService {
    * nothing is written, no secret is decrypted and no agent or shell runs. The sha256 is of the canonical text,
    * which is what a start bound to this edit must carry.
    */
-  async validateEdit(releaseId: string, text: string, ctx?: CallCtx, forceServiceIds?: string[]): Promise<{ ok: true; canonical: string; sha256: string } | { ok: false; errors: EditError[] }> {
+  async validateEdit(releaseId: string, text: string, ctx?: CallCtx, forceServiceIds?: string[]): Promise<PlaybookEditResult> {
     const actor = ctx?.actor ?? this.d.actor
     this.d.vault.assertUnlocked()
     const rel = this.d.releases.detail(releaseId)
@@ -524,9 +527,34 @@ export class ReleaseService {
     else this.assertCurrent(rel, env)
     const reviewed = this.previews.get(reviewKey(releaseId, actor))
     const startedAt = reviewed?.startedAt ?? this.d.now().toISOString()
-    const { playbook } = rel.operation ? this.opPlan(rel, env, actor, startedAt) : this.releasePlan(rel, env, actor, startedAt, this.skips(rel, forceServiceIds))
+    const skips = rel.operation ? NO_SKIPS : this.skips(rel, forceServiceIds)
+    const { playbook, inventory } = rel.operation ? this.opPlan(rel, env, actor, startedAt) : this.releasePlan(rel, env, actor, startedAt, skips)
     const res = validateEditedPlaybook(text, playbook)
-    return res.ok ? { ok: true, canonical: res.canonical, sha256: sha256(res.canonical) } : res
+    // Hashed as the preview is: an unedited text has the preview's hash, and the skips and inventory stay bound.
+    return res.ok ? { ok: true, canonical: res.canonical, sha256: reviewHash(res.canonical, skips, inventory) } : res
+  }
+
+  /**
+   * The edit a start carries, checked again against the playbook it would otherwise run, and bound to the hash
+   * `validateEdit` gave for it. Null without an edit, or when the canonical text is the generated one.
+   */
+  private editOf(confirm: ReleaseConfirm, generated: string, skips: Skips, inventory: string | null): { text: string; lineDelta: number } | null {
+    if (confirm.editedPlaybook === undefined) return null
+    const res = validateEditedPlaybook(confirm.editedPlaybook, generated)
+    if (!res.ok) {
+      const [first] = res.errors
+      throw new DeployError('VALIDATION', first ? `${EDIT_INVALID_MESSAGE} (line ${first.line}: ${first.message})` : EDIT_INVALID_MESSAGE)
+    }
+    if (confirm.playbookSha256 === undefined || reviewHash(res.canonical, skips, inventory) !== confirm.playbookSha256) {
+      throw new DeployError('INVALID_STATE', PLAYBOOK_CHANGED_MESSAGE)
+    }
+    if (res.canonical === generated) return null
+    return { text: res.canonical, lineDelta: lineCount(res.canonical) - lineCount(generated) }
+  }
+
+  /** The row fields a started playbook stores: the edited text with the generated one beside it, or the generated one. */
+  private playbookFields(generated: string, edit: { text: string } | null): { playbook: string; playbookSource?: 'edited'; playbookGenerated?: string } {
+    return edit === null ? { playbook: generated } : { playbook: edit.text, playbookSource: 'edited', playbookGenerated: generated }
   }
 
   /**
@@ -557,11 +585,12 @@ export class ReleaseService {
       throw new DeployError('INVALID_STATE', REVIEW_EXPIRED_MESSAGE)
     }
     const built = this.releasePlan(rel, env, actor, reviewed?.startedAt ?? this.d.now().toISOString(), skips)
-    if (confirm.playbookSha256 !== undefined && reviewHash(built.playbook, skips, built.inventory) !== confirm.playbookSha256) {
+    const edit = this.editOf(confirm, built.playbook, skips, built.inventory)
+    if (confirm.editedPlaybook === undefined && confirm.playbookSha256 !== undefined && reviewHash(built.playbook, skips, built.inventory) !== confirm.playbookSha256) {
       throw new DeployError('INVALID_STATE', PLAYBOOK_CHANGED_MESSAGE)
     }
     const live = this.register(releaseId, env, 'release', rel.version ?? 'release', actor)
-    let run: { infos: Info[]; holder: Holder; tag: string | null; autoRollback: boolean; previousVersion: string | null; version: string | null }
+    let run: { infos: Info[]; holder: Holder; tag: string | null; autoRollback: boolean; previousVersion: string | null; version: string | null; edited: boolean }
     try {
       this.dropPreviews(releaseId)
       // The skips stay in memory until the last step that can refuse (decrypting) has passed.
@@ -569,7 +598,8 @@ export class ReleaseService {
       const settings = this.d.deploys.settings(env.id)
       const holder = this.resolveSecrets(infos, { env: true, scope: 'release', flow: built.plan.flow })
       live.known = holder.secrets?.known ?? []
-      const { plan, playbook, version, docker } = built
+      const { playbook, version, docker } = built
+      const plan: DeployPlan = edit === null ? built.plan : { ...built.plan, playbookText: edit.text }
       const tag = !redeploy && settings.versioned && rel.version !== null && rel.version !== settings.currentVersion ? rel.version : null
       const skippedSteps = this.d.releases.transaction(() => {
         const out = this.applySkips(rel, skips)
@@ -579,7 +609,7 @@ export class ReleaseService {
           redeploy,
           version,
           ...(redeploy ? { versionBump: 'none' as const } : {}),
-          playbook,
+          ...this.playbookFields(playbook, edit),
         })
         return out
       })
@@ -587,7 +617,7 @@ export class ReleaseService {
       for (const [runId, steps] of skippedSteps) this.steps.set(runId, steps)
       for (const { run } of infos) if (!this.steps.has(run.id)) this.steps.set(run.id, run.steps.map((x) => ({ ...x })))
       for (const i of infos) live.runIds.add(i.run.id)
-      run = { infos, holder, tag, autoRollback: settings.autoRollback, previousVersion: settings.currentVersion, version }
+      run = { infos, holder, tag, autoRollback: settings.autoRollback, previousVersion: settings.currentVersion, version, edited: edit !== null }
       this.emitState(releaseId)
       this.audit('release.start', 'success', live, {
         kind: 'release',
@@ -600,6 +630,8 @@ export class ReleaseService {
         credentialIds: holder.secretIds,
         skippedServiceIds: skips.skipped.map((x) => x.id),
       })
+      // How much the text grew or shrank, nothing of what it says.
+      if (edit !== null) this.audit('playbook.edited', 'success', live, { lineDelta: edit.lineDelta })
       live.done = this.runRelease(live, run, plan, docker, rel.options.backup).catch((e: unknown) => this.crash(live, e)).finally(() => this.unregister(live))
     } catch (e) {
       this.unregister(live)
@@ -663,7 +695,7 @@ export class ReleaseService {
 
   private async runRelease(
     live: Live,
-    c: { infos: Info[]; holder: Holder; tag: string | null; autoRollback: boolean; previousVersion: string | null; version: string | null },
+    c: { infos: Info[]; holder: Holder; tag: string | null; autoRollback: boolean; previousVersion: string | null; version: string | null; edited: boolean },
     plan: DeployPlan,
     docker: Map<string, DockerMode>,
     backup: boolean,
@@ -689,6 +721,7 @@ export class ReleaseService {
         const targets = c.autoRollback && live.busyText === null ? this.rollbackTargets(live, c.infos, res.out, plan.prepare !== null) : []
         if (targets.length > 0) {
           const rb = await this.autoRollback(live, c, targets, docker, backup)
+          if (c.edited) notes = withNote(this.d.releases.detail(id).releaseNotes, ROLLBACK_GENERATED_NOTE)
           status = rb.ok ? 'rolled_back' : 'failed'
           if (live.vaultReset && !rb.ok) {
             status = 'cancelled'
@@ -747,7 +780,8 @@ export class ReleaseService {
     const reviewed = confirm.playbookSha256 !== undefined ? this.previews.get(reviewKey(releaseId, actor)) : undefined
     if (reviewed !== undefined && this.d.now().getTime() - reviewed.at > PREVIEW_TTL_MS) throw new DeployError('INVALID_STATE', REVIEW_EXPIRED_MESSAGE)
     const built = this.opPlan(rel, env, actor, reviewed?.startedAt ?? this.d.now().toISOString())
-    if (confirm.playbookSha256 !== undefined && reviewHash(built.playbook, NO_SKIPS, null) !== confirm.playbookSha256) {
+    const edit = this.editOf(confirm, built.playbook, NO_SKIPS, null)
+    if (confirm.editedPlaybook === undefined && confirm.playbookSha256 !== undefined && reviewHash(built.playbook, NO_SKIPS, null) !== confirm.playbookSha256) {
       throw new DeployError('INVALID_STATE', PLAYBOOK_CHANGED_MESSAGE)
     }
     const live = this.register(releaseId, env, 'release', op.name, actor)
@@ -757,12 +791,13 @@ export class ReleaseService {
       const infos = this.infosFor(rel)
       const holder = this.opSecrets(infos, built.rb, op.params, true)
       live.known = holder.secrets?.known ?? []
-      this.d.releases.setStatus(releaseId, 'running', { startedAt: this.d.now().toISOString(), playbook: built.playbook })
+      this.d.releases.setStatus(releaseId, 'running', { startedAt: this.d.now().toISOString(), ...this.playbookFields(built.playbook, edit) })
       for (const { run } of infos) if (!this.steps.has(run.id)) this.steps.set(run.id, run.steps.map((x) => ({ ...x })))
       for (const i of infos) live.runIds.add(i.run.id)
       this.emitState(releaseId)
       this.audit('ops.run', 'success', live, { name: op.name, outcome: 'started', hostCount: this.hostCount(infos), ...this.counts(infos), credentialIds: holder.secretIds })
-      live.done = this.runOperation(live, infos, holder, built.plan).catch((e: unknown) => this.crash(live, e)).finally(() => this.unregister(live))
+      if (edit !== null) this.audit('playbook.edited', 'success', live, { lineDelta: edit.lineDelta })
+      live.done = this.runOperation(live, infos, holder, edit === null ? built.plan : { ...built.plan, playbookText: edit.text }).catch((e: unknown) => this.crash(live, e)).finally(() => this.unregister(live))
     } catch (e) {
       this.unregister(live)
       throw e
@@ -1057,7 +1092,8 @@ export class ReleaseService {
       const previous = new Map(infos.map((i, n) => [i.run.id, eligible[n].previousCommit as string]))
       const docker = new Map<string, DockerMode>(Object.entries(src.preflight?.dockerModes ?? {}))
       const plan = this.plan('rollback', live, infos, { version: null, holder, docker, backup: false, previous })
-      this.d.releases.setStatus(rb.rel.id, 'running', { playbook: generatePlaybook(plan) })
+      // An edit ran once: the rollback is always the generated one, and its notes say so.
+      this.d.releases.setStatus(rb.rel.id, 'running', { playbook: generatePlaybook(plan), ...(src.playbookSource === 'edited' ? { releaseNotes: ROLLBACK_GENERATED_NOTE } : {}) })
       this.emitState(rb.rel.id)
       this.audit('release.rollback', 'success', live, { rollbackOf: src.id, deployments: infos.map((i) => i.dep.id), hostCount: this.hostCount(infos), ...this.counts(infos) })
       live.done = this.runRollback(live, src, infos, holder, plan).catch((e: unknown) => this.crash(live, e)).finally(() => this.unregister(live))
@@ -2300,6 +2336,14 @@ function originHeads(rel: ReleaseDetail, skips: Skips): Map<string, string> {
  * The review hash: of the playbook alone when nothing is skipped and there is no flow; with a flow, also of the
  * inventory (it holds `od` and become then); with skips, also of the skipped ids and their commits.
  */
+const lineCount = (text: string): number => text.split('\n').length
+
+/** Notes with `note` added as their last paragraph (once). */
+function withNote(notes: string | null, note: string): string {
+  if (notes === null || notes.trim() === '') return note
+  return notes.includes(note) ? notes : `${notes.trimEnd()}\n\n${note}`
+}
+
 function reviewHash(playbook: string, skips: Skips, inventory: string | null): string {
   const text = inventory === null ? playbook : `${playbook}\0${inventory}`
   return skips.skipped.length === 0 ? sha256(text) : sha256(`${text}\0${JSON.stringify(skips.skipped.map((x) => [x.id, x.since]))}`)

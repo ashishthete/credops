@@ -899,6 +899,7 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'deploy:previewPlaybook': args(v.uuid()),
   'deploy:savePlaybook': args(v.uuid(), v.str({ pattern: PLAYBOOK_SHA256 })),
   'release:savePlaybook': args(v.uuid()),
+  'release:validateEdit': args(v.uuid(), v.str({ max: MAX_EDITED_PLAYBOOK })),
   'release:start': args(v.uuid(), asReleaseConfirm),
   'release:cancel': args(v.uuid()),
   'release:rollback': args(v.uuid(), asReleaseConfirm),

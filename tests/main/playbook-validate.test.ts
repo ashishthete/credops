@@ -18,7 +18,50 @@ function edit(fn: (plays: Obj[]) => void, name = 'release-hooks.json') {
 }
 const block = (plays: Obj[]): Obj => plays[0].tasks.find((t: Obj) => t.block)
 const failing = (r: ReturnType<typeof edit>): string[] => (r.ok ? [] : r.errors.map((e) => e.message))
-const NEW = { name: 'extra', 'ansible.builtin.shell': 'echo hi', tags: ['extra'] }
+const NEW = { name: 'extra', 'ansible.builtin.shell': 'echo hi', timeout: 30, tags: ['extra'] }
+
+/** backend (dep1) prepared in parallel, then stage by stage, with an origin check on dep1 (Task 10b carries). */
+function flowText(): string {
+  const base = planFixture()
+  const [d1, d2, d3] = base.deployments
+  d1.preHookB64 = null
+  d1.postHookB64 = null
+  d1.services = ['backend']
+  d2.services = ['fastapi']
+  d3.services = ['frontend']
+  d1.expectOriginHead = 'c'.repeat(40)
+  const migrate = stepFixture(21, 'after_up', { name: 'migrate', script: 'echo migrate' }, { anchor: null })
+  return generatePlaybook({
+    ...base,
+    prepare: { cap: 2 },
+    flow: {
+      stages: [
+        { kind: 'services', parts: [{ runId: d1.runId, services: ['backend'], urls: [0] }] },
+        { kind: 'step', runId: d1.runId, step: migrate },
+        { kind: 'services', parts: [{ runId: d3.runId, services: ['frontend'], urls: [] }, { runId: d2.runId, services: ['fastapi'], urls: [0] }] },
+      ],
+      onFailure: 'stop-all',
+    },
+  })
+}
+function editFlow(fn: (plays: Obj[]) => void) {
+  const text = flowText()
+  const plays = JSON.parse(text) as Obj[]
+  fn(plays)
+  return validateEditedPlaybook(JSON.stringify(plays, null, 2), text)
+}
+const named = (tasks: Obj[], name: string): Obj => {
+  for (const t of tasks) {
+    if (t.name === name) return t
+    for (const l of ['block', 'rescue', 'always']) {
+      const hit = Array.isArray(t[l]) ? named(t[l], name) : undefined
+      if (hit) return hit
+    }
+  }
+  return undefined as unknown as Obj
+}
+const without = (tasks: Obj[], name: string): Obj[] =>
+  tasks.filter((t) => t.name !== name).map((t) => Object.fromEntries(Object.entries(t).map(([k, v]) => [k, ['block', 'rescue', 'always'].includes(k) ? without(v as Obj[], name) : v])))
 
 describe('validateEditedPlaybook', () => {
   it.each(GOLDEN)('accepts the generated %s unchanged with an equal canonical text', (f) => {
@@ -53,7 +96,7 @@ describe('validateEditedPlaybook', () => {
     const r = edit((p) => {
       const b = block(p).block
       b.push(
-        { name: 'a', 'ansible.builtin.command': { argv: ['ls', '-l'] }, register: 'x' },
+        { name: 'a', 'ansible.builtin.command': { argv: ['ls', '-l'] }, timeout: 10, register: 'x' },
         { name: 'b', 'ansible.builtin.set_fact': { mine: '{{ d.repo | quote }}' }, when: 'x.rc == 0' },
         { name: 'c', 'ansible.builtin.debug': { msg: 'repo {{ d.repo }}' } },
         { name: 'd', 'ansible.builtin.wait_for': { host: 'localhost', port: 80, timeout: 30 } },
@@ -182,6 +225,119 @@ describe('validateEditedPlaybook', () => {
     expect(stdin).toContain('{{ s.')
     block(plays).block.push({ name: 'leak', 'ansible.builtin.debug': { msg: stdin } })
     expect(validateEditedPlaybook(JSON.stringify(plays, null, 2), gen()).ok).toBe(false)
+  })
+
+  describe('flows, prepares and skips (Task 10b)', () => {
+    it('accepts a generated parallel-prepare flow playbook unchanged, and with a task added in a stage', () => {
+      const text = flowText()
+      expect(text).toContain('any_errors_fatal')
+      expect(failing(validateEditedPlaybook(text, text))).toEqual([])
+      const prep = generatePlaybook(planFixture({ prepare: { cap: 2 } }))
+      expect(failing(validateEditedPlaybook(prep, prep))).toEqual([])
+      expect(failing(editFlow((p) => p[1].tasks.find((t: Obj) => t.block).block.push({ ...NEW })))).toEqual([])
+      expect(failing(editFlow((p) => p[1].tasks.splice(1, 0, { ...NEW })))).toEqual([])
+    })
+
+    const flowBad: [string, (p: Obj[]) => void, string][] = [
+      ['a removed flow gate', (p) => { p[1].tasks.shift() }, EDIT_RULE.generatedRemoved('flow gate 1')],
+      ['a changed flow gate', (p) => { p[1].tasks[0].when = false }, EDIT_RULE.protectedTask],
+      ['a user task before the flow gate', (p) => { p[1].tasks.unshift({ ...NEW }) }, EDIT_RULE.generatedOrder('flow gate 1')],
+      ['a user task after the stage marker', (p) => { p[1].tasks.push({ ...NEW }) }, EDIT_RULE.generatedOrder('flow play 1 done')],
+      ['a removed stage marker', (p) => { p[2].tasks.pop() }, EDIT_RULE.generatedRemoved('flow play 2 done')],
+      ['the stage marker moved to another play', (p) => { p[2].tasks.push(p[1].tasks.pop()) }, EDIT_RULE.generatedRemoved('flow play 1 done')],
+      ['a removed origin check', (p) => { p[0].tasks = without(p[0].tasks, 'origin check dep1') }, EDIT_RULE.generatedRemoved('origin check dep1')],
+      ['a changed origin check', (p) => { named(p[0].tasks, 'origin check dep1').ignore_errors = true }, EDIT_RULE.protectedTask],
+      ['the origin check after the checkout', (p) => {
+        const b = named(p[0].tasks, 'deployment dep1').block as Obj[]
+        const i = b.findIndex((t) => t.name === 'origin check dep1')
+        b.splice(i, 2, b[i + 1], b[i])
+      }, EDIT_RULE.generatedOrder('origin check dep1')],
+      ['a removed build cleanup', (p) => { p[0].tasks = without(p[0].tasks, 'build cleanup dep1') }, EDIT_RULE.generatedRemoved('build cleanup dep1')],
+      ['the build cleanup moved out of its always', (p) => {
+        const w = p[0].tasks.find((t: Obj) => t.always)
+        w.block.push(w.always.pop())
+        delete w.always
+      }, EDIT_RULE.protectedMoved('build cleanup dep1')],
+      ['a removed prepare gate', (p) => { p[0].tasks = without(p[0].tasks, 'od gate') }, EDIT_RULE.generatedRemoved('od gate')],
+      ['ignore_errors on a stage block', (p) => { p[1].tasks[1].ignore_errors = true }, EDIT_RULE.protectedMoved('health dep1 0')],
+      ['a set_fact of od_stage', (p) => p[1].tasks.splice(1, 0, { name: 'x', 'ansible.builtin.set_fact': { od_stage: 9 } }), EDIT_RULE.reserved('od_stage')],
+      ['a register of od_stage', (p) => p[1].tasks.splice(1, 0, { ...NEW, register: 'od_stage' }), EDIT_RULE.reserved('od_stage')],
+      ['task vars of od_stage', (p) => p[1].tasks.splice(1, 0, { ...NEW, vars: { od_stage: '1' } }), EDIT_RULE.reserved('od_stage')],
+      ['a set_fact of od_prepared', (p) => p[0].tasks.splice(4, 0, { name: 'x', 'ansible.builtin.set_fact': { od_prepared: true } }), EDIT_RULE.reserved('od_prepared')],
+    ]
+    it.each(flowBad)('rejects %s', (_n, fn, rule) => {
+      const r = editFlow(fn)
+      expect(failing(r)).toContain(rule)
+    })
+  })
+
+  describe('bounded run time (Task 10b)', () => {
+    const long: [string, Obj, string][] = [
+      ['retries × delay over the cap', { ...NEW, register: 'x', until: 'x.rc == 0', retries: 100, delay: 60 }, EDIT_RULE.retryBudget],
+      ['retries alone over the cap at the default delay', { ...NEW, register: 'x', until: 'x.rc == 0', retries: 1000 }, EDIT_RULE.retryBudget],
+      ['a wait_for delay over the cap', { name: 'w', 'ansible.builtin.wait_for': { port: 80, delay: 4000, timeout: 10 } }, EDIT_RULE.longWait],
+      ['a wait_for delay and timeout over the cap together', { name: 'w', 'ansible.builtin.wait_for': { port: 80, delay: 1800, timeout: 1801 } }, EDIT_RULE.longWait],
+      ['a wait_for sleep over the cap', { name: 'w', 'ansible.builtin.wait_for': { port: 80, sleep: 3601, timeout: 10 } }, EDIT_RULE.longWait],
+      ['a literal sleep over the cap', { ...NEW, 'ansible.builtin.shell': 'echo a; sleep 7200' }, EDIT_RULE.longWait],
+      ['sleep in hours', { ...NEW, 'ansible.builtin.shell': { cmd: 'sleep 2h' } }, EDIT_RULE.longWait],
+      ['sleep infinity', { ...NEW, 'ansible.builtin.command': { argv: ['sleep', 'infinity'] }, 'ansible.builtin.shell': undefined }, EDIT_RULE.longWait],
+      ['a shell task without a timeout', { name: 'n', 'ansible.builtin.shell': 'echo hi' }, EDIT_RULE.shellTimeout],
+      ['a command task without a timeout', { name: 'n', 'ansible.builtin.command': { argv: ['ls'] } }, EDIT_RULE.shellTimeout],
+    ]
+    it.each(long)('rejects %s', (_n, task, rule) => {
+      const t = JSON.parse(JSON.stringify(task)) as Obj
+      expect(failing(edit((p) => block(p).block.push(t)))).toContain(rule)
+    })
+
+    it('accepts waits within the cap', () => {
+      expect(failing(edit((p) => block(p).block.push(
+        { ...NEW, register: 'x', until: 'x.rc == 0', retries: 60, delay: 60 },
+        { name: 'w', 'ansible.builtin.wait_for': { port: 80, delay: 600, timeout: 3000 } },
+        { ...NEW, 'ansible.builtin.shell': 'sleep 30 && echo ok' },
+      )))).toEqual([])
+    })
+  })
+
+  describe('places (Task 10b)', () => {
+    it('rejects a block with a rescue wrapped around the lock', () => {
+      const r = edit((p) => {
+        const [prep, lock] = p[0].tasks.splice(0, 2)
+        p[0].tasks.unshift({ name: 'wrap', block: [prep, lock], rescue: [{ name: 'swallow', 'ansible.builtin.debug': { msg: 'lock failed' } }] })
+      })
+      expect(failing(r)).toContain(EDIT_RULE.protectedMoved('lock prep od-1'))
+      expect(failing(r)).toContain(EDIT_RULE.protectedMoved('lock od-1'))
+    })
+
+    it('rejects an unchanged generated block moved under a rescue wrapper', () => {
+      const r = edit((p) => {
+        const i = p[0].tasks.findIndex((t: Obj) => t.block)
+        const [dep1] = p[0].tasks.splice(i, 1)
+        p[0].tasks.splice(i, 0, { name: 'wrap', block: [dep1], rescue: [{ name: 'swallow', 'ansible.builtin.debug': { msg: 'failed' } }] })
+      })
+      expect(failing(r)).toContain(EDIT_RULE.protectedMoved('deployment dep1'))
+    })
+
+    it('rejects an unchanged generated block copied into another play', () => {
+      expect(failing(edit((p) => p[1].tasks.splice(2, 0, block(p))))).toContain(EDIT_RULE.protectedMoved('deployment dep1'))
+    })
+
+    it('rejects an added rescue on a generated block that holds a protected task', () => {
+      const r = edit((p) => {
+        delete block(p).rescue
+        block(p).rescue = [{ name: 'swallow', 'ansible.builtin.debug': { msg: 'x' } }]
+      })
+      expect(r.ok).toBe(true)
+      const r2 = editFlow((p) => {
+        const w = p[0].tasks.find((t: Obj) => t.always)
+        delete w.rescue
+      })
+      expect(failing(r2)).toContain(EDIT_RULE.protectedMoved('build cleanup dep1'))
+    })
+  })
+
+  it('rejects set_fact of cacheable and omit', () => {
+    expect(failing(edit((p) => block(p).block.push({ name: 'c', 'ansible.builtin.set_fact': { cacheable: true } })))).toContain(EDIT_RULE.reserved('cacheable'))
+    expect(failing(edit((p) => block(p).block.push({ name: 'c', 'ansible.builtin.set_fact': { omit: 'x' } })))).toContain(EDIT_RULE.reserved('omit'))
   })
 
   it('rejects text over 256 KB', () => {

@@ -32,6 +32,7 @@ type DeployChannel =
   | 'deploy:previewPlaybook'
   | 'deploy:savePlaybook'
   | 'release:savePlaybook'
+  | 'release:validateEdit'
   | 'release:preflight'
   | 'release:preflightOperation'
   | 'release:start'
@@ -126,6 +127,12 @@ export function createDeployHandlers(deps: {
       if (path === undefined) return null
       await playbookFile.write(path, playbook)
       return { path }
+    },
+    // Masked as the preview is: the canonical text is the edit the person sends back to start; the hash stays that of the raw text.
+    'release:validateEdit': async (id, text) => {
+      const res = await releases.validateEdit(id, text)
+      if (res.ok) return { ...res, canonical: maskPlaybook(res.canonical, secrets()) }
+      return { ok: false, errors: res.errors.map((e) => ({ line: e.line, message: maskPlaybook(e.message, secrets()) })) }
     },
     // Every start from the UI is bound to the playbook the person reviewed: without its hash it is refused here.
     // The service checks the hash against a fresh generation. Retry-tagging (`release:retry-version`) and

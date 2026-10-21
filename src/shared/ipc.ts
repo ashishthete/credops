@@ -58,6 +58,7 @@ import type {
   DeployBatch,
   DeployBatchResult,
   BreakLockConfirm,
+  PlaybookEditResult,
   PlaybookPreview,
   PreflightRequest,
   ReleaseConfirm,
@@ -226,6 +227,8 @@ export interface IpcContract {
   'deploy:savePlaybook': { args: [releaseId: string, sha256: string]; result: { path: string } | null }
   /** Saves the playbook the release stored (as `release:get` reads it, redacted) where a dialog in main says; null when cancelled. */
   'release:savePlaybook': { args: [releaseId: string]; result: { path: string } | null }
+  /** Checks an edit of the reviewed playbook (static, writes nothing); masked like `deploy:previewPlaybook`. */
+  'release:validateEdit': { args: [releaseId: string, text: string]; result: PlaybookEditResult }
   // `release:start` resolves once the run has started; progress arrives as `deploy:event` batches.
   'release:preflight': { args: [request: PreflightRequest]; result: { releaseId: string } }
   /** A runbook operation's preflight: a `ready` release row that `release:start` runs like a release. */
@@ -437,6 +440,7 @@ export const CHANNELS = [
   'deploy:previewPlaybook',
   'deploy:savePlaybook',
   'release:savePlaybook',
+  'release:validateEdit',
   'release:preflight',
   'release:preflightOperation',
   'release:start',

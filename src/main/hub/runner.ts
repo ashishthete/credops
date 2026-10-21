@@ -1,5 +1,6 @@
 import type {
   BreakLockConfirm,
+  PlaybookEditResult,
   PlaybookPreview,
   PreflightRequest,
   ReleaseConfirm,
@@ -26,6 +27,8 @@ export interface ReleaseApi {
   /** A runbook operation's preflight: a `ready` row that `start` runs. */
   preflightOperation(req: OperationRequest): Maybe<{ releaseId: string }>
   previewPlaybook(releaseId: string): Maybe<PlaybookPreview>
+  /** Checks an edit of the previewed playbook; static, writes nothing. */
+  validateEdit(releaseId: string, text: string): Maybe<PlaybookEditResult>
   start(releaseId: string, confirm?: ReleaseConfirm): Maybe<void>
   cancel(releaseId: string): Maybe<void>
   rollback(releaseId: string, confirm?: ReleaseConfirm): Maybe<{ releaseId: string }>
@@ -41,6 +44,8 @@ export interface ReleaseApi {
   hasActive(): boolean
   onEvent(fn: (batch: RunEvent[]) => void): () => void
 }
+
+export const HUB_EDIT_MESSAGE = 'Playbook edits run on local environments only'
 
 type Op = 'preflight' | 'start' | 'cancel' | 'rollback' | 'break-lock' | 'discard' | 'retry-version'
 
@@ -82,7 +87,13 @@ export class HubRunner implements ReleaseApi {
     return this.d.client().get<PlaybookPreview>(`/api/v1/releases/${releaseId}/playbook`)
   }
 
+  /** The Hub runs its own generated playbook: an edit is refused before anything is sent. */
+  validateEdit(_releaseId: string, _text: string): Promise<PlaybookEditResult> {
+    return Promise.reject(new DeployError('INVALID_STATE', HUB_EDIT_MESSAGE))
+  }
+
   async start(releaseId: string, confirm: ReleaseConfirm = {}): Promise<void> {
+    if (confirm.editedPlaybook !== undefined) throw new DeployError('INVALID_STATE', HUB_EDIT_MESSAGE)
     await this.audited('start', releaseId, await this.nameOf(releaseId), () => this.d.client().post<void>(`/api/v1/releases/${releaseId}/start`, confirm))
   }
 
@@ -256,6 +267,9 @@ export class RoutingReleases implements ReleaseApi {
   }
   previewPlaybook(releaseId: string): Maybe<PlaybookPreview> {
     return this.pick(releaseId).previewPlaybook(releaseId)
+  }
+  validateEdit(releaseId: string, text: string): Maybe<PlaybookEditResult> {
+    return this.pick(releaseId).validateEdit(releaseId, text)
   }
   start(releaseId: string, confirm?: ReleaseConfirm): Maybe<void> {
     return this.pick(releaseId).start(releaseId, confirm)

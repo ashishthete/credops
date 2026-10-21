@@ -176,6 +176,6 @@ describe('ReleaseService.validateEdit', () => {
     const err = await r.svc.validateEdit(id, p.playbook).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(DeployError)
     expect((err as DeployError).code).toBe('DENIED')
-    expect((err as Error).message).not.toContain('lock')
+    expect((err as Error).message).toBe('not allowed here')
   })
 })

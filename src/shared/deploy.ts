@@ -632,6 +632,17 @@ export const PLAYBOOK_CHANGED_MESSAGE = 'The playbook changed since you reviewed
 export const REVIEW_TTL_MS = 30 * 60_000
 /** A review older than that limit: nothing changed, but its start time is too old to reuse. */
 export const REVIEW_EXPIRED_MESSAGE = `Your review is more than ${REVIEW_TTL_MS / 60_000} minutes old. Review the playbook again.`
+/** A start with an edited playbook whose text no longer passes the checks (the first problem follows). */
+export const EDIT_INVALID_MESSAGE = 'The edited playbook does not pass its checks; fix it and review again'
+/** The release notes of a rollback (manual or automatic) of a release that ran an edited playbook. */
+export const ROLLBACK_GENERATED_NOTE = 'This release ran an edited playbook; the rollback uses the generated one.'
+/** A problem `release:validateEdit` found, at a 1-based line of the edited text. */
+export interface PlaybookEditError {
+  line: number
+  message: string
+}
+/** `sha256` is what a start with this edit must carry as `playbookSha256`; `canonical` is the text it stores and runs. */
+export type PlaybookEditResult = { ok: true; canonical: string; sha256: string } | { ok: false; errors: PlaybookEditError[] }
 export interface BreakLockConfirm {
   typedLabel: string
 }

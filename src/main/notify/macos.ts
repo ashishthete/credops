@@ -48,6 +48,8 @@ export class MacNotifier {
   /** `<env> · <deployment|title> <status>`; the body is version and duration. Sounds only on failure. */
   show(facts: NotificationFacts, route: string): void {
     if (!this.d.enabled() || !this.supported()) return
+    // An operation: the runbook is the title, and one line says where and how it ended.
+    if (facts.runbook !== undefined) return this.raw(facts.runbook, `${facts.environment.name} · ${STATUS_WORD[facts.status]}`, !LOUD.has(facts.status), route)
     const title = `${facts.environment.name} · ${facts.deployment ?? facts.title} ${STATUS_WORD[facts.status]}`
     this.raw(title, [facts.version, facts.durationSec === null ? null : formatDuration(facts.durationSec)].filter(Boolean).join(' · '), !LOUD.has(facts.status), route)
   }

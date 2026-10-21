@@ -28,6 +28,8 @@ describe('release:* validators', () => {
     expect(() => check('release:start', [ID, { playbookSha256: HASH, forceServiceIds: [ID] }])).not.toThrow()
     expect(() => check('deploy:savePlaybook', [ID, HASH])).not.toThrow()
     expect(() => check('release:savePlaybook', [ID])).not.toThrow()
+    expect(() => check('release:validateEdit', [ID, '[]'])).not.toThrow()
+    expect(() => check('release:start', [ID, { playbookSha256: HASH, editedPlaybook: '[]' }])).not.toThrow()
     expect(() => check('release:break-lock', [ID, ID, { typedLabel: 'app1' }])).not.toThrow()
     expect(() => check('release:list', [{ environmentId: ID, limit: 10 }])).not.toThrow()
     expect(() => check('release:events', [ID, 0, 5000])).not.toThrow()
@@ -57,6 +59,10 @@ describe('release:* validators', () => {
     ['deploy:savePlaybook', [ID], /./],
     ['release:savePlaybook', ['x'], /./],
     ['release:savePlaybook', [], /./],
+    ['release:validateEdit', ['x', '[]'], /./],
+    ['release:validateEdit', [ID], /./],
+    ['release:validateEdit', [ID, 7], /./],
+    ['release:validateEdit', [ID, 'x'.repeat(256 * 1024 + 1)], /./],
     ['release:cancel', [], /./],
     ['release:rollback', [ID, { typedName: {} }], /typedName/],
     ['release:break-lock', [ID, ID, {}], /typedLabel/],
@@ -110,6 +116,8 @@ describe('playbook review handlers', () => {
       discard: vi.fn(async () => undefined),
       detail: vi.fn(async () => ({ id: ID, playbook: over.stored === undefined ? STORED : over.stored })),
       start: vi.fn(async () => undefined),
+      validateEdit: vi.fn(async (_id: string, text: string) =>
+        text === 'bad' ? { ok: false, errors: [{ line: 3, message: `unknown ${over.secrets?.[0] ?? ''}` }] } : { ok: true, canonical: text, sha256: HASH }),
     }
     const writes: [string, string][] = []
     const saveDialog = vi.fn(async () => over.path)
@@ -122,6 +130,13 @@ describe('playbook review handlers', () => {
     })
     return { releases, writes, saveDialog, h: handlers as unknown as Record<string, (...a: unknown[]) => Promise<unknown>> }
   }
+
+  it('release:validateEdit masks the canonical text and the error messages, and keeps the hash', async () => {
+    const { releases, h } = setup({ secrets: ['hunter22'] })
+    expect(await h['release:validateEdit'](ID, '[{"x":"hunter22"}]')).toEqual({ ok: true, canonical: '[{"x":"‹redacted›"}]', sha256: HASH })
+    expect(await h['release:validateEdit'](ID, 'bad')).toEqual({ ok: false, errors: [{ line: 3, message: 'unknown ‹redacted›' }] })
+    expect(releases.validateEdit).toHaveBeenCalledWith(ID, 'bad')
+  })
 
   it('release:start refuses a start without a reviewed hash and forwards one with it', async () => {
     const { releases, h } = setup()

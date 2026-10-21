@@ -210,6 +210,7 @@ export class NotificationDispatcher {
     return {
       event,
       title: `Operation ${op.name} on ${env}`,
+      runbook: op.name,
       environment: this.environment(run.environmentId, run.environmentName),
       product: null,
       deployment: null,

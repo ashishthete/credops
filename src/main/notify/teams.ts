@@ -28,6 +28,8 @@ export interface NotificationFacts {
   changes?: { deployment: string; subjects: string[] }[]
   /** A runbook operation's one line (runbook, environment, outcome, service count): the card shows only it. */
   summary?: string
+  /** A runbook operation's runbook name: the macOS alert is titled by it. */
+  runbook?: string
 }
 
 export const MAX_CHANGES_SHOWN = 10

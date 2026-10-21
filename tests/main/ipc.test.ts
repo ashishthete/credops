@@ -129,6 +129,7 @@ describe('deploy contract', () => {
     'deploy:previewPlaybook',
     'deploy:savePlaybook',
     'release:savePlaybook',
+    'release:validateEdit',
     'release:preflight',
     'release:preflightOperation',
     'release:start',
