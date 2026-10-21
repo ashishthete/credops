@@ -22,6 +22,7 @@ describe('release:* validators', () => {
     expect(() => check('release:start', [ID, { typedName: 'prod', redeploy: true }])).not.toThrow()
     expect(() => check('release:start', [ID, { playbookSha256: HASH }])).not.toThrow()
     expect(() => check('deploy:previewPlaybook', [ID])).not.toThrow()
+    expect(() => check('deploy:previewPlaybook', [ID, [ID]])).not.toThrow()
     expect(() => check('release:start', [ID, { playbookSha256: HASH, forceServiceIds: [ID] }])).not.toThrow()
     expect(() => check('deploy:savePlaybook', [ID, HASH])).not.toThrow()
     expect(() => check('release:savePlaybook', [ID])).not.toThrow()
@@ -49,6 +50,8 @@ describe('release:* validators', () => {
     ['release:start', [ID, { playbookSha256: 'A'.repeat(64) }], /playbookSha256/],
     ['release:start', [ID, { playbookSha256: 'a'.repeat(63) }], /playbookSha256/],
     ['deploy:previewPlaybook', ['x'], /./],
+    ['deploy:previewPlaybook', [ID, ['x']], /./],
+    ['deploy:previewPlaybook', [ID, []], /./],
     ['release:start', [ID, { forceServiceIds: ['x'] }], /forceServiceIds/],
     ['deploy:savePlaybook', [ID, 'nope'], /./],
     ['deploy:savePlaybook', [ID], /./],
@@ -169,6 +172,19 @@ describe('playbook review handlers', () => {
       expect(Buffer.from(plays[0].tasks[0].vars.d.pre_hook, 'base64').toString('utf8')).toBe('curl -H "Api-X: ‹redacted›" https://x.example\n')
     }
     expect(releases.previewPlaybook).toHaveBeenCalledTimes(1)
+  })
+
+  it('deploy:previewPlaybook forwards forced services and masks the flow inventory as it masks the playbook', async () => {
+    const SECRET = 'hunter2-secret-value'
+    const { h, releases } = setup({ secrets: [SECRET] })
+    releases.previewPlaybook.mockResolvedValueOnce({ playbook: PLAYBOOK, sha256: HASH, inventory: `[deploy]\nod-1 od='{"v":"${SECRET}"}'\n` } as never)
+    const got = (await h['deploy:previewPlaybook'](ID, [ID])) as { inventory: string; sha256: string }
+    expect(releases.previewPlaybook).toHaveBeenCalledWith(ID, undefined, [ID])
+    expect(got.sha256).toBe(HASH)
+    expect(got.inventory).toContain('od-1')
+    expect(got.inventory).not.toContain(SECRET)
+    await h['deploy:previewPlaybook'](ID)
+    expect(releases.previewPlaybook).toHaveBeenLastCalledWith(ID, undefined, undefined)
   })
 
   it('a discarded release forgets its review: its preview can no longer be saved', async () => {

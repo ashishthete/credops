@@ -158,3 +158,61 @@ export function playbookOf(detail: ReleaseDetail, health: Record<string, number>
     })),
   )
 }
+
+/** r1 with a flow step `migrate` (key c_21) after its up, as main seeds it. */
+export function flowDetail(over: Partial<ReleaseDetail> = {}): ReleaseDetail {
+  const d = releaseDetail(over)
+  const r1 = d.runs[0]
+  const at = r1.steps.findIndex((s) => s.kind === 'health')
+  const migrate = { stepId: 'r1:c_21', kind: 'custom' as const, key: 'c_21', label: 'migrate', state: 'pending' as const, startedAt: null, finishedAt: null }
+  return { ...d, runs: [{ ...r1, steps: [...r1.steps.slice(0, at), migrate, ...r1.steps.slice(at)] }, ...d.runs.slice(1)] }
+}
+
+/**
+ * A flow playbook in the generator's shape: `release prepare` on every host (each host's lock, then each run's
+ * steps before up), one `release stage <i>` per stage (`stages[i]`: per run, its step keys there; the play's hosts
+ * are those runs' hosts), then `release tag`. Plays after the first open with a gate; all but the last end with a
+ * marker. Blocks carry `when` on their host, as the generator writes them.
+ */
+export function flowPlaybookOf(detail: ReleaseDetail, stages: Record<string, string[]>[]): string {
+  const hosts = [...new Set(detail.runs.map((r) => r.hostId ?? ''))]
+  const alias = (h: string) => `od-${hosts.indexOf(h) + 1}`
+  const tags = (kind: string, run: string) => [`od_step=${kind}`, `od_run=${run}`]
+  const keyOf = (s: { kind: string; key?: string }) => s.key ?? s.kind
+  const block = (runId: string, keys: string[]) => {
+    const r = detail.runs.find((x) => x.id === runId)!
+    return {
+      name: `deployment ${r.deploymentName}`,
+      when: `inventory_hostname == '${alias(r.hostId ?? '')}'`,
+      vars: { d: { name: r.deploymentName, run: r.id } },
+      block: keys.map((k) => ({ name: `${k} ${r.deploymentName}`, tags: tags(k, r.id) })),
+      rescue: [{ name: `mark failed ${r.deploymentName}`, 'ansible.builtin.set_fact': { od_failed: true } }],
+    }
+  }
+  const prepare = ['record', 'fetch', 'checkout', 'build']
+  const phases: [string, Record<string, string[]>][] = [
+    ['release prepare', Object.fromEntries(detail.runs.map((r) => [r.id, r.steps.map(keyOf).filter((k) => prepare.includes(k))]))],
+    ...stages.map((st, i): [string, Record<string, string[]>] => [`release stage ${i}`, st]),
+    ['release tag', Object.fromEntries(detail.runs.map((r) => [r.id, ['tag']]))],
+  ]
+  return JSON.stringify(
+    phases.map(([name, runs], p) => {
+      const here = hosts.filter((h) => detail.runs.some((r) => r.hostId === h && r.id in runs))
+      return {
+        name,
+        hosts: here.map(alias).join(':'),
+        tasks: [
+          ...(p > 0 ? [{ name: `flow gate ${p}`, 'ansible.builtin.fail': { msg: 'stopped' } }] : []),
+          ...(p === 0
+            ? here.flatMap((h) => [
+                { name: `lock prep ${alias(h)}`, when: `inventory_hostname == '${alias(h)}'`, tags: tags('lock', `host:${h}`) },
+                { name: `lock ${alias(h)}`, when: `inventory_hostname == '${alias(h)}'`, tags: tags('lock', `host:${h}`) },
+              ])
+            : []),
+          ...Object.entries(runs).map(([runId, keys]) => block(runId, keys)),
+          ...(p < phases.length - 1 ? [{ name: `flow play ${p} done`, 'ansible.builtin.set_fact': { od_stage: p } }] : []),
+        ],
+      }
+    }),
+  )
+}

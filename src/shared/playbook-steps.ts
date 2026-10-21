@@ -21,20 +21,20 @@ export interface PlaybookDeployment {
 }
 
 export interface PlaybookPlay {
+  /** The play's name: `release <alias>` (one play per host), or with a flow `release prepare`, `release stage <i>`, `release tag`. */
+  name: string
   /** The play's host aliases (`od-1`); several when one play runs a stage on parallel hosts. */
   hosts: string[]
   /** The play's position in the playbook (0 is the first). */
   stage: number
-  /** The first host: kept until the renderer reads `hosts` (Task 14). */
-  readonly host: string
   /** Host-wide tasks before the deployments: the lock. */
   steps: PlaybookStep[]
   deployments: PlaybookDeployment[]
 }
 
-/** The lock's mkdir/touch helper, a build's launch task and a stage gate: parts of other steps, not steps of their own (events and views skip them). */
+/** The lock's mkdir/touch helper, a build's launch task, a stage gate and a flow play's gate and marker: parts of other steps, not steps of their own (events and views skip them). */
 export const isHelperTask = (name: string): boolean => HELPER_PREFIXES.some((p) => name.startsWith(p))
-const HELPER_PREFIXES = ['lock prep ', 'build launch ', 'od gate']
+const HELPER_PREFIXES = ['lock prep ', 'build launch ', 'od gate', 'flow gate ', 'flow play ']
 
 /**
  * What the review and the release view call each task: its step's label, numbered when the step has several
@@ -96,14 +96,7 @@ export function playbookSteps(playbook: string): PlaybookPlay[] {
   }
   if (!Array.isArray(plays)) return []
   return plays.filter(isObj).map((play, stage) => {
-    const out: PlaybookPlay = {
-      hosts: hostsOf(play.hosts),
-      stage,
-      steps: [],
-      deployments: [],
-    } as unknown as PlaybookPlay
-    // not enumerable, so a play still serialises and compares as `hosts` alone
-    Object.defineProperty(out, 'host', { get: () => out.hosts[0] ?? '' })
+    const out: PlaybookPlay = { name: typeof play.name === 'string' ? play.name : '', hosts: hostsOf(play.hosts), stage, steps: [], deployments: [] }
     for (const t of Array.isArray(play.tasks) ? play.tasks : []) {
       if (!isObj(t)) continue
       if (!('block' in t)) {
@@ -122,4 +115,19 @@ export function playbookSteps(playbook: string): PlaybookPlay[] {
     }
     return out
   })
+}
+
+/**
+ * One host's play-level tasks across the plays, in play order: its lock. A flow's `release prepare` runs every
+ * host's lock in one play, so they are picked by their step id (`host:<hostId>:…`).
+ */
+export function hostTasks(plays: PlaybookPlay[], hostId: string): PlaybookStep[] {
+  return plays.flatMap((p) => p.steps.filter((s) => s.stepId?.startsWith(`host:${hostId}:`)))
+}
+
+/** One run's block, its tasks gathered from every play it has a block in (a flow splits a run across plays), in play order. */
+export function runBlock(plays: PlaybookPlay[], runId: string): PlaybookDeployment | null {
+  const parts = plays.flatMap((p) => p.deployments.filter((d) => d.runId === runId))
+  if (parts.length === 0) return null
+  return { name: parts[0].name, runId, steps: parts.flatMap((d) => d.steps), rollback: parts.some((d) => d.rollback) }
 }

@@ -6,7 +6,7 @@ import { planFixture } from './deploy-helpers'
 describe('playbookSteps', () => {
   it('names each block by deployment, then its steps in playbook order, then rollback', () => {
     const plays = playbookSteps(generatePlaybook(planFixture()))
-    expect(plays.map((p) => p.host)).toEqual(['od-1', 'od-2'])
+    expect(plays.map((p) => p.hosts[0])).toEqual(['od-1', 'od-2'])
     expect(plays[0].steps.map((s) => s.kind)).toEqual(['lock', 'lock'])
     expect(plays[0].deployments.map((d) => d.name)).toEqual(['dep1', 'dep2'])
     const [one, two] = plays[0].deployments
@@ -41,7 +41,7 @@ describe('playbookSteps', () => {
     const plays = playbookSteps(text)
     expect(plays).toHaveLength(2)
     expect(plays[0]).toMatchObject({ hosts: ['od-1', 'od-2'], stage: 0 })
-    expect(plays[0].host).toBe('od-1')
+    expect(plays[0].hosts[0]).toBe('od-1')
     expect(plays[1]).toMatchObject({ hosts: ['od-3'], stage: 1 })
     expect(playbookSteps('[{"hosts":"od-1:od-2","tasks":[]}]')[0].hosts).toEqual(['od-1', 'od-2'])
   })
@@ -50,6 +50,8 @@ describe('playbookSteps', () => {
     expect(isHelperTask('build launch dep1')).toBe(true)
     expect(isHelperTask('od gate 2')).toBe(true)
     expect(isHelperTask('lock prep od-1')).toBe(true)
+    expect(isHelperTask('flow gate 2')).toBe(true)
+    expect(isHelperTask('flow play 0 done')).toBe(true)
     expect(isHelperTask('build dep1')).toBe(false)
   })
 
@@ -66,6 +68,6 @@ describe('playbookSteps', () => {
     expect(playbookSteps('')).toEqual([])
     expect(playbookSteps('not json')).toEqual([])
     expect(playbookSteps('{"a":1}')).toEqual([])
-    expect(playbookSteps('[{"hosts":"od-1","tasks":[null,{"block":"x"}]}]')).toEqual([{ hosts: ['od-1'], stage: 0, steps: [], deployments: [] }])
+    expect(playbookSteps('[{"hosts":"od-1","tasks":[null,{"block":"x"}]}]')).toEqual([{ name: '', hosts: ['od-1'], stage: 0, steps: [], deployments: [] }])
   })
 })

@@ -6,6 +6,7 @@ import { REPO_URL_LEGACY_WARNING, isLegacyRepoUrl, maskRepoUrl } from '../../../
 import type { AppServiceMeta } from '../../../../../shared/services'
 import { checkoutNotice, type PickerGroup } from '../../../deploy/picker'
 import { Badge } from '../../../ui/Badge'
+import { Button } from '../../../ui/Button'
 import { fast, spring, staggerDelay, useMotionSafe } from '../../../ui/motion'
 
 export interface ServicePickerProps {
@@ -55,6 +56,24 @@ export function DatabaseRows({ checkoutId, report }: { checkoutId: string; repor
     <ul aria-label="Databases" className="flex flex-col gap-0.5 pl-6 text-[12.5px] text-muted">
       {dbs.map((name) => (
         <li key={name} className="h-6 leading-6">{`${name} (database, skipped)`}</li>
+      ))}
+    </ul>
+  )
+}
+
+/** Selected services with no changes since their last deploy: start skips them unless deployed anyway. */
+export function SkipRows({ services, onForce }: { services: { id: string; name: string }[]; onForce: (serviceId: string) => void }) {
+  if (!services.length) return null
+  return (
+    <ul aria-label="Skipped services" className="flex flex-col gap-1 rounded-lg border border-line px-3 py-2 text-[12.5px]">
+      {services.map((s) => (
+        <li key={s.id} aria-label={s.name} className="flex items-center gap-3">
+          <span className="font-medium text-fg">{s.name}</span>
+          <span className="flex-1 text-muted">skipped: no changes</span>
+          <Button size="sm" variant="ghost" onClick={() => onForce(s.id)}>
+            Deploy anyway
+          </Button>
+        </li>
       ))}
     </ul>
   )

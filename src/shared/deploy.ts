@@ -604,6 +604,8 @@ export interface PlaybookPreview {
   sha256: string
   /** The services this start leaves out as unchanged since their last deploy (`skippable` and not forced). */
   skippedServiceIds?: string[]
+  /** With a release flow: the inventory, whose host vars (`od`, the version among them) the hash covers too. */
+  inventory?: string
 }
 /** Start and its preview refuse a release whose every service would be skipped as unchanged. */
 export const NOTHING_SELECTED_MESSAGE = 'Every selected service has no changes; select one to deploy it anyway'

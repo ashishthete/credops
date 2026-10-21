@@ -8,8 +8,11 @@ import { Switch } from '../../ui/Switch'
 import { ScriptCompare } from './ScriptCompare'
 import type { ScriptChecks } from './useScriptChecks'
 
+/** Most hosts that prepare (fetch, build) at once with parallel prepare. */
+const PREPARE_CAPS = [1, 2, 3, 4, 5, 6, 7, 8]
+
 /**
- * One environment's release settings: versioned tags, auto-rollback, and the current version. With `environment`
+ * One environment's release settings: versioned tags, auto-rollback, parallel prepare and its cap, and the current version. With `environment`
  * (a local one: a Hub environment's settings are not edited here) and `script`, also the comparison with unified_release.sh.
  */
 export function EnvDeploySettings({
@@ -24,7 +27,7 @@ export function EnvDeploySettings({
   /** The comparison with unified_release.sh, from useScriptChecks; shown with `environment`. */
   script?: ScriptChecks | null
 }) {
-  const [busy, setBusy] = useState<'versioned' | 'autoRollback' | 'version' | null>(null)
+  const [busy, setBusy] = useState<'versioned' | 'autoRollback' | 'parallelPrepare' | 'prepareCap' | 'version' | null>(null)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
 
@@ -33,7 +36,13 @@ export function EnvDeploySettings({
   }
   const id = settings.environmentId
 
-  const toggle = async (field: 'versioned' | 'autoRollback', value: boolean) => {
+  const setCap = async (prepareCap: number) => {
+    setBusy('prepareCap')
+    await updateSettings(id, { prepareCap })
+    setBusy(null)
+  }
+
+  const toggle = async (field: 'versioned' | 'autoRollback' | 'parallelPrepare', value: boolean) => {
     setBusy(field)
     await updateSettings(id, { [field]: value })
     setBusy(null)
@@ -59,6 +68,24 @@ export function EnvDeploySettings({
         <div className="flex items-center gap-2.5">
           <Switch label="Auto-rollback" checked={settings.autoRollback} busy={busy === 'autoRollback'} onChange={(v) => void toggle('autoRollback', v)} />
           <span className="text-[12.5px] text-fg/90">Auto-rollback</span>
+        </div>
+        <div className="flex items-center gap-2.5" title="Hosts fetch and build side by side before any service goes up">
+          <Switch label="Parallel prepare" checked={settings.parallelPrepare} busy={busy === 'parallelPrepare'} onChange={(v) => void toggle('parallelPrepare', v)} />
+          <span className="text-[12.5px] text-fg/90">Parallel prepare</span>
+          <select
+            aria-label="Hosts at once"
+            value={String(settings.prepareCap)}
+            disabled={!settings.parallelPrepare || busy === 'prepareCap'}
+            onChange={(e) => void setCap(Number(e.target.value))}
+            className="h-7 rounded-md border border-line bg-transparent px-1.5 text-[12.5px] text-fg tabular-nums disabled:opacity-50"
+          >
+            {PREPARE_CAPS.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+          <span className="text-[12.5px] text-muted">at once</span>
         </div>
         <div className="ml-auto flex items-center gap-2.5">
           {editing ? (

@@ -104,7 +104,8 @@ export function StepChip({
       data-state={view}
       aria-label={chipLabel(chip.label, host, view)}
       aria-pressed={selected}
-      title={chipLabel(chip.label, host, view)}
+      // a warning's message (a custom step's `warn`), as the step list shows it
+      title={view === 'warn' && chip.error ? `${chipLabel(chip.label, host, view)} — ${chip.error}` : chipLabel(chip.label, host, view)}
       onClick={() => onSelect?.(chip.stepId)}
       className={`relative inline-flex h-6 shrink-0 items-center gap-1 overflow-hidden rounded-md border px-1.5 text-[11.5px] font-medium ${TONE[view]} ${
         view === 'running' && motionSafe ? 'od-chip-running' : ''

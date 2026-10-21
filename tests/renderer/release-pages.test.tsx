@@ -8,7 +8,7 @@ import { ReleasePage } from '../../src/renderer/src/pages/deployments/ReleasePag
 import { PlaybookLogsPage } from '../../src/renderer/src/pages/deployments/PlaybookLogsPage'
 import type { ReleaseDetail, RunEvent, RunEventBody, TaskState } from '../../src/shared/deploy'
 import { playbookSteps } from '../../src/shared/playbook-steps'
-import { events, healthFailure, OK_RUN, playbookOf, REL, releaseDetail } from './fixtures/release-events'
+import { events, flowDetail, flowPlaybookOf, healthFailure, OK_RUN, playbookOf, REL, releaseDetail } from './fixtures/release-events'
 import { emitBridgeEvent, mockBridge } from './helpers'
 
 const flush = () => act(async () => {})
@@ -180,6 +180,26 @@ describe('the release page', () => {
     expect(screen.getByRole('heading', { name: 'Playbook & logs' })).toBeInTheDocument()
     expect(screen.getByRole('log', { name: 'Release log' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Clear the step filter' })).toBeInTheDocument()
+  })
+})
+
+describe('a release flow on the release page', () => {
+  it('a custom step chip shows its own label and the warning with its message; a skipped run says it had no changes', async () => {
+    const d = flowDetail({ status: 'running' })
+    const detail = { ...d, playbook: flowPlaybookOf(d, [{ r1: ['up', 'c_21'], r3: ['up', 'health'] }, { r1: ['health'] }]) }
+    await open(`/deployments/release/${REL}`, [
+      { type: 'run.started', kind: 'release', version: 'v1.5.0' },
+      { type: 'step.started', stepId: 'r1:c_21', kind: 'custom', name: 'migrate', hostId: 'h1', deploymentRunId: 'r1' },
+      { type: 'step.done', stepId: 'r1:c_21', state: 'warn', durationMs: 10, message: 'migration took long' },
+      { type: 'deployment.updated', deploymentRunId: 'r2', status: 'skipped' },
+    ], detail)
+    const pipeline = screen.getByRole('group', { name: 'Pipeline' })
+    const chip = within(pipeline).getByRole('button', { name: 'migrate on app1: warning' })
+    expect(chip).toHaveAttribute('data-state', 'warn')
+    expect(chip.getAttribute('title')).toContain('migration took long')
+    const r2 = pipeline.querySelector('[data-run="r2"]') as HTMLElement
+    expect(within(r2).getByText('skipped: no changes')).toBeInTheDocument()
+    expect(pipeline.querySelector('[data-run="r1"]')!.textContent).not.toContain('skipped')
   })
 })
 

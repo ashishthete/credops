@@ -9,6 +9,14 @@ function Tasks({ steps, custom }: { steps: PlaybookStep[]; custom?: Record<strin
   return tasks.map((s, j) => <li key={`${s.kind}:${j}`}>{labels[j]}</li>)
 }
 
+/** A flow playbook's plays are named by their part of the release; a per-host one's by position. */
+function playHeading(name: string, i: number): string {
+  if (name === 'release prepare') return 'Prepare'
+  if (name === 'release tag') return 'Tag'
+  const stage = /^release stage (\d+)$/.exec(name)
+  return stage ? `Stage ${Number(stage[1]) + 1}` : `Host ${i + 1}`
+}
+
 /**
  * The playbook a release will run: its steps per deployment on the left, the full text on the right.
  * `customLabels`: per run id, its custom steps' labels by key (the run rows' `label`/`key`).
@@ -18,8 +26,11 @@ export function PlaybookReview({
   autoRollback,
   onSave,
   customLabels = {},
+  inventory,
 }: {
   playbook: string | null
+  /** With a release flow: the inventory the hash covers too (host vars and the version, no secret values). */
+  inventory?: string
   autoRollback: boolean
   onSave: () => void
   customLabels?: Record<string, Record<string, string>>
@@ -38,7 +49,7 @@ export function PlaybookReview({
         <ol aria-label="Playbook steps" className="flex w-48 shrink-0 flex-col gap-2 overflow-y-auto text-[12px]">
           {plays.map((play, i) => (
             <li key={i} className="flex flex-col gap-1.5">
-              {plays.length > 1 && <span className="text-[11px] tracking-wide text-muted uppercase">Host {i + 1}</span>}
+              {plays.length > 1 && <span className="text-[11px] tracking-wide text-muted uppercase">{playHeading(play.name, i)}</span>}
               {play.steps.length > 0 && (
                 <ul className="flex flex-col gap-0.5 text-fg/85">
                   <Tasks steps={play.steps} />
@@ -58,6 +69,14 @@ export function PlaybookReview({
         </ol>
         <pre className="max-h-[50vh] min-w-0 flex-1 overflow-auto rounded-lg bg-canvas/70 p-3 font-mono text-[11.5px] whitespace-pre text-fg/90">{playbook}</pre>
       </div>
+      {inventory !== undefined && (
+        <pre
+          aria-label="Inventory (hashed with the playbook)"
+          className="max-h-[30vh] overflow-auto rounded-lg bg-canvas/70 p-3 font-mono text-[11.5px] whitespace-pre text-fg/90"
+        >
+          {inventory}
+        </pre>
+      )}
     </div>
   )
 }

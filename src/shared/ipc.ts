@@ -220,7 +220,8 @@ export interface IpcContract {
   'deploy:applyBatch': { args: [environmentId: string, batch: DeployBatch]; result: DeployBatchResult }
   'deploy:tooling': { args: []; result: Tooling }
   // The playbook a ready release would run, for review; generating it writes nothing. `release:start` carries its sha256.
-  'deploy:previewPlaybook': { args: [releaseId: string]; result: PlaybookPreview }
+  // `forceServiceIds` deploys those skippable services anyway; `release:start` must send the same.
+  'deploy:previewPlaybook': { args: [releaseId: string, forceServiceIds?: string[]]; result: PlaybookPreview }
   /** Saves the last reviewed playbook of the release (by its sha256) where a dialog in main says; null when cancelled. */
   'deploy:savePlaybook': { args: [releaseId: string, sha256: string]; result: { path: string } | null }
   /** Saves the playbook the release stored (as `release:get` reads it, redacted) where a dialog in main says; null when cancelled. */

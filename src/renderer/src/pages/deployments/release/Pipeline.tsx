@@ -86,6 +86,8 @@ export function Pipeline({
           {lane.runs.map((run) => (
             <div key={run.runId} data-run={run.runId} className="flex flex-wrap items-center gap-2 pl-2">
               <span className="min-w-36 text-[12px] text-fg/90">{runLabel(run)}</span>
+              {/* left out as unchanged since its last deploy (the wizard's "Deploy anyway" deploys it) */}
+              {run.status === 'skipped' && <span className="text-[11.5px] text-muted">skipped: no changes</span>}
               <Chain chips={run.chips} host={lane.hostLabel} cancelling={cancelling} selected={selected} onSelect={onSelect} />
             </div>
           ))}

@@ -90,11 +90,12 @@ export function createDeployHandlers(deps: {
     'deploy:applyBatch': (environmentId, batch) => deploys.applyBatch(environmentId, batch),
     'deploy:tooling': () => tooling(),
     'release:preflight': (request) => releases.preflight(request),
-    'deploy:previewPlaybook': async (id) => {
-      const preview = await releases.previewPlaybook(id)
+    'deploy:previewPlaybook': async (id, forceServiceIds) => {
+      const preview = await releases.previewPlaybook(id, undefined, forceServiceIds)
       reviewed.set(id, preview)
       // Shown and saved masked, as a stored release's playbook is (`release:get`); the hash stays that of the raw text.
-      return { ...preview, playbook: maskPlaybook(preview.playbook, secrets()) }
+      const known = secrets()
+      return { ...preview, playbook: maskPlaybook(preview.playbook, known), ...(preview.inventory !== undefined && { inventory: maskPlaybook(preview.inventory, known) }) }
     },
     'deploy:savePlaybook': async (id, sha256) => {
       const preview = reviewed.get(id)

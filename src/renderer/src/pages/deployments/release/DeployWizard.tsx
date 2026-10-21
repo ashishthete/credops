@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType } from 'react'
-import { bumpVersion, BREAK_LOCK_CONFIRM_MESSAGE, PLAYBOOK_CHANGED_MESSAGE, REVIEW_EXPIRED_MESSAGE, type PlaybookPreview, type VersionBump } from '../../../../../shared/deploy'
+import { bumpVersion, BREAK_LOCK_CONFIRM_MESSAGE, NOTHING_SELECTED_MESSAGE, ORIGIN_MOVED_MESSAGE, PLAYBOOK_CHANGED_MESSAGE, REVIEW_EXPIRED_MESSAGE, type PlaybookPreview, type VersionBump } from '../../../../../shared/deploy'
 import { pickerGroups, selectionRequest, type PickerGroup } from '../../../deploy/picker'
-import { closeRelease, openRelease, startReleaseSync, usePreflight } from '../../../deploy/releases'
+import { originMoved } from '../../../deploy/pipeline'
+import { closeRelease, openRelease, startReleaseSync, usePipeline, usePreflight } from '../../../deploy/releases'
 import { loadSettings, startDeploySync, useDeploy, useDeployments, useServices } from '../../../deploy/store'
 import { useHub } from '../../../hub/store'
 import { useInventory } from '../../../inventory/store'
@@ -14,7 +15,7 @@ import { createStore } from '../../../ui/store'
 import { CommitList } from './CommitList'
 import { PlaybookReview } from './PlaybookReview'
 import { PreflightChecklist } from './PreflightChecklist'
-import { CheckoutNotice, DatabaseRows, ServicePicker } from './ServicePicker'
+import { CheckoutNotice, DatabaseRows, ServicePicker, SkipRows } from './ServicePicker'
 import { ReleaseView } from './ReleaseView'
 
 export interface ReleaseNotesEditorProps {
@@ -83,6 +84,8 @@ export function DeployWizard({
   const [step, setStep] = useState<Step>('pick')
   const [releaseId, setReleaseId] = useState<string | null>(null)
   const [redeploy, setRedeploy] = useState(false)
+  // Skippable services the person chose to deploy anyway; sent as `forceServiceIds` to the preview and the start.
+  const [force, setForce] = useState<Set<string>>(() => new Set())
   const [busy, setBusy] = useState(false)
   // release:start in flight: the wizard can't be closed or rewound until it answers.
   const [starting, setStarting] = useState(false)
@@ -93,6 +96,7 @@ export function DeployWizard({
   const [saved, setSaved] = useState<string | null>(null)
   const pre = usePreflight(releaseId)
   const report = pre?.report ?? null
+  const pipeline = usePipeline(releaseId)
 
   useEffect(() => startReleaseSync(), [])
   useEffect(() => startDeploySync(), [])
@@ -167,6 +171,7 @@ export function DeployWizard({
     const token = attemptRef.current
     setReleaseId(null)
     setRedeploy(false)
+    setForce(new Set())
     setError(null)
     setStep('preflight')
     setBusy(true)
@@ -200,13 +205,16 @@ export function DeployWizard({
     })
   }
 
-  const review = async () => {
+  // The forced services go only when there are some, so a plain preview asks for the release alone.
+  const previewOf = (id: string, forced: Set<string>) => api.invoke('deploy:previewPlaybook', id, ...(forced.size ? [[...forced]] : []))
+
+  const review = async (forced = force) => {
     if (!releaseId) return
     const id = releaseId
     setReviewed(null)
     setSaved(null)
     setStep('review')
-    const out = await attempt("Couldn't generate the playbook", () => api.invoke('deploy:previewPlaybook', id), setError)
+    const out = await attempt("Couldn't generate the playbook", () => previewOf(id, forced), setError)
     if (out && held.current === id) setReviewed(out)
   }
 
@@ -228,13 +236,20 @@ export function DeployWizard({
   const start = async () => {
     if (!releaseId || !env || !reviewed) return
     const { sha256 } = reviewed
+    const forced = force
     const begin = async (typedName?: string) => {
       setStarting(true)
       setError(null)
       let changed = false
       const ok = await attempt(
         "Couldn't start the release",
-        () => api.invoke('release:start', releaseId, { ...(typedName !== undefined ? { typedName } : {}), redeploy, playbookSha256: sha256 }),
+        () =>
+          api.invoke('release:start', releaseId, {
+            ...(typedName !== undefined ? { typedName } : {}),
+            redeploy,
+            playbookSha256: sha256,
+            ...(forced.size ? { forceServiceIds: [...forced] } : {}),
+          }),
         (message) => {
           changed = message.includes(PLAYBOOK_CHANGED_MESSAGE) || message.includes(REVIEW_EXPIRED_MESSAGE)
           setError(message)
@@ -245,7 +260,7 @@ export function DeployWizard({
         // Show what would run now, so the next Deploy is bound to the playbook the person has seen.
         if (changed) {
           setReviewed(null)
-          const out = await attempt("Couldn't generate the playbook", () => api.invoke('deploy:previewPlaybook', releaseId), setError)
+          const out = await attempt("Couldn't generate the playbook", () => previewOf(releaseId, forced), setError)
           if (out && held.current === releaseId) setReviewed(out)
         }
         return
@@ -284,6 +299,21 @@ export function DeployWizard({
   const further = FURTHER[bump]
   const ready = !!report && !report.blocked
   const nothingNew = !!report && report.commitsTotal === 0
+  const nameOf = (id: string) => services.find((s) => s.id === id)?.name ?? 'unknown service'
+  const skippable = request.serviceIds.filter((id) => report?.serviceCommits[id]?.skippable)
+  const skipped = skippable.filter((id) => !force.has(id)).map((id) => ({ id, name: nameOf(id) }))
+  // Every selected service would be skipped: there is nothing to deploy until one is forced.
+  const allSkipped = !!report && !redeploy && !request.checkoutIds.length && request.serviceIds.length > 0 && skipped.length === request.serviceIds.length
+  const forceOne = (id: string) => setForce((f) => new Set(f).add(id))
+  // A custom step is named by its run row's label; the run's chips carry it under `<runId>:<key>`.
+  const customLabels = useMemo(() => {
+    const out: Record<string, Record<string, string>> = {}
+    for (const run of pipeline?.lanes.flatMap((l) => l.runs) ?? []) {
+      for (const c of run.chips) if (c.kind === 'custom') (out[run.runId] ??= {})[c.stepId.slice(run.runId.length + 1)] = c.label
+    }
+    return out
+  }, [pipeline?.lanes])
+  const moved = step === 'started' && !!pipeline && originMoved(pipeline)
   const hosts = new Set(picked.map((g) => g.checkout.hostId)).size
   const whole = request.checkoutIds.length
   const summary = [`Deploying to ${env?.name ?? ''}`, plural(hosts, 'host'), plural(request.serviceIds.length, 'service'), ...(whole ? [plural(whole, 'whole checkout')] : [])].join(' · ')
@@ -307,7 +337,7 @@ export function DeployWizard({
         <Button variant="ghost" onClick={back}>
           Back
         </Button>
-        <Button disabled={!ready || (nothingNew && !redeploy)} onClick={() => void review()}>
+        <Button disabled={!ready || (nothingNew && !redeploy) || allSkipped} onClick={() => void review()}>
           Review playbook
         </Button>
       </>
@@ -400,6 +430,8 @@ export function DeployWizard({
                 <CheckoutNotice key={g.checkout.id} group={g} report={report} />
               ))}
               {report && !nothingNew && <CommitList groups={picked} report={report} />}
+              {report && !nothingNew && <SkipRows services={skipped} onForce={forceOne} />}
+              {allSkipped && !nothingNew && <p className="text-[12.5px] text-fg/90">{NOTHING_SELECTED_MESSAGE}</p>}
               {nothingNew && (
                 <div className="flex items-center gap-3 rounded-lg border border-line px-3 py-2">
                   <span className="flex-1 text-[12.5px] text-fg/90">Nothing new to deploy</span>
@@ -408,8 +440,11 @@ export function DeployWizard({
                     variant="ghost"
                     disabled={!ready}
                     onClick={() => {
+                      // A redeploy runs every selected service, the unchanged ones too.
+                      const forced = new Set([...force, ...skippable])
                       setRedeploy(true)
-                      void review()
+                      setForce(forced)
+                      void review(forced)
                     }}
                   >
                     Redeploy anyway
@@ -428,11 +463,28 @@ export function DeployWizard({
                   {[backup ? 'Databases backed up first' : 'No database backup', ...(redeploy ? ['Redeploys the current commits'] : [])].join(' · ')}
                 </p>
               </div>
-              <PlaybookReview playbook={reviewed?.playbook ?? null} autoRollback={settings?.autoRollback ?? false} onSave={() => void save()} />
+              {!!reviewed?.skippedServiceIds?.length && (
+                <p className="text-[12px] text-muted">{`Skipped, no changes: ${reviewed.skippedServiceIds.map(nameOf).join(', ')}`}</p>
+              )}
+              <PlaybookReview
+                playbook={reviewed?.playbook ?? null}
+                inventory={reviewed?.inventory}
+                autoRollback={settings?.autoRollback ?? false}
+                customLabels={customLabels}
+                onSave={() => void save()}
+              />
               {saved && <p className="text-[12px] text-muted">Saved to {saved}</p>}
             </>
           )}
 
+          {moved && (
+            <div role="alert" className="flex items-center gap-3 rounded-lg border border-err/30 bg-err/[0.06] px-3 py-2 text-[12.5px] text-err">
+              <span className="flex-1">The release stopped: {ORIGIN_MOVED_MESSAGE}.</span>
+              <Button size="sm" variant="ghost" onClick={() => void runPreflight()}>
+                Preview again
+              </Button>
+            </div>
+          )}
           {step === 'started' && releaseId && <ReleaseView releaseId={releaseId} />}
 
           {busy && step === 'preflight' && !releaseId && <p className="text-[12px] text-muted">Starting preflight</p>}

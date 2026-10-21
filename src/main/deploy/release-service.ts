@@ -411,7 +411,7 @@ export class ReleaseService {
     const { playbook, inventory } = this.releasePlan(rel, env, actor, startedAt, skips)
     for (const [k, p] of this.previews) if (now.getTime() - p.at > PREVIEW_KEEP_MS) this.previews.delete(k)
     this.previews.set(reviewKey(releaseId, actor), { releaseId, startedAt, at: now.getTime() })
-    return { playbook, sha256: reviewHash(playbook, skips, inventory), skippedServiceIds: skips.skipped.map((x) => x.id) }
+    return { playbook, sha256: reviewHash(playbook, skips, inventory), skippedServiceIds: skips.skipped.map((x) => x.id), ...(inventory !== null && { inventory }) }
   }
 
   /**

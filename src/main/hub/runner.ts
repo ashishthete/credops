@@ -21,7 +21,8 @@ type Maybe<T> = T | Promise<T>
  */
 export interface ReleaseApi {
   preflight(req: PreflightRequest): Maybe<{ releaseId: string }>
-  previewPlaybook(releaseId: string): Maybe<PlaybookPreview>
+  /** `ctx` is the local service's (the router never sends one); `forceServiceIds` deploys those skippable services anyway. */
+  previewPlaybook(releaseId: string, ctx?: undefined, forceServiceIds?: string[]): Maybe<PlaybookPreview>
   start(releaseId: string, confirm?: ReleaseConfirm): Maybe<void>
   cancel(releaseId: string): Maybe<void>
   rollback(releaseId: string, confirm?: ReleaseConfirm): Maybe<{ releaseId: string }>
@@ -69,8 +70,9 @@ export class HubRunner implements ReleaseApi {
   }
 
   /** A read: not audited, like `detail`. */
-  previewPlaybook(releaseId: string): Promise<PlaybookPreview> {
-    return this.d.client().get<PlaybookPreview>(`/api/v1/releases/${releaseId}/playbook`)
+  previewPlaybook(releaseId: string, _ctx?: undefined, forceServiceIds?: string[]): Promise<PlaybookPreview> {
+    const q = new URLSearchParams((forceServiceIds ?? []).map((id) => ['forceServiceIds', id])).toString()
+    return this.d.client().get<PlaybookPreview>(`/api/v1/releases/${releaseId}/playbook${q === '' ? '' : `?${q}`}`)
   }
 
   async start(releaseId: string, confirm: ReleaseConfirm = {}): Promise<void> {
@@ -240,8 +242,8 @@ export class RoutingReleases implements ReleaseApi {
   async preflight(req: PreflightRequest): Promise<{ releaseId: string }> {
     return this.d.isHubEnv(req.environmentId) ? this.d.hub.preflight(req) : this.d.local.preflight(req)
   }
-  previewPlaybook(releaseId: string): Maybe<PlaybookPreview> {
-    return this.pick(releaseId).previewPlaybook(releaseId)
+  previewPlaybook(releaseId: string, _ctx?: undefined, forceServiceIds?: string[]): Maybe<PlaybookPreview> {
+    return this.pick(releaseId).previewPlaybook(releaseId, undefined, forceServiceIds)
   }
   start(releaseId: string, confirm?: ReleaseConfirm): Maybe<void> {
     return this.pick(releaseId).start(releaseId, confirm)

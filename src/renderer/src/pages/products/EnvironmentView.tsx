@@ -1,11 +1,11 @@
 import { motion } from 'framer-motion'
 import { ExternalLink, Globe, KeyRound, Link2, Lock, Network, Pencil, Plus, Route, Server, SquareTerminal, Trash2, Unlink } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import { DEFAULT_SSH_PORT, type EnvironmentMeta } from '../../../../shared/inventory'
 import type { AppServiceMeta } from '../../../../shared/services'
-import { startDeploySync } from '../../deploy/store'
+import { loadSettings, startDeploySync, updateSettings, useDeploy, useServices } from '../../deploy/store'
 import { sourceLabel } from '../../inventory/choices'
 import { openEnvironmentDomain, type InventoryData } from '../../inventory/store'
 import type { NodeKey } from '../../inventory/tree'
@@ -19,6 +19,7 @@ import { GlowDot, PaneHeader, ROLE_LABEL, ROLE_ORDER } from './ProductView'
 import { DeployWizard } from '../deployments/release/DeployWizard'
 import { CopyServicesDialog } from './services/CopyServicesDialog'
 import { ServiceLogs } from './services/ServiceLogs'
+import { ReleaseFlowSection } from './services/ReleaseFlowSection'
 import { ServicesSection } from './services/ServicesSection'
 
 interface EnvironmentViewProps {
@@ -40,6 +41,10 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
   const navigate = useNavigate()
   // The services and checkouts the Services section shows.
   useEffect(() => startDeploySync(), [])
+  useEffect(() => void loadSettings(env.id), [env.id])
+  const settings = useDeploy().settings[env.id]
+  const services = useServices(env.id)
+  const apps = useMemo(() => services.filter((s): s is AppServiceMeta => s.kind === 'service'), [services])
   const [logsOf, setLogsOf] = useState<AppServiceMeta | null>(null)
   const [copyFrom, setCopyFrom] = useState<EnvironmentMeta | null>(null)
   // The services the deploy wizard starts with ticked; null while it is closed.
@@ -144,6 +149,10 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
         </dl>
 
         <ServicesSection env={env} data={data} onDeploy={setDeployPick} onLogs={setLogsOf} onCopy={() => setCopyFrom(env)} />
+
+        {settings && apps.length > 0 && (
+          <ReleaseFlowSection services={apps} flow={settings.flow} onSave={(flow) => updateSettings(env.id, { flow })} />
+        )}
 
         {groups.length === 0 ? (
           <div className="mt-6 flex flex-col items-center gap-2 rounded-xl border border-dashed border-line px-6 py-10 text-center">

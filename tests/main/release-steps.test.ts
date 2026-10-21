@@ -100,6 +100,8 @@ describe('release custom steps', () => {
     const b = await r.svc.previewPlaybook(id)
     expect(b.sha256).toBe(a.sha256)
     expect(a.skippedServiceIds).toEqual([])
+    // without a flow the host vars are play vars, in the playbook text: no inventory to show
+    expect(a.inventory).toBeUndefined()
     r.runner.on.release = (_p, _s, emit) => {
       emit({ type: 'step.started', stepId: `${run.id}:c_0`, kind: 'custom', name: 'pre-hook', hostId: null, deploymentRunId: run.id })
       emit({ type: 'step.done', stepId: `${run.id}:c_0`, state: 'ok', durationMs: 3 })
@@ -533,6 +535,9 @@ describe('release flow', () => {
     // the version lives in the inventory's od, not the playbook text
     expect(b.playbook).toBe(a.playbook)
     expect(b.sha256).not.toBe(a.sha256)
+    // the preview shows the inventory it hashes, so the reviewer sees the version
+    expect(b.inventory).toContain('v9.9.9')
+    expect(a.inventory).not.toContain('v9.9.9')
     expect((await fail(r.svc.start(id, { playbookSha256: a.sha256, redeploy: true }))).message).toBe(PLAYBOOK_CHANGED_MESSAGE)
     await r.svc.start(id, { playbookSha256: b.sha256, redeploy: true })
     await r.svc.whenIdle()

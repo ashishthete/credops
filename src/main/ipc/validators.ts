@@ -848,7 +848,7 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'service:tunnelClose': args(v.uuid()),
   'service:tunnelSync': args(v.uuid()),
   'release:preflight': args(asPreflightRequest),
-  'deploy:previewPlaybook': args(v.uuid()),
+  'deploy:previewPlaybook': args(v.uuid(), v.optional(v.array(v.uuid(), MAX_SERVICES, { min: 1 }))),
   'deploy:savePlaybook': args(v.uuid(), v.str({ pattern: PLAYBOOK_SHA256 })),
   'release:savePlaybook': args(v.uuid()),
   'release:start': args(v.uuid(), asReleaseConfirm),

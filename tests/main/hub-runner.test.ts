@@ -95,6 +95,17 @@ describe('hub runner and release routing', () => {
     expect(await r.routing.previewPlaybook('l-1')).toEqual({ playbook: '[1]', sha256: 'b'.repeat(64) })
   })
 
+  it('a preview with forced services asks the Hub with each id as a query value and the local service with them', async () => {
+    const preview = { playbook: '[]', sha256: 'a'.repeat(64) }
+    const r = rig({ posts: () => ({ releaseId: 'h-1' }), gets: () => preview })
+    await r.routing.preflight(PREFLIGHT)
+    await r.routing.previewPlaybook('h-1', undefined, ['s-1', 's-2'])
+    await r.routing.previewPlaybook('h-1')
+    expect(r.calls.slice(1).map((c) => c.path)).toEqual(['/api/v1/releases/h-1/playbook?forceServiceIds=s-1&forceServiceIds=s-2', '/api/v1/releases/h-1/playbook'])
+    await r.routing.previewPlaybook('l-1', undefined, ['s-3'])
+    expect(r.local.previewPlaybook).toHaveBeenCalledWith('l-1', undefined, ['s-3'])
+  })
+
   it('routes hub environments to the Hub and others to local', async () => {
     const r = rig({ posts: () => ({ releaseId: 'h-1' }) })
     r.local.preflight.mockResolvedValue({ releaseId: 'l-1' })
