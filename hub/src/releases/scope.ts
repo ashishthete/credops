@@ -9,6 +9,8 @@ import type { HubDb } from '../db'
 
 /** Shown for a release error that may come from a part the viewer cannot see. */
 export const HIDDEN_ERROR = "The details are not shown because they may concern deployments you don't have access to."
+/** The version step runs once per repository, so its output, error and warning can name the other checkouts' repositories. */
+const VERSION_STEP = 'release:version'
 
 /** What a release's deployment runs say about who may see which part of it. */
 export interface RunRef {
@@ -70,7 +72,7 @@ export function visibleIn(db: HubDb, deploymentIds: ReadonlySet<string>, release
   const rows = db.prepare("SELECT payload FROM run_events WHERE release_id = ? AND type IN ('step.failed', 'lock.busy')").all(releaseId) as { payload: string }[]
   for (const row of rows) {
     const e = JSON.parse(row.payload) as { type: string; stepId?: string; error?: string; hostId?: string; text?: string }
-    if (e.type === 'step.failed' && e.stepId && e.error && stepVisible(e.stepId, v)) v.errors.add(e.error)
+    if (e.type === 'step.failed' && e.stepId && e.stepId !== VERSION_STEP && e.error && stepVisible(e.stepId, v)) v.errors.add(e.error)
     if (e.type === 'lock.busy' && e.hostId && e.text && v.hosts.has(e.hostId)) v.errors.add(e.text)
   }
   return v
@@ -137,14 +139,17 @@ function scopeEvent(e: RunEvent, v: Visible): RunEvent | null {
       return (e.check.deploymentId === null ? v.hosts.has(e.check.hostId) : v.deployments.has(e.check.deploymentId)) ? e : null
     case 'preflight.done':
       return { ...e, report: scopeReport(e.report, v) }
-    case 'step.started':
-    case 'step.done':
     case 'step.failed':
+      if (e.stepId === VERSION_STEP) return { ...e, error: HIDDEN_ERROR }
+      return stepVisible(e.stepId, v) ? e : null
+    case 'step.done':
+      if (e.stepId === VERSION_STEP) return e.message === undefined ? e : { ...e, message: HIDDEN_ERROR }
+      return stepVisible(e.stepId, v) ? e : null
+    case 'step.started':
     case 'task.done':
       return stepVisible(e.stepId, v) ? e : null
     case 'log':
-      // The version step runs once per repository, so its output can name the other checkouts' repositories.
-      if (e.stepId === 'release:version') return null
+      if (e.stepId === VERSION_STEP) return null
       if (e.stepId !== null) return stepVisible(e.stepId, v) ? e : null
       return e.hostId !== null && v.hosts.has(e.hostId) && !v.shared.has(e.hostId) ? e : null
     case 'lock.busy':

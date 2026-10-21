@@ -19,6 +19,8 @@ const lines = (evs: RunEvent[]) => evs.flatMap((e) => (e.type === 'log' ? [e.lin
 /** What a scripted run does besides its usual lines: fail one checkout, or wait before it ends. */
 interface Script {
   fail?: { name: string; error: string }
+  /** The version step's outcome text: a failure's error, or a warning's message. */
+  version?: { failed?: string; warn?: string }
   hold?: Promise<void>
 }
 let script: Script = {}
@@ -49,6 +51,9 @@ async function scoped(): Promise<Rig> {
     }
     emit({ type: 'log', stepId: 'release:record', hostId: null, stream: 'ansible', line: 'release line' })
     emit({ type: 'log', stepId: 'release:version', hostId: null, stream: 'ansible', line: 'version line' })
+    if (script.version) emit({ type: 'step.started', stepId: 'release:version', kind: 'version', name: 'Tag version', hostId: null, deploymentRunId: null })
+    if (script.version?.failed) emit({ type: 'step.failed', stepId: 'release:version', error: script.version.failed, durationMs: 1 })
+    if (script.version?.warn) emit({ type: 'step.done', stepId: 'release:version', state: 'warn', message: script.version.warn, durationMs: 1 })
     emit({ type: 'log', stepId: null, hostId: HOST_ID, stream: 'out', line: 'host raw line' })
     emit({ type: 'log', stepId: null, hostId: null, stream: 'err', line: 'unattributed line' })
     if (script.hold) await script.hold
@@ -239,6 +244,32 @@ describe('deployment-scoped access: what else could name the other deployment', 
     script.fail = { name: 'api', error: 'api broke' }
     const apiFailed = await r.release(r.bob, [SVC_WEB, SVC_API])
     expect((await get<ReleaseDetail>(r.carol, `/api/v1/releases/${apiFailed}`)).error).toBe('api broke')
+  })
+
+  it("the version step's error and warning, which can name the other checkouts' repositories, are not hers", async () => {
+    await scoped()
+    const feed: string[] = []
+    r.hub.app.live.subscribe(CAROL.oid, (f) => feed.push(f), () => {})
+    const FAILED = 'tag v1.5.0 push rejected on git@x:acme/web-secret-repo.git'
+    const WARN = 'tag v1.5.0 already on git@x:acme/web-secret-repo.git'
+    script.version = { failed: FAILED, warn: WARN }
+    const both = await r.release(r.bob, [SVC_WEB, SVC_API])
+    // The release's error, when it is that very text, is hidden as well.
+    r.hub.db.prepare('UPDATE releases SET error = ? WHERE id = ?').run(FAILED, both)
+
+    const step = (evs: RunEvent[]) => evs.filter((e) => (e.type === 'step.failed' || e.type === 'step.done') && e.stepId === 'release:version')
+    const hers = step(await get<RunEvent[]>(r.carol, `/api/v1/releases/${both}/events`))
+    expect(hers.map((e) => e.type)).toEqual(['step.failed', 'step.done'])
+    expect(hers.map((e) => (e.type === 'step.failed' ? e.error : e.type === 'step.done' ? e.message : ''))).toEqual([expect.stringMatching(HIDDEN_ERROR), expect.stringMatching(HIDDEN_ERROR)])
+    expect((await get<ReleaseDetail>(r.carol, `/api/v1/releases/${both}`)).error).toMatch(HIDDEN_ERROR)
+    expect((await get<ReleaseSummary[]>(r.carol, '/api/v1/releases')).find((x) => x.id === both)!.error).toMatch(HIDDEN_ERROR)
+    expect(feed.length).toBeGreaterThan(0)
+    expect(feed.join('')).not.toContain('web-secret-repo')
+
+    // Env-wide members see it as it is.
+    const bobs = step(await get<RunEvent[]>(r.bob, `/api/v1/releases/${both}/events`))
+    expect(bobs.map((e) => (e.type === 'step.failed' ? e.error : e.type === 'step.done' ? e.message : ''))).toEqual([FAILED, WARN])
+    expect((await get<ReleaseDetail>(r.bob, `/api/v1/releases/${both}`)).error).toBe(FAILED)
   })
 
   it('the environment lock does not give her the id of a release she cannot view', async () => {
