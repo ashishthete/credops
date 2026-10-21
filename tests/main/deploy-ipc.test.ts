@@ -1,3 +1,6 @@
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { ReleaseService } from '../../src/main/deploy/release-service'
 import { createDeployHandlers } from '../../src/main/ipc/handlers/deploy'
@@ -167,5 +170,32 @@ describe('playbook review handlers', () => {
     const cancelled = setup()
     expect(await cancelled.h['release:savePlaybook'](ID)).toBeNull()
     expect(cancelled.writes).toEqual([])
+  })
+  it('release:savePlaybook redacts in main before writing: no known secret or key block reaches the file', async () => {
+    const SECRET = 'hunter2-secret-value'
+    const KEY = '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----'
+    // as a Hub release's detail arrives: nothing on the way redacted it
+    const stored = JSON.stringify([{ hosts: 'od-1', tasks: [{ name: `curl https://x.example/?t=${SECRET}` }, { name: 'key', copy: { content: KEY } }] }], null, 2)
+    const dir = await mkdtemp(join(tmpdir(), 'opsdeck-save-'))
+    try {
+      const path = join(dir, 'release.yml')
+      const detail = vi.fn(async () => ({ id: ID, playbook: stored }))
+      const handlers = createDeployHandlers({
+        deploys: {} as never,
+        releases: { detail } as unknown as ReleaseService,
+        tooling: async () => ({}) as never,
+        knownSecrets: () => [SECRET],
+        playbookFile: { saveDialog: async () => path, write: (p, text) => writeFile(p, text, 'utf8') },
+      })
+      const h = handlers as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>
+      expect(await h['release:savePlaybook'](ID)).toEqual({ path })
+      const written = await readFile(path, 'utf8')
+      expect(written).not.toContain(SECRET)
+      expect(written).not.toContain('b3BlbnNzaC1rZXk')
+      expect(written).toContain('‹redacted›')
+      expect(written).toContain('"hosts": "od-1"')
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 })

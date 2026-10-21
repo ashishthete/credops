@@ -10,6 +10,7 @@ import {
 } from '../../../shared/deploy'
 import type { Handlers } from '../../../shared/ipc'
 import { DeployError } from '../../deploy/access'
+import { redact } from '../../security/redact'
 import type { DeployStore } from '../../deploy/deploy-store'
 import type { ReleaseApi } from '../../hub/runner'
 import type { HubCatalog } from '../../hub/catalog'
@@ -55,8 +56,10 @@ export function createDeployHandlers(deps: {
   playbookFile?: { saveDialog: (releaseId: string) => Promise<string | undefined>; write: (path: string, text: string) => Promise<void> }
   /** Each local environment's newest release that ran (`release:latest`). */
   lastReleases?: () => EnvLastRelease[]
+  /** The vault's and Hub's secret values, masked out of a stored playbook before it is written to a file. */
+  knownSecrets?: () => readonly string[]
 }): Pick<Handlers, DeployChannel> {
-  const { deploys, releases, tooling, catalog, published, playbookFile, lastReleases } = deps
+  const { deploys, releases, tooling, catalog, published, playbookFile, lastReleases, knownSecrets } = deps
   // The last playbook reviewed per release. Saving writes this text, so the renderer sends only its hash, never a path or text.
   const reviewed = new Map<string, PlaybookPreview>()
   return {
@@ -96,9 +99,11 @@ export function createDeployHandlers(deps: {
       await playbookFile.write(path, preview.playbook)
       return { path }
     },
-    // The text the release stored, read back through `detail` (which redacts it again), never the release's inputs.
+    // The text the release stored, read through `detail` as `release:get` reads it (the same access check) and
+    // redacted here again with every known secret value: a Hub release's text arrives unredacted by this desktop.
     'release:savePlaybook': async (id) => {
-      const { playbook } = await releases.detail(id)
+      const stored = (await releases.detail(id)).playbook
+      const playbook = stored === null ? null : redact(stored, knownSecrets?.() ?? [])
       if (!playbook) throw new DeployError('INVALID_STATE', PLAYBOOK_NOT_STORED_MESSAGE)
       if (!playbookFile) throw new DeployError('INVALID_STATE', 'Saving a playbook is not available here')
       const path = await playbookFile.saveDialog(id)
