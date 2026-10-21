@@ -58,7 +58,7 @@ export class SsoGate implements SignInGate {
   private pending: { at: number; oid: string; hubId: string } | null = null
   private inflight: Promise<SsoVerdict> | null = null
   private audited: SsoVerdict | null = null
-  // Bumped by a sign-out, so a check already in flight can't settle over it.
+  // Bumped by a sign-out or an interactive sign-in, so a check already in flight can't settle over it.
   private generation = 0
   private readonly blocked = new Set<() => void>()
 
@@ -195,6 +195,9 @@ export class SsoGate implements SignInGate {
         return this.settle('blocked')
       }
       throw err
+    } finally {
+      // Any session may have changed: a check started before this sign-in must not settle on it.
+      this.generation++
     }
     this.raiseHighWater()
     return this.settle(s.linked && s.user ? this.accept(s.user) : 'needs-signin')
@@ -297,6 +300,9 @@ export class SsoGate implements SignInGate {
         this.settle('blocked')
       }
       throw err
+    } finally {
+      // Any session may have changed: a check started before this sign-in must not settle on it.
+      this.generation++
     }
     if (!s.linked || !s.signedIn || !s.user) throw new Error('sign in first')
     const now = this.iso()

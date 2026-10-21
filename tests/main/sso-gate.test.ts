@@ -461,6 +461,24 @@ describe('SsoGate', () => {
     expect(row()?.last_verified_at).toBeNull()
   })
 
+  // Re-review N1: a check resolving after another account signs in is discarded.
+  it('a check in flight cannot settle over an interactive sign-in', async () => {
+    hub.link()
+    bindRow()
+    const g = gate()
+    let release!: (c: SessionCheck) => void
+    hub.checkSession = () => new Promise<SessionCheck>((r) => (release = r))
+    const p = g.check()
+    hub.signInResult = () => ({ ...(hub.st as Linked), user: BOB })
+    expect(await g.signIn()).toBe('mismatch')
+    // Alice's me() lands last, as HubConnection.me() would set it, while Bob's session is stored.
+    hub.link({ user: ALICE })
+    release({ kind: 'ok', user: ALICE })
+    expect(await p).not.toBe('verified')
+    expect(g.verdict()).not.toBe('verified')
+    expect(row()?.last_verified_at).toBeNull()
+  })
+
   // Pre-flight F1: sign-out must not leave the gate verified.
   describe('sign-out (F1)', () => {
     it('signOut resets the verdict and clears last_verified_at', async () => {
