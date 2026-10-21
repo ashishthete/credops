@@ -191,6 +191,48 @@ describe('vault KEK', () => {
     expect(await f.vault.unlock(PW)).toEqual({ ok: true })
   })
 
+  describe('removePassword counts Touch ID only when its cache holds the live KEK', () => {
+    const cases: [string, (q: ReturnType<typeof fakeQuick>, avail: { keychain: boolean; touchId: boolean }) => void][] = [
+      [
+        'a decrypt that throws',
+        (q) =>
+          q.keychain.decrypt.mockImplementation(() => {
+            throw new Error('keychain reset')
+          }),
+      ],
+      ['a decrypt with the wrong bytes', (q) => q.keychain.decrypt.mockImplementation(() => randomKey().toString('base64'))],
+      ['the keychain unavailable', (_q, avail) => (avail.keychain = false)],
+    ]
+    for (const [name, breakIt] of cases) {
+      it(`refuses on ${name}, keeping the password wrap`, async () => {
+        const avail = { keychain: true, touchId: true }
+        const quick = fakeQuick(avail)
+        const f = await ready(quick)
+        f.vault.setQuickUnlock('touchId')
+        const before = state(f)
+        breakIt(quick, avail)
+        await expect(f.vault.removePassword(PW)).rejects.toThrow('add Touch ID or a PIN first')
+        expect(state(f)).toEqual(before)
+        expect(f.vault.hasPassword()).toBe(true)
+        expect(events(f)).toContainEqual({
+          action: 'vault.password',
+          outcome: 'failure',
+          details: { op: 'removed', reason: 'no-other-factor' },
+        })
+        f.vault.lock('manual')
+        expect(await f.vault.unlock(PW)).toEqual({ ok: true })
+      })
+    }
+  })
+
+  it('removePassword with no password set refuses before any check', async () => {
+    const f = await ready()
+    f.vault.setQuickUnlock('touchId')
+    await f.vault.removePassword(PW)
+    await expect(f.vault.removePassword(PW)).rejects.toThrow('no master password is set')
+    expect(state(f).failed_attempts).toBe(0)
+  })
+
   it('removePassword checks the password and needs unlocked', async () => {
     const f = await ready()
     f.vault.setQuickUnlock('touchId')

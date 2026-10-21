@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { randomUUID, timingSafeEqual } from 'node:crypto'
 import {
   AUTO_LOCK_CHOICES,
   DEFAULT_VAULT_ID,
@@ -299,7 +299,7 @@ export class VaultService {
     if (mode === 'login') throw new Error('login quick unlock is not offered')
     this.assertUnlocked()
     if (mode === 'off') {
-      if (!this.hasPassword() && !this.pinEnabled()) throw new Error('add a master password or a PIN first')
+      if (!this.otherWayIn('touchId')) throw new Error('add a master password or a PIN first')
       this.db.prepare("UPDATE vault_state SET quick_unlock = 'off', quick_unlock_blob = NULL WHERE id = 1").run()
     } else {
       if (!this.modeAvailable(mode)) throw new Error('quick unlock unavailable')
@@ -432,7 +432,9 @@ export class VaultService {
     return this.serial(async () => {
       this.assertUnlocked()
       checkPassword(current, false)
-      if (!this.touchIdSet() && !this.pinEnabled()) throw new Error('add Touch ID or a PIN first')
+      // Refused up front: no scrypt, and nothing counted against the password backoff.
+      if (!this.hasPassword()) throw new Error('no master password is set')
+      this.assertOtherWayIn()
       const epoch = this.epoch
       const res = await this.verify(current, epoch)
       if (!res.ok) {
@@ -441,7 +443,7 @@ export class VaultService {
       }
       zero(res.kek, res.keys.values())
       // Checked again after the await: the other factor may have gone meanwhile.
-      if (!this.touchIdSet() && !this.pinEnabled()) throw new Error('add Touch ID or a PIN first')
+      this.assertOtherWayIn()
       const legacy = this.kekScheme() === 'legacy'
       this.tx(() => {
         this.db.prepare('UPDATE vault_state SET password_wrap = NULL, password_kdf = NULL WHERE id = 1').run()
@@ -773,10 +775,40 @@ export class VaultService {
     return this.state().pin_wrap !== null
   }
 
-  /** A Touch ID cache exists (a copy of the KEK in the keychain). */
-  private touchIdSet(): boolean {
+  /** removePassword's refusal, audited like its other failures. */
+  private assertOtherWayIn(): void {
+    if (this.otherWayIn('password')) return
+    this.audit.append({ action: 'vault.password', outcome: 'failure', details: { op: 'removed', reason: 'no-other-factor' } })
+    throw new Error('add Touch ID or a PIN first')
+  }
+
+  /**
+   * Whether the vaults can still be unlocked once `removing` is gone, so the last copy of the KEK
+   * is never dropped. Touch ID counts only when its cache opens to the live KEK right now.
+   */
+  private otherWayIn(removing: 'password' | 'touchId'): boolean {
+    if (this.pinEnabled()) return true
+    if (removing !== 'password' && this.hasPassword()) return true
+    return removing !== 'touchId' && this.touchIdHoldsKek()
+  }
+
+  /**
+   * True when the Touch ID cache decrypts, without a prompt, to the live KEK. The row alone proves
+   * nothing: after a re-signed app or a Keychain reset the blob is still there but unreadable.
+   */
+  private touchIdHoldsKek(): boolean {
     const s = this.state()
-    return s.quick_unlock === 'touchId' && s.quick_unlock_blob !== null
+    if (s.quick_unlock !== 'touchId' || !s.quick_unlock_blob || !this.kek) return false
+    if (!this.modeAvailable('touchId')) return false
+    let cached: Buffer | null = null
+    try {
+      cached = Buffer.from(this.quick!.keychain.decrypt(Buffer.from(s.quick_unlock_blob, 'base64')), 'base64')
+      return cached.length === this.kek.length && timingSafeEqual(cached, this.kek)
+    } catch {
+      return false
+    } finally {
+      cached?.fill(0)
+    }
   }
 
   /** Unwraps every keyed vault with `kek`; null (nothing kept) when the Default vault does not open. */
