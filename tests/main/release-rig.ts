@@ -29,7 +29,9 @@ export interface Rig {
   setup: { access: DeployAccess; finalize: FinalizeSteps }
 }
 
-export async function rig(over: { access?: DeployAccess; finalize?: FinalizeSteps; maxEvents?: number; audit?: ReleaseServiceDeps['audit'] } = {}): Promise<Rig> {
+export async function rig(
+  over: { access?: DeployAccess; finalize?: FinalizeSteps; maxEvents?: number; audit?: ReleaseServiceDeps['audit']; now?: () => Date } = {},
+): Promise<Rig> {
   const f = await makeDeployFixture({ maxEvents: over.maxEvents })
   // The fixture shares app1 with protected prod; most tests want an unprotected staging, so unshare it here.
   f.db.prepare('DELETE FROM environment_hosts WHERE environment_id = ?').run(f.prod.id)
@@ -61,7 +63,7 @@ export async function rig(over: { access?: DeployAccess; finalize?: FinalizeStep
     emit: (b) => void batches.push(b),
     emitState: (s) => void states.push(`${s.id}:${s.status}`),
     actor: { osUser: 'tester', machine: 'box' },
-    now: () => new Date(NOW),
+    now: over.now ?? (() => new Date(NOW)),
     clock: { setTimeout: (fn) => timers.push(fn) as unknown, clearTimeout: () => undefined },
   })
   return { f, svc, runner, batches, states, timers, tick: () => timers.splice(0).forEach((t) => t()), valueCalls, setup }

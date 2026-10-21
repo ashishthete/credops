@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { homedir, hostname, userInfo } from 'node:os'
@@ -637,7 +638,23 @@ if (!app.requestSingleInstanceLock()) {
           }),
           ...createSshImportHandlers(importer),
           ...createTunnelHandlers({ store: tunnels, manager: runner }),
-          ...createDeployHandlers({ deploys, releases, tooling: () => detectTools(toolDeps), catalog: hubCatalog, published: (environmentId) => hubEnvLink.get(environmentId) !== undefined }),
+          ...createDeployHandlers({
+            deploys,
+            releases,
+            tooling: () => detectTools(toolDeps),
+            catalog: hubCatalog,
+            published: (environmentId) => hubEnvLink.get(environmentId) !== undefined,
+            playbookFile: {
+              saveDialog: async (releaseId) => {
+                const opts: Electron.SaveDialogOptions = { defaultPath: `opsdeck-playbook-${releaseId.slice(0, 8)}.yml`, filters: [{ name: 'YAML', extensions: ['yml', 'yaml'] }] }
+                const res = mainWindow
+                  ? await dialog.showSaveDialog(mainWindow, opts)
+                  : await dialog.showSaveDialog(opts)
+                return res.canceled ? undefined : res.filePath
+              },
+              write: (path, text) => writeFile(path, text, 'utf8'),
+            },
+          }),
           ...createServiceHandlers({
             services,
             copy: (req) => copyServices(copyDeps, req),

@@ -34,7 +34,7 @@ const PREFLIGHT = { environmentId: HUB_ENV, serviceIds: [], bump: 'none' as cons
 /** A ReleaseApi whose every method is a spy. */
 function stub(over: Partial<ReleaseApi> = {}): { [K in keyof ReleaseApi]: ReturnType<typeof vi.fn> } & ReleaseApi {
   const fns: Record<string, ReturnType<typeof vi.fn>> = {}
-  for (const k of ['preflight', 'start', 'cancel', 'rollback', 'breakLock', 'discard', 'retryVersion', 'setNotes', 'list', 'listActive', 'detail', 'events', 'runMeta']) {
+  for (const k of ['preflight', 'previewPlaybook', 'start', 'cancel', 'rollback', 'breakLock', 'discard', 'retryVersion', 'setNotes', 'list', 'listActive', 'detail', 'events', 'runMeta']) {
     fns[k] = vi.fn(async () => undefined)
   }
   fns.hasActive = vi.fn(() => false)
@@ -78,6 +78,21 @@ function rig(opts: { posts?: (path: string, body: unknown) => unknown; gets?: (p
 }
 
 describe('hub runner and release routing', () => {
+  it('the playbook preview of a Hub release is read from the Hub, unaudited; the hash goes with start', async () => {
+    const preview = { playbook: '[]', sha256: 'a'.repeat(64) }
+    const r = rig({ posts: () => ({ releaseId: 'h-1' }), gets: (path) => (path.endsWith('/playbook') ? preview : undefined) })
+    r.local.previewPlaybook.mockResolvedValue({ playbook: '[1]', sha256: 'b'.repeat(64) })
+    await r.routing.preflight(PREFLIGHT)
+    expect(await r.routing.previewPlaybook('h-1')).toEqual(preview)
+    await r.routing.start('h-1', { playbookSha256: preview.sha256 })
+    expect(r.calls.slice(1)).toEqual([
+      { method: 'GET', path: '/api/v1/releases/h-1/playbook' },
+      { method: 'POST', path: '/api/v1/releases/h-1/start', body: { playbookSha256: preview.sha256 } },
+    ])
+    expect(r.audits.map((a) => (a as { details: { op: string } }).details.op)).toEqual(['preflight', 'start'])
+    expect(await r.routing.previewPlaybook('l-1')).toEqual({ playbook: '[1]', sha256: 'b'.repeat(64) })
+  })
+
   it('routes hub environments to the Hub and others to local', async () => {
     const r = rig({ posts: () => ({ releaseId: 'h-1' }) })
     r.local.preflight.mockResolvedValue({ releaseId: 'l-1' })

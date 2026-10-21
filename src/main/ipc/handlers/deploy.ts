@@ -1,8 +1,18 @@
-import { MAX_EVENTS_PAGE, type DeploymentMeta, type EnvDeploySettings, type Tooling } from '../../../shared/deploy'
+import {
+  MAX_EVENTS_PAGE,
+  PLAYBOOK_CHANGED_MESSAGE,
+  type DeploymentMeta,
+  type EnvDeploySettings,
+  type PlaybookPreview,
+  type Tooling,
+} from '../../../shared/deploy'
 import type { Handlers } from '../../../shared/ipc'
+import { DeployError } from '../../deploy/access'
 import type { DeployStore } from '../../deploy/deploy-store'
 import type { ReleaseApi } from '../../hub/runner'
 import type { HubCatalog } from '../../hub/catalog'
+
+export const REVIEW_REQUIRED_MESSAGE = 'Review the playbook before you deploy.'
 
 type DeployChannel =
   | 'deploy:list'
@@ -13,6 +23,8 @@ type DeployChannel =
   | 'deploy:settings'
   | 'deploy:updateSettings'
   | 'deploy:tooling'
+  | 'deploy:previewPlaybook'
+  | 'deploy:savePlaybook'
   | 'release:preflight'
   | 'release:start'
   | 'release:cancel'
@@ -34,8 +46,12 @@ export function createDeployHandlers(deps: {
   catalog?: Pick<HubCatalog, 'get' | 'list'>
   /** An environment this desktop published: its settings are edited here (and pushed again), not read from the Hub. */
   published?: (environmentId: string) => boolean
+  /** "Save as .yml…": a save dialog shown by main (undefined when cancelled), and the write of the reviewed text. */
+  playbookFile?: { saveDialog: (releaseId: string) => Promise<string | undefined>; write: (path: string, text: string) => Promise<void> }
 }): Pick<Handlers, DeployChannel> {
-  const { deploys, releases, tooling, catalog, published } = deps
+  const { deploys, releases, tooling, catalog, published, playbookFile } = deps
+  // The last playbook reviewed per release. Saving writes this text, so the renderer sends only its hash, never a path or text.
+  const reviewed = new Map<string, PlaybookPreview>()
   return {
     'deploy:list': (environmentId) => {
       const local = deploys.list(environmentId)
@@ -58,7 +74,28 @@ export function createDeployHandlers(deps: {
     'deploy:updateSettings': (environmentId, patch) => deploys.updateSettings(environmentId, patch),
     'deploy:tooling': () => tooling(),
     'release:preflight': (request) => releases.preflight(request),
-    'release:start': (id, confirm) => releases.start(id, confirm),
+    'deploy:previewPlaybook': async (id) => {
+      const preview = await releases.previewPlaybook(id)
+      reviewed.set(id, preview)
+      return preview
+    },
+    'deploy:savePlaybook': async (id, sha256) => {
+      const preview = reviewed.get(id)
+      if (!preview || preview.sha256 !== sha256) throw new DeployError('INVALID_STATE', PLAYBOOK_CHANGED_MESSAGE)
+      if (!playbookFile) throw new DeployError('INVALID_STATE', 'Saving a playbook is not available here')
+      const path = await playbookFile.saveDialog(id)
+      if (path === undefined) return null
+      await playbookFile.write(path, preview.playbook)
+      return { path }
+    },
+    // Every start from the UI is bound to the playbook the person reviewed: without its hash it is refused here.
+    // The service checks the hash against a fresh generation. Retry-tagging (`release:retry-version`) and
+    // rollback (`release:rollback`) generate their own playbook from a finished release and are exempt.
+    'release:start': async (id, confirm) => {
+      if (confirm?.playbookSha256 === undefined) throw new DeployError('CONFIRM_REQUIRED', REVIEW_REQUIRED_MESSAGE)
+      reviewed.delete(id)
+      return releases.start(id, confirm)
+    },
     'release:cancel': (id) => releases.cancel(id),
     'release:rollback': (id, confirm) => releases.rollback(id, confirm),
     'release:break-lock': (id, hostId, confirm) => releases.breakLock(id, hostId, confirm),

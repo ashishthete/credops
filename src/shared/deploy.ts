@@ -524,7 +524,16 @@ export interface PreflightRequest {
 export interface ReleaseConfirm {
   typedName?: string
   redeploy?: boolean
+  /** sha256 (hex) of the playbook the user reviewed; start refuses when the playbook it would run differs. */
+  playbookSha256?: string
 }
+/** The playbook a start would run, for review before Deploy. */
+export interface PlaybookPreview {
+  playbook: string
+  sha256: string
+}
+export const PLAYBOOK_SHA256 = /^[0-9a-f]{64}$/
+export const PLAYBOOK_CHANGED_MESSAGE = 'The playbook changed since you reviewed it. Review it again.'
 export interface BreakLockConfirm {
   typedLabel: string
 }

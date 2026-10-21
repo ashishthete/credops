@@ -171,6 +171,7 @@ describe('team deployments', () => {
     const user = userEvent.setup()
     const invoke = await open({
       'release:preflight': { releaseId: REL },
+      'deploy:previewPlaybook': { playbook: '[]', sha256: 'e'.repeat(64) },
       'release:get': releaseDetail({ status: 'preflight', runs: [] }),
       'release:active': [],
     })
@@ -184,15 +185,17 @@ describe('team deployments', () => {
     await user.click(within(dialog).getByRole('checkbox', { name: 'api' }))
     await user.click(within(dialog).getByRole('button', { name: 'Run preflight' }))
     expect(calls(invoke, 'release:preflight')[0][1]).toMatchObject({ environmentId: 'hub-prod', serviceIds: ['hs1'] })
-    await user.click(await within(dialog).findByRole('button', { name: 'Start' }))
+    await user.click(await within(dialog).findByRole('button', { name: 'Review playbook' }))
+    expect(calls(invoke, 'deploy:previewPlaybook').map((c) => c[1])).toEqual([REL])
     // prod-eu is protected: the typed name is required, from the catalog's own flag.
-    await user.click(within(dialog).getByRole('button', { name: 'Start' }))
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Deploy' })).toBeEnabled())
+    await user.click(within(dialog).getByRole('button', { name: 'Deploy' }))
     const confirm = await screen.findByRole('dialog', { name: 'Deploy to prod-eu?' })
-    const ok = within(confirm).getByRole('button', { name: 'Start' })
+    const ok = within(confirm).getByRole('button', { name: 'Deploy' })
     expect(ok).toBeDisabled()
     await user.type(within(confirm).getByLabelText('Type prod-eu to confirm'), 'prod-eu')
     await user.click(ok)
-    await waitFor(() => expect(calls(invoke, 'release:start')[0].slice(1)).toEqual([REL, { typedName: 'prod-eu', redeploy: false }]))
+    await waitFor(() => expect(calls(invoke, 'release:start')[0].slice(1)).toEqual([REL, { typedName: 'prod-eu', redeploy: false, playbookSha256: 'e'.repeat(64) }]))
   })
 
   it('env_locked error shows the holder', async () => {

@@ -62,6 +62,7 @@ import {
   MAX_URL as MAX_HEALTH_URL,
   STEP_TIMEOUT_RANGE,
   MAX_URLS,
+  PLAYBOOK_SHA256,
   VERSION,
   type DeploymentInput,
   type DeploymentPatch,
@@ -321,6 +322,7 @@ export const asPreflightRequest: Check<PreflightRequest> = v.object({
 export const asReleaseConfirm: Check<ReleaseConfirm> = v.object({
   typedName: v.optional(v.str({ max: MAX_NAME })),
   redeploy: v.optional(v.bool()),
+  playbookSha256: v.optional(v.str({ pattern: PLAYBOOK_SHA256 })),
 }) as Check<ReleaseConfirm>
 export const asBreakLockConfirm: Check<BreakLockConfirm> = v.object({ typedLabel: v.str({ max: MAX_NAME }) }) as Check<BreakLockConfirm>
 export const asReleaseListFilter: Check<ReleaseListFilter> = v.object({
@@ -791,6 +793,8 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'service:tunnelClose': args(v.uuid()),
   'service:tunnelSync': args(v.uuid()),
   'release:preflight': args(asPreflightRequest),
+  'deploy:previewPlaybook': args(v.uuid()),
+  'deploy:savePlaybook': args(v.uuid(), v.str({ pattern: PLAYBOOK_SHA256 })),
   'release:start': args(v.uuid(), asReleaseConfirm),
   'release:cancel': args(v.uuid()),
   'release:rollback': args(v.uuid(), asReleaseConfirm),

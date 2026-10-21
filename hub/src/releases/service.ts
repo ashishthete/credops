@@ -2,7 +2,7 @@ import { execFile, spawn } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { Actor, PreflightRequest, ReleaseConfirm, ReleaseDetail, ReleaseListFilter, ReleaseStatus, ReleaseSummary, RunEvent } from '../../../src/shared/deploy'
+import type { Actor, PlaybookPreview, PreflightRequest, ReleaseConfirm, ReleaseDetail, ReleaseListFilter, ReleaseStatus, ReleaseSummary, RunEvent } from '../../../src/shared/deploy'
 import { READY_RELEASE_TTL_MS, type HubAction, type HubEnvManifest, type HubUser } from '../../../src/shared/hub'
 import { startPrivateAgent, type ChildLike } from '../../../src/main/deploy/agent'
 import { DeployError } from '../../../src/main/deploy/access'
@@ -354,6 +354,17 @@ export class HubReleases {
     }
     this.bind(req.environmentId, provisional, res.releaseId)
     return res
+  }
+
+  /** The playbook a start would run, for review on the desktop. Generating it writes nothing and takes no lock. */
+  async previewPlaybook(user: HubUser, releaseId: string): Promise<PlaybookPreview> {
+    const { environmentId } = this.known(releaseId)
+    this.allow(user, 'release.start', environmentId, this.deploymentsOf(releaseId), 'release.start', releaseId)
+    try {
+      return await this.service.previewPlaybook(releaseId, { actor: this.actorOf(user) })
+    } catch (err) {
+      return this.fail(err)
+    }
   }
 
   async start(user: HubUser, releaseId: string, confirm: ReleaseConfirm): Promise<void> {

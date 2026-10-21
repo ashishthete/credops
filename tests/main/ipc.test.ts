@@ -125,6 +125,8 @@ describe('deploy contract', () => {
     'deploy:settings',
     'deploy:updateSettings',
     'deploy:tooling',
+    'deploy:previewPlaybook',
+    'deploy:savePlaybook',
     'release:preflight',
     'release:start',
     'release:cancel',

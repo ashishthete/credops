@@ -2,18 +2,24 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ReleaseService } from '../../src/main/deploy/release-service'
 import { createDeployHandlers } from '../../src/main/ipc/handlers/deploy'
 import { VALIDATORS } from '../../src/main/ipc/validators'
+import { PLAYBOOK_CHANGED_MESSAGE } from '../../src/main/deploy/release-service'
+import { REVIEW_REQUIRED_MESSAGE } from '../../src/main/ipc/handlers/deploy'
 import { MAX_EVENTS_PAGE } from '../../src/shared/deploy'
 import { MAX_SERVICES } from '../../src/shared/services'
 
 const ID = '0190a1b2-c3d4-7e5f-8a6b-1234567890ab'
 const check = (channel: string, args: unknown[]): unknown => (VALIDATORS as Record<string, (a: unknown[]) => unknown>)[channel](args)
 const OPTS = { backup: true, notify: false, qa: false }
+const HASH = 'a'.repeat(64)
 
 describe('release:* validators', () => {
   it('accept well-formed arguments', () => {
     expect(() => check('release:preflight', [{ environmentId: ID, serviceIds: [ID], bump: 'minor', options: OPTS }])).not.toThrow()
     expect(() => check('release:preflight', [{ environmentId: ID, serviceIds: [], checkoutIds: [ID], bump: 'minor', options: OPTS }])).not.toThrow()
     expect(() => check('release:start', [ID, { typedName: 'prod', redeploy: true }])).not.toThrow()
+    expect(() => check('release:start', [ID, { playbookSha256: HASH }])).not.toThrow()
+    expect(() => check('deploy:previewPlaybook', [ID])).not.toThrow()
+    expect(() => check('deploy:savePlaybook', [ID, HASH])).not.toThrow()
     expect(() => check('release:break-lock', [ID, ID, { typedLabel: 'app1' }])).not.toThrow()
     expect(() => check('release:list', [{ environmentId: ID, limit: 10 }])).not.toThrow()
     expect(() => check('release:events', [ID, 0, 5000])).not.toThrow()
@@ -34,6 +40,11 @@ describe('release:* validators', () => {
     ['release:start', ['x', {}], /./],
     ['release:start', [ID, { typedName: 5 }], /typedName/],
     ['release:start', [ID, { redeploy: 'yes' }], /redeploy/],
+    ['release:start', [ID, { playbookSha256: 'A'.repeat(64) }], /playbookSha256/],
+    ['release:start', [ID, { playbookSha256: 'a'.repeat(63) }], /playbookSha256/],
+    ['deploy:previewPlaybook', ['x'], /./],
+    ['deploy:savePlaybook', [ID, 'nope'], /./],
+    ['deploy:savePlaybook', [ID], /./],
     ['release:cancel', [], /./],
     ['release:rollback', [ID, { typedName: {} }], /typedName/],
     ['release:break-lock', [ID, ID, {}], /typedLabel/],
@@ -66,5 +77,52 @@ describe('release handlers', () => {
       [ID, 3, 1000],
     ])
     expect(MAX_EVENTS_PAGE).toBe(5000)
+  })
+})
+
+describe('playbook review handlers', () => {
+  const PLAYBOOK = '[{"hosts":"od-1"}]'
+  const setup = (over: { path?: string } = {}) => {
+    const releases = {
+      previewPlaybook: vi.fn(async () => ({ playbook: PLAYBOOK, sha256: HASH })),
+      start: vi.fn(async () => undefined),
+    }
+    const writes: [string, string][] = []
+    const saveDialog = vi.fn(async () => over.path)
+    const handlers = createDeployHandlers({
+      deploys: {} as never,
+      releases: releases as unknown as ReleaseService,
+      tooling: async () => ({}) as never,
+      playbookFile: { saveDialog, write: async (path, text) => void writes.push([path, text]) },
+    })
+    return { releases, writes, saveDialog, h: handlers as unknown as Record<string, (...a: unknown[]) => Promise<unknown>> }
+  }
+
+  it('release:start refuses a start without a reviewed hash and forwards one with it', async () => {
+    const { releases, h } = setup()
+    await expect(h['release:start'](ID, {})).rejects.toThrow(REVIEW_REQUIRED_MESSAGE)
+    await expect(h['release:start'](ID, { typedName: 'prod' })).rejects.toThrow(REVIEW_REQUIRED_MESSAGE)
+    expect(releases.start).not.toHaveBeenCalled()
+    await h['release:start'](ID, { playbookSha256: HASH, redeploy: true })
+    expect(releases.start).toHaveBeenCalledWith(ID, { playbookSha256: HASH, redeploy: true })
+  })
+
+  it('deploy:previewPlaybook returns the preview; deploy:savePlaybook writes only that text where the dialog says', async () => {
+    const { h, writes, saveDialog } = setup({ path: '/tmp/x/review.yml' })
+    expect(await h['deploy:previewPlaybook'](ID)).toEqual({ playbook: PLAYBOOK, sha256: HASH })
+    expect(await h['deploy:savePlaybook'](ID, HASH)).toEqual({ path: '/tmp/x/review.yml' })
+    expect(saveDialog).toHaveBeenCalledTimes(1)
+    expect(writes).toEqual([['/tmp/x/review.yml', PLAYBOOK]])
+  })
+
+  it('deploy:savePlaybook refuses a playbook that was not the last one reviewed, and a cancelled dialog writes nothing', async () => {
+    const { h, writes, saveDialog } = setup()
+    await expect(h['deploy:savePlaybook'](ID, HASH)).rejects.toThrow(PLAYBOOK_CHANGED_MESSAGE)
+    await h['deploy:previewPlaybook'](ID)
+    await expect(h['deploy:savePlaybook'](ID, 'b'.repeat(64))).rejects.toThrow(PLAYBOOK_CHANGED_MESSAGE)
+    await expect(h['deploy:savePlaybook']('0190a1b2-c3d4-7e5f-8a6b-1234567890ac', HASH)).rejects.toThrow(PLAYBOOK_CHANGED_MESSAGE)
+    expect(saveDialog).not.toHaveBeenCalled()
+    expect(await h['deploy:savePlaybook'](ID, HASH)).toBeNull()
+    expect(writes).toEqual([])
   })
 })

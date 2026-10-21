@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType } from 'react'
-import { bumpVersion, BREAK_LOCK_CONFIRM_MESSAGE, type VersionBump } from '../../../../../shared/deploy'
+import { bumpVersion, BREAK_LOCK_CONFIRM_MESSAGE, PLAYBOOK_CHANGED_MESSAGE, type PlaybookPreview, type VersionBump } from '../../../../../shared/deploy'
 import { pickerGroups, selectionRequest, type PickerGroup } from '../../../deploy/picker'
 import { closeRelease, openRelease, startReleaseSync, usePreflight } from '../../../deploy/releases'
 import { loadSettings, startDeploySync, useDeploy, useDeployments, useServices } from '../../../deploy/store'
@@ -12,6 +12,7 @@ import { Dialog } from '../../../ui/Dialog'
 import { Segmented } from '../../../ui/Segmented'
 import { createStore } from '../../../ui/store'
 import { CommitList } from './CommitList'
+import { PlaybookReview } from './PlaybookReview'
 import { PreflightChecklist } from './PreflightChecklist'
 import { CheckoutNotice, DatabaseRows, ServicePicker } from './ServicePicker'
 import { ReleaseView } from './ReleaseView'
@@ -47,9 +48,9 @@ const BUMPS = [
 const FURTHER: Partial<Record<VersionBump, VersionBump>> = { patch: 'minor', minor: 'major' }
 const PHASE_9 = 'Available with notifications (Phase 9)'
 
-type Step = 'pick' | 'preflight' | 'confirm' | 'started'
+type Step = 'pick' | 'preflight' | 'review' | 'started'
 
-/** Pick services, run preflight, confirm and start a release, on one surface. */
+/** Pick services, run preflight, review the playbook and start the release, on one surface. */
 export function DeployWizard({ environmentId, preselect, onClose }: { environmentId: string; preselect: string[]; onClose: () => void }) {
   const data = useInventory()
   const { catalog } = useHub()
@@ -75,6 +76,9 @@ export function DeployWizard({ environmentId, preselect, onClose }: { environmen
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
+  // The playbook under review; Deploy sends its hash, and main refuses the start if what would run differs.
+  const [reviewed, setReviewed] = useState<PlaybookPreview | null>(null)
+  const [saved, setSaved] = useState<string | null>(null)
   const pre = usePreflight(releaseId)
   const report = pre?.report ?? null
 
@@ -184,6 +188,22 @@ export function DeployWizard({ environmentId, preselect, onClose }: { environmen
     })
   }
 
+  const review = async () => {
+    if (!releaseId) return
+    const id = releaseId
+    setReviewed(null)
+    setSaved(null)
+    setStep('review')
+    const out = await attempt("Couldn't generate the playbook", () => api.invoke('deploy:previewPlaybook', id), setError)
+    if (out && held.current === id) setReviewed(out)
+  }
+
+  const save = async () => {
+    if (!releaseId || !reviewed) return
+    const out = await attempt("Couldn't save the playbook", () => api.invoke('deploy:savePlaybook', releaseId, reviewed.sha256))
+    if (out) setSaved(out.path)
+  }
+
   const back = () => {
     if (starting) return
     drop()
@@ -194,16 +214,30 @@ export function DeployWizard({ environmentId, preselect, onClose }: { environmen
   }
 
   const start = async () => {
-    if (!releaseId || !env) return
+    if (!releaseId || !env || !reviewed) return
+    const { sha256 } = reviewed
     const begin = async (typedName?: string) => {
       setStarting(true)
+      setError(null)
+      let changed = false
       const ok = await attempt(
         "Couldn't start the release",
-        () => api.invoke('release:start', releaseId, { ...(typedName !== undefined ? { typedName } : {}), redeploy }),
-        setError,
+        () => api.invoke('release:start', releaseId, { ...(typedName !== undefined ? { typedName } : {}), redeploy, playbookSha256: sha256 }),
+        (message) => {
+          changed = message.includes(PLAYBOOK_CHANGED_MESSAGE)
+          setError(message)
+        },
       )
       setStarting(false)
-      if (ok === undefined) return
+      if (ok === undefined) {
+        // Show what would run now, so the next Deploy is bound to the playbook the person has seen.
+        if (changed) {
+          setReviewed(null)
+          const out = await attempt("Couldn't generate the playbook", () => api.invoke('deploy:previewPlaybook', releaseId), setError)
+          if (out && held.current === releaseId) setReviewed(out)
+        }
+        return
+      }
       held.current = null
       setStep('started')
     }
@@ -211,7 +245,7 @@ export function DeployWizard({ environmentId, preselect, onClose }: { environmen
       setConfirm({
         title: `Deploy to ${env.name}?`,
         description: `${env.name} is protected.`,
-        confirmLabel: 'Start',
+        confirmLabel: 'Deploy',
         typeToConfirm: env.name,
         run: () => begin(env.name),
       })
@@ -261,21 +295,28 @@ export function DeployWizard({ environmentId, preselect, onClose }: { environmen
         <Button variant="ghost" onClick={back}>
           Back
         </Button>
-        <Button disabled={!ready || (nothingNew && !redeploy)} onClick={() => setStep('confirm')}>
-          Start
+        <Button disabled={!ready || (nothingNew && !redeploy)} onClick={() => void review()}>
+          Review playbook
         </Button>
       </>
     ),
-    confirm: (
+    review: (
       <>
         <Button variant="ghost" disabled={starting} onClick={close}>
           Cancel
         </Button>
-        <Button variant="ghost" disabled={starting} onClick={() => setStep('preflight')}>
+        <Button
+          variant="ghost"
+          disabled={starting}
+          onClick={() => {
+            setError(null)
+            setStep('preflight')
+          }}
+        >
           Back
         </Button>
-        <Button loading={starting} onClick={() => void start()}>
-          Start
+        <Button disabled={!reviewed} loading={starting} onClick={() => void start()}>
+          Deploy
         </Button>
       </>
     ),
@@ -356,7 +397,7 @@ export function DeployWizard({ environmentId, preselect, onClose }: { environmen
                     disabled={!ready}
                     onClick={() => {
                       setRedeploy(true)
-                      setStep('confirm')
+                      void review()
                     }}
                   >
                     Redeploy anyway
@@ -366,14 +407,18 @@ export function DeployWizard({ environmentId, preselect, onClose }: { environmen
             </>
           )}
 
-          {step === 'confirm' && (
-            <div className="flex flex-col gap-2 border-l-2 pl-3" style={{ borderColor: env?.color }}>
-              <p className="text-[13px] font-medium text-fg">{summary}</p>
-              {next && <p className="font-mono text-[12.5px] text-fg/85 tabular-nums">{preview}</p>}
-              <p className="text-[12px] text-muted">
-                {[backup ? 'Databases backed up first' : 'No database backup', ...(redeploy ? ['Redeploys the current commits'] : [])].join(' · ')}
-              </p>
-            </div>
+          {step === 'review' && (
+            <>
+              <div className="flex flex-col gap-2 border-l-2 pl-3" style={{ borderColor: env?.color }}>
+                <p className="text-[13px] font-medium text-fg">{summary}</p>
+                {next && <p className="font-mono text-[12.5px] text-fg/85 tabular-nums">{preview}</p>}
+                <p className="text-[12px] text-muted">
+                  {[backup ? 'Databases backed up first' : 'No database backup', ...(redeploy ? ['Redeploys the current commits'] : [])].join(' · ')}
+                </p>
+              </div>
+              <PlaybookReview playbook={reviewed?.playbook ?? null} autoRollback={settings?.autoRollback ?? false} onSave={() => void save()} />
+              {saved && <p className="text-[12px] text-muted">Saved to {saved}</p>}
+            </>
           )}
 
           {step === 'started' && releaseId && <ReleaseView releaseId={releaseId} />}

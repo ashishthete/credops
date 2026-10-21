@@ -38,7 +38,7 @@ const noLocal = (): ReleaseApi => {
     throw new Error('the local release service was used for a Hub release')
   }
   return {
-    preflight: boom, start: boom, cancel: boom, rollback: boom, breakLock: boom, discard: boom, retryVersion: boom, setNotes: boom,
+    preflight: boom, previewPlaybook: boom, start: boom, cancel: boom, rollback: boom, breakLock: boom, discard: boom, retryVersion: boom, setNotes: boom,
     list: () => [], listActive: () => [], detail: boom, events: boom, runMeta: boom, hasActive: () => false, onEvent: () => () => undefined,
   }
 }
