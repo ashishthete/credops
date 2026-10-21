@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { useId, useRef, type KeyboardEvent } from 'react'
+import { useId, useRef, type KeyboardEvent, type ReactNode } from 'react'
 import { spring, useMotionSafe } from './motion'
 
 /** A segmented radio group; the arrow keys move the choice. */
@@ -11,7 +11,7 @@ export function Segmented<T extends string>({
   size = 'md',
 }: {
   label: string
-  options: readonly { id: T; label: string }[]
+  options: readonly { id: T; label: string; icon?: ReactNode }[]
   value: T
   onChange: (v: T) => void
   size?: 'sm' | 'md'
@@ -61,7 +61,10 @@ export function Segmented<T extends string>({
                 className="absolute inset-0 rounded-md bg-accent/14 shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--accent)_45%,transparent)]"
               />
             )}
-            <span className="relative">{o.label}</span>
+            <span className="relative inline-flex items-center gap-1.5">
+              {o.icon}
+              {o.label}
+            </span>
           </motion.button>
         )
       })}
