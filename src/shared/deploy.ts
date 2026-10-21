@@ -22,7 +22,10 @@ export const RUNS_SUBDIR = '.opsdeck/runs'
 export const REPO_PATH = /^(?!.*\.\.)(?!.*\/\/)(?!.*\/\.(?:\/|$))\/[A-Za-z0-9._@+/-]{1,255}(?<!\/)$/
 export const BACKUP_DIR = REPO_PATH
 export const GIT_REF = /^(?!.*\.\.)(?!.*\/\/)(?!\/)(?!.*\/$)(?!.*\.lock$)(?!-)[A-Za-z0-9._/-]{1,200}$/
-export const COMPOSE_FILE = /^(?!\/)(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,200}$/
+/** A relative path inside the repo, or COMPOSE_AUTO (empty). */
+export const COMPOSE_FILE = /^(?!\/)(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{0,200}$/
+/** composeFile '' lets Compose discover its own files (no `-f`): compose.yaml and docker-compose.override.yml, COMPOSE_FILE. */
+export const COMPOSE_AUTO = ''
 export const VERSION = /^v\d+\.\d+\.\d+$/
 export const COMPOSE_PROJECT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/
 /** A service name inside a compose file: the same rule, so it can never look like an option or carry shell syntax. */

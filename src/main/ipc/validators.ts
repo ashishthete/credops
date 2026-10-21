@@ -271,7 +271,7 @@ const deployFields = {
   repoPath: deployPath,
   defaultBranch: v.str({ min: 1, max: MAX_GIT_REF_INPUT }),
   deployTag: v.str({ min: 1, max: MAX_GIT_REF_INPUT }),
-  composeFile: v.str({ min: 1, max: MAX_COMPOSE_FILE_INPUT }),
+  composeFile: v.str({ max: MAX_COMPOSE_FILE_INPUT }),
   position: v.int({ min: 0, max: MAX_POSITION }),
   urls: v.array(healthUrl, MAX_URLS),
   healthStatus: range(HEALTH_STATUS_RANGE),

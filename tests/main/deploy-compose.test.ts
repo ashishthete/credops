@@ -44,3 +44,12 @@ describe('compose helper', () => {
     expect(words.slice(run + 1)).toEqual(['compose', '-f', 'deploy/compose.yml', '-p', 'p1', 'logs', '--tail', '50', 'web'])
   })
 })
+
+describe('compose auto', () => {
+  it("composeFile '' omits -f in composeArgs and composeCommand", () => {
+    const A = { composeFile: '', composeProject: 'p1' }
+    expect(composeArgs(A, ['build'])).toEqual(['compose', '-p', 'p1', 'build'])
+    expect(composeArgs({ ...A, composeProject: null }, ['up', '-d'], ['web'])).toEqual(['compose', 'up', '-d', 'web'])
+    expect(shellWords(composeCommand({ composeFile: '', composeProject: null }, ['build']))).toEqual(['docker', 'compose', 'build'])
+  })
+})

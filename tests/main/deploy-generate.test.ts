@@ -4,6 +4,7 @@ import { matchSshConfig } from '../../src/main/inventory/ssh-config'
 import { generateAnsibleCfg, generateInventory, generateKnownHosts, generatePlaybook, generateSshConfig, knownHostsToken, socketPathFits } from '../../src/main/deploy/generate'
 import { b64, lockJson, sanitizeIdent } from '../../src/main/deploy/quote'
 import type { DeployPlan, PlanKind } from '../../src/main/deploy/runner'
+import { COMPOSE_AUTO, COMPOSE_FILE } from '../../src/shared/deploy'
 import { MAX_SERVICES } from '../../src/shared/services'
 import { FIX, planFixture, shellWords } from './deploy-helpers'
 
@@ -807,5 +808,47 @@ describe('compose service lists', () => {
         expect(r.stderr, `${kind}: ${cmd}`).toBe('')
         expect(r.status).toBe(0)
       }
+  })
+})
+
+describe('compose file auto (row 11)', () => {
+  const planWith = (kind: PlanKind, composeFile: string): DeployPlan => {
+    const plan = planFixture({ kind })
+    plan.deployments[0].composeFile = composeFile
+    return plan
+  }
+  const taskNamed = (plan: DeployPlan, step_: string): Task =>
+    plays(plan).flatMap((p) => flat(p.tasks)).find((t) => step(t) === step_ && t.tags!.includes(`od_run=${plan.deployments[0].runId}`))!
+
+  it("'' omits -f from build, up, rb_build and rb_up", () => {
+    for (const [kind, steps_] of [['release', ['build', 'up']], ['rollback', ['rb_build', 'rb_up']]] as [PlanKind, string[]][]) {
+      const plan = planWith(kind, '')
+      for (const s of steps_) {
+        const words = dockerWords(cmdOf(taskNamed(plan, s)))
+        expect(words.slice(0, 2), s).toEqual(['docker', 'compose'])
+        expect(words, s).not.toContain('-f')
+      }
+    }
+  })
+
+  it('a named compose file still generates -f exactly as before', () => {
+    expect(dockerWords(cmdOf(taskNamed(planWith('release', 'docker-compose.yml'), 'build')))).toEqual(['docker', 'compose', '-f', 'docker-compose.yml', 'build'])
+    expect(dockerWords(cmdOf(taskNamed(planWith('release', 'docker-compose.yml'), 'up')))).toEqual(['docker', 'compose', '-f', 'docker-compose.yml', 'up', '-d'])
+  })
+
+  it("the preflight for '' checks the four default names; a named file keeps the single -f check", () => {
+    const pfCmd = (cf: string): string =>
+      cmdOf(plays(planWith('preflight', cf)).flatMap((p) => every(p.tasks).map((x) => x.t)).find((t) => t.name === 'preflight compose dep1')!)
+    const auto = pfCmd('')
+    for (const n of ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml']) expect(auto).toContain(`[ -f ${n} ]`)
+    expect(auto).not.toContain('"$C"')
+    expect(auto).toContain('$D compose config')
+    expect(pfCmd('docker-compose.yml')).toContain('if [ -f "$C" ]; then')
+  })
+
+  it('COMPOSE_FILE accepts the empty auto value and still rejects bad tokens', () => {
+    expect(COMPOSE_FILE.test(COMPOSE_AUTO)).toBe(true)
+    expect(COMPOSE_AUTO).toBe('')
+    for (const bad of ['-f', '/etc/x', '../x', 'a b', '{{x}}']) expect(COMPOSE_FILE.test(bad), bad).toBe(false)
   })
 })

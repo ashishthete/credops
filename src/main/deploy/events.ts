@@ -610,9 +610,9 @@ export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, str
 
       const cp = get('compose')
       if (!cp) noResult('compose', 'The compose check')
-      else if (cp.exists !== '1') add('compose', 'block', `compose file ${d.composeFile} not found in ${d.repoPath}`)
+      else if (cp.exists !== '1') add('compose', 'block', d.composeFile === '' ? `no compose file found in ${d.repoPath}` : `compose file ${d.composeFile} not found in ${d.repoPath}`)
       else {
-        add('compose', 'ok', `${d.composeFile} exists`)
+        add('compose', 'ok', d.composeFile === '' ? 'compose file found' : `${d.composeFile} exists`)
         composeServices[d.deploymentId] = decodeServices(cp.services_b64)
         // partial checkouts: a warning for what --no-deps leaves stopped, never a block
         if (d.services !== null) {

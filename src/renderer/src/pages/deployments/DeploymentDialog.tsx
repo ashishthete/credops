@@ -1,6 +1,6 @@
 import { Plus, X } from 'lucide-react'
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import { MAX_URLS } from '../../../../shared/deploy'
+import { COMPOSE_AUTO, MAX_URLS } from '../../../../shared/deploy'
 import { REPO_URL_LEGACY_WARNING, isLegacyRepoUrl } from '../../../../shared/inventory'
 import type { SecretMeta } from '../../../../shared/vault'
 import { blankForm, checkForm, formFrom, toInput, toPatch, type DeploymentForm, type FormField } from '../../deploy/form'
@@ -227,9 +227,18 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
           )}
           <div className="grid grid-cols-3 gap-3">
             <TextField label="Branch" value={form.defaultBranch} onChange={(e) => set({ defaultBranch: e.target.value })} className="font-mono" spellCheck={false} error={err('defaultBranch')} />
-            <TextField label="Compose file" value={form.composeFile} onChange={(e) => set({ composeFile: e.target.value })} className="font-mono" spellCheck={false} error={err('composeFile')} />
+            {form.composeFile === COMPOSE_AUTO ? (
+              <TextField label="Compose file" value="Found by Compose" disabled readOnly />
+            ) : (
+              <TextField label="Compose file" value={form.composeFile} onChange={(e) => set({ composeFile: e.target.value })} className="font-mono" spellCheck={false} error={err('composeFile')} />
+            )}
             <TextField label="Deploy tag" value={form.deployTag} onChange={(e) => set({ deployTag: e.target.value })} placeholder="deployed-prod" className="font-mono" spellCheck={false} error={err('deployTag')} />
           </div>
+          <Switch
+            label="Let Compose find files (uses docker-compose.override.yml and COMPOSE_FILE)"
+            checked={form.composeFile === COMPOSE_AUTO}
+            onChange={(on) => set({ composeFile: on ? COMPOSE_AUTO : 'docker-compose.yml' })}
+          />
         </Section>
 
         <Section title="Health">

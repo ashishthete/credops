@@ -1,4 +1,4 @@
-import { BACKUP_DIR, COMPOSE_FILE, COMPOSE_PROJECT, GIT_REF, MAX_URL, REPO_PATH, RUNS_SUBDIR, VERSION } from '../../shared/deploy'
+import { BACKUP_DIR, COMPOSE_AUTO, COMPOSE_FILE, COMPOSE_PROJECT, GIT_REF, MAX_URL, REPO_PATH, RUNS_SUBDIR, VERSION } from '../../shared/deploy'
 import { MAX_SERVICES } from '../../shared/services'
 import { checkComposeServices, composeCommand } from './compose'
 import { ALIAS, B64, b64, lockJson, need, sanitizeIdent } from './quote'
@@ -448,8 +448,9 @@ function preflightTasks(plan: DeployPlan, d: PlanDeployment): Task[] {
       'echo "OD-PF branch fetched=$f exists=$v"',
     ].join('\n')),
     pf(d, 'compose', [
-      'C={{ d.compose | quote }}',
-      'if [ -f "$C" ]; then',
+      ...(d.composeFile === COMPOSE_AUTO
+        ? ['if [ -f compose.yaml ] || [ -f compose.yml ] || [ -f docker-compose.yaml ] || [ -f docker-compose.yml ]; then']
+        : ['C={{ d.compose | quote }}', 'if [ -f "$C" ]; then']),
       `  s=$(${composeCommand(composeOf(d), ['config', '--services'], [], { sudo: 'auto' })} 2>/dev/null | base64 | tr -d '\\n')`,
       '  echo "OD-PF compose exists=1 services_b64=$s"',
       'else echo "OD-PF compose exists=0"; fi',
