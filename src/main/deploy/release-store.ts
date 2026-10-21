@@ -256,13 +256,16 @@ export class ReleaseStore {
 
   /**
    * Per environment, its newest release that started or is running (a preflight, a ready or blocked one and a discarded
-   * one never ran), with the commits of its first run that deployed one. One statement for every environment.
+   * one never ran), with the commits of its first run that deployed one. One statement for every environment: each
+   * environment walks releases_env from its newest release back, so the cost follows environments, not all releases.
    */
   latestPerEnvironment(): EnvLastRelease[] {
     const run = (col: string) =>
       `(SELECT d.${col} FROM deployment_runs d WHERE d.release_id = q.id ORDER BY d.deployed_commit IS NULL, d.position, d.id LIMIT 1)`
     const sql = `SELECT q.*, ${run('previous_commit')} AS last_previous_commit, ${run('deployed_commit')} AS last_deployed_commit
-      FROM (${SELECT} WHERE r.id IN (SELECT MAX(id) FROM releases WHERE status NOT IN ('preflight','ready','blocked','discarded') GROUP BY environment_id)) q
+      FROM (${SELECT} WHERE r.id IN (SELECT (SELECT r2.id FROM releases r2 WHERE r2.environment_id = e.id
+          AND r2.status NOT IN ('preflight','ready','blocked','discarded') ORDER BY r2.created_at DESC, r2.id DESC LIMIT 1)
+        FROM environments e)) q
       ORDER BY q.id DESC`
     const rows = this.db.prepare(sql).all() as unknown as (ReleaseRow & { last_previous_commit: string | null; last_deployed_commit: string | null })[]
     return rows.map((r) => ({ ...summary(r), previousCommit: r.last_previous_commit, deployedCommit: r.last_deployed_commit }))

@@ -198,6 +198,17 @@ describe('ReleaseStore', () => {
     expect(byEnv.get(f.prod.id)).toMatchObject({ id: failed.id, status: 'failed', previousCommit: null, deployedCommit: null })
   })
 
+  it('latestPerEnvironment looks each environment up in the release index rather than scanning every release', async () => {
+    const f = await makeDeployFixture()
+    const spy = vi.spyOn(f.db, 'prepare')
+    f.releases.latestPerEnvironment()
+    const sql = spy.mock.calls[0][0] as string
+    spy.mockRestore()
+    const plan = (f.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as { detail: string }[]).map((r) => r.detail)
+    expect(plan.some((d) => /SEARCH r2 USING INDEX releases_env/.test(d))).toBe(true)
+    expect(plan.some((d) => /SCAN (releases|r2)\b/.test(d))).toBe(false)
+  })
+
   it('failInterrupted marks running and rolling_back as failed', async () => {
     const { f, d, r } = await release()
     const mk = () =>
