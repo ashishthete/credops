@@ -222,6 +222,10 @@ describe('toHubIntegrations', () => {
     const m = await buildManifest(f.prod.id, { ...deps, integrations: () => toHubIntegrations(local) })
     expect(m.integrations).toEqual({ notifyEvents: ['release.failed'], emailTo: ['ops@example.com'], emailCc: ['lead@example.com'], qaOnDeploy: true, qa: { repo: 'acme/web', workflow: 'qa.yml', ref: 'main' }, qaWait: true })
     expect(JSON.stringify(m)).not.toContain('secret-id-of-the-teams-webhook')
+    // an environment with a wait time publishes it; one without publishes the same qa object as before
+    const withWait = toHubIntegrations({ ...local, qa: { repo: 'acme/web', workflow: 'qa.yml', ref: 'main', waitMinutes: 90 } })
+    expect(withWait.qa).toEqual({ repo: 'acme/web', workflow: 'qa.yml', ref: 'main', waitMinutes: 90 })
+    expect(Object.keys(toHubIntegrations(local).qa as object)).toEqual(['repo', 'workflow', 'ref'])
     expect(JSON.stringify(m)).not.toContain('updatedAt')
   })
 })

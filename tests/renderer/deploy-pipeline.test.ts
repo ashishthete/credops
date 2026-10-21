@@ -102,4 +102,22 @@ describe('pipeline reducer', () => {
     expect(etaMs(s, history, buildStart + 15_000)).toBe(5_000 + 5_000)
     expect(etaMs(s, {}, 0)).toBeNull()
   })
+
+  it('a run.started after a finished run (retry tagging) clears the result and starts the version tag over', () => {
+    const upTo = OK_RUN.findIndex((e) => e.type === 'step.started' && e.stepId === 'release:version')
+    const first = events([
+      ...OK_RUN.slice(0, upTo),
+      { type: 'step.started', stepId: 'release:version', kind: 'version', name: 'version', hostId: null, deploymentRunId: null },
+      { type: 'step.failed', stepId: 'release:version', error: 'push rejected', durationMs: 1000 },
+      { type: 'run.finished', status: 'failed' },
+    ])
+    const done = reducePipeline(initialPipeline(releaseDetail()), first)
+    expect(done.result).toEqual({ status: 'failed' })
+    const again = reducePipeline(done, events([{ type: 'run.started', kind: 'release', version: 'v1.5.0' }], first.length + 1))
+    expect(again.status).toBe('running')
+    expect(again.result).toBeNull()
+    expect(again.release.find((c) => c.stepId === 'release:version')).toMatchObject({ state: 'pending', error: null, durationMs: null, startedAt: null })
+    // The steps of the first run keep what they did
+    expect(again.lanes[0]!.runs[0]!.chips.every((c) => c.state === 'ok')).toBe(true)
+  })
 })

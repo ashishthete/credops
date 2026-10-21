@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { homedir, hostname, userInfo } from 'node:os'
@@ -46,6 +47,7 @@ import { startPrivateAgent, type ChildLike } from './deploy/agent'
 import { prepareHosts } from './deploy/hostkeys'
 import { LocalRunner, nodeFs, nodeSpawn } from './deploy/local-runner'
 import { startTap } from './deploy/log-tap'
+import { maskEvents, maskSummary } from './deploy/mask'
 import { localAllowAll } from './deploy/access'
 import { HubAccess, RoutingAccess } from './hub/access'
 import { HubCatalog } from './hub/catalog'
@@ -414,7 +416,7 @@ if (!app.requestSingleInstanceLock()) {
         identities,
         secrets,
         emit: (batch) => pushEvent(mainWindow, 'deploy:event', batch),
-        emitState: (summary) => pushEvent(mainWindow, 'release:state', summary),
+        emitState: (summary) => pushEvent(mainWindow, 'release:state', maskSummary(summary, knownSecrets())),
         actor,
         now: () => new Date(),
         clock: { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: (h) => clearTimeout(h as NodeJS.Timeout) },
@@ -436,8 +438,9 @@ if (!app.requestSingleInstanceLock()) {
         backoff: backoffMs,
         sleep: sleepUnlessAborted,
         push: {
-          events: (batch) => pushEvent(mainWindow, 'deploy:event', batch),
-          state: (summary) => pushEvent(mainWindow, 'release:state', summary),
+          // The Hub's text reaches this desktop as the Hub sent it: mask it here, as `release:events` and `release:list` do.
+          events: (batch) => pushEvent(mainWindow, 'deploy:event', maskEvents(batch, knownSecrets())),
+          state: (summary) => pushEvent(mainWindow, 'release:state', maskSummary(summary, knownSecrets())),
           locks: () => pushEvent(mainWindow, 'hub:locks', {}),
           catalog: () => void hubCatalog.refresh().catch(() => undefined),
         },
@@ -637,7 +640,25 @@ if (!app.requestSingleInstanceLock()) {
           }),
           ...createSshImportHandlers(importer),
           ...createTunnelHandlers({ store: tunnels, manager: runner }),
-          ...createDeployHandlers({ deploys, releases, tooling: () => detectTools(toolDeps), catalog: hubCatalog, published: (environmentId) => hubEnvLink.get(environmentId) !== undefined }),
+          ...createDeployHandlers({
+            deploys,
+            releases,
+            tooling: () => detectTools(toolDeps),
+            catalog: hubCatalog,
+            published: (environmentId) => hubEnvLink.get(environmentId) !== undefined,
+            playbookFile: {
+              saveDialog: async (releaseId) => {
+                const opts: Electron.SaveDialogOptions = { defaultPath: `opsdeck-playbook-${releaseId.slice(0, 8)}.yml`, filters: [{ name: 'YAML', extensions: ['yml', 'yaml'] }] }
+                const res = mainWindow
+                  ? await dialog.showSaveDialog(mainWindow, opts)
+                  : await dialog.showSaveDialog(opts)
+                return res.canceled ? undefined : res.filePath
+              },
+              write: (path, text) => writeFile(path, text, 'utf8'),
+            },
+            lastReleases: () => release.latestPerEnvironment(),
+            knownSecrets,
+          }),
           ...createServiceHandlers({
             services,
             copy: (req) => copyServices(copyDeps, req),

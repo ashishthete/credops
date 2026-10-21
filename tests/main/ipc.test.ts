@@ -124,7 +124,11 @@ describe('deploy contract', () => {
     'deploy:reorder',
     'deploy:settings',
     'deploy:updateSettings',
+    'deploy:applyBatch',
     'deploy:tooling',
+    'deploy:previewPlaybook',
+    'deploy:savePlaybook',
+    'release:savePlaybook',
     'release:preflight',
     'release:start',
     'release:cancel',
@@ -137,6 +141,7 @@ describe('deploy contract', () => {
     'release:get',
     'release:events',
     'release:active',
+    'release:latest',
   ]
 
   it('lists every deploy channel and the changed event, all validated', () => {

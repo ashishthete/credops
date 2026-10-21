@@ -53,6 +53,28 @@ function report(over: Partial<PreflightReport> = {}): PreflightReport {
 }
 
 const check = (over: Partial<PreflightCheck> & { id: string }): PreflightCheck => ({ deploymentId: null, hostId: 'h1', label: over.id, level: 'ok', message: '', ...over })
+const HASH = 'c'.repeat(64)
+const task = (kind: string) => ({ name: `${kind} core`, 'ansible.builtin.command': 'true', tags: [`od_step=${kind}`, 'od_run=r1'] })
+const PLAYBOOK = JSON.stringify(
+  [
+    {
+      hosts: 'od-1',
+      tasks: [
+        { name: 'lock', tags: ['od_step=lock'] },
+        {
+          name: 'deployment core',
+          vars: { d: { run: 'r1', name: 'core' } },
+          block: ['fetch', 'build', 'up', 'health', 'tag'].map(task),
+          rescue: [{ 'ansible.builtin.set_fact': { od_failed: true } }],
+        },
+      ],
+    },
+  ],
+  null,
+  2,
+)
+const PREVIEW = { playbook: PLAYBOOK, sha256: HASH }
+
 const calls = (invoke: ReturnType<typeof mockBridge>, channel: string) => (invoke.mock.calls as unknown[][]).filter((x) => x[0] === channel)
 
 /** `persisted` is what `release:events` replays; a test can also push live batches. */
@@ -64,6 +86,7 @@ async function mount({ preselect = [] as string[], env = staging, persisted = []
     'service:list': SERVICES,
     'deploy:settings': envSettings(),
     'release:preflight': { releaseId: REL },
+    'deploy:previewPlaybook': PREVIEW,
     'release:get': releaseDetail({ status: 'preflight', runs: [] }),
     'release:active': [],
   })
@@ -250,10 +273,10 @@ describe('deploy wizard', () => {
     })
   })
 
-  it('deps warning shows and does not block Start', async () => {
+  it('deps warning shows and does not block the review', async () => {
     const { user, dialog } = await mount({ preselect: ['s1'] })
     await preflight(user, dialog)
-    const start = within(dialog).getByRole('button', { name: 'Start' })
+    const start = within(dialog).getByRole('button', { name: 'Review playbook' })
     expect(start).toBeDisabled()
     const deps = check({ id: 'deps', deploymentId: 'd1', label: 'Dependencies on app1', level: 'warn', message: 'redis is not running' })
     act(() => emitBridgeEvent('deploy:event', events([{ type: 'preflight.check', check: check({ id: 'repo', deploymentId: 'd1', label: 'Repo on app1' }) }, { type: 'preflight.check', check: deps }])))
@@ -261,7 +284,7 @@ describe('deploy wizard', () => {
     expect(within(list).getByText('redis is not running')).toBeInTheDocument()
     expect(within(list).getAllByRole('listitem')).toHaveLength(2)
     act(() => emitBridgeEvent('deploy:event', events([{ type: 'preflight.done', report: report({ checks: [deps] }) }], 3)))
-    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Start' })).toBeEnabled())
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Review playbook' })).toBeEnabled())
   })
 
   it('a blocking check disables Start and shows its fix', async () => {
@@ -270,7 +293,7 @@ describe('deploy wizard', () => {
     await preflight(user, dialog)
     await within(dialog).findByText('Uncommitted changes on app1:/srv/core')
     expect(within(dialog).getByText('git -C /srv/core status')).toBeInTheDocument()
-    expect(within(dialog).getByRole('button', { name: 'Start' })).toBeDisabled()
+    expect(within(dialog).getByRole('button', { name: 'Review playbook' })).toBeDisabled()
   })
 
   it('commits are grouped by service and show +n more when unknown', async () => {
@@ -296,29 +319,30 @@ describe('deploy wizard', () => {
     const { user, dialog, invoke } = await mount({ preselect: ['s1'], persisted: events([{ type: 'preflight.done', report: report({ commitsTotal: 0 }) }]) })
     await preflight(user, dialog)
     await within(dialog).findByText('Nothing new to deploy')
-    expect(within(dialog).getByRole('button', { name: 'Start' })).toBeDisabled()
+    expect(within(dialog).getByRole('button', { name: 'Review playbook' })).toBeDisabled()
     await user.click(within(dialog).getByRole('button', { name: 'Redeploy anyway' }))
     expect(within(dialog).getByText('Deploying to staging · 1 host · 1 service')).toBeInTheDocument()
-    await user.click(within(dialog).getByRole('button', { name: 'Start' }))
-    await waitFor(() => expect(calls(invoke, 'release:start')[0].slice(1)).toEqual([REL, { redeploy: true }]))
+    await user.click(await within(dialog).findByRole('button', { name: 'Deploy' }))
+    await waitFor(() => expect(calls(invoke, 'release:start')[0].slice(1)).toEqual([REL, { redeploy: true, playbookSha256: HASH }]))
   })
 
   it('protected start requires typing the environment name', async () => {
     const prod = environment({ ...staging, protected: true })
     const { user, dialog, invoke } = await mount({ env: prod, preselect: ['s1', 's3'], persisted: events([{ type: 'preflight.done', report: report() }]) })
     await preflight(user, dialog)
-    await user.click(await within(dialog).findByRole('button', { name: 'Start' }))
+    await user.click(await within(dialog).findByRole('button', { name: 'Review playbook' }))
     expect(within(dialog).getByText('Deploying to staging · 2 hosts · 2 services')).toBeInTheDocument()
-    await user.click(within(dialog).getByRole('button', { name: 'Start' }))
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Deploy' })).toBeEnabled())
+    await user.click(within(dialog).getByRole('button', { name: 'Deploy' }))
     const confirm = await screen.findByRole('dialog', { name: 'Deploy to staging?' })
-    const ok = within(confirm).getByRole('button', { name: 'Start' })
+    const ok = within(confirm).getByRole('button', { name: 'Deploy' })
     expect(ok).toBeDisabled()
     await user.type(within(confirm).getByLabelText('Type staging to confirm'), 'stagin')
     expect(ok).toBeDisabled()
     expect(calls(invoke, 'release:start')).toHaveLength(0)
     await user.type(within(confirm).getByLabelText('Type staging to confirm'), 'g')
     await user.click(ok)
-    await waitFor(() => expect(calls(invoke, 'release:start')[0].slice(1)).toEqual([REL, { typedName: 'staging', redeploy: false }]))
+    await waitFor(() => expect(calls(invoke, 'release:start')[0].slice(1)).toEqual([REL, { typedName: 'staging', redeploy: false, playbookSha256: HASH }]))
   })
 
   it('closing before start discards', async () => {
@@ -451,14 +475,58 @@ describe('stale preflight releases', () => {
     expect(within(dialog).getByRole('alert')).toHaveTextContent('release not found')
   })
 
+  it('Deploy is offered only on the review, once the playbook is shown, and starts bound to its hash', async () => {
+    const { user, dialog, invoke } = await mount({ preselect: ['s1'], persisted: events([{ type: 'preflight.done', report: report() }]) })
+    await preflight(user, dialog)
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Review playbook' })).toBeEnabled())
+    expect(within(dialog).queryByRole('button', { name: 'Deploy' })).toBeNull()
+    const previewCall = hold(invoke, 'deploy:previewPlaybook')
+    await user.click(within(dialog).getByRole('button', { name: 'Review playbook' }))
+    expect(within(dialog).getByRole('button', { name: 'Deploy' })).toBeDisabled()
+    expect(within(dialog).getByText('Generating the playbook')).toBeInTheDocument()
+    await previewCall.settle(0, PREVIEW)
+    const steps = within(dialog).getByRole('list', { name: 'Playbook steps' })
+    expect(within(steps).getByText('core')).toBeInTheDocument()
+    expect(within(steps).getAllByRole('listitem').map((li) => li.textContent)).toEqual(expect.arrayContaining(['Lock', 'Fetch', 'Build', 'Up', 'Health', 'Tag', 'Stop if a step fails']))
+    expect(within(dialog).getByText(/"deployment core"/)).toBeInTheDocument()
+    expect(calls(invoke, 'release:start')).toHaveLength(0)
+    await user.click(within(dialog).getByRole('button', { name: 'Save as .yml…' }))
+    await waitFor(() => expect(calls(invoke, 'deploy:savePlaybook').map((c) => c.slice(1))).toEqual([[REL, HASH]]))
+    await user.click(within(dialog).getByRole('button', { name: 'Deploy' }))
+    await waitFor(() => expect(calls(invoke, 'release:start').map((c) => c.slice(1))).toEqual([[REL, { redeploy: false, playbookSha256: HASH }]]))
+  })
+
+  it.each([
+    ['changed since the review', 'The playbook changed since you reviewed it. Review it again.'],
+    ['reviewed too long ago', 'Your review is more than 30 minutes old. Review the playbook again.'],
+  ])('a playbook %s is shown again, and the next Deploy carries the new hash', async (_case, refusal) => {
+    const { user, dialog, invoke } = await mount({ preselect: ['s1'], persisted: events([{ type: 'preflight.done', report: report() }]) })
+    await preflight(user, dialog)
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Review playbook' })).toBeEnabled())
+    await user.click(within(dialog).getByRole('button', { name: 'Review playbook' }))
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Deploy' })).toBeEnabled())
+    const startCall = hold(invoke, 'release:start')
+    const NEW = 'd'.repeat(64)
+    const base = invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
+    invoke.mockImplementation((ch: string, ...args: unknown[]) => (ch === 'deploy:previewPlaybook' ? Promise.resolve({ playbook: PLAYBOOK, sha256: NEW }) : base(ch, ...args)))
+    await user.click(within(dialog).getByRole('button', { name: 'Deploy' }))
+    await startCall.fail(0, new Error(refusal))
+    expect(within(dialog).getByRole('alert')).toHaveTextContent(refusal)
+    await waitFor(() => expect(calls(invoke, 'deploy:previewPlaybook')).toHaveLength(2))
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Deploy' })).toBeEnabled())
+    await user.click(within(dialog).getByRole('button', { name: 'Deploy' }))
+    expect(calls(invoke, 'release:start').map((c) => (c[2] as { playbookSha256: string }).playbookSha256)).toEqual([HASH, NEW])
+  })
+
   it('Cancel, Back and Escape wait while release:start is in flight', async () => {
     const done = report()
     const { user, dialog, invoke, closed } = await mount({ preselect: ['s1'], persisted: events([{ type: 'preflight.done', report: done }]) })
     await preflight(user, dialog)
-    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Start' })).toBeEnabled())
-    await user.click(within(dialog).getByRole('button', { name: 'Start' }))
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Review playbook' })).toBeEnabled())
+    await user.click(within(dialog).getByRole('button', { name: 'Review playbook' }))
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Deploy' })).toBeEnabled())
     const startCall = hold(invoke, 'release:start')
-    await user.click(within(dialog).getByRole('button', { name: 'Start' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Deploy' }))
     expect(startCall.count()).toBe(1)
     expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled()
     expect(within(dialog).getByRole('button', { name: 'Back' })).toBeDisabled()

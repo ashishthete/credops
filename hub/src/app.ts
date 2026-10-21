@@ -119,7 +119,8 @@ export function buildApp(deps: HubDeps): FastifyInstance {
   locks.onChange((environmentId) => live.publish({ type: 'lock.updated', environmentId, lock: locks.get(environmentId) }))
   registerLive(app, { live, auth, now: deps.now })
   registerRegistry(app, { registry, directory, auth })
-  registerLocks(app, { locks, directory, audit: deps.audit, auth })
+  // `releases` is built below; a lock is read only once the Hub serves requests.
+  registerLocks(app, { locks, directory, audit: deps.audit, auth, view: (user, groups, lock) => (releases ? releases.lockView(user, groups, lock) : { ...lock, releaseId: null }) })
   registerSecrets(app, { secrets, deployKeys, registry, locks, directory, audit: deps.audit, auth })
   // One directory scan serves a batch of cards; the cache is dropped on the next timer tick.
   let names: Map<string, string> | null = null
@@ -145,6 +146,7 @@ export function buildApp(deps: HubDeps): FastifyInstance {
     now: deps.now,
   })
   releases = new HubReleases({ config: deps.config, db: deps.db, audit: deps.audit, directory, registry, locks, secrets, deployKeys, live, now: deps.now, ids: deps.ids, finalize: notify.finalize, heldSecrets: notify.held, log: (m) => app.log.error(m), ...(deps.runner ? { runner: deps.runner } : {}) })
+  live.setView((user, groups, msg) => releases.liveView(user, groups, msg))
   // Started, failed and rolled-back notices ride the run's own events; success goes out from finalize, with notes.
   releases.service.onEvent((batch) => {
     for (const e of batch) void notify.dispatcher.onRunEvent(e)

@@ -1,5 +1,6 @@
 import { useMemo, useSyncExternalStore } from 'react'
 import type {
+  DeployBatch,
   DeploymentInput,
   DeploymentMeta,
   DeploymentPatch,
@@ -12,6 +13,7 @@ import { api } from '../lib/api'
 import { loadTunnels } from '../tunnels/store'
 import { attempt, fail } from '../ui/common'
 import { createStore } from '../ui/store'
+import { resetSettingsOpen } from './settings-open'
 
 export interface DeployState {
   deployments: DeploymentMeta[]
@@ -38,6 +40,7 @@ const SYNC_DEBOUNCE_MS = 100
 export function resetDeploy(): void {
   generation++
   deployStore.set(EMPTY)
+  resetSettingsOpen()
 }
 
 /**
@@ -206,6 +209,21 @@ export async function updateSettings(envId: string, patch: EnvDeploySettingsPatc
   if (!next) return false
   const s = deployStore.get()
   deployStore.set({ ...s, settings: { ...s.settings, [envId]: next } })
+  return true
+}
+
+/** Saves the settings and the deployments' patches together; main applies all of them or none. */
+export async function applyDeployBatch(envId: string, batch: DeployBatch): Promise<boolean> {
+  const out = await attempt("Couldn't save the deploy settings", () => api.invoke('deploy:applyBatch', envId, batch))
+  if (!out) return false
+  written++
+  const saved = new Map(out.deployments.map((d) => [d.id, d]))
+  const s = deployStore.get()
+  deployStore.set({
+    ...s,
+    settings: { ...s.settings, [envId]: out.settings },
+    deployments: s.deployments.map((d) => saved.get(d.id) ?? d),
+  })
   return true
 }
 

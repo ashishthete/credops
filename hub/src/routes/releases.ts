@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
-import type { PreflightRequest, ReleaseConfirm, ReleaseDetail, ReleaseSummary, RunEvent } from '../../../src/shared/deploy'
+import type { PlaybookPreview, PreflightRequest, ReleaseConfirm, ReleaseDetail, ReleaseSummary, RunEvent } from '../../../src/shared/deploy'
 import type { makeAuth } from '../auth/plugin'
 import type { HubReleases } from '../releases/service'
 
@@ -8,7 +8,11 @@ const idParams = { type: 'object', required: ['id'], properties: { id: { type: '
 const confirmBody = {
   type: 'object',
   additionalProperties: false,
-  properties: { typedName: { type: 'string', maxLength: 200 }, redeploy: { type: 'boolean' } },
+  properties: {
+    typedName: { type: 'string', maxLength: 200 },
+    redeploy: { type: 'boolean' },
+    playbookSha256: { type: 'string', pattern: '^[0-9a-f]{64}$' },
+  },
 } as const
 
 export function registerReleases(app: FastifyInstance, deps: { releases: HubReleases; auth: ReturnType<typeof makeAuth> }): void {
@@ -48,6 +52,8 @@ export function registerReleases(app: FastifyInstance, deps: { releases: HubRele
     '/api/v1/releases/:id/start',
     { onRequest, schema: { params: idParams, body: confirmBody } },
     async (req, reply) => {
+      // playbookSha256 is checked when sent but not required: older desktops don't send it. The desktop
+      // refuses a start from its UI without one.
       await releases.start(req.user, req.params.id, req.body ?? {})
       return done(reply).send()
     },
@@ -117,6 +123,10 @@ export function registerReleases(app: FastifyInstance, deps: { releases: HubRele
 
   app.get<{ Params: { id: string } }>('/api/v1/releases/:id', { onRequest, schema: { params: idParams } }, async (req): Promise<ReleaseDetail> =>
     releases.detail(req.user, req.params.id),
+  )
+
+  app.get<{ Params: { id: string } }>('/api/v1/releases/:id/playbook', { onRequest, schema: { params: idParams } }, async (req): Promise<PlaybookPreview> =>
+    releases.previewPlaybook(req.user, req.params.id),
   )
 
   app.get<{ Params: { id: string }; Querystring: { afterSeq?: number; limit?: number } }>(

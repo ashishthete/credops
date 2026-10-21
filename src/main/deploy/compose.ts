@@ -1,4 +1,4 @@
-import { COMPOSE_FILE, COMPOSE_PROJECT, COMPOSE_SERVICE } from '../../shared/deploy'
+import { COMPOSE_AUTO, COMPOSE_FILE, COMPOSE_PROJECT, COMPOSE_SERVICE } from '../../shared/deploy'
 import { shJoin } from '../ops/quote'
 
 /*
@@ -23,13 +23,13 @@ export function checkComposeServices(names: readonly string[]): string[] {
 }
 
 /**
- * The argv after `docker`: compose -f <file> [-p <project>] ...sub ...services. `sub` is the caller's
+ * The argv after `docker`: compose [-f <file>] [-p <project>] ...sub ...services. `sub` is the caller's
  * literal subcommand and flags (never user data); `services` is checked and appended after it.
  */
 export function composeArgs(t: ComposeTarget, sub: readonly string[], services: readonly string[] = []): string[] {
   if (!COMPOSE_FILE.test(t.composeFile)) throw new Error('invalid compose file')
   if (t.composeProject !== null && !COMPOSE_PROJECT.test(t.composeProject)) throw new Error('invalid compose project')
-  return ['compose', '-f', t.composeFile, ...(t.composeProject !== null ? ['-p', t.composeProject] : []), ...sub, ...checkComposeServices(services)]
+  return ['compose', ...(t.composeFile === COMPOSE_AUTO ? [] : ['-f', t.composeFile]), ...(t.composeProject !== null ? ['-p', t.composeProject] : []), ...sub, ...checkComposeServices(services)]
 }
 
 /** Picks plain docker when it works, else `sudo -n docker`; `$D` is then left unquoted so it splits. */

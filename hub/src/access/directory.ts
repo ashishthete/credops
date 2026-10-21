@@ -19,7 +19,7 @@ import type { HubAudit } from '../audit'
 import type { SessionStore } from '../auth/sessions'
 import { HubHttpError } from '../errors'
 import type { HubConfig } from '../config'
-import type { HubDb } from '../db'
+import { PUBLISHED, type HubDb } from '../db'
 
 interface UserRow {
   oid: string
@@ -343,7 +343,7 @@ export class Directory {
       const count = (this.db.prepare('SELECT COUNT(*) AS n FROM grants WHERE group_id = ?').get(groupId) as { n: number }).n
       if (count >= MAX_GRANTS_PER_GROUP) throw new HubHttpError(409, 'conflict', 'Too many grants in this group')
       if (scope.kind !== 'all') {
-        if (!this.db.prepare('SELECT 1 FROM environments WHERE id = ?').get(scope.environmentId)) {
+        if (!this.db.prepare(`SELECT 1 FROM environments WHERE id = ? AND ${PUBLISHED}`).get(scope.environmentId)) {
           throw new HubHttpError(404, 'not_found', 'That environment is not published to this Hub')
         }
         if (

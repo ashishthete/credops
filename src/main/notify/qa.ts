@@ -4,7 +4,7 @@ import type { FinalizeContext, ReleaseRunMeta } from '../deploy/finalize'
 import type { IntegrationStore } from '../settings/integration-store'
 import type { SettingsStore } from '../settings/settings-store'
 import type { SecretStore } from '../vault/secret-store'
-import type { QaDispatch } from '../../shared/settings'
+import { QA_WAIT_DEFAULT_MIN, type QaDispatch } from '../../shared/settings'
 import type { NotificationDispatcher } from './dispatcher'
 import { getJson, IntegrationError, postJson, type Fetch, type HttpOptions } from './http'
 
@@ -12,7 +12,6 @@ const GITHUB = 'https://api.github.com'
 const FIND_EVERY_MS = 15_000
 const FIND_FOR_MS = 2 * 60_000
 const POLL_EVERY_MS = 30_000
-const POLL_FOR_MS = 30 * 60_000
 /** A run created this long before the dispatch still counts: GitHub's clock and ours differ. */
 const CLOCK_SKEW_MS = 5_000
 const MAX_KEPT = 50
@@ -117,6 +116,7 @@ export class QaDispatcher {
         repo: qa.repo,
         workflow: qa.workflow,
         ref: qa.ref,
+        waitMinutes: qa.waitMinutes ?? QA_WAIT_DEFAULT_MIN,
         dispatchedAt: at.toISOString(),
         state: 'dispatched',
         htmlUrl: null,
@@ -147,7 +147,7 @@ export class QaDispatcher {
   }
 
   /**
-   * Finds the run the dispatch started (every 15 s, up to 2 min), then polls it (every 30 s, up to 30 min).
+   * Finds the run the dispatch started (every 15 s, up to 2 min), then polls it (every 30 s, up to the workflow's waitMinutes, 45 by default).
    * A finished run audits `qa.finished` and, for a release, sends the `qa.finished` notification.
    */
   async wait(d: QaDispatch, signal: AbortSignal): Promise<QaResult> {
@@ -204,7 +204,7 @@ export class QaDispatcher {
       if (signal.aborted) return null
       const r = await getJson<GhRun>(url, { ...this.http(), maxBytes: RUN_MAX_BYTES })
       if (r.status === 'completed') return r
-      if (this.now().getTime() - start >= POLL_FOR_MS) return null
+      if (this.now().getTime() - start >= item.waitMinutes * 60_000) return null
       await this.d.sleep(POLL_EVERY_MS)
     }
   }

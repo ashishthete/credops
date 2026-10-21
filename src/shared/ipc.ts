@@ -54,12 +54,16 @@ import type {
   DeploymentPatch,
   EnvDeploySettings,
   EnvDeploySettingsPatch,
+  DeployBatch,
+  DeployBatchResult,
   BreakLockConfirm,
+  PlaybookPreview,
   PreflightRequest,
   ReleaseConfirm,
   ReleaseDetail,
   ReleaseListFilter,
   ReleaseSummary,
+  EnvLastRelease,
   RunEvent as DeployRunEvent,
 } from './deploy'
 import type { CopyServicesRequest, CopyServicesResult, ServiceInput, ServiceMeta, ServicePatch, ServiceUpdateResult } from './services'
@@ -212,7 +216,15 @@ export interface IpcContract {
   'deploy:reorder': { args: [environmentId: string, ids: string[]]; result: void }
   'deploy:settings': { args: [environmentId: string]; result: EnvDeploySettings }
   'deploy:updateSettings': { args: [environmentId: string, patch: EnvDeploySettingsPatch]; result: EnvDeploySettings }
+  // All of it or nothing: the settings and every named deployment of that environment, in one transaction.
+  'deploy:applyBatch': { args: [environmentId: string, batch: DeployBatch]; result: DeployBatchResult }
   'deploy:tooling': { args: []; result: Tooling }
+  // The playbook a ready release would run, for review; generating it writes nothing. `release:start` carries its sha256.
+  'deploy:previewPlaybook': { args: [releaseId: string]; result: PlaybookPreview }
+  /** Saves the last reviewed playbook of the release (by its sha256) where a dialog in main says; null when cancelled. */
+  'deploy:savePlaybook': { args: [releaseId: string, sha256: string]; result: { path: string } | null }
+  /** Saves the playbook the release stored (as `release:get` reads it, redacted) where a dialog in main says; null when cancelled. */
+  'release:savePlaybook': { args: [releaseId: string]; result: { path: string } | null }
   // `release:start` resolves once the run has started; progress arrives as `deploy:event` batches.
   'release:preflight': { args: [request: PreflightRequest]; result: { releaseId: string } }
   'release:start': { args: [releaseId: string, confirm: ReleaseConfirm]; result: void }
@@ -226,6 +238,8 @@ export interface IpcContract {
   'release:get': { args: [releaseId: string]; result: ReleaseDetail }
   'release:events': { args: [releaseId: string, afterSeq: number, limit?: number]; result: DeployRunEvent[] }
   'release:active': { args: []; result: ReleaseSummary[] }
+  /** Each local environment's newest release that ran, for the Deployments list. Hub environments are not included. */
+  'release:latest': { args: []; result: EnvLastRelease[] }
   // Hub (Phase 10). Results carry no token; `hub:state` pushes the same token-free HubStatus.
   'hub:status': { args: []; result: HubStatus }
   'hub:connect': { args: [url: string]; result: HubStatus }
@@ -411,7 +425,11 @@ export const CHANNELS = [
   'deploy:reorder',
   'deploy:settings',
   'deploy:updateSettings',
+  'deploy:applyBatch',
   'deploy:tooling',
+  'deploy:previewPlaybook',
+  'deploy:savePlaybook',
+  'release:savePlaybook',
   'release:preflight',
   'release:start',
   'release:cancel',
@@ -424,6 +442,7 @@ export const CHANNELS = [
   'release:get',
   'release:events',
   'release:active',
+  'release:latest',
   'hub:status',
   'hub:connect',
   'hub:signIn',

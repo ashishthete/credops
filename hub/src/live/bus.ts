@@ -22,6 +22,12 @@ export interface LiveBusOpts {
   every?: (fn: () => void, ms: number) => () => void
 }
 
+/**
+ * A subscriber's copy of a message they may view: the message itself, a copy cut to what they see (a grant on
+ * some deployments only), or null to send nothing.
+ */
+export type LiveView = (user: HubUser, groups: HubGroup[], msg: HubLiveMessage) => HubLiveMessage | null
+
 const defaultEvery = (fn: () => void, ms: number): (() => void) => {
   const t = setInterval(fn, ms)
   t.unref()
@@ -35,6 +41,7 @@ const defaultEvery = (fn: () => void, ms: number): (() => void) => {
 export class LiveBus {
   private readonly subs = new Set<Sub>()
   private stopBeat: (() => void) | null = null
+  private view: LiveView | null = null
 
   constructor(private readonly opts: LiveBusOpts) {}
 
@@ -46,6 +53,11 @@ export class LiveBus {
     this.subs.add(sub)
     this.stopBeat ??= (this.opts.every ?? defaultEvery)(() => this.beat(), LIVE_HEARTBEAT_MS)
     return () => this.remove(sub)
+  }
+
+  /** Set once the releases exist; they own what a deployment-scoped viewer may see of a release. */
+  setView(view: LiveView): void {
+    this.view = view
   }
 
   size(): number {
@@ -70,11 +82,13 @@ export class LiveBus {
     if (this.subs.size === 0) return
     const users = new Map<string, HubUser | null>()
     let groups: HubGroup[] | null = null
-    const frameFor = (): string => {
-      const data = redact(msg, this.opts.knownSecrets())
-      return `event: ${msg.type}\ndata: ${JSON.stringify(data)}\n\n`
+    const frameFor = (m: HubLiveMessage): string => {
+      const data = redact(m, this.opts.knownSecrets())
+      return `event: ${m.type}\ndata: ${JSON.stringify(data)}\n\n`
     }
     let frame: string | null = null
+    // Per person: their own frame when their view of the message differs from it, or null for none.
+    const own = new Map<string, string | null>()
     for (const sub of [...this.subs]) {
       if (this.expired(sub)) {
         this.drop(sub)
@@ -90,8 +104,20 @@ export class LiveBus {
         }
         groups ??= this.opts.directory.listGroups()
         if (!decide(user, groups, 'deploy.view', { environmentId }).allowed) continue
+        if (this.view) {
+          if (!own.has(sub.oid)) {
+            const seen = this.view(user, groups, msg)
+            own.set(sub.oid, seen === msg ? null : seen === null ? '' : frameFor(seen))
+          }
+          const mine = own.get(sub.oid)
+          if (mine === '') continue
+          if (mine) {
+            this.send(sub, mine)
+            continue
+          }
+        }
       }
-      frame ??= frameFor()
+      frame ??= frameFor(msg)
       this.send(sub, frame)
     }
   }

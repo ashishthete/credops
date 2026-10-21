@@ -22,7 +22,10 @@ export const RUNS_SUBDIR = '.opsdeck/runs'
 export const REPO_PATH = /^(?!.*\.\.)(?!.*\/\/)(?!.*\/\.(?:\/|$))\/[A-Za-z0-9._@+/-]{1,255}(?<!\/)$/
 export const BACKUP_DIR = REPO_PATH
 export const GIT_REF = /^(?!.*\.\.)(?!.*\/\/)(?!\/)(?!.*\/$)(?!.*\.lock$)(?!-)[A-Za-z0-9._/-]{1,200}$/
-export const COMPOSE_FILE = /^(?!\/)(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,200}$/
+/** A relative path inside the repo, or COMPOSE_AUTO (empty). */
+export const COMPOSE_FILE = /^(?!\/)(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{0,200}$/
+/** composeFile '' lets Compose discover its own files (no `-f`): compose.yaml and docker-compose.override.yml, COMPOSE_FILE. */
+export const COMPOSE_AUTO = ''
 export const VERSION = /^v\d+\.\d+\.\d+$/
 export const COMPOSE_PROJECT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/
 /** A service name inside a compose file: the same rule, so it can never look like an option or carry shell syntax. */
@@ -133,6 +136,16 @@ export interface EnvDeploySettings {
 }
 /** `currentVersion` is a manual correction (null clears it); it must match VERSION. */
 export type EnvDeploySettingsPatch = Partial<Pick<EnvDeploySettings, 'versioned' | 'autoRollback' | 'currentVersion'>>
+/** Several edits to one environment saved together: all of them or none (the script-compatible preset and its Undo). */
+export interface DeployBatch {
+  settings?: EnvDeploySettingsPatch
+  deployments: { id: string; patch: DeploymentPatch }[]
+}
+export interface DeployBatchResult {
+  settings: EnvDeploySettings
+  /** Every deployment the batch named, as saved. */
+  deployments: DeploymentMeta[]
+}
 
 // ---- Versions ----
 export type VersionBump = 'major' | 'minor' | 'patch' | 'none'
@@ -312,6 +325,8 @@ export const STEP_LABEL: Record<StepKind, string> = {
 }
 
 export type StepState = 'pending' | 'running' | 'ok' | 'warn' | 'failed' | 'skipped' | 'cancelled'
+/** How one Ansible task ended: `changed` is an ok that changed something on the host. */
+export type TaskState = 'ok' | 'changed' | 'skipped' | 'failed'
 export type ReleaseStatus =
   | 'preflight'
   | 'ready'
@@ -409,7 +424,17 @@ export type RunEventBody =
   | { type: 'step.started'; stepId: string; kind: StepKind; name: string; hostId: string | null; deploymentRunId: string | null }
   | { type: 'step.done'; stepId: string; state: 'ok' | 'warn' | 'skipped' | 'cancelled'; durationMs: number; message?: string }
   | { type: 'step.failed'; stepId: string; error: string; durationMs: number }
-  | { type: 'log'; stepId: string | null; hostId: string | null; stream: 'out' | 'err' | 'ansible'; line: string }
+  /**
+   * One Ansible task of a step finished (a step can run several, e.g. one health task per URL). `task` is the
+   * task's playbook name; `attempts` is set when the task retried (`until`). Releases from before this event
+   * have none, and the view then shows their steps' states.
+   */
+  | { type: 'task.done'; stepId: string; task: string; hostId: string | null; state: TaskState; rc: number | null; attempts: number | null; durationMs: number }
+  /**
+   * `task` is the Ansible task the line came from (redacted, as in its `task.done`), set on a task's own output.
+   * Streamed lines and lines from releases before it have none; they are only their step's.
+   */
+  | { type: 'log'; stepId: string | null; hostId: string | null; stream: 'out' | 'err' | 'ansible'; line: string; task?: string }
   | { type: 'log.truncated'; dropped: number }
   | { type: 'lock.busy'; hostId: string; holder: LockHolder; stale: boolean; text: string }
   | { type: 'rollback.started'; deploymentRunIds: string[] }
@@ -458,6 +483,14 @@ export interface ReleaseSummary {
   /** The run entries: every service the release deploys, including a whole checkout's. */
   serviceCount: number
   error: string | null
+  /** Hub only: the release's environment was unpublished; the release is kept as read-only history. */
+  unpublished?: boolean
+}
+
+/** An environment's newest release that ran (or is running), with the commits of its first run. */
+export interface EnvLastRelease extends ReleaseSummary {
+  previousCommit: string | null
+  deployedCommit: string | null
 }
 
 export interface DeploymentRunMeta {
@@ -489,6 +522,8 @@ export interface ReleaseDetail extends ReleaseSummary {
   releaseNotes: string | null
   /** The generated, secret-free release playbook JSON (redacted again on read). */
   playbook: string | null
+  /** Hub only: the playbook is left out (null) because it covers deployments this viewer can't see. */
+  playbookHidden?: boolean
   runs: DeploymentRunMeta[]
   preflight: PreflightReport | null
   lastSeq: number
@@ -521,7 +556,22 @@ export interface PreflightRequest {
 export interface ReleaseConfirm {
   typedName?: string
   redeploy?: boolean
+  /** sha256 (hex) of the playbook the user reviewed; start refuses when the playbook it would run differs. */
+  playbookSha256?: string
 }
+/** The playbook a start would run, for review before Deploy. */
+export interface PlaybookPreview {
+  playbook: string
+  sha256: string
+}
+export const PLAYBOOK_SHA256 = /^[0-9a-f]{64}$/
+/** A release from before playbooks were stored (or one that never started). */
+export const PLAYBOOK_NOT_STORED_MESSAGE = 'Playbook not stored for this release'
+export const PLAYBOOK_CHANGED_MESSAGE = 'The playbook changed since you reviewed it. Review it again.'
+/** How long a reviewed playbook can be started from (main's `PREVIEW_TTL_MS`). */
+export const REVIEW_TTL_MS = 30 * 60_000
+/** A review older than that limit: nothing changed, but its start time is too old to reuse. */
+export const REVIEW_EXPIRED_MESSAGE = `Your review is more than ${REVIEW_TTL_MS / 60_000} minutes old. Review the playbook again.`
 export interface BreakLockConfirm {
   typedLabel: string
 }

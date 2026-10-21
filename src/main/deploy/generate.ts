@@ -1,4 +1,4 @@
-import { BACKUP_DIR, COMPOSE_FILE, COMPOSE_PROJECT, GIT_REF, MAX_URL, REPO_PATH, RUNS_SUBDIR, VERSION } from '../../shared/deploy'
+import { BACKUP_DIR, COMPOSE_AUTO, COMPOSE_FILE, COMPOSE_PROJECT, GIT_REF, MAX_URL, REPO_PATH, RUNS_SUBDIR, VERSION } from '../../shared/deploy'
 import { MAX_SERVICES } from '../../shared/services'
 import { checkComposeServices, composeCommand } from './compose'
 import { ALIAS, B64, b64, lockJson, need, sanitizeIdent } from './quote'
@@ -410,7 +410,19 @@ function taskUnlock(h: PlanHost, breakLock: boolean): Task {
 
 // ---- version
 const taskVersion = (d: PlanDeployment): Task =>
-  sh(nm('version', d), 'version', runOf(d), ['V={{ od.version | quote }}', 'E={{ od.env | quote }}', `${GIT_ID} git tag -a "$V" -m "$E release $V" && git push origin "$V"`].join('\n'), {
+  sh(nm('version', d), 'version', runOf(d), [
+      'V={{ od.version | quote }}',
+      'E={{ od.env | quote }}',
+      // Deployments in different directories can share one git repo (the second would hit "tag already exists"):
+      // a tag already on HEAD is done. A tag at another commit falls through to `git tag`, which fails as before.
+      'h=$(git rev-parse HEAD 2>/dev/null)',
+      'if [ -n "$h" ] && [ "$(git rev-parse -q --verify "refs/tags/$V^{commit}" 2>/dev/null)" = "$h" ]; then',
+      // a plain line, not an OD- marker: the event translator would swallow it (OD-TAG means the deploy tag failed)
+      '  echo "$V is already on HEAD in this repository; skipping the tag and push"',
+      'else',
+      `  ${GIT_ID} git tag -a "$V" -m "$E release $V" && git push origin "$V"`,
+      'fi',
+    ].join('\n'), {
     timeout: T_SHORT,
     chdir: IN_REPO,
   })
@@ -448,8 +460,9 @@ function preflightTasks(plan: DeployPlan, d: PlanDeployment): Task[] {
       'echo "OD-PF branch fetched=$f exists=$v"',
     ].join('\n')),
     pf(d, 'compose', [
-      'C={{ d.compose | quote }}',
-      'if [ -f "$C" ]; then',
+      ...(d.composeFile === COMPOSE_AUTO
+        ? ['if [ -f compose.yaml ] || [ -f compose.yml ] || [ -f docker-compose.yaml ] || [ -f docker-compose.yml ]; then']
+        : ['C={{ d.compose | quote }}', 'if [ -f "$C" ]; then']),
       `  s=$(${composeCommand(composeOf(d), ['config', '--services'], [], { sudo: 'auto' })} 2>/dev/null | base64 | tr -d '\\n')`,
       '  echo "OD-PF compose exists=1 services_b64=$s"',
       'else echo "OD-PF compose exists=0"; fi',

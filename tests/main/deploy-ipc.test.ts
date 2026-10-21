@@ -1,23 +1,34 @@
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { ReleaseService } from '../../src/main/deploy/release-service'
 import { createDeployHandlers } from '../../src/main/ipc/handlers/deploy'
 import { VALIDATORS } from '../../src/main/ipc/validators'
-import { MAX_EVENTS_PAGE } from '../../src/shared/deploy'
+import { PLAYBOOK_CHANGED_MESSAGE } from '../../src/main/deploy/release-service'
+import { REVIEW_REQUIRED_MESSAGE } from '../../src/main/ipc/handlers/deploy'
+import { MAX_EVENTS_PAGE, PLAYBOOK_NOT_STORED_MESSAGE, type ReleaseDetail } from '../../src/shared/deploy'
 import { MAX_SERVICES } from '../../src/shared/services'
 
 const ID = '0190a1b2-c3d4-7e5f-8a6b-1234567890ab'
 const check = (channel: string, args: unknown[]): unknown => (VALIDATORS as Record<string, (a: unknown[]) => unknown>)[channel](args)
 const OPTS = { backup: true, notify: false, qa: false }
+const HASH = 'a'.repeat(64)
 
 describe('release:* validators', () => {
   it('accept well-formed arguments', () => {
     expect(() => check('release:preflight', [{ environmentId: ID, serviceIds: [ID], bump: 'minor', options: OPTS }])).not.toThrow()
     expect(() => check('release:preflight', [{ environmentId: ID, serviceIds: [], checkoutIds: [ID], bump: 'minor', options: OPTS }])).not.toThrow()
     expect(() => check('release:start', [ID, { typedName: 'prod', redeploy: true }])).not.toThrow()
+    expect(() => check('release:start', [ID, { playbookSha256: HASH }])).not.toThrow()
+    expect(() => check('deploy:previewPlaybook', [ID])).not.toThrow()
+    expect(() => check('deploy:savePlaybook', [ID, HASH])).not.toThrow()
+    expect(() => check('release:savePlaybook', [ID])).not.toThrow()
     expect(() => check('release:break-lock', [ID, ID, { typedLabel: 'app1' }])).not.toThrow()
     expect(() => check('release:list', [{ environmentId: ID, limit: 10 }])).not.toThrow()
     expect(() => check('release:events', [ID, 0, 5000])).not.toThrow()
     expect(() => check('release:active', [])).not.toThrow()
+    expect(() => check('release:latest', [])).not.toThrow()
   })
 
   const bad: [string, unknown[], RegExp][] = [
@@ -34,6 +45,13 @@ describe('release:* validators', () => {
     ['release:start', ['x', {}], /./],
     ['release:start', [ID, { typedName: 5 }], /typedName/],
     ['release:start', [ID, { redeploy: 'yes' }], /redeploy/],
+    ['release:start', [ID, { playbookSha256: 'A'.repeat(64) }], /playbookSha256/],
+    ['release:start', [ID, { playbookSha256: 'a'.repeat(63) }], /playbookSha256/],
+    ['deploy:previewPlaybook', ['x'], /./],
+    ['deploy:savePlaybook', [ID, 'nope'], /./],
+    ['deploy:savePlaybook', [ID], /./],
+    ['release:savePlaybook', ['x'], /./],
+    ['release:savePlaybook', [], /./],
     ['release:cancel', [], /./],
     ['release:rollback', [ID, { typedName: {} }], /typedName/],
     ['release:break-lock', [ID, ID, {}], /typedLabel/],
@@ -66,5 +84,257 @@ describe('release handlers', () => {
       [ID, 3, 1000],
     ])
     expect(MAX_EVENTS_PAGE).toBe(5000)
+  })
+
+  it('release:latest answers from the local releases, and with none when nothing provides them', async () => {
+    const row = { id: ID, environmentId: ID, previousCommit: 'a', deployedCommit: 'b' }
+    const base = { deploys: {} as never, releases: {} as unknown as ReleaseService, tooling: async () => ({}) as never }
+    const h = (x: ReturnType<typeof createDeployHandlers>) => (x as Record<string, unknown>)['release:latest'] as () => unknown
+    expect(await h(createDeployHandlers({ ...base, lastReleases: () => [row as never] }))()).toEqual([row])
+    expect(await h(createDeployHandlers(base))()).toEqual([])
+  })
+})
+
+describe('playbook review handlers', () => {
+  const PLAYBOOK = '[{"hosts":"od-1"}]'
+  /** As `release:get` reads it: redacted again on read. */
+  const STORED = '[\n  {\n    "hosts": "od-1",\n    "vars": { "token": "‹redacted›" }\n  }\n]'
+  const setup = (over: { path?: string; stored?: string | null; preview?: string; secrets?: string[] } = {}) => {
+    const releases = {
+      previewPlaybook: vi.fn(async () => ({ playbook: over.preview ?? PLAYBOOK, sha256: HASH })),
+      discard: vi.fn(async () => undefined),
+      detail: vi.fn(async () => ({ id: ID, playbook: over.stored === undefined ? STORED : over.stored })),
+      start: vi.fn(async () => undefined),
+    }
+    const writes: [string, string][] = []
+    const saveDialog = vi.fn(async () => over.path)
+    const handlers = createDeployHandlers({
+      deploys: {} as never,
+      releases: releases as unknown as ReleaseService,
+      tooling: async () => ({}) as never,
+      playbookFile: { saveDialog, write: async (path, text) => void writes.push([path, text]) },
+      knownSecrets: () => over.secrets ?? [],
+    })
+    return { releases, writes, saveDialog, h: handlers as unknown as Record<string, (...a: unknown[]) => Promise<unknown>> }
+  }
+
+  it('release:start refuses a start without a reviewed hash and forwards one with it', async () => {
+    const { releases, h } = setup()
+    await expect(h['release:start'](ID, {})).rejects.toThrow(REVIEW_REQUIRED_MESSAGE)
+    await expect(h['release:start'](ID, { typedName: 'prod' })).rejects.toThrow(REVIEW_REQUIRED_MESSAGE)
+    expect(releases.start).not.toHaveBeenCalled()
+    await h['release:start'](ID, { playbookSha256: HASH, redeploy: true })
+    expect(releases.start).toHaveBeenCalledWith(ID, { playbookSha256: HASH, redeploy: true })
+  })
+
+  it('a start refused for another reason keeps the review, so it can still be saved', async () => {
+    const { releases, h, writes } = setup({ path: '/tmp/x/review.yml' })
+    releases.start.mockRejectedValueOnce(new Error('This release is busy'))
+    await h['deploy:previewPlaybook'](ID)
+    await expect(h['release:start'](ID, { playbookSha256: HASH })).rejects.toThrow('busy')
+    expect(await h['deploy:savePlaybook'](ID, HASH)).toEqual({ path: '/tmp/x/review.yml' })
+    expect(writes).toEqual([['/tmp/x/review.yml', PLAYBOOK]])
+    await h['release:start'](ID, { playbookSha256: HASH })
+    await expect(h['deploy:savePlaybook'](ID, HASH)).rejects.toThrow(PLAYBOOK_CHANGED_MESSAGE)
+  })
+
+  it('deploy:previewPlaybook returns the preview; deploy:savePlaybook writes only that text where the dialog says', async () => {
+    const { h, writes, saveDialog } = setup({ path: '/tmp/x/review.yml' })
+    expect(await h['deploy:previewPlaybook'](ID)).toEqual({ playbook: PLAYBOOK, sha256: HASH })
+    expect(await h['deploy:savePlaybook'](ID, HASH)).toEqual({ path: '/tmp/x/review.yml' })
+    expect(saveDialog).toHaveBeenCalledTimes(1)
+    expect(writes).toEqual([['/tmp/x/review.yml', PLAYBOOK]])
+  })
+
+  it('the preview and its saved file mask a known secret, also inside a base64 hook off a 3-byte boundary, and keep the reviewed hash', async () => {
+    const SECRET = 'hunter2-secret-value'
+    const hook = `curl -H "Api-X: ${SECRET}" https://x.example\n`
+    expect(hook.indexOf(SECRET) % 3).not.toBe(0)
+    const encoded = Buffer.from(hook).toString('base64')
+    const preview = JSON.stringify([{ hosts: 'od-1', vars: { url: `https://x.example/?t=${SECRET}` }, tasks: [{ vars: { d: { pre_hook: encoded } } }] }], null, 2)
+    const { h, writes, releases } = setup({ path: '/tmp/x/review.yml', preview, secrets: [SECRET] })
+    const got = (await h['deploy:previewPlaybook'](ID)) as { playbook: string; sha256: string }
+    // The hash stays the one of the text main generated, which start checks against a fresh generation
+    expect(got.sha256).toBe(HASH)
+    expect(await h['deploy:savePlaybook'](ID, HASH)).toEqual({ path: '/tmp/x/review.yml' })
+    expect(writes).toHaveLength(1)
+    expect(writes[0]![1]).toBe(got.playbook)
+    for (const text of [got.playbook, writes[0]![1]]) {
+      expect(text).not.toContain(SECRET)
+      expect(text).not.toContain(encoded)
+      const plays = JSON.parse(text)
+      expect(plays[0].vars.url).toBe('https://x.example/?t=‹redacted›')
+      expect(Buffer.from(plays[0].tasks[0].vars.d.pre_hook, 'base64').toString('utf8')).toBe('curl -H "Api-X: ‹redacted›" https://x.example\n')
+    }
+    expect(releases.previewPlaybook).toHaveBeenCalledTimes(1)
+  })
+
+  it('a discarded release forgets its review: its preview can no longer be saved', async () => {
+    const { h, releases, saveDialog } = setup({ path: '/tmp/x/review.yml' })
+    await h['deploy:previewPlaybook'](ID)
+    await h['release:discard'](ID)
+    expect(releases.discard).toHaveBeenCalledWith(ID)
+    await expect(h['deploy:savePlaybook'](ID, HASH)).rejects.toThrow(PLAYBOOK_CHANGED_MESSAGE)
+    expect(saveDialog).not.toHaveBeenCalled()
+  })
+
+  it('deploy:savePlaybook refuses a playbook that was not the last one reviewed, and a cancelled dialog writes nothing', async () => {
+    const { h, writes, saveDialog } = setup()
+    await expect(h['deploy:savePlaybook'](ID, HASH)).rejects.toThrow(PLAYBOOK_CHANGED_MESSAGE)
+    await h['deploy:previewPlaybook'](ID)
+    await expect(h['deploy:savePlaybook'](ID, 'b'.repeat(64))).rejects.toThrow(PLAYBOOK_CHANGED_MESSAGE)
+    await expect(h['deploy:savePlaybook']('0190a1b2-c3d4-7e5f-8a6b-1234567890ac', HASH)).rejects.toThrow(PLAYBOOK_CHANGED_MESSAGE)
+    expect(saveDialog).not.toHaveBeenCalled()
+    expect(await h['deploy:savePlaybook'](ID, HASH)).toBeNull()
+    expect(writes).toEqual([])
+  })
+
+  it('release:savePlaybook writes the stored playbook, as read, where the dialog says', async () => {
+    const { h, writes, saveDialog, releases } = setup({ path: '/tmp/x/release.yml' })
+    expect(await h['release:savePlaybook'](ID)).toEqual({ path: '/tmp/x/release.yml' })
+    expect(releases.detail).toHaveBeenCalledWith(ID)
+    expect(saveDialog).toHaveBeenCalledWith(ID)
+    expect(writes).toEqual([['/tmp/x/release.yml', STORED]])
+  })
+
+  it('release:savePlaybook refuses a release with no stored playbook, and a cancelled dialog writes nothing', async () => {
+    const none = setup({ path: '/tmp/x/release.yml', stored: null })
+    await expect(none.h['release:savePlaybook'](ID)).rejects.toThrow(PLAYBOOK_NOT_STORED_MESSAGE)
+    expect(none.saveDialog).not.toHaveBeenCalled()
+    const cancelled = setup()
+    expect(await cancelled.h['release:savePlaybook'](ID)).toBeNull()
+    expect(cancelled.writes).toEqual([])
+  })
+  it('release:savePlaybook redacts in main before writing: no known secret or key block reaches the file', async () => {
+    const SECRET = 'hunter2-secret-value'
+    const KEY = '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----'
+    // as a Hub release's detail arrives: nothing on the way redacted it
+    const stored = JSON.stringify([{ hosts: 'od-1', tasks: [{ name: `curl https://x.example/?t=${SECRET}` }, { name: 'key', copy: { content: KEY } }] }], null, 2)
+    const dir = await mkdtemp(join(tmpdir(), 'opsdeck-save-'))
+    try {
+      const path = join(dir, 'release.yml')
+      const detail = vi.fn(async () => ({ id: ID, playbook: stored }))
+      const handlers = createDeployHandlers({
+        deploys: {} as never,
+        releases: { detail } as unknown as ReleaseService,
+        tooling: async () => ({}) as never,
+        knownSecrets: () => [SECRET],
+        playbookFile: { saveDialog: async () => path, write: (p, text) => writeFile(p, text, 'utf8') },
+      })
+      const h = handlers as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>
+      expect(await h['release:savePlaybook'](ID)).toEqual({ path })
+      const written = await readFile(path, 'utf8')
+      expect(written).not.toContain(SECRET)
+      expect(written).not.toContain('b3BlbnNzaC1rZXk')
+      expect(written).toContain('‹redacted›')
+      expect(written).toContain('"hosts": "od-1"')
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+  it('release:get masks known secret values in main: the stored playbook, the error and the check messages', async () => {
+    const SECRET = 'hunter2-secret-value'
+    const detail = vi.fn(async () => ({
+      id: ID,
+      playbook: JSON.stringify([{ hosts: 'od-1', tasks: [{ name: `curl https://x.example/?t=${SECRET}` }] }], null, 2),
+      error: `health check failed: GET /?t=${SECRET} 503`,
+      preflight: { releaseId: ID, checks: [{ id: 'ssh', label: 'ssh', level: 'block', message: `auth ${SECRET} refused` }] },
+      runs: [],
+    }))
+    const handlers = createDeployHandlers({ deploys: {} as never, releases: { detail } as unknown as ReleaseService, tooling: async () => ({}) as never, knownSecrets: () => [SECRET] })
+    const got = (await (handlers as unknown as Record<string, (id: string) => Promise<ReleaseDetail>>)['release:get'](ID))
+    expect(JSON.stringify(got)).not.toContain(SECRET)
+    expect(got.playbook).toContain('"name": "curl https://x.example/?t=‹redacted›"')
+    expect(got.error).toBe('health check failed: GET /?t=‹redacted› 503')
+    expect(got.preflight!.checks[0].message).toBe('auth ‹redacted› refused')
+    expect(got.id).toBe(ID)
+  })
+  it('a known secret holding a quote and a backslash is masked as the stored JSON escapes it, in release:get and the saved file', async () => {
+    const SECRET = 'p@ss"w\\rd-9x'
+    const stored = JSON.stringify([{ hosts: 'od-1', tasks: [{ name: 'health', uri: { url: `https://x.example/?t=${SECRET}` } }] }], null, 2)
+    // JSON escapes both characters, so the raw form is not in the text at all
+    expect(stored).not.toContain(SECRET)
+    expect(stored).toContain('p@ss\\"w\\\\rd-9x')
+    const dir = await mkdtemp(join(tmpdir(), 'opsdeck-save-'))
+    try {
+      const path = join(dir, 'release.yml')
+      const handlers = createDeployHandlers({
+        deploys: {} as never,
+        releases: { detail: vi.fn(async () => ({ id: ID, playbook: stored, error: `GET /?t=${SECRET} 503`, preflight: null, runs: [] })) } as unknown as ReleaseService,
+        tooling: async () => ({}) as never,
+        knownSecrets: () => [SECRET],
+        playbookFile: { saveDialog: async () => path, write: (p, text) => writeFile(p, text, 'utf8') },
+      })
+      const h = handlers as unknown as Record<string, (id: string) => Promise<unknown>>
+      const got = (await h['release:get'](ID)) as ReleaseDetail
+      const escaped = JSON.stringify(SECRET).slice(1, -1)
+      for (const text of [got.playbook!, JSON.stringify(got)]) {
+        expect(text).not.toContain(SECRET)
+        expect(text).not.toContain(escaped)
+      }
+      expect(got.error).toBe('GET /?t=‹redacted› 503')
+      expect(JSON.parse(got.playbook!)[0].tasks[0].uri.url).toBe('https://x.example/?t=‹redacted›')
+      await h['release:savePlaybook'](ID)
+      const written = await readFile(path, 'utf8')
+      expect(written).not.toContain(SECRET)
+      expect(written).not.toContain(escaped)
+      expect(written).toBe(got.playbook)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+  it('a known secret inside a base64 hook, off a 3-byte boundary, is masked in release:get and the saved file', async () => {
+    const SECRET = 'hunter2-secret-value'
+    const hook = `curl -H "Api-X: ${SECRET}" https://x.example\n`
+    const at = hook.indexOf(SECRET)
+    expect(at % 3).not.toBe(0)
+    const encoded = Buffer.from(hook).toString('base64')
+    // Encoding the secret on its own does not find it inside the hook
+    expect(encoded).not.toContain(Buffer.from(SECRET).toString('base64'))
+    const stored = JSON.stringify([{ hosts: 'od-1', tasks: [{ name: 'pre-hook', vars: { d: { pre_hook: encoded } } }] }], null, 2)
+    const dir = await mkdtemp(join(tmpdir(), 'opsdeck-save-'))
+    try {
+      const path = join(dir, 'release.yml')
+      const handlers = createDeployHandlers({
+        deploys: {} as never,
+        releases: { detail: vi.fn(async () => ({ id: ID, playbook: stored, error: null, preflight: null, runs: [] })) } as unknown as ReleaseService,
+        tooling: async () => ({}) as never,
+        knownSecrets: () => [SECRET],
+        playbookFile: { saveDialog: async () => path, write: (p, text) => writeFile(p, text, 'utf8') },
+      })
+      const h = handlers as unknown as Record<string, (id: string) => Promise<unknown>>
+      const got = (await h['release:get'](ID)) as ReleaseDetail
+      await h['release:savePlaybook'](ID)
+      const written = await readFile(path, 'utf8')
+      expect(written).toBe(got.playbook)
+      for (const text of [got.playbook!, written]) {
+        expect(text).not.toContain(encoded)
+        const b64 = JSON.parse(text)[0].tasks[0].vars.d.pre_hook as string
+        expect(Buffer.from(b64, 'base64').toString('utf8')).toBe('curl -H "Api-X: ‹redacted›" https://x.example\n')
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+  it('release:events masks known secret values in main, as a Hub release sends its events unmasked', async () => {
+    const SECRET = 'hunter2-secret-value'
+    const raw = [{ id: 'e1', runId: ID, seq: 1, at: 'now', type: 'log', stepId: 'r1:health', hostId: 'h1', stream: 'out', line: `GET /?t=${SECRET}` }]
+    const handlers = createDeployHandlers({ deploys: {} as never, releases: { events: vi.fn(async () => raw) } as unknown as ReleaseService, tooling: async () => ({}) as never, knownSecrets: () => [SECRET] })
+    const got = await (handlers as unknown as Record<string, (id: string, after: number) => Promise<unknown>>)['release:events'](ID, 0)
+    expect(got).toEqual([{ ...raw[0], line: 'GET /?t=‹redacted›' }])
+  })
+  it('release:list and release:active mask a known secret in a Hub summary error, and leave its ids and times', async () => {
+    const SECRET = 'hunter2-secret-value'
+    const hub = { id: ID, environmentId: ID, status: 'failed', startedAt: '2026-10-21T18:00:00.000Z', error: `health failed: GET /?t=${SECRET} 503` }
+    const handlers = createDeployHandlers({
+      deploys: {} as never,
+      releases: { list: vi.fn(async () => [hub]), listActive: vi.fn(async () => [hub]) } as unknown as ReleaseService,
+      tooling: async () => ({}) as never,
+      knownSecrets: () => [SECRET],
+    })
+    const h = handlers as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>
+    const want = [{ ...hub, error: 'health failed: GET /?t=‹redacted› 503' }]
+    expect(await h['release:list']({})).toEqual(want)
+    expect(await h['release:active']()).toEqual(want)
   })
 })

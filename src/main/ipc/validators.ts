@@ -62,11 +62,13 @@ import {
   MAX_URL as MAX_HEALTH_URL,
   STEP_TIMEOUT_RANGE,
   MAX_URLS,
+  PLAYBOOK_SHA256,
   VERSION,
   type DeploymentInput,
   type DeploymentPatch,
   type BreakLockConfirm,
   type EnvDeploySettingsPatch,
+  type DeployBatch,
   type HealthUrl,
   type PreflightRequest,
   type ReleaseConfirm,
@@ -107,6 +109,7 @@ import {
   MAX_NOTIFY_LOG,
   NOTIFY_EVENTS,
   NOTIFY_SOURCES,
+  QA_WAIT_RANGE,
   type EnvironmentIntegrationsPatch,
   type NotifyLogFilter,
   type NotifyTestTarget,
@@ -271,7 +274,7 @@ const deployFields = {
   repoPath: deployPath,
   defaultBranch: v.str({ min: 1, max: MAX_GIT_REF_INPUT }),
   deployTag: v.str({ min: 1, max: MAX_GIT_REF_INPUT }),
-  composeFile: v.str({ min: 1, max: MAX_COMPOSE_FILE_INPUT }),
+  composeFile: v.str({ max: MAX_COMPOSE_FILE_INPUT }),
   position: v.int({ min: 0, max: MAX_POSITION }),
   urls: v.array(healthUrl, MAX_URLS),
   healthStatus: range(HEALTH_STATUS_RANGE),
@@ -309,6 +312,10 @@ export const asEnvDeploySettingsPatch: Check<EnvDeploySettingsPatch> = v.object(
   autoRollback: v.optional(v.bool()),
   currentVersion: v.optional(v.nullable(v.str({ max: 64, pattern: VERSION }))),
 }) as Check<EnvDeploySettingsPatch>
+export const asDeployBatch: Check<DeployBatch> = v.object({
+  settings: v.optional(asEnvDeploySettingsPatch),
+  deployments: v.array(v.object({ id: v.uuid(), patch: asDeploymentPatch }), MAX_DEPLOYMENTS),
+}) as Check<DeployBatch>
 export const asPreflightRequest: Check<PreflightRequest> = v.object({
   environmentId: v.uuid(),
   serviceIds: v.array(v.uuid(), MAX_SERVICES),
@@ -320,6 +327,7 @@ export const asPreflightRequest: Check<PreflightRequest> = v.object({
 export const asReleaseConfirm: Check<ReleaseConfirm> = v.object({
   typedName: v.optional(v.str({ max: MAX_NAME })),
   redeploy: v.optional(v.bool()),
+  playbookSha256: v.optional(v.str({ pattern: PLAYBOOK_SHA256 })),
 }) as Check<ReleaseConfirm>
 export const asBreakLockConfirm: Check<BreakLockConfirm> = v.object({ typedLabel: v.str({ max: MAX_NAME }) }) as Check<BreakLockConfirm>
 export const asReleaseListFilter: Check<ReleaseListFilter> = v.object({
@@ -396,7 +404,7 @@ export const asIntegrationPatch: Check<EnvironmentIntegrationsPatch> = v.object(
   emailCc: v.optional(recipients),
   qaOnDeploy: v.optional(v.bool()),
   qa: v.optional(
-    v.nullable(v.object({ repo: v.str({ min: 1, max: 201 }), workflow: v.str({ min: 1, max: 210 }), ref: v.str({ max: MAX_GIT_REF + 10 }) })),
+    v.nullable(v.object({ repo: v.str({ min: 1, max: 201 }), workflow: v.str({ min: 1, max: 210 }), ref: v.str({ max: MAX_GIT_REF + 10 }), waitMinutes: v.optional(range(QA_WAIT_RANGE)) })),
   ),
   qaWait: v.optional(v.bool()),
 }) as Check<EnvironmentIntegrationsPatch>
@@ -763,6 +771,7 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'deploy:reorder': args(v.uuid(), v.array(v.uuid(), MAX_DEPLOYMENTS)),
   'deploy:settings': args(v.uuid()),
   'deploy:updateSettings': args(v.uuid(), asEnvDeploySettingsPatch),
+  'deploy:applyBatch': args(v.uuid(), asDeployBatch),
   'deploy:tooling': args(),
   'service:list': args(v.optional(v.uuid())),
   'service:create': args(asServiceInput),
@@ -790,6 +799,9 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'service:tunnelClose': args(v.uuid()),
   'service:tunnelSync': args(v.uuid()),
   'release:preflight': args(asPreflightRequest),
+  'deploy:previewPlaybook': args(v.uuid()),
+  'deploy:savePlaybook': args(v.uuid(), v.str({ pattern: PLAYBOOK_SHA256 })),
+  'release:savePlaybook': args(v.uuid()),
   'release:start': args(v.uuid(), asReleaseConfirm),
   'release:cancel': args(v.uuid()),
   'release:rollback': args(v.uuid(), asReleaseConfirm),
@@ -801,6 +813,7 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'release:get': args(v.uuid()),
   'release:events': args(v.uuid(), v.int({ min: 0, max: Number.MAX_SAFE_INTEGER }), v.optional(v.int({ min: 1, max: MAX_EVENTS_PAGE }))),
   'release:active': args(),
+  'release:latest': args(),
   'hub:status': args(),
   'hub:connect': args(hubUrl),
   'hub:signIn': args(),

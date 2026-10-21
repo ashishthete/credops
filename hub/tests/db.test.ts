@@ -37,7 +37,7 @@ describe('hub db', () => {
 
   it('migrating twice is a no-op', () => {
     const db = openHubDb(':memory:')
-    expect(migrate(db, HUB_MIGRATIONS)).toEqual({ from: 7, to: 7 })
+    expect(migrate(db, HUB_MIGRATIONS)).toEqual({ from: 8, to: 8 })
     expect((db.prepare('SELECT COUNT(*) AS n FROM groups').get() as { n: number }).n).toBe(1)
   })
 

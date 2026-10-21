@@ -66,7 +66,9 @@ function secretUsage(environmentId: string, deps: Pick<ManifestDeps, 'deploys' |
 
 /** What a Hub run needs of an environment's Phase 9 settings: never the Teams webhook secret id (the Hub keeps its own) or timestamps. */
 export function toHubIntegrations(i: EnvironmentIntegrations): HubIntegrations {
-  return { notifyEvents: [...i.notifyEvents], emailTo: [...i.emailTo], emailCc: [...i.emailCc], qaOnDeploy: i.qaOnDeploy, qa: i.qa === null ? null : { repo: i.qa.repo, workflow: i.qa.workflow, ref: i.qa.ref }, qaWait: i.qaWait }
+  return { notifyEvents: [...i.notifyEvents], emailTo: [...i.emailTo], emailCc: [...i.emailCc], qaOnDeploy: i.qaOnDeploy,
+    // waitMinutes only when set: a manifest without it hashes exactly as before
+    qa: i.qa === null ? null : { repo: i.qa.repo, workflow: i.qa.workflow, ref: i.qa.ref, ...(i.qa.waitMinutes !== undefined ? { waitMinutes: i.qa.waitMinutes } : {}) }, qaWait: i.qaWait }
 }
 
 /** Everything a Hub needs to run the environment's deployments, and no secret value: only secret ids and names. */

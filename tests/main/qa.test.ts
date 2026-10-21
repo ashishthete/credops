@@ -138,18 +138,53 @@ describe('QaDispatcher', () => {
     expect(t.f.audit.list({ actions: ['qa.finished'] })[0]!.details).toEqual({ conclusion: 'failure' })
   })
 
-  it('wait gives up after 30 min as unknown', async () => {
-    const t = await setup((url) => {
-      if (url.endsWith('/dispatches')) return new Response(null, { status: 204 })
-      if (url.includes('/runs?')) return json({ workflow_runs: [{ id: 9, created_at: '2026-10-19T12:00:01Z', status: 'queued', conclusion: null, html_url: 'https://github.com/acme/shop-qa/actions/runs/9' }] })
-      return json({ id: 9, status: 'in_progress', conclusion: null, html_url: 'https://github.com/acme/shop-qa/actions/runs/9' })
-    })
+  const NEVER_DONE = (url: string): Response => {
+    if (url.endsWith('/dispatches')) return new Response(null, { status: 204 })
+    if (url.includes('/runs?')) return json({ workflow_runs: [{ id: 9, created_at: '2026-10-19T12:00:01Z', status: 'queued', conclusion: null, html_url: 'https://github.com/acme/shop-qa/actions/runs/9' }] })
+    return json({ id: 9, status: 'in_progress', conclusion: null, html_url: 'https://github.com/acme/shop-qa/actions/runs/9' })
+  }
+  const polled = (sleeps: number[]): number => sleeps.filter((x) => x === 30_000).reduce((a, c) => a + c, 0)
+
+  it('with no waitMinutes the wait polls up to 45 min, then gives up as unknown (row 46)', async () => {
+    const t = await setup(NEVER_DONE)
     const d = await t.qa.dispatch(t.env.id, { trigger: 'release', releaseId: 'rel-1' })
     const res = await t.qa.wait(d, new AbortController().signal)
     expect(res.conclusion).toBeNull()
-    expect(t.sleeps.filter((s) => s === 30_000).reduce((a, b) => a + b, 0)).toBe(30 * 60_000)
+    expect(polled(t.sleeps)).toBe(45 * 60_000)
     expect(t.qa.list()[0]!.state).toBe('unknown')
     expect(t.notified).toEqual([])
+  })
+
+  it('waitMinutes: 10 stops polling at 10 min', async () => {
+    const t = await setup(NEVER_DONE)
+    t.integrations.update(t.env.id, { qa: { repo: 'acme/shop-qa', workflow: 'qa.yml', ref: 'main', waitMinutes: 10 } })
+    const d = await t.qa.dispatch(t.env.id, { trigger: 'release', releaseId: 'rel-1' })
+    expect(d.waitMinutes).toBe(10)
+    await t.qa.wait(d, new AbortController().signal)
+    expect(polled(t.sleeps)).toBe(10 * 60_000)
+  })
+
+  it('waitMinutes is validated 5..180 whole minutes, by the store and the IPC validator', async () => {
+    const t = await setup()
+    const qa = (waitMinutes: unknown) => ({ repo: 'acme/shop-qa', workflow: 'qa.yml', ref: 'main', waitMinutes }) as never
+    for (const ok of [5, 45, 180]) expect(t.integrations.update(t.env.id, { qa: qa(ok) }).qa!.waitMinutes).toBe(ok)
+    for (const bad of [4, 181, 0, -1, 10.5, '45', Number.NaN]) {
+      expect(() => t.integrations.update(t.env.id, { qa: qa(bad) }), String(bad)).toThrow(/wait time/)
+    }
+    // unset again: the key disappears and the default applies
+    expect(t.integrations.update(t.env.id, { qa: qa(undefined) }).qa).toEqual({ repo: 'acme/shop-qa', workflow: 'qa.yml', ref: 'main' })
+    const v = VALIDATORS['integration:update']!
+    const patch = (w: unknown) => [t.env.id, { qa: { repo: 'acme/shop-qa', workflow: 'qa.yml', ref: 'main', waitMinutes: w } }]
+    expect(() => v(patch(10) as never)).not.toThrow()
+    for (const bad of [4, 181, 1.5, 'x']) expect(() => v(patch(bad) as never), String(bad)).toThrow()
+  })
+
+  it('the wait never blocks the release: finalize starts it detached and returns', async () => {
+    const t = await setup(NEVER_DONE)
+    const watch = vi.fn(() => new Promise<void>(() => undefined)) // never settles
+    const step = qaFinalizeStep({ qa: { dispatch: t.qa.dispatch.bind(t.qa), watch }, integrations: t.integrations })
+    await step({ run: t.run, log: () => undefined, signal: new AbortController().signal })
+    expect(watch).toHaveBeenCalledTimes(1)
   })
 
   it('a run that never appears is unknown after 2 min', async () => {

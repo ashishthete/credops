@@ -12,7 +12,7 @@ import { createConfigHandlers } from '../../src/main/ipc/handlers/config'
 import { createDeployHandlers } from '../../src/main/ipc/handlers/deploy'
 import { createServiceHandlers } from '../../src/main/ipc/handlers/services'
 import { SecretStore } from '../../src/main/vault/secret-store'
-import { DEFAULT_RELEASE_OPTIONS, type StepKind } from '../../src/shared/deploy'
+import { DEFAULT_RELEASE_OPTIONS, type ReleaseConfirm, type StepKind } from '../../src/shared/deploy'
 import type { AppServiceMeta, ServiceMeta } from '../../src/shared/services'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import { FakeAnsible, TOOLS_OK, fakeAgent, fakePrepare, fakeTap, makeDeployFixture, memFs, scriptFromPlaybook } from './deploy-helpers'
@@ -110,9 +110,16 @@ async function world() {
     tunnels: { afterUpdate: () => undefined, remove: () => undefined, open: () => undefined, close: () => undefined, sync: () => undefined } as never,
     openExternal: async () => undefined,
   })
+  const preview = keep(deployIpc['deploy:previewPlaybook'])
+  const reviewed: Record<string, string> = {}
   const ipc = {
     preflight: keep(deployIpc['release:preflight']),
-    start: keep(deployIpc['release:start']),
+    // As the wizard does: review the playbook, then start bound to its hash.
+    start: async (id: string, confirm: ReleaseConfirm) => {
+      const p = await preview(id)
+      reviewed[id] = p.playbook
+      return keep(deployIpc['release:start'])(id, { ...confirm, playbookSha256: p.sha256 })
+    },
     rollback: keep(deployIpc['release:rollback']),
     discard: keep(deployIpc['release:discard']),
     get: keep(deployIpc['release:get']),
@@ -120,7 +127,7 @@ async function world() {
     copy: keep(serviceIpc['service:copy']),
     list: keep(serviceIpc['service:list']),
   }
-  return { f, svc, ansible, spawned, script, ipc, results, home }
+  return { f, svc, ansible, spawned, script, ipc, results, home, reviewed }
 }
 
 type World = Awaited<ReturnType<typeof world>>
@@ -319,8 +326,10 @@ describe('services deploy end to end', () => {
     expect(handedOver.some((v) => v.includes(`B='${SECRET}'`))).toBe(true)
     expect(tasksOf(lastOf(w, 'release')).some((t) => step(t) === 'env' && t.deployment === 'webapp_esg')).toBe(true)
     const ids = svc.list({ limit: 100 }).map((r) => r.id)
+    expect(Object.keys(w.reviewed).length).toBe(4)
     for (const id of ids) {
       expect(f.releases.detail(id).playbook ?? '').not.toContain(SECRET)
+      if (w.reviewed[id] !== undefined && f.releases.detail(id).kind === 'release') expect(f.releases.detail(id).playbook).toBe(w.reviewed[id])
       expect(JSON.stringify(await w.ipc.get(id))).not.toContain(SECRET)
       expect(JSON.stringify(await w.ipc.events(id, 0, 1000))).not.toContain(SECRET)
     }

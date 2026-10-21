@@ -1,7 +1,7 @@
 import { escapeHtml, notesToHtml, notesToText, parseNotes } from '../../shared/notes-markdown'
 import { redact } from '../security/redact'
 import { postJson, type Fetch } from './http'
-import { factRows, httpsLinks, type NotificationFacts } from './teams'
+import { changeLines, factRows, httpsLinks, type NotificationFacts } from './teams'
 
 export const SENDGRID_URL = 'https://api.sendgrid.com/v3/mail/send'
 
@@ -29,9 +29,20 @@ const uniqueCaseless = (xs: readonly string[], skip: ReadonlySet<string> = new S
   })
 }
 
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/** dd-Mon-YYYY in the main process's local timezone; null when the time is missing or unreadable. */
+function localDate(iso: string | null | undefined): string | null {
+  const d = iso ? new Date(iso) : null
+  if (!d || Number.isNaN(d.getTime())) return null
+  return `${String(d.getDate()).padStart(2, '0')}-${MONTHS[d.getMonth()]}-${d.getFullYear()}`
+}
+
 export function releaseSubject(f: NotificationFacts): string {
   const prefix = f.product ? `[${f.product}] ` : ''
-  return f.version ? `${prefix}${f.environment.name} released ${f.version}` : `${prefix}${f.environment.name} redeployed`
+  if (f.version) return `${prefix}${f.environment.name} released ${f.version}`
+  const date = (f.commitCount ?? 0) > 0 ? localDate(f.startedAt) : null
+  return date ? `${prefix}${f.environment.name} update: ${date} available for testing` : `${prefix}${f.environment.name} redeployed`
 }
 
 /** The release email: §8.7 facts, then the notes. Notes and every other string are redacted again here. */
@@ -40,12 +51,14 @@ export function buildReleaseEmail(facts: NotificationFacts, notes: string | null
   const blocks = notes ? parseNotes(redact(notes, secrets)) : []
   const rows = factRows(facts)
   const links = httpsLinks(facts.urls)
+  const changes = changeLines(facts, secrets)
 
   const text = [
     facts.title,
     '',
     ...rows.map((r) => `${r.title}: ${r.value}`),
     ...(blocks.length > 0 ? ['', notesToText(blocks)] : []),
+    ...(changes.length > 0 ? ['', 'Changes', ...changes.flatMap((c) => [`${c.deployment}:`, ...c.lines.map((l) => `- ${l}`)])] : []),
     ...(links.length > 0 ? ['', ...links.map((u) => u.href)] : []),
   ].join('\n')
 
@@ -56,6 +69,13 @@ export function buildReleaseEmail(facts: NotificationFacts, notes: string | null
     ...rows.map((r) => `<tr><td style="padding:4px 12px 4px 0;color:#666">${escapeHtml(r.title)}</td><td style="padding:4px 0">${escapeHtml(r.value)}</td></tr>`),
     '</table>',
     ...(blocks.length > 0 ? ['<div style="margin-top:16px">', notesToHtml(blocks), '</div>'] : []),
+    ...(changes.length > 0
+      ? [
+          '<div style="margin-top:16px"><strong>Changes</strong>',
+          ...changes.map((c) => `<p style="margin:8px 0 0"><em>${escapeHtml(c.deployment)}</em></p><ul style="margin:4px 0">${c.lines.map((l) => `<li>${escapeHtml(l)}</li>`).join('')}</ul>`),
+          '</div>',
+        ]
+      : []),
     ...(links.length > 0 ? [`<p style="margin-top:16px">${links.map((u) => `<a href="${escapeHtml(u.href)}">${escapeHtml(u.href)}</a>`).join('<br>')}</p>`] : []),
     '</div>',
   ].join('\n')

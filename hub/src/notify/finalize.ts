@@ -21,6 +21,7 @@ import {
   GITHUB_WORKFLOW,
   MAX_GIT_REF,
   NOTIFY_EVENTS,
+  QA_WAIT_RANGE,
   type EnvironmentIntegrations,
   type IntegrationSettings,
   type QaWorkflow,
@@ -60,11 +61,17 @@ export interface HubNotify {
 
 const AUDIT_ACTIONS: ReadonlySet<string> = new Set(HUB_AUDIT_ACTIONS)
 
-function validQa(raw: unknown): QaWorkflow | null {
+/** The Hub's copy of an environment's QA workflow; waitMinutes is kept only as a whole number in QA_WAIT_RANGE. */
+export function validQa(raw: unknown): QaWorkflow | null {
   if (typeof raw !== 'object' || raw === null) return null
   const q = raw as Record<string, unknown>
   const ok = typeof q.repo === 'string' && GITHUB_REPO.test(q.repo) && typeof q.workflow === 'string' && GITHUB_WORKFLOW.test(q.workflow) && typeof q.ref === 'string' && q.ref.length > 0 && q.ref.length <= MAX_GIT_REF
-  return ok ? { repo: q.repo as string, workflow: q.workflow as string, ref: q.ref as string } : null
+  if (!ok) return null
+  const base = { repo: q.repo as string, workflow: q.workflow as string, ref: q.ref as string }
+  if (q.waitMinutes === undefined) return base
+  const w = q.waitMinutes
+  // a bad wait time drops the whole workflow, as the app's store does (it rejects the save)
+  return typeof w === 'number' && Number.isInteger(w) && w >= QA_WAIT_RANGE[0] && w <= QA_WAIT_RANGE[1] ? { ...base, waitMinutes: w } : null
 }
 
 /**

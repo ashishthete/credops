@@ -1,7 +1,7 @@
 import { FREEZE_DEFAULT_HOURS, FREEZE_MAX_HOURS, type HubEnvLock } from '../../src/shared/hub'
 import { inTransaction } from '../../src/main/db/tx'
 import { HubHttpError } from './errors'
-import type { HubDb } from './db'
+import { PUBLISHED, type HubDb } from './db'
 
 interface Row {
   environment_id: string
@@ -83,7 +83,7 @@ export class EnvLocks {
   }
 
   private assertEnv(environmentId: string): { name: string; protected: boolean } {
-    const e = this.db.prepare('SELECT name, protected FROM environments WHERE id = ?').get(environmentId) as { name: string; protected: number } | undefined
+    const e = this.db.prepare(`SELECT name, protected FROM environments WHERE id = ? AND ${PUBLISHED}`).get(environmentId) as { name: string; protected: number } | undefined
     if (!e) throw new HubHttpError(404, 'not_found', 'That environment is not published to this Hub')
     return { name: e.name, protected: e.protected === 1 }
   }

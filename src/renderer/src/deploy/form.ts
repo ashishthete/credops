@@ -1,5 +1,6 @@
 import {
   BACKUP_DIR,
+  COMPOSE_AUTO,
   COMPOSE_FILE,
   COMPOSE_PROJECT,
   GIT_REF,
@@ -24,7 +25,10 @@ export interface DeploymentForm {
   composeProject: string
   repoPath: string
   defaultBranch: string
+  /** The file name shown in the box; ignored while composeAuto is on. */
   composeFile: string
+  /** Let Compose find its own files: saved as composeFile ''. */
+  composeAuto: boolean
   deployTag: string
   urls: HealthUrl[]
   healthStatus: string
@@ -53,6 +57,7 @@ export function blankForm(hostId = ''): DeploymentForm {
     repoPath: '',
     defaultBranch: 'main',
     composeFile: 'docker-compose.yml',
+    composeAuto: false,
     deployTag: '',
     urls: [],
     healthStatus: '200',
@@ -86,7 +91,8 @@ export function formFrom(d: DeploymentMeta): DeploymentForm {
     composeProject: d.composeProject ?? '',
     repoPath: d.repoPath,
     defaultBranch: d.defaultBranch,
-    composeFile: d.composeFile,
+    composeFile: d.composeFile === COMPOSE_AUTO ? 'docker-compose.yml' : d.composeFile,
+    composeAuto: d.composeFile === COMPOSE_AUTO,
     deployTag: d.deployTag,
     urls: d.urls.map((u) => ({ ...u })),
     healthStatus: String(d.healthStatus),
@@ -137,7 +143,10 @@ export function checkForm(f: DeploymentForm): { errors: Partial<Record<FormField
   if (!REPO_PATH.test(f.repoPath)) errors.repoPath = 'Use an absolute path (letters, digits and . _ @ + / -), with no ".." or "//"'
   if (!GIT_REF.test(f.defaultBranch)) errors.defaultBranch = `A branch name uses ${REF_RULE}`
   if (!GIT_REF.test(f.deployTag)) errors.deployTag = `A tag name uses ${REF_RULE}`
-  if (!COMPOSE_FILE.test(f.composeFile)) errors.composeFile = 'Use a relative path (letters, digits and . _ / -), with no ".."'
+  if (!f.composeAuto) {
+    if (f.composeFile === '') errors.composeFile = 'Enter a compose file, or turn on Let Compose find files'
+    else if (!COMPOSE_FILE.test(f.composeFile)) errors.composeFile = 'Use a relative path (letters, digits and . _ / -), with no ".."'
+  }
   const repoUrl = f.repoUrl.trim()
   if (repoUrl && (repoUrl.length > MAX_URL || !REPO_URL.test(repoUrl))) errors.repoUrl = 'Use an http(s), ssh:// or git@ URL, with no spaces'
   else if (repoUrl && hasRepoCredentials(repoUrl)) errors.repoUrl = REPO_URL_CREDENTIALS_MSG
@@ -184,7 +193,7 @@ export function toInput(f: DeploymentForm, environmentId: string, position?: num
     repoPath: f.repoPath,
     defaultBranch: f.defaultBranch,
     deployTag: f.deployTag,
-    composeFile: f.composeFile,
+    composeFile: f.composeAuto ? COMPOSE_AUTO : f.composeFile,
     ...(position !== undefined ? { position } : {}),
     urls: f.urls.map((u) => ({ url: u.url.trim(), from: u.from })),
     healthStatus: whole(f.healthStatus),

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import {
   BREAK_LOCK_CONFIRM_MESSAGE,
   EVENT_BATCH_MS,
@@ -12,6 +13,10 @@ import {
   type DeploymentRunMeta,
   type DeploymentRunStatus,
   type DockerMode,
+  PLAYBOOK_CHANGED_MESSAGE,
+  REVIEW_EXPIRED_MESSAGE,
+  REVIEW_TTL_MS,
+  type PlaybookPreview,
   type PreflightCheck,
   type PreflightReport,
   type PreflightRequest,
@@ -20,6 +25,7 @@ import {
   type ReleaseListFilter,
   type ReleaseStatus,
   type ReleaseSummary,
+  type EnvLastRelease,
   type RunEvent,
   type RunEventBody,
   type RunService,
@@ -108,7 +114,7 @@ export interface ReleaseServiceDeps {
 /** The part of the service the Hub's routes and tests use. */
 export type ReleaseOps = Pick<
   ReleaseService,
-  'preflight' | 'start' | 'cancel' | 'rollback' | 'breakLock' | 'discard' | 'retryVersion' | 'runMeta' | 'detail' | 'list' | 'events' | 'hasActive' | 'onEvent'
+  'preflight' | 'previewPlaybook' | 'start' | 'cancel' | 'rollback' | 'breakLock' | 'discard' | 'retryVersion' | 'runMeta' | 'detail' | 'list' | 'events' | 'hasActive' | 'onEvent'
 >
 type ReleaseCounts = { serviceCount: number; deploymentCount: number; hostCount: number }
 
@@ -157,6 +163,16 @@ interface Info {
 
 const SHA = /^[0-9a-f]{40}$/
 const EMPTY: RunSecrets = { values: {}, known: [] }
+export { PLAYBOOK_CHANGED_MESSAGE }
+/**
+ * How long a review keeps its start time. The lock a start writes carries that time (it is part of the
+ * reviewed text), so an older review would make a fresh lock look old; past this it is reviewed again.
+ * Within it, the host lock and its "started N minutes ago" can be up to this much older than the real
+ * start (the release row keeps the real time), which brings LOCK_STALE_MS that much closer.
+ */
+export const PREVIEW_TTL_MS = REVIEW_TTL_MS
+/** Reviews are dropped from memory after this; a ready release expires well before. */
+const PREVIEW_KEEP_MS = 24 * 60 * 60_000
 export const RESET_CUT_ROLLBACK = 'Cancelled by a vault reset; the rollback did not finish'
 const TAG_FAILED = 'Deployed, but tagging'
 const STALE_TEXT = (minutes: number, who: string): string => `The lock is only ${minutes} minutes old; wait or ask ${who}`
@@ -170,6 +186,11 @@ export class ReleaseService {
   private readonly steps = new Map<string, DeploymentRunMeta['steps']>()
   /** Runs whose step list changed since the last flush; written in the same transaction as the events. */
   private readonly dirty = new Set<string>()
+  /**
+   * Per ready release and person (`reviewKey`), the start time their last review generated with, so two people
+   * reviewing one Hub release don't undo each other's review. Memory only: a preview writes nothing.
+   */
+  private readonly previews = new Map<string, { releaseId: string; startedAt: string; at: number }>()
   private timer: unknown = null
   private readonly unsubscribe: () => void
 
@@ -199,6 +220,11 @@ export class ReleaseService {
   events(releaseId: string, afterSeq: number, limit = 1000): RunEvent[] {
     this.flush()
     return this.d.releases.events(releaseId, afterSeq, limit)
+  }
+
+  /** Each environment's newest release that ran; its error is redacted as in `detail`. */
+  latestPerEnvironment(): EnvLastRelease[] {
+    return this.d.releases.latestPerEnvironment().map((r) => (r.error === null ? r : { ...r, error: redact(r.error) }))
   }
 
   listActive(): ReleaseSummary[] {
@@ -346,46 +372,76 @@ export class ReleaseService {
 
   // ---- start ----
 
+  /**
+   * The playbook `start` would run now, and its sha256, for review before Deploy. It builds the plan through the
+   * same `releasePlan` as start. It writes nothing (no row, event or audit), takes no lock, decrypts no secret
+   * (the playbook holds references only) and starts no agent. The start time it generates with is kept in memory
+   * so a start bound to this hash regenerates the same text.
+   */
+  async previewPlaybook(releaseId: string, ctx?: CallCtx): Promise<PlaybookPreview> {
+    const actor = ctx?.actor ?? this.d.actor
+    this.d.vault.assertUnlocked()
+    const rel = this.d.releases.detail(releaseId)
+    this.assertStartable(rel)
+    const env = this.inv.environment(rel.environmentId)
+    // An access check without the denied audit row `guard` writes: start audits a denial.
+    const res = await this.d.access.check(actor, 'release.start', { environmentId: env.id, deploymentIds: this.depIds(rel) })
+    if (!res.allowed) throw new DeployError('DENIED', redact(res.reason ?? 'Not allowed'))
+    this.assertCurrent(rel, env)
+    const now = this.d.now()
+    const startedAt = now.toISOString()
+    const { playbook } = this.releasePlan(rel, env, actor, startedAt)
+    for (const [k, p] of this.previews) if (now.getTime() - p.at > PREVIEW_KEEP_MS) this.previews.delete(k)
+    this.previews.set(reviewKey(releaseId, actor), { releaseId, startedAt, at: now.getTime() })
+    return { playbook, sha256: sha256(playbook) }
+  }
+
+  /**
+   * Starts a ready release. With `playbookSha256` (every start from the UI: the IPC handler refuses one without
+   * it) the playbook is regenerated and must hash the same, or the start is refused before anything is written;
+   * the stored playbook is then the reviewed text. Retry-tagging and rollback generate their own playbook and
+   * are exempt, as are the service's own callers (tests, the Hub's start route checks it when sent).
+   */
   async start(releaseId: string, confirm: ReleaseConfirm = {}, ctx?: CallCtx): Promise<void> {
     const actor = ctx?.actor ?? this.d.actor
     this.d.vault.assertUnlocked()
     const rel = this.d.releases.detail(releaseId)
-    if (rel.kind !== 'release') throw new DeployError('INVALID_STATE', 'Only a release can be started')
-    if (rel.status !== 'ready') {
-      throw new DeployError('INVALID_STATE', rel.status === 'blocked' ? 'This release is blocked; fix the failed checks and run preflight again' : `This release is ${rel.status}`)
-    }
+    this.assertStartable(rel)
     if (this.live.has(releaseId)) throw new DeployError('INVALID_STATE', 'This release is busy')
     const env = this.inv.environment(rel.environmentId)
     await this.guard(actor, 'release.start', 'release.start', env, this.depIds(rel), releaseId)
     this.assertStatus(releaseId, ['ready'])
     this.confirmProtected(actor, 'release.start', rel, env, rel.runs.map((r) => r.hostId).filter((h): h is string => h !== null), confirm.typedName)
-    const current = this.d.deploys.settings(env.id)
-    if (current.versioned && current.currentVersion !== rel.previousVersion) {
-      throw new DeployError('INVALID_STATE', 'The version changed since preflight; run preflight again')
-    }
-    this.assertSelectionCurrent(rel)
+    this.assertCurrent(rel, env)
     const redeploy = (rel.preflight?.commitsTotal ?? 0) === 0
     if (redeploy && confirm.redeploy !== true) throw new DeployError('CONFIRM_REQUIRED', REDEPLOY_CONFIRM_MESSAGE)
 
     this.assertCapacity(env)
+    const reviewed = confirm.playbookSha256 !== undefined ? this.previews.get(reviewKey(releaseId, actor)) : undefined
+    if (reviewed !== undefined && this.d.now().getTime() - reviewed.at > PREVIEW_TTL_MS) {
+      throw new DeployError('INVALID_STATE', REVIEW_EXPIRED_MESSAGE)
+    }
+    const built = this.releasePlan(rel, env, actor, reviewed?.startedAt ?? this.d.now().toISOString())
+    if (confirm.playbookSha256 !== undefined && sha256(built.playbook) !== confirm.playbookSha256) {
+      throw new DeployError('INVALID_STATE', PLAYBOOK_CHANGED_MESSAGE)
+    }
     const live = this.register(releaseId, env, 'release', rel.version ?? 'release', actor)
     let run: { infos: Info[]; holder: Holder; tag: string | null; autoRollback: boolean; previousVersion: string | null; version: string | null }
     try {
+      this.dropPreviews(releaseId)
       const infos = this.infosOf(rel)
       for (const i of infos) live.runIds.add(i.run.id)
       const settings = this.d.deploys.settings(env.id)
       const holder = this.resolveSecrets(infos, { env: true })
       live.known = holder.secrets?.known ?? []
-      const version = redeploy ? settings.currentVersion : rel.version
+      const { plan, playbook, version, docker } = built
       const tag = !redeploy && settings.versioned && rel.version !== null && rel.version !== settings.currentVersion ? rel.version : null
-      const docker = new Map<string, DockerMode>(Object.entries(rel.preflight?.dockerModes ?? {}))
-      const plan = this.plan('release', live, infos, { version, holder, docker, backup: rel.options.backup })
       this.d.releases.setStatus(releaseId, 'running', {
         startedAt: this.d.now().toISOString(),
         redeploy,
         version,
         ...(redeploy ? { versionBump: 'none' as const } : {}),
-        playbook: generatePlaybook(plan),
+        playbook,
       })
       run = { infos, holder, tag, autoRollback: settings.autoRollback, previousVersion: settings.currentVersion, version }
       this.emitState(releaseId)
@@ -404,6 +460,52 @@ export class ReleaseService {
       this.unregister(live)
       throw e
     }
+  }
+
+  private dropPreviews(releaseId: string): void {
+    for (const [k, p] of this.previews) if (p.releaseId === releaseId) this.previews.delete(k)
+  }
+
+  private assertStartable(rel: ReleaseDetail): void {
+    if (rel.kind !== 'release') throw new DeployError('INVALID_STATE', 'Only a release can be started')
+    if (rel.status !== 'ready') {
+      throw new DeployError('INVALID_STATE', rel.status === 'blocked' ? 'This release is blocked; fix the failed checks and run preflight again' : `This release is ${rel.status}`)
+    }
+  }
+
+  /** What changed since preflight that the release cannot run with: the version, or its services. */
+  private assertCurrent(rel: ReleaseDetail, env: { id: string }): void {
+    const current = this.d.deploys.settings(env.id)
+    if (current.versioned && current.currentVersion !== rel.previousVersion) {
+      throw new DeployError('INVALID_STATE', 'The version changed since preflight; run preflight again')
+    }
+    this.assertSelectionCurrent(rel)
+  }
+
+  /**
+   * The release plan and playbook of a ready release, as start runs it. The one code path for the preview and
+   * start: the plan holds secret references only (keys named by run id), so nothing is decrypted here.
+   */
+  private releasePlan(
+    rel: ReleaseDetail,
+    env: { id: string; name: string },
+    actor: Actor,
+    startedAt: string,
+  ): { plan: DeployPlan; playbook: string; version: string | null; docker: Map<string, DockerMode> } {
+    const infos = this.infosFor(rel)
+    const settings = this.d.deploys.settings(env.id)
+    const redeploy = (rel.preflight?.commitsTotal ?? 0) === 0
+    const version = redeploy ? settings.currentVersion : rel.version
+    const docker = new Map<string, DockerMode>(Object.entries(rel.preflight?.dockerModes ?? {}))
+    const refs = this.resolveSecrets(infos, { env: true, values: false })
+    const plan = this.plan('release', { id: rel.id, environmentId: env.id, environmentName: env.name, actor }, infos, {
+      version,
+      holder: refs,
+      docker,
+      backup: rel.options.backup,
+      startedAt,
+    })
+    return { plan, playbook: generatePlaybook(plan), version, docker }
   }
 
   private async runRelease(
@@ -506,7 +608,7 @@ export class ReleaseService {
     const live = this.live.get(releaseId)
     if (!live) throw new DeployError('INVALID_STATE', 'This release is not running')
     const env = this.inv.environment(live.environmentId)
-    await this.guard(ctx?.actor ?? this.d.actor, 'release.cancel', 'release.cancel', env, [], releaseId)
+    await this.guard(ctx?.actor ?? this.d.actor, 'release.cancel', 'release.cancel', env, this.depIds(this.d.releases.detail(releaseId)), releaseId)
     this.abort(live)
     this.audit('release.cancel', 'success', live, { releaseId, ...this.rowCounts(releaseId) }, ctx?.actor)
     await live.done
@@ -777,7 +879,7 @@ export class ReleaseService {
     }
     if (!checking() && rel.status !== 'ready' && rel.status !== 'blocked') throw new DeployError('INVALID_STATE', `A ${rel.status} release cannot be discarded`)
     const env = this.inv.environment(rel.environmentId)
-    await this.guard(actor, 'deploy.edit', 'release.discard', env, [], releaseId)
+    await this.guard(actor, 'deploy.edit', 'release.discard', env, this.depIds(this.d.releases.detail(releaseId)), releaseId)
     // Re-check after the await: a start that began meanwhile has registered and moved the row to running.
     const live = checking()
     let settled: ReleaseStatus[] = ['ready', 'blocked']
@@ -795,6 +897,7 @@ export class ReleaseService {
       this.push(releaseId, { type: 'run.finished', status: 'cancelled' })
       this.flush()
     }
+    this.dropPreviews(releaseId)
     this.d.releases.setStatus(releaseId, 'discarded', { finishedAt: this.d.now().toISOString() })
     this.emitState(releaseId)
     this.auditRelease(actor, 'release.discard', 'success', releaseId, env.name, rel.version ?? 'release', {})
@@ -1037,9 +1140,18 @@ export class ReleaseService {
 
   private plan(
     kind: PlanKind,
-    live: Live,
+    live: Pick<Live, 'id' | 'environmentId' | 'environmentName' | 'actor'>,
     infos: Info[],
-    o: { version: string | null; holder: Holder | null; docker: Map<string, DockerMode>; backup?: boolean; previous?: Map<string, string>; lockRaw?: Record<string, string> },
+    o: {
+      version: string | null
+      holder: Holder | null
+      docker: Map<string, DockerMode>
+      backup?: boolean
+      previous?: Map<string, string>
+      lockRaw?: Record<string, string>
+      /** The lock's start time; a reviewed release passes the review's, so the text matches. */
+      startedAt?: string
+    },
   ): DeployPlan {
     const hosts = this.planHosts(live.environmentId, infos)
     const metas = new Map(this.d.services.list(live.environmentId).map((s) => [s.id, s]))
@@ -1077,7 +1189,7 @@ export class ReleaseService {
       deployments,
       secretRefs: o.holder?.refs ?? {},
       lock: o.lockRaw ? { expectRaw: o.lockRaw } : {},
-      startedAt: this.d.now().toISOString(),
+      startedAt: o.startedAt ?? this.d.now().toISOString(),
     }
   }
 
@@ -1119,13 +1231,17 @@ export class ReleaseService {
     return out
   }
 
-  /** Decrypts what a plan needs, once. `env` false resolves only the sudo passwords (preflight). */
-  private resolveSecrets(infos: Info[], o: { env: boolean }): Holder {
+  /**
+   * Decrypts what a plan needs, once. `env` false resolves only the sudo passwords (preflight). `values` false
+   * names the same keys and references without decrypting anything (the playbook preview).
+   */
+  private resolveSecrets(infos: Info[], o: { env: boolean; values?: boolean }): Holder {
     const environmentId = infos[0]?.dep.environmentId
     const values: Record<string, string> = {}
     const known = new Set<string>()
     const cache = new Map<string, string>()
     const value = (secretId: string): string => {
+      if (o.values === false) return ''
       let v = cache.get(secretId)
       if (v === undefined) {
         v = this.d.secrets.value(secretId, environmentId)
@@ -1147,8 +1263,8 @@ export class ReleaseService {
         if (parsed.errors.length > 0) throw new Error(`The .env template of ${dep.name} is invalid`)
         const resolved = new Map(parsed.secretIds.map((sid) => [sid, value(sid)]))
         const key = `ENV_${run.id.replace(/-/g, '_')}`
-        values[key] = renderEnvTemplate(parsed.lines, resolved)
-        for (const l of parsed.lines) {
+        values[key] = o.values === false ? '' : renderEnvTemplate(parsed.lines, resolved)
+        for (const l of o.values === false ? [] : parsed.lines) {
           if ('key' in l) {
             const v = l.value.kind === 'text' ? l.value.text : (resolved.get(l.value.secretId) ?? '')
             if (v) known.add(v)
@@ -1166,9 +1282,15 @@ export class ReleaseService {
   // ---- bookkeeping ----
 
   private infosOf(rel: ReleaseDetail): Info[] {
+    const infos = this.infosFor(rel)
+    for (const { run } of infos) if (!this.steps.has(run.id)) this.steps.set(run.id, run.steps.map((x) => ({ ...x })))
+    return infos
+  }
+
+  /** `infosOf` without taking the runs' step lists into memory. */
+  private infosFor(rel: ReleaseDetail): Info[] {
     return rel.runs.map((run) => {
       if (run.deploymentId === null) throw new DeployError('INVALID_STATE', `${run.deploymentName} was removed since preflight; run preflight again`)
-      if (!this.steps.has(run.id)) this.steps.set(run.id, run.steps.map((x) => ({ ...x })))
       return { run, dep: this.d.deploys.get(run.deploymentId), sel: selectionOf(run) }
     })
   }
@@ -1591,4 +1713,13 @@ function serviceCommits(infos: Info[], commits: PreflightReport['commits']): Pre
     }
   }
   return out
+}
+
+/** A review belongs to one person: the Hub user when there is one, else the OS user on the machine. */
+function reviewKey(releaseId: string, actor: Actor): string {
+  return JSON.stringify([releaseId, actor.hubUserId ?? null, actor.osUser, actor.machine])
+}
+
+function sha256(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex')
 }

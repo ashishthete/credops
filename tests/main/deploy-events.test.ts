@@ -539,6 +539,81 @@ describe('fix round 1', () => {
     expect(r.checks.find((c) => c.id === 'commits')!.message).toContain('at least 1')
   })
 
+  it('each step task yields task.done with its own state, rc, attempts and duration', () => {
+    const { events } = replay('release-ok.jsonl')
+    const tasks = of(events, 'task.done')
+    // the lock prep helper belongs to the lock step and is not a task row
+    expect(tasks.map((t) => t.task)).toEqual(['lock od-1', 'record dep2', 'fetch dep2', 'checkout dep2', 'build dep2', 'up dep2', 'health dep2 0', 'tag dep2', 'unlock od-1'])
+    expect(tasks[0]).toEqual({ type: 'task.done', stepId: 'host:host-od-1:lock', task: 'lock od-1', hostId: 'host-od-1', state: 'ok', rc: 0, attempts: null, durationMs: 500 })
+    expect(tasks.every((t) => t.durationMs === 500)).toBe(true)
+
+    const c = clock()
+    const tr = new EventTranslator({ plan: planFixture(), secrets: () => [], now: c.now })
+    const tags = ['od_step=health', `od_run=${R1}`]
+    const out: RunEventBody[] = []
+    const run = (task: string, result: Record<string, unknown>) => {
+      out.push(...tr.feed(JSON.stringify({ event: 'task_start', name: task, tags })))
+      c.t += 3000
+      out.push(...tr.feed(JSON.stringify({ host: 'od-1', task, tags, no_log: false, truncated: [], ...result })))
+    }
+    run('health dep1 0', { event: 'ok', changed: false, attempts: 4, rc: null })
+    expect(of(out, 'task.done')).toEqual([{ type: 'task.done', stepId: `${R1}:health`, task: 'health dep1 0', hostId: 'host-od-1', state: 'ok', rc: null, attempts: 4, durationMs: 3000 }])
+    const up = ['od_step=up', `od_run=${R1}`]
+    out.push(...tr.feed(JSON.stringify({ event: 'task_start', name: 'up dep1', tags: up })))
+    out.push(...tr.feed(JSON.stringify({ event: 'ok', host: 'od-1', task: 'up dep1', tags: up, changed: true, rc: 0 })))
+    expect(of(out, 'task.done').at(-1)).toMatchObject({ task: 'up dep1', state: 'changed', attempts: null })
+  })
+
+  it('a failed task is a failed task.done with its rc, and its secret stays out', () => {
+    const { events } = replay('release-health-fail.jsonl', planFixture(), ['hunter2-secret'])
+    const failed = of(events, 'task.done').filter((t) => t.state === 'failed')
+    expect(failed).toEqual([{ type: 'task.done', stepId: `${R2}:health`, task: 'health dep2 0', hostId: 'host-od-1', state: 'failed', rc: 1, attempts: null, durationMs: 500 }])
+    // the untagged rescue tasks are no step's
+    expect(of(events, 'task.done').map((t) => t.task)).not.toContain('fail dep2')
+    expect(JSON.stringify(events)).not.toContain('hunter2-secret')
+  })
+
+  it('skipped and unreachable tasks, and a task name carrying a secret', () => {
+    const tr = new EventTranslator({ plan: planFixture(), secrets: () => ['n4me-secret'], now: clock().now })
+    const tags = ['od_step=backup', `od_run=${R1}`]
+    tr.feed(JSON.stringify({ event: 'task_start', name: 'backup n4me-secret', tags }))
+    const skipped = tr.feed(JSON.stringify({ event: 'skipped', host: 'od-1', task: 'backup n4me-secret', tags }))
+    expect(of(skipped, 'task.done')[0]).toMatchObject({ state: 'skipped', task: 'backup ‹redacted›' })
+    const t2 = ['od_step=fetch', `od_run=${R1}`]
+    tr.feed(JSON.stringify({ event: 'task_start', name: 'fetch dep1', tags: t2 }))
+    const un = tr.feed(JSON.stringify({ event: 'unreachable', host: 'od-1', task: 'fetch dep1', tags: t2, msg: 'timed out' }))
+    expect(of(un, 'task.done')[0]).toMatchObject({ state: 'failed', task: 'fetch dep1', rc: null })
+    expect(JSON.stringify([skipped, un])).not.toContain('n4me-secret')
+  })
+
+  it("a task's output lines carry its task name, redacted, so each task shows its own output", () => {
+    const tr = new EventTranslator({ plan: planFixture(), secrets: () => ['n4me-secret'], now: clock().now })
+    const tags = ['od_step=health', `od_run=${R1}`]
+    const out: RunEventBody[] = []
+    for (const [task, stdout] of [
+      ['health dep1 0', 'GET /a 200'],
+      ['health dep1 n4me-secret', 'GET /b?k=n4me-secret 503'],
+    ]) {
+      out.push(...tr.feed(JSON.stringify({ event: 'task_start', name: task, tags })))
+      out.push(...tr.feed(JSON.stringify({ event: 'ok', host: 'od-1', task, tags, no_log: false, rc: 0, stdout, truncated: ['stdout'] })))
+    }
+    const logs = of(out, 'log').filter((l) => l.stepId === `${R1}:health`)
+    expect(logs.map((l) => [l.task, l.line])).toEqual([
+      ['health dep1 0', 'GET /a 200'],
+      ['health dep1 0', 'Output of this step was cut (stdout)'],
+      ['health dep1 ‹redacted›', 'GET /b?k=‹redacted› 503'],
+      ['health dep1 ‹redacted›', 'Output of this step was cut (stdout)'],
+    ])
+    // the same name as the task's task.done, so the view can pair them
+    expect(of(out, 'task.done').map((t) => t.task)).toEqual(['health dep1 0', 'health dep1 ‹redacted›'])
+    expect(JSON.stringify(out)).not.toContain('n4me-secret')
+  })
+
+  it('the plugin reports changed and attempts', () => {
+    expect(CALLBACK_PLUGIN_SOURCE).toContain('"changed": bool(res.get("changed"))')
+    expect(CALLBACK_PLUGIN_SOURCE).toContain('"attempts": res.get("attempts") if isinstance(res.get("attempts"), int) else None')
+  })
+
   it('the plugin tolerates extra Display arguments and non-string messages', () => {
     expect(CALLBACK_PLUGIN_SOURCE).toContain('def _warning(self, msg, *args, **kwargs):')
     expect(CALLBACK_PLUGIN_SOURCE).toContain('json.dumps(value, default=str)')

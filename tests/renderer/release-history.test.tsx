@@ -10,7 +10,7 @@ import { ReleaseHistory } from '../../src/renderer/src/pages/deployments/release
 import { ReleaseView } from '../../src/renderer/src/pages/deployments/release/ReleaseView'
 import type { ReleaseDetail, ReleaseSummary } from '../../src/shared/deploy'
 import { events, OK_RUN, REL, releaseDetail } from './fixtures/release-events'
-import { appService, deploymentMeta, environment, host, mockBridge } from './helpers'
+import { appService, deploymentMeta, emitBridgeEvent, environment, host, mockBridge } from './helpers'
 
 const flush = () => act(async () => {})
 const calls = (invoke: ReturnType<typeof mockBridge>, channel: string) => (invoke.mock.calls as unknown[][]).filter((x) => x[0] === channel)
@@ -219,5 +219,58 @@ describe('release history', () => {
     const running = document.querySelector('[data-state="cancelling"]')
     expect(running).not.toBeNull()
     expect(running).toHaveAccessibleName(/: cancelling$/)
+  })
+
+  it('a retry of a failed version tag shows its cancel as cancelling, and hides Retry tagging while it runs', async () => {
+    const upTo = OK_RUN.findIndex((e) => e.type === 'step.started' && e.stepId === 'release:version')
+    const stored = events([
+      ...OK_RUN.slice(0, upTo),
+      { type: 'step.started', stepId: 'release:version', kind: 'version', name: 'version', hostId: null, deploymentRunId: null },
+      { type: 'step.failed', stepId: 'release:version', error: 'push rejected', durationMs: 1000 },
+      { type: 'run.finished', status: 'failed', error: 'Tagging the version failed' },
+    ])
+    const failed = releaseDetail({ status: 'failed', startedAt: '2026-10-19T10:00:00.000Z', finishedAt: '2026-10-19T10:01:00.000Z', error: 'Tagging the version failed' })
+    const invoke = mockBridge({ 'release:get': failed, 'release:cancel': null, 'release:retry-version': null })
+    const base = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'release:events') return stored.filter((e) => e.seq > (args[1] as number))
+      return base(channel)
+    })
+    render(
+      <MemoryRouter>
+        <ReleaseView releaseId={REL} />
+      </MemoryRouter>,
+    )
+    await flush()
+    await flush()
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Retry tagging' }))
+    expect(calls(invoke, 'release:retry-version')).toEqual([['release:retry-version', REL]])
+
+    // Main re-runs the same release: running again, from a fresh run.started.
+    const { options: _o, releaseNotes: _n, playbook: _p, runs: _r, preflight: _f, lastSeq: _l, ...rest } = failed
+    act(() => emitBridgeEvent('release:state', { ...rest, status: 'running', finishedAt: null, error: null }))
+    act(() =>
+      emitBridgeEvent(
+        'deploy:event',
+        events(
+          [
+            { type: 'run.started', kind: 'release', version: 'v1.5.0' },
+            { type: 'step.started', stepId: 'release:version', kind: 'version', name: 'version', hostId: null, deploymentRunId: null },
+          ],
+          stored.length + 1,
+        ),
+      ),
+    )
+    await flush()
+    expect(screen.queryByRole('button', { name: 'Retry tagging' })).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Cancel the release?' })
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel release' }))
+    await flush()
+    expect(calls(invoke, 'release:cancel')).toEqual([['release:cancel', REL]])
+    await waitFor(() => expect(screen.getByText('cancelling')).toBeInTheDocument())
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Retry tagging' })).toBeNull()
   })
 })

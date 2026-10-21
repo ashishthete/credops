@@ -6,7 +6,10 @@ import {
   type RunEvent,
   type StepKind,
   type StepState,
+  type TaskState,
 } from '../../../shared/deploy'
+import { playbookSteps, type PlaybookPlay } from '../../../shared/playbook-steps'
+import { listNames } from '../../../shared/services'
 
 export interface ChipState {
   stepId: string
@@ -16,6 +19,17 @@ export interface ChipState {
   startedAt: number | null
   durationMs: number | null
   error: string | null
+}
+
+/** One Ansible task's result (`task.done`); `at` is when it arrived. */
+export interface TaskResult {
+  task: string
+  hostId: string | null
+  state: TaskState
+  rc: number | null
+  attempts: number | null
+  durationMs: number
+  at: number
 }
 
 export interface LaneRun {
@@ -29,6 +43,11 @@ export interface LaneRun {
   previousCommit: string | null
   deployedCommit: string | null
 }
+
+/** `<checkout>: <services>`, or `<checkout>: whole checkout`. */
+/** What a run deploys: its services, or the whole checkout. */
+export const runServices = (run: Pick<LaneRun, 'services' | 'wholeCheckout'>) => (run.wholeCheckout || !run.services.length ? 'whole checkout' : listNames(run.services))
+export const runLabel = (run: Pick<LaneRun, 'name' | 'services' | 'wholeCheckout'>) => `${run.name}: ${runServices(run)}`
 
 export interface Lane {
   hostId: string
@@ -47,6 +66,10 @@ export interface PipelineState {
   rollback: { active: boolean; runIds: string[]; ok: boolean | null }
   version: { from: string | null; to: string | null }
   lockBusy: { hostId: string; text: string; stale: boolean }[]
+  /** Per step id, its tasks' results in arrival order; empty for releases from before `task.done`. */
+  tasks: Record<string, TaskResult[]>
+  /** The stored release playbook's tasks, for the step list; empty until the release has one. */
+  plays: PlaybookPlay[]
   lastSeq: number
   /** An event arrived past `lastSeq + 1`; the store refetches from `lastSeq`. */
   gap: boolean
@@ -95,6 +118,8 @@ export function initialPipeline(detail: ReleaseDetail): PipelineState {
     rollback: { active: false, runIds: [], ok: null },
     version: { from: detail.previousVersion, to: detail.version },
     lockBusy: [],
+    tasks: {},
+    plays: detail.playbook ? playbookSteps(detail.playbook) : [],
     lastSeq: 0,
     gap: false,
     result: null,
@@ -170,10 +195,15 @@ export function reducePipeline(s: PipelineState, events: RunEvent[]): PipelineSt
     d.lastSeq = ev.seq
     d.gap = false
     switch (ev.type) {
-      case 'run.started':
+      case 'run.started': {
         d.status = 'running'
         if (ev.version) d.version = { ...d.version, to: ev.version }
+        // Retry-tagging runs the finished release again under its id: its result and version tag start over.
+        d.result = null
+        const c = findChip('release:version')
+        if (c) Object.assign(c, { state: 'pending', startedAt: null, durationMs: null, error: null })
         break
+      }
       case 'preflight.done':
         d.status = ev.report.blocked ? 'blocked' : 'ready'
         break
@@ -190,6 +220,11 @@ export function reducePipeline(s: PipelineState, events: RunEvent[]): PipelineSt
       case 'step.failed': {
         const c = findChip(ev.stepId)
         if (c) Object.assign(c, { state: 'failed', durationMs: ev.durationMs, error: ev.error })
+        break
+      }
+      case 'task.done': {
+        const { stepId, task, hostId, state, rc, attempts, durationMs } = ev
+        d.tasks = { ...d.tasks, [stepId]: [...(d.tasks[stepId] ?? []), { task, hostId, state, rc, attempts, durationMs, at: Date.parse(ev.at) }] }
         break
       }
       case 'deployment.updated': {

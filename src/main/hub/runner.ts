@@ -1,5 +1,6 @@
 import type {
   BreakLockConfirm,
+  PlaybookPreview,
   PreflightRequest,
   ReleaseConfirm,
   ReleaseDetail,
@@ -20,6 +21,7 @@ type Maybe<T> = T | Promise<T>
  */
 export interface ReleaseApi {
   preflight(req: PreflightRequest): Maybe<{ releaseId: string }>
+  previewPlaybook(releaseId: string): Maybe<PlaybookPreview>
   start(releaseId: string, confirm?: ReleaseConfirm): Maybe<void>
   cancel(releaseId: string): Maybe<void>
   rollback(releaseId: string, confirm?: ReleaseConfirm): Maybe<{ releaseId: string }>
@@ -64,6 +66,11 @@ export class HubRunner implements ReleaseApi {
     const res = await this.audited('preflight', null, envName, () => this.d.client().post<{ releaseId: string }>('/api/v1/releases/preflight', req))
     this.remember(res.releaseId, envName)
     return res
+  }
+
+  /** A read: not audited, like `detail`. */
+  previewPlaybook(releaseId: string): Promise<PlaybookPreview> {
+    return this.d.client().get<PlaybookPreview>(`/api/v1/releases/${releaseId}/playbook`)
   }
 
   async start(releaseId: string, confirm: ReleaseConfirm = {}): Promise<void> {
@@ -232,6 +239,9 @@ export class RoutingReleases implements ReleaseApi {
 
   async preflight(req: PreflightRequest): Promise<{ releaseId: string }> {
     return this.d.isHubEnv(req.environmentId) ? this.d.hub.preflight(req) : this.d.local.preflight(req)
+  }
+  previewPlaybook(releaseId: string): Maybe<PlaybookPreview> {
+    return this.pick(releaseId).previewPlaybook(releaseId)
   }
   start(releaseId: string, confirm?: ReleaseConfirm): Maybe<void> {
     return this.pick(releaseId).start(releaseId, confirm)

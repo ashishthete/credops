@@ -65,7 +65,12 @@ export interface QaWorkflow {
   /** A workflow file name (`qa.yml`) or a numeric id. */
   workflow: string
   ref: string
+  /** How long to poll for the result: whole minutes, QA_WAIT_RANGE. Absent means QA_WAIT_DEFAULT_MIN. */
+  waitMinutes?: number
 }
+
+export const QA_WAIT_RANGE = [5, 180] as const
+export const QA_WAIT_DEFAULT_MIN = 45
 
 export const QA_STATES = ['dispatched', 'running', 'passed', 'failed', 'unknown'] as const
 export type QaState = (typeof QA_STATES)[number]
@@ -78,6 +83,8 @@ export interface QaDispatch {
   repo: string
   workflow: string
   ref: string
+  /** Minutes the wait polls for; QA_WAIT_DEFAULT_MIN when the workflow sets none. */
+  waitMinutes: number
   /** ISO time the dispatch was accepted. */
   dispatchedAt: string
   state: QaState

@@ -1,4 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
+import { AuditLog } from '../audit/audit-log'
+import { hasRepoCredentials, stripRepoCredentials } from '../../shared/inventory'
 
 export type Db = DatabaseSync
 
@@ -6,6 +8,8 @@ export interface Migration {
   version: number
   name: string
   up: string
+  /** Data fix-up run in the same transaction right after `up`. */
+  after?: (db: Db) => void
 }
 
 export const migrations: Migration[] = [
@@ -265,7 +269,50 @@ CREATE TABLE hub_env_links(
   hub_id TEXT NOT NULL, published_at TEXT NOT NULL, manifest_hash TEXT NOT NULL);
 `,
   },
+  {
+    version: 10,
+    name: 'qa_wait_minutes',
+    up: `
+ALTER TABLE environment_integrations ADD COLUMN qa_wait_minutes INTEGER CHECK (qa_wait_minutes IS NULL OR (qa_wait_minutes BETWEEN 5 AND 180));
+`,
+  },
+  {
+    version: 11,
+    name: 'strip_repo_credentials',
+    up: '',
+    after: (db) => {
+      stripSavedRepoCredentials(db)
+    },
+  },
 ]
+
+/**
+ * Removes userinfo from every saved repo URL (products and deployments), leaving the rest byte for byte.
+ * Audits the count only, and only when something changed. Safe to run again: clean rows are not touched.
+ */
+export function stripSavedRepoCredentials(db: Db): number {
+  let count = 0
+  for (const table of ['products', 'deployments'] as const) {
+    const rows = db.prepare(`SELECT id, repo_url FROM ${table} WHERE repo_url IS NOT NULL`).all() as {
+      id: string
+      repo_url: string
+    }[]
+    const update = db.prepare(`UPDATE ${table} SET repo_url = ? WHERE id = ?`)
+    for (const r of rows) {
+      if (!hasRepoCredentials(r.repo_url)) continue
+      update.run(stripRepoCredentials(r.repo_url), r.id)
+      count++
+    }
+  }
+  if (count > 0) {
+    new AuditLog(db).appendInTx({
+      action: 'repo.credentials_stripped',
+      outcome: 'info',
+      details: { count },
+    })
+  }
+  return count
+}
 
 const ENSURE_TABLE = `CREATE TABLE IF NOT EXISTS schema_migrations(
   version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)`
@@ -296,6 +343,7 @@ export function migrate(db: Db, list: Migration[] = migrations): { from: number;
     db.exec('BEGIN IMMEDIATE')
     try {
       db.exec(m.up)
+      m.after?.(db)
       insert.run(m.version, m.name, new Date().toISOString())
       db.exec('COMMIT')
     } catch (err) {

@@ -1,15 +1,12 @@
 import { motion } from 'framer-motion'
 import { Fragment } from 'react'
-import { listNames } from '../../../../../shared/services'
-import type { ChipState, LaneRun, PipelineState } from '../../../deploy/pipeline'
+import { runLabel, type ChipState, type PipelineState } from '../../../deploy/pipeline'
 import { fast, spring, staggerDelay, useMotionSafe } from '../../../ui/motion'
 import { StepChip } from './StepChip'
 
 const FINISHED = new Set<ChipState['state']>(['ok', 'warn', 'skipped'])
 
-/** `<checkout>: <services>`, or `<checkout>: whole checkout`. */
-export const runLabel = (run: Pick<LaneRun, 'name' | 'services' | 'wholeCheckout'>) =>
-  `${run.name}: ${run.wholeCheckout || !run.services.length ? 'whole checkout' : listNames(run.services)}`
+export { runLabel }
 
 /** The bar between two chips; it fills once the chip on its left has finished. */
 function Connector({ filled }: { filled: boolean }) {

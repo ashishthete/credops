@@ -91,6 +91,76 @@ describe('EnvironmentNotifications', () => {
     expect(rows[1]).toHaveTextContent('SendGrid rejected the key')
   })
 
+  it('the wait field only works where it has an effect: QA configured and "Wait for the QA result" on', async () => {
+    const off = { ...blank(ENV), qa: { repo: 'acme/qa', workflow: 'qa.yml', ref: 'main' }, qaOnDeploy: true, qaWait: false, updatedAt: TS }
+    bridge(environment({ id: ENV, name: 'staging' }), off)
+    renderSection()
+    const s = section()
+    const field = await waitFor(() => within(s).getByLabelText('Wait up to (minutes)'))
+    expect(field).toBeDisabled()
+    fireEvent.click(within(s).getByRole('switch', { name: 'Wait for result' }))
+    expect(field).toBeEnabled()
+  })
+
+  it('a bad wait value in a disabled field does not block Save and is not saved; a good one is kept', async () => {
+    const saved = { ...blank(ENV), qa: { repo: 'acme/qa', workflow: 'qa.yml', ref: 'main' }, qaOnDeploy: true, qaWait: true, updatedAt: TS }
+    const invoke = bridge(environment({ id: ENV, name: 'staging' }), saved)
+    renderSection()
+    const s = section()
+    const field = await waitFor(() => within(s).getByLabelText('Wait up to (minutes)'))
+    const save = within(s).getByRole('button', { name: 'Save notifications' })
+    const waitSwitch = within(s).getByRole('switch', { name: 'Wait for result' })
+    fireEvent.change(field, { target: { value: '999' } })
+    expect(save).toBeDisabled()
+    fireEvent.click(waitSwitch)
+    expect(field).toBeDisabled()
+    expect(save).toBeEnabled()
+    fireEvent.click(save)
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('integration:update', ENV, expect.objectContaining({ qa: { repo: 'acme/qa', workflow: 'qa.yml', ref: 'main' }, qaWait: false })),
+    )
+  })
+
+  it('a good wait value is kept while "Wait for result" is off', async () => {
+    const saved = { ...blank(ENV), qa: { repo: 'acme/qa', workflow: 'qa.yml', ref: 'main', waitMinutes: 30 }, qaOnDeploy: true, qaWait: false, updatedAt: TS }
+    const invoke = bridge(environment({ id: ENV, name: 'staging' }), saved)
+    renderSection()
+    const save = await waitFor(() => within(section()).getByRole('button', { name: 'Save notifications' }))
+    await waitFor(() => expect(save).toBeEnabled())
+    fireEvent.click(save)
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('integration:update', ENV, expect.objectContaining({ qa: { repo: 'acme/qa', workflow: 'qa.yml', ref: 'main', waitMinutes: 30 } })),
+    )
+  })
+
+  it('the wait field is disabled while the QA workflow is blank', async () => {
+    const blankQa = { ...blank(ENV), qa: null, qaOnDeploy: false, qaWait: true, updatedAt: TS }
+    bridge(environment({ id: ENV, name: 'staging' }), blankQa)
+    renderSection()
+    expect(await waitFor(() => within(section()).getByLabelText('Wait up to (minutes)'))).toBeDisabled()
+  })
+
+  it('QA wait time is optional, validated 5..180, and saved with the workflow (row 46)', async () => {
+    const saved = { ...blank(ENV), qa: { repo: 'acme/qa', workflow: 'qa.yml', ref: 'main' }, qaOnDeploy: true, qaWait: true, updatedAt: TS }
+    const invoke = bridge(environment({ id: ENV, name: 'staging' }), saved)
+    renderSection()
+    const s = section()
+    const field = await waitFor(() => within(s).getByLabelText('Wait up to (minutes)'))
+    expect(field).toHaveValue('')
+    expect(field).toHaveAttribute('placeholder', '45')
+    const save = within(s).getByRole('button', { name: 'Save notifications' })
+    for (const bad of ['4', '181', '1.5', 'abc']) {
+      fireEvent.change(field, { target: { value: bad } })
+      expect(save, bad).toBeDisabled()
+    }
+    fireEvent.change(field, { target: { value: '10' } })
+    expect(save).toBeEnabled()
+    fireEvent.click(save)
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('integration:update', ENV, expect.objectContaining({ qa: { repo: 'acme/qa', workflow: 'qa.yml', ref: 'main', waitMinutes: 10 } })),
+    )
+  })
+
   it('send test card calls notify:test for this environment', async () => {
     const invoke = bridge(environment({ id: ENV, name: 'staging' }), { ...blank(ENV), teamsWebhookSecretId: HOOK, updatedAt: TS })
     renderSection()

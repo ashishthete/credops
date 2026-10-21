@@ -72,7 +72,7 @@ describe('deployments page', () => {
     expect(screen.queryByText('prod-api')).not.toBeInTheDocument()
     expect(within(app1).getByText('Backup')).toBeInTheDocument()
     expect(within(app1).getByText('1 URL')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'staging', pressed: true })).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'Breadcrumb' })).toHaveTextContent('Deployments›Shop›staging')
     expect(screen.getByTestId('current-version')).toHaveTextContent('v1.2.0')
   })
 
@@ -144,6 +144,36 @@ describe('deployments page', () => {
       envTemplate: null,
     })
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New checkout' })).not.toBeInTheDocument())
+  })
+
+  it('compose file: an empty box is an error, and only the switch selects auto (saved as an empty composeFile)', async () => {
+    const user = userEvent.setup()
+    const invoke = world({ 'deploy:create': deploymentMeta({ id: 'new', name: 'api' }) })
+    await open()
+    await screen.findByText('No deployments in staging yet')
+    await user.click(screen.getAllByRole('button', { name: 'New deployment' })[0])
+    const dialog = await screen.findByRole('dialog', { name: 'New checkout' })
+    await user.type(within(dialog).getByLabelText('Name'), 'api')
+    await user.selectOptions(within(dialog).getByLabelText('Host'), 'h1')
+    await user.type(within(dialog).getByLabelText('Repo path'), '/srv/app')
+    await user.type(within(dialog).getByLabelText('Deploy tag'), 'deployed-staging')
+    const create = within(dialog).getByRole('button', { name: 'Create deployment' })
+    const auto = within(dialog).getByRole('switch', { name: /Let Compose find files/ })
+    expect(auto).toHaveAttribute('aria-checked', 'false')
+
+    await user.clear(within(dialog).getByLabelText('Compose file'))
+    // Clearing the box does not flip the switch; it is an error instead.
+    expect(await within(dialog).findByText(/Enter a compose file, or turn on/)).toBeInTheDocument()
+    expect(auto).toHaveAttribute('aria-checked', 'false')
+    expect(create).toBeDisabled()
+
+    await user.click(auto)
+    expect(auto).toHaveAttribute('aria-checked', 'true')
+    expect(within(dialog).getByLabelText('Compose file')).toBeDisabled()
+    await waitFor(() => expect(create).toBeEnabled())
+    await user.click(create)
+    await waitFor(() => expect(calls(invoke, 'deploy:create')).toHaveLength(1))
+    expect(calls(invoke, 'deploy:create')[0][1]).toMatchObject({ composeFile: '' })
   })
 
   it('env template shows secret chips by name and blocks a plain DB_PASSWORD', async () => {
@@ -266,14 +296,15 @@ describe('deployments page', () => {
     await waitFor(() => expect(calls(invoke, 'deploy:delete')).toHaveLength(1))
   })
 
-  it('picking an environment updates the URL selection and the list', async () => {
+  it('going back to the list and opening another environment swaps the list', async () => {
     const user = userEvent.setup()
     world({
       'deploy:list': [deploymentMeta({ id: 'd1', name: 'api' }), deploymentMeta({ id: 'd4', name: 'prod-api', environmentId: 'e2' })],
     })
     await open()
     await screen.findByRole('listitem', { name: 'api' })
-    await user.click(screen.getByRole('button', { name: 'prod' }))
+    await user.click(within(screen.getByRole('navigation', { name: 'Breadcrumb' })).getByRole('button', { name: 'Deployments' }))
+    await user.click(within(await screen.findByRole('listitem', { name: 'prod' })).getByRole('button', { name: /^prod,/ }))
     expect(await screen.findByRole('listitem', { name: 'prod-api' })).toBeInTheDocument()
     expect(screen.queryByRole('listitem', { name: 'api' })).not.toBeInTheDocument()
   })

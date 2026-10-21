@@ -60,6 +60,12 @@ const holds = new Map<string, number>()
 const buffers = new Map<string, LogBuffer>()
 /** Per open release, bumped by each batch of log lines, so a view of the buffer re-renders. */
 const logVersions = createStore<Record<string, number>>({})
+/**
+ * Releases this window asked to cancel: both release pages show them as cancelling while they still run. The store
+ * clears one when its release finishes (a `run.finished` event, or a state push that is no longer running), so
+ * it does not matter which page, if any, is open then.
+ */
+const cancels = createStore<Record<string, true>>({})
 let syncUsers = 0
 let stopSync: (() => void) | null = null
 
@@ -74,6 +80,7 @@ export function resetReleases(): void {
   holds.clear()
   buffers.clear()
   logVersions.set({})
+  cancels.set({})
   releaseStore.set(EMPTY)
 }
 
@@ -106,6 +113,7 @@ function ingest(id: string, batch: DeployRunEvent[]): void {
     if (e.type === 'preflight.check') pre = { ...pre, checks: [...pre.checks.filter((c) => !sameCheck(c, e.check)), e.check] }
     else if (e.type === 'preflight.done') pre = { ...pre, report: e.report }
   }
+  if (next.result) markCancelling(id, false)
   if (next !== prev || pre !== s.preflight[id]) {
     releaseStore.set({ ...s, pipelines: { ...s.pipelines, [id]: next }, preflight: { ...s.preflight, [id]: pre } })
   }
@@ -287,6 +295,7 @@ function onEvents(batch: DeployRunEvent[]): void {
 }
 
 function onState(summary: ReleaseSummary): void {
+  if (!ACTIVE.has(summary.status)) markCancelling(summary.id, false)
   const s = releaseStore.get()
   const on = ACTIVE.has(summary.status)
   const has = s.active.includes(summary.id)
@@ -338,6 +347,25 @@ export function startReleaseSync(): () => void {
       stopSync = null
     }
   }
+}
+
+/** A cancel of the release was sent from this window (`release:cancel` succeeded); cleared when it finishes. */
+export function markCancelling(id: string, on: boolean): void {
+  if (isCancelling(id) === on) return
+  // The cancel's reply can come after the release already finished: then there is nothing left to cancel. The
+  // status decides, not a pipeline's result, which a retry of its version tag leaves from the run before.
+  const status = releaseStore.get().byId[id]?.status
+  if (on && status !== undefined && !ACTIVE.has(status)) return
+  const { [id]: _was, ...rest } = cancels.get()
+  cancels.set(on ? { ...rest, [id]: true } : rest)
+}
+
+export function isCancelling(id: string): boolean {
+  return cancels.get()[id] === true
+}
+
+export function useCancelling(id: string): boolean {
+  return useSyncExternalStore(cancels.subscribe, () => cancels.get()[id] === true)
 }
 
 export function usePipeline(id: string | null): PipelineState | undefined {

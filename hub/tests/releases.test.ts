@@ -1,4 +1,4 @@
-import { generateKeyPairSync, randomUUID } from 'node:crypto'
+import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -10,6 +10,7 @@ import { buildApp } from '../src/app'
 import { KeyRing } from '../src/secrets/keyring'
 import { DeployKeys } from '../src/secrets/deploykeys'
 import { HostKeyError } from '../../src/main/ssh/connect'
+import { PLAYBOOK_CHANGED_MESSAGE } from '../../src/shared/deploy'
 import { READY_RELEASE_TTL_MS } from '../../src/shared/hub'
 import { hubVerify } from '../src/releases/adapters'
 import { testHub, type TestHub } from './helpers'
@@ -228,6 +229,73 @@ describe('hub releases', () => {
     expect(audits('release.rollback')[0]).toMatchObject({ actor: { oid: BOB.oid }, viaGroup: 'Ops' })
   })
 
+  describe('playbook review', () => {
+    const sha = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex')
+    const preview = (t: string, id: string) => call(t, 'GET', `/api/v1/releases/${id}/playbook`)
+    const auditCount = () => hub.audit.list({ limit: 1000 }).length
+
+    it('a maintainer previews a ready release without writing anything, then starts bound to it', async () => {
+      const { fr, bob } = await setup()
+      const id = await ready(bob)
+      const before = { detail: await detail(bob, id), events: await events(bob, id), audit: auditCount(), locks: lockRows(), kinds: [...fr.kinds] }
+      const res = await preview(bob, id)
+      expect(res.statusCode, res.body).toBe(200)
+      const p = res.json() as { playbook: string; sha256: string }
+      expect(p.sha256).toBe(sha(p.playbook))
+      expect(JSON.parse(p.playbook)).toBeInstanceOf(Array)
+      expect({ detail: await detail(bob, id), events: await events(bob, id), audit: auditCount(), locks: lockRows(), kinds: [...fr.kinds] }).toEqual(before)
+      const start = await call(bob, 'POST', `/api/v1/releases/${id}/start`, { typedName: 'prod', playbookSha256: p.sha256 })
+      expect(start.statusCode, start.body).toBe(204)
+      await hub.app.releases.whenIdle()
+      const done = await detail(bob, id)
+      expect(done.status).toBe('succeeded')
+      expect(done.playbook).toBe(p.playbook)
+    })
+
+    it('a setting changed after the review refuses the start with 409; nothing runs and the lock stays', async () => {
+      const { fr, bob } = await setup()
+      const id = await ready(bob)
+      const p = (await preview(bob, id)).json() as { sha256: string }
+      // A republish is refused while the release holds the lock, so the stored deployment row changes directly.
+      hub.db.prepare("UPDATE deployments SET meta = json_set(meta, '$.healthTimeoutSec', 99) WHERE id = ?").run(DEP_WEB)
+      const locks = lockRows()
+      const res = await call(bob, 'POST', `/api/v1/releases/${id}/start`, { typedName: 'prod', playbookSha256: p.sha256 })
+      expect(res.statusCode).toBe(409)
+      expect(res.json()).toMatchObject({ error: 'conflict', message: PLAYBOOK_CHANGED_MESSAGE })
+      expect((await detail(bob, id)).status).toBe('ready')
+      expect(fr.kinds).not.toContain('release')
+      expect(lockRows()).toEqual(locks)
+      expect(locks.map((l) => l.release_id)).toEqual([id])
+    })
+
+    it('a person who cannot view the release gets 404 like an unknown one, and the service is not reached', async () => {
+      const { bob, dan } = await setup()
+      const id = await ready(bob)
+      const spy = vi.spyOn(hub.app.releases.service, 'previewPlaybook')
+      const audit = auditCount()
+      const res = await preview(dan, id)
+      expect(res.statusCode).toBe(404)
+      expect(res.json()).toMatchObject({ error: 'not_found' })
+      expect(spy).not.toHaveBeenCalled()
+      // A preview is a read: like a denied detail, it writes no audit row.
+      expect(auditCount()).toBe(audit)
+      const unknown = await preview(bob, randomUUID())
+      expect(unknown.statusCode).toBe(404)
+    })
+
+    it('a malformed playbookSha256 on start is a 400 from the schema', async () => {
+      const { bob } = await setup()
+      const id = await ready(bob)
+      const spy = vi.spyOn(hub.app.releases.service, 'start')
+      for (const playbookSha256 of ['A'.repeat(64), 'a'.repeat(63)]) {
+        const res = await call(bob, 'POST', `/api/v1/releases/${id}/start`, { typedName: 'prod', playbookSha256 })
+        expect(res.statusCode).toBe(400)
+      }
+      expect(spy).not.toHaveBeenCalled()
+      expect((await detail(bob, id)).status).toBe('ready')
+    })
+  })
+
   it('a person without a grant gets 403 and nothing runs', async () => {
     const { fr, dan } = await setup()
     const res = await preflight(dan)
@@ -380,7 +448,9 @@ describe('hub releases', () => {
     const pre = await keep(preflight(bob))
     const id = pre.json().releaseId as string
     await hub.app.releases.whenIdle()
-    await keep(call(bob, 'POST', `/api/v1/releases/${id}/start`, { typedName: 'prod' }))
+    const reviewed = await keep(call(bob, 'GET', `/api/v1/releases/${id}/playbook`))
+    expect(reviewed.statusCode).toBe(200)
+    await keep(call(bob, 'POST', `/api/v1/releases/${id}/start`, { typedName: 'prod', playbookSha256: reviewed.json().sha256 }))
     await hub.app.releases.whenIdle()
     expect((await detail(bob, id)).status).toBe('failed')
     await keep(call(bob, 'GET', `/api/v1/releases/${id}`))

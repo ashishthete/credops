@@ -227,9 +227,18 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
           )}
           <div className="grid grid-cols-3 gap-3">
             <TextField label="Branch" value={form.defaultBranch} onChange={(e) => set({ defaultBranch: e.target.value })} className="font-mono" spellCheck={false} error={err('defaultBranch')} />
-            <TextField label="Compose file" value={form.composeFile} onChange={(e) => set({ composeFile: e.target.value })} className="font-mono" spellCheck={false} error={err('composeFile')} />
+            {form.composeAuto ? (
+              <TextField label="Compose file" value="Found by Compose" disabled readOnly />
+            ) : (
+              <TextField label="Compose file" value={form.composeFile} onChange={(e) => set({ composeFile: e.target.value })} className="font-mono" spellCheck={false} error={err('composeFile')} />
+            )}
             <TextField label="Deploy tag" value={form.deployTag} onChange={(e) => set({ deployTag: e.target.value })} placeholder="deployed-prod" className="font-mono" spellCheck={false} error={err('deployTag')} />
           </div>
+          <Switch
+            label="Let Compose find files (uses docker-compose.override.yml and COMPOSE_FILE)"
+            checked={form.composeAuto}
+            onChange={(composeAuto) => set({ composeAuto })}
+          />
         </Section>
 
         <Section title="Health">
