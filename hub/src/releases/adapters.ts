@@ -121,7 +121,7 @@ export function hubServices(db: HubDb, registry: Registry): Pick<ServiceStore, '
   }
 }
 
-/** Environments and hosts from the registry. A Hub host belongs to exactly one environment and no product. */
+/** Environments and hosts from the registry. A Hub host row belongs to exactly one environment and no product. */
 export function hubInventory(db: HubDb, registry: Registry): ReleaseInventory {
   return {
     environment: (id) => {
@@ -130,8 +130,8 @@ export function hubInventory(db: HubDb, registry: Registry): ReleaseInventory {
       const row = db.prepare('SELECT protected FROM environments WHERE id = ?').get(id) as { protected: number }
       return { id, name, protected: row.protected === 1, productIds: [] }
     },
-    hostLabel: (hostId) => {
-      const row = db.prepare('SELECT label FROM hosts WHERE id = ?').get(hostId) as { label: string } | undefined
+    hostLabel: (hostId, environmentId) => {
+      const row = db.prepare('SELECT label FROM hosts WHERE id = ? AND environment_id = ?').get(hostId, environmentId) as { label: string } | undefined
       if (!row) throw new Error('host not found')
       return row.label
     },
@@ -221,9 +221,10 @@ export function hubSecrets(deps: { secrets: Pick<SecretStore, 'resolveForRun'>; 
 /** Every hop dials with the environment's deploy key; the chain comes from the published manifest. */
 export function hubResolve(deps: { db: HubDb; registry: Pick<Registry, 'get'> }): (hostId: string, environmentId?: string) => ResolvedHost {
   return (hostId, environmentId) => {
-    const row = deps.db.prepare('SELECT environment_id FROM hosts WHERE id = ?').get(hostId) as { environment_id: string } | undefined
-    if (!row || (environmentId !== undefined && environmentId !== row.environment_id)) throw new Error('host not found')
-    const env = row.environment_id
+    // A shared host has a row per environment; without the environment, only a host published once is unambiguous.
+    const rows = deps.db.prepare('SELECT environment_id FROM hosts WHERE id = ?').all(hostId) as { environment_id: string }[]
+    const env = environmentId ?? (rows.length === 1 ? rows[0].environment_id : undefined)
+    if (env === undefined || !rows.some((r) => r.environment_id === env)) throw new Error('host not found')
     const host = deps.registry.get(env).hosts.find((h) => h.id === hostId)
     if (!host) throw new Error('host not found')
     const identity = (username: string): ResolvedHost['identity'] => ({ source: 'environment', identityId: env, label: 'Deploy key', username, auth: 'key', vaultId: '' })

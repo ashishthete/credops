@@ -58,7 +58,8 @@ import { ToolingError } from './tooling'
 /** What the service reads about the inventory. Locally it is the app database; the Hub answers from its registry. */
 export interface ReleaseInventory {
   environment(id: string): Pick<EnvironmentMeta, 'id' | 'name' | 'protected' | 'productIds'>
-  hostLabel(hostId: string): string
+  /** The environment matters on the Hub, where a shared host has a row per environment. */
+  hostLabel(hostId: string, environmentId: string): string
   productName(productId: string): string
   /** Every environment the hosts belong to, for the typed-name rule. */
   environmentsOfHosts(hostIds: string[]): { id: string; name: string; protected: boolean }[]
@@ -314,7 +315,7 @@ export class ReleaseService {
         deploymentId: x.id,
         deploymentName: x.name,
         hostId: x.hostId,
-        hostLabel: this.inv.hostLabel(x.hostId),
+        hostLabel: this.inv.hostLabel(x.hostId, env.id),
         position: i,
         branch: x.defaultBranch,
         steps: [],
@@ -792,7 +793,7 @@ export class ReleaseService {
     this.assertStatus(releaseId, ['ready', 'blocked'])
     const lock = rel.preflight?.locks[hostId]
     if (!lock) throw new DeployError('INVALID_STATE', 'No lock was seen on this host in preflight')
-    const label = this.inv.hostLabel(hostId)
+    const label = this.inv.hostLabel(hostId, rel.environmentId)
     if (!lock.stale) {
       const minutes = Math.max(0, Math.floor((this.d.now().getTime() - Date.parse(lock.holder.startedAt)) / 60000))
       throw new DeployError('INVALID_STATE', STALE_TEXT(minutes, `${lock.holder.user}@${lock.holder.machine}`))
@@ -1207,7 +1208,7 @@ export class ReleaseService {
     const out: PlanHost[] = []
     for (const hostId of [...new Set(infos.map((i) => i.dep.hostId))]) {
       const resolved = this.d.resolve(hostId, environmentId)
-      const label = this.inv.hostLabel(hostId)
+      const label = this.inv.hostLabel(hostId, environmentId)
       const chain = [
         ...resolved.chain.map((h) => ({ hostId: h.hostId as string | null, label: h.label, address: h.address, port: h.port, identity: h.identity })),
         { hostId: hostId as string | null, label, address: resolved.address, port: resolved.port.value, identity: resolved.identity },

@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { MAX_MANIFEST_BYTES, type HubEnvManifest } from '../../src/shared/hub'
+import { hubInventory, hubResolve } from '../src/releases/adapters'
+import { Registry } from '../src/registry'
 import { testHub, type TestHub } from './helpers'
 import { DEP_API, DEP_WEB, ENV_ID, HOST_ID, deployment, manifest, SECRET_DB } from './manifest'
 
@@ -186,6 +188,41 @@ describe('environment registry', () => {
     expect((await put(admin, withApp)).statusCode).toBe(500)
     expect(JSON.stringify(hub.db.prepare('SELECT * FROM deployments ORDER BY id').all())).toBe(before)
     expect(hub.db.prepare("SELECT COUNT(*) AS n FROM deployments WHERE environment_id NOT IN (SELECT id FROM environments)").get()).toEqual({ n: 0 })
+  })
+
+  it('two environments that share a host each publish and keep their own host row', async () => {
+    const { admin } = await setup()
+    const STAGING = 'e2222222-2222-4222-8222-222222222222'
+    const DEP_STG = 'd4444444-4444-4444-8444-444444444444'
+    const prod = manifest()
+    // The same desktop host, reached from staging at another address, as another user and without the bastion.
+    const staging = manifest({
+      environment: { ...prod.environment, id: STAGING, name: 'staging', protected: false },
+      hosts: [{ ...prod.hosts[0], address: '10.1.0.5', username: 'stage', hops: [{ hostId: HOST_ID, label: 'web-1', address: '10.1.0.5', port: 22, username: 'stage' }] }],
+      deployments: [deployment(DEP_STG, 'web', { environmentId: STAGING })],
+      requiredSecrets: [],
+    })
+    expect((await put(admin, prod)).statusCode).toBe(200)
+    expect((await put(admin, staging)).statusCode).toBe(200)
+    const get = async (id: string) => (await call(admin, 'GET', `/api/v1/admin/environments/${id}`)).json() as HubEnvManifest
+    expect(await get(ENV_ID)).toEqual(prod)
+    expect(await get(STAGING)).toEqual(staging)
+
+    // A run on each environment dials that environment's row.
+    const registry = new Registry(hub.db, { audit: hub.audit, directory: { listGroups: () => [] }, locks: { get: () => null }, now: () => new Date() })
+    const resolve = hubResolve({ db: hub.db, registry })
+    expect(resolve(HOST_ID, ENV_ID)).toMatchObject({ environmentId: ENV_ID, address: '10.0.0.5', identity: { username: 'deploy' } })
+    expect(resolve(HOST_ID, STAGING)).toMatchObject({ environmentId: STAGING, address: '10.1.0.5', identity: { username: 'stage' }, chain: [] })
+    expect(hubInventory(hub.db, registry).hostLabel(HOST_ID, STAGING)).toBe('web-1')
+
+    // Republishing one without the host, or unpublishing it, leaves the other untouched.
+    const other = 'a5555555-5555-4555-8555-555555555555'
+    expect((await put(admin, { ...staging, hosts: [{ ...staging.hosts[0], id: other, hops: [{ ...staging.hosts[0].hops[0], hostId: other }] }], deployments: [deployment(DEP_STG, 'web', { environmentId: STAGING, hostId: other })] })).statusCode).toBe(200)
+    expect(await get(ENV_ID)).toEqual(prod)
+    expect((await put(admin, staging)).statusCode).toBe(200)
+    expect((await call(admin, 'DELETE', `/api/v1/admin/environments/${STAGING}`)).statusCode).toBe(204)
+    expect(await get(ENV_ID)).toEqual(prod)
+    expect(() => resolve(HOST_ID, STAGING)).toThrow('host not found')
   })
 
   it('republish drops grants for deployments that no longer exist', async () => {

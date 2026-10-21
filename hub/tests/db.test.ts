@@ -37,7 +37,7 @@ describe('hub db', () => {
 
   it('migrating twice is a no-op', () => {
     const db = openHubDb(':memory:')
-    expect(migrate(db, HUB_MIGRATIONS)).toEqual({ from: 8, to: 8 })
+    expect(migrate(db, HUB_MIGRATIONS)).toEqual({ from: 9, to: 9 })
     expect((db.prepare('SELECT COUNT(*) AS n FROM groups').get() as { n: number }).n).toBe(1)
   })
 
@@ -55,5 +55,24 @@ describe('hub db', () => {
     expect(v4.prepare('SELECT name FROM deployments WHERE id = ?').get('d1')).toEqual({ name: 'web' })
     expect(v4.prepare('PRAGMA foreign_key_check').all()).toEqual([])
     expect((v4.prepare('PRAGMA table_info(deployments)').all() as { name: string }[]).map((c) => c.name)).not.toContain('app_id')
+  })
+
+  it('upgrades a v8 hub to v9: hosts are keyed per environment and deployments keep their host', () => {
+    const v8 = new DatabaseSync(':memory:')
+    v8.exec('PRAGMA foreign_keys = ON')
+    expect(migrate(v8, HUB_MIGRATIONS.filter((m) => m.version <= 8))).toMatchObject({ to: 8 })
+    v8.exec(`INSERT INTO environments VALUES ('e1','prod',0,0,0,NULL,'{}','h','u','t',NULL), ('e2','staging',0,0,0,NULL,'{}','h','u','t',NULL)`)
+    v8.exec(`INSERT INTO hosts VALUES ('h1','e1','l','a',22,'u','[]','[]','auto')`)
+    v8.exec(`INSERT INTO deployments VALUES ('d1','e1','h1','web',0,'{}')`)
+    migrate(v8, HUB_MIGRATIONS)
+    expect(v8.prepare('SELECT host_id FROM deployments WHERE id = ?').get('d1')).toEqual({ host_id: 'h1' })
+    expect(v8.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+    // The same host id now fits in a second environment, and a deployment can only use its own environment's host.
+    v8.exec(`INSERT INTO hosts VALUES ('h1','e2','l','b',22,'u','[]','[]','auto')`)
+    expect(() => v8.exec(`INSERT INTO hosts VALUES ('h1','e2','l','c',22,'u','[]','[]','auto')`)).toThrow(/UNIQUE/)
+    expect(() => v8.exec(`INSERT INTO deployments VALUES ('d2','e2','h9','api',0,'{}')`)).toThrow(/FOREIGN KEY/)
+    v8.exec(`DELETE FROM environments WHERE id = 'e1'`)
+    expect(v8.prepare('SELECT environment_id FROM hosts').all()).toEqual([{ environment_id: 'e2' }])
+    expect(v8.prepare('SELECT COUNT(*) AS n FROM deployments').get()).toEqual({ n: 0 })
   })
 })
