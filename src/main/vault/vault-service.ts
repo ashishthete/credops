@@ -6,6 +6,7 @@ import {
   MAX_VAULT_NAME,
   MIN_MASTER_PASSWORD,
   PIN_ATTEMPTS,
+  PIN_WIPED,
   VAULT_COLOR,
   VAULT_LOCKED,
   VAULT_RESET_CONFIRM,
@@ -68,7 +69,7 @@ type Factor = 'password' | 'touchId' | 'pin'
 const CANCELLED: Failure = { ok: false, reason: 'cancelled', retryAfterMs: 0 }
 const UNAVAILABLE: Failure = { ok: false, reason: 'unavailable', retryAfterMs: 0 }
 const WRONG_PIN: Failure = { ok: false, reason: 'wrong-pin', retryAfterMs: 0 }
-const PIN_WIPED: Failure = { ok: false, reason: 'pin-wiped', retryAfterMs: 0 }
+const WIPED_PIN: Failure = { ok: false, reason: 'pin-wiped', retryAfterMs: 0 }
 
 interface VaultRow {
   id: string
@@ -174,6 +175,7 @@ export class VaultService {
       hasPassword: this.hasPassword(),
       pin: { enabled: s.pin_wrap !== null, attemptsLeft: Math.max(0, PIN_ATTEMPTS - s.pin_failed) },
       lastMethod: s.last_method,
+      resetRequired: this.isSetUp() && !this.hasPassword() && !s.pin_wrap && !s.quick_unlock_blob,
       sso: { required: false },
     }
   }
@@ -316,8 +318,8 @@ export class VaultService {
       try {
         kek = Buffer.from(this.quick!.keychain.decrypt(Buffer.from(blob, 'base64')), 'base64')
       } catch {
-        // Unreadable may be a locked or reset keychain; with no password it is the only way back.
-        if (this.hasPassword()) this.discardQuickUnlock()
+        // Unreadable may be a locked or briefly unavailable keychain: keep the cache. Only a blob that
+        // reads but no longer holds the KEK (cache-stale below) is a definitive invalidation.
         return fail('cache-unreadable', UNAVAILABLE)
       }
       if (epoch !== this.epoch) {
@@ -402,7 +404,9 @@ export class VaultService {
    * Proves the user again while unlocked, for changes that need it; the lock state is untouched. A
    * password goes through the unlock throttle and a PIN through the unlock miss path, wipe
    * included (preflight F5). Touch ID counts only when it is set up and its cache holds the KEK.
-   * A method that is not set up, or a lock meanwhile, gives false.
+   * A method that is not set up, or a lock meanwhile, gives false. A miss that wipes the PIN throws
+   * PIN_WIPED; if that left nothing stored to unlock with, the vault locks first, so whoever was
+   * guessing cannot keep it open to add a factor of their own (the spec's "locked until reset").
    */
   reverify(proof: ReverifyProof): Promise<boolean> {
     return this.serial(async () => {
@@ -425,7 +429,11 @@ export class VaultService {
         checkPinFormat(proof.pin)
         res = await this.pinAttempt(proof.pin, epoch)
       }
-      if (!res.ok) return false
+      if (!res.ok) {
+        if (res.reason !== 'pin-wiped') return false
+        if (this.wipeFallback() === 'none') this.lock('manual')
+        throw new Error(PIN_WIPED)
+      }
       zero(res.kek, res.keys.values())
       return epoch === this.epoch
     })
@@ -1050,6 +1058,11 @@ export class VaultService {
       pinKey.fill(0)
     }
     if (!kek) return this.pinMiss(s.pin_wrap)
+    // A setPin or clearPin during the derive replaced this wrap: the old PIN no longer counts.
+    if (this.state().pin_wrap !== s.pin_wrap) {
+      kek.fill(0)
+      return UNAVAILABLE
+    }
     // Read after the await: a vault created meanwhile must be included.
     const opened = kek.length === KEK_BYTES ? this.openAll(kek) : null
     if (!opened) {
@@ -1073,16 +1086,25 @@ export class VaultService {
         .run(tried).changes
       const s = this.state()
       if (!counted || s.pin_failed < PIN_ATTEMPTS) return
-      const fallback = this.hasPassword()
-        ? 'password'
-        : s.quick_unlock === 'touchId' && s.quick_unlock_blob
-          ? 'touchId'
-          : 'none'
+      const fallback = this.wipeFallback()
       this.clearPinColumns(PIN_ATTEMPTS)
       this.audit.appendInTx({ action: 'vault.pin', outcome: 'failure', details: { op: 'wiped', reason: 'attempts', fallback } })
       wiped = true
     })
-    return wiped ? PIN_WIPED : WRONG_PIN
+    return wiped ? WIPED_PIN : WRONG_PIN
+  }
+
+  /**
+   * What still opens the vaults besides the PIN: the password, else Touch ID (while unlocked, only
+   * if its cache holds the live KEK; at the lock screen, if it is set up and available), else nothing.
+   */
+  private wipeFallback(): 'password' | 'touchId' | 'none' {
+    if (this.hasPassword()) return 'password'
+    const s = this.state()
+    const touchId = this.kek
+      ? this.touchIdHoldsKek()
+      : s.quick_unlock === 'touchId' && !!s.quick_unlock_blob && this.modeAvailable('touchId')
+    return touchId ? 'touchId' : 'none'
   }
 
   /** After any successful unlock: both failure counts restart, and the method is remembered. */

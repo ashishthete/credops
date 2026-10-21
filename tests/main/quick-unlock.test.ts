@@ -124,19 +124,22 @@ describe('quick unlock', () => {
     expect(events(f)).toContainEqual({ action: 'vault.unlock', outcome: 'success', details: { method: 'login' } })
   })
 
-  it('a broken cache is discarded', async () => {
+  it('a keychain read error keeps the cache, even with a password', async () => {
+    // One transient error must not turn Touch ID off for good; only a stale cache is dropped.
     const f = await ready()
-    seedLogin(f)
+    f.vault.setQuickUnlock('touchId')
     f.vault.lock('manual')
+    const before = stateRow(f)
     f.quick.keychain.decrypt.mockImplementationOnce(() => {
-      throw new Error('keychain changed')
+      throw new Error('keychain locked')
     })
     expect(await f.vault.unlockQuick()).toEqual({ ok: false, reason: 'unavailable', retryAfterMs: 0 })
     expect(f.vault.isUnlocked()).toBe(false)
-    expect(stateRow(f)).toEqual({ quick_unlock: 'off', quick_unlock_blob: null })
-    expect(f.vault.status().quickUnlock).toBe('off')
+    expect(stateRow(f)).toEqual(before)
+    expect(before.quick_unlock).toBe('touchId')
     expect(events(f)).toContainEqual(expect.objectContaining({ action: 'vault.unlock', outcome: 'failure' }))
     expect(f.db.prepare('SELECT failed_attempts FROM vault_state').get()).toEqual({ failed_attempts: 0 })
+    expect(await f.vault.unlockQuick()).toEqual({ ok: true })
   })
 
   it('a stale cache falls back to the password without counting a failure', async () => {

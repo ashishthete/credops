@@ -2,6 +2,8 @@
 import type { SsoState } from './sso'
 export const DEFAULT_VAULT_ID = '00000000-0000-4000-8000-000000000001'
 export const VAULT_LOCKED = 'vault locked'
+/** Thrown by reverify when its miss wiped the PIN; a coded error, so no caller can read it as success. */
+export const PIN_WIPED = 'pin wiped'
 /** Typed by the user to confirm a forgotten-password reset, which erases every vault secret. */
 export const VAULT_RESET_CONFIRM = 'RESET'
 export const MIN_MASTER_PASSWORD = 8
@@ -45,6 +47,8 @@ export interface VaultStatus {
   hasPassword: boolean
   pin: { enabled: boolean; attemptsLeft: number }
   lastMethod: UnlockMethod | null
+  /** Set up, but nothing stored can open the vaults any more: only a reset gets back in. */
+  resetRequired: boolean
   sso: SsoState
 }
 export type UnlockResult =

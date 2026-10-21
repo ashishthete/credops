@@ -14,6 +14,7 @@ const status: VaultStatus = {
   hasPassword: true,
   pin: { enabled: false, attemptsLeft: 5 },
   lastMethod: null,
+  resetRequired: false,
   sso: { required: false },
 }
 

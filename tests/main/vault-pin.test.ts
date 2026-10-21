@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { deriveKek } from '../../src/main/vault/crypto'
 import { checkPin } from '../../src/main/vault/pin'
-import { DEFAULT_VAULT_ID, PIN_ATTEMPTS, VAULT_LOCKED, VAULT_RESET_CONFIRM } from '../../src/shared/vault'
+import { DEFAULT_VAULT_ID, PIN_ATTEMPTS, PIN_WIPED, VAULT_LOCKED, VAULT_RESET_CONFIRM } from '../../src/shared/vault'
 import { auditRows, fakeQuick, makeVault, type FakeQuick, type VaultFixture } from './vault-helpers'
 
 vi.mock('../../src/main/vault/crypto', async (importOriginal) => {
@@ -89,8 +89,8 @@ describe('PIN unlock', () => {
     f.vault.lock('manual')
     expect(await f.vault.unlockPin('013579')).toEqual({ ok: true })
     f.vault.lock('manual')
-    // Not read as a number: the zero is part of it.
-    expect(await f.vault.unlockPin('13579'.padEnd(6, '0'))).toMatchObject({ ok: false, reason: 'wrong-pin' })
+    // Not read as a number: an extra leading zero is a different PIN.
+    expect(await f.vault.unlockPin('0013579')).toMatchObject({ ok: false, reason: 'wrong-pin' })
   })
 
   it('rejects non-digit and short PINs without counting', async () => {
@@ -330,9 +330,11 @@ describe('reverify', () => {
     for (let i = 0; i < PIN_ATTEMPTS - 1; i++) expect(await f.vault.reverify({ method: 'pin', pin: PIN2 })).toBe(false)
     expect(f.vault.status().pin.attemptsLeft).toBe(1)
     expect(f.vault.isUnlocked()).toBe(true)
-    // Preflight F5: the 5th miss wipes the PIN here too, audited the same way.
-    expect(await f.vault.reverify({ method: 'pin', pin: PIN2 })).toBe(false)
+    // Preflight F5: the 5th miss wipes the PIN here too, audited the same way, and says so.
+    await expect(f.vault.reverify({ method: 'pin', pin: PIN2 })).rejects.toThrow(PIN_WIPED)
     expect(row(f)).toMatchObject({ pin_wrap: null, pin_salt: null, pin_pepper_blob: null })
+    // The password still opens the vaults, so the wipe leaves them unlocked.
+    expect(f.vault.status()).toMatchObject({ unlocked: true, resetRequired: false })
     expect(events(f)).toContainEqual({
       action: 'vault.pin',
       outcome: 'failure',
@@ -340,6 +342,47 @@ describe('reverify', () => {
     })
     expect(await f.vault.reverify({ method: 'pin', pin: PIN })).toBe(false)
     expect(f.vault.isUnlocked()).toBe(true)
+  })
+
+  it('a reverify wipe that leaves nothing locks the vault at once', async () => {
+    // Allowed while the PIN works: Touch ID off, PIN only, no password.
+    const f = await ready({ pin: PIN, touchId: true })
+    f.vault.setQuickUnlock('off')
+    const kek = (f.vault as unknown as { kek: Buffer }).kek
+    for (let i = 0; i < PIN_ATTEMPTS - 1; i++) expect(await f.vault.reverify({ method: 'pin', pin: PIN2 })).toBe(false)
+    expect(f.vault.isUnlocked()).toBe(true)
+    await expect(f.vault.reverify({ method: 'pin', pin: PIN2 })).rejects.toThrow(PIN_WIPED)
+    expect(f.vault.isUnlocked()).toBe(false)
+    expect(kek.every((b) => b === 0)).toBe(true)
+    expect(f.vault.status()).toMatchObject({
+      setUp: true,
+      unlocked: false,
+      resetRequired: true,
+      hasPassword: false,
+      quickUnlock: 'off',
+      pin: { enabled: false, attemptsLeft: 0 },
+    })
+    const ev = events(f)
+    const wipe = ev.findIndex((e) => e.action === 'vault.pin' && e.outcome === 'failure')
+    expect(ev[wipe]).toEqual({ action: 'vault.pin', outcome: 'failure', details: { op: 'wiped', reason: 'attempts', fallback: 'none' } })
+    expect(ev.slice(wipe)).toContainEqual({ action: 'vault.lock', outcome: 'success', details: { reason: 'manual' } })
+    expect(await f.vault.unlockPin(PIN)).toMatchObject({ ok: false, reason: 'unavailable' })
+    expect(await f.vault.unlockQuick()).toMatchObject({ ok: false, reason: 'unavailable' })
+    await expect(f.vault.reverify({ method: 'pin', pin: PIN })).rejects.toThrow(VAULT_LOCKED)
+  })
+
+  it('a reverify wipe with Touch ID left keeps the vault unlocked', async () => {
+    const f = await ready({ pin: PIN, touchId: true })
+    for (let i = 0; i < PIN_ATTEMPTS - 1; i++) await f.vault.reverify({ method: 'pin', pin: PIN2 })
+    await expect(f.vault.reverify({ method: 'pin', pin: PIN2 })).rejects.toThrow(PIN_WIPED)
+    expect(f.vault.status()).toMatchObject({ unlocked: true, resetRequired: false, quickUnlock: 'touchId', pin: { enabled: false } })
+    expect(events(f)).toContainEqual({
+      action: 'vault.pin',
+      outcome: 'failure',
+      details: { op: 'wiped', reason: 'attempts', fallback: 'touchId' },
+    })
+    f.vault.lock('manual')
+    expect(await f.vault.unlockQuick()).toEqual({ ok: true })
   })
 
   it('a right PIN resets the count', async () => {
