@@ -99,9 +99,10 @@ describe('playbook review handlers', () => {
   const PLAYBOOK = '[{"hosts":"od-1"}]'
   /** As `release:get` reads it: redacted again on read. */
   const STORED = '[\n  {\n    "hosts": "od-1",\n    "vars": { "token": "‹redacted›" }\n  }\n]'
-  const setup = (over: { path?: string; stored?: string | null } = {}) => {
+  const setup = (over: { path?: string; stored?: string | null; preview?: string; secrets?: string[] } = {}) => {
     const releases = {
-      previewPlaybook: vi.fn(async () => ({ playbook: PLAYBOOK, sha256: HASH })),
+      previewPlaybook: vi.fn(async () => ({ playbook: over.preview ?? PLAYBOOK, sha256: HASH })),
+      discard: vi.fn(async () => undefined),
       detail: vi.fn(async () => ({ id: ID, playbook: over.stored === undefined ? STORED : over.stored })),
       start: vi.fn(async () => undefined),
     }
@@ -112,6 +113,7 @@ describe('playbook review handlers', () => {
       releases: releases as unknown as ReleaseService,
       tooling: async () => ({}) as never,
       playbookFile: { saveDialog, write: async (path, text) => void writes.push([path, text]) },
+      knownSecrets: () => over.secrets ?? [],
     })
     return { releases, writes, saveDialog, h: handlers as unknown as Record<string, (...a: unknown[]) => Promise<unknown>> }
   }
@@ -142,6 +144,38 @@ describe('playbook review handlers', () => {
     expect(await h['deploy:savePlaybook'](ID, HASH)).toEqual({ path: '/tmp/x/review.yml' })
     expect(saveDialog).toHaveBeenCalledTimes(1)
     expect(writes).toEqual([['/tmp/x/review.yml', PLAYBOOK]])
+  })
+
+  it('the preview and its saved file mask a known secret, also inside a base64 hook off a 3-byte boundary, and keep the reviewed hash', async () => {
+    const SECRET = 'hunter2-secret-value'
+    const hook = `curl -H "Api-X: ${SECRET}" https://x.example\n`
+    expect(hook.indexOf(SECRET) % 3).not.toBe(0)
+    const encoded = Buffer.from(hook).toString('base64')
+    const preview = JSON.stringify([{ hosts: 'od-1', vars: { url: `https://x.example/?t=${SECRET}` }, tasks: [{ vars: { d: { pre_hook: encoded } } }] }], null, 2)
+    const { h, writes, releases } = setup({ path: '/tmp/x/review.yml', preview, secrets: [SECRET] })
+    const got = (await h['deploy:previewPlaybook'](ID)) as { playbook: string; sha256: string }
+    // The hash stays the one of the text main generated, which start checks against a fresh generation
+    expect(got.sha256).toBe(HASH)
+    expect(await h['deploy:savePlaybook'](ID, HASH)).toEqual({ path: '/tmp/x/review.yml' })
+    expect(writes).toHaveLength(1)
+    expect(writes[0]![1]).toBe(got.playbook)
+    for (const text of [got.playbook, writes[0]![1]]) {
+      expect(text).not.toContain(SECRET)
+      expect(text).not.toContain(encoded)
+      const plays = JSON.parse(text)
+      expect(plays[0].vars.url).toBe('https://x.example/?t=‹redacted›')
+      expect(Buffer.from(plays[0].tasks[0].vars.d.pre_hook, 'base64').toString('utf8')).toBe('curl -H "Api-X: ‹redacted›" https://x.example\n')
+    }
+    expect(releases.previewPlaybook).toHaveBeenCalledTimes(1)
+  })
+
+  it('a discarded release forgets its review: its preview can no longer be saved', async () => {
+    const { h, releases, saveDialog } = setup({ path: '/tmp/x/review.yml' })
+    await h['deploy:previewPlaybook'](ID)
+    await h['release:discard'](ID)
+    expect(releases.discard).toHaveBeenCalledWith(ID)
+    await expect(h['deploy:savePlaybook'](ID, HASH)).rejects.toThrow(PLAYBOOK_CHANGED_MESSAGE)
+    expect(saveDialog).not.toHaveBeenCalled()
   })
 
   it('deploy:savePlaybook refuses a playbook that was not the last one reviewed, and a cancelled dialog writes nothing', async () => {

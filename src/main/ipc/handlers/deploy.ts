@@ -11,7 +11,7 @@ import {
 } from '../../../shared/deploy'
 import type { Handlers } from '../../../shared/ipc'
 import { DeployError } from '../../deploy/access'
-import { maskDetail, maskEvents, maskSummary } from '../../deploy/mask'
+import { maskDetail, maskEvents, maskPlaybook, maskSummary } from '../../deploy/mask'
 import type { DeployStore } from '../../deploy/deploy-store'
 import type { ReleaseApi } from '../../hub/runner'
 import type { HubCatalog } from '../../hub/catalog'
@@ -64,7 +64,8 @@ export function createDeployHandlers(deps: {
   const secrets = () => knownSecrets?.() ?? []
   /** A release as `release:get` returns it, local or Hub, with its text masked again in main (see `maskDetail`). */
   const maskedDetail = async (id: string): Promise<ReleaseDetail> => maskDetail(await releases.detail(id), secrets())
-  // The last playbook reviewed per release. Saving writes this text, so the renderer sends only its hash, never a path or text.
+  // The last playbook reviewed per release, as generated: its hash is the one start checks against a fresh generation.
+  // Saving writes this text, masked, so the renderer sends only its hash, never a path or text.
   const reviewed = new Map<string, PlaybookPreview>()
   return {
     'deploy:list': (environmentId) => {
@@ -92,7 +93,8 @@ export function createDeployHandlers(deps: {
     'deploy:previewPlaybook': async (id) => {
       const preview = await releases.previewPlaybook(id)
       reviewed.set(id, preview)
-      return preview
+      // Shown and saved masked, as a stored release's playbook is (`release:get`); the hash stays that of the raw text.
+      return { ...preview, playbook: maskPlaybook(preview.playbook, secrets()) }
     },
     'deploy:savePlaybook': async (id, sha256) => {
       const preview = reviewed.get(id)
@@ -100,7 +102,7 @@ export function createDeployHandlers(deps: {
       if (!playbookFile) throw new DeployError('INVALID_STATE', 'Saving a playbook is not available here')
       const path = await playbookFile.saveDialog(id)
       if (path === undefined) return null
-      await playbookFile.write(path, preview.playbook)
+      await playbookFile.write(path, maskPlaybook(preview.playbook, secrets()))
       return { path }
     },
     // The text the release stored, read and masked exactly as `release:get` returns it (the same access check).
@@ -125,7 +127,10 @@ export function createDeployHandlers(deps: {
     'release:cancel': (id) => releases.cancel(id),
     'release:rollback': (id, confirm) => releases.rollback(id, confirm),
     'release:break-lock': (id, hostId, confirm) => releases.breakLock(id, hostId, confirm),
-    'release:discard': (id) => releases.discard(id),
+    'release:discard': async (id) => {
+      await releases.discard(id)
+      reviewed.delete(id)
+    },
     'release:set-notes': (id, notes) => releases.setNotes(id, notes),
     'release:retry-version': (id) => releases.retryVersion(id),
     'release:list': async (filter) => (await releases.list(filter)).map((r) => maskSummary(r, secrets())),

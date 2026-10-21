@@ -31,7 +31,7 @@ function textMask(secrets: readonly string[]): Mask {
 }
 
 /** The playbook vars that carry text as base64: the hooks, and OpsDeck's own `*_b64` values (the lock file text). */
-const B64_VAR = /("(?:pre_hook|post_hook|[A-Za-z0-9_]*_b64)"\s*:\s*)"((?:[^"\\]|\\.)*)"/g
+const B64_VAR = /("(pre_hook|post_hook|[A-Za-z0-9_]*_b64)"\s*:\s*)"((?:[^"\\]|\\.)*)"/g
 const utf8 = new TextDecoder('utf-8', { fatal: true })
 
 /**
@@ -40,7 +40,7 @@ const utf8 = new TextDecoder('utf-8', { fatal: true })
  * A payload that does not decode cleanly to UTF-8 text cannot be checked, so it is replaced by its size.
  */
 function maskBase64(text: string, secrets: readonly string[]): string {
-  return text.replace(B64_VAR, (whole, key: string, literal: string) => {
+  return text.replace(B64_VAR, (whole, key: string, name: string, literal: string) => {
     const value = JSON.parse(`"${literal}"`) as string
     if (value === '') return whole
     const bytes = Buffer.from(value, 'base64')
@@ -53,7 +53,10 @@ function maskBase64(text: string, secrets: readonly string[]): string {
         decoded = null
       }
     }
-    if (decoded === null) return key + JSON.stringify(`‹hook, ${clean ? bytes.length : Buffer.byteLength(value)} bytes›`)
+    if (decoded === null) {
+      const what = name.endsWith('_b64') ? 'lock data' : 'hook'
+      return key + JSON.stringify(`‹${what}, ${clean ? bytes.length : Buffer.byteLength(value)} bytes›`)
+    }
     const masked = redact(decoded, secrets)
     return masked === decoded ? whole : key + JSON.stringify(Buffer.from(masked, 'utf8').toString('base64'))
   })
@@ -75,12 +78,17 @@ export function maskSummary<T extends ReleaseSummary>(s: T, secrets: readonly st
   return summaryOf(s, textMask(secrets))
 }
 
+/** A playbook's text (stored, or a preview about to be shown or saved), masked as `maskDetail` masks a stored one. */
+export function maskPlaybook(text: string, secrets: readonly string[]): string {
+  return textMask(secrets)(maskBase64(text, secrets))
+}
+
 export function maskDetail(d: ReleaseDetail, secrets: readonly string[]): ReleaseDetail {
   const m = textMask(secrets)
   return {
     ...summaryOf(d, m),
     ...(typeof d.releaseNotes === 'string' && { releaseNotes: m(d.releaseNotes) }),
-    ...(typeof d.playbook === 'string' && { playbook: m(maskBase64(d.playbook, secrets)) }),
+    ...(typeof d.playbook === 'string' && { playbook: maskPlaybook(d.playbook, secrets) }),
     runs: each(d.runs, (r) => ({
       ...r,
       commits: each(r.commits, (c) => commitOf(c, m)),
