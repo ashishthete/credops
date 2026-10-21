@@ -103,7 +103,7 @@ export function LoginDialog({ open, host, current, inheritedFrom, onClose }: Log
           ? api.invoke('identity:update', match.id, { password: input.password })
           : Promise.resolve(match),
     )
-    const saved = identity && (await inv.saveHost({ label: host.label, address: host.address, identityId: identity.id }, host.id))
+    const saved = identity && (await inv.saveHost({ label: host.label, address: host.address, regionId: host.regionId, identityId: identity.id }, host.id))
     if (identity && identity !== match) await reloadInventory()
     setBusy(false)
     if (saved) {

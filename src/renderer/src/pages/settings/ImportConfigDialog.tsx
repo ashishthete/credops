@@ -2,7 +2,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronRight, KeyRound } from 'lucide-react'
 import { useState } from 'react'
 import { IMPORT_ACTIONS, type ImportAction, type ImportItem, type ImportPreview, type ImportNeedsSecret } from '../../../../shared/config-file'
-import { defaultRegionId, reloadInventory } from '../../inventory/store'
+import { reloadInventory, useInventory } from '../../inventory/store'
 import { api } from '../../lib/api'
 import { loadTunnels } from '../../tunnels/store'
 import { Button } from '../../ui/Button'
@@ -10,6 +10,7 @@ import { attempt } from '../../ui/common'
 import { Dialog } from '../../ui/Dialog'
 import { TextField } from '../../ui/Field'
 import { exitFast, fast, useMotionSafe } from '../../ui/motion'
+import { RegionSelect } from '../hosts/RegionDialog'
 import { toast } from '../../ui/Toaster'
 
 const ACTION_LABEL: Record<ImportAction, string> = { add: 'Add', update: 'Update', unchanged: 'Unchanged', skip: 'Skip' }
@@ -63,7 +64,12 @@ export function ImportConfigDialog({ preview, onClose }: { preview: ImportPrevie
 function PreviewDialog({ preview, onClose }: { preview: ImportPreview; onClose: () => void }) {
   const [typed, setTyped] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(false)
-  const confirmed = preview.protectedEnvironments.every((name) => typed[name] === name)
+  const [regionId, setRegionId] = useState('')
+  const data = useInventory()
+  // A version 1 file has no regions, so its new hosts need one; only a lone region is a safe guess.
+  const regions = data?.regions ?? []
+  const region = regionId || (regions.length === 1 ? regions[0].id : '')
+  const confirmed = preview.protectedEnvironments.every((name) => typed[name] === name) && (!preview.needsRegion || !!region)
 
   const cancel = () => {
     void api.invoke('config:importDiscard', preview.token).catch(() => undefined)
@@ -76,8 +82,7 @@ function PreviewDialog({ preview, onClose }: { preview: ImportPreview; onClose: 
       const res = await attempt("Couldn't import the config", async () =>
         api.invoke('config:importApply', preview.token, {
           typedNames: preview.protectedEnvironments.filter((n) => typed[n] === n),
-          // regions-ui: a version 1 file's hosts go in the default region until the dialog lets the user pick one.
-          ...(preview.needsRegion ? { regionId: await defaultRegionId() } : {}),
+          ...(preview.needsRegion ? { regionId: region } : {}),
         }),
       )
       if (!res) return
@@ -114,6 +119,11 @@ function PreviewDialog({ preview, onClose }: { preview: ImportPreview; onClose: 
           <Group key={a} action={a} items={preview.items.filter((i) => i.action === a)} count={preview.counts[a]} />
         ))}
       </div>
+      {preview.needsRegion && (
+        <div className="mt-4">
+          <RegionSelect label="Put new hosts in region" value={region} onChange={setRegionId} hint="The file predates regions, so its hosts don't say where they run." />
+        </div>
+      )}
       {preview.needsSecret.length > 0 && <NeedsSecret entries={preview.needsSecret} />}
       {preview.protectedEnvironments.length > 0 && (
         <div className="mt-4 space-y-3">
