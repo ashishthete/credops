@@ -16,6 +16,7 @@ import {
   type StepKind,
   type VersionBump,
 } from '../../shared/deploy'
+import type { OperationMeta } from '../../shared/runbooks'
 import type { Db } from '../db/connection'
 import { inTransaction } from '../db/tx'
 import { uuidv7 } from './uuidv7'
@@ -40,6 +41,8 @@ export interface NewRelease {
   triggeredBy: string
   /** The services the release was confirmed for (releases.service_ids). */
   serviceIds: string[]
+  /** Set for a runbook operation (releases.operation). */
+  operation?: OperationMeta | null
 }
 
 export interface ReleaseStatusExtra {
@@ -52,6 +55,8 @@ export interface ReleaseStatusExtra {
   playbook?: string | null
   redeploy?: boolean
   versionBump?: VersionBump
+  playbookSource?: 'generated' | 'edited'
+  playbookGenerated?: string | null
 }
 
 export interface RunPlan {
@@ -98,6 +103,9 @@ interface ReleaseRow {
   release_notes: string | null
   error: string | null
   playbook: string | null
+  operation: string | null
+  playbook_source: 'generated' | 'edited' | null
+  playbook_generated: string | null
   triggered_by: string
   created_at: string
   started_at: string | null
@@ -178,12 +186,12 @@ export class ReleaseStore {
     this.db
       .prepare(
         `INSERT INTO releases(id, environment_id, kind, status, version, previous_version, version_bump, redeploy,
-          rollback_of, options, service_ids, triggered_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          rollback_of, options, service_ids, triggered_by, created_at, operation) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         id, input.environmentId, input.kind, input.status, input.version, input.previousVersion, input.versionBump,
         input.redeploy ? 1 : 0, input.rollbackOf, JSON.stringify(input.options), JSON.stringify(input.serviceIds), input.triggeredBy,
-        this.now().toISOString(),
+        this.now().toISOString(), input.operation ? JSON.stringify(input.operation) : null,
       )
     return this.get(id)
   }
@@ -206,6 +214,8 @@ export class ReleaseStore {
       playbook: 'playbook',
       redeploy: 'redeploy',
       versionBump: 'version_bump',
+      playbookSource: 'playbook_source',
+      playbookGenerated: 'playbook_generated',
     }
     for (const k of Object.keys(cols) as (keyof ReleaseStatusExtra)[]) {
       if (extra[k] !== undefined) {
@@ -231,6 +241,7 @@ export class ReleaseStore {
       options: JSON.parse(r.options) as ReleaseOptions,
       releaseNotes: r.release_notes,
       playbook: r.playbook,
+      playbookGenerated: r.playbook_generated,
       runs,
       preflight,
       lastSeq: last.s ?? 0,
@@ -238,7 +249,7 @@ export class ReleaseStore {
   }
 
   /** Newest first. `before` is a release id to page from. */
-  list(q: { environmentId?: string; limit: number; before?: string }): ReleaseSummary[] {
+  list(q: { environmentId?: string; limit: number; before?: string; operations?: 'only' | 'exclude' }): ReleaseSummary[] {
     const where: string[] = []
     const args: (string | number)[] = []
     if (q.environmentId !== undefined) {
@@ -249,6 +260,8 @@ export class ReleaseStore {
       where.push('r.id < ?')
       args.push(q.before)
     }
+    if (q.operations === 'only') where.push('r.operation IS NOT NULL')
+    else if (q.operations === 'exclude') where.push('r.operation IS NULL')
     const limit = Math.max(1, Math.min(Math.floor(q.limit), 200))
     const sql = `${SELECT}${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY r.id DESC LIMIT ?`
     return (this.db.prepare(sql).all(...args, limit) as unknown as ReleaseRow[]).map(summary)
@@ -264,7 +277,7 @@ export class ReleaseStore {
       `(SELECT d.${col} FROM deployment_runs d WHERE d.release_id = q.id ORDER BY d.deployed_commit IS NULL, d.position, d.id LIMIT 1)`
     const sql = `SELECT q.*, ${run('previous_commit')} AS last_previous_commit, ${run('deployed_commit')} AS last_deployed_commit
       FROM (${SELECT} WHERE r.id IN (SELECT (SELECT r2.id FROM releases r2 WHERE r2.environment_id = e.id
-          AND r2.status NOT IN ('preflight','ready','blocked','discarded') ORDER BY r2.created_at DESC, r2.id DESC LIMIT 1)
+          AND r2.operation IS NULL AND r2.status NOT IN ('preflight','ready','blocked','discarded') ORDER BY r2.created_at DESC, r2.id DESC LIMIT 1)
         FROM environments e)) q
       ORDER BY q.id DESC`
     const rows = this.db.prepare(sql).all() as unknown as (ReleaseRow & { last_previous_commit: string | null; last_deployed_commit: string | null })[]
@@ -483,6 +496,19 @@ function summary(r: ReleaseRow): ReleaseSummary {
     serviceIds: serviceIds(r.service_ids),
     serviceCount: r.service_count,
     error: r.error,
+    operation: parseOperation(r.operation),
+    playbookSource: r.playbook_source === 'edited' ? 'edited' : 'generated',
+  }
+}
+
+/** A release's stored operation, or null when absent or unreadable. */
+function parseOperation(json: string | null): OperationMeta | null {
+  if (json === null) return null
+  try {
+    const o = JSON.parse(json) as OperationMeta
+    return typeof o === 'object' && o !== null ? o : null
+  } catch {
+    return null
   }
 }
 

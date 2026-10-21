@@ -144,11 +144,12 @@ describe('migration 7 (deployments)', () => {
       'id', 'name', 'environment_id', 'host_id', 'repo_url', 'compose_project', 'repo_path', 'default_branch', 'compose_file', 'deploy_tag',
       'position', 'urls', 'health_status', 'health_timeout_sec', 'db_backup', 'backup_dir', 'pre_hook', 'post_hook',
       'build_timeout_sec', 'compose_timeout_sec', 'use_sudo', 'become_secret_id', 'managed_env', 'env_template',
-      'created_at', 'updated_at',
+      'created_at', 'updated_at', 'steps',
     ])
     expect(cols(db, 'releases')).toEqual([
       'id', 'environment_id', 'kind', 'status', 'version', 'previous_version', 'version_bump', 'redeploy', 'rollback_of',
       'options', 'service_ids', 'release_notes', 'error', 'playbook', 'triggered_by', 'created_at', 'started_at', 'finished_at',
+      'operation', 'playbook_source', 'playbook_generated',
     ])
     expect(cols(db, 'deployment_runs')).toEqual([
       'id', 'release_id', 'deployment_id', 'deployment_name', 'host_id', 'host_label', 'position', 'branch',
@@ -186,7 +187,7 @@ describe('migration 7 (deployments)', () => {
     expect(cols(db, 'services')).toEqual([
       'id', 'environment_id', 'name', 'kind', 'position', 'description', 'deployment_id', 'compose_service', 'url',
       'url_check_from', 'last_deployed_commit', 'last_release_id', 'db_engine', 'db_address', 'db_port', 'via_host_id',
-      'local_port', 'tunnel_id', 'created_at', 'updated_at',
+      'local_port', 'tunnel_id', 'created_at', 'updated_at', 'skip_unchanged',
     ])
     const indexes = (db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name = 'services'").all() as { name: string }[]).map((r) => r.name)
     expect(indexes).toEqual(expect.arrayContaining(['services_name', 'services_compose', 'services_env']))

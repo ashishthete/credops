@@ -1,4 +1,6 @@
 // Imported by the renderer: keep runtime code to plain constants and pure functions (no node or electron imports).
+import type { OperationMeta } from './runbooks'
+import type { Step, StepBody } from './steps'
 
 // ---- Limits ----
 export const MAX_DEPLOYMENTS = 512
@@ -87,6 +89,8 @@ export interface DeploymentMeta {
   backupDir: string | null
   preHook: string | null
   postHook: string | null
+  /** Saved steps; non-empty replaces the hooks (see effectiveSteps). */
+  steps: Step[]
   buildTimeoutSec: number
   composeTimeoutSec: number
   useSudo: UseSudo
@@ -117,6 +121,7 @@ export interface DeploymentInput {
   backupDir?: string | null
   preHook?: string | null
   postHook?: string | null
+  steps?: Step[]
   buildTimeoutSec?: number
   composeTimeoutSec?: number
   useSudo?: UseSudo
@@ -128,14 +133,26 @@ export interface DeploymentInput {
 /** Explicit nulls clear nullable fields. */
 export type DeploymentPatch = Partial<DeploymentInput>
 
+/** One stage of a release flow: a group of services deployed together, or one step run on a service's checkout. */
+export type FlowStage = { kind: 'services'; serviceIds: string[] } | { kind: 'step'; serviceId: string; step: StepBody }
+export interface ReleaseFlow {
+  stages: FlowStage[]
+  onFailure: 'stop-all' | 'continue-other-hosts'
+}
+
 export interface EnvDeploySettings {
   environmentId: string
   versioned: boolean
   autoRollback: boolean
   currentVersion: string | null
+  parallelPrepare: boolean
+  /** 1-8 hosts prepared at once. */
+  prepareCap: number
+  /** null: the services deploy in checkout order, as before. */
+  flow: ReleaseFlow | null
 }
 /** `currentVersion` is a manual correction (null clears it); it must match VERSION. */
-export type EnvDeploySettingsPatch = Partial<Pick<EnvDeploySettings, 'versioned' | 'autoRollback' | 'currentVersion'>>
+export type EnvDeploySettingsPatch = Partial<Pick<EnvDeploySettings, 'versioned' | 'autoRollback' | 'currentVersion' | 'parallelPrepare' | 'prepareCap' | 'flow'>>
 /** Several edits to one environment saved together: all of them or none (the script-compatible preset and its Undo). */
 export interface DeployBatch {
   settings?: EnvDeploySettingsPatch
@@ -298,6 +315,7 @@ export type StepKind =
   | 'finalize_notes'
   | 'finalize_notify'
   | 'finalize_qa'
+  | 'custom'
 
 export const STEP_LABEL: Record<StepKind, string> = {
   lock: 'Lock',
@@ -322,6 +340,7 @@ export const STEP_LABEL: Record<StepKind, string> = {
   finalize_notes: 'Release notes',
   finalize_notify: 'Notify',
   finalize_qa: 'QA',
+  custom: 'Step',
 }
 
 export type StepState = 'pending' | 'running' | 'ok' | 'warn' | 'failed' | 'skipped' | 'cancelled'
@@ -485,6 +504,10 @@ export interface ReleaseSummary {
   error: string | null
   /** Hub only: the release's environment was unpublished; the release is kept as read-only history. */
   unpublished?: boolean
+  /** Set when the release is a runbook operation rather than a deploy. */
+  operation: OperationMeta | null
+  /** 'edited' when the user changed the generated playbook before starting. */
+  playbookSource: 'generated' | 'edited'
 }
 
 /** An environment's newest release that ran (or is running), with the commits of its first run. */
@@ -510,7 +533,7 @@ export interface DeploymentRunMeta {
   backupFile: string | null
   startedAt: string | null
   finishedAt: string | null
-  steps: { stepId: string; kind: StepKind; state: StepState; startedAt: string | null; finishedAt: string | null; error?: string }[]
+  steps: { stepId: string; kind: StepKind; state: StepState; startedAt: string | null; finishedAt: string | null; error?: string; label?: string; key?: string }[]
   /** The selected services this run deploys, with their commits. */
   services: RunService[]
   /** True when the run rebuilds the whole checkout (`services` null in the plan). */
@@ -522,6 +545,8 @@ export interface ReleaseDetail extends ReleaseSummary {
   releaseNotes: string | null
   /** The generated, secret-free release playbook JSON (redacted again on read). */
   playbook: string | null
+  /** The playbook as generated, kept only when the run used an edited one. */
+  playbookGenerated: string | null
   /** Hub only: the playbook is left out (null) because it covers deployments this viewer can't see. */
   playbookHidden?: boolean
   runs: DeploymentRunMeta[]
@@ -558,6 +583,8 @@ export interface ReleaseConfirm {
   redeploy?: boolean
   /** sha256 (hex) of the playbook the user reviewed; start refuses when the playbook it would run differs. */
   playbookSha256?: string
+  /** The reviewed playbook, edited by the user; main re-validates it and runs it in place of the generated one. */
+  editedPlaybook?: string
 }
 /** The playbook a start would run, for review before Deploy. */
 export interface PlaybookPreview {
@@ -579,6 +606,7 @@ export interface ReleaseListFilter {
   environmentId?: string
   limit?: number
   before?: string
+  operations?: 'only' | 'exclude'
 }
 
 // ---- Tooling ----

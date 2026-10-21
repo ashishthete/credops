@@ -284,6 +284,30 @@ ALTER TABLE environment_integrations ADD COLUMN qa_wait_minutes INTEGER CHECK (q
       stripSavedRepoCredentials(db)
     },
   },
+  // Version 12 belongs to the regions branch; the runner applies versions by number and skips the gap.
+  {
+    version: 13,
+    name: 'playbook_ops',
+    up: `
+ALTER TABLE deployments ADD COLUMN steps TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE environments ADD COLUMN release_flow TEXT;
+ALTER TABLE environments ADD COLUMN parallel_prepare INTEGER NOT NULL DEFAULT 1 CHECK (parallel_prepare IN (0,1));
+ALTER TABLE environments ADD COLUMN prepare_cap INTEGER NOT NULL DEFAULT 3 CHECK (prepare_cap BETWEEN 1 AND 8);
+ALTER TABLE services ADD COLUMN skip_unchanged INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE releases ADD COLUMN operation TEXT;
+ALTER TABLE releases ADD COLUMN playbook_source TEXT;
+ALTER TABLE releases ADD COLUMN playbook_generated TEXT;
+CREATE TABLE runbooks(
+  id TEXT PRIMARY KEY,
+  environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  definition TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(environment_id, name));
+`,
+  },
 ]
 
 /**

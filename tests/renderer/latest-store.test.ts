@@ -23,6 +23,8 @@ const row = (id: string, status: ReleaseStatus, over: Partial<EnvLastRelease> = 
   serviceIds: [],
   serviceCount: 1,
   error: null,
+  operation: null,
+  playbookSource: 'generated',
   previousCommit: 'aaaaaaa',
   deployedCommit: 'bbbbbbb',
   ...over,

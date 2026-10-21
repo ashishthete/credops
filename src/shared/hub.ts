@@ -279,7 +279,7 @@ export interface HubEnvManifest {
   }[]
   /** Services of the environment: a `service` runs from a checkout, a `db` is reached through a via-host. Ids are the publisher's local UUIDs. */
   services: HubManifestService[]
-  deployments: Omit<DeploymentMeta, 'vaultIds' | 'createdAt' | 'updatedAt'>[]
+  deployments: Omit<DeploymentMeta, 'vaultIds' | 'steps' | 'createdAt' | 'updatedAt'>[]
   integrations: HubIntegrations
   requiredSecrets: { secretId: string; name: string; usedBy: string[] }[]
 }

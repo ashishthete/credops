@@ -96,12 +96,43 @@ describe('vault schema', () => {
 })
 
 describe('migration versions', () => {
-  // Version 8 is Phase 9's and merges from another branch, so this branch alone may skip it.
-  it('are strictly increasing and unique, skipping only the other branch\'s version 8', () => {
+  // Version 12 is the regions branch's and merges from there, so this branch alone skips it.
+  it('are strictly increasing and unique, skipping only the regions branch\'s version 12', () => {
     const versions = migrations.map((m) => m.version)
     expect(versions).toEqual([...new Set(versions)].sort((a, b) => a - b))
-    const rest = versions.filter((v) => v !== 8)
-    expect(rest).toEqual(rest.map((_, i) => (i < 7 ? i + 1 : i + 2)))
+    const gaps = Array.from({ length: versions.at(-1)! }, (_, i) => i + 1).filter((v) => !versions.includes(v))
+    expect(gaps).toEqual([12])
+  })
+})
+
+describe('migration 13 playbook_ops', () => {
+  const upTo = (version: number) => migrations.filter((m) => m.version <= version)
+  it('migrates a version 11 database, keeping parallel prepare on and existing releases plain', () => {
+    const db = new (process.getBuiltinModule('node:sqlite').DatabaseSync)(':memory:')
+    db.exec('PRAGMA foreign_keys = ON')
+    migrate(db, upTo(11))
+    expect(currentVersion(db)).toBe(11)
+    db.exec("INSERT INTO environments(id,name,color,created_at,updated_at) VALUES ('e','e','#000','t','t')")
+    db.exec(
+      "INSERT INTO releases(id,environment_id,kind,status,version_bump,options,service_ids,triggered_by,created_at) VALUES ('r','e','release','ready','none','{}','[]','a','t')",
+    )
+    expect(migrate(db)).toEqual({ from: 11, to: 13 })
+    expect(db.prepare("SELECT parallel_prepare AS p, prepare_cap AS c, release_flow AS f FROM environments WHERE id='e'").get()).toEqual({ p: 1, c: 3, f: null })
+    expect(db.prepare("SELECT operation AS o, playbook_source AS s, playbook_generated AS g FROM releases WHERE id='r'").get()).toEqual({ o: null, s: null, g: null })
+    expect(() => db.exec("UPDATE environments SET prepare_cap = 9 WHERE id='e'")).toThrow(/CHECK constraint failed/)
+    expect(() => db.exec("UPDATE environments SET parallel_prepare = 2 WHERE id='e'")).toThrow(/CHECK constraint failed/)
+  })
+
+  it('keeps a runbook name unique per environment and removes runbooks with their environment', () => {
+    const db = openDatabase(':memory:')
+    db.exec("INSERT INTO environments(id,name,color,created_at,updated_at) VALUES ('e','e','#000','t','t'),('f','f','#000','t','t')")
+    const ins = (id: string, env: string, name: string) =>
+      db.prepare("INSERT INTO runbooks(id,environment_id,name,definition,created_at,updated_at) VALUES (?,?,?,'{}','t','t')").run(id, env, name)
+    ins('a', 'e', 'restart')
+    ins('b', 'f', 'restart')
+    expect(() => ins('c', 'e', 'restart')).toThrow(/UNIQUE constraint failed/)
+    db.exec("DELETE FROM environments WHERE id='e'")
+    expect(db.prepare('SELECT COUNT(*) AS n FROM runbooks').get()).toEqual({ n: 1 })
   })
 })
 

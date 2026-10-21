@@ -177,6 +177,13 @@ ALTER TABLE hosts_v9 RENAME TO hosts;
 ALTER TABLE deployments_v9 RENAME TO deployments;
 `
 
+// The shared ReleaseStore reads these columns. Version 10 is reserved by the regions branch.
+const PLAYBOOK_OPS = `
+ALTER TABLE releases ADD COLUMN operation TEXT NULL;
+ALTER TABLE releases ADD COLUMN playbook_source TEXT NULL;
+ALTER TABLE releases ADD COLUMN playbook_generated TEXT NULL;
+`
+
 export const HUB_MIGRATIONS: Migration[] = [
   { version: 1, name: 'core', up: CORE },
   { version: 2, name: 'registry', up: REGISTRY },
@@ -187,6 +194,7 @@ export const HUB_MIGRATIONS: Migration[] = [
   { version: 7, name: 'notify', up: NOTIFY },
   { version: 8, name: 'history', up: HISTORY },
   { version: 9, name: 'shared_hosts', up: SHARED_HOSTS },
+  { version: 11, name: 'playbook_ops', up: PLAYBOOK_OPS },
 ]
 
 export function openHubDb(file: string): HubDb {

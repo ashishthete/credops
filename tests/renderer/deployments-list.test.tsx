@@ -38,6 +38,8 @@ const last = (environmentId: string, status: ReleaseStatus, over: Partial<EnvLas
   deploymentCount: 1,
   hostCount: 1,
   serviceIds: [],
+  operation: null,
+  playbookSource: 'generated',
   serviceCount: 1,
   error: null,
   previousCommit: 'aaaaaaa1111',

@@ -89,6 +89,7 @@ export function maskDetail(d: ReleaseDetail, secrets: readonly string[]): Releas
     ...summaryOf(d, m),
     ...(typeof d.releaseNotes === 'string' && { releaseNotes: m(d.releaseNotes) }),
     ...(typeof d.playbook === 'string' && { playbook: maskPlaybook(d.playbook, secrets) }),
+    ...(typeof d.playbookGenerated === 'string' && { playbookGenerated: maskPlaybook(d.playbookGenerated, secrets) }),
     runs: each(d.runs, (r) => ({
       ...r,
       commits: each(r.commits, (c) => commitOf(c, m)),

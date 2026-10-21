@@ -229,6 +229,7 @@ export function deploymentMeta(over: Partial<DeploymentMeta> & { id: string }): 
     backupDir: null,
     preHook: null,
     postHook: null,
+    steps: [],
     buildTimeoutSec: 300,
     composeTimeoutSec: 120,
     useSudo: 'auto',
@@ -243,7 +244,7 @@ export function deploymentMeta(over: Partial<DeploymentMeta> & { id: string }): 
 }
 
 export function envSettings(over: Partial<EnvDeploySettings> = {}): EnvDeploySettings {
-  return { environmentId: 'e1', versioned: true, autoRollback: false, currentVersion: 'v1.2.0', ...over }
+  return { environmentId: 'e1', versioned: true, autoRollback: false, currentVersion: 'v1.2.0', parallelPrepare: true, prepareCap: 3, flow: null, ...over }
 }
 
 export function toolingOk(over: Partial<Tooling> = {}): Tooling {
@@ -270,6 +271,7 @@ export function appService(over: Partial<AppServiceMeta> & { id: string; name: s
     urlCheckFrom: 'mac',
     lastDeployedCommit: null,
     lastReleaseId: null,
+    skipUnchanged: false,
     createdAt: STAMP,
     updatedAt: STAMP,
     ...over,

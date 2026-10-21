@@ -31,14 +31,14 @@ const stamp = (db: HubDb, environmentId: string): string =>
 export function hubDeploys(db: HubDb, registry: Registry): Pick<DeployStore, 'get' | 'list' | 'settings' | 'updateSettings'> {
   const metas = (environmentId: string): DeploymentMeta[] => {
     const at = stamp(db, environmentId)
-    return registry.get(environmentId).deployments.map((d) => ({ ...d, vaultIds: [], createdAt: at, updatedAt: at }))
+    return registry.get(environmentId).deployments.map((d) => ({ ...d, steps: [], vaultIds: [], createdAt: at, updatedAt: at }))
   }
   const settings = (environmentId: string): EnvDeploySettings => {
     const row = db.prepare('SELECT versioned, auto_rollback, current_version FROM environments WHERE id = ?').get(environmentId) as
       | { versioned: number; auto_rollback: number; current_version: string | null }
       | undefined
     if (!row) throw new Error('environment not found')
-    return { environmentId, versioned: row.versioned === 1, autoRollback: row.auto_rollback === 1, currentVersion: row.current_version }
+    return { environmentId, versioned: row.versioned === 1, autoRollback: row.auto_rollback === 1, currentVersion: row.current_version, parallelPrepare: true, prepareCap: 3, flow: null }
   }
   return {
     get: (id) => {
@@ -96,6 +96,7 @@ export function hubServices(db: HubDb, registry: Registry): Pick<ServiceStore, '
           urlCheckFrom: 'host',
           lastDeployedCommit: l?.commit ?? null,
           lastReleaseId: l?.releaseId ?? null,
+          skipUnchanged: false,
         }
         return app
       }

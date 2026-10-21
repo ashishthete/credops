@@ -100,6 +100,12 @@ export const AUDIT_ACTIONS = [
   'ai.command',
   'config.export',
   'config.import',
+  'ops.run',
+  'ops.preflight',
+  'playbook.edited',
+  'runbook.create',
+  'runbook.update',
+  'runbook.delete',
 ] as const // later phases extend
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]
 

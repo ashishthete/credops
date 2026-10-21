@@ -55,6 +55,9 @@ export function releaseDetail(over: Partial<ReleaseDetail> = {}): ReleaseDetail 
     options: { backup: false, notify: false, qa: false },
     releaseNotes: null,
     playbook: null,
+    playbookGenerated: null,
+    operation: null,
+    playbookSource: 'generated',
     runs: [
       run({ id: 'r1', deploymentName: 'core', position: 0, services: [svc('s1', 'api'), svc('s2', 'worker')] }),
       run({ id: 'r2', deploymentName: 'web', position: 1, wholeCheckout: true, services: [svc('s4', 'site-web')] }),

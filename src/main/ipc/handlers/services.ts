@@ -99,5 +99,6 @@ function catalogService(
     urlCheckFrom: 'host',
     lastDeployedCommit: null,
     lastReleaseId: null,
+    skipUnchanged: false,
   }
 }

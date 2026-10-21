@@ -427,3 +427,59 @@ describe('ReleaseStore', () => {
     })
   })
 })
+
+describe('ReleaseStore operations', () => {
+  const op = { runbookId: 'rb1', name: 'Restart', params: { n: '1' }, readOnly: false, lock: true, targetServiceIds: ['s1'] }
+
+  async function twoReleases() {
+    const { f, d, r } = await release()
+    const o = f.releases.createRelease({
+      environmentId: f.staging.id,
+      kind: 'release',
+      status: 'ready',
+      version: null,
+      previousVersion: null,
+      versionBump: 'none',
+      redeploy: false,
+      rollbackOf: null,
+      options: DEFAULT_RELEASE_OPTIONS,
+      triggeredBy: 'ana@mbp',
+      serviceIds: [],
+      operation: op,
+    })
+    return { f, d, r, o }
+  }
+
+  it('keeps operation null for a plain release and stores one for an operation', async () => {
+    const { f, r, o } = await twoReleases()
+    expect(f.releases.get(r.id)).toMatchObject({ operation: null, playbookSource: 'generated' })
+    expect(f.releases.get(o.id)).toMatchObject({ operation: op, playbookSource: 'generated' })
+  })
+
+  it('filters the list by operations', async () => {
+    const { f, r, o } = await twoReleases()
+    const ids = (operations?: 'only' | 'exclude') => f.releases.list({ environmentId: f.staging.id, limit: 50, operations }).map((x) => x.id)
+    expect(ids().sort()).toEqual([r.id, o.id].sort())
+    expect(ids('only')).toEqual([o.id])
+    expect(ids('exclude')).toEqual([r.id])
+  })
+
+  it('latestPerEnvironment ignores operations', async () => {
+    const { f, r, o } = await twoReleases()
+    f.releases.setStatus(r.id, 'succeeded', { startedAt: '2026-01-01T00:00:00.000Z' })
+    f.releases.setStatus(o.id, 'succeeded', { startedAt: '2026-01-02T00:00:00.000Z' })
+    expect(f.releases.latestPerEnvironment().map((x) => x.id)).toEqual([r.id])
+  })
+
+  it('stores an edited playbook beside the generated one', async () => {
+    const { f, r } = await twoReleases()
+    f.releases.setStatus(r.id, 'running', { playbook: '[1]', playbookSource: 'edited', playbookGenerated: '[2]' })
+    expect(f.releases.get(r.id).playbookSource).toBe('edited')
+    expect(f.releases.detail(r.id)).toMatchObject({ playbook: '[1]', playbookGenerated: '[2]' })
+  })
+
+  it('reads a plain release with no generated playbook', async () => {
+    const { f, r } = await twoReleases()
+    expect(f.releases.detail(r.id).playbookGenerated).toBeNull()
+  })
+})

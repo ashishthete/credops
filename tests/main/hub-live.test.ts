@@ -31,6 +31,8 @@ const summary = (id: string, status: ReleaseSummary['status'], triggeredBy = 'bo
   serviceIds: [],
   serviceCount: 1,
   error: null,
+  operation: null,
+  playbookSource: 'generated',
 })
 
 const frame = (m: HubLiveMessage): string => `event: ${m.type}\ndata: ${JSON.stringify(m)}\n\n`

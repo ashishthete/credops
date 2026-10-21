@@ -215,7 +215,11 @@ export class ReleaseService {
   detail(releaseId: string): ReleaseDetail {
     this.flush()
     const d = this.d.releases.detail(releaseId)
-    return { ...d, playbook: d.playbook === null ? null : redact(d.playbook), error: d.error === null ? null : redact(d.error) }
+    return {
+      ...d,
+      playbook: d.playbook === null ? null : redact(d.playbook),
+      playbookGenerated: d.playbookGenerated === null ? null : redact(d.playbookGenerated),
+      error: d.error === null ? null : redact(d.error) }
   }
 
   events(releaseId: string, afterSeq: number, limit = 1000): RunEvent[] {

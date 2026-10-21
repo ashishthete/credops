@@ -39,6 +39,7 @@ interface ServiceRow {
   url_check_from: HealthFrom | null
   last_deployed_commit: string | null
   last_release_id: string | null
+  skip_unchanged: number
   db_engine: DbEngine | null
   db_address: string | null
   db_port: number | null
@@ -49,11 +50,11 @@ interface ServiceRow {
   updated_at: string
 }
 
-type AppFields = Pick<AppServiceMeta, 'name' | 'description' | 'deploymentId' | 'composeService' | 'url' | 'urlCheckFrom'>
+type AppFields = Pick<AppServiceMeta, 'name' | 'description' | 'deploymentId' | 'composeService' | 'url' | 'urlCheckFrom' | 'skipUnchanged'>
 type DbFields = Pick<DbServiceMeta, 'name' | 'description' | 'dbEngine' | 'dbAddress' | 'dbPort' | 'viaHostId' | 'localPort'>
 
 /** The fields a caller may set, per kind; a field of the other kind is refused by name of the rule. */
-const APP_FIELDS = ['name', 'description', 'deploymentId', 'composeService', 'url', 'urlCheckFrom'] as const satisfies readonly (keyof AppFields)[]
+const APP_FIELDS = ['name', 'description', 'deploymentId', 'composeService', 'url', 'urlCheckFrom', 'skipUnchanged'] as const satisfies readonly (keyof AppFields)[]
 const DB_FIELDS = ['name', 'description', 'dbEngine', 'dbAddress', 'dbPort', 'viaHostId', 'localPort'] as const satisfies readonly (keyof DbFields)[]
 const ENGINES = Object.keys(DB_DEFAULT_PORT) as DbEngine[]
 
@@ -150,6 +151,7 @@ export class ServiceStore {
           composeService: input.composeService ?? (COMPOSE_SERVICE.test(name) ? name : ''),
           url: input.url ?? null,
           urlCheckFrom: input.urlCheckFrom ?? 'mac',
+          skipUnchanged: input.skipUnchanged ?? false,
         },
         input.environmentId,
         null,
@@ -157,9 +159,9 @@ export class ServiceStore {
       this.db
         .prepare(
           `INSERT INTO services(id, environment_id, name, kind, position, description, deployment_id, compose_service, url,
-            url_check_from, created_at, updated_at) VALUES (?,?,?,'service',?,?,?,?,?,?,?,?)`,
+            url_check_from, skip_unchanged, created_at, updated_at) VALUES (?,?,?,'service',?,?,?,?,?,?,?,?,?)`,
         )
-        .run(id, input.environmentId, f.name, pos, f.description, f.deploymentId, f.composeService, f.url, f.urlCheckFrom, ts, ts)
+        .run(id, input.environmentId, f.name, pos, f.description, f.deploymentId, f.composeService, f.url, f.urlCheckFrom, f.skipUnchanged ? 1 : 0, ts, ts)
     } else {
       const name = this.checkName(input.name, input.environmentId, null)
       const engine = this.checkEngine(input.dbEngine)
@@ -220,6 +222,7 @@ export class ServiceStore {
           composeService: pick(before, 'composeService'),
           url: pick(before, 'url'),
           urlCheckFrom: pick(before, 'urlCheckFrom'),
+          skipUnchanged: pick(before, 'skipUnchanged'),
         },
         before.environmentId,
         id,
@@ -227,8 +230,8 @@ export class ServiceStore {
       changed = APP_FIELDS.filter((k) => !same(f[k], before[k]))
       if (changed.length === 0) return changed
       this.db
-        .prepare('UPDATE services SET name = ?, description = ?, deployment_id = ?, compose_service = ?, url = ?, url_check_from = ?, updated_at = ? WHERE id = ?')
-        .run(f.name, f.description, f.deploymentId, f.composeService, f.url, f.urlCheckFrom, this.now().toISOString(), id)
+        .prepare('UPDATE services SET name = ?, description = ?, deployment_id = ?, compose_service = ?, url = ?, url_check_from = ?, skip_unchanged = ?, updated_at = ? WHERE id = ?')
+        .run(f.name, f.description, f.deploymentId, f.composeService, f.url, f.urlCheckFrom, f.skipUnchanged ? 1 : 0, this.now().toISOString(), id)
     } else {
       const f = this.validateDb({
         name,
@@ -363,6 +366,7 @@ export class ServiceStore {
         urlCheckFrom: r.url_check_from as HealthFrom,
         lastDeployedCommit: r.last_deployed_commit,
         lastReleaseId: r.last_release_id,
+        skipUnchanged: r.skip_unchanged === 1,
       }
     }
     return {
@@ -434,6 +438,7 @@ export class ServiceStore {
       if (dup && dup.id !== selfId) throw new Error(`${checkout.name} already has a service for compose service ${f.composeService}`)
     }
     if (f.urlCheckFrom !== 'mac' && f.urlCheckFrom !== 'host') throw new Error('url check must run from mac or host')
+    if (typeof f.skipUnchanged !== 'boolean') throw new Error('skip unchanged must be true or false')
     return { ...f, description, url: this.checkUrl(f.url) }
   }
 

@@ -120,6 +120,7 @@ export function scopeDetail(d: ReleaseDetail, v: Visible): ReleaseDetail {
     runs: shown,
     preflight: d.preflight === null ? null : scopeReport(d.preflight, v),
     playbook: whole ? d.playbook : null,
+    playbookGenerated: whole ? d.playbookGenerated : null,
     releaseNotes: whole ? d.releaseNotes : null,
     ...(whole ? {} : { playbookHidden: true }),
   }

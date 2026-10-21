@@ -267,9 +267,9 @@ describe('DeployStore', () => {
 
   it('settings: versioned and current version validate and audit deploy.settings', async () => {
     const f = await makeDeployFixture()
-    expect(f.deploys.settings(f.staging.id)).toEqual({ environmentId: f.staging.id, versioned: false, autoRollback: true, currentVersion: null })
+    expect(f.deploys.settings(f.staging.id)).toEqual({ environmentId: f.staging.id, versioned: false, autoRollback: true, currentVersion: null, parallelPrepare: true, prepareCap: 3, flow: null })
     const s = f.deploys.updateSettings(f.staging.id, { versioned: true, autoRollback: false, currentVersion: 'v1.2.3' })
-    expect(s).toEqual({ environmentId: f.staging.id, versioned: true, autoRollback: false, currentVersion: 'v1.2.3' })
+    expect(s).toEqual({ environmentId: f.staging.id, versioned: true, autoRollback: false, currentVersion: 'v1.2.3', parallelPrepare: true, prepareCap: 3, flow: null })
     expect(() => f.deploys.updateSettings(f.staging.id, { currentVersion: '1.2' })).toThrow('version must look like v1.2.3')
     expect(f.deploys.updateSettings(f.staging.id, { currentVersion: null }).currentVersion).toBeNull()
     expect(() => f.deploys.settings('00000000-0000-4000-8000-000000000000')).toThrow('environment not found')
@@ -374,5 +374,97 @@ describe('DeployStore', () => {
     })
     expect(() => asDeployBatch({ deployments: [{ id, patch: { environmentId: id } }] }, 'args[1]')).toThrow(InvalidArgs)
     expect(() => asDeployBatch({ deployments: [{ id: 'x', patch: {} }] }, 'args[1]')).toThrow(/args\[1\]\.deployments\[0\]\.id/)
+  })
+})
+
+describe('DeployStore steps and playbook settings', () => {
+  const stepOf = (over: Record<string, unknown> = {}) => ({
+    id: 'c_1',
+    name: 'migrate',
+    run: 'shell' as const,
+    service: null,
+    script: 'echo TOPSECRETSCRIPT',
+    cwd: null,
+    sudo: 'docker' as const,
+    timeoutSec: 600,
+    onFailure: 'stop' as const,
+    when: { kind: 'always' as const },
+    secrets: [],
+    anchor: 'after_up' as const,
+    alsoOnRollback: false,
+    ...over,
+  })
+
+  it('defaults steps to none and round-trips saved steps', async () => {
+    const f = await makeDeployFixture()
+    const d = f.deploys.create(f.input())
+    expect(d.steps).toEqual([])
+    const saved = f.deploys.update(d.id, { steps: [stepOf()] })
+    expect(saved.steps).toEqual([stepOf()])
+    expect(f.deploys.get(d.id).steps).toEqual([stepOf()])
+  })
+
+  it('clears the hooks when non-empty steps are saved, in the same write', async () => {
+    const f = await makeDeployFixture()
+    const d = f.deploys.create(f.input({ preHook: 'echo pre', postHook: 'echo post' }))
+    const saved = f.deploys.update(d.id, { steps: [stepOf()] })
+    expect(saved).toMatchObject({ preHook: null, postHook: null })
+    expect(f.deploys.create(f.input({ name: 'two', preHook: 'a', steps: [stepOf()] }))).toMatchObject({ preHook: null })
+    f.deploys.update(d.id, { steps: [] })
+    expect(f.deploys.update(d.id, { preHook: 'echo again' }).preHook).toBe('echo again')
+  })
+
+  it('audits a steps change by field name only', async () => {
+    const f = await makeDeployFixture()
+    const d = f.deploys.create(f.input({ preHook: 'echo pre' }))
+    f.deploys.update(d.id, { steps: [stepOf()] })
+    const [e] = f.audit.list({ actions: ['deploy.update'] })
+    expect(e.details).toEqual({ fields: ['preHook', 'steps'] })
+    expect(auditRows(f.db)).not.toContain('TOPSECRETSCRIPT')
+  })
+
+  it('validates steps: too many, duplicate ids, a secret outside the checkout vaults, a bad service', async () => {
+    const f = await makeDeployFixture()
+    const d = f.deploys.create(f.input({ vaultIds: [DEFAULT_VAULT_ID] }))
+    expect(() => f.deploys.update(d.id, { steps: Array.from({ length: 21 }, (_, i) => stepOf({ id: `c_${i}` })) })).toThrow('too many steps (20)')
+    expect(() => f.deploys.update(d.id, { steps: [stepOf(), stepOf()] })).toThrow('step ids must be unique')
+    expect(() => f.deploys.update(d.id, { steps: [stepOf({ run: 'compose-exec', service: 'web' })] })).toThrow(/compose-exec/)
+    f.services.create({ kind: 'service', environmentId: f.staging.id, name: 'web', deploymentId: d.id })
+    expect(f.deploys.update(d.id, { steps: [stepOf({ run: 'compose-exec', service: 'web' })] }).steps).toHaveLength(1)
+    const withSecret = stepOf({ secrets: [{ envName: 'TOKEN', secretId: f.secretId }] })
+    expect(f.deploys.update(d.id, { steps: [withSecret] }).steps[0].secrets).toEqual([{ envName: 'TOKEN', secretId: f.secretId }])
+    const other = f.deploys.create(f.input({ name: 'other' }))
+    expect(() => f.deploys.update(other.id, { steps: [withSecret] })).toThrow(/secret/)
+  })
+
+  it('stores parallel prepare, the prepare cap and the flow, naming fields only in the audit', async () => {
+    const f = await makeDeployFixture()
+    const d = f.deploys.create(f.input())
+    const s = f.services.create({ kind: 'service', environmentId: f.staging.id, name: 'web', deploymentId: d.id })
+    expect(f.deploys.settings(f.staging.id)).toMatchObject({ parallelPrepare: true, prepareCap: 3, flow: null })
+    const flow = {
+      onFailure: 'stop-all' as const,
+      stages: [
+        { kind: 'services' as const, serviceIds: [s.id] },
+        { kind: 'step' as const, serviceId: s.id, step: { ...stepOf(), anchor: undefined, alsoOnRollback: undefined } },
+      ],
+    }
+    delete (flow.stages[1] as { step: Record<string, unknown> }).step.anchor
+    delete (flow.stages[1] as { step: Record<string, unknown> }).step.alsoOnRollback
+    const saved = f.deploys.updateSettings(f.staging.id, { parallelPrepare: false, prepareCap: 5, flow })
+    expect(saved).toMatchObject({ parallelPrepare: false, prepareCap: 5 })
+    expect(f.deploys.settings(f.staging.id).flow).toEqual(flow)
+    const [e] = f.audit.list({ actions: ['deploy.settings'] })
+    expect(e.details).toEqual({ fields: ['parallelPrepare', 'prepareCap', 'flow'] })
+    expect(auditRows(f.db)).not.toContain('TOPSECRETSCRIPT')
+    expect(f.deploys.updateSettings(f.staging.id, { flow: null }).flow).toBeNull()
+  })
+
+  it('refuses a bad cap and a flow naming a foreign service', async () => {
+    const f = await makeDeployFixture()
+    expect(() => f.deploys.updateSettings(f.staging.id, { prepareCap: 9 })).toThrow('prepare cap must be 1-8')
+    expect(() => f.deploys.updateSettings(f.staging.id, { prepareCap: 0 })).toThrow('prepare cap must be 1-8')
+    expect(() => f.deploys.updateSettings(f.staging.id, { flow: { onFailure: 'stop-all', stages: [{ kind: 'services', serviceIds: ['nope'] }] } })).toThrow(/not in this environment/)
+    expect(f.deploys.settings(f.staging.id).prepareCap).toBe(3)
   })
 })

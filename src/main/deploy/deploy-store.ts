@@ -24,9 +24,13 @@ import {
   type DeploymentPatch,
   type EnvDeploySettings,
   type EnvDeploySettingsPatch,
+  type FlowStage,
   type HealthUrl,
+  type ReleaseFlow,
   type UseSudo,
 } from '../../shared/deploy'
+import { DeployError } from '../../shared/deploy-error'
+import { MAX_STEPS_PER_CHECKOUT, validateStep, type Step } from '../../shared/steps'
 import { isProd } from '../../shared/script-parity'
 import { MAX_NAME, REPO_URL, REPO_URL_CREDENTIALS_MSG, hasRepoCredentials, isParsableRepoUrl } from '../../shared/inventory'
 import type { AuditLog } from '../audit/audit-log'
@@ -76,6 +80,7 @@ interface DeploymentRow {
   backup_dir: string | null
   pre_hook: string | null
   post_hook: string | null
+  steps: string
   build_timeout_sec: number
   compose_timeout_sec: number
   use_sudo: UseSudo
@@ -104,6 +109,7 @@ const FIELDS = [
   'backupDir',
   'preHook',
   'postHook',
+  'steps',
   'buildTimeoutSec',
   'composeTimeoutSec',
   'useSudo',
@@ -112,6 +118,10 @@ const FIELDS = [
   'envTemplate',
   'vaultIds',
 ] as const satisfies readonly (keyof Fields)[]
+
+const SETTINGS_FIELDS = ['versioned', 'autoRollback', 'currentVersion', 'parallelPrepare', 'prepareCap', 'flow'] as const
+type SettingsField = (typeof SETTINGS_FIELDS)[number]
+const MAX_FLOW_STAGES = 50
 
 const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
 
@@ -204,6 +214,7 @@ export class DeployStore {
         backupDir: input.backupDir ?? null,
         preHook: input.preHook ?? null,
         postHook: input.postHook ?? null,
+        steps: input.steps ?? [],
         buildTimeoutSec: input.buildTimeoutSec ?? 300,
         composeTimeoutSec: input.composeTimeoutSec ?? 120,
         useSudo: input.useSudo ?? 'auto',
@@ -220,14 +231,14 @@ export class DeployStore {
     this.db
       .prepare(
         `INSERT INTO deployments(id, name, environment_id, host_id, repo_url, compose_project, repo_path, default_branch, compose_file, deploy_tag,
-          position, urls, health_status, health_timeout_sec, db_backup, backup_dir, pre_hook, post_hook, build_timeout_sec,
+          position, urls, health_status, health_timeout_sec, db_backup, backup_dir, pre_hook, post_hook, steps, build_timeout_sec,
           compose_timeout_sec, use_sudo, become_secret_id, managed_env, env_template, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         id, f.name, f.environmentId, f.hostId, f.repoUrl, f.composeProject, f.repoPath, f.defaultBranch, f.composeFile, f.deployTag,
         f.position, JSON.stringify(f.urls), f.healthStatus, f.healthTimeoutSec, f.dbBackup ? 1 : 0, f.backupDir, f.preHook,
-        f.postHook, f.buildTimeoutSec, f.composeTimeoutSec, f.useSudo, f.becomeSecretId, f.managedEnv ? 1 : 0, f.envTemplate, ts, ts,
+        f.postHook, JSON.stringify(f.steps), f.buildTimeoutSec, f.composeTimeoutSec, f.useSudo, f.becomeSecretId, f.managedEnv ? 1 : 0, f.envTemplate, ts, ts,
       )
     this.setVaults(id, f.vaultIds)
     return id
@@ -272,6 +283,7 @@ export class DeployStore {
       backupDir: pick('backupDir'),
       preHook: pick('preHook'),
       postHook: pick('postHook'),
+      steps: pick('steps'),
       buildTimeoutSec: pick('buildTimeoutSec'),
       composeTimeoutSec: pick('composeTimeoutSec'),
       useSudo: pick('useSudo'),
@@ -287,12 +299,12 @@ export class DeployStore {
       .prepare(
         `UPDATE deployments SET name = ?, repo_url = ?, compose_project = ?, repo_path = ?, default_branch = ?, compose_file = ?, deploy_tag = ?,
           position = ?, urls = ?, health_status = ?, health_timeout_sec = ?, db_backup = ?, backup_dir = ?, pre_hook = ?,
-          post_hook = ?, build_timeout_sec = ?, compose_timeout_sec = ?, use_sudo = ?, become_secret_id = ?, managed_env = ?,
+          post_hook = ?, steps = ?, build_timeout_sec = ?, compose_timeout_sec = ?, use_sudo = ?, become_secret_id = ?, managed_env = ?,
           env_template = ?, updated_at = ? WHERE id = ?`,
       )
       .run(
         f.name, f.repoUrl, f.composeProject, f.repoPath, f.defaultBranch, f.composeFile, f.deployTag, f.position, JSON.stringify(f.urls),
-        f.healthStatus, f.healthTimeoutSec, f.dbBackup ? 1 : 0, f.backupDir, f.preHook, f.postHook, f.buildTimeoutSec,
+        f.healthStatus, f.healthTimeoutSec, f.dbBackup ? 1 : 0, f.backupDir, f.preHook, f.postHook, JSON.stringify(f.steps), f.buildTimeoutSec,
         f.composeTimeoutSec, f.useSudo, f.becomeSecretId, f.managedEnv ? 1 : 0, f.envTemplate, this.now().toISOString(), id,
       )
     if (changed.includes('vaultIds')) this.setVaults(id, f.vaultIds)
@@ -347,10 +359,20 @@ export class DeployStore {
 
   settings(environmentId: string): EnvDeploySettings {
     const row = this.db
-      .prepare('SELECT versioned, auto_rollback, current_version FROM environments WHERE id = ?')
-      .get(environmentId) as { versioned: number; auto_rollback: number; current_version: string | null } | undefined
+      .prepare('SELECT versioned, auto_rollback, current_version, parallel_prepare, prepare_cap, release_flow FROM environments WHERE id = ?')
+      .get(environmentId) as
+      | { versioned: number; auto_rollback: number; current_version: string | null; parallel_prepare: number; prepare_cap: number; release_flow: string | null }
+      | undefined
     if (!row) throw new Error('environment not found')
-    return { environmentId, versioned: row.versioned === 1, autoRollback: row.auto_rollback === 1, currentVersion: row.current_version }
+    return {
+      environmentId,
+      versioned: row.versioned === 1,
+      autoRollback: row.auto_rollback === 1,
+      currentVersion: row.current_version,
+      parallelPrepare: row.parallel_prepare === 1,
+      prepareCap: row.prepare_cap,
+      flow: row.release_flow === null ? null : (JSON.parse(row.release_flow) as ReleaseFlow),
+    }
   }
 
   updateSettings(environmentId: string, patch: EnvDeploySettingsPatch): EnvDeploySettings {
@@ -373,18 +395,28 @@ export class DeployStore {
   }
 
   /** updateSettings() without the transaction, the unlock check, the audit or `onChanged`; the changed field names. */
-  updateSettingsInTx(environmentId: string, patch: EnvDeploySettingsPatch): ('versioned' | 'autoRollback' | 'currentVersion')[] {
+  updateSettingsInTx(environmentId: string, patch: EnvDeploySettingsPatch): SettingsField[] {
     const before = this.settings(environmentId)
     const next = {
       versioned: patch.versioned ?? before.versioned,
       autoRollback: patch.autoRollback ?? before.autoRollback,
       currentVersion: patch.currentVersion === undefined ? before.currentVersion : patch.currentVersion,
+      parallelPrepare: patch.parallelPrepare ?? before.parallelPrepare,
+      prepareCap: patch.prepareCap ?? before.prepareCap,
+      flow: patch.flow === undefined ? before.flow : this.checkFlow(environmentId, patch.flow),
     }
-    const changed = (['versioned', 'autoRollback', 'currentVersion'] as const).filter((k) => next[k] !== before[k])
+    if (!Number.isInteger(next.prepareCap) || next.prepareCap < 1 || next.prepareCap > 8) throw new Error('prepare cap must be 1-8')
+    if (typeof next.parallelPrepare !== 'boolean') throw new Error('parallel prepare must be true or false')
+    const changed = SETTINGS_FIELDS.filter((k) => !same(next[k], before[k]))
     if (changed.length === 0) return changed
     this.db
-      .prepare('UPDATE environments SET versioned = ?, auto_rollback = ?, current_version = ?, updated_at = ? WHERE id = ?')
-      .run(next.versioned ? 1 : 0, next.autoRollback ? 1 : 0, next.currentVersion, this.now().toISOString(), environmentId)
+      .prepare(
+        'UPDATE environments SET versioned = ?, auto_rollback = ?, current_version = ?, parallel_prepare = ?, prepare_cap = ?, release_flow = ?, updated_at = ? WHERE id = ?',
+      )
+      .run(
+        next.versioned ? 1 : 0, next.autoRollback ? 1 : 0, next.currentVersion, next.parallelPrepare ? 1 : 0, next.prepareCap,
+        next.flow === null ? null : JSON.stringify(next.flow), this.now().toISOString(), environmentId,
+      )
     return changed
   }
 
@@ -464,6 +496,7 @@ export class DeployStore {
       backupDir: r.backup_dir,
       preHook: r.pre_hook,
       postHook: r.post_hook,
+      steps: JSON.parse(r.steps) as Step[],
       buildTimeoutSec: r.build_timeout_sec,
       composeTimeoutSec: r.compose_timeout_sec,
       useSudo: r.use_sudo,
@@ -551,8 +584,10 @@ export class DeployStore {
     if (dbBackup && backupDir === null) throw new Error('backup dir is required when DB backup is on')
     if (backupDir !== null && !BACKUP_DIR.test(backupDir)) throw new Error(`backup dir ${pathMsg}`)
 
-    const preHook = this.checkHook(f.preHook)
-    const postHook = this.checkHook(f.postHook)
+    const steps = this.checkSteps(f.steps, f.vaultIds, selfId)
+    // Saved steps replace the hooks, so the hooks are cleared in the same write.
+    const preHook = steps.length > 0 ? null : this.checkHook(f.preHook)
+    const postHook = steps.length > 0 ? null : this.checkHook(f.postHook)
 
     if (f.becomeSecretId !== null && !this.secrets.exists(f.becomeSecretId)) throw new Error('become secret not found')
 
@@ -593,6 +628,7 @@ export class DeployStore {
       backupDir,
       preHook,
       postHook,
+      steps,
       buildTimeoutSec: f.buildTimeoutSec,
       composeTimeoutSec: f.composeTimeoutSec,
       useSudo: f.useSudo,
@@ -612,6 +648,59 @@ export class DeployStore {
 
   private checkInt(n: number, min: number, max: number, what: string): void {
     if (!Number.isInteger(n) || n < min || n > max) throw new Error(`${what} must be ${min}-${max}`)
+  }
+
+  /** The secrets a step may use: those in the checkout's vaults. `selfId` null is a checkout not saved yet. */
+  private checkSteps(steps: Step[], vaultIds: string[], selfId: string | null): Step[] {
+    if (!Array.isArray(steps)) throw new DeployError('VALIDATION', 'steps must be a list')
+    if (steps.length > MAX_STEPS_PER_CHECKOUT) throw new DeployError('VALIDATION', `too many steps (${MAX_STEPS_PER_CHECKOUT})`)
+    if (steps.length === 0) return []
+    const allowed = new Set(
+      (this.db.prepare('SELECT id FROM secrets WHERE vault_id IN (SELECT value FROM json_each(?))').all(JSON.stringify(vaultIds)) as { id: string }[]).map((r) => r.id),
+    )
+    const serviceNames =
+      selfId === null
+        ? []
+        : (this.db.prepare("SELECT compose_service FROM services WHERE deployment_id = ? AND kind = 'service'").all(selfId) as { compose_service: string }[]).map((r) => r.compose_service)
+    const out = steps.map((s) => validateStep(s, { allowedSecretIds: allowed, serviceNames }))
+    if (new Set(out.map((s) => s.id)).size !== out.length) throw new DeployError('VALIDATION', 'step ids must be unique')
+    return out
+  }
+
+  /** A flow names services of this environment only; every step in it is checked like a runbook step. */
+  private checkFlow(environmentId: string, flow: ReleaseFlow | null): ReleaseFlow | null {
+    if (flow === null) return null
+    const bad = (m: string): never => {
+      throw new DeployError('VALIDATION', m)
+    }
+    if (typeof flow !== 'object' || !Array.isArray(flow.stages)) return bad('flow must have stages')
+    if (flow.onFailure !== 'stop-all' && flow.onFailure !== 'continue-other-hosts') return bad('flow on failure must be stop-all or continue-other-hosts')
+    if (flow.stages.length === 0 || flow.stages.length > MAX_FLOW_STAGES) return bad(`flow needs 1-${MAX_FLOW_STAGES} stages`)
+    const services = new Map(
+      (this.db.prepare("SELECT id, compose_service, deployment_id FROM services WHERE environment_id = ? AND kind = 'service'").all(environmentId) as {
+        id: string
+        compose_service: string
+        deployment_id: string | null
+      }[]).map((r) => [r.id, r]),
+    )
+    const secretIds = new Set((this.db.prepare('SELECT id FROM secrets').all() as { id: string }[]).map((r) => r.id))
+    const stageIds = new Set<string>()
+    const stages = flow.stages.map((st: FlowStage): FlowStage => {
+      if (st.kind === 'services') {
+        if (!Array.isArray(st.serviceIds) || st.serviceIds.length === 0 || !st.serviceIds.every((i) => typeof i === 'string' && services.has(i))) {
+          return bad('a flow stage names a service that is not in this environment')
+        }
+        return { kind: 'services', serviceIds: [...new Set(st.serviceIds)] }
+      }
+      if (st.kind !== 'step' || typeof st.serviceId !== 'string' || !services.has(st.serviceId)) return bad('a flow step names a service that is not in this environment')
+      const checkout = services.get(st.serviceId)?.deployment_id
+      const names = [...services.values()].filter((s) => s.deployment_id === checkout).map((s) => s.compose_service)
+      const step = validateStep(st.step, { allowedSecretIds: secretIds, serviceNames: names, body: true })
+      if (stageIds.has(step.id)) return bad('flow step ids must be unique')
+      stageIds.add(step.id)
+      return { kind: 'step', serviceId: st.serviceId, step }
+    })
+    return { stages, onFailure: flow.onFailure }
   }
 
   private checkHook(h: string | null): string | null {

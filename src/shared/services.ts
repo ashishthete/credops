@@ -33,6 +33,8 @@ export interface AppServiceMeta extends ServiceBase {
   urlCheckFrom: HealthFrom
   lastDeployedCommit: string | null
   lastReleaseId: string | null
+  /** A release leaves this service alone when none of its commits touch the checkout since its last deploy. */
+  skipUnchanged: boolean
 }
 
 /** Reached through a tunnel from a via-host; `dbAddress` is as seen from that host. */
@@ -58,6 +60,7 @@ export type ServiceInput =
       composeService?: string
       url?: string | null
       urlCheckFrom?: HealthFrom
+      skipUnchanged?: boolean
     }
   | {
       kind: 'db'

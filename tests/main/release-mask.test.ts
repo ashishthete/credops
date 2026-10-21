@@ -85,7 +85,7 @@ const report = (): PreflightReport => ({
 const summary = (): Required<ReleaseSummary> => ({
   id: UUID, environmentId: UUID, environmentName: 'staging', kind: 'release', status: 'failed', version: '2026.1', previousVersion: '2025.9', redeploy: false,
   rollbackOf: UUID, triggeredBy: 'ana@mbp', createdAt: AT, startedAt: AT, finishedAt: AT, deploymentCount: 1, hostCount: 1, serviceIds: [UUID], serviceCount: 1,
-  error: TEXT, unpublished: false,
+  error: TEXT, unpublished: false, operation: null, playbookSource: 'generated',
 })
 const detail = (): Required<ReleaseDetail> => ({
   ...summary(),
@@ -93,6 +93,7 @@ const detail = (): Required<ReleaseDetail> => ({
   releaseNotes: TEXT,
   playbook: JSON.stringify([{ name: 'od-1', hosts: 'od-1', tasks: [{ name: `health ${TEXT}` }] }], null, 2),
   playbookHidden: false,
+  playbookGenerated: null,
   runs: [{
     id: RUN, releaseId: UUID, deploymentId: UUID, deploymentName: 'core', hostId: UUID, hostLabel: 'app1', position: 0, branch: 'main', previousCommit: 'c3d4', deployedCommit: 'c3d4',
     commits: [commit()], status: 'failed', rolledBack: false, backupFile: '/srv/b/2026-10-21.tgz', startedAt: AT, finishedAt: AT,

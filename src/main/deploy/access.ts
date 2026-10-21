@@ -9,13 +9,4 @@ export interface DeployAccess {
 
 export const localAllowAll: DeployAccess = { check: async () => ({ allowed: true }) }
 
-/** `code` lets callers tell a missing confirmation or a refusal from a failure; IPC carries the message only. */
-export class DeployError extends Error {
-  constructor(
-    readonly code: 'CONFIRM_REQUIRED' | 'DENIED' | 'BUSY' | 'INVALID_STATE',
-    message: string,
-  ) {
-    super(message)
-    this.name = 'DeployError'
-  }
-}
+export { DeployError } from '../../shared/deploy-error'

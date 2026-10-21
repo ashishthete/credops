@@ -142,13 +142,13 @@ export function createDeployHandlers(deps: {
   }
 }
 
-function catalogDeployment(d: Omit<DeploymentMeta, 'vaultIds' | 'createdAt' | 'updatedAt'>): DeploymentMeta {
-  return { ...d, vaultIds: [], createdAt: '', updatedAt: '' }
+function catalogDeployment(d: Omit<DeploymentMeta, 'vaultIds' | 'steps' | 'createdAt' | 'updatedAt'>): DeploymentMeta {
+  return { ...d, steps: [], vaultIds: [], createdAt: '', updatedAt: '' }
 }
 
 function catalogSettings(
   environmentId: string,
   env: { versioned: boolean; autoRollback: boolean; currentVersion: string | null },
 ): EnvDeploySettings {
-  return { environmentId, versioned: env.versioned, autoRollback: env.autoRollback, currentVersion: env.currentVersion }
+  return { environmentId, versioned: env.versioned, autoRollback: env.autoRollback, currentVersion: env.currentVersion, parallelPrepare: true, prepareCap: 3, flow: null }
 }

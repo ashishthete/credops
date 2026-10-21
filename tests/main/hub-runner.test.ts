@@ -27,6 +27,8 @@ const summary = (id: string, environmentId: string, createdAt: string): ReleaseS
   serviceIds: [],
   serviceCount: 1,
   error: null,
+  operation: null,
+  playbookSource: 'generated',
 })
 
 const PREFLIGHT = { environmentId: HUB_ENV, serviceIds: [], bump: 'none' as const, options: { backup: false, notify: false, qa: false } }
@@ -226,7 +228,7 @@ describe('hub runner and release routing', () => {
     expect((await h['deploy:list'](HUB_ENV)).map((d) => [d.id, d.vaultIds])).toEqual([['d1', []]])
     expect((await h['deploy:list'](undefined)).map((d) => d.id)).toEqual(['d1'])
     expect(await h['deploy:list'](LOCAL_ENV)).toEqual([])
-    expect(await h['deploy:settings'](HUB_ENV)).toEqual({ environmentId: HUB_ENV, versioned: true, autoRollback: true, currentVersion: 'v1.2.3' })
+    expect(await h['deploy:settings'](HUB_ENV)).toEqual({ environmentId: HUB_ENV, versioned: true, autoRollback: true, currentVersion: 'v1.2.3', parallelPrepare: true, prepareCap: 3, flow: null })
     await expect(Promise.resolve().then(() => h['deploy:settings'](LOCAL_ENV))).rejects.toThrow('environment not found')
     // An environment this desktop published reads its own row, the one its edits write.
     const own = createDeployHandlers({ deploys: { ...deploys, settings: vi.fn(() => ({ environmentId: HUB_ENV, versioned: false, autoRollback: false, currentVersion: null })) } as never, releases: stub(), tooling: async () => ({}) as never, catalog, published: (id) => id === HUB_ENV })

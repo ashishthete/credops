@@ -272,3 +272,23 @@ describe('ServiceStore', () => {
     expect(auditRows(f.db)).toBe(before)
   })
 })
+
+describe('ServiceStore skipUnchanged', () => {
+  it('defaults to false, round-trips and audits the field name', async () => {
+    const f = await setup()
+    const s = f.services.create(f.app())
+    expect(s).toMatchObject({ skipUnchanged: false })
+    const on = f.services.update(s.id, { skipUnchanged: true })
+    expect(on).toMatchObject({ skipUnchanged: true })
+    expect(f.services.get(s.id)).toMatchObject({ skipUnchanged: true })
+    const [e] = f.audit.list({ actions: ['service.update'] })
+    expect(e.details).toMatchObject({ fields: ['skipUnchanged'] })
+    expect(f.services.create(f.app({ name: 'second', skipUnchanged: true }))).toMatchObject({ skipUnchanged: true })
+  })
+
+  it('refuses it on a db service', async () => {
+    const f = await setup()
+    const db = f.services.create(f.dbService())
+    expect(() => f.services.update(db.id, { skipUnchanged: true } as never)).toThrow()
+  })
+})
