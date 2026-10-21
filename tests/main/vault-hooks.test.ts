@@ -28,7 +28,7 @@ describe('wireVaultHooks', () => {
     const { calls, targets } = recording()
     wireVaultHooks(vault, targets)
 
-    await vault.setup('correct horse')
+    await vault.setup({ password: 'correct horse', touchId: true })
     expect(calls.splice(0)).toEqual(['tunnels.vaultUnlocked'])
     vault.lock('manual')
     expect(calls.splice(0)).toEqual([
@@ -57,7 +57,7 @@ describe('wireVaultHooks', () => {
     const { targets } = recording()
     const ai = new AiRequests()
     wireVaultHooks(vault, { ...targets, ai })
-    await vault.setup('correct horse')
+    await vault.setup({ password: 'correct horse', touchId: true })
     const before = [ai.start(), ai.start()]
     vault.lock('manual')
     expect(before.map((r) => r.signal.aborted)).toEqual([true, true])
@@ -75,7 +75,7 @@ describe('wireVaultHooks', () => {
     targets.releases.vaultReset = () => void seen.push(`releases with ${secrets()} secret`)
     targets.links.closeForReset = () => void seen.push(`links with ${secrets()} secret`)
     wireVaultHooks(vault, targets)
-    await vault.setup('correct horse')
+    await vault.setup({ password: 'correct horse', touchId: true })
     const clipboard = { async writeText() {}, async readText() { return '' } }
     new SecretStore(db, vault, audit, { clipboard }).create({ vaultId: DEFAULT_VAULT_ID, name: 'db', kind: 'password', value: 'pw-1' })
     vault.lock('manual')
@@ -95,7 +95,7 @@ describe('wireVaultHooks', () => {
     targets.sessions.closeAll = boom
     targets.sessions.vaultLocked = boom
     wireVaultHooks(vault, targets)
-    await vault.setup('correct horse')
+    await vault.setup({ password: 'correct horse', touchId: true })
     vault.lock('manual')
     await vault.reset('RESET')
     expect(calls).toContain('prompts.cancelAll')

@@ -70,7 +70,7 @@ describe('spawnLocalShell', () => {
 describe('SessionManager local shell', () => {
   it('audits open and close; reconnect refused; numbering never repeats', async () => {
     const f = makeVault()
-    await f.vault.setup('correct horse')
+    await f.vault.setup({ password: 'correct horse', touchId: true })
     const ptys: Pty[] = []
     const exits: Array<() => void> = []
     const manager = new SessionManager({
@@ -115,7 +115,7 @@ describe('SessionManager local shell', () => {
 describe('SessionManager.closeAll', () => {
   it('one session failing to close never leaves the others open; the error is logged redacted', async () => {
     const f = makeVault()
-    await f.vault.setup('correct horse')
+    await f.vault.setup({ password: 'correct horse', touchId: true })
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     onTestFinished(() => error.mockRestore())
     const pem = '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----'

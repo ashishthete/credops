@@ -6,7 +6,7 @@ import { auditRows, makeVault } from './vault-helpers'
 
 async function setup() {
   const f = makeVault()
-  await f.vault.setup('correct horse')
+  await f.vault.setup({ password: 'correct horse', touchId: true })
   const clipboard = { text: '', async writeText(t: string) { this.text = t }, async readText() { return this.text } }
   const secrets = new SecretStore(f.db, f.vault, f.audit, { clipboard })
   const store = new SettingsStore({ db: f.db, audit: f.audit, vault: f.vault, secrets, platform: 'darwin' })

@@ -12,7 +12,7 @@ beforeAll(async () => {
   db = openDatabase(':memory:')
   migrate(db, migrations.filter((m) => m.version < SSO_N))
   f = makeVault({ db })
-  await f.vault.setup(PW)
+  await f.vault.setup({ password: PW, touchId: true })
   // A vault keyed before this build: password-derived KEK, no password wrap.
   await seedLegacy(f, PW)
   migrate(db)
@@ -51,7 +51,8 @@ describe('sso migration', () => {
     expect(f.vault.status()).toMatchObject({
       hasPassword: true,
       pin: { enabled: false, attemptsLeft: 5 },
-      lastMethod: null,
+      // The password unlock above writes it, as every successful unlock does.
+      lastMethod: 'password',
       sso: { required: false },
     })
   })

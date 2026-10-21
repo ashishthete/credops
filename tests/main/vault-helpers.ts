@@ -1,3 +1,4 @@
+import { vi } from 'vitest'
 import { AuditLog } from '../../src/main/audit/audit-log'
 import { openDatabase, type Db } from '../../src/main/db/connection'
 import { deriveKek, newKdfParams, randomKey, seal, type KdfParams } from '../../src/main/vault/crypto'
@@ -9,6 +10,28 @@ export const FAST_KDF: Omit<KdfParams, 'salt'> = { alg: 'scrypt', N: 2 ** 10, r:
 
 export const actor = { osUser: 'tester', machine: 'box' }
 
+export interface FakeQuick extends QuickUnlockDeps {
+  keychain: QuickUnlockDeps['keychain'] & { decrypt: ReturnType<typeof vi.fn> }
+  touchId: QuickUnlockDeps['touchId'] & { prompt: ReturnType<typeof vi.fn> }
+}
+
+/** Fake safeStorage reverses and prefixes `kc:`; availability is switchable. Never the real Keychain. */
+export function fakeQuick(avail = { keychain: true, touchId: true }): FakeQuick {
+  const decode = (blob: Buffer): string => {
+    const s = blob.toString('utf8')
+    if (!s.startsWith('kc:')) throw new Error('bad blob')
+    return [...s.slice(3)].reverse().join('')
+  }
+  return {
+    keychain: {
+      available: () => avail.keychain,
+      encrypt: (plain) => Buffer.from(`kc:${[...plain].reverse().join('')}`, 'utf8'),
+      decrypt: vi.fn(decode),
+    },
+    touchId: { available: () => avail.touchId, prompt: vi.fn(async () => undefined) },
+  }
+}
+
 export interface VaultFixture {
   db: Db
   audit: AuditLog
@@ -18,6 +41,7 @@ export interface VaultFixture {
   clipboard?: ClipboardLike
 }
 
+/** `quick` defaults to a fresh fakeQuick(); pass `quick: undefined` for a Mac with no Keychain at all. */
 export function makeVault(
   opts: {
     db?: Db
@@ -32,7 +56,7 @@ export function makeVault(
   const clock = (): Date => new Date(now.t)
   let vault: VaultService | undefined
   const audit = new AuditLog(db, { actor, now: clock, knownSecrets: () => vault?.knownValues() ?? [] })
-  vault = new VaultService(db, audit, { kdf: opts.kdf ?? FAST_KDF, now: clock, quick: opts.quick })
+  vault = new VaultService(db, audit, { kdf: opts.kdf ?? FAST_KDF, now: clock, quick: 'quick' in opts ? opts.quick : fakeQuick() })
   return { db, audit, vault, now, clipboard: opts.clipboard }
 }
 
@@ -59,4 +83,6 @@ export async function seedLegacy(f: VaultFixture, password: string): Promise<voi
   kek.fill(0)
   f.vault.lock('manual')
   if (!(await f.vault.unlock(password)).ok) throw new Error('legacy seed did not unlock')
+  // A build before last_method never wrote it.
+  f.db.prepare('UPDATE vault_state SET last_method = NULL WHERE id = 1').run()
 }

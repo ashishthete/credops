@@ -19,7 +19,8 @@ type VaultChannel =
 export function createVaultHandlers(vault: VaultService): Pick<Handlers, VaultChannel> {
   return {
     'vault:status': () => vault.status(),
-    'vault:setup': (password) => vault.setup(password),
+    // TODO(Task 7): vault:setup takes SetupOptions; until then the renderer still sends a password.
+    'vault:setup': (password) => vault.setup({ password, touchId: false }),
     'vault:unlock': (password) => vault.unlock(password),
     'vault:unlockQuick': () => vault.unlockQuick(),
     'vault:lock': () => vault.lock('manual'),

@@ -105,7 +105,7 @@ async function failure(hops: HopTarget[], d: ConnectDeps & { hops: [number, HopS
 /** A KnownHostStore whose known_hosts file is `text`, and a verifier built on it. */
 async function knownHosts(text: string) {
   const f = makeVault()
-  await f.vault.setup('correct horse')
+  await f.vault.setup({ password: 'correct horse', touchId: true })
   const dir = mkdtempSync(join(tmpdir(), 'opsdeck-connect-'))
   onTestFinished(() => rmSync(dir, { recursive: true, force: true }))
   const path = join(dir, 'known_hosts')

@@ -3,27 +3,10 @@ import type { StatementSync } from 'node:sqlite'
 import { deriveKek, openSealed, randomKey } from '../../src/main/vault/crypto'
 import type { QuickUnlockDeps } from '../../src/main/vault/vault-service'
 import { DEFAULT_VAULT_ID, VAULT_LOCKED, VAULT_RESET_CONFIRM } from '../../src/shared/vault'
-import { auditRows, makeVault, seedLegacy, type VaultFixture } from './vault-helpers'
+import { auditRows, fakeQuick, makeVault, seedLegacy, type VaultFixture } from './vault-helpers'
 
 const PW = 'correct horse'
 const PW2 = 'battery staple!'
-
-/** Fake safeStorage reverses and prefixes `kc:`; availability is switchable. */
-function fakeQuick(avail = { keychain: true, touchId: true }): QuickUnlockDeps & { keychain: { decrypt: ReturnType<typeof vi.fn> } } {
-  const decode = (blob: Buffer): string => {
-    const s = blob.toString('utf8')
-    if (!s.startsWith('kc:')) throw new Error('bad blob')
-    return [...s.slice(3)].reverse().join('')
-  }
-  return {
-    keychain: {
-      available: () => avail.keychain,
-      encrypt: (plain) => Buffer.from(`kc:${[...plain].reverse().join('')}`, 'utf8'),
-      decrypt: vi.fn(decode),
-    },
-    touchId: { available: () => avail.touchId, prompt: vi.fn(async () => undefined) },
-  }
-}
 
 interface Row {
   password_wrap: string | null
@@ -54,7 +37,8 @@ function events(f: VaultFixture): { action: string; outcome: string; details: un
 
 async function ready(quick: QuickUnlockDeps | undefined = fakeQuick()): Promise<VaultFixture> {
   const f = makeVault({ quick })
-  await f.vault.setup(PW)
+  // Without the Keychain only a password-only setup is possible.
+  await f.vault.setup({ password: PW, touchId: quick?.keychain.available() === true })
   return f
 }
 
@@ -156,7 +140,7 @@ describe('vault KEK', () => {
     expect(f.vault.status().hasPassword).toBe(false)
     expect(state(f)).toMatchObject({ password_wrap: null, password_kdf: null })
     f.vault.lock('manual')
-    expect(await f.vault.unlock(PW)).toMatchObject({ ok: false, reason: 'wrong-password' })
+    expect(await f.vault.unlock(PW)).toMatchObject({ ok: false, reason: 'unavailable' })
     expect(await f.vault.unlockQuick()).toEqual({ ok: true })
 
     expect(await f.vault.setPassword(PW)).toMatchObject({ hasPassword: true, unlocked: true })
@@ -184,7 +168,8 @@ describe('vault KEK', () => {
   })
 
   it('removePassword refuses with no Touch ID or PIN', async () => {
-    const f = await ready()
+    // Only a Mac without the Keychain can set up with neither.
+    const f = await ready(fakeQuick({ keychain: false, touchId: true }))
     await expect(f.vault.removePassword(PW)).rejects.toThrow('add Touch ID or a PIN first')
     expect(f.vault.hasPassword()).toBe(true)
     f.vault.lock('manual')
@@ -262,15 +247,15 @@ describe('vault KEK', () => {
     await expect(legacy.vault.setPassword(PW2)).rejects.toThrow('a master password is already set')
   })
 
-  // F19 moves this to 'unavailable', uncounted, in Task 3; here it is a wrong password like any other.
-  it('with no password, unlock is a counted wrong password', async () => {
+  // Preflight F19: no password wrap means nothing to try, so nothing is counted.
+  it('with no password, unlock is unavailable and uncounted', async () => {
     const f = await ready()
     f.vault.setQuickUnlock('touchId')
     await f.vault.removePassword(PW)
     f.vault.lock('manual')
-    expect(await f.vault.unlock(PW)).toMatchObject({ ok: false, reason: 'wrong-password' })
-    expect(await f.vault.unlock(PW2)).toMatchObject({ ok: false, reason: 'wrong-password' })
-    expect(state(f).failed_attempts).toBe(2)
+    expect(await f.vault.unlock(PW)).toMatchObject({ ok: false, reason: 'unavailable' })
+    expect(await f.vault.unlock(PW2)).toMatchObject({ ok: false, reason: 'unavailable' })
+    expect(state(f).failed_attempts).toBe(0)
   })
 
   it('the last copy of the KEK is never discarded', async () => {
@@ -278,7 +263,7 @@ describe('vault KEK', () => {
     const f = await ready(quick)
     f.vault.setQuickUnlock('touchId')
     await f.vault.removePassword(PW)
-    expect(() => f.vault.setQuickUnlock('off')).toThrow('add a master password or a PIN first')
+    expect(() => f.vault.setQuickUnlock('off')).toThrow('add Touch ID or a PIN first')
     const blob = state(f).quick_unlock_blob
     expect(blob).not.toBeNull()
 
@@ -301,7 +286,7 @@ describe('vault KEK', () => {
     expect(state(f)).toMatchObject({ password_wrap: null, password_kdf: null })
     expect(f.vault.hasPassword()).toBe(false)
     expect(f.vault.status().setUp).toBe(false)
-    await f.vault.setup(PW2)
+    await f.vault.setup({ password: PW2, touchId: true })
     f.vault.lock('manual')
     expect(await f.vault.unlock(PW2)).toEqual({ ok: true })
   })

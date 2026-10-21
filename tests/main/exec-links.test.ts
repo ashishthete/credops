@@ -558,7 +558,7 @@ describe('ExecLinks on a vault reset', () => {
     await expect(t.lease(leasedHost)).rejects.toMatchObject({ code: 'locked' })
 
     // Unlike closeAll, a reset is not the end: leases are served again once the vault is back.
-    await t.vault.setup('a new password')
+    await t.vault.setup({ password: 'a new password', touchId: true })
     t.vault.lock('manual')
     await t.vault.unlock('a new password')
     const fresh = await t.lease(leasedHost, null, undefined, 'runs:3')
@@ -613,7 +613,7 @@ describe('ExecLinks on a vault reset', () => {
     expect(warn.mock.calls.map((c) => c[0])).toEqual(['Exec link close failed:'])
     expect(JSON.stringify(warn.mock.calls)).not.toContain('b3BlbnNzaC1rZXk')
 
-    await t.vault.setup('a new password')
+    await t.vault.setup({ password: 'a new password', touchId: true })
     expect(await run(await t.lease(a, null, undefined, 'runs:3'), 'echo up')).toMatchObject({ out: 'up\n' })
   })
 })

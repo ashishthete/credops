@@ -561,7 +561,7 @@ describe('RunManager on a vault reset', () => {
     expect(t.server.execs()).toHaveLength(2)
 
     expect(() => t.runs.start({ target: onHosts(t, ['app-1']), command: text('true') })).toThrow(VAULT_LOCKED)
-    await t.vault.setup('a new password')
+    await t.vault.setup({ password: 'a new password', touchId: true })
     const after = t.runs.start({ target: onHosts(t, ['app-1']), command: text('echo after') })
     expect(await t.finished(after.id)).toMatchObject({ state: 'done' })
     expect(t.runs.get(after.id).output[0]!.text).toBe('after\n')

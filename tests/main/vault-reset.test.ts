@@ -192,7 +192,7 @@ describe('VaultService.reset', () => {
     await f.vault.reset(VAULT_RESET_CONFIRM)
     expect(f.vault.status().setUp).toBe(false)
     await expect(f.vault.unlock(PW)).rejects.toThrow(/not set up/)
-    expect(await f.vault.setup('a brand new password')).toMatchObject({ setUp: true, unlocked: true, corruptVaultIds: [] })
+    expect(await f.vault.setup({ password: 'a brand new password', touchId: true })).toMatchObject({ setUp: true, unlocked: true, corruptVaultIds: [] })
     // Every kept vault is keyed again and usable.
     for (const id of [DEFAULT_VAULT_ID, otherVaultId]) {
       expect(f.vault.open(id, 'a', f.vault.seal(id, 'a', 'v'))).toBe('v')

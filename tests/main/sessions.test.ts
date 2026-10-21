@@ -55,7 +55,7 @@ interface Target {
 
 async function setup(over: Partial<SessionManagerDeps> = {}) {
   const f = makeVault()
-  await f.vault.setup('correct horse')
+  await f.vault.setup({ password: 'correct horse', touchId: true })
   const dir = mkdtempSync(join(tmpdir(), 'opsdeck-sessions-'))
   onTestFinished(() => rmSync(dir, { recursive: true, force: true }))
   const knownHosts = new KnownHostStore(f.db, f.vault, f.audit, { knownHostsPath: join(dir, 'known_hosts') })

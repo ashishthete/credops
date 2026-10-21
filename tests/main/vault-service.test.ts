@@ -55,7 +55,7 @@ describe('VaultService', () => {
 
   it('setup keys the default vault and unlocks', async () => {
     const f = makeVault()
-    expect(await f.vault.setup(PW)).toMatchObject({ setUp: true, unlocked: true })
+    expect(await f.vault.setup({ password: PW, touchId: true })).toMatchObject({ setUp: true, unlocked: true })
     expect(f.vault.status().unlocked).toBe(true)
     const row = defaultRow(f.db)
     expect(row.wrapped_key).not.toBeNull()
@@ -64,22 +64,22 @@ describe('VaultService', () => {
     const params = JSON.parse(passwordKdf(f.db)) as { N: number; salt: string }
     expect(params.N).toBe(FAST_KDF.N)
     expect(Buffer.from(params.salt, 'base64')).toHaveLength(16)
-    await expect(f.vault.setup(PW)).rejects.toThrow(/already set up/)
+    await expect(f.vault.setup({ password: PW, touchId: true })).rejects.toThrow(/already set up/)
     expect(actions(f)).toContainEqual(expect.objectContaining({ action: 'vault.setup', outcome: 'success' }))
 
     const fresh = makeVault()
-    await expect(fresh.vault.setup('short')).rejects.toThrow(/too short/)
-    await expect(fresh.vault.setup('x'.repeat(MAX_MASTER_PASSWORD + 1))).rejects.toThrow(/too long/)
+    await expect(fresh.vault.setup({ password: 'short', touchId: true })).rejects.toThrow(/too short/)
+    await expect(fresh.vault.setup({ password: 'x'.repeat(MAX_MASTER_PASSWORD + 1), touchId: true })).rejects.toThrow(/too long/)
     expect(fresh.vault.status().setUp).toBe(false)
     // The minimum is MIN_MASTER_PASSWORD (8): 7 is refused, 8 is accepted.
-    await expect(fresh.vault.setup('x'.repeat(MIN_MASTER_PASSWORD - 1))).rejects.toThrow(/too short/)
+    await expect(fresh.vault.setup({ password: 'x'.repeat(MIN_MASTER_PASSWORD - 1), touchId: true })).rejects.toThrow(/too short/)
     expect(MIN_MASTER_PASSWORD).toBe(8)
-    expect(await fresh.vault.setup('x'.repeat(MIN_MASTER_PASSWORD))).toMatchObject({ setUp: true })
+    expect(await fresh.vault.setup({ password: 'x'.repeat(MIN_MASTER_PASSWORD), touchId: true })).toMatchObject({ setUp: true })
   })
 
   it('unlock and lock', async () => {
     const f = makeVault()
-    await f.vault.setup(PW)
+    await f.vault.setup({ password: PW, touchId: true })
     const onLock = vi.fn()
     f.vault.onLock(onLock)
     f.vault.lock('manual')
@@ -109,7 +109,7 @@ describe('VaultService', () => {
       touchId: { available: () => true, prompt: async () => undefined },
     }
     const f = makeVault({ quick })
-    await f.vault.setup(PW)
+    await f.vault.setup({ password: PW, touchId: true })
     f.vault.setQuickUnlock('touchId')
     f.vault.lock('manual')
     const onUnlock = vi.fn()
@@ -139,7 +139,7 @@ describe('VaultService', () => {
       // The section's last step, its audit row, is already written.
       seen.push({ unlocked: f.vault.isUnlocked(), audited: actions(f).some((e) => e.action === 'vault.setup') })
     })
-    await f.vault.setup(PW)
+    await f.vault.setup({ password: PW, touchId: true })
     expect(seen).toEqual([{ unlocked: true, audited: true }])
     expect(error).toHaveBeenCalledTimes(1)
     expect(error.mock.calls.flat().map(String).join(' ')).not.toContain('BEGIN OPENSSH')
@@ -159,7 +159,7 @@ describe('VaultService', () => {
       throw new Error('lock broke: -----BEGIN OPENSSH PRIVATE KEY-----abc')
     })
     f.vault.onLock(later)
-    await f.vault.setup(PW)
+    await f.vault.setup({ password: PW, touchId: true })
     await new Promise((r) => setTimeout(r, 0))
     f.vault.lock('manual')
     expect(later).toHaveBeenCalledTimes(1)
@@ -174,7 +174,7 @@ describe('VaultService', () => {
 
   it('backs off after three failures', async () => {
     const f = makeVault()
-    await f.vault.setup(PW)
+    await f.vault.setup({ password: PW, touchId: true })
     f.vault.lock('manual')
 
     const delays: number[] = []
@@ -219,7 +219,7 @@ describe('VaultService', () => {
 
   it('tampered wrapped key fails closed', async () => {
     const f = makeVault()
-    await f.vault.setup(PW)
+    await f.vault.setup({ password: PW, touchId: true })
     f.vault.lock('manual')
     const wrapped = defaultRow(f.db).wrapped_key!
     const i = wrapped.length - 5
@@ -231,7 +231,7 @@ describe('VaultService', () => {
 
   it('wraps each vault key under aad vault:<id>', async () => {
     const f = makeVault()
-    await f.vault.setup(PW)
+    await f.vault.setup({ password: PW, touchId: true })
     const prod = f.vault.createVault({ name: 'Prod', color: '#ff0000' })
     const kek = await kekOf(f.db, PW)
     for (const id of [DEFAULT_VAULT_ID, prod.id]) {
@@ -242,7 +242,7 @@ describe('VaultService', () => {
 
   it('a corrupt non-default vault does not fail the unlock', async () => {
     const f = makeVault()
-    await f.vault.setup(PW)
+    await f.vault.setup({ password: PW, touchId: true })
     const prod = f.vault.createVault({ name: 'Prod', color: '#ff0000' })
     const sealed = f.vault.seal(DEFAULT_VAULT_ID, 'a', 'one')
     f.vault.lock('manual')
@@ -274,7 +274,7 @@ describe('VaultService', () => {
 
   it('a lock during unlock derivation cancels it', async () => {
     const f = makeVault()
-    await f.vault.setup(PW)
+    await f.vault.setup({ password: PW, touchId: true })
     f.vault.lock('manual')
     const derived = Buffer.alloc(32, 7)
     let release!: () => void
@@ -299,7 +299,7 @@ describe('VaultService', () => {
     vi.mocked(deriveKek).mockImplementationOnce(
       () => new Promise<Buffer>((resolve) => (release = () => resolve(derived))),
     )
-    const pending = f.vault.setup(PW)
+    const pending = f.vault.setup({ password: PW, touchId: true })
     await vi.waitFor(() => expect(deriveKek).toHaveBeenCalled())
     f.vault.lock('screen')
     release()
@@ -312,7 +312,7 @@ describe('VaultService', () => {
   it('a lock during either password-change derivation cancels it', async () => {
     for (const which of [1, 2]) {
       const f = makeVault()
-      await f.vault.setup(PW)
+      await f.vault.setup({ password: PW, touchId: true })
       const derived = Buffer.alloc(32, 7)
       let release!: () => void
       const real = vi.mocked(deriveKek).getMockImplementation()!
@@ -337,7 +337,7 @@ describe('VaultService', () => {
 
   it('rejects unusable kdf params without deriving', async () => {
     const f = makeVault()
-    await f.vault.setup(PW)
+    await f.vault.setup({ password: PW, touchId: true })
     f.vault.lock('manual')
     f.db
       .prepare('UPDATE vaults SET kdf_params = ? WHERE id = ?')
@@ -348,7 +348,7 @@ describe('VaultService', () => {
 
   it('vault crud', async () => {
     const f = makeVault()
-    await f.vault.setup(PW)
+    await f.vault.setup({ password: PW, touchId: true })
     const prod = f.vault.createVault({ name: 'Prod', color: '#ff0000' })
     expect(prod).toMatchObject({ name: 'Prod', color: '#ff0000', isDefault: false })
     const prodRow = f.db.prepare('SELECT wrapped_key, kdf_params FROM vaults WHERE id = ?').get(prod.id) as {
@@ -398,7 +398,7 @@ describe('VaultService', () => {
 
   it('delete removes the vault contents', async () => {
     const f = makeVault()
-    await f.vault.setup(PW)
+    await f.vault.setup({ password: PW, touchId: true })
     const v = f.vault.createVault({ name: 'Ops', color: '#123456' })
     const t = '2026-01-01T00:00:00.000Z'
     f.db
@@ -423,7 +423,7 @@ describe('VaultService', () => {
 
   it('password change is atomic', async () => {
     const f = makeVault()
-    await f.vault.setup(PW)
+    await f.vault.setup({ password: PW, touchId: true })
     const prod = f.vault.createVault({ name: 'Prod', color: '#ff0000' })
     const a = f.vault.seal(DEFAULT_VAULT_ID, 'a', 'one')
     const b = f.vault.seal(prod.id, 'b', 'two')
@@ -477,14 +477,14 @@ describe('VaultService', () => {
 
   it('changePassword requires unlocked', async () => {
     const f = makeVault()
-    await f.vault.setup(PW)
+    await f.vault.setup({ password: PW, touchId: true })
     f.vault.lock('manual')
     await expect(f.vault.changePassword(PW, PW2)).rejects.toThrow(VAULT_LOCKED)
   })
 
   it('serializes concurrent unlocks so the throttle holds', async () => {
     const f = makeVault()
-    await f.vault.setup(PW)
+    await f.vault.setup({ password: PW, touchId: true })
     f.vault.lock('manual')
     await f.vault.unlock('wrong password')
     await f.vault.unlock('wrong password')
@@ -496,7 +496,7 @@ describe('VaultService', () => {
 
   it('known values are lock-aware', async () => {
     const f = makeVault()
-    await f.vault.setup(PW)
+    await f.vault.setup({ password: PW, touchId: true })
     f.vault.registerKnown('secrets', ['hunter22', 'tok'])
     f.vault.registerKnown('keys', ['pp'])
     expect([...f.vault.knownValues()].sort()).toEqual(['hunter22', 'pp', 'tok'])
@@ -510,7 +510,7 @@ describe('VaultService', () => {
 
   it('no password in audit', async () => {
     const f = makeVault()
-    await f.vault.setup(PW)
+    await f.vault.setup({ password: PW, touchId: true })
     await f.vault.changePassword(PW, PW2)
     f.vault.lock('manual')
     await f.vault.unlock(PW)

@@ -33,7 +33,7 @@ let n = 0
 
 export async function makeInventory(opts: { db?: Db; quick?: QuickUnlockDeps } = {}): Promise<InventoryFixture> {
   const f = makeVault(opts)
-  await f.vault.setup('correct horse')
+  await f.vault.setup({ password: 'correct horse', touchId: true })
   const home = mkdtempSync(join(tmpdir(), 'opsdeck-inv-'))
   const sshDir = join(home, '.ssh')
   mkdirSync(sshDir)
