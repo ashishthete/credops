@@ -7,7 +7,7 @@ import { inventoryStore, loadInventory } from '../../src/renderer/src/inventory/
 import { DeploymentsPage } from '../../src/renderer/src/pages/deployments/DeploymentsPage'
 import { Toaster, clearToasts } from '../../src/renderer/src/ui/Toaster'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
-import { appService, defaultVault, deploymentMeta, envSettings, environment, host, emitBridgeEvent, mockBridge, product, toolingOk } from './helpers'
+import { appService, defaultVault, deploymentMeta, envSettings, environment, host, emitBridgeEvent, mockBridge, product, REGION, toolingOk } from './helpers'
 
 // framer-motion caches matchMedia, so reduced motion is driven through its hook directly.
 const reduced = vi.hoisted(() => ({ on: false }))
@@ -97,6 +97,25 @@ describe('deployments page', () => {
     // The header's button and the empty state's action both open it.
     await user.click(screen.getAllByRole('button', { name: 'New deployment' })[1])
     expect(await screen.findByRole('dialog', { name: 'New checkout' })).toBeInTheDocument()
+  })
+
+  it("the host select groups the environment's hosts, then the others, by region", async () => {
+    const user = userEvent.setup()
+    const us = { ...REGION, id: 'region-2', code: 'us-east-1', displayName: 'US East' }
+    world({
+      'region:list': [REGION, us],
+      'host:list': [host({ id: 'h1', label: 'app1' }), host({ id: 'h2', label: 'app2' }), host({ id: 'h3', label: 'app3', regionId: us.id }), host({ id: 'h4', label: 'app4' })],
+    })
+    await open()
+    await screen.findByText('No deployments in staging yet')
+    await user.click(screen.getAllByRole('button', { name: 'New deployment' })[0])
+    const dialog = await screen.findByRole('dialog', { name: 'New checkout' })
+    const groups = [...within(dialog).getByLabelText('Host').querySelectorAll('optgroup')]
+    expect(groups.map((g) => [g.label, [...g.querySelectorAll('option')].map((o) => o.textContent)])).toEqual([
+      ['test-1 · Test', ['app1', 'app2']],
+      ['Other hosts in test-1 · Test (joins as an app host)', ['app4']],
+      ['Other hosts in us-east-1 · US East (joins as an app host)', ['app3']],
+    ])
   })
 
   it('create dialog validates repo path and branch inline and submits', async () => {
