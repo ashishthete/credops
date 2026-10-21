@@ -32,8 +32,10 @@ export function createDeployHandlers(deps: {
   tooling: () => Promise<Tooling>
   /** The signed-in person's Hub catalog: where the wizard reads a Hub environment this desktop has no local copy of. */
   catalog?: Pick<HubCatalog, 'get' | 'list'>
+  /** An environment this desktop published: its settings are edited here (and pushed again), not read from the Hub. */
+  published?: (environmentId: string) => boolean
 }): Pick<Handlers, DeployChannel> {
-  const { deploys, releases, tooling, catalog } = deps
+  const { deploys, releases, tooling, catalog, published } = deps
   return {
     'deploy:list': (environmentId) => {
       const local = deploys.list(environmentId)
@@ -48,8 +50,8 @@ export function createDeployHandlers(deps: {
     'deploy:delete': (id) => deploys.delete(id),
     'deploy:reorder': (environmentId, ids) => deploys.reorder(environmentId, ids),
     'deploy:settings': (environmentId) => {
-      // The Hub is the authority for a Hub environment's version and rollback settings.
-      const hub = catalog?.get(environmentId)?.environment
+      // The Hub is the authority for a Hub environment's settings, unless this desktop published it: edits go to the local row.
+      const hub = published?.(environmentId) ? undefined : catalog?.get(environmentId)?.environment
       if (hub) return catalogSettings(environmentId, hub)
       return deploys.settings(environmentId)
     },

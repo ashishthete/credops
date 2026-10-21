@@ -293,7 +293,7 @@ export class RoutingReleases implements ReleaseApi {
     return limit === undefined ? all : all.slice(0, limit)
   }
 
-  /** An unreachable Hub hides its entries and says so once; any other failure is the caller's to see. */
+  /** An unreachable Hub (including a proxy's 5xx in front of a stopped one) hides its entries and says so once; any other failure is the caller's to see. */
   private async fromHub(read: () => Maybe<ReleaseSummary[]>): Promise<ReleaseSummary[]> {
     if (!this.d.hubActive()) return []
     try {
@@ -301,7 +301,7 @@ export class RoutingReleases implements ReleaseApi {
       this.offlineTold = false
       return rows
     } catch (err) {
-      if (!(err instanceof HubError) || (err.code !== 'network' && err.code !== 'timeout')) throw err
+      if (!(err instanceof HubError) || !unreachable(err)) throw err
       if (!this.offlineTold) {
         this.offlineTold = true
         this.d.notice(HUB_OFFLINE_NOTICE)
@@ -309,4 +309,9 @@ export class RoutingReleases implements ReleaseApi {
       return []
     }
   }
+}
+
+/** A Hub that cannot answer: no socket, a 5xx from a proxy in front of a stopped Hub, or no status at all. 401 and 403 are answers. */
+function unreachable(err: HubError): boolean {
+  return err.code === 'network' || err.code === 'timeout' || err.code === 'unavailable' || err.status === undefined || err.status >= 500
 }

@@ -45,6 +45,8 @@ interface Script {
   active: () => ReleaseSummary[]
   /** The Hub's event log per release. */
   log: Map<string, RunEvent[]>
+  /** GET /releases/:id */
+  detail?: Map<string, ReleaseSummary>
 }
 
 let server: Server | undefined
@@ -71,6 +73,11 @@ async function start(script: Script) {
     if (url.pathname === '/api/v1/releases/active') {
       seen.active++
       res.end(JSON.stringify(script.active()))
+      return
+    }
+    const one = /^\/api\/v1\/releases\/([^/]+)$/.exec(url.pathname)
+    if (one && script.detail?.has(one[1]!)) {
+      res.end(JSON.stringify(script.detail.get(one[1]!)))
       return
     }
     const m = /^\/api\/v1\/releases\/([^/]+)\/events$/.exec(url.pathname)
@@ -195,6 +202,28 @@ describe('hub live feed', () => {
     })
     expect(pushed.locks).toBe(1)
     expect(new Set(tracked)).toEqual(new Set([REL, OTHER]))
+  })
+
+  it('a tracked release that finished while the stream was down gets its terminal state', async () => {
+    const log = new Map([[REL, Array.from({ length: 4 }, (_, i) => ev(REL, i + 1))]])
+    const { base } = await start({
+      log,
+      active: () => [],
+      detail: new Map([[REL, summary(REL, 'succeeded')]]),
+      live: [
+        (res) => {
+          res.write(frame(batch(REL, 1, 2)))
+          setTimeout(() => res.destroy(), 20)
+        },
+        () => undefined,
+      ],
+    })
+    const { feed, pushed, shown } = make(base)
+    feed.start()
+    await vi.waitFor(() => expect(pushed.states.map((s) => s.status)).toEqual(['succeeded']))
+    await feed.idle()
+    expect(seqs(pushed.events)).toEqual([1, 2, 3, 4])
+    expect(shown).toHaveLength(1)
   })
 
   it('401 renews once, then signs out', async () => {

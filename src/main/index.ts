@@ -432,6 +432,8 @@ if (!app.requestSingleInstanceLock()) {
       const hubFeed = new LiveFeed({
         client: () => hub.client(),
         renew: () => hub.renew(),
+        // The feed gave up on the session: make the status say so, which also stops the feed.
+        onSignedOut: () => void hub.signOut().catch(() => undefined),
         backoff: backoffMs,
         sleep: sleepUnlessAborted,
         push: {
@@ -638,7 +640,7 @@ if (!app.requestSingleInstanceLock()) {
           }),
           ...createSshImportHandlers(importer),
           ...createTunnelHandlers({ store: tunnels, manager: runner }),
-          ...createDeployHandlers({ deploys, releases, tooling: () => detectTools(toolDeps), catalog: hubCatalog }),
+          ...createDeployHandlers({ deploys, releases, tooling: () => detectTools(toolDeps), catalog: hubCatalog, published: (environmentId) => hubEnvLink.get(environmentId) !== undefined }),
           ...createServiceHandlers({
             services,
             copy: (req) => copyServices(copyDeps, req),

@@ -172,6 +172,28 @@ describe('hub runner and release routing', () => {
     await expect(bad.routing.list({})).rejects.toMatchObject({ code: 'forbidden' })
   })
 
+  it('a proxied Hub that is down (5xx, unavailable, no status) is offline; 401 and 403 are not', async () => {
+    for (const err of [new HubError('internal', 'Bad gateway', 502), new HubError('unavailable', 'Hub unavailable', 503), new HubError('internal', 'No status')]) {
+      const r = rig({
+        gets: () => {
+          throw err
+        },
+      })
+      r.local.list.mockResolvedValue([summary('l-1', LOCAL_ENV, '2026-10-20T08:00:00.000Z')])
+      expect((await r.routing.list({})).map((s) => s.id)).toEqual(['l-1'])
+      r.local.listActive.mockResolvedValue([])
+      expect((await r.routing.listActive()).length).toBe(0)
+      expect(r.notices).toEqual([HUB_OFFLINE_NOTICE])
+    }
+    const expired = rig({
+      gets: () => {
+        throw new HubError('session_expired', 'Your session expired', 401)
+      },
+    })
+    expired.local.list.mockResolvedValue([])
+    await expect(expired.routing.list({})).rejects.toMatchObject({ code: 'session_expired' })
+  })
+
   it('the wizard readers fall back to the Hub catalog for an environment with no local copy', async () => {
     const dep = { id: 'd1', name: 'web', environmentId: HUB_ENV, hostId: 'h1', repoPath: '/srv/web', defaultBranch: 'main', deployTag: 'web' }
     const env = { environment: { id: HUB_ENV, name: 'prod', protected: true, versioned: true, autoRollback: true, currentVersion: 'v1.2.3' }, deployments: [dep], services: [
@@ -191,6 +213,9 @@ describe('hub runner and release routing', () => {
     expect(await h['deploy:list'](LOCAL_ENV)).toEqual([])
     expect(await h['deploy:settings'](HUB_ENV)).toEqual({ environmentId: HUB_ENV, versioned: true, autoRollback: true, currentVersion: 'v1.2.3' })
     await expect(Promise.resolve().then(() => h['deploy:settings'](LOCAL_ENV))).rejects.toThrow('environment not found')
+    // An environment this desktop published reads its own row, the one its edits write.
+    const own = createDeployHandlers({ deploys: { ...deploys, settings: vi.fn(() => ({ environmentId: HUB_ENV, versioned: false, autoRollback: false, currentVersion: null })) } as never, releases: stub(), tooling: async () => ({}) as never, catalog, published: (id) => id === HUB_ENV })
+    expect(await own['deploy:settings'](HUB_ENV)).toMatchObject({ versioned: false })
     const sh = createServiceHandlers({ services: { list: () => [] } as never, copy: vi.fn(), deploys: {} as never, containers: {} as never, tunnels: {} as never, openExternal: async () => undefined, catalog })
     const services = await sh['service:list'](HUB_ENV)
     expect(services.map((x) => [x.id, x.kind])).toEqual([['s1', 'service']])

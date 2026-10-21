@@ -120,9 +120,10 @@ export class LiveFeed {
     while (!signal.aborted) {
       try {
         const res = await this.d.client().stream('/api/v1/live', signal)
+        await this.run(() => this.catchUp(signal))
+        // Only a stream that got through its catch-up counts as healthy: a 401 there must not renew forever.
         renewed = false
         failures = 0
-        await this.run(() => this.catchUp(signal))
         for await (const frame of sseFrames(res.body!, signal)) {
           await this.run(() => this.frame(frame, signal))
         }
@@ -163,10 +164,18 @@ export class LiveFeed {
   private async catchUp(signal: AbortSignal): Promise<void> {
     const active = await this.d.client().get<ReleaseSummary[]>('/api/v1/releases/active')
     for (const s of active) this.state(s)
-    const ids = new Set([...this.last.keys(), ...active.map((s) => s.id)])
-    for (const id of ids) {
+    const running = new Set(active.map((s) => s.id))
+    for (const id of [...this.last.keys()]) {
       if (signal.aborted) return
-      if (this.last.has(id)) await this.backfill(id)
+      await this.backfill(id, signal)
+      if (running.has(id)) continue
+      // It finished while the stream was down: its terminal state would otherwise never arrive.
+      try {
+        const done = await this.d.client().get<ReleaseSummary>(`/api/v1/releases/${id}`)
+        if (!signal.aborted) this.state(done)
+      } catch (err) {
+        if (!(err instanceof HubError) || err.status !== 404) throw err
+      }
     }
   }
 
@@ -180,7 +189,7 @@ export class LiveFeed {
     if (signal.aborted) return
     switch (msg.type) {
       case 'deploy.events':
-        await this.events(msg.events)
+        await this.events(msg.events, signal)
         break
       case 'release.state':
         this.state(msg.summary)
@@ -196,7 +205,7 @@ export class LiveFeed {
     }
   }
 
-  private async events(batch: RunEvent[]): Promise<void> {
+  private async events(batch: RunEvent[], signal: AbortSignal): Promise<void> {
     const out: RunEvent[] = []
     for (const e of batch) {
       const id = e.runId
@@ -206,7 +215,8 @@ export class LiveFeed {
       if (last !== undefined && e.seq > last + 1) {
         // A gap: the Hub's log has what was missed, this event included.
         this.flush(out)
-        await this.backfill(id)
+        await this.backfill(id, signal)
+        if (signal.aborted) return
         if (e.seq <= (this.last.get(id) ?? 0)) continue
       }
       this.accept(e, out)
@@ -214,10 +224,13 @@ export class LiveFeed {
     this.flush(out)
   }
 
-  private async backfill(releaseId: string): Promise<void> {
+  /** A stopped session's backfill must not repopulate `last` or push events after `stop()`. */
+  private async backfill(releaseId: string, signal: AbortSignal): Promise<void> {
     for (;;) {
+      if (signal.aborted) return
       const after = this.last.get(releaseId) ?? 0
       const page = await this.d.client().get<RunEvent[]>(`/api/v1/releases/${releaseId}/events`, { afterSeq: after, limit: PAGE })
+      if (signal.aborted) return
       const out: RunEvent[] = []
       for (const e of page) if (e.seq > (this.last.get(releaseId) ?? 0)) this.accept(e, out)
       this.flush(out)
@@ -244,6 +257,7 @@ export class LiveFeed {
     this.d.push.state(s)
     if (!TERMINAL.has(s.status) || this.notified.has(s.id) || !this.d.isMine(s)) return
     this.notified.add(s.id)
+    if (this.notified.size > MAX_TRACKED) this.notified.delete(this.notified.values().next().value as string)
     this.d.notifier.show(this.facts(s), `/deployments/release/${s.id}`)
   }
 
