@@ -9,7 +9,7 @@ import { Button } from '../../ui/Button'
 import { plural, useMenuPopover } from '../../ui/common'
 import { relativeTime } from '../../ui/time'
 
-/** The group holding the team environments this machine has no copy of. */
+/** The group holding the team environments this machine has no copy of and whose manifest names no product. */
 export const TEAM_GROUP = 'Team (Hub)'
 /** Hosts named on a row before the rest are counted. */
 const HOSTS_SHOWN = 2
@@ -66,7 +66,11 @@ export function rowLabel(row: EnvRow): string {
   return `${row.name}, ${last}${row.protected ? ', protected' : ''}`
 }
 
-/** Environments by product (a product's own order), then the team's. */
+/**
+ * Environments by product (a product's own order), then the team's. A team environment joins its product's group
+ * by name, ignoring case (product ids are local to each desktop); one from an older desktop, with no product, goes
+ * in the team's group.
+ */
 export function envGroups(
   data: InventoryData,
   team: HubCatalogEnv[],
@@ -95,32 +99,40 @@ export function envGroups(
     last: latest[e.id],
   })
   // Every environment has one product, so each lands in exactly one group.
-  const out: EnvGroup[] = data.products.flatMap((p) => {
+  const products: EnvGroup[] = data.products.map((p) => {
     const at = (id: string) => (p.environmentIds.indexOf(id) + 1 || p.environmentIds.length + 1)
     const rows = data.environments
       .filter((e) => e.productId === p.id)
       .sort((a, b) => at(a.id) - at(b.id))
       .map((e) => local(e, p.name))
-    return rows.length ? [{ id: p.id, name: p.name, rows }] : []
+    return { id: p.id, name: p.name, rows }
   })
-  // The Hub manifest doesn't carry the product yet: once it does, team environments join their product's group by name.
-  if (team.length) {
-    out.push({
-      id: 'hub',
-      name: TEAM_GROUP,
-      rows: team.map((c) => ({
-        id: c.environment.id,
-        name: c.environment.name,
-        protected: c.environment.protected,
-        hub: true,
-        productName: TEAM_GROUP,
-        hosts: c.hosts.map((h) => ({ label: h.label })),
-        units: units(c.environment.id),
-        last: latest[c.environment.id],
-      })),
+  const byName = new Map(products.map((g) => [g.name.toLowerCase(), g]))
+  const teamOnly: EnvGroup[] = []
+  const rest: EnvGroup = { id: 'hub', name: TEAM_GROUP, rows: [] }
+  for (const c of team) {
+    const name = c.environment.product?.name
+    let g = rest
+    if (name) {
+      const key = name.toLowerCase()
+      g = byName.get(key) ?? { id: `hub:${key}`, name, rows: [] }
+      if (!byName.has(key)) {
+        byName.set(key, g)
+        teamOnly.push(g)
+      }
+    }
+    g.rows.push({
+      id: c.environment.id,
+      name: c.environment.name,
+      protected: c.environment.protected,
+      hub: true,
+      productName: g.name,
+      hosts: c.hosts.map((h) => ({ label: h.label })),
+      units: units(c.environment.id),
+      last: latest[c.environment.id],
     })
   }
-  return out
+  return [...products, ...teamOnly, rest].filter((g) => g.rows.length)
 }
 
 /** Keeps the rows matching `query` (environment, product or host) in `productId` ('' for all), running and failed first. */
@@ -244,7 +256,7 @@ export function EnvList({ groups, query, productId, onQuery, onProduct, onOpen, 
         <section key={g.id} role="group" aria-label={g.name}>
           <div className="mb-2 flex items-center gap-2.5">
             <h2 className="flex items-center gap-1.5 text-[12.5px] font-semibold tracking-tight text-fg/90">
-              {g.id === 'hub' && <Cloud aria-hidden className="size-3" />}
+              {g.rows.every((r) => r.hub) && <Cloud aria-hidden className="size-3" />}
               {g.name}
             </h2>
             <span className="text-[11.5px] text-muted tabular-nums">{g.rows.length}</span>
@@ -332,7 +344,11 @@ function EnvListRow({ row, onOpen, onDeploy, onAddService }: { row: EnvRow; onOp
 /** "New deployment" on the list: picks the environment first. */
 export function NewDeploymentMenu({ groups, onPick }: { groups: EnvGroup[]; onPick: (envId: string) => void }) {
   const { open, setOpen, close, triggerProps, menuProps } = useMenuPopover()
-  const local = groups.filter((g) => g.id !== 'hub')
+  // Only this machine's environments take a new deployment; team ones are changed where they are published from.
+  const local = groups.flatMap((g) => {
+    const rows = g.rows.filter((r) => !r.hub)
+    return rows.length ? [{ ...g, rows }] : []
+  })
   if (!local.length) return null
   return (
     <div className="relative">

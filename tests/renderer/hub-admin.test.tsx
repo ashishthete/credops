@@ -208,6 +208,29 @@ describe('hub admin panels', () => {
     expect(within(select).getByRole('option', { name: 'team-only' }).closest('optgroup')).toBeNull()
   })
 
+  it('groups Hub-only environments by their product name, joining a local product of that name', async () => {
+    const shop = product({ id: 'p1', name: 'Shop', environmentIds: ['e1'] })
+    const hubEnv = (id: string, name: string, productName?: string) =>
+      catalogEnv(id, name, productName ? { environment: { id, name, protected: false, versioned: false, autoRollback: false, currentVersion: null, product: { id: `remote-${id}`, name: productName } } } : {})
+    const adminEnvs = [catalogEnv('e1', 'staging'), hubEnv('e5', 'shop-eu', 'SHOP'), hubEnv('e6', 'pay-eu', 'Payments'), hubEnv('e7', 'old-eu')]
+    await renderHub({ 'product:list': [shop], 'env:list': [environment({ id: 'e1', name: 'staging', productId: 'p1' })], 'hub:adminEnvironments': adminEnvs }, 'Environments')
+    const heads = (name: string) => within(screen.getByRole('region', { name })).getAllByRole('heading', { level: 3 }).map((h) => h.textContent)
+    expect(await screen.findByRole('region', { name: 'Shop' })).toBeInTheDocument()
+    expect(heads('Shop')).toEqual(['Shop', 'staging', 'shop-eu'])
+    expect(heads('Payments')).toEqual(['Payments', 'pay-eu'])
+    // A manifest from an older desktop names no product: ungrouped, as before.
+    expect(screen.getByText('old-eu').closest('section')).toBeNull()
+
+    cleanup()
+    render(<GrantPicker groupName="Ops" onAdd={() => {}} />)
+    await userEvent.setup().selectOptions(screen.getByLabelText('Grant scope for Ops'), 'environment')
+    const select = screen.getByLabelText('Environment for Ops')
+    const options = (name: string) => within(within(select).getByRole('group', { name })).getAllByRole('option').map((o) => o.textContent)
+    expect(options('Shop')).toEqual(['staging', 'shop-eu'])
+    expect(options('Payments')).toEqual(['pay-eu'])
+    expect(within(select).getByRole('option', { name: 'old-eu' }).closest('optgroup')).toBeNull()
+  })
+
   it('groups panel adds a scoped grant through the picker', async () => {
     const invoke = await renderHub({ 'hub:groups': [group()], 'hub:addGrant': null }, 'Groups')
     const user = userEvent.setup()

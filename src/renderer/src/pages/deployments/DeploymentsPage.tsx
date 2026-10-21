@@ -3,6 +3,7 @@ import { ArrowLeft, Cloud, Copy, ExternalLink, GripVertical, Pencil, Plus, Rocke
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type DragEvent, type KeyboardEvent } from 'react'
 import { useSearchParams } from 'react-router'
 import type { DeploymentMeta } from '../../../../shared/deploy'
+import type { HubRegionRef } from '../../../../shared/hub'
 import { startLatestSync, useLatestReleases } from '../../deploy/latest'
 import { pickerGroups } from '../../deploy/picker'
 import { deleteDeployment, loadSettings, reorderDeployments, startDeploySync, useDeploy, useDeployments } from '../../deploy/store'
@@ -11,6 +12,7 @@ import { isHubActive, startHubSync, useHub } from '../../hub/store'
 import { useInventory } from '../../inventory/store'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
+import { RegionChip } from '../../ui/RegionChip'
 import { ConfirmDialog, RowMenu, plural, type ConfirmRequest } from '../../ui/common'
 import { EmptyState } from '../../ui/EmptyState'
 import { useMotionSafe } from '../../ui/motion'
@@ -42,6 +44,8 @@ interface HostGroup {
   hostId: string
   label: string
   address?: string
+  /** Unknown for a team host whose manifest, from an older desktop, has none. */
+  region?: HubRegionRef
   items: DeploymentMeta[]
 }
 
@@ -89,7 +93,6 @@ export function DeploymentsPage() {
   const publishedLocal = !!env && hub.catalog.some((c) => c.environment.id === env.id)
   const envName = env?.name ?? hubEnv?.environment.name ?? ''
   const envProtected = env?.protected ?? hubEnv?.environment.protected ?? false
-  const productName = hubEnv ? TEAM_GROUP : (inventory?.products.find((p) => p.id === env?.productId)?.name ?? '')
   useEffect(() => {
     if (envId) void loadSettings(envId)
   }, [envId])
@@ -125,14 +128,19 @@ export function DeploymentsPage() {
   )
   const shownGroups = useMemo(() => filterGroups(envGroupsAll, query, productId), [envGroupsAll, query, productId])
   const envCount = envGroupsAll.reduce((n, g) => n + g.rows.length, 0)
+  // A team environment is under the group the list puts it in: its product's, by name, or the team's.
+  const productName = hubEnv
+    ? (envGroupsAll.flatMap((g) => g.rows).find((r) => r.id === hubEnv.environment.id)?.productName ?? TEAM_GROUP)
+    : (inventory?.products.find((p) => p.id === env?.productId)?.name ?? '')
 
   const groups = useMemo<HostGroup[]>(() => {
-    const hosts = new Map<string, { label: string; address?: string }>(inventory?.hosts.map((h) => [h.id, h]))
-    for (const h of hubEnv?.hosts ?? []) if (!hosts.has(h.id)) hosts.set(h.id, { label: h.label })
+    const regionById = new Map(inventory?.regions.map((r) => [r.id, r]))
+    const hosts = new Map<string, { label: string; address?: string; region?: HubRegionRef }>(inventory?.hosts.map((h) => [h.id, { ...h, region: regionById.get(h.regionId) }]))
+    for (const h of hubEnv?.hosts ?? []) if (!hosts.has(h.id)) hosts.set(h.id, { label: h.label, region: h.region })
     const byHost = new Map<string, HostGroup>()
     for (const d of deployments) {
       const h = hosts.get(d.hostId)
-      const g = byHost.get(d.hostId) ?? { hostId: d.hostId, label: h?.label ?? 'Unknown host', address: h?.address, items: [] }
+      const g = byHost.get(d.hostId) ?? { hostId: d.hostId, label: h?.label ?? 'Unknown host', address: h?.address, region: h?.region, items: [] }
       byHost.set(d.hostId, g)
       g.items.push(d)
     }
@@ -326,6 +334,7 @@ export function DeploymentsPage() {
                     <div className="mb-2 flex items-center gap-2.5">
                       <h2 className="text-[12.5px] font-semibold tracking-tight text-fg/90">{g.label}</h2>
                       {g.address && <span className="font-mono text-[11.5px] text-muted">{g.address}</span>}
+                      {g.region && <RegionChip region={g.region} />}
                       <span aria-hidden className="h-px flex-1 bg-linear-to-r from-line to-transparent" />
                     </div>
                     <ul className="flex flex-col gap-1.5">

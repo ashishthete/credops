@@ -3,7 +3,7 @@ import type { GrantScope, HubCatalogEnv } from '../../../../shared/hub'
 import { useHub } from '../../hub/store'
 import { useInventory } from '../../inventory/store'
 import { Button } from '../../ui/Button'
-import { byLocalProduct } from './names'
+import { byProduct } from './names'
 
 const select = 'h-7 rounded-md border border-line bg-surface-2/60 px-2 text-[12.5px] text-fg'
 
@@ -33,7 +33,7 @@ export function GrantPicker({ groupName, onAdd }: { groupName: string; onAdd: (s
   const [depId, setDepId] = useState('')
   const env = useMemo(() => envs.find((e) => e.environment.id === envId), [envs, envId])
   const data = useInventory()
-  const { groups, rest } = useMemo(() => byLocalProduct(envs, (e) => e.environment.id, data), [envs, data])
+  const { groups, rest } = useMemo(() => byProduct(envs, (e) => e.environment.id, data, (e) => e.environment.product?.name), [envs, data])
   const option = (e: HubCatalogEnv) => (
     <option key={e.environment.id} value={e.environment.id}>
       {e.environment.name}
