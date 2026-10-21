@@ -97,11 +97,12 @@ describe('vault schema', () => {
 
 describe('migration versions', () => {
   // Version 8 is Phase 9's and merges from another branch, so this branch alone may skip it.
-  it('are strictly increasing and unique, skipping only the other branch\'s version 8', () => {
+  it('are strictly increasing and unique, skipping only other branches\' versions 8, 12 and 13', () => {
     const versions = migrations.map((m) => m.version)
     expect(versions).toEqual([...new Set(versions)].sort((a, b) => a - b))
-    const rest = versions.filter((v) => v !== 8)
-    expect(rest).toEqual(rest.map((_, i) => (i < 7 ? i + 1 : i + 2)))
+    // 8 is Phase 9's, 12 is regions' and 13 is playbook-ops'; each merges from another branch.
+    const rest = versions.filter((v) => v !== 8 && v !== 12 && v !== 13)
+    expect(rest).toEqual([1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 14])
   })
 })
 

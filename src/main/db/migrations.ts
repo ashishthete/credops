@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { AuditLog } from '../audit/audit-log'
+import { ssoMigration } from './sso-migration'
 import { hasRepoCredentials, stripRepoCredentials } from '../../shared/inventory'
 
 export type Db = DatabaseSync
@@ -284,6 +285,7 @@ ALTER TABLE environment_integrations ADD COLUMN qa_wait_minutes INTEGER CHECK (q
       stripSavedRepoCredentials(db)
     },
   },
+  ssoMigration,
 ]
 
 /**

@@ -5,11 +5,13 @@ import {
   MAX_MASTER_PASSWORD,
   MAX_VAULT_NAME,
   MIN_MASTER_PASSWORD,
+  PIN_ATTEMPTS,
   VAULT_COLOR,
   VAULT_LOCKED,
   VAULT_RESET_CONFIRM,
   type LockReason,
   type QuickUnlockMode,
+  type UnlockMethod,
   type UnlockResult,
   type VaultInput,
   type VaultMeta,
@@ -65,6 +67,9 @@ interface StateRow {
   quick_unlock: QuickUnlockMode
   quick_unlock_blob: string | null
   auto_lock_minutes: number | null
+  pin_wrap: string | null
+  pin_failed: number
+  last_method: UnlockMethod | null
 }
 
 const META_SQL = `SELECT v.id, v.name, v.color, v.created_at, v.updated_at,
@@ -139,6 +144,10 @@ export class VaultService {
       autoLockMinutes: s.auto_lock_minutes,
       retryAfterMs: this.retryAfterMs(s),
       corruptVaultIds: this.kek ? [...this.corrupt] : [],
+      hasPassword: this.isSetUp(),
+      pin: { enabled: s.pin_wrap !== null, attemptsLeft: Math.max(0, PIN_ATTEMPTS - s.pin_failed) },
+      lastMethod: s.last_method,
+      sso: { required: false },
     }
   }
 
@@ -621,7 +630,7 @@ export class VaultService {
 
   private state(): StateRow {
     return this.db
-      .prepare('SELECT failed_attempts, last_failed_at, quick_unlock, quick_unlock_blob, auto_lock_minutes FROM vault_state WHERE id = 1')
+      .prepare('SELECT failed_attempts, last_failed_at, quick_unlock, quick_unlock_blob, auto_lock_minutes, pin_wrap, pin_failed, last_method FROM vault_state WHERE id = 1')
       .get() as unknown as StateRow
   }
 

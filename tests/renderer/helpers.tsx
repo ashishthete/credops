@@ -42,6 +42,10 @@ export function vaultStatus(over: Partial<VaultStatus> = {}): VaultStatus {
     autoLockMinutes: 15,
     retryAfterMs: 0,
     corruptVaultIds: [],
+    hasPassword: true,
+    pin: { enabled: false, attemptsLeft: 5 },
+    lastMethod: null,
+    sso: { required: false },
     ...over,
   }
 }
