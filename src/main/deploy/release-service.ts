@@ -45,11 +45,11 @@ import { environmentMeta, hostMeta, productMeta } from '../inventory/rows'
 import { redact } from '../security/redact'
 import { DeployError, type DeployAccess, type DeployAction } from './access'
 import type { DeployStore } from './deploy-store'
-import { planFields, resolveSelection, runServicesOf, skipServices, type RunSelection } from './selection'
+import { flowStages, planFields, resolveSelection, runServicesOf, skipServices, type RunSelection } from './selection'
 import type { ServiceStore } from './service-store'
 import { noopFinalize, type FinalizeSteps, type ReleaseRunMeta } from './finalize'
 import { INTERRUPTED_MESSAGE, type ReleaseStore } from './release-store'
-import type { DeployPlan, DeployRunner, PlanDeployment, PlanHop, PlanHost, PlanKind, PlanStep, RunOutcome, RunSecrets } from './runner'
+import type { DeployPlan, DeployRunner, PlanDeployment, PlanFlow, PlanHop, PlanHost, PlanKind, PlanStep, RunOutcome, RunSecrets } from './runner'
 import { generatePlaybook, stepList } from './generate'
 import { withBase64Forms } from './mask'
 import { ToolingError } from './tooling'
@@ -449,7 +449,7 @@ export class ReleaseService {
       // The skips stay in memory until the last step that can refuse (decrypting) has passed.
       const infos = this.infosFor(rel, skips)
       const settings = this.d.deploys.settings(env.id)
-      const holder = this.resolveSecrets(infos, { env: true, scope: 'release' })
+      const holder = this.resolveSecrets(infos, { env: true, scope: 'release', flow: built.plan.flow })
       live.known = holder.secrets?.known ?? []
       const { plan, playbook, version, docker } = built
       const tag = !redeploy && settings.versioned && rel.version !== null && rel.version !== settings.currentVersion ? rel.version : null
@@ -524,8 +524,10 @@ export class ReleaseService {
     const redeploy = (rel.preflight?.commitsTotal ?? 0) === 0
     const version = redeploy ? settings.currentVersion : rel.version
     const docker = new Map<string, DockerMode>(Object.entries(rel.preflight?.dockerModes ?? {}))
-    const refs = this.resolveSecrets(infos, { env: true, values: false, scope: 'release' })
+    const flow = this.flowOf(env.id, infos)
+    const refs = this.resolveSecrets(infos, { env: true, values: false, scope: 'release', flow })
     const plan = this.plan('release', { id: rel.id, environmentId: env.id, environmentName: env.name, actor }, infos, {
+      flow,
       version,
       holder: refs,
       docker,
@@ -1190,6 +1192,8 @@ export class ReleaseService {
       tagCommits?: PreflightReport['commits']
       /** Release only: per run with skipped services, the origin head its preflight saw (see expectOriginHead). */
       originHeads?: Map<string, string>
+      /** Release only: the environment's flow as this release's stages (flowOf). */
+      flow?: PlanFlow | null
     },
   ): DeployPlan {
     const hosts = this.planHosts(live.environmentId, infos)
@@ -1231,7 +1235,15 @@ export class ReleaseService {
       secretRefs: o.holder?.refs ?? {},
       lock: o.lockRaw ? { expectRaw: o.lockRaw } : {},
       startedAt: o.startedAt ?? this.d.now().toISOString(),
+      flow: kind === 'release' ? (o.flow ?? null) : null,
     }
+  }
+
+  /** The environment's release flow as stages of these runs (flowStages); null when it has none. */
+  private flowOf(environmentId: string, infos: Info[]): PlanFlow | null {
+    const flow = this.d.deploys.settings(environmentId).flow
+    const stages = flowStages(flow, infos, new Map(this.d.services.list(environmentId).map((s) => [s.id, s])))
+    return flow === null || stages === null ? null : { stages, onFailure: flow.onFailure }
   }
 
   /**
@@ -1301,7 +1313,7 @@ export class ReleaseService {
    * steps of `scope` (a release's, or the rollback's `alsoOnRollback` ones) get their secrets too, each of which
    * must be one the environment's env templates or sudo passwords already use (S12).
    */
-  private resolveSecrets(infos: Info[], o: { env: boolean; values?: boolean; scope?: 'release' | 'rollback' }): Holder {
+  private resolveSecrets(infos: Info[], o: { env: boolean; values?: boolean; scope?: 'release' | 'rollback'; flow?: PlanFlow | null }): Holder {
     const environmentId = infos[0]?.dep.environmentId
     const values: Record<string, string> = {}
     const known = new Set<string>()
@@ -1350,6 +1362,16 @@ export class ReleaseService {
           holder.stepKey.set(`${run.id}:${i}:${n}`, key)
           holder.refs[key] = { secretId: x.secretId }
         })
+      })
+    }
+    // A flow's step stages, under the keys flowStages gave them, held to the same rule (S12).
+    for (const st of o.env ? (o.flow?.stages ?? []) : []) {
+      if (st.kind !== 'step') continue
+      st.step.secretKeys.forEach((x, n) => {
+        const secretId = st.step.step.secrets[n]?.secretId
+        if (secretId === undefined || !allowed.has(secretId)) throw new DeployError('VALIDATION', STEP_SECRET_UNUSED_MESSAGE)
+        values[x.key] = value(secretId)
+        holder.refs[x.key] = { secretId }
       })
     }
     holder.secrets = { values, known: [...known] }
@@ -1437,6 +1459,7 @@ export class ReleaseService {
         urls: planFields(dep, sel, metas).urls,
         steps: planStepsOf(dep, () => ''),
       })),
+      kind === 'release' && infos.length > 0 ? this.flowOf(infos[0].dep.environmentId, infos) : null,
     )
     for (const { run } of infos) {
       const steps = (list.get(run.id) ?? []).map((x) => ({ stepId: `${run.id}:${x.key}`, kind: x.kind, label: x.label, key: x.key, state: 'pending' as const, startedAt: null, finishedAt: null }))

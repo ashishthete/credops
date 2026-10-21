@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { DeployError } from '../../src/main/deploy/access'
-import { planFields, resolveSelection, runServicesOf, skipServices } from '../../src/main/deploy/selection'
-import type { DeploymentMeta } from '../../src/shared/deploy'
+import { flowStages, planFields, resolveSelection, runServicesOf, skipServices } from '../../src/main/deploy/selection'
+import type { DeploymentMeta, ReleaseFlow } from '../../src/shared/deploy'
 import type { AppServiceMeta, DbServiceMeta, ServiceMeta } from '../../src/shared/services'
 
 const ENV = 'env-1'
@@ -217,5 +217,63 @@ describe('skipServices', () => {
     const whole = entries(['web', 'worker', 'api'], true)
     expect(skipServices(whole, new Set(['pay']))).toEqual({ sel: whole, skipped: [] })
     expect(skipServices({ services: [], whole: true }, new Set(['web']))).toEqual({ sel: { services: [], whole: true }, skipped: [] })
+  })
+})
+
+describe('flowStages', () => {
+  const migrate = { id: 's-mig', name: 'migrate', run: 'shell' as const, service: null, script: 'echo m', cwd: null, sudo: 'docker' as const, timeoutSec: 60, onFailure: 'stop' as const, when: { kind: 'always' as const }, secrets: [{ envName: 'DB_PASS', secretId: 'sec-db' }] }
+  // web carries a url, so shop's url list (planFields) is [web]
+  const list: ServiceMeta[] = services.map((x) => (x.id === 'web' ? { ...x, url: 'https://web.example.com/up' } : x))
+  const runs = (serviceIds: string[], checkoutIds: string[] = []) =>
+    resolveSelection(ENV, { serviceIds, checkoutIds }, { services: list, deployments }).map((g) => ({
+      run: { id: `run-${g.deployment.id}` },
+      dep: g.deployment,
+      sel: { services: runServicesOf(g), whole: g.whole },
+    }))
+  const flow = (onFailure: ReleaseFlow['onFailure'] = 'stop-all'): ReleaseFlow => ({
+    onFailure,
+    stages: [
+      { kind: 'services', serviceIds: ['api'] },
+      { kind: 'step', serviceId: 'api', step: migrate },
+      { kind: 'services', serviceIds: ['web', 'pay'] },
+    ],
+  })
+
+  it('no flow: null', () => {
+    expect(flowStages(null, runs(['web']), metas(list))).toBeNull()
+  })
+
+  it('keeps flow order; unnamed services join their checkout\'s last part', () => {
+    const st = flowStages(flow(), runs(['api', 'web', 'worker', 'pay']), metas(list))!
+    expect(st.map((x) => x.kind)).toEqual(['services', 'step', 'services'])
+    expect(st[0]).toEqual({ kind: 'services', parts: [{ runId: 'run-shop', services: ['api'], urls: [] }] })
+    expect(st[1]).toMatchObject({ kind: 'step', runId: 'run-shop', step: { key: 'c_21', anchor: null, secretKeys: [{ envName: 'DB_PASS', key: 'FLOW_1_0' }] } })
+    // the checkouts are whole (every service selected): the last part ups the whole checkout and checks every url
+    expect(st[2]).toEqual({ kind: 'services', parts: [{ runId: 'run-shop', services: null, urls: [0] }, { runId: 'run-billing', services: null, urls: [] }] })
+  })
+
+  it('a partial checkout keeps its listed services, worker folded into the last part', () => {
+    const st = flowStages(flow(), runs(['api', 'web', 'worker']).map((r) => ({ ...r, sel: { ...r.sel, whole: false } })), metas(list))!
+    expect(st[2]).toEqual({ kind: 'services', parts: [{ runId: 'run-shop', services: ['web', 'worker'], urls: [0] }] })
+  })
+
+  it('drops unselected services and the step stages bound to them', () => {
+    // billing is whole (pay is all it holds), shop is not (api and worker are left out)
+    const st = flowStages(flow(), runs(['web', 'pay']), metas(list))!
+    expect(st).toEqual([{ kind: 'services', parts: [{ runId: 'run-shop', services: ['web'], urls: [0] }, { runId: 'run-billing', services: null, urls: [] }] }])
+    expect(st.some((x) => x.kind === 'step')).toBe(false)
+  })
+
+  it('a stage left with no service is dropped; a checkout the flow never names gets a last stage of its own', () => {
+    const st = flowStages({ onFailure: 'stop-all', stages: [{ kind: 'services', serviceIds: ['api'] }, { kind: 'services', serviceIds: ['pay'] }] }, runs(['web']), metas(list))!
+    expect(st).toEqual([{ kind: 'services', parts: [{ runId: 'run-shop', services: ['web'], urls: [0] }] }])
+  })
+
+  it('a service named twice counts where it first appears', () => {
+    const st = flowStages({ onFailure: 'stop-all', stages: [{ kind: 'services', serviceIds: ['web'] }, { kind: 'services', serviceIds: ['web', 'api'] }] }, runs(['web', 'api']).map((r) => ({ ...r, sel: { ...r.sel, whole: false } })), metas(list))!
+    expect(st).toEqual([
+      { kind: 'services', parts: [{ runId: 'run-shop', services: ['web'], urls: [0] }] },
+      { kind: 'services', parts: [{ runId: 'run-shop', services: ['api'], urls: [] }] },
+    ])
   })
 })

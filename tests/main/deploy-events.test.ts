@@ -976,3 +976,41 @@ describe('callback plugin source', () => {
     expect(CALLBACK_PLUGIN_SOURCE.indexOf('if not no_log')).toBeLessThan(CALLBACK_PLUGIN_SOURCE.indexOf('res.get(key)'))
   })
 })
+
+describe('EventTranslator release flow', () => {
+  // dep1 ups in two parts (stage 0 and stage 2), with a flow step between
+  const flowPlan = (): DeployPlan => {
+    const plan = planFixture()
+    plan.deployments[0].urls = []
+    plan.flow = {
+      onFailure: 'stop-all',
+      stages: [
+        { kind: 'services', parts: [{ runId: R1, services: ['a'], urls: [] }] },
+        { kind: 'step', runId: R1, step: stepFixture(21, 'after_up', { name: 'Migrate db' }, { label: 'Migrate db', anchor: null }) },
+        { kind: 'services', parts: [{ runId: R1, services: ['b'], urls: [] }, { runId: R2, services: null, urls: [0] }, { runId: R3, services: null, urls: [] }] },
+      ],
+    }
+    return plan
+  }
+  const feed = (tr: EventTranslator, kind: string, run: string, ev: 'task_start' | 'ok') =>
+    tr.feed(JSON.stringify({ event: ev, host: 'od-1', name: `${kind} x`, task: `${kind} x`, tags: [`od_step=${kind}`, `od_run=${run}`], rc: 0 }))
+
+  it('a run upped in two parts settles up only after both', () => {
+    const tr = new EventTranslator({ plan: flowPlan(), secrets: () => [], now: clock().now })
+    const out: RunEventBody[] = []
+    out.push(...feed(tr, 'up', R1, 'task_start'), ...feed(tr, 'up', R1, 'ok'))
+    expect(of(out, 'step.done')).toHaveLength(0)
+    out.push(...feed(tr, 'up', R1, 'task_start'), ...feed(tr, 'up', R1, 'ok'))
+    expect(of(out, 'step.done').map((e) => e.stepId)).toEqual([`${R1}:up`])
+    // a run with one part settles on its one up
+    const two = [...feed(tr, 'up', R2, 'task_start'), ...feed(tr, 'up', R2, 'ok')]
+    expect(of(two, 'step.done').map((e) => e.stepId)).toEqual([`${R2}:up`])
+  })
+
+  it('a flow step settles under its label', () => {
+    const tr = new EventTranslator({ plan: flowPlan(), secrets: () => [], now: clock().now })
+    const began = feed(tr, 'c_21', R1, 'task_start')
+    expect(of(began, 'step.started')[0]).toMatchObject({ stepId: `${R1}:c_21`, kind: 'custom', name: 'Migrate db', deploymentRunId: R1 })
+    expect(of(feed(tr, 'c_21', R1, 'ok'), 'step.done')[0]).toMatchObject({ stepId: `${R1}:c_21`, state: 'ok' })
+  })
+})

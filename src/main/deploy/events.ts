@@ -98,6 +98,8 @@ export class EventTranslator {
   private readonly customLabel = new Map<string, string>()
   /** Run id -> the key of the last step of its block. */
   private readonly lastKey = new Map<string, string>()
+  /** Run id -> how many up tasks a flow gives it (one per services part); absent means one. */
+  private readonly ups = new Map<string, number>()
   private readonly versionTasks: number
 
   constructor(private readonly o: { plan: DeployPlan; secrets: () => string[]; now: () => number }) {
@@ -112,6 +114,13 @@ export class EventTranslator {
   }
 
   private readSteps(plan: DeployPlan): void {
+    const flow = plan.kind === 'release' ? (plan.flow ?? null) : null
+    for (const st of flow?.stages ?? []) {
+      if (st.kind === 'step') {
+        this.customLabel.set(`${st.runId}:${st.step.key}`, st.step.label)
+        if (st.step.step.when.kind !== 'always') this.hasWhen.add(`${st.runId}:${st.step.key}`)
+      } else for (const p of st.parts) this.ups.set(p.runId, (this.ups.get(p.runId) ?? 0) + 1)
+    }
     for (const d of plan.deployments) {
       let steps: PlanStep[]
       try {
@@ -124,7 +133,12 @@ export class EventTranslator {
         if (p.step.when.kind !== 'always') this.hasWhen.add(`${d.runId}:${p.key}`)
       }
       if (plan.kind !== 'release' && plan.kind !== 'rollback') continue
-      const list = stepList(plan.kind, [{ ...d, steps }]).get(d.runId) ?? []
+      let list: { key: string }[] = []
+      try {
+        list = stepList(plan.kind, [{ ...d, steps }], flow).get(d.runId) ?? []
+      } catch {
+        continue
+      }
       const last = list.at(-1)
       if (last) this.lastKey.set(d.runId, last.key)
     }
@@ -265,7 +279,7 @@ export class EventTranslator {
     const dep = this.depByRun.get(run)
     const label = kind === 'custom' ? this.labelOf(run, r.key) : STEP_LABEL[kind]
     if (dep) {
-      const expected = kind === 'health' ? Math.max(1, dep.urls.length) : 1
+      const expected = kind === 'health' ? Math.max(1, dep.urls.length) : kind === 'up' ? (this.ups.get(run) ?? 1) : 1
       return { ...r, stepId: `${run}:${r.key}`, hostId: dep.hostId, deploymentRunId: run, name: kind === 'custom' ? label : `${label} ${dep.name}`, expected }
     }
     if (run.startsWith('host:')) {

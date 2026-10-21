@@ -1,10 +1,11 @@
-import { BACKUP_DIR, COMPOSE_AUTO, COMPOSE_FILE, COMPOSE_PROJECT, GIT_REF, MAX_URL, ORIGIN_MOVED_MESSAGE, REPO_PATH, RUNS_SUBDIR, SAFE_IDENT, STEP_LABEL, VERSION, type StepKind } from '../../shared/deploy'
+import { BACKUP_DIR, COMPOSE_AUTO, COMPOSE_FILE, COMPOSE_PROJECT, GIT_REF, MAX_URL, ORIGIN_MOVED_MESSAGE, REPO_PATH, RUNS_SUBDIR, SAFE_IDENT, STEP_LABEL, type StepKind } from '../../shared/deploy'
 import { MAX_SERVICES } from '../../shared/services'
-import { ENV_NAME, MAX_STEPS_PER_CHECKOUT, STEP_ANCHORS, deniedEnvName, effectiveSteps, stepLabel, validateStep, type StepAnchor } from '../../shared/steps'
+import { ENV_NAME, MAX_FLOW_STAGES, MAX_STEPS_PER_CHECKOUT, STEP_ANCHORS, deniedEnvName, effectiveSteps, stepLabel, validateStep, type StepAnchor } from '../../shared/steps'
 import { shJoin } from '../ops/quote'
 import { checkComposeServices, composeCommand } from './compose'
-import { ALIAS, B64, b64, lockJson, need, sanitizeIdent } from './quote'
-import type { DeployPlan, PlanDeployment, PlanHost, PlanStep } from './runner'
+import { hostBecome, hostOd } from './host-vars'
+import { ALIAS, B64, b64, need, sanitizeIdent } from './quote'
+import type { DeployPlan, PlanDeployment, PlanFlow, PlanHost, PlanStep } from './runner'
 
 export { generateAnsibleCfg, generateInventory, generateKnownHosts, generateSshConfig, knownHostsToken, socketPathFits } from './ssh-files'
 export type { SshConfigOptions } from './ssh-files'
@@ -137,19 +138,24 @@ function stepsRun(kind: 'release' | 'rollback', d: PlanDeployment): PlanStep[] {
     keys.add(p.key)
     need(p.anchor !== null && STEP_ANCHORS.includes(p.anchor), 'step anchor')
     need(p.anchor !== 'before_fetch' || p.step.when.kind === 'always', 'when at before_fetch')
-    // The editor's rules. The secret ids and service passed here are the step's own, so those two checks are no-ops:
-    // the real guards are checkPlan (secretRefs) and checkComposeServices.
-    validateStep(p.step, { allowedSecretIds: new Set(p.step.secrets.map((x) => x.secretId)), serviceNames: p.step.service === null ? [] : [p.step.service], body: true })
-    if (p.step.run === 'compose-exec') checkComposeServices([p.step.service ?? ''])
-    const names = new Set<string>()
-    for (const e of [...p.secretKeys.map((x) => x.envName), ...p.paramKeys.map((x) => x.envName)]) {
-      need(typeof e === 'string' && !names.has(e), 'step env name')
-      names.add(e)
-    }
-    for (const x of p.secretKeys) need(ENV_NAME.test(x.envName) && !deniedEnvName(x.envName) && SECRET_KEY.test(x.key), 'step secret')
-    for (const x of p.paramKeys) need(PARAM_ENV.test(x.envName) && typeof x.valueB64 === 'string' && B64.test(x.valueB64), 'step param')
+    checkStep(p)
   }
   return kind === 'rollback' ? all.filter((p) => p.alsoOnRollback === true) : all
+}
+
+/** A step's body, env names and keys: what the playbook could not carry safely throws. */
+function checkStep(p: PlanStep): void {
+  // The editor's rules. The secret ids and service passed here are the step's own, so those two checks are no-ops:
+  // the real guards are checkPlan (secretRefs) and checkComposeServices.
+  validateStep(p.step, { allowedSecretIds: new Set(p.step.secrets.map((x) => x.secretId)), serviceNames: p.step.service === null ? [] : [p.step.service], body: true })
+  if (p.step.run === 'compose-exec') checkComposeServices([p.step.service ?? ''])
+  const names = new Set<string>()
+  for (const e of [...p.secretKeys.map((x) => x.envName), ...p.paramKeys.map((x) => x.envName)]) {
+    need(typeof e === 'string' && !names.has(e), 'step env name')
+    names.add(e)
+  }
+  for (const x of p.secretKeys) need(ENV_NAME.test(x.envName) && !deniedEnvName(x.envName) && SECRET_KEY.test(x.key), 'step secret')
+  for (const x of p.paramKeys) need(PARAM_ENV.test(x.envName) && typeof x.valueB64 === 'string' && B64.test(x.valueB64), 'step param')
 }
 
 function stepVars(p: PlanStep, base: string | null): Record<string, unknown> {
@@ -189,13 +195,66 @@ function sequence<S extends StepListDeployment['steps'][number]>(kind: 'release'
   return out
 }
 
-/** Per run id, the steps a release or rollback playbook runs, in order (health once, however many URLs). */
-export function stepList(kind: 'release' | 'rollback', deps: readonly StepListDeployment[]): Map<string, { key: string; kind: StepKind; label: string }[]> {
+type StepRef = StepListDeployment['steps'][number]
+/** A flow's slots besides Slot: one services part's up (null: the whole checkout) and health URLs (indices). */
+type FlowSlot<S> = Slot<S> | { up: string[] | null } | { health: number[] }
+
+/**
+ * A run's place in a release flow, as (stage, slot) pairs. Stage -1 is the prepare phase, everything before up, which
+ * the first play runs for every checkout. Then, per stage the run is in: a services part ups its services and checks
+ * its URLs, the run's last part adding the after_up and after_health steps; a step stage runs its step. The tag and
+ * after_tag steps close the flow's last stage, so no checkout is tagged before the whole flow ran.
+ */
+function flowSequence<S extends StepRef>(d: Omit<StepListDeployment, 'steps'>, steps: readonly S[], flow: PlanFlow): { stage: number; slot: FlowSlot<S | PlanStep> }[] {
+  const seq = sequence('release', d, steps)
+  const at = seq.findIndex((x) => 'builtin' in x && x.builtin === 'up')
+  const mine = flow.stages.flatMap((st, i) => (st.kind === 'services' && st.parts.some((p) => p.runId === d.runId) ? [i] : []))
+  need(at >= 0 && mine.length > 0, 'flow parts')
+  const lastPart = mine[mine.length - 1]
+  const out: { stage: number; slot: FlowSlot<S | PlanStep> }[] = seq.slice(0, at).map((slot) => ({ stage: -1, slot }))
+  const anchored = (stage: number, a: StepAnchor) => steps.filter((s) => s.anchor === a).map((step) => ({ stage, slot: { step } }))
+  flow.stages.forEach((st, i) => {
+    if (st.kind === 'step') {
+      if (st.runId === d.runId) out.push({ stage: i, slot: { step: st.step } })
+      return
+    }
+    const parts = st.parts.filter((p) => p.runId === d.runId)
+    need(parts.length <= 1, 'flow parts')
+    for (const p of parts) {
+      out.push({ stage: i, slot: { up: p.services } })
+      if (i === lastPart) out.push(...anchored(i, 'after_up'))
+      if (p.urls.length > 0) out.push({ stage: i, slot: { health: p.urls } })
+      if (i === lastPart) out.push(...anchored(i, 'after_health'))
+    }
+  })
+  const end = flow.stages.length - 1
+  out.push({ stage: end, slot: { builtin: 'tag' } }, ...anchored(end, 'after_tag'))
+  return out
+}
+
+/**
+ * Per run id, the steps a release or rollback playbook runs, in order (health once, however many URLs). With a
+ * flow (a release only), in the flow's order: up and health once each however many parts, then each step stage.
+ */
+export function stepList(
+  kind: 'release' | 'rollback',
+  deps: readonly StepListDeployment[],
+  flow: PlanFlow | null = null,
+): Map<string, { key: string; kind: StepKind; label: string }[]> {
+  const entry = (x: FlowSlot<StepRef>): { key: string; kind: StepKind; label: string } =>
+    'builtin' in x
+      ? { key: x.builtin, kind: x.builtin, label: STEP_LABEL[x.builtin] }
+      : 'step' in x
+        ? { key: x.step.key, kind: 'custom', label: x.step.label }
+        : 'up' in x
+          ? { key: 'up', kind: 'up', label: STEP_LABEL.up }
+          : { key: 'health', kind: 'health', label: STEP_LABEL.health }
   return new Map(
-    deps.map((d) => [
-      d.runId,
-      sequence(kind, d, d.steps).map((x) => ('builtin' in x ? { key: x.builtin, kind: x.builtin, label: STEP_LABEL[x.builtin] } : { key: x.step.key, kind: 'custom' as const, label: x.step.label })),
-    ]),
+    deps.map((d) => {
+      const slots = kind === 'release' && flow !== null ? flowSequence(d, d.steps, flow).map((x) => x.slot) : sequence(kind, d, d.steps)
+      const list = slots.map(entry)
+      return [d.runId, list.filter((x, i) => list.findIndex((y) => y.key === x.key) === i)]
+    }),
   )
 }
 
@@ -205,11 +264,10 @@ function checkPlan(plan: DeployPlan): void {
     need(ALIAS.test(h.alias), 'host alias')
     need(SAFE_IDENT.test(h.hostId), 'host id')
   }
-  for (const d of plan.deployments) {
-    for (const k of [d.envSecretKey, d.becomeSecretKey, ...d.steps.flatMap((p) => p.secretKeys.map((x) => x.key))]) {
-      if (k === null) continue
-      need(SECRET_KEY.test(k) && k in plan.secretRefs, 'secret reference')
-    }
+  const flowKeys = (plan.flow?.stages ?? []).flatMap((st) => (st.kind === 'step' ? st.step.secretKeys.map((x) => x.key) : []))
+  for (const k of [...plan.deployments.flatMap((d) => [d.envSecretKey, d.becomeSecretKey, ...d.steps.flatMap((p) => p.secretKeys.map((x) => x.key))]), ...flowKeys]) {
+    if (k === null) continue
+    need(SECRET_KEY.test(k) && k in plan.secretRefs, 'secret reference')
   }
 }
 
@@ -460,8 +518,8 @@ function stepStreamed(key: string, body: string, o: { pre?: string; cont: boolea
   ].join('\n')
 }
 
-/** A custom step, with its own kind `c_<n>`. `continue` never fails the host and reports OD-STEP. */
-function stepTask(d: PlanDeployment, p: PlanStep, anchor: StepAnchor): Task {
+/** A custom step, with its own kind `c_<n>`. `continue` never fails the host and reports OD-STEP. A flow step has no anchor. */
+function stepTask(d: PlanDeployment, p: PlanStep, anchor: StepAnchor | null): Task {
   const s = p.step
   const env = p.secretKeys.length + p.paramKeys.length > 0
   const become = s.sudo === 'docker' ? becomes(d) : s.sudo === 'yes'
@@ -788,32 +846,13 @@ const BUILTIN: Record<Builtin, (d: PlanDeployment) => Task[]> = {
 }
 
 function deploymentTasks(kind: 'release' | 'rollback', d: PlanDeployment): Task[] {
-  return sequence(kind, d, stepsRun(kind, d)).flatMap((x) => ('builtin' in x ? BUILTIN[x.builtin](d) : [stepTask(d, x.step, x.step.anchor as StepAnchor)]))
+  return sequence(kind, d, stepsRun(kind, d)).flatMap((x) => ('builtin' in x ? BUILTIN[x.builtin](d) : [stepTask(d, x.step, x.step.anchor)]))
 }
 
 function playFor(plan: DeployPlan, h: PlanHost, deps: PlanDeployment[]): Play {
-  const od: Record<string, unknown> = {
-    rel: plan.releaseId,
-    env: sanitizeIdent(plan.environment.name) || 'env',
-    // Every repo the plan touches on this host, sorted: lock, unlock and the lock check all walk this list.
-    lock_repos: [...new Set(deps.map((d) => d.repoPath))].sort(),
-    lock_b64: b64(lockJson(plan)),
-  }
-  for (const r of od.lock_repos as string[]) need(REPO_PATH.test(r), 'repo path')
-  if (plan.version !== null) {
-    need(VERSION.test(plan.version), 'version')
-    od.version = plan.version
-  }
-  if (plan.kind === 'break-lock') {
-    const raw = plan.lock.expectRaw?.[h.hostId]
-    need(typeof raw === 'string', 'expected lock content')
-    od.expect_b64 = b64(raw as string)
-  }
-  const vars: Record<string, unknown> = { od, s: SECRETS_VAR }
-  // One become password per host: differing keys on one host cannot both apply.
-  const keys = new Set(deps.map((d) => d.becomeSecretKey).filter((k): k is string => k !== null))
-  need(keys.size <= 1, 'become secrets (one per host)')
-  for (const k of keys) vars.ansible_become_password = `{{ (s.${k} | b64decode) if s.${k} is defined else omit }}`
+  const vars: Record<string, unknown> = { od: hostOd(plan, h, deps), s: SECRETS_VAR }
+  const become = hostBecome(deps)
+  if (become !== undefined) vars.ansible_become_password = become
 
   const tasks: Task[] = []
   switch (plan.kind) {
@@ -852,6 +891,8 @@ const depsOf = (plan: DeployPlan, h: PlanHost): PlanDeployment[] => plan.deploym
 
 export function generatePlaybook(plan: DeployPlan): string {
   checkPlan(plan)
+  const flow = plan.flow ?? null
+  if (flow !== null) return JSON.stringify(flowPlays(plan, flow), null, 2)
   const plays: Play[] = []
   for (const h of plan.hosts) {
     const deps = depsOf(plan, h)
@@ -861,3 +902,136 @@ export function generatePlaybook(plan: DeployPlan): string {
   return JSON.stringify(plays, null, 2)
 }
 
+// ---------------------------------------------------------------- release flow
+
+const onHost = (h: PlanHost): string => `inventory_hostname == '${h.alias}'`
+const FLOW_STOPPED = 'OpsDeck flow stopped: a host did not finish an earlier stage'
+
+function checkFlow(plan: DeployPlan, flow: PlanFlow): void {
+  need(plan.kind === 'release', 'flow outside a release')
+  need(flow.onFailure === 'stop-all' || flow.onFailure === 'continue-other-hosts', 'flow on failure')
+  // the flow's own stages, plus one for the checkouts it never names
+  need(Array.isArray(flow.stages) && flow.stages.length >= 1 && flow.stages.length <= MAX_FLOW_STAGES + 1, 'flow stages')
+  const runs = new Map(plan.deployments.map((d) => [d.runId, d]))
+  const urls = new Map<string, number[]>()
+  for (const st of flow.stages) {
+    if (st.kind === 'step') {
+      need(runs.has(st.runId), 'flow step run')
+      continue
+    }
+    need(st.kind === 'services' && Array.isArray(st.parts) && st.parts.length >= 1, 'flow stage')
+    const seen = new Set<string>()
+    for (const p of st.parts) {
+      const d = runs.get(p.runId)
+      need(d !== undefined && !seen.has(p.runId), 'flow part')
+      seen.add(p.runId)
+      if (p.services !== null) {
+        need(Array.isArray(p.services) && p.services.length >= 1 && p.services.length <= MAX_SERVICES, 'flow part services')
+        checkComposeServices(p.services)
+      }
+      need(Array.isArray(p.urls) && p.urls.every((n) => Number.isInteger(n) && n >= 0 && n < (d as PlanDeployment).urls.length), 'flow health url')
+      urls.set(p.runId, [...(urls.get(p.runId) ?? []), ...p.urls])
+    }
+  }
+  // each health URL is checked exactly once
+  for (const d of plan.deployments) {
+    const u = (urls.get(d.runId) ?? []).sort((a, b) => a - b)
+    need(u.length === d.urls.length && u.every((n, i) => n === i), 'flow health urls')
+  }
+}
+
+/** The flow's step stages of one run, checked like its own steps; their keys never clash with the run's. */
+function flowStepsOf(flow: PlanFlow, d: PlanDeployment, own: readonly PlanStep[]): PlanStep[] {
+  const keys = new Set(own.map((p) => p.key))
+  const out: PlanStep[] = []
+  for (const st of flow.stages) {
+    if (st.kind !== 'step' || st.runId !== d.runId) continue
+    const p = st.step
+    need(STEP_KEY.test(p.key) && !keys.has(p.key) && p.anchor === null, 'flow step key')
+    keys.add(p.key)
+    checkStep(p)
+    out.push(p)
+  }
+  return out
+}
+
+function flowSlotTasks(d: PlanDeployment, x: FlowSlot<PlanStep>): Task[] {
+  if ('builtin' in x) return BUILTIN[x.builtin](d)
+  if ('step' in x) return [stepTask(d, x.step, x.step.anchor)]
+  if ('up' in x) return [composeTask('up', { ...d, services: x.up })]
+  return x.health.map((i) => taskHealth(d, i))
+}
+
+/**
+ * Fails every host of a later play unless each host that was in an earlier play finished the last one it was in
+ * (`od_stage`, set as a play's last task) without a failed deployment. Ansible leaves a failed or unreachable host
+ * out of later plays on its own; this stops the hosts that are left, whatever the strategy does with
+ * any_errors_fatal. The condition names aliases (ALIAS-checked) and play indexes only.
+ */
+function flowGate(i: number, lastPlay: ReadonlyMap<string, number>): Task {
+  const when = [...lastPlay]
+    .map(([a, k]) => `(hostvars['${a}'].od_stage | default(-1)) != ${k} or (hostvars['${a}'].od_failed | default(false))`)
+    .join(' or ')
+  return { name: `flow gate ${i}`, 'ansible.builtin.fail': { msg: FLOW_STOPPED }, when }
+}
+
+/**
+ * A release in flow order: one play per stage, over that stage's hosts, with `strategy: free` (each host runs its
+ * own blocks, in the order the stage lists them) and every block bound to its host by `when`. The first play also
+ * takes every host's lock and runs each checkout's prepare phase; the last also tags every checkout, so both span
+ * every host. `od` and become are inventory host vars here
+ * (generateInventory), so play vars hold the secrets lookup only.
+ */
+function flowPlays(plan: DeployPlan, flow: PlanFlow): Play[] {
+  checkFlow(plan, flow)
+  const hostOf = new Map(plan.hosts.map((h) => [h.hostId, h]))
+  const hosts = plan.hosts.filter((h) => depsOf(plan, h).length > 0)
+  for (const h of hosts) {
+    hostOd(plan, h, depsOf(plan, h))
+    hostBecome(depsOf(plan, h))
+  }
+  const runs = new Map(
+    plan.deployments.map((d) => {
+      const own = stepsRun('release', d)
+      const extra = flowStepsOf(flow, d, own)
+      const vars = dVars(d, 'release')
+      if (extra.length > 0) vars.steps = { ...((vars.steps as Record<string, unknown> | undefined) ?? {}), ...Object.fromEntries(extra.map((p) => [p.key, stepVars(p, d.whenBase)])) }
+      const host = hostOf.get(d.hostId)
+      need(host !== undefined, 'deployment host')
+      return [d.runId, { d, host: host as PlanHost, vars, slots: flowSequence(d, own, flow) }]
+    }),
+  )
+  const blockAt = (runId: string, stage: number): Task[] => {
+    const r = runs.get(runId)
+    if (!r) return []
+    const tasks = r.slots.filter((x) => x.stage === stage).flatMap((x) => flowSlotTasks(r.d, x.slot as FlowSlot<PlanStep>))
+    if (tasks.length === 0) return []
+    return [{ name: `deployment ${sanitizeIdent(r.d.name)}`, when: onHost(r.host), vars: { d: r.vars }, block: tasks, rescue: rescueRelease(r.d) }]
+  }
+  const lastPlay = new Map<string, number>()
+  const end = flow.stages.length - 1
+  return flow.stages.map((st, i) => {
+    const named = st.kind === 'step' ? [st.runId] : st.parts.map((p) => p.runId)
+    // the last stage's own runs first, then every other run's tag
+    const ids = i === end ? [...named, ...plan.deployments.map((d) => d.runId).filter((id) => !named.includes(id))] : named
+    const here = i === 0 || i === end ? hosts : hosts.filter((h) => ids.some((id) => runs.get(id)?.host === h))
+    const tasks: Task[] = []
+    if (i > 0) tasks.push(flowGate(i, lastPlay))
+    if (i === 0) {
+      for (const h of hosts) tasks.push({ ...taskPrep(h), when: onHost(h) }, { ...taskLock(h), when: onHost(h) })
+      for (const d of plan.deployments) tasks.push(...blockAt(d.runId, -1))
+    }
+    for (const id of ids) tasks.push(...blockAt(id, i))
+    if (i < flow.stages.length - 1) tasks.push({ name: `flow stage ${i} done`, 'ansible.builtin.set_fact': { od_stage: i } })
+    for (const h of here) lastPlay.set(h.alias, i)
+    return {
+      name: `release stage ${i}`,
+      hosts: here.map((h) => h.alias).join(':'),
+      gather_facts: false,
+      strategy: 'free',
+      ...(flow.onFailure === 'stop-all' ? { any_errors_fatal: true } : {}),
+      vars: { s: SECRETS_VAR },
+      tasks,
+    }
+  })
+}

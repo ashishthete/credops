@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { matchSshConfig } from '../../src/main/inventory/ssh-config'
 import { generateAnsibleCfg, generateInventory, generateKnownHosts, generatePlaybook, generateSshConfig, knownHostsToken, socketPathFits, stepList } from '../../src/main/deploy/generate'
 import { b64, lockJson, sanitizeIdent } from '../../src/main/deploy/quote'
-import type { DeployPlan, PlanDeployment, PlanKind, PlanStep } from '../../src/main/deploy/runner'
+import type { DeployPlan, PlanDeployment, PlanFlow, PlanKind, PlanStep } from '../../src/main/deploy/runner'
 import { COMPOSE_AUTO, COMPOSE_FILE, ORIGIN_MOVED_MESSAGE } from '../../src/shared/deploy'
 import { MAX_SERVICES } from '../../src/shared/services'
 import { ENV_NAME, deniedEnvName, type StepAnchor } from '../../src/shared/steps'
@@ -1167,5 +1167,162 @@ describe('custom steps', () => {
     bad((p) => { p.deployments[0].steps[1].step.service = 'api;id' })
     bad((p) => { p.deployments[0].whenBase = 'HEAD' })
     bad((p) => { p.deployments[0].steps = Array.from({ length: 21 }, (_, i) => stepFixture(i, 'after_up')) })
+  })
+})
+
+describe('release flow stages', () => {
+  // backend (dep1, od-1) -> migrate (a step on backend's checkout) -> frontend (dep3, od-2) || fastapi (dep2, od-1)
+  const flowPlan = (over: Partial<PlanFlow> = {}): DeployPlan => {
+    const base = planFixture()
+    const [d1, d2, d3] = base.deployments
+    d1.preHookB64 = null
+    d1.postHookB64 = null
+    d1.services = ['backend']
+    d2.services = ['fastapi']
+    d3.services = ['frontend']
+    const migrate = stepFixture(21, 'after_up', { name: 'migrate', script: 'echo migrate', secrets: [{ envName: 'DB_PASS', secretId: 'sec-db' }] }, {
+      anchor: null,
+      secretKeys: [{ envName: 'DB_PASS', key: 'FLOW_1_0' }],
+    })
+    return {
+      ...base,
+      secretRefs: { ...base.secretRefs, FLOW_1_0: { secretId: 'sec-db' } },
+      flow: {
+        stages: [
+          { kind: 'services', parts: [{ runId: d1.runId, services: ['backend'], urls: [0] }] },
+          { kind: 'step', runId: d1.runId, step: migrate },
+          { kind: 'services', parts: [{ runId: d3.runId, services: ['frontend'], urls: [] }, { runId: d2.runId, services: ['fastapi'], urls: [0] }] },
+        ],
+        onFailure: 'stop-all',
+        ...over,
+      },
+    }
+  }
+  /** od_step tags of a play's leaf tasks; untagged tasks (the gate, the stage marker) show their name. */
+  const tagsOf = (p: Play): string[] => flat(p.tasks).map((t) => (t.tags ?? []).find((x) => x.startsWith('od_step='))?.slice(8) ?? `<${String(t.name)}>`)
+  const blocks = (p: Play): Task[] => p.tasks.filter((t) => t.block)
+
+  it('no flow: the release playbook is the per-host one, linear and without host vars in the inventory', () => {
+    const ps = plays(planFixture())
+    expect(ps.map((p) => p.strategy)).toEqual(['linear', 'linear'])
+    expect(generateInventory(planFixture())).not.toContain(' od=')
+  })
+
+  it('gives one play per stage, in flow order, over each stage\'s hosts', () => {
+    const ps = plays(flowPlan())
+    expect(ps.map((p) => p.name)).toEqual(['release stage 0', 'release stage 1', 'release stage 2'])
+    expect(ps.map((p) => p.hosts)).toEqual(['od-1:od-2', 'od-1', 'od-1:od-2'])
+    for (const p of ps) {
+      expect(p.strategy).toBe('free')
+      expect(p.gather_facts).toBe(false)
+      expect(Object.keys(p.vars)).toEqual(['s'])
+    }
+    // stage 0: every host's lock, every checkout's prepare, then backend's up and health
+    const t0 = tagsOf(ps[0])
+    // prep and lock, both tagged lock, once per host
+    expect(ps[0].tasks.filter((t) => (t.tags ?? []).includes('od_step=lock')).map((t) => t.when)).toEqual([
+      "inventory_hostname == 'od-1'",
+      "inventory_hostname == 'od-1'",
+      "inventory_hostname == 'od-2'",
+      "inventory_hostname == 'od-2'",
+    ])
+    expect(t0.filter((x) => x === 'checkout')).toHaveLength(3)
+    expect(t0.filter((x) => x === 'up')).toHaveLength(1)
+    expect(t0.at(-1)).toBe('<flow stage 0 done>')
+    // stage 1: the gate, the step alone, the marker
+    expect(tagsOf(ps[1])).toEqual(['<flow gate 1>', 'c_21', '<flow stage 1 done>'])
+    expect(blocks(ps[1]).map((b) => b.when)).toEqual(["inventory_hostname == 'od-1'"])
+    // stage 2: frontend on od-2 and fastapi on od-1, each bound to its host; then every checkout's tag
+    const b2 = blocks(ps[2])
+    expect(b2.map((b) => b.when)).toEqual(["inventory_hostname == 'od-2'", "inventory_hostname == 'od-1'", "inventory_hostname == 'od-1'"])
+    expect(b2.map((b) => b.name)).toEqual(['deployment dep3', 'deployment dep2', 'deployment dep1'])
+    expect(tagsOf(ps[2])[0]).toBe('<flow gate 2>')
+    expect(tagsOf(ps[2]).filter((x) => x === 'up')).toHaveLength(2)
+    expect(tagsOf(ps[2]).filter((x) => x === 'tag')).toHaveLength(3)
+    expect(tagsOf(ps[2])).not.toContain('<flow stage 2 done>')
+    // every block and per-host task names its host
+    for (const p of ps) for (const t of p.tasks) if (!String(t.name).startsWith('flow ')) expect(t.when).toMatch(/^inventory_hostname == 'od-\d+'$/)
+  })
+
+  it('ups only the stage\'s services and checks only its urls', () => {
+    const ps = plays(flowPlan())
+    const ups = ps.flatMap((p) => flat(p.tasks).filter((t) => (t.tags ?? []).includes('od_step=up')))
+    expect(ups.map((t) => dockerWords(cmdOf(t)).slice(-2))).toEqual([['--no-deps', 'backend'], ['--no-deps', 'frontend'], ['--no-deps', 'fastapi']])
+    const health = (p: Play) => flat(p.tasks).filter((t) => (t.tags ?? []).includes('od_step=health'))
+    expect(health(ps[0])).toHaveLength(1)
+    expect(health(ps[1])).toHaveLength(0)
+    expect(health(ps[2])).toHaveLength(1)
+  })
+
+  it('the gate stops a stage when a host did not finish the one before', () => {
+    const [, p1, p2] = plays(flowPlan())
+    expect(p1.tasks[0]).toEqual({
+      name: 'flow gate 1',
+      'ansible.builtin.fail': { msg: 'OpsDeck flow stopped: a host did not finish an earlier stage' },
+      when: "(hostvars['od-1'].od_stage | default(-1)) != 0 or (hostvars['od-1'].od_failed | default(false)) or (hostvars['od-2'].od_stage | default(-1)) != 0 or (hostvars['od-2'].od_failed | default(false))",
+    })
+    // od-2 sat stage 1 out: it is still held to stage 0
+    expect(p2.tasks[0].when).toBe("(hostvars['od-1'].od_stage | default(-1)) != 1 or (hostvars['od-1'].od_failed | default(false)) or (hostvars['od-2'].od_stage | default(-1)) != 0 or (hostvars['od-2'].od_failed | default(false))")
+  })
+
+  it('stop-all sets any_errors_fatal on every play; continue-other-hosts leaves it out', () => {
+    expect(plays(flowPlan()).every((p) => p.any_errors_fatal === true)).toBe(true)
+    expect(plays(flowPlan({ onFailure: 'continue-other-hosts' })).some((p) => 'any_errors_fatal' in p)).toBe(false)
+  })
+
+  it('the playbook parses and every command passes bash -n (parse only, nothing runs)', () => {
+    for (const onFailure of ['stop-all', 'continue-other-hosts'] as const)
+      for (const p of plays(flowPlan({ onFailure })))
+        for (const { t } of every(p.tasks)) {
+          const cmd = cmdOf(t).replace(/\{\{[^}]*\}\}/g, 'x')
+          if (!cmd) continue
+          const r = spawnSync('/bin/bash', ['-n'], { input: cmd, encoding: 'utf8' })
+          expect(r.stderr, cmd).toBe('')
+          expect(r.status).toBe(0)
+        }
+  })
+
+  it('the flow step reads its secret from OPSDECK_SECRETS, never inline', () => {
+    const text = generatePlaybook(flowPlan())
+    expect(text).toContain('FLOW_1_0')
+    expect(text).not.toContain('sec-db')
+    const [, p1] = plays(flowPlan())
+    const b = blocks(p1)[0] as Task & { vars: { d: { steps: Record<string, unknown> } } }
+    expect(Object.keys(b.vars.d.steps)).toContain('c_21')
+    for (const { t } of every(p1.tasks)) expect(t.environment ?? {}).not.toHaveProperty('DB_PASS')
+  })
+
+  it('the inventory carries od and become per host, as references only', () => {
+    const plan = flowPlan()
+    const inv = generateInventory(plan)
+    const line = (alias: string) => inv.split('\n').find((l) => l.startsWith(`${alias} `))!
+    const od = (alias: string) => JSON.parse(/ od='([^']*)'/.exec(line(alias))![1]) as Record<string, unknown>
+    expect(od('od-1')).toEqual({ rel: FIX.releaseId, env: 'prod_east', lock_repos: [`${FIX.repo}1`, `${FIX.repo}2`], lock_b64: b64(lockJson(plan)), version: 'v1.2.3' })
+    expect(od('od-2').lock_repos).toEqual([`${FIX.repo}3`])
+    expect(line('od-1')).toContain("ansible_become_password='{{ (s.become_1 | b64decode) if s.become_1 is defined else omit }}'")
+    expect(line('od-2')).not.toContain('ansible_become_password')
+    // every templated value is a {{ }} reference; nothing else templated, no secret id or value
+    for (const m of inv.matchAll(/\{[{%#]/g)) expect(m[0]).toBe('{{')
+    expect(inv).not.toContain('sec-1')
+    expect(inv).not.toContain('sec-db')
+  })
+
+  it('rejects a flow that does not partition each run, or names an unknown run', () => {
+    const bad = (f: (p: DeployPlan) => void) => {
+      const p = flowPlan()
+      f(p)
+      expect(() => generatePlaybook(p)).toThrow()
+    }
+    bad((p) => { p.flow!.stages.splice(2, 1) }) // dep2 and dep3 never up
+    bad((p) => { (p.flow!.stages[0] as { parts: { urls: number[] }[] }).parts[0].urls = [] }) // dep1's url unchecked
+    bad((p) => { (p.flow!.stages[0] as { parts: { runId: string }[] }).parts[0].runId = 'nope' })
+    bad((p) => { (p.flow!.stages[1] as { step: PlanStep }).step.key = 'c_1;id' })
+    bad((p) => { p.kind = 'rollback' })
+  })
+
+  it('the step list follows the flow: prepare, then stage by stage, the tag last', () => {
+    const plan = flowPlan()
+    const list = stepList('release', plan.deployments, plan.flow)
+    expect(list.get(plan.deployments[0].runId)!.map((x) => x.key)).toEqual(['record', 'backup', 'fetch', 'checkout', 'env', 'build', 'up', 'health', 'c_21', 'tag'])
   })
 })

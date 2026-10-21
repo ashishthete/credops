@@ -1,4 +1,4 @@
-import type { Actor, DockerMode, HealthUrl, PreflightReport, RunEventBody, UseSudo } from '../../shared/deploy'
+import type { Actor, DockerMode, HealthUrl, PreflightReport, ReleaseFlow, RunEventBody, UseSudo } from '../../shared/deploy'
 import type { StepAnchor, StepBody } from '../../shared/steps'
 
 /** One SSH hop. `hostId` is null for a hop that isn't an inventory host. */
@@ -86,6 +86,21 @@ export interface PlanDeployment {
   expectOriginHead?: string | null
 }
 
+/**
+ * One stage of a release flow (see flowStages). A services stage ups each part's compose services (null: the whole
+ * checkout) and checks the health URLs at `urls` (indices into the run's `urls`); a step stage runs one step on its
+ * checkout's host.
+ */
+export type PlanStage =
+  | { kind: 'services'; parts: { runId: string; services: string[] | null; urls: number[] }[] }
+  | { kind: 'step'; runId: string; step: PlanStep }
+
+/** A release's flow: its stages in order, each one play. */
+export interface PlanFlow {
+  stages: PlanStage[]
+  onFailure: ReleaseFlow['onFailure']
+}
+
 export type PlanKind = 'preflight' | 'release' | 'rollback' | 'version' | 'unlock' | 'break-lock'
 
 /**
@@ -105,6 +120,8 @@ export interface DeployPlan {
   /** For `break-lock`: the raw lock content preflight saw, per host. */
   lock: { expectRaw?: Record<string, string> }
   startedAt: string
+  /** Release only: the stages the deploy phase runs in, one play each. Null: one play per host. */
+  flow: PlanFlow | null
 }
 
 // ---- The runner boundary (Phase 10's HubRunner implements the same interface) ----

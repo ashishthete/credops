@@ -229,6 +229,7 @@ export function planFixture(over: Partial<DeployPlan> = {}): DeployPlan {
     secretRefs: { env_1: { envTemplate: { deploymentId: 'dep-1' } }, become_1: { secretId: 'sec-1' } },
     lock: {},
     startedAt: '2026-10-19T10:00:00.000Z',
+    flow: null,
     ...over,
   }
 }

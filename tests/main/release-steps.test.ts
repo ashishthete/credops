@@ -393,3 +393,69 @@ describe('skip unchanged', () => {
     for (const head of [undefined, null]) expect(await one(C, { list: [C, B], head })).toMatchObject({ skippable: false })
   })
 })
+
+describe('release flow', () => {
+  // backend -> migrate (a step on backend's checkout) -> frontend || fastapi
+  const flowRig = async () => {
+    const r = await rig()
+    const [be, fe, fa] = ['backend', 'frontend', 'fastapi'].map((n) => dep(r, n))
+    const [sb, sf, sa] = [svcIn(r, be, 'backend'), svcIn(r, fe, 'frontend'), svcIn(r, fa, 'fastapi')]
+    const { id: _id, anchor: _a, alsoOnRollback: _r, ...migrate } = step()
+    const set = (stages: 'flow' | 'swapped') =>
+      r.f.deploys.updateSettings(r.f.staging.id, {
+        flow: {
+          onFailure: 'stop-all',
+          stages: [
+            { kind: 'services', serviceIds: stages === 'flow' ? [sb.id] : [sf.id, sa.id] },
+            { kind: 'step', serviceId: sb.id, step: { ...migrate, id: 'migrate' } },
+            { kind: 'services', serviceIds: stages === 'flow' ? [sf.id, sa.id] : [sb.id] },
+          ],
+        },
+      })
+    set('flow')
+    const id = await ready(r, [be, fe, fa])
+    return { r, id, set }
+  }
+
+  it('seeds the steps in flow order, keeps the preview hash stable, and hands the runner the flow', async () => {
+    const { r, id } = await flowRig()
+    const runs = r.svc.detail(id).runs
+    const be = runs.find((x) => x.deploymentName === 'backend')!
+    expect(be.steps.map((x) => x.key)).toEqual(['record', 'fetch', 'checkout', 'build', 'up', 'c_21', 'tag'])
+    expect(be.steps.find((x) => x.key === 'c_21')).toMatchObject({ kind: 'custom', label: 'migrate', state: 'pending' })
+    expect(runs.find((x) => x.deploymentName === 'frontend')!.steps.map((x) => x.key)).toEqual(['record', 'fetch', 'checkout', 'build', 'up', 'tag'])
+
+    const a = await r.svc.previewPlaybook(id)
+    const b = await r.svc.previewPlaybook(id)
+    expect(b.sha256).toBe(a.sha256)
+    const names = (JSON.parse(a.playbook) as { name: string }[]).map((p) => p.name)
+    expect(names).toEqual(['release stage 0', 'release stage 1', 'release stage 2'])
+
+    await r.svc.start(id, { playbookSha256: a.sha256 })
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).status).toBe('succeeded')
+    const plan = r.runner.call('release')
+    expect(plan.flow?.stages.map((x) => x.kind)).toEqual(['services', 'step', 'services'])
+    expect(plan.flow?.onFailure).toBe('stop-all')
+  })
+
+  it('the review hash binds the flow order', async () => {
+    const { r, id, set } = await flowRig()
+    const a = await r.svc.previewPlaybook(id)
+    set('swapped')
+    const b = await r.svc.previewPlaybook(id)
+    expect(b.sha256).not.toBe(a.sha256)
+    expect((await fail(r.svc.start(id, { playbookSha256: a.sha256 }))).message).toBe(PLAYBOOK_CHANGED_MESSAGE)
+  })
+
+  it('a rollback runs without the flow', async () => {
+    const { r, id } = await flowRig()
+    r.runner.on.release = (plan) => ({ commits: Object.fromEntries(plan.deployments.map((x) => [x.runId, { previous: A, deployed: B }])) })
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    await r.svc.rollback(id, {})
+    await r.svc.whenIdle()
+    expect(r.runner.call('rollback').flow).toBeNull()
+    expect(r.runner.call('preflight').flow).toBeNull()
+  })
+})
