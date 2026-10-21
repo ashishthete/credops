@@ -87,10 +87,10 @@ describe('shell', () => {
     expect(await screen.findByRole('heading', { name: 'Products', level: 1 })).toBeInTheDocument()
   })
 
-  it(`${shortcutOf('hub')} jumps to the Hub; Audit, the tenth section, has no digit shortcut`, async () => {
+  it(`${shortcutOf('hub')} jumps to the Hub; Audit, the ninth section, is mod+9`, async () => {
     renderShell()
     expect(SECTIONS.at(-1)!.id).toBe('audit')
-    expect(sectionShortcut(SECTIONS.length - 1)).toBeNull()
+    expect(sectionShortcut(SECTIONS.length - 1)).toBe('mod+9')
     act(() => {
       fireEvent.keyDown(window, { key: digitOf('hub'), metaKey: true })
     })
