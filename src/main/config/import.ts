@@ -147,12 +147,29 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
    * A host now reaches another machine or logs in as someone else: every environment that uses it needs confirming,
    * directly, as its default jump host, or through hosts that jump through it.
    */
-  const guardHost = (hostId: string, seen = new Set<string>()) => {
-    if (seen.has(hostId)) return
+  /**
+   * The environments that depend on a host: those it is linked to, whose default jump it is, whose services reach
+   * through it, or whose checkouts or tunnels run on it; and, through `jump_host_id`, those of every host that jumps
+   * through it.
+   */
+  const protectedDependents = (hostId: string, seen = new Set<string>()): Set<string> => {
+    const out = new Set<string>()
+    if (seen.has(hostId)) return out
     seen.add(hostId)
-    for (const e of ids('SELECT environment_id AS id FROM environment_hosts WHERE host_id = ?', hostId)) touch(e)
-    for (const e of ids('SELECT id FROM environments WHERE default_jump_host_id = ?', hostId)) touch(e)
-    for (const h of ids('SELECT id FROM hosts WHERE jump_host_id = ?', hostId)) guardHost(h, seen)
+    for (const sql of [
+      'SELECT environment_id AS id FROM environment_hosts WHERE host_id = ?',
+      'SELECT id FROM environments WHERE default_jump_host_id = ?',
+      'SELECT environment_id AS id FROM services WHERE via_host_id = ?',
+      'SELECT environment_id AS id FROM deployments WHERE host_id = ?',
+      'SELECT environment_id AS id FROM tunnels WHERE host_id = ? AND environment_id IS NOT NULL',
+    ]) {
+      for (const e of ids(sql, hostId)) out.add(e)
+    }
+    for (const h of ids('SELECT id FROM hosts WHERE jump_host_id = ?', hostId)) for (const e of protectedDependents(h, seen)) out.add(e)
+    return out
+  }
+  const guardHost = (hostId: string) => {
+    for (const e of protectedDependents(hostId)) touch(e)
   }
   const guardIdentity = (identityId: string) => {
     for (const h of ids('SELECT id FROM hosts WHERE identity_id = ?', identityId)) guardHost(h)

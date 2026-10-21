@@ -329,6 +329,32 @@ describe('config import', () => {
     expect(hostRow(f.db, f.host.id).address).toBe('6.6.6.6')
   })
 
+  it('a host a protected environment reaches through a db service or checkout needs its typed name', async () => {
+    const f = await makeConfigFixture()
+    // None of these hosts is linked to prod; prod reaches each through one of its own rows.
+    const jump = f.hosts.create({ label: 'tunjump', address: '10.5.0.1' })
+    const via = f.hosts.create({ label: 'tunhost', address: '10.5.0.2', jumpHostId: jump.id })
+    f.services.create({ kind: 'db', environmentId: f.prod.id, name: 'prod-db', dbEngine: 'postgres', dbAddress: '10.5.0.9', viaHostId: via.id })
+    const build = f.hosts.create({ label: 'buildbox', address: '10.5.0.3' })
+    f.deploys.create(f.input({ name: 'prod-build', environmentId: f.prod.id, hostId: build.id, deployTag: 'deploy_prod_build' }))
+    // The checkout joined prod silently; taking the host out of prod leaves the checkout on it.
+    f.envs.removeHost(f.prod.id, build.id)
+    const exported = buildConfigExport(f.db, clock).file
+
+    for (const label of ['tunhost', 'tunjump', 'buildbox']) {
+      const file = copy(exported)
+      file.hosts.find((h) => h.label === label)!.address = '6.6.6.6'
+      const plan = planImport(f.db, file)
+      expect(itemOf(plan, 'hosts', label)).toMatchObject({ action: 'update', fields: ['address'] })
+      expect(plan.protectedEnvironments, label).toContain('prod')
+      expect(() => applyImport(deps(f), file, { typedNames: [], expected: plan.counts })).toThrow('Type prod to update this protected environment')
+    }
+    // A tags-only change reaches nothing.
+    const tags = copy(exported)
+    tags.hosts.find((h) => h.label === 'tunhost')!.tags = ['db']
+    expect(planImport(f.db, tags).protectedEnvironments).toEqual([])
+  })
+
   it('a changed jump host, or a host dropping its jump, guards the protected environments behind it', async () => {
     const f = await makeConfigFixture()
     const exported = buildConfigExport(f.db, clock).file
