@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType } from 'react'
-import { bumpVersion, BREAK_LOCK_CONFIRM_MESSAGE, PLAYBOOK_CHANGED_MESSAGE, type PlaybookPreview, type VersionBump } from '../../../../../shared/deploy'
+import { bumpVersion, BREAK_LOCK_CONFIRM_MESSAGE, PLAYBOOK_CHANGED_MESSAGE, REVIEW_EXPIRED_MESSAGE, type PlaybookPreview, type VersionBump } from '../../../../../shared/deploy'
 import { pickerGroups, selectionRequest, type PickerGroup } from '../../../deploy/picker'
 import { closeRelease, openRelease, startReleaseSync, usePreflight } from '../../../deploy/releases'
 import { loadSettings, startDeploySync, useDeploy, useDeployments, useServices } from '../../../deploy/store'
@@ -224,7 +224,7 @@ export function DeployWizard({ environmentId, preselect, onClose }: { environmen
         "Couldn't start the release",
         () => api.invoke('release:start', releaseId, { ...(typedName !== undefined ? { typedName } : {}), redeploy, playbookSha256: sha256 }),
         (message) => {
-          changed = message.includes(PLAYBOOK_CHANGED_MESSAGE)
+          changed = message.includes(PLAYBOOK_CHANGED_MESSAGE) || message.includes(REVIEW_EXPIRED_MESSAGE)
           setError(message)
         },
       )

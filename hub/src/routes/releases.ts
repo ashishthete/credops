@@ -52,6 +52,8 @@ export function registerReleases(app: FastifyInstance, deps: { releases: HubRele
     '/api/v1/releases/:id/start',
     { onRequest, schema: { params: idParams, body: confirmBody } },
     async (req, reply) => {
+      // playbookSha256 is checked when sent but not required: older desktops don't send it. The desktop
+      // refuses a start from its UI without one.
       await releases.start(req.user, req.params.id, req.body ?? {})
       return done(reply).send()
     },

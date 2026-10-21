@@ -534,6 +534,8 @@ export interface PlaybookPreview {
 }
 export const PLAYBOOK_SHA256 = /^[0-9a-f]{64}$/
 export const PLAYBOOK_CHANGED_MESSAGE = 'The playbook changed since you reviewed it. Review it again.'
+/** A review older than the main side's limit (30 minutes): nothing changed, but its start time is too old to reuse. */
+export const REVIEW_EXPIRED_MESSAGE = 'Your review is more than 30 minutes old. Review the playbook again.'
 export interface BreakLockConfirm {
   typedLabel: string
 }

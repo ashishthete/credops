@@ -496,7 +496,10 @@ describe('stale preflight releases', () => {
     await waitFor(() => expect(calls(invoke, 'release:start').map((c) => c.slice(1))).toEqual([[REL, { redeploy: false, playbookSha256: HASH }]]))
   })
 
-  it('a playbook that changed since the review is shown again, and the next Deploy carries the new hash', async () => {
+  it.each([
+    ['changed since the review', 'The playbook changed since you reviewed it. Review it again.'],
+    ['reviewed too long ago', 'Your review is more than 30 minutes old. Review the playbook again.'],
+  ])('a playbook %s is shown again, and the next Deploy carries the new hash', async (_case, refusal) => {
     const { user, dialog, invoke } = await mount({ preselect: ['s1'], persisted: events([{ type: 'preflight.done', report: report() }]) })
     await preflight(user, dialog)
     await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Review playbook' })).toBeEnabled())
@@ -507,8 +510,8 @@ describe('stale preflight releases', () => {
     const base = invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
     invoke.mockImplementation((ch: string, ...args: unknown[]) => (ch === 'deploy:previewPlaybook' ? Promise.resolve({ playbook: PLAYBOOK, sha256: NEW }) : base(ch, ...args)))
     await user.click(within(dialog).getByRole('button', { name: 'Deploy' }))
-    await startCall.fail(0, new Error('The playbook changed since you reviewed it. Review it again.'))
-    expect(within(dialog).getByRole('alert')).toHaveTextContent('The playbook changed since you reviewed it. Review it again.')
+    await startCall.fail(0, new Error(refusal))
+    expect(within(dialog).getByRole('alert')).toHaveTextContent(refusal)
     await waitFor(() => expect(calls(invoke, 'deploy:previewPlaybook')).toHaveLength(2))
     await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Deploy' })).toBeEnabled())
     await user.click(within(dialog).getByRole('button', { name: 'Deploy' }))

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { DeployError } from '../../src/main/deploy/access'
 import { PLAYBOOK_CHANGED_MESSAGE, PREVIEW_TTL_MS } from '../../src/main/deploy/release-service'
+import { REVIEW_EXPIRED_MESSAGE } from '../../src/shared/deploy'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import { NOW, SECRET, dep, ready, rig, type Rig } from './release-rig'
 
@@ -47,11 +48,31 @@ describe('ReleaseService.previewPlaybook', () => {
     const id = await ready(r)
     const old = await r.svc.previewPlaybook(id)
     now += PREVIEW_TTL_MS + 1
-    await expect(r.svc.start(id, { playbookSha256: old.sha256 })).rejects.toThrow(PLAYBOOK_CHANGED_MESSAGE)
+    // Nothing changed, so the refusal says the review is old, not that the playbook changed.
+    const err = await r.svc.start(id, { playbookSha256: old.sha256 }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(DeployError)
+    expect((err as DeployError).code).toBe('INVALID_STATE')
+    expect((err as DeployError).message).toBe(REVIEW_EXPIRED_MESSAGE)
+    expect(r.svc.detail(id).status).toBe('ready')
     const fresh = await r.svc.previewPlaybook(id)
     await r.svc.start(id, { playbookSha256: fresh.sha256 })
     await r.svc.whenIdle()
     expect(r.svc.detail(id).playbook).toBe(fresh.playbook)
+  })
+
+  it('each person keeps their own review: a second review does not undo the first', async () => {
+    let now = NOW
+    const r = await rig({ now: () => new Date(now) })
+    const id = await ready(r)
+    const ann = { actor: { osUser: 'ann', machine: 'hub', hubUserId: 'u-ann' } }
+    const ben = { actor: { osUser: 'ben', machine: 'hub', hubUserId: 'u-ben' } }
+    const mine = await r.svc.previewPlaybook(id, ann)
+    now += 60_000
+    const theirs = await r.svc.previewPlaybook(id, ben)
+    expect(theirs.sha256).not.toBe(mine.sha256)
+    await r.svc.start(id, { playbookSha256: mine.sha256 }, ann)
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).playbook).toBe(mine.playbook)
   })
 
   it('writes nothing, takes no lock, decrypts nothing and starts no agent', async () => {

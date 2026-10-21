@@ -107,6 +107,17 @@ describe('playbook review handlers', () => {
     expect(releases.start).toHaveBeenCalledWith(ID, { playbookSha256: HASH, redeploy: true })
   })
 
+  it('a start refused for another reason keeps the review, so it can still be saved', async () => {
+    const { releases, h, writes } = setup({ path: '/tmp/x/review.yml' })
+    releases.start.mockRejectedValueOnce(new Error('This release is busy'))
+    await h['deploy:previewPlaybook'](ID)
+    await expect(h['release:start'](ID, { playbookSha256: HASH })).rejects.toThrow('busy')
+    expect(await h['deploy:savePlaybook'](ID, HASH)).toEqual({ path: '/tmp/x/review.yml' })
+    expect(writes).toEqual([['/tmp/x/review.yml', PLAYBOOK]])
+    await h['release:start'](ID, { playbookSha256: HASH })
+    await expect(h['deploy:savePlaybook'](ID, HASH)).rejects.toThrow(PLAYBOOK_CHANGED_MESSAGE)
+  })
+
   it('deploy:previewPlaybook returns the preview; deploy:savePlaybook writes only that text where the dialog says', async () => {
     const { h, writes, saveDialog } = setup({ path: '/tmp/x/review.yml' })
     expect(await h['deploy:previewPlaybook'](ID)).toEqual({ playbook: PLAYBOOK, sha256: HASH })

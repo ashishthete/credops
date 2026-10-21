@@ -356,10 +356,15 @@ export class HubReleases {
     return res
   }
 
-  /** The playbook a start would run, for review on the desktop. Generating it writes nothing and takes no lock. */
+  /**
+   * The playbook a start would run, for review on the desktop. Generating it writes nothing and takes no lock.
+   * It is a read: a refusal writes no audit row (like `detail`, and like the desktop's own preview).
+   */
   async previewPlaybook(user: HubUser, releaseId: string): Promise<PlaybookPreview> {
     const { environmentId } = this.known(releaseId)
-    this.allow(user, 'release.start', environmentId, this.deploymentsOf(releaseId), 'release.start', releaseId)
+    const deploymentIds = this.deploymentsOf(releaseId)
+    const decision = decide(user, this.d.directory.listGroups(), 'release.start', { environmentId, ...(deploymentIds.length ? { deploymentIds } : {}) })
+    if (!decision.allowed) throw new HubHttpError(403, 'forbidden', decision.reason)
     try {
       return await this.service.previewPlaybook(releaseId, { actor: this.actorOf(user) })
     } catch (err) {

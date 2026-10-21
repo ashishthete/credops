@@ -14,6 +14,7 @@ import {
   type DeploymentRunStatus,
   type DockerMode,
   PLAYBOOK_CHANGED_MESSAGE,
+  REVIEW_EXPIRED_MESSAGE,
   type PlaybookPreview,
   type PreflightCheck,
   type PreflightReport,
@@ -164,8 +165,12 @@ export { PLAYBOOK_CHANGED_MESSAGE }
 /**
  * How long a review keeps its start time. The lock a start writes carries that time (it is part of the
  * reviewed text), so an older review would make a fresh lock look old; past this it is reviewed again.
+ * Within it, the host lock and its "started N minutes ago" can be up to this much older than the real
+ * start (the release row keeps the real time), which brings LOCK_STALE_MS that much closer.
  */
 export const PREVIEW_TTL_MS = 30 * 60_000
+/** Reviews are dropped from memory after this; a ready release expires well before. */
+const PREVIEW_KEEP_MS = 24 * 60 * 60_000
 export const RESET_CUT_ROLLBACK = 'Cancelled by a vault reset; the rollback did not finish'
 const TAG_FAILED = 'Deployed, but tagging'
 const STALE_TEXT = (minutes: number, who: string): string => `The lock is only ${minutes} minutes old; wait or ask ${who}`
@@ -179,8 +184,11 @@ export class ReleaseService {
   private readonly steps = new Map<string, DeploymentRunMeta['steps']>()
   /** Runs whose step list changed since the last flush; written in the same transaction as the events. */
   private readonly dirty = new Set<string>()
-  /** Per ready release, the start time its last review generated with. Memory only: a preview writes nothing. */
-  private readonly previews = new Map<string, { startedAt: string; at: number }>()
+  /**
+   * Per ready release and person (`reviewKey`), the start time their last review generated with, so two people
+   * reviewing one Hub release don't undo each other's review. Memory only: a preview writes nothing.
+   */
+  private readonly previews = new Map<string, { releaseId: string; startedAt: string; at: number }>()
   private timer: unknown = null
   private readonly unsubscribe: () => void
 
@@ -376,8 +384,8 @@ export class ReleaseService {
     const now = this.d.now()
     const startedAt = now.toISOString()
     const { playbook } = this.releasePlan(rel, env, actor, startedAt)
-    for (const [id, p] of this.previews) if (now.getTime() - p.at > PREVIEW_TTL_MS) this.previews.delete(id)
-    this.previews.set(releaseId, { startedAt, at: now.getTime() })
+    for (const [k, p] of this.previews) if (now.getTime() - p.at > PREVIEW_KEEP_MS) this.previews.delete(k)
+    this.previews.set(reviewKey(releaseId, actor), { releaseId, startedAt, at: now.getTime() })
     return { playbook, sha256: sha256(playbook) }
   }
 
@@ -402,16 +410,18 @@ export class ReleaseService {
     if (redeploy && confirm.redeploy !== true) throw new DeployError('CONFIRM_REQUIRED', REDEPLOY_CONFIRM_MESSAGE)
 
     this.assertCapacity(env)
-    const reviewed = confirm.playbookSha256 !== undefined ? this.previews.get(releaseId) : undefined
-    const fresh = reviewed !== undefined && this.d.now().getTime() - reviewed.at <= PREVIEW_TTL_MS
-    const built = this.releasePlan(rel, env, actor, fresh ? reviewed.startedAt : this.d.now().toISOString())
+    const reviewed = confirm.playbookSha256 !== undefined ? this.previews.get(reviewKey(releaseId, actor)) : undefined
+    if (reviewed !== undefined && this.d.now().getTime() - reviewed.at > PREVIEW_TTL_MS) {
+      throw new DeployError('INVALID_STATE', REVIEW_EXPIRED_MESSAGE)
+    }
+    const built = this.releasePlan(rel, env, actor, reviewed?.startedAt ?? this.d.now().toISOString())
     if (confirm.playbookSha256 !== undefined && sha256(built.playbook) !== confirm.playbookSha256) {
       throw new DeployError('INVALID_STATE', PLAYBOOK_CHANGED_MESSAGE)
     }
     const live = this.register(releaseId, env, 'release', rel.version ?? 'release', actor)
     let run: { infos: Info[]; holder: Holder; tag: string | null; autoRollback: boolean; previousVersion: string | null; version: string | null }
     try {
-      this.previews.delete(releaseId)
+      this.dropPreviews(releaseId)
       const infos = this.infosOf(rel)
       for (const i of infos) live.runIds.add(i.run.id)
       const settings = this.d.deploys.settings(env.id)
@@ -443,6 +453,10 @@ export class ReleaseService {
       this.unregister(live)
       throw e
     }
+  }
+
+  private dropPreviews(releaseId: string): void {
+    for (const [k, p] of this.previews) if (p.releaseId === releaseId) this.previews.delete(k)
   }
 
   private assertStartable(rel: ReleaseDetail): void {
@@ -876,7 +890,7 @@ export class ReleaseService {
       this.push(releaseId, { type: 'run.finished', status: 'cancelled' })
       this.flush()
     }
-    this.previews.delete(releaseId)
+    this.dropPreviews(releaseId)
     this.d.releases.setStatus(releaseId, 'discarded', { finishedAt: this.d.now().toISOString() })
     this.emitState(releaseId)
     this.auditRelease(actor, 'release.discard', 'success', releaseId, env.name, rel.version ?? 'release', {})
@@ -1692,6 +1706,11 @@ function serviceCommits(infos: Info[], commits: PreflightReport['commits']): Pre
     }
   }
   return out
+}
+
+/** A review belongs to one person: the Hub user when there is one, else the OS user on the machine. */
+function reviewKey(releaseId: string, actor: Actor): string {
+  return JSON.stringify([releaseId, actor.hubUserId ?? null, actor.osUser, actor.machine])
 }
 
 function sha256(text: string): string {

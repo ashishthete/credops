@@ -93,8 +93,9 @@ export function createDeployHandlers(deps: {
     // rollback (`release:rollback`) generate their own playbook from a finished release and are exempt.
     'release:start': async (id, confirm) => {
       if (confirm?.playbookSha256 === undefined) throw new DeployError('CONFIRM_REQUIRED', REVIEW_REQUIRED_MESSAGE)
+      await releases.start(id, confirm)
+      // Only once started: a start refused for another reason (busy, capacity) leaves the review on screen valid.
       reviewed.delete(id)
-      return releases.start(id, confirm)
     },
     'release:cancel': (id) => releases.cancel(id),
     'release:rollback': (id, confirm) => releases.rollback(id, confirm),
