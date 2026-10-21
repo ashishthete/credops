@@ -1253,16 +1253,22 @@ export class ReleaseService {
     }
     if (moved.size === 0) return
     if (src.status === 'rolled_back') throw new DeployError('INVALID_STATE', 'Nothing to roll back: this release was already rolled back')
-    const parts = [...moved].map(([id, names]) => `${listNames(names)} ${names.length === 1 ? 'is' : 'are'} now on ${id === null ? 'no recorded release' : `release ${this.releaseLabel(id)}`}`)
+    const parts = [...moved].map(([id, names]) => `${listNames(names)} ${names.length === 1 ? 'is' : 'are'} now on ${id === null ? 'no recorded release' : this.releaseLabel(id)}`)
     throw new DeployError('INVALID_STATE', `Can't roll back: ${parts.join('; ')}`)
   }
 
+  /** "release 1.4.0", or "the rollback of 1.4.0"; a release with no version goes by its id's first 8 characters. */
   private releaseLabel(id: string): string {
-    try {
-      return this.d.releases.get(id).version ?? id.slice(0, 8)
-    } catch {
-      return id.slice(0, 8)
+    const summary = (x: string): ReleaseSummary | null => {
+      try {
+        return this.d.releases.get(x)
+      } catch {
+        return null
+      }
     }
+    const rel = summary(id)
+    if (rel?.kind === 'rollback' && rel.rollbackOf !== null) return `the rollback of ${summary(rel.rollbackOf)?.version ?? rel.rollbackOf.slice(0, 8)}`
+    return `release ${rel?.version ?? id.slice(0, 8)}`
   }
 
   /** Runs that ended succeeded fill their entries' deployedCommit and become their services' last deploy. */
@@ -1291,7 +1297,7 @@ export class ReleaseService {
   private restoreServices(live: Live, runs: { services: RunService[]; commit: string | null }[], before: string): void {
     try {
       this.d.services.recordDeployed(
-        runs.flatMap((r) => r.services.map((e) => ({ serviceId: e.id, commit: shaOrNull(r.commit), releaseId: this.d.releases.previousTouching(e.id, before)?.releaseId ?? null }))),
+        runs.flatMap((r) => r.services.map((e) => ({ serviceId: e.id, commit: shaOrNull(r.commit), releaseId: this.d.releases.previousRelease(e.id, before) }))),
       )
     } catch (e) {
       console.warn(this.red(live, `Restoring the deployed commits failed: ${e instanceof Error ? e.message : String(e)}`))

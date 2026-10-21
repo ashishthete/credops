@@ -308,16 +308,26 @@ export class ReleaseStore {
    * The newest started release before `beforeReleaseId` whose run for the service succeeded, with the commit it
    * deployed. A rollback release's runs end `rolled_back` when they succeed; a release that was rolled back no longer counts.
    */
-  previousTouching(serviceId: string, beforeReleaseId: string): { releaseId: string; commit: string | null } | null {
+  previousTouching(serviceId: string, beforeReleaseId: string): { releaseId: string; commit: string | null; rollbackOf: string | null } | null {
     const row = this.db
       .prepare(
-        `SELECT r.id AS release_id, j.value ->> '$.deployedCommit' AS commit_sha
+        `SELECT r.id AS release_id, j.value ->> '$.deployedCommit' AS commit_sha, CASE WHEN r.kind = 'rollback' THEN r.rollback_of END AS rollback_of
          FROM releases r JOIN deployment_runs d ON d.release_id = r.id, json_each(d.services) j
          WHERE r.started_at IS NOT NULL AND r.id < ? AND j.value ->> '$.id' = ? AND ${DEPLOYED}
          ORDER BY r.id DESC LIMIT 1`,
       )
-      .get(beforeReleaseId, serviceId) as { release_id: string; commit_sha: string | null } | undefined
-    return row ? { releaseId: row.release_id, commit: row.commit_sha } : null
+      .get(beforeReleaseId, serviceId) as { release_id: string; commit_sha: string | null; rollback_of: string | null } | undefined
+    return row ? { releaseId: row.release_id, commit: row.commit_sha, rollbackOf: row.rollback_of } : null
+  }
+
+  /**
+   * The release (never a rollback) the service was on before `beforeReleaseId`: a rollback found on the way stands for
+   * the release it restored, the one before the release it undid.
+   */
+  previousRelease(serviceId: string, beforeReleaseId: string): string | null {
+    let hit = this.previousTouching(serviceId, beforeReleaseId)
+    while (hit !== null && hit.rollbackOf !== null) hit = this.previousTouching(serviceId, hit.rollbackOf)
+    return hit?.releaseId ?? null
   }
 
   updateRun(runId: string, patch: RunPatch): void {

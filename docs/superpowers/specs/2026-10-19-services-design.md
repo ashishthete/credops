@@ -196,9 +196,10 @@ migration 7 in place (see Migration below).
      run for it did not record a commit, the release it was on before).
 
    Otherwise the rollback is refused, and the refusal names each service and
-   the release it is now on; a release already rolled back says so. A
+   the release it is now on (a rollback reads "the rollback of …"); a release
+   already rolled back says so. A
    rollback sets `last_release_id` back to the release before the one it
-   undid, so "the new release failed, roll back one more" works whether the
+   undid (always a release, never a rollback), so "the new release failed, roll back one more" works whether the
    newer release was rolled back automatically or by hand, and rolling back
    the same release twice is refused. On rollback, each service's
    `last_deployed_commit` is set to the commit the rollback checked out for

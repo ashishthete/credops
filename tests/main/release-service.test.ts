@@ -1218,8 +1218,38 @@ describe('per-service record', () => {
       // R2's previous commit is R1's failed one: rolling R2 back now would put it back.
       const err = await r.svc.rollback(r2, {}).catch((e: unknown) => e)
       expect(err).toBeInstanceOf(DeployError)
-      expect((err as DeployError).message).toBe(`Can't roll back: esg is now on release ${rb1.slice(0, 8)}`)
+      expect((err as DeployError).message).toBe(`Can't roll back: esg is now on the rollback of ${r1.slice(0, 8)}`)
       expect(r.runner.kinds.filter((k) => k === 'rollback')).toHaveLength(1)
+    }
+  })
+
+  it('after rolling back R2, a later R3 undone by hand or automatically leaves R1 on record and rollbackable', async () => {
+    for (const auto of [false, true]) {
+      const { r, esg } = await platformRig()
+      const r1 = await release(r, [esg.id], A, B)
+      const r2 = await release(r, [esg.id], B, C)
+      await r.svc.rollback(r2, {})
+      await r.svc.whenIdle()
+      if (auto) {
+        const id = await ready(r, [], { serviceIds: [esg.id] })
+        r.runner.on.release = (plan) => {
+          const [x] = runIds(plan)
+          return { exitCode: 2, failedDeploymentRunIds: [x], reachedCheckout: [x], commits: { [x]: { previous: B, deployed: C } } }
+        }
+        await r.svc.start(id, {})
+        await r.svc.whenIdle()
+        expect(r.svc.detail(id).status).toBe('rolled_back')
+      } else {
+        const r3 = await release(r, [esg.id], B, C)
+        await r.svc.rollback(r3, {})
+        await r.svc.whenIdle()
+      }
+      // The record names the release the host is back on, never a rollback.
+      expect(last(r, esg.id)).toEqual([B, r1])
+      const { releaseId } = await r.svc.rollback(r1, {})
+      await r.svc.whenIdle()
+      expect(r.svc.detail(releaseId).status).toBe('succeeded')
+      expect(last(r, esg.id)).toEqual([A, null])
     }
   })
 
