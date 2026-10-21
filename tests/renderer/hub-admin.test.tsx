@@ -9,7 +9,7 @@ import { GrantPicker } from '../../src/renderer/src/pages/hub/GrantPicker'
 import { HubPage } from '../../src/renderer/src/pages/hub/HubPage'
 import { clearToasts, Toaster } from '../../src/renderer/src/ui/Toaster'
 import { DEFAULT_GROUP_ID, type GrantScope, type HubCatalogEnv, type HubGroup, type HubSecretList, type HubStatus } from '../../src/shared/hub'
-import { deploymentMeta, environment, host, mockBridge } from './helpers'
+import { deploymentMeta, environment, host, mockBridge, product } from './helpers'
 
 const motion = vi.hoisted(() => ({ safe: true }))
 vi.mock('../../src/renderer/src/ui/motion', async (importOriginal) => ({
@@ -185,6 +185,27 @@ describe('hub admin panels', () => {
     await user.click(add)
     expect(added).toEqual([{ kind: 'all' }, { kind: 'environment', environmentId: 'e2' }, { kind: 'deployment', environmentId: 'e1', deploymentId: 'e1-d1' }])
     stop()
+  })
+
+  it("groups local environments under their product; Hub-only ones stay as they are", async () => {
+    const shop = product({ id: 'p1', name: 'Shop', environmentIds: ['e9', 'e1'] })
+    const env = (id: string, name: string) => environment({ id, name, productId: 'p1' })
+    await renderHub({ 'product:list': [shop], 'env:list': [env('e1', 'staging'), env('e9', 'qa')], 'hub:adminEnvironments': [catalogEnv('e1', 'staging'), catalogEnv('e5', 'team-only')] }, 'Environments')
+    const group = await screen.findByRole('region', { name: 'Shop' })
+    // In the product's order, not the inventory's.
+    expect(within(group).getAllByRole('heading', { level: 3 }).map((h) => h.textContent)).toEqual(['Shop', 'qa', 'staging'])
+    expect(within(group).queryByText('team-only')).toBeNull()
+    expect(screen.getByText('team-only')).toBeInTheDocument()
+
+    // The grant picker groups the same way, with the inventory already loaded.
+    cleanup()
+    render(<GrantPicker groupName="Ops" onAdd={() => {}} />)
+    await userEvent.setup().selectOptions(screen.getByLabelText('Grant scope for Ops'), 'environment')
+    const select = screen.getByLabelText('Environment for Ops')
+    const optgroup = within(select).getByRole('group', { name: 'Shop' })
+    expect(within(optgroup).getAllByRole('option').map((o) => o.textContent)).toEqual(['staging'])
+    // The Hub-only environment stays a plain option.
+    expect(within(select).getByRole('option', { name: 'team-only' }).closest('optgroup')).toBeNull()
   })
 
   it('groups panel adds a scoped grant through the picker', async () => {

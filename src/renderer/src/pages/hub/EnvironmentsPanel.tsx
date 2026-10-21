@@ -10,6 +10,7 @@ import { Button } from '../../ui/Button'
 import { ConfirmDialog, plural, type ConfirmRequest } from '../../ui/common'
 import { EmptyState } from '../../ui/EmptyState'
 import { toast } from '../../ui/Toaster'
+import { byLocalProduct } from './names'
 import { ListSkeleton } from './shared'
 
 const counts = (hosts: number, services: number, deployments: number) =>
@@ -23,12 +24,21 @@ export function EnvironmentsPanel({ onOpenSecrets }: { onOpenSecrets: () => void
   if (!adminLoaded || !data) return <ListSkeleton />
   const published = new Map(adminEnvs.map((e) => [e.environment.id, e]))
   const hubOnly = adminEnvs.filter((e) => !data.environments.some((l) => l.id === e.environment.id))
+  const { groups, rest } = byLocalProduct(data.environments, (e) => e.id, data)
   if (data.environments.length === 0 && hubOnly.length === 0) {
     return <EmptyState icon={Cloud} title="No environments yet" text="Create an environment in the inventory, then publish it here for your team." />
   }
   return (
     <div className="flex max-w-3xl flex-col gap-3">
-      {data.environments.map((env) => (
+      {groups.map((g) => (
+        <section key={g.id} aria-label={g.name} className="flex flex-col gap-3">
+          <h3 className="mt-1 text-[11px] font-medium tracking-wide text-muted uppercase">{g.name}</h3>
+          {g.items.map((env) => (
+            <LocalEnvRow key={env.id} env={env} hub={published.get(env.id) ?? null} onConfirm={setConfirm} onOpenSecrets={onOpenSecrets} />
+          ))}
+        </section>
+      ))}
+      {rest.map((env) => (
         <LocalEnvRow key={env.id} env={env} hub={published.get(env.id) ?? null} onConfirm={setConfirm} onOpenSecrets={onOpenSecrets} />
       ))}
       {hubOnly.map((hub) => (
