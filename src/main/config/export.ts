@@ -33,11 +33,12 @@ type Row = Record<string, unknown>
 // Export-only rules, wider than the stores' SENSITIVE_KEY (which stays as it is so stored templates and older
 // files keep validating). They err toward blanking too much: a blanked value is easy to re-enter, a leaked one is not.
 const EXPORT_SECRET_NAME = /PASS|PWD|TOKEN|SECRET|KEY|CREDENTIAL|PRIVATE|AUTH|DSN|SALT|COOKIE|SESSION|WEBHOOK|CERT|SIGNATURE/i
-/** A URL with a password in its userinfo, wherever it sits in the value. */
-const URL_USERINFO_VALUE = /[a-z][a-z0-9+.-]*:\/\/[^\s/@]*:[^\s/@]*@/i
-const SECRET_REF_IN_VALUE = /\$\{secret:[^}]*\}/
+/** A URL with a password in its userinfo, or any http(s) userinfo (a bare token), wherever it sits in the value. */
+const URL_USERINFO_VALUE = /https?:\/\/[^\s/@]*@|[a-z][a-z0-9+.-]*:\/\/[^\s/@]*:[^\s/@]*@/i
+/** A value that is exactly one secret ref: the only form the store reads as a ref. */
+const WHOLE_SECRET_REF = /^\$\{secret:[^}]*\}$/
 /** Query or fragment parameters, with the delimiter kept. */
-const URL_PARAM = /([?&#;])([^=&#;\s]*)=([^&#;\s]*)/g
+const URL_PARAM = /([?&#;])([^=&#;?\s]*)=([^&#;?\s]*)/g
 
 const byId = <T extends { id: string }>(xs: T[]): T[] => xs.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
 const byKey = <T>(xs: T[], key: (x: T) => string): T[] => xs.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0))
@@ -205,14 +206,15 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: numbe
     template
       .split('\n')
       .map((line) => {
+        // A commented-out assignment (`# KEY=value`) is checked like a live one.
+        const comment = /^(\s*#\s*)([A-Za-z_][A-Za-z0-9_]*)=(.+)$/.exec(line.replace(/\r$/, ''))
         const eq = line.indexOf('=')
-        if (eq <= 0 || line.trimStart().startsWith('#')) return line
-        const key = line.slice(0, eq)
-        const value = line.slice(eq + 1).replace(/\r$/, '')
-        if (value === '' || SECRET_REF_IN_VALUE.test(value)) return line
+        if (!comment && (eq <= 0 || line.trimStart().startsWith('#'))) return line
+        const [prefix, key, value] = comment ? [comment[1], comment[2], comment[3]] : ['', line.slice(0, eq), line.slice(eq + 1).replace(/\r$/, '')]
+        if (value === '' || WHOLE_SECRET_REF.test(value)) return line
         if (!EXPORT_SECRET_NAME.test(key) && !URL_USERINFO_VALUE.test(value)) return line
         omitted++
-        return `${key}=${line.endsWith('\r') ? '\r' : ''}`
+        return `${prefix}${key}=${line.endsWith('\r') ? '\r' : ''}`
       })
       .join('\n')
   const rewrite = (template: string | null): string | null =>

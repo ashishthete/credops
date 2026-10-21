@@ -223,6 +223,27 @@ describe('config export', () => {
     expect(again.file.products[0].repoUrl).toBe('ssh://u@host/r')
   })
 
+  it('template lines: only a whole ref is exempt, comments are checked, a bare http(s) token counts, a stray ? does not hide params', async () => {
+    const f = await makeConfigFixture()
+    const ref = '${secret:0190a1b2-c3d4-4e5f-8a6b-aaaaaaaaaaaa}'
+    f.db
+      .prepare('UPDATE deployments SET env_template = ?, urls = ?, repo_url = ? WHERE id = ?')
+      .run(
+        ['DB_PASS=fakepw1' + ref, '# DB_PASS=fakepw2', '# note: plain words', 'GIT_REMOTE=https://faketok3@github.com/x', 'APP_ENV=staging', ''].join('\n'),
+        JSON.stringify([{ url: 'https://app.example/h?a=1?token=faketok4', from: 'mac' }]),
+        null,
+        f.ids.deployment,
+      )
+    const { file, omitted } = buildConfigExport(f.db, clock)
+    const [d] = file.deployments
+    // The deleted ref inside DB_PASS goes with its whole line; the comment note stays.
+    expect(d.envTemplate).toBe(['DB_PASS=', '# DB_PASS=', '# note: plain words', 'GIT_REMOTE=', 'APP_ENV=staging', ''].join('\n'))
+    expect(d.urls[0].url).toBe('https://app.example/h?a=1?token=')
+    expect(omitted).toBe(4)
+    expect(serializeConfig(file)).not.toMatch(/fakepw|faketok/)
+    expect(parseConfigFile(serializeConfig(file)).ok).toBe(true)
+  })
+
   it('env template secret refs become ref-N with vault and item names', async () => {
     const f = await makeConfigFixture()
     const { file } = buildConfigExport(f.db, clock)
