@@ -5,6 +5,7 @@ import { INTERRUPTED_MESSAGE } from '../../src/main/deploy/release-store'
 import { RESET_CUT_ROLLBACK } from '../../src/main/deploy/release-service'
 import { REDACTED } from '../../src/main/security/redact'
 import type { DeployPlan } from '../../src/main/deploy/runner'
+import { generatePlaybook } from '../../src/main/deploy/generate'
 import { ToolingError } from '../../src/main/deploy/tooling'
 import { CONFIRM_MESSAGE } from '../../src/shared/ops'
 import { BREAK_LOCK_CONFIRM_MESSAGE, DEFAULT_RELEASE_OPTIONS, PREPARE_FAILED_MESSAGE, PREPARE_FETCH_FAILED_MESSAGE, type CommitInfo, type DeploymentMeta, type PreflightCheck, type RunEvent } from '../../src/shared/deploy'
@@ -1912,6 +1913,40 @@ describe('ReleaseService operations', () => {
     expect(unlocks.find((p) => p.releaseId === free)?.killBuilds).toBeUndefined()
   })
 
+  it('an operation unlocks after it fails and after it is cancelled, and its unlock never stops builds', async () => {
+    const r = await rig()
+    const d = dep(r, 'api')
+    const ids = tracked(r, d).map((x) => x.id)
+    r.runner.on.operation = () => ({ exitCode: 2 })
+    const bad = await opReady(r, runbook(r, ids))
+    await r.svc.start(bad, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(bad).status).toBe('failed')
+    expect(r.runner.kinds.slice(-2)).toEqual(['operation', 'unlock'])
+    const g = gate()
+    r.runner.onCancel = g.open
+    r.runner.on.operation = async () => {
+      await g.p
+      return { cancelled: true, exitCode: null }
+    }
+    const stopped = await opReady(r, runbook(r, ids, { name: 'Bounce 2' }))
+    await r.svc.start(stopped, {})
+    await r.svc.cancel(stopped)
+    await r.svc.whenIdle()
+    expect(r.svc.detail(stopped).status).toBe('cancelled')
+    expect(r.runner.kinds.slice(-2)).toEqual(['operation', 'unlock'])
+    expect(r.svc.hasActive()).toBe(false)
+    const unlocks = r.runner.calls.filter((c) => c.plan.kind === 'unlock').map((c) => c.plan)
+    expect(unlocks.map((p) => p.releaseId)).toEqual([bad, stopped])
+    for (const p of unlocks) {
+      expect(p).not.toHaveProperty('killBuilds')
+      expect(generatePlaybook(p)).not.toMatch(/kill_pids|kill -/)
+    }
+    // The same unlock with builds to stop does carry the kill, so the check above is not vacuous.
+    const withKill = { ...unlocks[0], killBuilds: [{ runId: unlocks[0].deployments[0]?.runId ?? 'r', repoPath: '/srv/api' }] }
+    expect(generatePlaybook(withKill as DeployPlan)).toMatch(/kill_pids/)
+  })
+
   it('an operation on a protected environment needs the typed name, audited as ops.run', async () => {
     const r = await rig()
     r.f.envs.putHost(r.f.prod.id, r.f.host.id, 'app')
@@ -1921,6 +1956,7 @@ describe('ReleaseService operations', () => {
     const err = await r.svc.start(id, {}).catch((e: unknown) => e)
     expect((err as DeployError).code).toBe('CONFIRM_REQUIRED')
     expect(audits(r, 'ops.run').map((e) => e.outcome)).toEqual(['denied'])
+    expect(audits(r, 'ops.run')[0].details).toMatchObject({ reason: 'confirm', name: rb.name, serviceCount: rb.targetServiceIds.length })
     expect(r.runner.kinds).toEqual(['preflight'])
     await r.svc.start(id, { typedName: 'prod' })
     await r.svc.whenIdle()
@@ -1964,7 +2000,23 @@ describe('ReleaseService operations', () => {
     expect(await code(r.svc.preflightOperation({ ...base, serviceIds: [] }))).toBe('VALIDATION')
     expect(await code(r.svc.preflightOperation({ ...base, params: { target: 'no spaces' } }))).toBe('VALIDATION')
     expect(await code(r.svc.preflightOperation({ ...base, params: {} }))).toBe('VALIDATION')
-    expect(await code(r.svc.preflightOperation({ ...base, environmentId: r.f.prod.id }))).toBe('VALIDATION')
+    // Services from another environment fail the selection, as a release preflight's do, before the runbook is read.
+    expect(await code(r.svc.preflightOperation({ ...base, environmentId: r.f.prod.id }))).toBe('INVALID_STATE')
+    expect(r.runner.kinds).toEqual([])
+  })
+
+  it('preflightOperation checks access before it reads the runbook: a denied caller learns nothing about it', async () => {
+    const r = await rig({ access: { check: async (_a, action) => (action === 'ops.run' ? { allowed: false, reason: 'no' } : { allowed: true }) } })
+    const d = dep(r, 'api')
+    const rb = bounce(r, tracked(r, d).map((x) => x.id))
+    const base = { environmentId: r.f.staging.id, runbookId: rb.id, serviceIds: rb.targetServiceIds, params: { target: 'ok' } }
+    const code = (p: Promise<unknown>) => p.then(() => null, (e: unknown) => (e as DeployError).code)
+    for (const req of [base, { ...base, runbookId: '00000000-0000-4000-8000-000000000000' }, { ...base, params: { target: 'no spaces' } }, { ...base, params: {} }]) {
+      expect(await code(r.svc.preflightOperation(req))).toBe('DENIED')
+    }
+    const denied = audits(r, 'ops.preflight')
+    expect(denied.map((e) => e.outcome)).toEqual(['denied', 'denied', 'denied', 'denied'])
+    expect(JSON.stringify(denied)).not.toContain(rb.name)
     expect(r.runner.kinds).toEqual([])
   })
 

@@ -115,8 +115,10 @@ export class HubRunner implements ReleaseApi {
     throw new Error('Release notes of a Hub release are set when it is prepared')
   }
 
+  /** The Hub runs no operations, so every row is a release: `operations` is the router's to apply, never sent. */
   async list(filter: ReleaseListFilter = {}): Promise<ReleaseSummary[]> {
-    const rows = await this.d.client().get<ReleaseSummary[]>('/api/v1/releases', { ...filter })
+    const { operations: _operations, ...query } = filter
+    const rows = await this.d.client().get<ReleaseSummary[]>('/api/v1/releases', query)
     for (const r of rows) this.remember(r.id, r.environmentName)
     return rows
   }
@@ -289,7 +291,8 @@ export class RoutingReleases implements ReleaseApi {
   async list(filter: ReleaseListFilter = {}): Promise<ReleaseSummary[]> {
     const env = filter.environmentId
     const hubOnly = env !== undefined && this.d.isHubEnv(env)
-    const localOnly = env !== undefined && !hubOnly
+    // The Hub has no operations yet: an operations-only list never asks it.
+    const localOnly = (env !== undefined && !hubOnly) || filter.operations === 'only'
     const local = hubOnly ? [] : await this.d.local.list(filter)
     const hub = localOnly ? [] : await this.fromHub(() => this.d.hub.list(filter))
     return this.merge(local, hub, filter.limit)

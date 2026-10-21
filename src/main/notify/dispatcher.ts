@@ -178,9 +178,10 @@ export class NotificationDispatcher {
       .filter((c) => c.subjects.length > 0)
     const what = run.kind === 'rollback' ? 'Rollback' : 'Release'
     const env = this.environment(run.environmentId, run.environmentName).name
+    if (run.operation) return this.factsForOperation(run, run.operation, env, status, event)
     return {
       event,
-      title: run.operation ? `Operation ${run.operation.name} on ${env}` : `${run.productName ? `${run.productName} ` : ''}${what} on ${env}`,
+      title: `${run.productName ? `${run.productName} ` : ''}${what} on ${env}`,
       environment: this.environment(run.environmentId, run.environmentName),
       product: run.productName,
       deployment: names.length ? names.join(', ') : null,
@@ -194,6 +195,35 @@ export class NotificationDispatcher {
       startedAt: run.startedAt,
       commitCount: run.commits.length,
       changes: byDeployment,
+    }
+  }
+
+  /** One line, no rows: the runbook, the environment, the outcome and a service count. Never a host or a checkout. */
+  private factsForOperation(
+    run: ReleaseRunMeta,
+    op: NonNullable<ReleaseRunMeta['operation']>,
+    env: string,
+    status: NotificationFacts['status'],
+    event: NotifyEventKey,
+  ): NotificationFacts {
+    const n = op.targetServiceIds?.length ?? 0
+    return {
+      event,
+      title: `Operation ${op.name} on ${env}`,
+      environment: this.environment(run.environmentId, run.environmentName),
+      product: null,
+      deployment: null,
+      hosts: [],
+      status,
+      version: null,
+      durationSec: null,
+      urls: [],
+      actor: `${run.actor.osUser}@${run.actor.machine}`,
+      at: this.now().toISOString(),
+      startedAt: run.startedAt,
+      commitCount: 0,
+      changes: [],
+      summary: `${op.name} on ${env} ${status === 'succeeded' ? 'succeeded' : 'failed'} · ${n} service${n === 1 ? '' : 's'}`,
     }
   }
 

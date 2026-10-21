@@ -379,15 +379,17 @@ export class ReleaseService {
     const actor = ctx?.actor ?? this.d.actor
     this.d.vault.assertUnlocked()
     if (!this.d.runbooks) throw new DeployError('INVALID_STATE', 'Runbooks are not available here')
-    const rb = this.d.runbooks.get(req.runbookId)
-    if (rb.environmentId !== req.environmentId) throw new DeployError('VALIDATION', 'This runbook belongs to another environment')
-    const targets = new Set(rb.targetServiceIds)
-    if (req.serviceIds.length === 0 || req.serviceIds.some((x) => !targets.has(x))) throw new DeployError('VALIDATION', 'Pick one or more of the services this runbook targets')
-    const params = validateParamValues(rb.params, req.params)
+    if (req.serviceIds.length === 0) throw new DeployError('VALIDATION', 'Pick one or more of the services this runbook targets')
+    // Access first, on the picked services alone: a caller who may not run operations learns nothing about the runbook.
     const env = this.inv.environment(req.environmentId)
     const groups = resolveSelection(env.id, { serviceIds: req.serviceIds, checkoutIds: [] }, { services: this.d.services.list(env.id), deployments: this.d.deploys.list(env.id) })
     const counts = { serviceCount: req.serviceIds.length, deploymentCount: groups.length, hostCount: new Set(groups.map((g) => g.deployment.hostId)).size }
     await this.guard(actor, 'ops.run', 'ops.preflight', env, groups.map((g) => g.deployment.id), undefined, counts)
+    const rb = this.d.runbooks.get(req.runbookId)
+    if (rb.environmentId !== req.environmentId) throw new DeployError('VALIDATION', 'This runbook belongs to another environment')
+    const targets = new Set(rb.targetServiceIds)
+    if (req.serviceIds.some((x) => !targets.has(x))) throw new DeployError('VALIDATION', 'Pick one or more of the services this runbook targets')
+    const params = validateParamValues(rb.params, req.params)
     if (rb.items.some((i) => i.type === 'builtin' && i.builtin === 'backup-db')) {
       const none = groups.find((g) => !g.deployment.dbBackup || !g.deployment.backupDir)
       if (none) throw new DeployError('VALIDATION', `${none.deployment.name} has no database backup set up`)
@@ -711,7 +713,10 @@ export class ReleaseService {
     const releaseId = rel.id
     await this.guard(actor, 'ops.run', 'ops.run', env, this.depIds(rel), releaseId)
     this.assertStatus(releaseId, ['ready'])
-    this.confirmProtected(actor, 'ops.run', { id: releaseId, version: op.name }, env, rel.runs.map((r) => r.hostId).filter((h): h is string => h !== null), confirm.typedName)
+    this.confirmProtected(actor, 'ops.run', { id: releaseId, version: op.name }, env, rel.runs.map((r) => r.hostId).filter((h): h is string => h !== null), confirm.typedName, {
+      name: op.name,
+      ...this.rowCounts(releaseId),
+    })
     this.assertOpCurrent(rel)
     const lockFree = !op.lock && op.readOnly
     this.assertCapacity(env, lockFree)
@@ -1999,7 +2004,16 @@ export class ReleaseService {
   }
 
   /** The typed-name rule of Phase 7: every protected environment the target hosts serve counts, not only this one. */
-  private confirmProtected(actor: Actor, action: AuditAction, rel: { id: string; version: string | null }, env: { id: string; name: string; protected: boolean }, hostIds: string[], typedName: string | undefined): void {
+  /** `details` adds to a refusal's audit row (an operation's name and counts). */
+  private confirmProtected(
+    actor: Actor,
+    action: AuditAction,
+    rel: { id: string; version: string | null },
+    env: { id: string; name: string; protected: boolean },
+    hostIds: string[],
+    typedName: string | undefined,
+    details: Record<string, unknown> = {},
+  ): void {
     const memberships = this.inv.environmentsOfHosts([...new Set(hostIds)])
     let message = CONFIRM_MESSAGE
     try {
@@ -2009,7 +2023,7 @@ export class ReleaseService {
       if (!(e instanceof ProtectError)) throw e
       message = e.message
     }
-    this.auditRelease(actor, action, 'denied', rel.id, env.name, rel.version ?? 'release', { reason: 'confirm' })
+    this.auditRelease(actor, action, 'denied', rel.id, env.name, rel.version ?? 'release', { reason: 'confirm', ...details })
     throw new DeployError('CONFIRM_REQUIRED', message)
   }
 

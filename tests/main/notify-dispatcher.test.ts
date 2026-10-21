@@ -281,14 +281,24 @@ describe('NotificationDispatcher', () => {
       await t.d.onRunEvent(t.ev('op-1', body))
     }
     expect(t.sink.calls).toEqual([])
-    t.meta('op-2', { operation: op, options: { backup: false, notify: true, qa: false }, version: null })
+    t.meta('op-2', { operation: { ...op, targetServiceIds: ['s1', 's2'] }, options: { backup: false, notify: true, qa: false }, version: null })
     await t.d.onRunEvent(t.ev('op-2', { type: 'run.started', kind: 'release', version: null }))
     expect(t.sink.calls).toEqual([])
     await t.d.onRunEvent(t.ev('op-2', { type: 'run.finished', status: 'succeeded' }))
     expect(t.sink.calls.sort()).toEqual(['macos:release.succeeded', 'teams:release.succeeded'])
-    expect(t.sink.facts[0]).toMatchObject({ title: 'Operation Restart api on staging', commitCount: 0, changes: [], version: null })
+    // One line: the runbook, the environment, the outcome and how many services; never a host or a checkout.
+    expect(t.sink.facts[0]).toMatchObject({
+      title: 'Operation Restart api on staging',
+      summary: 'Restart api on staging succeeded · 2 services',
+      deployment: null,
+      hosts: [],
+      urls: [],
+      commitCount: 0,
+      changes: [],
+      version: null,
+    })
     await t.d.onRunEvent(t.ev('op-2', { type: 'run.finished', status: 'failed', error: 'x' }))
-    expect(t.sink.facts.at(-1)).toMatchObject({ event: 'release.failed', title: 'Operation Restart api on staging' })
+    expect(t.sink.facts.at(-1)).toMatchObject({ event: 'release.failed', title: 'Operation Restart api on staging', summary: 'Restart api on staging failed · 2 services', hosts: [] })
   })
 })
 

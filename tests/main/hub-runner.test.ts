@@ -45,10 +45,10 @@ function stub(over: Partial<ReleaseApi> = {}): { [K in keyof ReleaseApi]: Return
 }
 
 function rig(opts: { posts?: (path: string, body: unknown) => unknown; gets?: (path: string) => unknown } = {}) {
-  const calls: { method: string; path: string; body?: unknown }[] = []
+  const calls: { method: string; path: string; body?: unknown; query?: unknown }[] = []
   const client = {
-    get: async (path: string) => {
-      calls.push({ method: 'GET', path })
+    get: async (path: string, query?: unknown) => {
+      calls.push(query === undefined ? { method: 'GET', path } : { method: 'GET', path, query })
       return opts.gets?.(path)
     },
     post: async (path: string, body?: unknown) => {
@@ -158,6 +158,21 @@ describe('hub runner and release routing', () => {
     expect(r.calls).toEqual([])
     r.local.listActive.mockResolvedValue([])
     expect((await r.routing.listActive()).map((s) => s.id)).toEqual(['h-2'])
+  })
+
+  it('the Hub runs no operations: operations "only" asks local alone, "exclude" keeps Hub releases and never sends the key', async () => {
+    const hubRows = [summary('h-2', HUB_ENV, '2026-10-20T10:00:00.000Z')]
+    const r = rig({ gets: () => hubRows })
+    const op = { ...summary('l-op', LOCAL_ENV, '2026-10-20T11:00:00.000Z'), operation: { runbookId: 'rb', name: 'Restart', params: {}, readOnly: false, lock: true, targetServiceIds: [] } }
+    r.local.list.mockResolvedValue([op])
+    expect((await r.routing.list({ operations: 'only' })).map((s) => s.id)).toEqual(['l-op'])
+    expect(r.calls).toEqual([])
+    expect(await r.routing.list({ environmentId: HUB_ENV, operations: 'only' })).toEqual([])
+    expect(r.calls).toEqual([])
+    r.local.list.mockResolvedValue([summary('l-1', LOCAL_ENV, '2026-10-20T08:00:00.000Z')])
+    expect((await r.routing.list({ operations: 'exclude' })).map((s) => s.id)).toEqual(['h-2', 'l-1'])
+    expect(r.local.list).toHaveBeenLastCalledWith({ operations: 'exclude' })
+    expect(r.calls).toEqual([{ method: 'GET', path: '/api/v1/releases', query: {} }])
   })
 
   it('offline Hub hides team releases once, local still works', async () => {
