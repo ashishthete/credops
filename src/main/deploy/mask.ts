@@ -30,27 +30,32 @@ function textMask(secrets: readonly string[]): Mask {
   return (s) => redact(s, forms)
 }
 
-const B64_STRING = /"([A-Za-z0-9+/]{4,}={0,2})"/g
+/** The playbook vars that carry text as base64: the hooks, and OpsDeck's own `*_b64` values (the lock file text). */
+const B64_VAR = /("(?:pre_hook|post_hook|[A-Za-z0-9_]*_b64)"\s*:\s*)"((?:[^"\\]|\\.)*)"/g
 const utf8 = new TextDecoder('utf-8', { fatal: true })
 
 /**
- * Hooks are carried in the playbook as base64, where a secret's encoding depends on where it falls in the text, so
- * an encoded form cannot be matched reliably. Instead each base64 string in the playbook is decoded; when it is
- * UTF-8 text holding a known secret or key block, it is masked and encoded again. Anything else stays as it was.
+ * Hooks are carried in the playbook as base64, where a secret's encoding depends on its offset in the hook, so an
+ * encoded form of the secret cannot be matched reliably. Instead each hook var is decoded, masked and encoded again.
+ * A payload that does not decode cleanly to UTF-8 text cannot be checked, so it is replaced by its size.
  */
 function maskBase64(text: string, secrets: readonly string[]): string {
-  return text.replace(B64_STRING, (whole, b64: string) => {
-    if (b64.length % 4 !== 0) return whole
-    const bytes = Buffer.from(b64, 'base64')
-    if (bytes.toString('base64') !== b64) return whole
-    let decoded: string
-    try {
-      decoded = utf8.decode(bytes)
-    } catch {
-      return whole
+  return text.replace(B64_VAR, (whole, key: string, literal: string) => {
+    const value = JSON.parse(`"${literal}"`) as string
+    if (value === '') return whole
+    const bytes = Buffer.from(value, 'base64')
+    const clean = value.length % 4 === 0 && bytes.toString('base64') === value
+    let decoded: string | null = null
+    if (clean) {
+      try {
+        decoded = utf8.decode(bytes)
+      } catch {
+        decoded = null
+      }
     }
+    if (decoded === null) return key + JSON.stringify(`‹hook, ${clean ? bytes.length : Buffer.byteLength(value)} bytes›`)
     const masked = redact(decoded, secrets)
-    return masked === decoded ? whole : `"${Buffer.from(masked, 'utf8').toString('base64')}"`
+    return masked === decoded ? whole : key + JSON.stringify(Buffer.from(masked, 'utf8').toString('base64'))
   })
 }
 

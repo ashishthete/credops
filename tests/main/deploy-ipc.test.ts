@@ -249,6 +249,39 @@ describe('playbook review handlers', () => {
       await rm(dir, { recursive: true, force: true })
     }
   })
+  it('a known secret inside a base64 hook, off a 3-byte boundary, is masked in release:get and the saved file', async () => {
+    const SECRET = 'hunter2-secret-value'
+    const hook = `curl -H "Api-X: ${SECRET}" https://x.example\n`
+    const at = hook.indexOf(SECRET)
+    expect(at % 3).not.toBe(0)
+    const encoded = Buffer.from(hook).toString('base64')
+    // Encoding the secret on its own does not find it inside the hook
+    expect(encoded).not.toContain(Buffer.from(SECRET).toString('base64'))
+    const stored = JSON.stringify([{ hosts: 'od-1', tasks: [{ name: 'pre-hook', vars: { d: { pre_hook: encoded } } }] }], null, 2)
+    const dir = await mkdtemp(join(tmpdir(), 'opsdeck-save-'))
+    try {
+      const path = join(dir, 'release.yml')
+      const handlers = createDeployHandlers({
+        deploys: {} as never,
+        releases: { detail: vi.fn(async () => ({ id: ID, playbook: stored, error: null, preflight: null, runs: [] })) } as unknown as ReleaseService,
+        tooling: async () => ({}) as never,
+        knownSecrets: () => [SECRET],
+        playbookFile: { saveDialog: async () => path, write: (p, text) => writeFile(p, text, 'utf8') },
+      })
+      const h = handlers as unknown as Record<string, (id: string) => Promise<unknown>>
+      const got = (await h['release:get'](ID)) as ReleaseDetail
+      await h['release:savePlaybook'](ID)
+      const written = await readFile(path, 'utf8')
+      expect(written).toBe(got.playbook)
+      for (const text of [got.playbook!, written]) {
+        expect(text).not.toContain(encoded)
+        const b64 = JSON.parse(text)[0].tasks[0].vars.d.pre_hook as string
+        expect(Buffer.from(b64, 'base64').toString('utf8')).toBe('curl -H "Api-X: ‹redacted›" https://x.example\n')
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
   it('release:events masks known secret values in main, as a Hub release sends its events unmasked', async () => {
     const SECRET = 'hunter2-secret-value'
     const raw = [{ id: 'e1', runId: ID, seq: 1, at: 'now', type: 'log', stepId: 'r1:health', hostId: 'h1', stream: 'out', line: `GET /?t=${SECRET}` }]

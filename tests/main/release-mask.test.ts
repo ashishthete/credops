@@ -195,4 +195,11 @@ describe('masking only the text fields', () => {
       expect(out).not.toContain(Buffer.from(hook).toString('base64'))
     }
   })
+  it('replaces a hook payload that does not decode cleanly with its size, and keeps an empty hook', () => {
+    const bad = { pre_hook: 'not base64 at all!', post_hook: Buffer.from([0xff, 0xfe, 0x41]).toString('base64'), none: '' }
+    const playbook = JSON.stringify([{ hosts: 'od-1', tasks: [{ vars: { d: { ...bad, other_hook: '', pre: 'x' } } }], vars: { od: { expect_b64: 'bad' } } }], null, 2)
+    const plays = JSON.parse(maskDetail({ ...detail(), playbook }, [SECRET]).playbook!)
+    expect(plays[0].tasks[0].vars.d).toEqual({ pre_hook: '‹hook, 18 bytes›', post_hook: '‹hook, 3 bytes›', none: '', other_hook: '', pre: 'x' })
+    expect(plays[0].vars.od.expect_b64).toBe('‹hook, 3 bytes›')
+  })
 })
