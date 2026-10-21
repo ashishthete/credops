@@ -144,10 +144,6 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
   const reloaded = new Set<string>()
   const touchOnly = (envId: string) => reloaded.add(envId)
   /**
-   * A host now reaches another machine or logs in as someone else: every environment that uses it needs confirming,
-   * directly, as its default jump host, or through hosts that jump through it.
-   */
-  /**
    * The environments that depend on a host: those it is linked to, whose default jump it is, whose services reach
    * through it, or whose checkouts or tunnels run on it; and, through `jump_host_id`, those of every host that jumps
    * through it.
@@ -168,6 +164,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
     for (const h of ids('SELECT id FROM hosts WHERE jump_host_id = ?', hostId)) for (const e of protectedDependents(h, seen)) out.add(e)
     return out
   }
+  /** A host now reaches another machine or logs in as someone else: every environment that depends on it needs confirming. */
   const guardHost = (hostId: string) => {
     for (const e of protectedDependents(hostId)) touch(e)
   }
