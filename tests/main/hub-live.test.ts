@@ -339,6 +339,36 @@ describe('hub live feed', () => {
     expect(seqs(pushed.events)).toEqual([1, 2, 3, 4, 5, 6])
   })
 
+  it('a retry that starts and finishes while the stream is down shows succeeded after reconnect', async () => {
+    const upTo = (n: number) => Array.from({ length: n }, (_, i) => ev(REL, i + 1))
+    const log = new Map([[REL, upTo(2)]])
+    const detail = new Map<string, ReleaseSummary>()
+    const { base } = await start({
+      log,
+      detail,
+      active: () => [],
+      live: [
+        async (res) => {
+          res.write(frame(batch(REL, 1, 2)))
+          res.write(frame({ type: 'release.state', summary: summary(REL, 'failed') }))
+          await new Promise((r) => setTimeout(r, 40))
+          // While the stream is down the retry runs and succeeds.
+          log.set(REL, upTo(4))
+          detail.set(REL, summary(REL, 'succeeded'))
+          res.destroy()
+        },
+        () => undefined,
+      ],
+    })
+    const { feed, pushed, shown } = make(base)
+    feed.start()
+    await vi.waitFor(() => expect(pushed.states.map((s) => s.status)).toEqual(['failed', 'succeeded']))
+    await feed.idle()
+    expect(seqs(pushed.events)).toEqual([1, 2, 3, 4])
+    // The failure and the retry's success each notify once.
+    expect(shown).toHaveLength(2)
+  })
+
   it('a terminal state for a release this client never tracked fetches no events', async () => {
     const log = new Map([[OTHER, Array.from({ length: 50 }, (_, i) => ev(OTHER, i + 1))]])
     const { base, seen } = await start({

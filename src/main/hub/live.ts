@@ -11,6 +11,8 @@ const MAX_FRAME_BYTES = 8 * 1024 * 1024
 /** Releases whose last seq is remembered; the oldest are forgotten first. */
 const MAX_TRACKED = 200
 
+/** How many recent failed releases a reconnect re-reads. */
+const RECHECK = 10
 const TERMINAL = new Set<ReleaseSummary['status']>(['succeeded', 'failed', 'rolled_back'])
 const EVENT_OF: Record<string, NotifyEventKey> = { succeeded: 'release.succeeded', failed: 'release.failed', rolled_back: 'release.rolled_back' }
 
@@ -79,7 +81,7 @@ export class LiveFeed {
   private readonly last = new Map<string, number>()
   private readonly notified = new Set<string>()
   /** Releases whose terminal state was seen (capped), with the last seq shown: late events are dropped, and a retry resumes from that seq. */
-  private readonly finished = new Map<string, number | null>()
+  private readonly finished = new Map<string, { seq: number | null; status: string }>()
   private readonly listeners = new Set<(batch: RunEvent[]) => void>()
   private chain: Promise<void> = Promise.resolve()
 
@@ -178,8 +180,33 @@ export class LiveFeed {
         const done = await this.d.client().get<ReleaseSummary>(`/api/v1/releases/${id}`)
         if (!signal.aborted) {
           this.state(done)
-          if (TERMINAL.has(done.status)) this.finish(id)
+          if (TERMINAL.has(done.status)) this.finish(id, done.status)
         }
+      } catch (err) {
+        if (!this.gone(err)) throw err
+        this.forget(id)
+      }
+    }
+    await this.recheckFailed(running, signal)
+  }
+
+  /**
+   * A failed release can be retried (same id) and finish while the stream is down; nothing else would look at it again.
+   * Only the most recent few failures are re-read, so a reconnect stays cheap.
+   */
+  private async recheckFailed(running: Set<string>, signal: AbortSignal): Promise<void> {
+    const failed = [...this.finished].filter(([id, f]) => f.status === 'failed' && !running.has(id)).slice(-RECHECK)
+    for (const [id, f] of failed) {
+      if (signal.aborted) return
+      try {
+        const done = await this.d.client().get<ReleaseSummary>(`/api/v1/releases/${id}`)
+        if (signal.aborted || done.status === f.status) continue
+        // It ran again: show its events and final state, and let its new outcome notify.
+        this.notified.delete(id)
+        this.state(done)
+        if (!this.last.has(id) && f.seq != null) this.last.set(id, f.seq)
+        await this.backfill(id, signal)
+        if (TERMINAL.has(done.status)) this.finish(id, done.status)
       } catch (err) {
         if (!this.gone(err)) throw err
         this.forget(id)
@@ -188,11 +215,11 @@ export class LiveFeed {
   }
 
   /** A finished release: no catch-up later, and events straggling in behind its terminal state are ignored. */
-  private finish(id: string): void {
+  private finish(id: string, status: string): void {
     const seq = this.last.get(id) ?? null
     this.last.delete(id)
     this.finished.delete(id)
-    this.finished.set(id, seq)
+    this.finished.set(id, { seq, status })
     if (this.finished.size > MAX_TRACKED) this.finished.delete(this.finished.keys().next().value as string)
   }
 
@@ -231,7 +258,7 @@ export class LiveFeed {
             }
           }
           // Its events are in before it is forgotten; a late batch for it is dropped by `finished`.
-          if (!signal.aborted) this.finish(id)
+          if (!signal.aborted) this.finish(id, msg.summary.status)
         }
         break
       case 'lock.updated':
@@ -306,7 +333,7 @@ export class LiveFeed {
       // The same release running again (retry-version): it is live, and may notify, once more.
       this.notified.delete(s.id)
       if (this.finished.has(s.id)) {
-        const seq = this.finished.get(s.id)
+        const seq = this.finished.get(s.id)?.seq
         this.finished.delete(s.id)
         if (seq != null) this.last.set(s.id, seq)
       }
