@@ -58,7 +58,7 @@ import { HubRunner, RoutingReleases } from './hub/runner'
 import { backoffMs } from './tunnels/backoff'
 import { HubPublisher, toHubIntegrations } from './hub/publish'
 import { createAuthHandlers } from './ipc/handlers/auth'
-import { createHubHandlers } from './ipc/handlers/hub'
+import { createHubHandlers, hubLinkGuard } from './ipc/handlers/hub'
 import { ReleaseService } from './deploy/release-service'
 import { DeployStore, dbSecretRefs } from './deploy/deploy-store'
 import { ServiceStore } from './deploy/service-store'
@@ -371,10 +371,7 @@ if (!app.requestSingleInstanceLock()) {
         openBrowser: (url) => shell.openExternal(url),
         now: () => Date.now(),
         emit: (status) => pushEvent(mainWindow, 'hub:state', status),
-        beforeLink: (hubId) => {
-          if (!ssoGateRef) throw new Error('OpsDeck is still starting')
-          ssoGateRef.assertMayLink(hubId)
-        },
+        beforeLink: hubLinkGuard(service, () => ssoGateRef),
       })
       hubConnection = hub
       // Every unlock asks the gate; a Hub that says the account is disabled locks the vaults at once.
@@ -621,7 +618,7 @@ if (!app.requestSingleInstanceLock()) {
       powerMonitor.on('suspend', () => vault?.lock('suspend'))
       powerMonitor.on('shutdown', () => vault?.lock('quit'))
       const rendererFile = join(__dirname, '../renderer/index.html')
-      const hubHandlers = createHubHandlers({ conn: hub, vault: service, audit: log, catalog: hubCatalog, publisher: hubPublisher, onLocksChanged: () => pushEvent(mainWindow, 'hub:locks', {}) })
+      const hubHandlers = createHubHandlers({ conn: hub, vault: service, gate: ssoGate, audit: log, catalog: hubCatalog, publisher: hubPublisher, onLocksChanged: () => pushEvent(mainWindow, 'hub:locks', {}) })
       registerHandlers(
         ipcMain,
         {
@@ -705,12 +702,6 @@ if (!app.requestSingleInstanceLock()) {
           ...hubHandlers,
           // Owns hub:signOut, so the gate forgets the verification too.
           ...createAuthHandlers({ vault: service, gate: ssoGate, hub }),
-          // Bound vaults leave their Hub through the vault settings (hub:connect is guarded by beforeLink).
-          'hub:unlink': () => {
-            service.assertUnlocked()
-            ssoGate.assertMayUnlink()
-            return hubHandlers['hub:unlink']()
-          },
           ...createConfigHandlers({
             db,
             vault: service,

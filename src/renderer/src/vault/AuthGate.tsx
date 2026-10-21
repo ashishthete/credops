@@ -2,7 +2,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Fingerprint, X } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import type { ReverifyProof } from '../../../shared/sso'
-import { MAX_MASTER_PASSWORD, VERIFICATION_FAILED, type VaultStatus } from '../../../shared/vault'
+import { MAX_MASTER_PASSWORD, MAX_PIN, VERIFICATION_FAILED, type VaultStatus } from '../../../shared/vault'
 import { api } from '../lib/api'
 import { Button } from '../ui/Button'
 import { SecretField } from '../ui/Field'
@@ -393,8 +393,16 @@ function ReenableStep({ status, onWrong, onContinue }: { status: VaultStatus; on
       setMethod('password')
     } catch (err) {
       if (err instanceof Error && err.message === VERIFICATION_FAILED) {
-        setError(method === 'pin' ? 'Wrong PIN' : 'Wrong password')
         onWrong()
+        if (method === 'pin') {
+          // The rejection carries no count: read it from a fresh status, so a wipe never comes unwarned.
+          const left = await refreshVaultStatus()
+            .then((fresh) => (fresh.pin.enabled ? fresh.pin.attemptsLeft : null))
+            .catch(() => null)
+          setError(left === null ? 'Wrong PIN' : `Wrong PIN · ${left} ${left === 1 ? 'try' : 'tries'} left`)
+        } else {
+          setError('Wrong password')
+        }
       } else {
         setError(err instanceof Error ? err.message : String(err))
       }
@@ -420,7 +428,7 @@ function ReenableStep({ status, onWrong, onContinue }: { status: VaultStatus; on
         autoFocus
         readOnly={busy}
         inputMode={method === 'pin' ? 'numeric' : undefined}
-        maxLength={method === 'pin' ? 64 : MAX_MASTER_PASSWORD}
+        maxLength={method === 'pin' ? MAX_PIN : MAX_MASTER_PASSWORD}
         onInput={(e) => setHasInput(e.currentTarget.value.length > 0)}
         error={error ?? undefined}
       />

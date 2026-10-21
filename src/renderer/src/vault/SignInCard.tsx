@@ -1,7 +1,7 @@
 import { LogIn } from 'lucide-react'
 import { useRef, useState, type FormEvent } from 'react'
 import type { VaultStatus } from '../../../shared/vault'
-import { cancelSignIn, connectHub } from '../hub/store'
+import { cancelSignIn, connectHub, unlinkHub } from '../hub/store'
 import { api } from '../lib/api'
 import { Button } from '../ui/Button'
 import { TextField } from '../ui/Field'
@@ -128,6 +128,7 @@ function MicrosoftStep({
   const [waiting, setWaiting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [checking, setChecking] = useState(false)
+  const [leaving, setLeaving] = useState(false)
   // Set by Cancel, so the rejected sign-in it causes is not shown as an error.
   const cancelled = useRef(false)
   const hubName = status.sso.required ? status.sso.hubName : ''
@@ -168,6 +169,17 @@ function MicrosoftStep({
     }
   }
 
+  // Before setup nothing is bound yet: undo the link, so the gate offers the Hub step (and "without a Hub") again.
+  const differentHub = async () => {
+    setLeaving(true)
+    setError(null)
+    try {
+      if (await unlinkHub()) await refreshVaultStatus().catch(() => undefined)
+    } finally {
+      setLeaving(false)
+    }
+  }
+
   return (
     <div className="flex flex-col gap-4">
       {/* Before setup the description already names the Hub. */}
@@ -201,6 +213,11 @@ function MicrosoftStep({
       {(view === 'mismatch' || view === 'blocked') && (
         <button type="button" onClick={onReset} disabled={waiting} className={`-mt-1 ${linkClass}`}>
           Reset vaults
+        </button>
+      )}
+      {!status.setUp && !waiting && (
+        <button type="button" onClick={() => void differentHub()} disabled={leaving} className={`-mt-1 ${linkClass}`}>
+          Use a different Hub
         </button>
       )}
     </div>

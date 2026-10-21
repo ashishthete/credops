@@ -86,6 +86,10 @@ function fakeVault(start: Partial<VaultStatus> = {}, results: Record<string, unk
       state.sso = sso({ verdict: 'needs-signin', upn: null, lastVerifiedAt: null })
       return linked
     }
+    if (channel === 'hub:unlink') {
+      state.sso = { required: false }
+      return { ...linked, linked: false, url: null, hubId: null, hubName: null }
+    }
     if (channel === 'vault:setup') {
       Object.assign(state, { setUp: true, unlocked: true })
       return { ...state }
@@ -146,6 +150,26 @@ describe('first launch', () => {
     // A fresh link has no session to check: no forced check on top of the sign-in.
     expect(calls('auth:check')).toHaveLength(0)
     expect(screen.queryByRole('navigation')).not.toBeInTheDocument()
+  })
+
+  it('a linked Hub that will not do can be swapped, or left, before setup', async () => {
+    const user = userEvent.setup()
+    const { invoke } = fakeVault({ setUp: false })
+    renderApp()
+    await user.type(within(await gate("Connect to your team's Hub")).getByLabelText('Hub URL'), 'https://hub.contoso.com{Enter}')
+    const ms = await gate('Sign in with Microsoft')
+    await user.click(within(ms).getByRole('button', { name: 'Use a different Hub' }))
+    expect(invoke).toHaveBeenCalledWith('hub:unlink')
+    const hub = await gate("Connect to your team's Hub")
+    await user.click(within(hub).getByRole('button', { name: 'Use OpsDeck without a Hub' }))
+    expect(await gate('Protect your vaults')).toBeInTheDocument()
+  })
+
+  it('set-up vaults offer no way to drop the Hub from the sign-in step', async () => {
+    fakeVault({ sso: sso({ verdict: 'needs-signin' }) })
+    renderApp()
+    const card = await gate('Sign in with Microsoft')
+    expect(within(card).queryByRole('button', { name: 'Use a different Hub' })).not.toBeInTheDocument()
   })
 
   it('shows a refused Hub address under the field', async () => {
@@ -357,6 +381,64 @@ describe('Touch ID needs turning on again', () => {
     await user.click(within(card).getByRole('button', { name: 'Turn on Touch ID' }))
     expect(await within(card).findByText('Wrong password')).toBeInTheDocument()
     expect(within(card).getByLabelText('Master password')).toHaveValue('')
+  })
+
+  it('a wrong PIN says how many tries are left', async () => {
+    const user = userEvent.setup()
+    const vault = fakeVault(
+      { quickUnlock: 'touchId', lastMethod: 'pin', pin: { enabled: true, attemptsLeft: 5 }, touchIdNeedsReenable: true },
+      {
+        'vault:unlock': [{ ok: true }],
+        'vault:setQuickUnlock': [
+          () => {
+            vault.state.pin = { enabled: true, attemptsLeft: 2 }
+            return Promise.reject(new Error('verification failed'))
+          },
+        ],
+      },
+    )
+    renderApp()
+    const unlock = await gate('Unlock vaults')
+    // The unlock card is T9's: use the password whichever tab it opens on.
+    const toPassword = within(unlock).queryByRole('button', { name: /master password/i })
+    if (toPassword) await user.click(toPassword)
+    await user.type(within(unlock).getByLabelText('Master password'), 'correct horse{Enter}')
+    const card = await gate('Turn Touch ID on again')
+    await user.type(within(card).getByLabelText('PIN'), '000000')
+    await user.click(within(card).getByRole('button', { name: 'Turn on Touch ID' }))
+    expect(await within(card).findByText('Wrong PIN · 2 tries left')).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('000000')
+  })
+
+  it('a wiped PIN with the vaults still open switches to the password', async () => {
+    const user = userEvent.setup()
+    const open = vaultStatus({ unlocked: true, quickUnlock: 'touchId', pin: { enabled: false, attemptsLeft: 0 }, touchIdNeedsReenable: true })
+    fakeVault(
+      { quickUnlock: 'touchId', lastMethod: 'password', pin: { enabled: true, attemptsLeft: 1 }, touchIdNeedsReenable: true },
+      {
+        'vault:unlock': [{ ok: true }],
+        'vault:setQuickUnlock': [{ ok: false, reason: 'pin-wiped', status: open }],
+      },
+    )
+    renderApp()
+    await user.type(await screen.findByLabelText('Master password'), 'correct horse{Enter}')
+    const card = await gate('Turn Touch ID on again')
+    await user.click(within(card).getByRole('button', { name: 'Use your PIN instead' }))
+    await user.type(within(card).getByLabelText('PIN'), '000000')
+    await user.click(within(card).getByRole('button', { name: 'Turn on Touch ID' }))
+    expect(await screen.findByText('Too many wrong PINs')).toBeInTheDocument()
+    expect(await within(card).findByLabelText('Master password')).toBeInTheDocument()
+    expect(within(card).queryByRole('button', { name: 'Use your PIN instead' })).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Turn Touch ID on again' })).toBeInTheDocument()
+  })
+
+  it('no step when Touch ID is fine', async () => {
+    const user = userEvent.setup()
+    fakeVault({ quickUnlock: 'touchId', lastMethod: 'password', touchIdNeedsReenable: false }, { 'vault:unlock': [{ ok: true }] })
+    renderApp()
+    await user.type(await screen.findByLabelText('Master password'), 'correct horse{Enter}')
+    expect(await screen.findByRole('navigation')).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Turn Touch ID on again' })).not.toBeInTheDocument()
   })
 
   it('a PIN proof that wipes the PIN says so and goes back to the lock screen', async () => {

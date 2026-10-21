@@ -22,19 +22,44 @@ import type { HubConnection } from '../../hub/connection'
 // verification, and leaving it out here makes that the only handler, whatever the spread order.
 type HubChannel = Exclude<Extract<keyof Handlers, `hub:${string}`>, 'hub:signOut'>
 
+type LinkVault = { assertUnlocked(): void; status(): { setUp: boolean } }
+
+/**
+ * Linking a Hub, or undoing that link, needs the vault open once it is set up. A fresh install links
+ * its Hub before any vault exists (the gate's first step), so there is nothing to protect yet.
+ */
+export function assertMayChangeHubLink(vault: LinkVault): void {
+  if (vault.status().setUp) vault.assertUnlocked()
+}
+
+/**
+ * HubConnection's beforeLink: runs after the Hub answered, so it checks the vault again (setup may
+ * have finished and locked meanwhile), then the sign-in gate's binding. Fails closed until the gate exists.
+ */
+export function hubLinkGuard(vault: LinkVault, gate: () => { assertMayLink(hubId: string): void } | null) {
+  return (hubId: string): void => {
+    const g = gate()
+    if (!g) throw new Error('OpsDeck is still starting')
+    assertMayChangeHubLink(vault)
+    g.assertMayLink(hubId)
+  }
+}
+
 const ADMIN = '/api/v1/admin'
 
 /** Admin calls go through the Hub; each mutation is audited locally as `hub.admin { op, target }` (never the values). */
 export function createHubHandlers(deps: {
   conn: Pick<HubConnection, 'client' | 'status' | 'connect' | 'signIn' | 'cancelSignIn' | 'unlink' | 'me'>
-  vault: { assertUnlocked(): void; status(): { setUp: boolean } }
+  vault: LinkVault
+  /** While bound, the vaults may not leave their Hub (they leave through the vault settings). */
+  gate: { assertMayUnlink(): void }
   audit: { append(input: AuditInput): unknown }
   catalog: Pick<HubCatalog, 'refresh'>
   publisher: Pick<HubPublisher, 'publish' | 'unpublish' | 'uploadSecrets' | 'setIntegrationSecret'>
   /** Tells the renderer a lock changed (event hub:locks). */
   onLocksChanged?: () => void
 }): Pick<Handlers, HubChannel> {
-  const { conn, vault, audit, catalog, publisher } = deps
+  const { conn, vault, gate, audit, catalog, publisher } = deps
   /** After a lock change: refresh the catalog (it carries each environment's lock) and tell the renderer. */
   const changed = async (): Promise<void> => {
     deps.onLocksChanged?.()
@@ -59,9 +84,7 @@ export function createHubHandlers(deps: {
   return {
     'hub:status': () => conn.status(),
     'hub:connect': (url) => {
-      // A fresh install links its Hub before any vault exists (the gate's first step), so there is
-      // nothing to protect yet; once set up, linking needs the vault open.
-      if (vault.status().setUp) vault.assertUnlocked()
+      assertMayChangeHubLink(vault)
       return conn.connect(url)
     },
     'hub:signIn': () => {
@@ -70,7 +93,9 @@ export function createHubHandlers(deps: {
     },
     'hub:cancelSignIn': () => conn.cancelSignIn(),
     'hub:unlink': () => {
-      vault.assertUnlocked()
+      // Before setup this is the gate's "Use a different Hub"; a binding still holds it.
+      assertMayChangeHubLink(vault)
+      gate.assertMayUnlink()
       return conn.unlink()
     },
     'hub:me': () => conn.me(),

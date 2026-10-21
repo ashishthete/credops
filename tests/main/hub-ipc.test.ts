@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { IpcMainInvokeEvent } from 'electron'
 import { HubError } from '../../src/main/hub/client'
-import { createHubHandlers } from '../../src/main/ipc/handlers/hub'
+import { createHubHandlers, hubLinkGuard } from '../../src/main/ipc/handlers/hub'
 import { registerHandlers } from '../../src/main/ipc/register'
 import { VALIDATORS } from '../../src/main/ipc/validators'
 import { CHANNELS } from '../../src/shared/ipc'
@@ -58,6 +58,7 @@ describe('hub handlers', () => {
     const secrets = extra.secrets ?? []
     const audit = { append: vi.fn() }
     const vault = { assertUnlocked: vi.fn(), status: vi.fn(() => ({ setUp: true })) }
+    const gate = { assertMayUnlink: vi.fn() }
     const conn = {
       client: () => client,
       status: vi.fn(),
@@ -67,18 +68,18 @@ describe('hub handlers', () => {
       unlink: vi.fn(),
       me: vi.fn(),
     }
-    const handlers = createHubHandlers({ conn: conn as never, vault, audit, catalog: { refresh: vi.fn(async () => []) }, publisher: { publish: vi.fn(async () => ({ manifestHash: 'h', missingSecrets: [] })), unpublish: vi.fn(async () => undefined), uploadSecrets: vi.fn(async () => ({ uploaded: 0 })), setIntegrationSecret: vi.fn(async () => undefined) }, onLocksChanged: extra.onLocksChanged })
+    const handlers = createHubHandlers({ conn: conn as never, vault, gate, audit, catalog: { refresh: vi.fn(async () => []) }, publisher: { publish: vi.fn(async () => ({ manifestHash: 'h', missingSecrets: [] })), unpublish: vi.fn(async () => undefined), uploadSecrets: vi.fn(async () => ({ uploaded: 0 })), setIntegrationSecret: vi.fn(async () => undefined) }, onLocksChanged: extra.onLocksChanged })
     const registered = new Map<string, (...a: unknown[]) => unknown>()
     registerHandlers({ handle: (c: string, fn: never) => void registered.set(c, fn) }, stubHandlers(handlers), (u) => u === 'file:///ok', {
       validators: VALIDATORS,
       knownSecrets: () => secrets,
     })
-    return { audit, vault, conn, call: (c: string, ...a: unknown[]) => registered.get(c)!(frame, ...a) as Promise<unknown> }
+    return { audit, vault, gate, conn, call: (c: string, ...a: unknown[]) => registered.get(c)!(frame, ...a) as Promise<unknown> }
   }
 
   it('leaves hub:signOut to the auth handlers, so the sign-in gate always hears of it', () => {
     const { conn } = setup({})
-    const handlers = createHubHandlers({ conn: conn as never, vault: { assertUnlocked: vi.fn(), status: () => ({ setUp: true }) }, audit: { append: vi.fn() }, catalog: { refresh: vi.fn(async () => []) }, publisher: {} as never })
+    const handlers = createHubHandlers({ conn: conn as never, vault: { assertUnlocked: vi.fn(), status: () => ({ setUp: true }) }, gate: { assertMayUnlink: vi.fn() }, audit: { append: vi.fn() }, catalog: { refresh: vi.fn(async () => []) }, publisher: {} as never })
     expect('hub:signOut' in handlers).toBe(false)
   })
 
@@ -127,6 +128,44 @@ describe('hub handlers', () => {
     t.vault.status.mockReturnValue({ setUp: false })
     await t.call('hub:connect', 'https://hub.example.com')
     expect(t.conn.connect).toHaveBeenCalledWith('https://hub.example.com')
+  })
+
+  it('hub:unlink needs the vault open once set up; before setup only a binding stops it', async () => {
+    const t = setup({})
+    t.vault.assertUnlocked.mockImplementation(() => {
+      throw new Error('Vault is locked')
+    })
+    await expect(t.call('hub:unlink')).rejects.toThrow(/locked/)
+    expect(t.conn.unlink).not.toHaveBeenCalled()
+    t.vault.status.mockReturnValue({ setUp: false })
+    t.gate.assertMayUnlink.mockImplementation(() => {
+      throw new Error('Disconnect from the vault settings')
+    })
+    await expect(t.call('hub:unlink')).rejects.toThrow(/vault settings/)
+    expect(t.conn.unlink).not.toHaveBeenCalled()
+    t.gate.assertMayUnlink.mockReset()
+    await t.call('hub:unlink')
+    expect(t.conn.unlink).toHaveBeenCalledTimes(1)
+  })
+
+  it('beforeLink checks the vault again after the Hub answers, then the binding, and fails closed while starting', () => {
+    const vault = { assertUnlocked: vi.fn(), status: vi.fn(() => ({ setUp: false })) }
+    const gate = { assertMayLink: vi.fn() }
+    let ready: typeof gate | null = null
+    const guard = hubLinkGuard(vault, () => ready)
+    expect(() => guard('hub-1')).toThrow('OpsDeck is still starting')
+    ready = gate
+    guard('hub-1')
+    expect(vault.assertUnlocked).not.toHaveBeenCalled()
+    expect(gate.assertMayLink).toHaveBeenCalledWith('hub-1')
+    // Setup finished and the vault locked while the Hub was answering.
+    vault.status.mockReturnValue({ setUp: true })
+    vault.assertUnlocked.mockImplementation(() => {
+      throw new Error('Vault is locked')
+    })
+    gate.assertMayLink.mockClear()
+    expect(() => guard('hub-1')).toThrow(/locked/)
+    expect(gate.assertMayLink).not.toHaveBeenCalled()
   })
 
   it('a failed Hub call writes no audit and a token in its error text is redacted', async () => {
