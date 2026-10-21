@@ -58,6 +58,8 @@ export class SsoGate implements SignInGate {
   private pending: { at: number; oid: string; hubId: string } | null = null
   private inflight: Promise<SsoVerdict> | null = null
   private audited: SsoVerdict | null = null
+  // Bumped by a sign-out, so a check already in flight can't settle over it.
+  private generation = 0
   private readonly blocked = new Set<() => void>()
 
   constructor(private readonly d: SsoGateDeps) {}
@@ -96,15 +98,26 @@ export class SsoGate implements SignInGate {
     const lv = this.lastVerified(b)
     const now = this.d.now()
     if (lv === null || now - lv >= SSO_RECHECK_MS || !this.clockOk(now, lv, b)) return false
-    const who = b ? { oid: b.user_oid, hubId: b.hub_id } : this.pending
-    if (!who || s.hubId !== who.hubId) return false
-    return s.user === null || s.user.oid === who.oid
+    return this.owns(s, b ? { oid: b.user_oid, hubId: b.hub_id } : this.pending)
+  }
+
+  /**
+   * The stored session belongs to `who`. After a restart the user is not in memory until `me()`, so the oid the
+   * Hub link stored with the session stands in; with neither, the owner is unknown and this fails closed.
+   */
+  private owns(s: HubStatus, who: { oid: string; hubId: string } | null): boolean {
+    if (!who || !s.linked || !s.signedIn || s.hubId !== who.hubId) return false
+    const stored = this.d.db.prepare('SELECT user_oid FROM hub_link WHERE id = 1 AND session_enc IS NOT NULL').get() as
+      | { user_oid: string | null }
+      | undefined
+    const owner = s.user?.oid ?? stored?.user_oid ?? null
+    return owner !== null && owner === who.oid
   }
 
   private inGrace(): boolean {
     const b = this.binding()
     const s = this.d.hub.status()
-    if (!b || !s.linked || !s.signedIn) return false
+    if (!b || !this.owns(s, { oid: b.user_oid, hubId: b.hub_id })) return false
     const lv = ms(b.last_verified_at)
     const now = this.d.now()
     return lv !== null && now < lv + GRACE_MS && this.clockOk(now, lv, b)
@@ -147,6 +160,7 @@ export class SsoGate implements SignInGate {
   }
 
   private async run(): Promise<SsoVerdict> {
+    const gen = this.generation
     let r: SessionCheck
     try {
       r = await this.d.hub.checkSession()
@@ -154,6 +168,7 @@ export class SsoGate implements SignInGate {
       // Unknown failures fail closed, and never start grace.
       r = { kind: 'expired' }
     }
+    if (gen !== this.generation) return this.verdict()
     this.raiseHighWater()
     switch (r.kind) {
       case 'ok':
@@ -194,6 +209,7 @@ export class SsoGate implements SignInGate {
 
   /** For a Hub sign-out that bypasses `signOut()`: forget every verification. */
   sessionDropped(): void {
+    this.generation++
     this.forget()
     if (this.required()) this.settle('needs-signin')
   }
@@ -208,7 +224,11 @@ export class SsoGate implements SignInGate {
       this.pending = { at: now, oid: user.oid, hubId: s.hubId }
       return 'verified'
     }
-    if (b.user_oid !== user.oid || b.hub_id !== s.hubId) return 'mismatch'
+    if (b.user_oid !== user.oid || b.hub_id !== s.hubId) {
+      // No earlier verification may be reused while another account's session is stored.
+      this.forget()
+      return 'mismatch'
+    }
     this.d.db.prepare('UPDATE sso_binding SET last_verified_at = ? WHERE id = 1').run(this.iso(now))
     return 'verified'
   }
@@ -319,8 +339,10 @@ export class SsoGate implements SignInGate {
 
   watch(isUnlocked: () => boolean): () => void {
     const timer = setInterval(() => {
-      if (isUnlocked()) void this.check({ force: true })
+      // A failing tick must not become an unhandled rejection; the next tick checks again.
+      if (isUnlocked()) this.check({ force: true }).catch(() => console.warn('SSO recheck failed'))
     }, SSO_WATCH_MS)
+    timer.unref?.()
     return () => clearInterval(timer)
   }
 }

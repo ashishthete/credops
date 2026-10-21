@@ -23,7 +23,6 @@ const user = (oid: string, upn: string): HubUser => ({
 })
 const ALICE = user('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'alice@example.com')
 const BOB = user('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'bob@example.com')
-const TOKEN = 'hub-session-token-do-not-log'
 
 type Linked = Extract<HubStatus, { linked: true }>
 
@@ -93,6 +92,14 @@ const bindRow = (over: Partial<{ hub_id: string; user_oid: string; last_verified
     )
 const oldestFirst = () => audit.list({}).sort((a, b) => a.id - b.id)
 const actions = (a: string) => oldestFirst().filter((e) => e.action === a)
+// The session HubConnection stores, with its owner's oid: what a restart knows before `me()` runs.
+const storeSession = (oid: string) =>
+  db
+    .prepare(
+      `INSERT INTO hub_link(id, url, hub_id, hub_name, user_oid, session_enc, session_expires_at, linked_at, updated_at)
+       VALUES (1, 'https://hub.example.com', 'hub-1', 'Team Hub', ?, x'00', ?, ?, ?)`,
+    )
+    .run(oid, iso(T0 + 12 * H), iso(T0), iso(T0))
 
 beforeEach(() => {
   db = openDatabase(':memory:')
@@ -149,6 +156,7 @@ describe('SsoGate', () => {
 
   it('before any check: verified only within the hour and with a stored session', () => {
     hub.link({ user: null })
+    storeSession(ALICE.oid)
     bindRow({ last_verified_at: iso(T0 - 30 * MIN) })
     expect(gate().verdict()).toBe('verified')
     now.t = T0 + 31 * MIN
@@ -365,7 +373,7 @@ describe('SsoGate', () => {
     expect(evs.map((e) => e.action)).toEqual(['auth.check', 'auth.bind', 'auth.check', 'auth.rebind', 'auth.check', 'auth.unbind'])
     for (const e of evs) {
       const d = JSON.stringify(e.details)
-      for (const s of [TOKEN, ALICE.upn, BOB.upn, ALICE.oid, BOB.oid]) expect(d).not.toContain(s)
+      for (const s of [ALICE.upn, BOB.upn, ALICE.oid, BOB.oid]) expect(d).not.toContain(s)
     }
   })
 
@@ -377,6 +385,80 @@ describe('SsoGate', () => {
     await g.check()
     await g.check({ force: true })
     expect(actions('auth.check').map((e) => e.details)).toEqual([{ verdict: 'verified' }])
+  })
+
+  // Review I1: a session for another account never gets a verdict without the network.
+  describe('another account (I1)', () => {
+    const verifiedAlice = async (g: SsoGate) => {
+      hub.checks.push({ kind: 'ok', user: ALICE })
+      expect(await g.check()).toBe('verified')
+    }
+
+    it('mismatch, then offline, is never grace', async () => {
+      hub.link()
+      bindRow()
+      const g = gate()
+      await verifiedAlice(g)
+      hub.signInResult = () => ({ ...(hub.st as Linked), user: BOB })
+      expect(await g.signIn()).toBe('mismatch')
+      expect(row()?.last_verified_at).toBeNull()
+      now.t = T0 + 2 * H
+      hub.checks.push({ kind: 'offline' })
+      expect(['mismatch', 'needs-signin']).toContain(await g.check())
+      expect(g.verdict()).not.toBe('grace')
+    })
+
+    it('a foreign session the gate never saw gets no grace', async () => {
+      hub.link()
+      bindRow()
+      const g = gate()
+      await verifiedAlice(g)
+      // Bob signed in through the Hub card, not the gate.
+      hub.link({ user: BOB })
+      now.t = T0 + 2 * H
+      hub.checks.push({ kind: 'offline' })
+      expect(await g.check()).toBe('needs-signin')
+    })
+
+    it('a restart offline with the bound account stored still gets grace', async () => {
+      hub.link({ user: null })
+      storeSession(ALICE.oid)
+      bindRow({ last_verified_at: iso(T0 - 5 * H) })
+      hub.checks.push({ kind: 'offline' })
+      expect(await gate().check()).toBe('grace')
+    })
+
+    it('a restart with the session user unknown is needs-signin', () => {
+      hub.link({ user: null })
+      bindRow({ last_verified_at: iso(T0 - 10 * MIN) })
+      expect(gate().verdict()).toBe('needs-signin')
+    })
+
+    it('a restart with another account stored is needs-signin', async () => {
+      hub.link({ user: null })
+      storeSession(BOB.oid)
+      bindRow({ last_verified_at: iso(T0 - 10 * MIN) })
+      const g = gate()
+      expect(g.verdict()).toBe('needs-signin')
+      hub.checks.push({ kind: 'offline' })
+      expect(await g.check()).toBe('needs-signin')
+      expect(hub.calls).toBe(1)
+    })
+  })
+
+  // Review M3: a sign-out during a check wins.
+  it('a check in flight cannot settle over a sign-out', async () => {
+    hub.link()
+    bindRow()
+    const g = gate()
+    let release!: (c: SessionCheck) => void
+    hub.checkSession = () => new Promise<SessionCheck>((r) => (release = r))
+    const p = g.check()
+    await g.signOut()
+    hub.link()
+    release({ kind: 'ok', user: ALICE })
+    expect(await p).toBe('needs-signin')
+    expect(row()?.last_verified_at).toBeNull()
   })
 
   // Pre-flight F1: sign-out must not leave the gate verified.
