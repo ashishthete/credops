@@ -118,10 +118,9 @@ describe('forgot password', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(screen.queryByRole('navigation')).not.toBeInTheDocument()
 
-    await user.type(screen.getByLabelText('Master password'), 'a brand new password')
-    await user.type(screen.getByLabelText('Confirm password'), 'a brand new password')
-    await user.click(screen.getByRole('button', { name: 'Create master password' }))
-    expect(invoke).toHaveBeenCalledWith('vault:setup', { password: 'a brand new password' })
+    // Touch ID is on by default, which is enough to continue.
+    await user.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(invoke).toHaveBeenCalledWith('vault:setup', { touchId: true, pin: undefined, password: undefined })
     await gate('Your vaults are ready')
     await user.click(screen.getByRole('button', { name: /Continue|Not now/ }))
     expect(await screen.findByRole('navigation')).toBeInTheDocument()
