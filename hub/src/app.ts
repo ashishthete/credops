@@ -106,6 +106,7 @@ export function buildApp(deps: HubDeps): FastifyInstance {
   const sweep = setInterval(() => {
     try {
       locks.sweepExpired()
+      releases?.expireReady()
     } catch (err) {
       // A timer must never take the Hub down. Only the error's name is logged.
       app.log.error({ errName: err instanceof Error ? err.name : 'Error' }, 'lock sweep failed')
@@ -133,11 +134,12 @@ export function buildApp(deps: HubDeps): FastifyInstance {
     knownSecrets: () => releases?.runKnownSecrets() ?? [],
     now: deps.now,
   })
-  releases = new HubReleases({ config: deps.config, db: deps.db, audit: deps.audit, directory, registry, locks, secrets, deployKeys, live, now: deps.now, ids: deps.ids, finalize: notify.finalize, heldSecrets: notify.held, ...(deps.runner ? { runner: deps.runner } : {}) })
+  releases = new HubReleases({ config: deps.config, db: deps.db, audit: deps.audit, directory, registry, locks, secrets, deployKeys, live, now: deps.now, ids: deps.ids, finalize: notify.finalize, heldSecrets: notify.held, log: (m) => app.log.error(m), ...(deps.runner ? { runner: deps.runner } : {}) })
   // Started, failed and rolled-back notices ride the run's own events; success goes out from finalize, with notes.
   releases.service.onEvent((batch) => {
     for (const e of batch) void notify.dispatcher.onRunEvent(e)
   })
+  deps.audit.setKnownSecrets(() => (releases as HubReleases).knownSecrets())
   app.decorate('releases', releases)
   app.addHook('onClose', async () => releases?.close())
   registerReleases(app, { releases, auth })

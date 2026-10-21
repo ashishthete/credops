@@ -28,7 +28,7 @@ const envOfDeployment = (db: HubDb, id: string): string | null =>
 const stamp = (db: HubDb, environmentId: string): string =>
   (db.prepare('SELECT published_at FROM environments WHERE id = ?').get(environmentId) as { published_at: string } | undefined)?.published_at ?? ''
 
-export function hubDeploys(db: HubDb, registry: Registry, now: () => Date): Pick<DeployStore, 'get' | 'list' | 'settings' | 'updateSettings'> {
+export function hubDeploys(db: HubDb, registry: Registry): Pick<DeployStore, 'get' | 'list' | 'settings' | 'updateSettings'> {
   const metas = (environmentId: string): DeploymentMeta[] => {
     const at = stamp(db, environmentId)
     return registry.get(environmentId).deployments.map((d) => ({ ...d, vaultIds: [], createdAt: at, updatedAt: at }))
@@ -66,13 +66,12 @@ export function hubDeploys(db: HubDb, registry: Registry, now: () => Date): Pick
         next.currentVersion,
         environmentId,
       )
-      void now
       return settings(environmentId)
     },
   }
 }
 
-export function hubServices(db: HubDb, registry: Registry, now: () => Date): Pick<ServiceStore, 'list' | 'recordDeployed'> {
+export function hubServices(db: HubDb, registry: Registry): Pick<ServiceStore, 'list' | 'recordDeployed'> {
   const state = (environmentId: string): Map<string, { commit: string | null; releaseId: string | null }> =>
     new Map(
       (db.prepare('SELECT service_id, last_deployed_commit, last_release_id FROM service_deploy_state WHERE environment_id = ?').all(environmentId) as {
@@ -114,7 +113,6 @@ export function hubServices(db: HubDb, registry: Registry, now: () => Date): Pic
         `INSERT INTO service_deploy_state(service_id, environment_id, last_deployed_commit, last_release_id) VALUES (?,?,?,?)
          ON CONFLICT(service_id) DO UPDATE SET last_deployed_commit = excluded.last_deployed_commit, last_release_id = excluded.last_release_id`,
       )
-      void now
       for (const e of entries) {
         const row = envOf.get(e.serviceId) as { environment_id: string } | undefined
         if (row) put.run(e.serviceId, row.environment_id, e.commit, e.releaseId)

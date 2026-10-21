@@ -344,3 +344,6 @@ export type HubLiveMessage =
   | { type: 'lock.updated'; environmentId: string; lock: HubEnvLock | null }
   | { type: 'catalog.updated' }
   | { type: 'access.changed' }
+
+/** A release that sits in 'ready' this long without starting loses its environment lock and is discarded. */
+export const READY_RELEASE_TTL_MS = 60 * 60 * 1000

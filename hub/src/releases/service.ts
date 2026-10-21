@@ -1,9 +1,9 @@
 import { execFile, spawn } from 'node:child_process'
-import { existsSync, mkdirSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Actor, PreflightRequest, ReleaseConfirm, ReleaseDetail, ReleaseListFilter, ReleaseStatus, ReleaseSummary, RunEvent } from '../../../src/shared/deploy'
-import type { HubAction, HubEnvManifest, HubUser } from '../../../src/shared/hub'
+import { READY_RELEASE_TTL_MS, type HubAction, type HubEnvManifest, type HubUser } from '../../../src/shared/hub'
 import { startPrivateAgent, type ChildLike } from '../../../src/main/deploy/agent'
 import { DeployError } from '../../../src/main/deploy/access'
 import { noopFinalize, type FinalizeSteps } from '../../../src/main/deploy/finalize'
@@ -52,6 +52,8 @@ export interface HubReleasesDeps {
   finalize?: FinalizeSteps
   /** Integration secrets in use right now (see HubNotify.held); masked in the live stream and error bodies. */
   heldSecrets?: () => string[]
+  /** Where lock-release failures are reported; the message is already redacted. */
+  log?: (message: string) => void
 }
 
 export const runRootOf = (config: HubConfig): string => config.runRoot ?? join(config.dataDir, 'runs')
@@ -60,6 +62,8 @@ export const runRootOf = (config: HubConfig): string => config.runRoot ?? join(c
 function localRunner(deps: HubReleasesDeps, build: { resolve: ReturnType<typeof hubResolve>; identities: ReturnType<typeof hubIdentities> }): DeployRunner {
   const root = runRootOf(deps.config)
   mkdirSync(root, { recursive: true, mode: 0o700 })
+  // mkdir's mode only applies to a directory it creates.
+  chmodSync(root, 0o700)
   const home = homedir()
   const toolDeps = {
     env: process.env,
@@ -142,12 +146,12 @@ export class HubReleases {
       },
       cancel: (runId) => base.cancel(runId),
       // Defense in depth: whatever a runner reports is masked against the run's secrets before the service stores it.
-      onEvent: (fn) => base.onEvent((releaseId, body) => fn(releaseId, redact(body, [...(this.runSecrets.get(releaseId) ?? []), ...this.pems.values()]))),
+      onEvent: (fn) => base.onEvent((releaseId, body) => fn(releaseId, redact(body, [...(this.runSecrets.get(releaseId) ?? []), ...this.pemSecrets()]))),
     }
     this.service = new ReleaseService({
       db: d.db,
-      deploys: hubDeploys(d.db, d.registry, d.now),
-      services: hubServices(d.db, d.registry, d.now),
+      deploys: hubDeploys(d.db, d.registry),
+      services: hubServices(d.db, d.registry),
       releases: this.store,
       runner,
       access,
@@ -171,9 +175,42 @@ export class HubReleases {
     return [...this.runKnownSecrets(), ...(this.d.heldSecrets?.() ?? [])]
   }
 
+  /** Each loaded deploy key and every line of its body, so a log line carrying only part of a key is still masked. */
+  private pemSecrets(): string[] {
+    return [...this.pems.values()].flatMap((pem) => [pem, ...pem.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length >= 16 && !l.startsWith('-----'))])
+  }
+
   /** The run secrets and deploy keys alone. */
   runKnownSecrets(): string[] {
-    return [...[...this.runSecrets.values()].flat(), ...this.pems.values()]
+    return [...[...this.runSecrets.values()].flat(), ...this.pemSecrets()]
+  }
+
+  /**
+   * A 'ready' release that never started holds its environment lock; past the TTL it is discarded, which frees
+   * the lock through the normal state path. Returns how many it discarded.
+   */
+  expireReady(): number {
+    const cutoff = new Date(this.d.now().getTime() - READY_RELEASE_TTL_MS).toISOString()
+    const rows = this.d.db
+      .prepare("SELECT r.id AS id, r.environment_id AS environment_id FROM releases r JOIN env_locks l ON l.release_id = r.id AND l.kind = 'release' WHERE r.status = 'ready' AND l.created_at <= ?")
+      .all(cutoff) as { id: string; environment_id: string }[]
+    let n = 0
+    for (const row of rows) {
+      if (this.store.get(row.id).status !== 'ready') continue
+      this.store.setStatus(row.id, 'discarded', { finishedAt: this.d.now().toISOString() })
+      this.d.audit.append({
+        action: 'release.discard',
+        outcome: 'success',
+        actor: null,
+        targetType: 'release',
+        targetId: row.id,
+        targetLabel: this.d.registry.nameOf(row.environment_id),
+        details: { reason: 'expired' },
+      })
+      this.onState(this.store.get(row.id))
+      n++
+    }
+    return n
   }
 
   async whenIdle(): Promise<void> {
@@ -207,8 +244,9 @@ export class HubReleases {
     if (LOCK_FREE.has(summary.status)) {
       try {
         this.d.locks.releaseFor(summary.id)
-      } catch {
-        /* the lock was already gone */
+      } catch (err) {
+        // A failure here leaves the environment locked: say so (redacted), but still tell watchers the release ended.
+        this.d.log?.(redact(`releasing the lock of release ${summary.id} failed: ${err instanceof Error ? err.message : String(err)}`, this.knownSecrets()))
       }
     }
     this.d.live.publish({ type: 'release.state', summary })
@@ -300,6 +338,7 @@ export class HubReleases {
 
   async preflight(user: HubUser, req: PreflightRequest): Promise<{ releaseId: string }> {
     this.allow(user, 'release.start', req.environmentId, this.selectedDeployments(req), 'release.preflight', null)
+    if (this.d.registry.nameOf(req.environmentId) === null) throw new HubHttpError(404, 'not_found', 'That environment is not published to this Hub')
     const provisional = this.d.ids()
     this.d.locks.acquireRelease(req.environmentId, provisional, { oid: user.oid, name: user.name })
     let res: { releaseId: string }

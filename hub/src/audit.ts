@@ -92,7 +92,7 @@ function computeHash(e: Omit<HubAuditEvent, 'id' | 'hash'>): string {
 
 export class HubAudit {
   private readonly now: () => Date
-  private readonly knownSecrets: () => readonly string[]
+  private knownSecrets: () => readonly string[]
 
   constructor(
     private readonly db: HubDb,
@@ -100,6 +100,11 @@ export class HubAudit {
   ) {
     this.now = opts.now ?? ((): Date => new Date())
     this.knownSecrets = opts.knownSecrets ?? ((): readonly string[] => [])
+  }
+
+  /** The app binds this once its release service exists; until then nothing extra is masked. */
+  setKnownSecrets(fn: () => readonly string[]): void {
+    this.knownSecrets = fn
   }
 
   append(input: HubAuditInput): HubAuditEvent {

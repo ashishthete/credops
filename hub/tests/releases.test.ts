@@ -10,6 +10,7 @@ import { buildApp } from '../src/app'
 import { KeyRing } from '../src/secrets/keyring'
 import { DeployKeys } from '../src/secrets/deploykeys'
 import { HostKeyError } from '../../src/main/ssh/connect'
+import { READY_RELEASE_TTL_MS } from '../../src/shared/hub'
 import { hubVerify } from '../src/releases/adapters'
 import { testHub, type TestHub } from './helpers'
 import { DEP_API, DEP_WEB, ENV_ID, HOST_ID, JUMP_ID, SECRET_DB, SECRET_SUDO, deployment, manifest } from './manifest'
@@ -295,10 +296,14 @@ describe('hub releases', () => {
     const { fr, bob } = await setup()
     const keys = new DeployKeys(hub.db, new KeyRing(hub.db, hub.masterKey), { now: () => hub.clock.now })
     const pem = keys.privateForRun(ENV_ID)
-    fr.on.release = (_p, secrets, emit) => {
+    const pemBody = pem.split('\n').filter((l) => !l.startsWith('-----') && l.length > 20)[0]!
+    fr.on.release = async (_p, secrets, emit) => {
+      // The runner resolves the identity as the real one does, so the Hub remembers the PEM for masking.
+      await (hub.app.releases.service as unknown as { d: { identities: { resolve(id: string): Promise<unknown> } } }).d.identities.resolve(ENV_ID)
       const value = Object.values(secrets.values).join(' ')
       emit({ type: 'log', stepId: null, hostId: null, stream: 'ansible', line: `connecting with ${value}` })
-      emit({ type: 'log', stepId: null, hostId: null, stream: 'ansible', line: pem })
+      // A body line without the BEGIN/END markers: only the remembered PEM can mask it.
+      emit({ type: 'log', stepId: null, hostId: null, stream: 'ansible', line: `key ${pemBody}` })
       throw new Error(`boom ${SENTINEL}`)
     }
     const bodies: string[] = []
@@ -319,7 +324,6 @@ describe('hub releases', () => {
     await keep(call(bob, 'GET', '/api/v1/releases/active'))
     hub.db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
     const bytes = readFileSync(join(hub.config.dataDir, 'hub.db')).toString('latin1')
-    const pemBody = pem.split('\n').filter((l) => !l.startsWith('-----') && l.length > 20)[0]
     for (const needle of [SENTINEL, 'sudo-pw-sentinel-2', pemBody]) {
       expect(bytes).not.toContain(needle)
       expect(bodies.join('\n')).not.toContain(needle)
@@ -328,6 +332,43 @@ describe('hub releases', () => {
       expect(JSON.stringify(hub.db.prepare('SELECT * FROM audit').all())).not.toContain(needle)
       expect(hub.logs.join('\n')).not.toContain(needle)
     }
+  })
+
+  it('a republish keeps the version the Hub released', async () => {
+    const { admin, bob } = await setup({ protectedEnv: false })
+    const version = () => (hub.db.prepare('SELECT current_version AS v FROM environments WHERE id = ?').get(ENV_ID) as { v: string }).v
+    const id = await ready(bob, { bump: 'patch' })
+    expect((await call(bob, 'POST', `/api/v1/releases/${id}/start`, {})).statusCode).toBe(204)
+    await hub.app.releases.whenIdle()
+    expect((await detail(bob, id)).status).toBe('succeeded')
+    const bumped = version()
+    expect(bumped).not.toBe('v1.2.3')
+    const again = manifestOne({ protectedEnv: false })
+    expect(again.environment.currentVersion).toBe('v1.2.3')
+    expect((await call(admin, 'PUT', `/api/v1/admin/environments/${ENV_ID}`, again)).statusCode).toBe(200)
+    expect(version()).toBe(bumped)
+  })
+
+  it('a ready release that never starts is discarded after the TTL and frees the lock', async () => {
+    const { bob } = await setup()
+    const id = await ready(bob)
+    hub.clock.now = new Date(hub.clock.now.getTime() + READY_RELEASE_TTL_MS - 60_000)
+    expect(hub.app.releases.expireReady()).toBe(0)
+    expect(lockRows().length).toBe(1)
+    hub.clock.now = new Date(hub.clock.now.getTime() + 120_000)
+    expect(hub.app.releases.expireReady()).toBe(1)
+    expect((await detail(bob, id)).status).toBe('discarded')
+    expect(lockRows()).toEqual([])
+    const row = audits('release.discard')[0]!
+    expect(row).toMatchObject({ actor: null, targetId: id, details: { reason: 'expired' } })
+    expect(hub.audit.verify().ok).toBe(true)
+  })
+
+  it('a preflight on an unknown environment is a 404', async () => {
+    const { admin } = await setup()
+    const res = await call(admin, 'POST', '/api/v1/releases/preflight', { environmentId: ENV2, serviceIds: [SVC_WEB], bump: 'none', options: OPTIONS })
+    expect(res.statusCode, res.body).toBe(404)
+    expect(lockRows()).toEqual([])
   })
 
   it('a missing secret blocks start and names only the secret', async () => {

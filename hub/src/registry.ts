@@ -399,7 +399,9 @@ export class Registry {
           `INSERT INTO environments(id, name, protected, versioned, auto_rollback, current_version, integrations, manifest_hash, published_by, published_at)
            VALUES (?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(id) DO UPDATE SET name = excluded.name, protected = excluded.protected, versioned = excluded.versioned,
-             auto_rollback = excluded.auto_rollback, current_version = excluded.current_version, integrations = excluded.integrations,
+             auto_rollback = excluded.auto_rollback,
+             current_version = CASE WHEN EXISTS (SELECT 1 FROM releases WHERE environment_id = environments.id) THEN environments.current_version ELSE excluded.current_version END,
+             integrations = excluded.integrations,
              manifest_hash = excluded.manifest_hash, published_by = excluded.published_by, published_at = excluded.published_at`,
         )
         .run(
@@ -479,6 +481,7 @@ export class Registry {
     if (r && r.environment_id !== environmentId) throw new HubHttpError(409, 'conflict', 'An id in the manifest belongs to another environment')
   }
 
+  // Deleting the environment deletes its Hub release history and run events with it (ON DELETE CASCADE); the audit chain keeps the record.
   unpublish(id: string, actor: HubActor): void {
     inTransaction(this.db, () => {
       const row = this.db.prepare('SELECT name FROM environments WHERE id = ?').get(id) as { name: string } | undefined
