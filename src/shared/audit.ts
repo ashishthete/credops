@@ -42,6 +42,7 @@ export const AUDIT_ACTIONS = [
   'product.create',
   'product.update',
   'product.delete',
+  'repo.credentials_stripped',
   'environment.create',
   'environment.update',
   'environment.delete',
