@@ -22,6 +22,19 @@ function defaultRow(db: ReturnType<typeof makeVault>['db']): { wrapped_key: stri
   return db.prepare('SELECT wrapped_key, kdf_params FROM vaults WHERE id = ?').get(DEFAULT_VAULT_ID) as never
 }
 
+function passwordKdf(db: ReturnType<typeof makeVault>['db']): string {
+  return (db.prepare('SELECT password_kdf FROM vault_state WHERE id = 1').get() as { password_kdf: string }).password_kdf
+}
+
+/** The live KEK, recovered the way verify() does under the wrapped scheme. */
+async function kekOf(db: ReturnType<typeof makeVault>['db'], password: string): Promise<Buffer> {
+  const s = db.prepare('SELECT password_wrap, password_kdf FROM vault_state WHERE id = 1').get() as {
+    password_wrap: string
+    password_kdf: string
+  }
+  return openSealed(await deriveKek(password, JSON.parse(s.password_kdf) as KdfParams), s.password_wrap, 'pw:kek')
+}
+
 function actions(f: ReturnType<typeof makeVault>): { action: string; outcome: string; details: unknown; targetLabel: string | null }[] {
   return f.audit
     .list({ limit: 1000 })
@@ -46,7 +59,9 @@ describe('VaultService', () => {
     expect(f.vault.status().unlocked).toBe(true)
     const row = defaultRow(f.db)
     expect(row.wrapped_key).not.toBeNull()
-    const params = JSON.parse(row.kdf_params!) as { N: number; salt: string }
+    // Wrapped scheme: the vault rows carry no KDF params; the password wrap does.
+    expect(row.kdf_params).toBeNull()
+    const params = JSON.parse(passwordKdf(f.db)) as { N: number; salt: string }
     expect(params.N).toBe(FAST_KDF.N)
     expect(Buffer.from(params.salt, 'base64')).toHaveLength(16)
     await expect(f.vault.setup(PW)).rejects.toThrow(/already set up/)
@@ -218,7 +233,7 @@ describe('VaultService', () => {
     const f = makeVault()
     await f.vault.setup(PW)
     const prod = f.vault.createVault({ name: 'Prod', color: '#ff0000' })
-    const kek = await deriveKek(PW, JSON.parse(defaultRow(f.db).kdf_params!) as KdfParams)
+    const kek = await kekOf(f.db, PW)
     for (const id of [DEFAULT_VAULT_ID, prod.id]) {
       const row = f.db.prepare('SELECT wrapped_key FROM vaults WHERE id = ?').get(id) as { wrapped_key: string }
       expect(openSealed(kek, row.wrapped_key, `vault:${id}`)).toHaveLength(32)
@@ -418,8 +433,7 @@ describe('VaultService', () => {
     expect(await f.vault.changePassword(PW, PW2)).toEqual({ ok: true })
     expect(f.vault.isUnlocked()).toBe(true)
     expect(f.vault.open(prod.id, 'b', b)).toBe('two')
-    const rows = f.db.prepare('SELECT DISTINCT kdf_params FROM vaults').all()
-    expect(rows).toHaveLength(1)
+    expect(f.db.prepare('SELECT DISTINCT kdf_params FROM vaults').all()).toEqual([{ kdf_params: null }])
 
     f.vault.lock('manual')
     expect(await f.vault.unlock(PW)).toMatchObject({ ok: false, reason: 'wrong-password' })
@@ -428,26 +442,29 @@ describe('VaultService', () => {
     expect(f.vault.open(prod.id, 'b', b)).toBe('two')
     expect(actions(f)).toContainEqual(expect.objectContaining({ action: 'vault.rekey', outcome: 'success' }))
 
-    // Fail the second vault's re-wrap: nothing may change on disk or in memory.
-    const before = f.db.prepare('SELECT id, wrapped_key, kdf_params FROM vaults ORDER BY id').all()
+    // Fail the password wrap's write: nothing may change on disk or in memory.
+    const snapshot = (): unknown => [
+      f.db.prepare('SELECT id, wrapped_key, kdf_params FROM vaults ORDER BY id').all(),
+      f.db.prepare('SELECT password_wrap, password_kdf FROM vault_state WHERE id = 1').get(),
+    ]
+    const before = snapshot()
     const realPrepare = f.db.prepare.bind(f.db)
     let updates = 0
     vi.spyOn(f.db, 'prepare').mockImplementation((sql: string) => {
       const stmt = realPrepare(sql)
-      if (!/^UPDATE vaults\b/.test(sql.trim())) return stmt
-      const run = stmt.run.bind(stmt)
+      if (!/^UPDATE vault_state SET password_wrap\b/.test(sql.trim())) return stmt
       return Object.assign(Object.create(stmt) as StatementSync, {
-        run: (...p: Parameters<StatementSync['run']>) => {
-          if (++updates === 2) throw new Error('disk full')
-          return run(...p)
+        run: () => {
+          updates++
+          throw new Error('disk full')
         },
       })
     })
     await expect(f.vault.changePassword(PW2, 'third password')).rejects.toThrow(/disk full/)
     vi.restoreAllMocks()
-    expect(updates).toBe(2)
+    expect(updates).toBe(1)
     expect(f.db.isTransaction).toBe(false)
-    expect(f.db.prepare('SELECT id, wrapped_key, kdf_params FROM vaults ORDER BY id').all()).toEqual(before)
+    expect(snapshot()).toEqual(before)
     expect(f.vault.open(prod.id, 'b', b)).toBe('two')
     expect(actions(f)).toContainEqual(expect.objectContaining({ action: 'vault.rekey', outcome: 'failure' }))
 

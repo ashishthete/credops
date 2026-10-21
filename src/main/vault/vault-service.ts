@@ -35,6 +35,8 @@ export interface QuickUnlockDeps {
 const MAX_UNLOCK_DELAY_MS = 300_000
 const TOUCH_ID_REASON = 'unlock your OpsDeck vaults'
 const KEK_BYTES = 32
+/** AAD of the KEK sealed under the master password's key (`vault_state.password_wrap`). */
+const PW_AAD = 'pw:kek'
 
 /** Wait required after `failures` consecutive wrong passwords. */
 export function unlockDelayMs(failures: number): number {
@@ -46,6 +48,8 @@ type Failure = Extract<UnlockResult, { ok: false }>
 type Verified = { ok: true; kek: Buffer; keys: Map<string, Buffer>; corrupt: string[] }
 
 type Opened = { keys: Map<string, Buffer>; corrupt: string[] }
+/** The KEK sealed under a password key, with that key's scrypt params. Neither is secret alone. */
+type PasswordWrap = { params: KdfParams; sealed: string }
 
 const CANCELLED: Failure = { ok: false, reason: 'cancelled', retryAfterMs: 0 }
 const UNAVAILABLE: Failure = { ok: false, reason: 'unavailable', retryAfterMs: 0 }
@@ -70,6 +74,8 @@ interface StateRow {
   pin_wrap: string | null
   pin_failed: number
   last_method: UnlockMethod | null
+  password_wrap: string | null
+  password_kdf: string | null
 }
 
 const META_SQL = `SELECT v.id, v.name, v.color, v.created_at, v.updated_at,
@@ -108,7 +114,10 @@ export class VaultService {
   private readonly kdf: Omit<KdfParams, 'salt'>
   private readonly now: () => Date
   private readonly quick: QuickUnlockDeps | undefined
-  /** Key-encryption key derived from the master password; null while locked. */
+  /**
+   * Key-encryption key; null while locked. Random and stable for every setup since the wrapped
+   * scheme (the master password, if any, only wraps it); derived from the password on a legacy vault.
+   */
   private kek: Buffer | null = null
   private readonly keys = new Map<string, Buffer>()
   /** Keyed vaults whose wrapped key failed to open at unlock (Default opened, so not a wrong password). */
@@ -144,7 +153,7 @@ export class VaultService {
       autoLockMinutes: s.auto_lock_minutes,
       retryAfterMs: this.retryAfterMs(s),
       corruptVaultIds: this.kek ? [...this.corrupt] : [],
-      hasPassword: this.isSetUp(),
+      hasPassword: this.hasPassword(),
       pin: { enabled: s.pin_wrap !== null, attemptsLeft: Math.max(0, PIN_ATTEMPTS - s.pin_failed) },
       lastMethod: s.last_method,
       sso: { required: false },
@@ -163,10 +172,15 @@ export class VaultService {
     return this.serial(async () => {
       if (this.isSetUp()) throw new Error('already set up')
       checkPassword(password, true)
-      const epoch = this.epoch
-      const params = newKdfParams(this.kdf)
-      const kek = await deriveKek(password, params)
-      if (epoch !== this.epoch) {
+      const kek = randomKey()
+      let wrap: PasswordWrap | null
+      try {
+        wrap = await this.passwordWrap(password, kek, this.epoch)
+      } catch (err) {
+        kek.fill(0)
+        throw err
+      }
+      if (!wrap) {
         kek.fill(0)
         throw new Error(VAULT_LOCKED)
       }
@@ -179,9 +193,10 @@ export class VaultService {
             const key = randomKey()
             keys.set(id, key)
             this.db
-              .prepare('UPDATE vaults SET wrapped_key = ?, kdf_params = ?, updated_at = ? WHERE id = ?')
-              .run(seal(kek, key, wrapAad(id)), JSON.stringify(params), ts, id)
+              .prepare('UPDATE vaults SET wrapped_key = ?, kdf_params = NULL, updated_at = ? WHERE id = ?')
+              .run(seal(kek, key, wrapAad(id)), ts, id)
           }
+          this.writePasswordWrap(wrap)
           this.resetFailures()
         })
       } catch (err) {
@@ -248,7 +263,8 @@ export class VaultService {
       try {
         kek = Buffer.from(this.quick!.keychain.decrypt(Buffer.from(blob, 'base64')), 'base64')
       } catch {
-        this.discardQuickUnlock()
+        // Unreadable may be a locked or reset keychain; with no password it is the only way back.
+        if (this.hasPassword()) this.discardQuickUnlock()
         return fail('cache-unreadable', UNAVAILABLE)
       }
       if (epoch !== this.epoch) {
@@ -258,7 +274,8 @@ export class VaultService {
       const opened = kek.length === KEK_BYTES ? this.openAll(kek) : null
       if (!opened) {
         kek.fill(0)
-        this.discardQuickUnlock()
+        // The last copy of the KEK is never discarded: keep it if nothing else can unlock.
+        if (this.hasPassword() || this.pinEnabled()) this.discardQuickUnlock()
         return fail('cache-stale', UNAVAILABLE)
       }
       // The OS vouched for the user (Touch ID, or the login keychain), so the password backoff restarts.
@@ -282,6 +299,7 @@ export class VaultService {
     if (mode === 'login') throw new Error('login quick unlock is not offered')
     this.assertUnlocked()
     if (mode === 'off') {
+      if (!this.hasPassword() && !this.pinEnabled()) throw new Error('add a master password or a PIN first')
       this.db.prepare("UPDATE vault_state SET quick_unlock = 'off', quick_unlock_blob = NULL WHERE id = 1").run()
     } else {
       if (!this.modeAvailable(mode)) throw new Error('quick unlock unavailable')
@@ -351,6 +369,10 @@ export class VaultService {
     return () => this.resetListeners.delete(fn)
   }
 
+  /**
+   * Rewraps the live KEK under `next`. The KEK itself is kept, so the vault rows, the Touch ID cache
+   * and any PIN wrap stay valid. A legacy vault moves to the wrapped scheme in the same transaction.
+   */
   changePassword(current: string, next: string): Promise<UnlockResult> {
     return this.serial(async () => {
       this.assertUnlocked()
@@ -362,57 +384,77 @@ export class VaultService {
         this.audit.append({ action: 'vault.rekey', outcome: 'failure', details: { reason: res.reason } })
         return res
       }
-      // Only a password check: re-wrap the live keys, which include any vault created meanwhile.
+      // Only a password check: the live KEK is what gets wrapped.
       zero(res.kek, res.keys.values())
-      const params = newKdfParams(this.kdf)
-      const kek = await deriveKek(next, params)
-      if (epoch !== this.epoch) {
-        kek.fill(0)
+      const legacy = this.kekScheme() === 'legacy'
+      const wrap = await this.passwordWrap(next, this.kek!, epoch)
+      if (!wrap) {
         this.audit.append({ action: 'vault.rekey', outcome: 'failure', details: { reason: 'cancelled' } })
         return CANCELLED
       }
-      // A cache of the old KEK would be stale: refresh it, or turn quick unlock off if we cannot.
-      const mode = this.state().quick_unlock
-      let blob: string | null = null
-      if (mode !== 'off') {
-        try {
-          if (this.quick?.keychain.available()) blob = this.cacheBlob(kek)
-        } catch {
-          blob = null
-        }
-      }
       try {
         this.tx(() => {
-          if (mode !== 'off') {
-            this.db
-              .prepare('UPDATE vault_state SET quick_unlock = ?, quick_unlock_blob = ? WHERE id = 1')
-              .run(blob ? mode : 'off', blob)
-          }
-          const keyed = this.db.prepare('SELECT COUNT(*) AS n FROM vaults WHERE wrapped_key IS NOT NULL').get() as {
-            n: number
-          }
-          // Corrupt vaults keep their old wrapping: their key is gone either way.
-          if (Number(keyed.n) !== this.keys.size + this.corrupt.length) throw new Error('vault keys out of sync')
-          const ts = this.now().toISOString()
-          for (const [id, key] of this.keys) {
-            this.db
-              .prepare('UPDATE vaults SET wrapped_key = ?, kdf_params = ?, updated_at = ? WHERE id = ?')
-              .run(seal(kek, key, wrapAad(id)), JSON.stringify(params), ts, id)
-          }
+          this.writePasswordWrap(wrap)
+          if (legacy) this.convertLegacy()
         })
       } catch (err) {
-        kek.fill(0)
         this.audit.append({ action: 'vault.rekey', outcome: 'failure', details: { reason: 'write-failed' } })
         throw err
       }
-      this.kek!.fill(0)
-      this.kek = kek
-      this.audit.append({ action: 'vault.rekey', outcome: 'success', details: { vaults: this.keys.size } })
-      if (mode !== 'off' && !blob) {
-        this.audit.append({ action: 'vault.quickunlock', outcome: 'info', details: { mode: 'off', reason: 'rekey' } })
-      }
+      this.audit.append({
+        action: 'vault.rekey',
+        outcome: 'success',
+        details: { vaults: this.keys.size, ...(legacy ? { converted: true } : {}) },
+      })
       return { ok: true }
     })
+  }
+
+  /** Adds a master password to a vault that has none. Only while unlocked. */
+  setPassword(next: string): Promise<VaultStatus> {
+    return this.serial(async () => {
+      this.assertUnlocked()
+      if (this.hasPassword()) throw new Error('a master password is already set')
+      checkPassword(next, true)
+      const wrap = await this.passwordWrap(next, this.kek!, this.epoch)
+      if (!wrap) throw new Error(VAULT_LOCKED)
+      this.tx(() => this.writePasswordWrap(wrap))
+      this.audit.append({ action: 'vault.password', outcome: 'success', details: { op: 'set' } })
+      return this.status()
+    })
+  }
+
+  /**
+   * Drops the master password after checking it, leaving the KEK only in the Touch ID cache or the
+   * PIN wrap. Refused when neither exists: that would discard the last way in.
+   */
+  removePassword(current: string): Promise<UnlockResult> {
+    return this.serial(async () => {
+      this.assertUnlocked()
+      checkPassword(current, false)
+      if (!this.touchIdSet() && !this.pinEnabled()) throw new Error('add Touch ID or a PIN first')
+      const epoch = this.epoch
+      const res = await this.verify(current, epoch)
+      if (!res.ok) {
+        this.audit.append({ action: 'vault.password', outcome: 'failure', details: { op: 'removed', reason: res.reason } })
+        return res
+      }
+      zero(res.kek, res.keys.values())
+      // Checked again after the await: the other factor may have gone meanwhile.
+      if (!this.touchIdSet() && !this.pinEnabled()) throw new Error('add Touch ID or a PIN first')
+      const legacy = this.kekScheme() === 'legacy'
+      this.tx(() => {
+        this.db.prepare('UPDATE vault_state SET password_wrap = NULL, password_kdf = NULL WHERE id = 1').run()
+        if (legacy) this.convertLegacy()
+      })
+      this.audit.append({ action: 'vault.password', outcome: 'success', details: { op: 'removed' } })
+      return { ok: true }
+    })
+  }
+
+  /** True when a master password can unlock: a password wrap, or a legacy password-derived KEK. */
+  hasPassword(): boolean {
+    return this.state().password_wrap !== null || this.kekScheme() === 'legacy'
   }
 
   /**
@@ -468,7 +510,7 @@ export class VaultService {
         this.db.prepare('UPDATE vaults SET wrapped_key = NULL, kdf_params = NULL, updated_at = ?').run(ts)
         this.db
           .prepare(
-            "UPDATE vault_state SET quick_unlock = 'off', quick_unlock_blob = NULL, failed_attempts = 0, last_failed_at = NULL WHERE id = 1",
+            "UPDATE vault_state SET quick_unlock = 'off', quick_unlock_blob = NULL, failed_attempts = 0, last_failed_at = NULL, password_wrap = NULL, password_kdf = NULL WHERE id = 1",
           )
           .run()
         // In the same transaction: an erase is never left unaudited, nor an audit row unerased.
@@ -499,15 +541,17 @@ export class VaultService {
     this.assertUnlocked()
     const name = this.checkName(input.name)
     const color = checkColor(input.color)
+    // A legacy vault shares the Default vault's KDF params until it converts; the wrapped scheme has none.
     const master = this.db.prepare('SELECT kdf_params FROM vaults WHERE id = ?').get(DEFAULT_VAULT_ID) as {
-      kdf_params: string
+      kdf_params: string | null
     }
+    const kdfParams = this.kekScheme() === 'legacy' ? master.kdf_params : null
     const id = randomUUID()
     const key = randomKey()
     const ts = this.now().toISOString()
     this.db
       .prepare('INSERT INTO vaults(id, name, color, wrapped_key, kdf_params, created_at, updated_at) VALUES (?,?,?,?,?,?,?)')
-      .run(id, name, color, seal(this.kek!, key, wrapAad(id)), master.kdf_params, ts, ts)
+      .run(id, name, color, seal(this.kek!, key, wrapAad(id)), kdfParams, ts, ts)
     this.keys.set(id, key)
     this.audit.append({
       action: 'vault.create',
@@ -630,7 +674,9 @@ export class VaultService {
 
   private state(): StateRow {
     return this.db
-      .prepare('SELECT failed_attempts, last_failed_at, quick_unlock, quick_unlock_blob, auto_lock_minutes, pin_wrap, pin_failed, last_method FROM vault_state WHERE id = 1')
+      .prepare(
+        'SELECT failed_attempts, last_failed_at, quick_unlock, quick_unlock_blob, auto_lock_minutes, pin_wrap, pin_failed, last_method, password_wrap, password_kdf FROM vault_state WHERE id = 1',
+      )
       .get() as unknown as StateRow
   }
 
@@ -652,19 +698,15 @@ export class VaultService {
   private async verify(password: string, epoch: number): Promise<Verified | Failure> {
     const wait = this.retryAfterMs()
     if (wait > 0) return { ok: false, reason: 'throttled', retryAfterMs: wait }
-    const master = this.db.prepare('SELECT kdf_params FROM vaults WHERE id = ?').get(DEFAULT_VAULT_ID) as {
-      kdf_params: string | null
-    }
-    if (!master.kdf_params) throw new Error('invalid kdf params')
-    const kek = await deriveKek(password, JSON.parse(master.kdf_params) as KdfParams)
+    const kek = this.kekScheme() === 'legacy' ? await this.legacyKek(password) : await this.unwrapKek(password)
     if (epoch !== this.epoch) {
-      kek.fill(0)
+      kek?.fill(0)
       return CANCELLED
     }
     // Read after the await: a vault created during derivation must be included.
-    const opened = this.openAll(kek)
-    if (!opened) {
-      kek.fill(0)
+    const opened = kek && kek.length === KEK_BYTES ? this.openAll(kek) : null
+    if (!kek || !opened) {
+      kek?.fill(0)
       this.db
         .prepare('UPDATE vault_state SET failed_attempts = failed_attempts + 1, last_failed_at = ? WHERE id = 1')
         .run(this.now().toISOString())
@@ -672,6 +714,69 @@ export class VaultService {
     }
     this.resetFailures()
     return { ok: true, kek, ...opened }
+  }
+
+  /** Legacy scheme: the KEK is the password's scrypt output under the Default vault's params. */
+  private legacyKek(password: string): Promise<Buffer> {
+    const master = this.db.prepare('SELECT kdf_params FROM vaults WHERE id = ?').get(DEFAULT_VAULT_ID) as {
+      kdf_params: string
+    }
+    return deriveKek(password, JSON.parse(master.kdf_params) as KdfParams)
+  }
+
+  /** Wrapped scheme: the KEK sealed under the password's key; null for a wrong (or no) password. */
+  private async unwrapKek(password: string): Promise<Buffer | null> {
+    const s = this.state()
+    if (!s.password_wrap || !s.password_kdf) return null
+    const pwKey = await deriveKek(password, JSON.parse(s.password_kdf) as KdfParams)
+    try {
+      return openSealed(pwKey, s.password_wrap, PW_AAD)
+    } catch {
+      return null
+    } finally {
+      pwKey.fill(0)
+    }
+  }
+
+  /** Seals `kek` under a key derived from `password` with fresh params; null if a lock() since `epoch`. */
+  private async passwordWrap(password: string, kek: Buffer, epoch: number): Promise<PasswordWrap | null> {
+    const params = newKdfParams(this.kdf)
+    const pwKey = await deriveKek(password, params)
+    try {
+      if (epoch !== this.epoch) return null
+      return { params, sealed: seal(pwKey, kek, PW_AAD) }
+    } finally {
+      pwKey.fill(0)
+    }
+  }
+
+  private writePasswordWrap(wrap: PasswordWrap): void {
+    this.db
+      .prepare('UPDATE vault_state SET password_wrap = ?, password_kdf = ? WHERE id = 1')
+      .run(wrap.sealed, JSON.stringify(wrap.params))
+  }
+
+  /** Inside a tx: leaves the legacy scheme for good, so the password no longer derives the KEK. */
+  private convertLegacy(): void {
+    this.db.prepare('UPDATE vaults SET kdf_params = NULL, updated_at = ?').run(this.now().toISOString())
+  }
+
+  /** Legacy while the Default vault keeps its KDF params (the KEK is derived from the password). */
+  private kekScheme(): 'legacy' | 'wrapped' {
+    const row = this.db.prepare('SELECT kdf_params FROM vaults WHERE id = ?').get(DEFAULT_VAULT_ID) as
+      | { kdf_params: string | null }
+      | undefined
+    return row?.kdf_params != null ? 'legacy' : 'wrapped'
+  }
+
+  private pinEnabled(): boolean {
+    return this.state().pin_wrap !== null
+  }
+
+  /** A Touch ID cache exists (a copy of the KEK in the keychain). */
+  private touchIdSet(): boolean {
+    const s = this.state()
+    return s.quick_unlock === 'touchId' && s.quick_unlock_blob !== null
   }
 
   /** Unwraps every keyed vault with `kek`; null (nothing kept) when the Default vault does not open. */

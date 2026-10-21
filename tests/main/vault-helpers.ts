@@ -1,6 +1,6 @@
 import { AuditLog } from '../../src/main/audit/audit-log'
 import { openDatabase, type Db } from '../../src/main/db/connection'
-import type { KdfParams } from '../../src/main/vault/crypto'
+import { deriveKek, newKdfParams, randomKey, seal, type KdfParams } from '../../src/main/vault/crypto'
 import type { ClipboardLike } from '../../src/main/vault/types'
 import { VaultService, type QuickUnlockDeps } from '../../src/main/vault/vault-service'
 
@@ -39,4 +39,24 @@ export function makeVault(
 /** Every audit row as one JSON string, for "no secret value" asserts. */
 export function auditRows(db: Db): string {
   return JSON.stringify(db.prepare('SELECT * FROM audit_events ORDER BY id').all())
+}
+
+/**
+ * Rewrites a fresh setup the way vaults were keyed before the wrapped scheme: KEK =
+ * deriveKek(password, kdf_params), each vault key sealed by it (the vaults must be empty: their
+ * keys are replaced), kdf_params on every row and no password wrap. Ends unlocked on that KEK.
+ */
+export async function seedLegacy(f: VaultFixture, password: string): Promise<void> {
+  const params = newKdfParams(FAST_KDF)
+  const kek = await deriveKek(password, params)
+  const ids = (f.db.prepare('SELECT id FROM vaults').all() as { id: string }[]).map((r) => r.id)
+  for (const id of ids) {
+    f.db
+      .prepare('UPDATE vaults SET wrapped_key = ?, kdf_params = ? WHERE id = ?')
+      .run(seal(kek, randomKey(), `vault:${id}`), JSON.stringify(params), id)
+  }
+  f.db.prepare('UPDATE vault_state SET password_wrap = NULL, password_kdf = NULL WHERE id = 1').run()
+  kek.fill(0)
+  f.vault.lock('manual')
+  if (!(await f.vault.unlock(password)).ok) throw new Error('legacy seed did not unlock')
 }

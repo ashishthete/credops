@@ -226,30 +226,31 @@ describe('quick unlock', () => {
     expect(events(f)).toContainEqual({ action: 'vault.quickunlock', outcome: 'success', details: { mode: 'off' } })
   })
 
-  it('rekey refreshes the cache', async () => {
+  // The KEK is stable across a password change, so the cache stays valid as it is.
+  it('rekey keeps the cache', async () => {
     const f = await ready()
     f.vault.setQuickUnlock('touchId')
-    const before = stateRow(f).quick_unlock_blob
+    const before = stateRow(f)
     expect(await f.vault.changePassword(PW, PW2)).toEqual({ ok: true })
-    expect(stateRow(f).quick_unlock_blob).not.toBe(before)
+    expect(stateRow(f)).toEqual(before)
     f.vault.lock('manual')
     expect(await f.vault.unlockQuick()).toEqual({ ok: true })
     f.vault.lock('manual')
     expect(await f.vault.unlock(PW2)).toEqual({ ok: true })
   })
 
-  it('rekey clears the cache when the keychain is gone', async () => {
+  it('rekey does not need the keychain', async () => {
     const avail = { keychain: true, touchId: true }
     const f = await ready(fakeQuick(avail))
     f.vault.setQuickUnlock('touchId')
+    const before = stateRow(f)
     avail.keychain = false
     expect(await f.vault.changePassword(PW, PW2)).toEqual({ ok: true })
-    expect(stateRow(f)).toEqual({ quick_unlock: 'off', quick_unlock_blob: null })
-    expect(events(f)).toContainEqual({
-      action: 'vault.quickunlock',
-      outcome: 'info',
-      details: { mode: 'off', reason: 'rekey' },
-    })
+    expect(stateRow(f)).toEqual(before)
+    expect(events(f).filter((e) => e.action === 'vault.quickunlock')).toHaveLength(1)
+    avail.keychain = true
+    f.vault.lock('manual')
+    expect(await f.vault.unlockQuick()).toEqual({ ok: true })
   })
 
   it('a failed keychain encrypt propagates and writes nothing', async () => {

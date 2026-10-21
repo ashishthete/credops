@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { openDatabase, type Db } from '../../src/main/db/connection'
 import { migrate, migrations } from '../../src/main/db/migrations'
 import { SSO_N } from '../../src/main/db/sso-migration'
-import { makeVault, type VaultFixture } from './vault-helpers'
+import { makeVault, seedLegacy, type VaultFixture } from './vault-helpers'
 
 const PW = 'correct horse'
 let f: VaultFixture
@@ -13,6 +13,8 @@ beforeAll(async () => {
   migrate(db, migrations.filter((m) => m.version < SSO_N))
   f = makeVault({ db })
   await f.vault.setup(PW)
+  // A vault keyed before this build: password-derived KEK, no password wrap.
+  await seedLegacy(f, PW)
   migrate(db)
 })
 
