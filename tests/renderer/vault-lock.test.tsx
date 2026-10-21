@@ -147,9 +147,15 @@ describe('setup', () => {
     const user = userEvent.setup()
     const { invoke } = fakeVault({ setUp: false })
     renderApp()
-    await gate('Protect your vaults')
+    // With T8's gate order, a fresh install starts on the Hub step; skip it for local-only setup.
+    const skipHub = await waitFor(() => {
+      const skip = screen.queryByRole('button', { name: 'Use OpsDeck without a Hub' })
+      expect(skip ?? screen.queryByRole('switch', { name: 'Touch ID' })).toBeInTheDocument()
+      return skip
+    })
+    if (skipHub) await user.click(skipHub)
+    expect(await screen.findByRole('switch', { name: 'Touch ID' })).toHaveAttribute('aria-checked', 'true')
     expect(shellNav()).not.toBeInTheDocument()
-    expect(screen.getByRole('switch', { name: 'Touch ID' })).toHaveAttribute('aria-checked', 'true')
     await user.click(screen.getByRole('button', { name: 'Continue' }))
     expect(invoke).toHaveBeenCalledWith('vault:setup', { touchId: true, pin: undefined, password: undefined })
     await gate('Your vaults are ready')
