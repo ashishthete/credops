@@ -145,6 +145,7 @@ export function buildApp(deps: HubDeps): FastifyInstance {
     now: deps.now,
   })
   releases = new HubReleases({ config: deps.config, db: deps.db, audit: deps.audit, directory, registry, locks, secrets, deployKeys, live, now: deps.now, ids: deps.ids, finalize: notify.finalize, heldSecrets: notify.held, log: (m) => app.log.error(m), ...(deps.runner ? { runner: deps.runner } : {}) })
+  live.setView((user, groups, msg) => releases.liveView(user, groups, msg))
   // Started, failed and rolled-back notices ride the run's own events; success goes out from finalize, with notes.
   releases.service.onEvent((batch) => {
     for (const e of batch) void notify.dispatcher.onRunEvent(e)

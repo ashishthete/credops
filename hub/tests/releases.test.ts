@@ -268,14 +268,14 @@ describe('hub releases', () => {
       expect(locks.map((l) => l.release_id)).toEqual([id])
     })
 
-    it('a person without a release.start grant gets 403 and the service is not reached; an unknown release is 404', async () => {
+    it('a person who cannot view the release gets 404 like an unknown one, and the service is not reached', async () => {
       const { bob, dan } = await setup()
       const id = await ready(bob)
       const spy = vi.spyOn(hub.app.releases.service, 'previewPlaybook')
       const audit = auditCount()
       const res = await preview(dan, id)
-      expect(res.statusCode).toBe(403)
-      expect(res.json()).toMatchObject({ error: 'forbidden' })
+      expect(res.statusCode).toBe(404)
+      expect(res.json()).toMatchObject({ error: 'not_found' })
       expect(spy).not.toHaveBeenCalled()
       // A preview is a read: like a denied detail, it writes no audit row.
       expect(auditCount()).toBe(audit)

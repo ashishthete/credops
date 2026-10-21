@@ -74,3 +74,19 @@ export function decide(user: HubUser, groups: HubGroup[], action: HubAction, tar
     vias: perDep.map((p) => ({ deploymentId: p.id, groupId: p.best!.group.id, groupName: p.best!.group.name })),
   }
 }
+
+/** What of an environment's releases a viewer sees: all of it, or only the parts of the named deployments. */
+export type ViewScope = { all: true } | { all: false; deploymentIds: ReadonlySet<string> }
+
+/**
+ * The part of `environmentId` that `user` may view: null when nothing. Admins and an all or environment grant see
+ * all of it; deployment grants alone see only those deployments.
+ */
+export function viewScope(user: HubUser, groups: HubGroup[], environmentId: string): ViewScope | null {
+  if (!decide(user, groups, 'deploy.view', { environmentId }).allowed) return null
+  if (user.role === 'admin') return { all: true }
+  const grants = groups.filter((g) => user.groupIds.includes(g.id)).flatMap((g) => g.grants)
+  if (grants.some((g) => g.scope.kind === 'all' || (g.scope.kind === 'environment' && g.scope.environmentId === environmentId))) return { all: true }
+  const deploymentIds = new Set(grants.flatMap((g) => (g.scope.kind === 'deployment' && g.scope.environmentId === environmentId ? [g.scope.deploymentId] : [])))
+  return deploymentIds.size > 0 ? { all: false, deploymentIds } : null
+}
