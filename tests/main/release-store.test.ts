@@ -321,6 +321,7 @@ describe('ReleaseStore', () => {
       const m = f.releases.latestTouching(['s1', 's2', 's3'])
       expect(Object.fromEntries(m)).toEqual({ s1: r1.id, s2: r2.id })
       expect(f.releases.latestTouching([]).size).toBe(0)
+      expect(Object.fromEntries(f.releases.latestTouching(['s1', 's2'], 'release'))).toEqual({ s1: r1.id, s2: r1.id })
     })
 
     it('previousTouching returns the earlier succeeded deploy of that service', async () => {

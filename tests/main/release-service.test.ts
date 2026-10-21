@@ -177,7 +177,7 @@ describe('ReleaseService', () => {
     expect(runIds(r.runner.call('rollback'))).toEqual([runIds(r.runner.call('release'))[1]])
   })
 
-  it('auto-rollback off ends failed and rollback() refuses a release whose services were deployed again', async () => {
+  it('auto-rollback off ends failed and rollback() refuses a release whose services were deployed since', async () => {
     const r = await rig()
     r.f.deploys.updateSettings(r.f.staging.id, { autoRollback: false })
     const deps = [dep(r, 'one'), dep(r, 'two')]
@@ -197,7 +197,7 @@ describe('ReleaseService', () => {
     await r.svc.whenIdle()
     expect(r.svc.detail(newer).status).toBe('succeeded')
 
-    await expect(r.svc.rollback(failing, {})).rejects.toThrow("Can't roll back: one-0 and two-1 were deployed again since this release")
+    await expect(r.svc.rollback(failing, {})).rejects.toThrow(`Can't roll back: one-0 and two-1 are now on release ${newer.slice(0, 8)}`)
     const { releaseId } = await r.svc.rollback(newer, {})
     await r.svc.whenIdle()
     const rb = r.svc.detail(releaseId)
@@ -1128,14 +1128,14 @@ describe('per-service record', () => {
   it('rollback of R1 is refused after R2 redeployed esg, naming esg', async () => {
     const { r, esg, ui, pay } = await platformRig()
     const r1 = await release(r, [esg.id], A, B)
-    await release(r, [esg.id, ui.id], B, C)
+    const r2 = await release(r, [esg.id, ui.id], B, C)
     const err = await r.svc.rollback(r1, {}).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(DeployError)
     expect((err as DeployError).code).toBe('INVALID_STATE')
-    expect((err as DeployError).message).toBe("Can't roll back: esg was deployed again since this release")
+    expect((err as DeployError).message).toBe(`Can't roll back: esg is now on release ${r2.slice(0, 8)}`)
     const r3 = await release(r, [ui.id, pay.id], C, A)
-    await release(r, [ui.id, pay.id], A, B)
-    await expect(r.svc.rollback(r3, {})).rejects.toThrow("Can't roll back: ui and pay were deployed again since this release")
+    const r4 = await release(r, [ui.id, pay.id], A, B)
+    await expect(r.svc.rollback(r3, {})).rejects.toThrow(`Can't roll back: ui and pay are now on release ${r4.slice(0, 8)}`)
     expect(r.runner.kinds).not.toContain('rollback')
   })
 
@@ -1167,8 +1167,30 @@ describe('per-service record', () => {
 
     // A succeeded R2 is a real redeploy.
     const r4 = await release(r, [ui.id], A, B)
-    await release(r, [ui.id], B, C)
-    await expect(r.svc.rollback(r4, {})).rejects.toThrow("Can't roll back: ui was deployed again since this release")
+    const r5 = await release(r, [ui.id], B, C)
+    await expect(r.svc.rollback(r4, {})).rejects.toThrow(`Can't roll back: ui is now on release ${r5.slice(0, 8)}`)
+  })
+
+  it('after rolling back R2 by hand, R1 can be rolled back too, rebuilding at its previous commit', async () => {
+    const { r, esg, pay } = await platformRig()
+    const r1 = await release(r, [esg.id, pay.id], A, B)
+    const r2 = await release(r, [esg.id, pay.id], B, C)
+    const err = await r.svc.rollback(r1, {}).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(DeployError)
+    expect((err as DeployError).message).toBe(`Can't roll back: esg and pay are now on release ${r2.slice(0, 8)}`)
+    await r.svc.rollback(r2, {})
+    await r.svc.whenIdle()
+    expect(last(r, esg.id)).toEqual([B, r1])
+    const { releaseId } = await r.svc.rollback(r1, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(releaseId).status).toBe('succeeded')
+    expect(r.runner.call('rollback', 1).deployments.map((d) => [d.name, d.services, d.previousCommit])).toEqual([
+      ['billing', null, A],
+      ['platform', ['esg'], A],
+    ])
+    expect(last(r, esg.id)).toEqual([A, null])
+    await expect(r.svc.rollback(r1, {})).rejects.toThrow('Nothing to roll back: this release was already rolled back')
+    expect(r.runner.kinds.filter((k) => k === 'rollback')).toHaveLength(2)
   })
 
   it('rollback restores last_deployed_commit to the commit it checked out', async () => {
@@ -1338,12 +1360,12 @@ describe('per-service record', () => {
     expect(last(r, esg.id)).toEqual([A, null])
   })
 
-  it('after rolling back R1, rolling back R1 again is refused naming its services', async () => {
+  it('after rolling back R1, rolling back R1 again is refused', async () => {
     const { r, esg, pay } = await platformRig()
     const r1 = await release(r, [esg.id, pay.id], A, B)
     await r.svc.rollback(r1, {})
     await r.svc.whenIdle()
-    await expect(r.svc.rollback(r1, {})).rejects.toThrow("Can't roll back: esg and pay were deployed again since this release")
+    await expect(r.svc.rollback(r1, {})).rejects.toThrow('Nothing to roll back: this release was already rolled back')
     expect(r.runner.kinds.filter((k) => k === 'rollback')).toHaveLength(1)
   })
 

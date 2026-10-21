@@ -285,10 +285,10 @@ export class ReleaseStore {
   }
 
   /**
-   * Each service → the newest started release (either kind) whose run left it deployed (see `DEPLOYED`). A failed or
-   * rolled-back release does not count.
+   * Each service → the newest started release (either kind, or only `kind`) whose run left it deployed (see
+   * `DEPLOYED`). A failed or rolled-back release does not count.
    */
-  latestTouching(serviceIds: string[]): Map<string, string> {
+  latestTouching(serviceIds: string[], kind?: ReleaseKind): Map<string, string> {
     const out = new Map<string, string>()
     if (serviceIds.length === 0) return out
     const rows = this.db
@@ -296,9 +296,10 @@ export class ReleaseStore {
         `SELECT j.value ->> '$.id' AS service_id, MAX(r.id) AS release_id
          FROM releases r JOIN deployment_runs d ON d.release_id = r.id, json_each(d.services) j
          WHERE r.started_at IS NOT NULL AND j.value ->> '$.id' IN (SELECT value FROM json_each(?)) AND ${DEPLOYED}
+           AND (? IS NULL OR r.kind = ?)
          GROUP BY service_id`,
       )
-      .all(JSON.stringify(serviceIds)) as { service_id: string; release_id: string }[]
+      .all(JSON.stringify(serviceIds), kind ?? null, kind ?? null) as { service_id: string; release_id: string }[]
     for (const r of rows) out.set(r.service_id, r.release_id)
     return out
   }

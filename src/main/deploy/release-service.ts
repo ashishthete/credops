@@ -490,7 +490,7 @@ export class ReleaseService {
     const eligible = src.runs
       .filter((r) => (r.status === 'succeeded' || r.status === 'failed') && r.previousCommit !== null && SHA.test(r.previousCommit) && r.deploymentId !== null)
       .reverse()
-    this.assertLatestTouching(src, eligible)
+    this.assertStillCurrent(src, eligible)
     this.confirmProtected('release.rollback', src, env, src.runs.map((r) => r.hostId).filter((h): h is string => h !== null), confirm.typedName)
     if (eligible.length === 0) {
       throw new DeployError('INVALID_STATE', src.status === 'rolled_back' ? 'Nothing to roll back: this release was already rolled back' : 'Nothing to roll back: every deployment was a first deploy')
@@ -1228,14 +1228,40 @@ export class ReleaseService {
     }
   }
 
-  /** Manual rollback only while no later release (of either kind) has deployed any service the rollback rebuilds. */
-  private assertLatestTouching(src: ReleaseDetail, eligible: DeploymentRunMeta[]): void {
-    // Names in run order, though the rollback walks the runs last first.
-    const entries = [...eligible].reverse().flatMap((r) => r.services)
-    const latest = this.d.releases.latestTouching(entries.map((e) => e.id))
-    // Only a newer deploy blocks; a run of this release that failed leaves an older one (or none) as the latest.
-    const names = [...new Set(entries.filter((e) => (latest.get(e.id) ?? src.id) > src.id).map((e) => e.name))]
-    if (names.length > 0) throw new DeployError('INVALID_STATE', `Can't roll back: ${listNames(names)} ${names.length === 1 ? 'was' : 'were'} deployed again since this release`)
+  /**
+   * Manual rollback only while every service it rebuilds is still where this release left it: no later release has
+   * deployed it, and its record is on this release when this release recorded it, or on the release it was on before
+   * when this release's run did not. A rollback moves the record back to the release before the one it undid, so after
+   * rolling back R2, R1 can be rolled back too.
+   */
+  private assertStillCurrent(src: ReleaseDetail, eligible: DeploymentRunMeta[]): void {
+    const entries = [...eligible].reverse().flatMap((run) => run.services.map((e) => ({ e, recorded: run.status === 'succeeded' && !run.rolledBack && e.deployedCommit !== null })))
+    const now = new Map(this.d.services.list(src.environmentId).flatMap((s) => (s.kind === 'service' ? [[s.id, s.lastReleaseId] as const] : [])))
+    // A later release deploy counts even when it reported no commit and so left the record alone.
+    const later = this.d.releases.latestTouching(entries.map(({ e }) => e.id), 'release')
+    // Services in run order, though the rollback walks the runs last first, grouped by the release each is on now.
+    const moved = new Map<string | null, string[]>()
+    for (const { e, recorded } of entries) {
+      // A deleted service has nothing to restore.
+      if (!now.has(e.id)) continue
+      const newer = later.get(e.id)
+      const cur = newer !== undefined && newer > src.id ? newer : (now.get(e.id) ?? null)
+      if (cur === (recorded ? src.id : e.previousReleaseId)) continue
+      const names = moved.get(cur) ?? []
+      if (!names.includes(e.name)) moved.set(cur, [...names, e.name])
+    }
+    if (moved.size === 0) return
+    if (src.status === 'rolled_back') throw new DeployError('INVALID_STATE', 'Nothing to roll back: this release was already rolled back')
+    const parts = [...moved].map(([id, names]) => `${listNames(names)} ${names.length === 1 ? 'is' : 'are'} now on ${id === null ? 'no recorded release' : `release ${this.releaseLabel(id)}`}`)
+    throw new DeployError('INVALID_STATE', `Can't roll back: ${parts.join('; ')}`)
+  }
+
+  private releaseLabel(id: string): string {
+    try {
+      return this.d.releases.get(id).version ?? id.slice(0, 8)
+    } catch {
+      return id.slice(0, 8)
+    }
   }
 
   /** Runs that ended succeeded fill their entries' deployedCommit and become their services' last deploy. */

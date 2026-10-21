@@ -231,7 +231,7 @@ describe('services deploy end to end', () => {
 
     // 6. R1 again is refused; R2 is still the latest release for its services, so the real rollback path takes it,
     // and only once.
-    await expect(w.ipc.rollback(r1, {})).rejects.toThrow(/^Can't roll back: esg was deployed again since this release$/)
+    await expect(w.ipc.rollback(r1, {})).rejects.toThrow(/^Nothing to roll back: this release was already rolled back$/)
     expect(f.releases.latestTouching([fastapi.id, langgraph.id])).toEqual(
       new Map([
         [fastapi.id, r2],
@@ -243,7 +243,7 @@ describe('services deploy end to end', () => {
     expect(svc.detail(r2back).status).toBe('succeeded')
     expect(f.releases.get(r2back).serviceIds).toEqual([fastapi.id, langgraph.id])
     expect(cmds(tasksOf(lastOf(w, 'rollback')), 'rb_up', 'fast-api').join('\n')).toMatch(/ up -d$/)
-    await expect(w.ipc.rollback(r2, {})).rejects.toThrow(/^Can't roll back: fastapi-app and langgraph-api were deployed again since this release$/)
+    await expect(w.ipc.rollback(r2, {})).rejects.toThrow(/^Nothing to roll back: this release was already rolled back$/)
 
     // 7. A database is never deployed.
     await expect(w.ipc.preflight({ environmentId: f.staging.id, serviceIds: [pg.id], bump: 'none', options: DEFAULT_RELEASE_OPTIONS })).rejects.toThrow(
