@@ -677,6 +677,33 @@ describe('ReleaseService', () => {
     expect(dis[0]).toMatchObject({ targetType: 'release', targetId: id, outcome: 'success' })
   })
 
+  it('every release audit row carries its counts, denials, cancels and discards included', async () => {
+    const counts = { serviceCount: 1, deploymentCount: 1, hostCount: 1 }
+    const denied = await rig({ access: { check: async (_a, action) => (action === 'deploy.view' ? { allowed: false, reason: 'no' } : { allowed: true }) } })
+    await expect(ready(denied)).rejects.toThrow(/no/)
+    expect(audits(denied, 'release.preflight')[0].details).toEqual({ reason: 'access', ...counts })
+
+    const r = await rig()
+    r.f.envs.update(r.f.staging.id, { protected: true })
+    const id = await ready(r)
+    await expect(r.svc.start(id, {})).rejects.toThrow(DeployError)
+    expect(audits(r, 'release.start')[0].details).toEqual({ reason: 'confirm', ...counts })
+    await r.svc.discard(id)
+    expect(audits(r, 'release.discard')[0].details).toEqual(counts)
+
+    const g = gate()
+    r.runner.onCancel = g.open
+    r.runner.on.release = async () => {
+      await g.p
+      return { cancelled: true, exitCode: null }
+    }
+    const id2 = await ready(r, r.f.deploys.list(r.f.staging.id))
+    await r.svc.start(id2, { typedName: 'staging' })
+    await r.svc.cancel(id2)
+    await r.svc.whenIdle()
+    expect(audits(r, 'release.cancel')[0].details).toEqual({ releaseId: id2, ...counts })
+  })
+
   it('a throw after the run leaves no stranded row', async () => {
     const r = await rig()
     const id = await ready(r)

@@ -73,6 +73,8 @@ export interface ReleaseServiceDeps {
   clock: { setTimeout(fn: () => void, ms: number): unknown; clearTimeout(handle: unknown): void }
 }
 
+type ReleaseCounts = { serviceCount: number; deploymentCount: number; hostCount: number }
+
 type Phase = 'preflight' | 'release' | 'version' | 'rollback' | 'unlock'
 
 interface Live {
@@ -206,7 +208,11 @@ export class ReleaseService {
       { serviceIds: req.serviceIds, checkoutIds: req.checkoutIds ?? [] },
       { services: this.d.services.list(env.id), deployments: this.d.deploys.list(env.id) },
     )
-    await this.guard('deploy.view', 'release.preflight', env, groups.map((g) => g.deployment.id))
+    await this.guard('deploy.view', 'release.preflight', env, groups.map((g) => g.deployment.id), undefined, {
+      serviceCount: groups.reduce((n, g) => n + g.selected.length, 0),
+      deploymentCount: groups.length,
+      hostCount: new Set(groups.map((g) => g.deployment.hostId)).size,
+    })
     const deps = groups.map((g) => g.deployment)
     const sels: RunSelection[] = groups.map((g) => ({ services: runServicesOf(g), whole: g.whole }))
 
@@ -447,7 +453,7 @@ export class ReleaseService {
     const env = environmentMeta(this.d.db, live.environmentId)
     await this.guard('release.cancel', 'release.cancel', env, [], releaseId)
     this.abort(live)
-    this.audit('release.cancel', 'success', live, { releaseId })
+    this.audit('release.cancel', 'success', live, { releaseId, ...this.rowCounts(releaseId) })
     await live.done
   }
 
@@ -1141,7 +1147,14 @@ export class ReleaseService {
     if (this.live.get(live.id) === live) this.live.delete(live.id)
   }
 
-  private async guard(action: DeployAction, auditAction: AuditAction, env: { id: string; name: string }, deploymentIds: string[], releaseId?: string): Promise<void> {
+  private async guard(
+    action: DeployAction,
+    auditAction: AuditAction,
+    env: { id: string; name: string },
+    deploymentIds: string[],
+    releaseId?: string,
+    counts?: ReleaseCounts,
+  ): Promise<void> {
     const res = await this.d.access.check(this.d.actor, action, { environmentId: env.id, deploymentIds })
     if (res.allowed) return
     this.d.audit.append({
@@ -1150,7 +1163,7 @@ export class ReleaseService {
       targetType: releaseId ? 'release' : 'environment',
       targetId: releaseId ?? env.id,
       targetLabel: releaseId ? `${env.name} release` : env.name,
-      details: { reason: 'access' },
+      details: { reason: 'access', ...(releaseId ? this.rowCounts(releaseId) : counts) },
     })
     throw new DeployError('DENIED', redact(res.reason ?? 'Not allowed'))
   }
@@ -1159,9 +1172,19 @@ export class ReleaseService {
     this.d.audit.append({ action, outcome, targetType: 'release', targetId: live.id, targetLabel: `${live.environmentName} ${live.label}`, details })
   }
 
-  /** Audit rows name the release and carry ids and counts only: never a host label, address, path or secret. */
+  /**
+   * Audit rows name the release and carry ids and counts only: never a host label, address, path or secret. A
+   * `release.*` row gets the release's stored counts.
+   */
   private auditRelease(action: AuditAction, outcome: 'success' | 'failure' | 'denied' | 'info', releaseId: string, envName: string, label: string, details: Record<string, unknown>): void {
-    this.d.audit.append({ action, outcome, targetType: 'release', targetId: releaseId, targetLabel: `${envName} ${label}`, details })
+    const counts = action.startsWith('release.') ? this.rowCounts(releaseId) : {}
+    this.d.audit.append({ action, outcome, targetType: 'release', targetId: releaseId, targetLabel: `${envName} ${label}`, details: { ...details, ...counts } })
+  }
+
+  /** The counts a release row derives from its runs. */
+  private rowCounts(releaseId: string): ReleaseCounts {
+    const r = this.d.releases.get(releaseId)
+    return { serviceCount: r.serviceCount, deploymentCount: r.deploymentCount, hostCount: r.hostCount }
   }
 
   /** Wipes the decrypted values in place (anything still holding the object sees nothing) and lets go of it. */

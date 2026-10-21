@@ -13,7 +13,7 @@ import type { PrivateAgent } from '../../src/main/deploy/agent'
 import type { PreparedHosts } from '../../src/main/deploy/hostkeys'
 import type { startTap } from '../../src/main/deploy/log-tap'
 import type { RunChild, RunFs, RunSpawn } from '../../src/main/deploy/local-runner'
-import type { PreflightCheck, Tooling } from '../../src/shared/deploy'
+import type { PreflightCheck, StepKind, Tooling } from '../../src/shared/deploy'
 
 export type DeployFixture = InventoryFixture & {
   staging: { id: string }
@@ -347,4 +347,102 @@ export function memFs(): RunFs & { dirs: Set<string>; files: Map<string, string>
       for (const f of [...files.keys()]) if (f.startsWith(`${p}/`)) files.delete(f)
     },
   }
+}
+
+// ---- Scripted ansible output for a generated playbook (Task 14) ----
+
+type PlayTask = Record<string, unknown> & { name?: string; tags?: string[]; block?: PlayTask[]; rescue?: PlayTask[]; vars?: { d?: { name: string; repo: string; prev: string } } }
+type PlayJson = { hosts: string; vars: { od: { lock_repos: string[] } }; tasks: PlayTask[] }
+
+const b64s = (s: string): string => Buffer.from(s, 'utf8').toString('base64')
+const sanitized = (s: string): string => s.replace(/[^A-Za-z0-9._@-]/g, '_').slice(0, 64)
+
+/** The OD-PF lines one preflight check prints on a healthy host whose repo is at `c.previous` with `c.deployed` on origin. */
+function preflightOut(check: string, c: { previous: string; deployed: string } | undefined, repos: string[]): string {
+  switch (check) {
+    case 'tools':
+      return 'OD-PF tools missing='
+    case 'docker':
+      return 'OD-PF docker plain=ok sudo=fail mode=plain use=auto'
+    case 'docker-become':
+      return 'OD-PF docker become=ok'
+    case 'repo':
+      return 'OD-PF repo exists=1 git=1'
+    case 'clean':
+      return 'OD-PF clean ok=1'
+    case 'fetch':
+      return 'OD-PF branch fetched=1 exists=1'
+    case 'compose':
+      return 'OD-PF compose exists=1'
+    case 'deps':
+      return `OD-PF deps config_b64=${b64s('{"services":{}}')} ps_b64=`
+    case 'disk':
+      return 'OD-PF disk avail_kb=52428800'
+    case 'tag':
+      return c ? `OD-PF tag exists=1 commit=${c.previous}` : 'OD-PF tag exists=0 commit='
+    case 'version-tag':
+      return 'OD-PF version-tag exists=0'
+    case 'commits':
+      return `OD-PF commits log_b64=${c ? b64s(`${c.deployed}\x1fShip it\x1fana\x1f2026-10-19T09:00:00+00:00\x1e\n`) : ''}`
+    case 'lock':
+      return repos.map((r) => `OD-PF lock repo=${r} held=0 raw_b64=`).join('\n')
+    default:
+      return ''
+  }
+}
+
+/**
+ * The callback plugin's JSON lines for a run of `playbook` (generatePlaybook's JSON): `task_start` and `ok` for
+ * every task, in play order, each with its own tags. Record and checkout print the commits of `commits`, keyed by
+ * checkout name; a rollback checkout prints the commit it was given. At `failStep` the task fails, the release
+ * rescue runs and that host stops, as ansible does.
+ */
+export function scriptFromPlaybook(playbook: string, opts: { failStep?: StepKind; commits: Record<string, { previous: string; deployed: string }> }): string[] {
+  const plays = JSON.parse(playbook) as PlayJson[]
+  const byName = new Map(Object.entries(opts.commits).map(([k, v]) => [sanitized(k), v]))
+  const lines: string[] = []
+  const line = (o: Record<string, unknown>): void => void lines.push(JSON.stringify(o))
+  for (const play of plays) {
+    const host = play.hosts
+    let failed = false
+    const run = (t: PlayTask, d: { name: string; prev: string } | undefined): void => {
+      const name = String(t.name ?? '')
+      const tags = t.tags ?? []
+      const kind = tags.find((x) => x.startsWith('od_step='))?.slice(8)
+      line({ event: 'task_start', name, tags })
+      const c = d ? byName.get(d.name) : undefined
+      let stdout = ''
+      if (kind === 'record' && c) stdout = `OD-PREV ${c.previous}`
+      else if (kind === 'checkout' && c) stdout = `OD-HEAD ${c.deployed}`
+      else if (kind === 'rb_checkout' && d) stdout = `OD-HEAD ${d.prev}`
+      else if (kind === 'health') stdout = 'OD-HEALTH ok 200'
+      else if (kind === 'preflight') stdout = preflightOut(/^preflight (\S+)/.exec(name)?.[1] ?? '', c, play.vars.od.lock_repos)
+      if (kind !== undefined && kind === opts.failStep) {
+        failed = true
+        return line({ event: 'failed', host, task: name, tags, no_log: false, rc: 1, truncated: [], stdout: '', stderr: `${kind} broke` })
+      }
+      line({ event: 'ok', host, task: name, tags, no_log: false, rc: 0, truncated: [], ...(stdout ? { stdout } : {}) })
+    }
+    for (const t of play.tasks) {
+      if (failed) break
+      if (!t.block) {
+        run(t, undefined)
+        continue
+      }
+      const d = t.vars?.d
+      for (const inner of t.block) {
+        run(inner, d)
+        if (failed) break
+      }
+      if (failed) {
+        // the rescue's own tasks are untagged: set_fact, then (for a release) a fail that ends the host
+        for (const r of t.rescue ?? []) {
+          const fails = 'ansible.builtin.fail' in r
+          line({ event: 'task_start', name: r.name, tags: [] })
+          line({ event: fails ? 'failed' : 'ok', host, task: r.name, tags: [], no_log: false, rc: null, truncated: [], ...(fails ? { msg: (r['ansible.builtin.fail'] as { msg: string }).msg } : {}) })
+        }
+      }
+    }
+  }
+  return lines
 }

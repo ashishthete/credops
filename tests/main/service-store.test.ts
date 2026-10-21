@@ -4,14 +4,14 @@ import type { ServiceInput } from '../../src/shared/services'
 import { makeDeployFixture } from './deploy-helpers'
 import { auditRows } from './vault-helpers'
 
-type AppInput = Extract<ServiceInput, { kind: 'service' }>
+type AppServiceInput = Extract<ServiceInput, { kind: 'service' }>
 type DbInput = Extract<ServiceInput, { kind: 'db' }>
 
 async function setup() {
   const f = await makeDeployFixture()
   const checkout = f.deploys.create(f.input({ name: 'webapp' }))
   f.changed.length = 0
-  const app = (over: Partial<AppInput> = {}): AppInput => ({
+  const app = (over: Partial<AppServiceInput> = {}): AppServiceInput => ({
     kind: 'service',
     environmentId: f.staging.id,
     name: 'esg',
