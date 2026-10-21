@@ -568,8 +568,10 @@ export const PLAYBOOK_SHA256 = /^[0-9a-f]{64}$/
 /** A release from before playbooks were stored (or one that never started). */
 export const PLAYBOOK_NOT_STORED_MESSAGE = 'Playbook not stored for this release'
 export const PLAYBOOK_CHANGED_MESSAGE = 'The playbook changed since you reviewed it. Review it again.'
-/** A review older than the main side's limit (30 minutes): nothing changed, but its start time is too old to reuse. */
-export const REVIEW_EXPIRED_MESSAGE = 'Your review is more than 30 minutes old. Review the playbook again.'
+/** How long a reviewed playbook can be started from (main's `PREVIEW_TTL_MS`). */
+export const REVIEW_TTL_MS = 30 * 60_000
+/** A review older than that limit: nothing changed, but its start time is too old to reuse. */
+export const REVIEW_EXPIRED_MESSAGE = `Your review is more than ${REVIEW_TTL_MS / 60_000} minutes old. Review the playbook again.`
 export interface BreakLockConfirm {
   typedLabel: string
 }

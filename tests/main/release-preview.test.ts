@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { DeployError } from '../../src/main/deploy/access'
 import { PLAYBOOK_CHANGED_MESSAGE, PREVIEW_TTL_MS } from '../../src/main/deploy/release-service'
-import { REVIEW_EXPIRED_MESSAGE } from '../../src/shared/deploy'
+import { REVIEW_EXPIRED_MESSAGE, REVIEW_TTL_MS } from '../../src/shared/deploy'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import { NOW, SECRET, dep, ready, rig, type Rig } from './release-rig'
 
@@ -18,6 +18,10 @@ const snapshot = (r: Rig, id: string) => ({
 })
 
 describe('ReleaseService.previewPlaybook', () => {
+  it('the review-expired message states the limit main enforces', () => {
+    expect(REVIEW_EXPIRED_MESSAGE).toContain(`more than ${PREVIEW_TTL_MS / 60_000} minutes old`)
+    expect(PREVIEW_TTL_MS).toBe(REVIEW_TTL_MS)
+  })
   it('previews exactly the playbook start stores, bound by its sha256', async () => {
     const r = await rig()
     const id = await ready(r)

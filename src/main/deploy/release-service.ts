@@ -15,6 +15,7 @@ import {
   type DockerMode,
   PLAYBOOK_CHANGED_MESSAGE,
   REVIEW_EXPIRED_MESSAGE,
+  REVIEW_TTL_MS,
   type PlaybookPreview,
   type PreflightCheck,
   type PreflightReport,
@@ -169,7 +170,7 @@ export { PLAYBOOK_CHANGED_MESSAGE }
  * Within it, the host lock and its "started N minutes ago" can be up to this much older than the real
  * start (the release row keeps the real time), which brings LOCK_STALE_MS that much closer.
  */
-export const PREVIEW_TTL_MS = 30 * 60_000
+export const PREVIEW_TTL_MS = REVIEW_TTL_MS
 /** Reviews are dropped from memory after this; a ready release expires well before. */
 const PREVIEW_KEEP_MS = 24 * 60 * 60_000
 export const RESET_CUT_ROLLBACK = 'Cancelled by a vault reset; the rollback did not finish'
