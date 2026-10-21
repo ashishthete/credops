@@ -683,13 +683,19 @@ describe('fix round 1', () => {
     expect(tagTasks.length).toBeGreaterThanOrEqual(2)
     for (const t of tagTasks) {
       const c = cmdOf(t)
-      const guard = c.indexOf('rev-parse -q --verify "refs/tags/$V^{commit}"')
-      expect(guard).toBeGreaterThanOrEqual(0)
-      expect(c).toContain('= "$(git rev-parse HEAD)"')
-      expect(c).toContain("already tagged")
-      // the guard comes first, and tag + push sit in its else branch
-      expect(c.indexOf('git tag -a')).toBeGreaterThan(guard)
-      expect(c.indexOf('git push origin "$V"')).toBeGreaterThan(c.indexOf('else'))
+      // exact shape: guard (HEAD must be non-empty), a plain log line, else tag + push
+      expect(c.split('\n')).toEqual([
+        'V={{ od.version | quote }}',
+        'E={{ od.env | quote }}',
+        'h=$(git rev-parse HEAD 2>/dev/null)',
+        'if [ -n "$h" ] && [ "$(git rev-parse -q --verify "refs/tags/$V^{commit}" 2>/dev/null)" = "$h" ]; then',
+        '  echo "$V is already on HEAD in this repository; skipping the tag and push"',
+        'else',
+        expect.stringMatching(/^ {2}.*git tag -a "\$V" -m "\$E release \$V" && git push origin "\$V"$/),
+        'fi',
+      ])
+      // not a marker line: OD-TAG means "the deploy tag failed" to the event translator
+      expect(c).not.toContain('OD-TAG')
       // V reaches the shell only through `| quote`
       expect(c).toContain('V={{ od.version | quote }}')
       expect(c.replace('V={{ od.version | quote }}', '')).not.toContain('od.version')

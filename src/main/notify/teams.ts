@@ -138,7 +138,12 @@ export function buildTeamsCard(facts: NotificationFacts, knownSecrets: readonly 
   if (changes.length > 0) {
     body.push({ type: 'TextBlock', text: 'Changes', weight: 'Bolder', spacing: 'Medium' })
     for (const c of changes) {
-      body.push({ type: 'TextBlock', text: [`**${c.deployment}**`, ...c.lines.map((l) => `- ${l}`)].join('\n\n'), wrap: true, spacing: 'Small' })
+      // RichTextBlock text runs are plain text: a TextBlock would render commit subjects as markdown (links, bold).
+      body.push({
+        type: 'RichTextBlock',
+        spacing: 'Small',
+        inlines: [{ type: 'TextRun', text: c.deployment, weight: 'Bolder' }, ...c.lines.map((l) => ({ type: 'TextRun', text: `\n• ${l}` }))],
+      })
     }
   }
   const actions = httpsLinks(facts.urls).map((u) => ({ type: 'Action.OpenUrl', title: `Open ${u.host}`, url: u.href }))

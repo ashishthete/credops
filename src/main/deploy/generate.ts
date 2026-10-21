@@ -415,8 +415,10 @@ const taskVersion = (d: PlanDeployment): Task =>
       'E={{ od.env | quote }}',
       // Deployments in different directories can share one git repo (the second would hit "tag already exists"):
       // a tag already on HEAD is done. A tag at another commit falls through to `git tag`, which fails as before.
-      'if [ "$(git rev-parse -q --verify "refs/tags/$V^{commit}" 2>/dev/null)" = "$(git rev-parse HEAD)" ]; then',
-      '  echo "OD-TAG $V already tagged at HEAD"',
+      'h=$(git rev-parse HEAD 2>/dev/null)',
+      'if [ -n "$h" ] && [ "$(git rev-parse -q --verify "refs/tags/$V^{commit}" 2>/dev/null)" = "$h" ]; then',
+      // a plain line, not an OD- marker: the event translator would swallow it (OD-TAG means the deploy tag failed)
+      '  echo "$V is already on HEAD in this repository; skipping the tag and push"',
       'else',
       `  ${GIT_ID} git tag -a "$V" -m "$E release $V" && git push origin "$V"`,
       'fi',

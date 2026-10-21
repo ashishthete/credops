@@ -22,20 +22,31 @@ const facts = (over: Partial<NotificationFacts> = {}): NotificationFacts => ({
 const content = (card: object) => (card as { attachments: { content: Record<string, unknown> }[] }).attachments[0]!.content
 
 describe('buildTeamsCard changes (row 42)', () => {
-  const texts = (card: object) => (content(card).body as { text?: string }[]).map((b) => b.text ?? '')
+  type Block = { type: string; text?: string; inlines?: { type: string; text: string }[] }
+  const blocks = (card: object) => content(card).body as Block[]
+  const runs = (b: Block) => (b.inlines ?? []).map((i) => i.text)
+  const deploymentBlock = (card: object, name: string) => blocks(card).find((b) => b.type === 'RichTextBlock' && runs(b)[0] === name)!
   it('adds a Changes section: up to 10 subjects per deployment, then "and N more"', () => {
     const subjects = Array.from({ length: 12 }, (_, i) => `change ${i + 1}`)
-    const t = texts(buildTeamsCard(facts({ changes: [{ deployment: 'web', subjects }, { deployment: 'worker', subjects: ['one'] }] })))
-    expect(t).toContain('Changes')
-    const web = t.find((x) => x.startsWith('**web**'))!
-    expect(web).toContain('- change 10')
-    expect(web).not.toContain('change 11')
-    expect(web).toContain('- and 2 more')
-    expect(t.find((x) => x.startsWith('**worker**'))).toBe('**worker**\n\n- one')
+    const card = buildTeamsCard(facts({ changes: [{ deployment: 'web', subjects }, { deployment: 'worker', subjects: ['one'] }] }))
+    expect(blocks(card).map((b) => b.text)).toContain('Changes')
+    const web = runs(deploymentBlock(card, 'web'))
+    expect(web).toHaveLength(1 + 10 + 1)
+    expect(web[10]).toBe('\n• change 10')
+    expect(web.join('')).not.toContain('change 11')
+    expect(web[11]).toBe('\n• and 2 more')
+    expect(runs(deploymentBlock(card, 'worker'))).toEqual(['worker', '\n• one'])
   })
   it('has no Changes section without commits', () => {
-    expect(texts(buildTeamsCard(facts()))).not.toContain('Changes')
-    expect(texts(buildTeamsCard(facts({ changes: [{ deployment: 'web', subjects: [] }] })))).not.toContain('Changes')
+    expect(blocks(buildTeamsCard(facts())).map((b) => b.text)).not.toContain('Changes')
+    expect(blocks(buildTeamsCard(facts({ changes: [{ deployment: 'web', subjects: [] }] }))).map((b) => b.text)).not.toContain('Changes')
+  })
+  it('subjects are plain text: never a markdown-rendering TextBlock', () => {
+    const card = buildTeamsCard(facts({ changes: [{ deployment: 'web', subjects: ['[Release notes](https://evil.example) **bold**'] }] }))
+    const hostile = JSON.stringify(blocks(card).filter((b) => (b.inlines ?? []).some((i) => i.text.includes('evil.example'))))
+    expect(hostile).toContain('"type":"RichTextBlock"')
+    // no TextBlock (which renders markdown) carries the subject
+    expect(blocks(card).filter((b) => b.type === 'TextBlock').some((b) => (b.text ?? '').includes('evil.example'))).toBe(false)
   })
   it('truncates subjects to 120 chars and redacts secrets first', () => {
     const long = 'x'.repeat(200)
