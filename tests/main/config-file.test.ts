@@ -86,6 +86,10 @@ describe('parseConfigFile', () => {
     expect(cred).toEqual(['$.products[0].repoUrl must not carry credentials'])
     expect(errorsOf(edit(file, (r) => (r.deployments[0].repoUrl = 'ssh://git:SECRETVAL@host/x.git')))).toEqual(['$.deployments[0].repoUrl must not carry credentials'])
     expect(errorsOf(edit(file, (r) => (r.deployments[0].repoUrl = 'https://tok@host/x.git')))).toEqual(['$.deployments[0].repoUrl must not carry credentials'])
+    // Extra slashes and backslashes can't hide credentials.
+    for (const u of ['https:///tok:pw@host/x.git', 'https:////tok@host/x', 'HTTPS://tok@host/x', 'https:\\\\tok:pw@host/x']) {
+      expect(parseConfigFile(edit(file, (r) => (r.deployments[0].repoUrl = u))).ok, u).toBe(false)
+    }
     // An ssh user is fine.
     expect(parseConfigFile(edit(file, (r) => (r.deployments[0].repoUrl = 'ssh://git@host/x.git'))).ok).toBe(true)
     expect(parseConfigFile(edit(file, (r) => (r.deployments[0].repoUrl = 'git@host:x.git'))).ok).toBe(true)
