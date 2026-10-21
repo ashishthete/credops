@@ -400,7 +400,7 @@ export class Registry {
            VALUES (?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(id) DO UPDATE SET name = excluded.name, protected = excluded.protected, versioned = excluded.versioned,
              auto_rollback = excluded.auto_rollback,
-             current_version = CASE WHEN EXISTS (SELECT 1 FROM releases WHERE environment_id = environments.id) THEN environments.current_version ELSE excluded.current_version END,
+             current_version = CASE WHEN EXISTS (SELECT 1 FROM releases WHERE environment_id = environments.id AND version IS NOT NULL AND status IN ('succeeded','rolled_back')) THEN environments.current_version ELSE excluded.current_version END,
              integrations = excluded.integrations,
              manifest_hash = excluded.manifest_hash, published_by = excluded.published_by, published_at = excluded.published_at`,
         )

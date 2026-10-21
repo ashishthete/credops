@@ -116,6 +116,8 @@ function localRunner(deps: HubReleasesDeps, build: { resolve: ReturnType<typeof 
  */
 export class HubReleases {
   readonly service: ReleaseService
+  /** The deploy key as a runner resolves it; tests drive it as a run would. */
+  readonly identities: ReturnType<typeof hubIdentities>
   private readonly store: ReleaseStore
   private readonly runSecrets = new Map<string, string[]>()
   private readonly pems = new Map<string, string>()
@@ -125,6 +127,7 @@ export class HubReleases {
     this.store = new ReleaseStore({ db: d.db, now: d.now })
     const resolve = hubResolve({ db: d.db, registry: d.registry })
     const identities = hubIdentities({ deployKeys: d.deployKeys, loaded: this.pems })
+    this.identities = identities
     const base = d.runner ?? localRunner(d, { resolve, identities })
     const envOfTarget = (type: string | undefined, id: string | undefined): string | null => {
       if (!id) return null
@@ -196,7 +199,8 @@ export class HubReleases {
       .all(cutoff) as { id: string; environment_id: string }[]
     let n = 0
     for (const row of rows) {
-      if (this.store.get(row.id).status !== 'ready') continue
+      // A break-lock or preflight is still working on it and would write its status over ours.
+      if (this.service.isBusy(row.id) || this.store.get(row.id).status !== 'ready') continue
       this.store.setStatus(row.id, 'discarded', { finishedAt: this.d.now().toISOString() })
       this.d.audit.append({
         action: 'release.discard',

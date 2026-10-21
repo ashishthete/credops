@@ -296,14 +296,16 @@ describe('hub releases', () => {
     const { fr, bob } = await setup()
     const keys = new DeployKeys(hub.db, new KeyRing(hub.db, hub.masterKey), { now: () => hub.clock.now })
     const pem = keys.privateForRun(ENV_ID)
-    const pemBody = pem.split('\n').filter((l) => !l.startsWith('-----') && l.length > 20)[0]!
+    // Every key line a log could carry on its own: the line itself is the secret, with or without the BEGIN/END markers.
+    const pemLines = pem.split('\n').filter((l) => !l.startsWith('-----') && l.length >= 16)
+    expect(pemLines.length).toBeGreaterThan(2)
     fr.on.release = async (_p, secrets, emit) => {
       // The runner resolves the identity as the real one does, so the Hub remembers the PEM for masking.
-      await (hub.app.releases.service as unknown as { d: { identities: { resolve(id: string): Promise<unknown> } } }).d.identities.resolve(ENV_ID)
+      await hub.app.releases.identities.resolve(ENV_ID)
       const value = Object.values(secrets.values).join(' ')
       emit({ type: 'log', stepId: null, hostId: null, stream: 'ansible', line: `connecting with ${value}` })
       // A body line without the BEGIN/END markers: only the remembered PEM can mask it.
-      emit({ type: 'log', stepId: null, hostId: null, stream: 'ansible', line: `key ${pemBody}` })
+      for (const l of pemLines) emit({ type: 'log', stepId: null, hostId: null, stream: 'ansible', line: `key ${l}` })
       throw new Error(`boom ${SENTINEL}`)
     }
     const bodies: string[] = []
@@ -324,7 +326,7 @@ describe('hub releases', () => {
     await keep(call(bob, 'GET', '/api/v1/releases/active'))
     hub.db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
     const bytes = readFileSync(join(hub.config.dataDir, 'hub.db')).toString('latin1')
-    for (const needle of [SENTINEL, 'sudo-pw-sentinel-2', pemBody]) {
+    for (const needle of [SENTINEL, 'sudo-pw-sentinel-2', ...pemLines]) {
       expect(bytes).not.toContain(needle)
       expect(bodies.join('\n')).not.toContain(needle)
       expect(JSON.stringify(await events(bob, id))).not.toContain(needle)
@@ -347,6 +349,32 @@ describe('hub releases', () => {
     expect(again.environment.currentVersion).toBe('v1.2.3')
     expect((await call(admin, 'PUT', `/api/v1/admin/environments/${ENV_ID}`, again)).statusCode).toBe(200)
     expect(version()).toBe(bumped)
+  })
+
+  it('a republish takes the manifest version while no release has set one', async () => {
+    const { admin, bob, fr } = await setup({ protectedEnv: false })
+    const version = () => (hub.db.prepare('SELECT current_version AS v FROM environments WHERE id = ?').get(ENV_ID) as { v: string }).v
+    fr.on.release = () => ({ exitCode: 1, failedDeploymentRunIds: [], commits: {} })
+    const id = await ready(bob, { bump: 'patch' })
+    expect((await call(bob, 'POST', `/api/v1/releases/${id}/start`, {})).statusCode).toBe(204)
+    await hub.app.releases.whenIdle()
+    expect((await detail(bob, id)).status).toBe('failed')
+    expect(version()).toBe('v1.2.3')
+    const again = manifestOne({ protectedEnv: false })
+    again.environment.currentVersion = 'v1.5.0'
+    expect((await call(admin, 'PUT', `/api/v1/admin/environments/${ENV_ID}`, again)).statusCode).toBe(200)
+    expect(version()).toBe('v1.5.0')
+  })
+
+  it('a ready release with work in flight is not expired', async () => {
+    const { bob } = await setup()
+    const id = await ready(bob)
+    hub.clock.now = new Date(hub.clock.now.getTime() + READY_RELEASE_TTL_MS + 60_000)
+    const busy = vi.spyOn(hub.app.releases.service, 'isBusy').mockReturnValue(true)
+    expect(hub.app.releases.expireReady()).toBe(0)
+    expect((await detail(bob, id)).status).toBe('ready')
+    busy.mockRestore()
+    expect(hub.app.releases.expireReady()).toBe(1)
   })
 
   it('a ready release that never starts is discarded after the TTL and frees the lock', async () => {

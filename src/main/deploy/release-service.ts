@@ -201,6 +201,11 @@ export class ReleaseService {
     return this.d.releases.active()
   }
 
+  /** Work is in flight on this release, a preflight (or break-lock) included. */
+  isBusy(releaseId: string): boolean {
+    return this.live.has(releaseId)
+  }
+
   /** A release is running or rolling back (preflights don't count: they hold no lock). */
   hasActive(): boolean {
     return [...this.live.values()].some((l) => l.phase !== 'preflight')
