@@ -1,8 +1,10 @@
-import { BACKUP_DIR, COMPOSE_AUTO, COMPOSE_FILE, COMPOSE_PROJECT, GIT_REF, MAX_URL, REPO_PATH, RUNS_SUBDIR, VERSION } from '../../shared/deploy'
+import { BACKUP_DIR, COMPOSE_AUTO, COMPOSE_FILE, COMPOSE_PROJECT, GIT_REF, MAX_URL, REPO_PATH, RUNS_SUBDIR, SAFE_IDENT, STEP_LABEL, VERSION, type StepKind } from '../../shared/deploy'
 import { MAX_SERVICES } from '../../shared/services'
+import { ENV_NAME, MAX_STEPS_PER_CHECKOUT, STEP_ANCHORS, deniedEnvName, effectiveSteps, stepLabel, validateStep, type StepAnchor } from '../../shared/steps'
+import { shJoin } from '../ops/quote'
 import { checkComposeServices, composeCommand } from './compose'
 import { ALIAS, B64, b64, lockJson, need, sanitizeIdent } from './quote'
-import type { DeployPlan, PlanDeployment, PlanHost } from './runner'
+import type { DeployPlan, PlanDeployment, PlanHost, PlanStep } from './runner'
 
 export { generateAnsibleCfg, generateInventory, generateKnownHosts, generateSshConfig, knownHostsToken, socketPathFits } from './ssh-files'
 export type { SshConfigOptions } from './ssh-files'
@@ -12,16 +14,16 @@ export type { SshConfigOptions } from './ssh-files'
  * references only, and the playbook reads values from OPSDECK_SECRETS on the controller at run time.
  *
  * Injection rules. Every user-derived value is either (a) rejected here unless it matches the shared
- * validators, or (b) carried as base64 (hooks, lock content). Shell commands then read values only
+ * validators, or (b) carried as base64 (step scripts, when paths, params, lock content). Shell commands then read values only
  * through `{{ d.<field> | quote }}`, except compose command lines and commit bases, which are built here
  * from validated values: compose lines shJoin-quoted (none can hold a brace), commit bases SHA-checked hex
- * inserted unquoted. Task names never carry user text.
+ * inserted unquoted. Task names never carry user text. Step secrets and params reach the host only as
+ * `NAME=<base64>` lines on stdin; the env name (ENV_NAME, not deny-listed) is the only step value in plain text.
  */
 
 type Task = Record<string, unknown>
 type Play = Record<string, unknown>
 
-const SAFE_IDENT = /^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$/
 const SECRET_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
 const SHA = /^[0-9a-f]{40}$/
 const RELEASE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -34,7 +36,6 @@ const SECRETS_VAR = "{{ lookup('env','OPSDECK_SECRETS') | default('{}', true) | 
 // Timeouts (seconds)
 const T_SHORT = 120
 const T_BACKUP = 1800
-const T_HOOK = 600
 const T_PREFLIGHT = 60
 
 const clampSec = (n: number, what: string): number => {
@@ -56,6 +57,7 @@ function dVars(d: PlanDeployment, kind: DeployPlan['kind']): Record<string, unkn
   need(Number.isInteger(d.healthStatus) && d.healthStatus >= 100 && d.healthStatus <= 599, 'health status')
   need(d.preHookB64 === null || (B64.test(d.preHookB64) && d.preHookB64.length > 0), 'pre-hook')
   need(d.postHookB64 === null || (B64.test(d.postHookB64) && d.postHookB64.length > 0), 'post-hook')
+  need(d.whenBase === null || SHA.test(d.whenBase), 'when base')
   if (d.backup) {
     need(BACKUP_DIR.test(d.backup.dir), 'backup directory')
     need(SAFE_IDENT.test(d.backup.label), 'backup label')
@@ -75,7 +77,7 @@ function dVars(d: PlanDeployment, kind: DeployPlan['kind']): Record<string, unkn
     typeof bases?.tag === 'boolean' && Array.isArray(bases.shas) && bases.shas.length <= MAX_SERVICES && bases.shas.every((x) => typeof x === 'string' && SHA.test(x)),
     'commit bases',
   )
-  return {
+  const out: Record<string, unknown> = {
     run: d.runId,
     name: sanitizeIdent(d.name) || 'deployment',
     repo: d.repoPath,
@@ -87,10 +89,108 @@ function dVars(d: PlanDeployment, kind: DeployPlan['kind']): Record<string, unkn
     health_timeout: clampSec(d.healthTimeoutSec, 'health timeout'),
     backup_dir: d.backup?.dir ?? '',
     backup_label: d.backup?.label ?? '',
-    pre_hook: d.preHookB64 ?? '',
-    post_hook: d.postHookB64 ?? '',
+    // Hooks run as steps now; the empty keys stay so a playbook keeps its shape (G3).
+    pre_hook: '',
+    post_hook: '',
     urls: d.urls.map((u) => ({ url: u.url, from: u.from })),
   }
+  // Only the steps this playbook runs, and only when there are any: a step-free block is unchanged.
+  const run = kind === 'release' || kind === 'rollback' ? stepsRun(kind, d) : []
+  if (run.length > 0) out.steps = Object.fromEntries(run.map((p) => [p.key, stepVars(p, d.whenBase)]))
+  return out
+}
+
+// ---------------------------------------------------------------- custom steps
+
+const STEP_KEY = /^c_\d{1,2}$/
+const PARAM_ENV = /^OD_PARAM_[A-Z0-9_]{1,55}$/
+
+/** A checkout's steps: the plan's, or its legacy hooks migrated by effectiveSteps (so a hook is never dropped). */
+function planSteps(d: PlanDeployment): PlanStep[] {
+  if (d.steps.length > 0) {
+    need(d.preHookB64 === null && d.postHookB64 === null, 'hooks next to steps')
+    return d.steps
+  }
+  const text = (x: string | null): string | null => (x === null ? null : Buffer.from(x, 'base64').toString('utf8'))
+  return effectiveSteps({ steps: [], preHook: text(d.preHookB64), postHook: text(d.postHookB64) }).map(({ anchor, alsoOnRollback, ...step }, i) => ({
+    key: `c_${i}`,
+    label: stepLabel(step),
+    step,
+    anchor,
+    alsoOnRollback,
+    secretKeys: [],
+    paramKeys: [],
+  }))
+}
+
+/** Every step a release or rollback of this checkout runs. Throws on any value the playbook could not carry safely. */
+function stepsRun(kind: 'release' | 'rollback', d: PlanDeployment): PlanStep[] {
+  const all = planSteps(d)
+  need(all.length <= MAX_STEPS_PER_CHECKOUT, 'step count')
+  const keys = new Set<string>()
+  for (const p of all) {
+    need(STEP_KEY.test(p.key) && !keys.has(p.key), 'step key')
+    keys.add(p.key)
+    need(p.anchor !== null && STEP_ANCHORS.includes(p.anchor), 'step anchor')
+    // the same rules as the step editor; the secrets a step may use were resolved into secretKeys already
+    validateStep(p.step, { allowedSecretIds: new Set(p.step.secrets.map((x) => x.secretId)), serviceNames: p.step.service === null ? [] : [p.step.service], body: true })
+    if (p.step.run === 'compose-exec') checkComposeServices([p.step.service ?? ''])
+    const names = new Set<string>()
+    for (const e of [...p.secretKeys.map((x) => x.envName), ...p.paramKeys.map((x) => x.envName)]) {
+      need(typeof e === 'string' && !names.has(e), 'step env name')
+      names.add(e)
+    }
+    for (const x of p.secretKeys) need(ENV_NAME.test(x.envName) && !deniedEnvName(x.envName) && SECRET_KEY.test(x.key), 'step secret')
+    for (const x of p.paramKeys) need(PARAM_ENV.test(x.envName) && typeof x.valueB64 === 'string' && B64.test(x.valueB64), 'step param')
+  }
+  return kind === 'rollback' ? all.filter((p) => p.alsoOnRollback === true) : all
+}
+
+function stepVars(p: PlanStep, base: string | null): Record<string, unknown> {
+  const v: Record<string, unknown> = { script_b64: b64(p.step.script) }
+  if (p.step.when.kind !== 'always') v.base = base ?? ''
+  if (p.step.when.kind === 'paths') v.paths_b64 = b64(p.step.when.paths.join('\n'))
+  if (p.paramKeys.length > 0) v.params = p.paramKeys.map((x) => x.valueB64)
+  return v
+}
+
+/** The order a release or rollback runs: built-in steps, with each anchor's custom steps at its place. */
+const RELEASE_SLOTS = ['record', 'backup', 'before_fetch', 'fetch', 'checkout', 'after_checkout', 'env', 'before_build', 'build', 'after_build', 'up', 'after_up', 'health', 'after_health', 'tag', 'after_tag'] as const
+const ROLLBACK_SLOTS = ['before_fetch', 'rb_checkout', 'after_checkout', 'rb_env', 'before_build', 'rb_build', 'after_build', 'rb_up', 'after_up', 'after_health', 'rb_tag', 'after_tag'] as const
+type Builtin = Exclude<(typeof RELEASE_SLOTS)[number] | (typeof ROLLBACK_SLOTS)[number], StepAnchor>
+const isAnchor = (x: string): x is StepAnchor => (STEP_ANCHORS as readonly string[]).includes(x)
+
+/** What the step order needs to know of a checkout: a PlanDeployment, or the same facts before a plan exists. */
+export interface StepListDeployment {
+  runId: string
+  backup: object | null
+  envSecretKey: string | null
+  urls: readonly unknown[]
+  steps: readonly Pick<PlanStep, 'key' | 'label' | 'anchor' | 'alsoOnRollback'>[]
+}
+
+type Slot<S> = { builtin: Builtin } | { step: S }
+
+/** The one ordering both the playbook and the step list follow. A rollback runs only `alsoOnRollback` steps. */
+function sequence<S extends StepListDeployment['steps'][number]>(kind: 'release' | 'rollback', d: Omit<StepListDeployment, 'steps'>, steps: readonly S[]): Slot<S>[] {
+  const run = kind === 'rollback' ? steps.filter((s) => s.alsoOnRollback === true) : steps
+  const has = (b: Builtin): boolean => (b === 'backup' ? d.backup !== null : b === 'env' || b === 'rb_env' ? d.envSecretKey !== null : b === 'health' ? d.urls.length > 0 : true)
+  const out: Slot<S>[] = []
+  for (const slot of kind === 'release' ? RELEASE_SLOTS : ROLLBACK_SLOTS) {
+    if (isAnchor(slot)) for (const s of run) if (s.anchor === slot) out.push({ step: s })
+    if (!isAnchor(slot) && has(slot)) out.push({ builtin: slot })
+  }
+  return out
+}
+
+/** Per run id, the steps a release or rollback playbook runs, in order (health once, however many URLs). */
+export function stepList(kind: 'release' | 'rollback', deps: readonly StepListDeployment[]): Map<string, { key: string; kind: StepKind; label: string }[]> {
+  return new Map(
+    deps.map((d) => [
+      d.runId,
+      sequence(kind, d, d.steps).map((x) => ('builtin' in x ? { key: x.builtin, kind: x.builtin, label: STEP_LABEL[x.builtin] } : { key: x.step.key, kind: 'custom' as const, label: x.step.label })),
+    ]),
+  )
 }
 
 function checkPlan(plan: DeployPlan): void {
@@ -100,7 +200,7 @@ function checkPlan(plan: DeployPlan): void {
     need(SAFE_IDENT.test(h.hostId), 'host id')
   }
   for (const d of plan.deployments) {
-    for (const k of [d.envSecretKey, d.becomeSecretKey]) {
+    for (const k of [d.envSecretKey, d.becomeSecretKey, ...d.steps.flatMap((p) => p.secretKeys.map((x) => x.key))]) {
       if (k === null) continue
       need(SECRET_KEY.test(k) && k in plan.secretRefs, 'secret reference')
     }
@@ -156,7 +256,7 @@ const LOG_SETUP = [
  * read loop: no GNU sed -u). The exit code is the body's. On failure the step's own last 40 lines are
  * printed so the failure carries context; `post` runs only on success, outside the log.
  */
-function streamed(kind: string, body: string, o: { pre?: string; post?: string } = {}): string {
+function streamed(kind: string, body: string, o: { pre?: string; post?: string; fail?: string } = {}): string {
   return [
     ...(o.pre ? [o.pre] : []),
     LOG_SETUP,
@@ -165,6 +265,7 @@ function streamed(kind: string, body: string, o: { pre?: string; post?: string }
     body,
     `) 2>&1 | while IFS= read -r l || [ -n "$l" ]; do printf '%s\\t%s\\n' "$P" "$l"; done >> "$L"; rc=\${PIPESTATUS[0]}`,
     `if [ "$rc" -ne 0 ]; then grep -F "$P"$'\\t' "$L" | tail -n 40; fi`,
+    ...(o.fail ? [`if [ "$rc" -ne 0 ]; then ${o.fail}; fi`] : []),
     ...(o.post ? [`if [ "$rc" -eq 0 ]; then ${o.post}; fi`] : []),
     'exit "$rc"',
   ].join('\n')
@@ -260,17 +361,71 @@ function envTask(kind: 'env' | 'rb_env', d: PlanDeployment): Task {
 }
 const taskEnv = (d: PlanDeployment): Task => envTask('env', d)
 
-function hookTask(kind: 'pre_hook' | 'post_hook', d: PlanDeployment): Task {
-  const field = kind === 'pre_hook' ? 'pre_hook' : 'post_hook'
-  return sh(nm(kind, d), kind, runOf(d), streamed(kind, `echo {{ d.${field} | quote }} | base64 -d | bash -e`), {
-    timeout: T_HOOK,
-    chdir: IN_REPO,
-    become: becomes(d),
+const composeOf = (d: PlanDeployment) => ({ composeFile: d.composeFile, composeProject: d.composeProject })
+
+/**
+ * Reads the step's `NAME=<base64>` stdin lines into its environment (and `-e NAME` for compose exec, so the
+ * value never reaches an argv). The names were checked at generate time; the shell checks them again.
+ */
+const STEP_ENV = [
+  'E=()',
+  'while IFS= read -r l || [ -n "$l" ]; do',
+  '  k="${l%%=*}"',
+  '  case "$k" in [A-Z]*) ;; *) exit 2;; esac',
+  '  case "$k" in *[!A-Z0-9_]*) exit 2;; esac',
+  '  x=$(printf \'%s\' "${l#*=}" | base64 -d && printf .) || exit 2',
+  '  export "$k=${x%.}"',
+  '  E+=(-e "$k")',
+  'done',
+].join('\n')
+
+/**
+ * Prints OD-SKIP and ends the task when `when` finds nothing changed since the base commit. No base, or a base
+ * the repo does not have, counts as changed. Runs outside the stream log, so the marker reaches the translator.
+ * No `${#...}` here: `{#` opens a Jinja comment.
+ */
+function whenCheck(p: PlanStep): string | undefined {
+  const w = p.step.when
+  if (w.kind === 'always') return undefined
+  const ref = `d.steps.${p.key}`
+  const G = 'git -C {{ d.repo | quote }}'
+  const test =
+    w.kind === 'changed'
+      ? [`  if [ "$(${G} rev-parse HEAD 2>/dev/null)" = "$B" ]; then echo "OD-SKIP"; exit 0; fi`]
+      : [
+          '  a=()',
+          `  while IFS= read -r g; do [ -n "$g" ] && a+=(":(glob)$g"); done < <(echo {{ ${ref}.paths_b64 | quote }} | base64 -d)`,
+          `  if [ -n "\${a[*]}" ] && ${G} diff --quiet "$B" HEAD -- "\${a[@]}"; then echo "OD-SKIP"; exit 0; fi`,
+        ]
+  return [`B={{ ${ref}.base | quote }}`, `if [ -n "$B" ] && ${G} cat-file -e "$B^{commit}" 2>/dev/null; then`, ...test, 'fi'].join('\n')
+}
+
+/** A custom step: streamed like build, with its own kind `c_<n>`. `continue` never fails the host and reports OD-STEP. */
+function stepTask(d: PlanDeployment, p: PlanStep, anchor: StepAnchor): Task {
+  const s = p.step
+  const env = p.secretKeys.length + p.paramKeys.length > 0
+  const script = `S=$(echo {{ d.steps.${p.key}.script_b64 | quote }} | base64 -d && printf .) || exit 2\nS="\${S%.}"`
+  const run =
+    s.run === 'compose-exec'
+      ? `${composeCommand(composeOf(d), ['exec', '-T'])}${env ? ' "${E[@]}"' : ''} ${shJoin(checkComposeServices([s.service ?? '']))} sh -c "$S"`
+      : 'bash -e -c "$S"'
+  const body = [...(env ? [STEP_ENV] : []), script, run].join('\n')
+  // An after_tag step cannot fail the release: the tag is already pushed (validateStep forces this for a saved step too).
+  const cont = s.onFailure === 'continue' || anchor === 'after_tag'
+  const stdin = [
+    ...p.secretKeys.map((x) => `${x.envName}={{ s.${x.key} }}`),
+    ...p.paramKeys.map((x, i) => `${x.envName}={{ d.steps.${p.key}.params[${i}] }}`),
+  ]
+  return sh(`${p.key} ${sanitizeIdent(d.name)}`, p.key, runOf(d), streamed(p.key, body, { pre: whenCheck(p), fail: cont ? 'echo "OD-STEP rc=$rc"' : undefined }), {
+    timeout: s.timeoutSec,
+    chdir: s.cwd ?? IN_REPO,
+    become: s.sudo === 'docker' ? becomes(d) : s.sudo === 'yes',
+    ...(env && { stdin: `${stdin.join('\n')}\n` }),
+    noLog: p.secretKeys.length > 0,
+    failedWhen: cont ? false : undefined,
     guarded: true,
   })
 }
-
-const composeOf = (d: PlanDeployment) => ({ composeFile: d.composeFile, composeProject: d.composeProject })
 
 /**
  * Build and up, for the whole checkout or for its selected services; a rollback uses the same form as the
@@ -552,32 +707,25 @@ const rescueRollback = (d: PlanDeployment): Task[] => [
   { name: `rollback failed ${sanitizeIdent(d.name)}`, 'ansible.builtin.set_fact': { rollback_failed: true } },
 ]
 
-function releaseTasks(d: PlanDeployment): Task[] {
-  const steps: (Task | null)[] = [
-    taskRecord(d),
-    d.backup ? taskBackup(d) : null,
-    taskFetch(d),
-    taskCheckout(d),
-    d.envSecretKey ? taskEnv(d) : null,
-    d.preHookB64 ? hookTask('pre_hook', d) : null,
-    taskBuild(d),
-    taskUp(d),
-    ...d.urls.map((_, i) => taskHealth(d, i)),
-    d.postHookB64 ? hookTask('post_hook', d) : null,
-    taskTag(d),
-  ]
-  return steps.filter((t): t is Task => t !== null)
+const BUILTIN: Record<Builtin, (d: PlanDeployment) => Task[]> = {
+  record: (d) => [taskRecord(d)],
+  backup: (d) => [taskBackup(d)],
+  fetch: (d) => [taskFetch(d)],
+  checkout: (d) => [taskCheckout(d)],
+  env: (d) => [taskEnv(d)],
+  build: (d) => [taskBuild(d)],
+  up: (d) => [taskUp(d)],
+  health: (d) => d.urls.map((_, i) => taskHealth(d, i)),
+  tag: (d) => [taskTag(d)],
+  rb_checkout: (d) => [taskRbCheckout(d)],
+  rb_env: (d) => [taskRbEnv(d)],
+  rb_build: (d) => [composeTask('rb_build', d)],
+  rb_up: (d) => [composeTask('rb_up', d)],
+  rb_tag: (d) => [taskRbTag(d)],
 }
 
-function rollbackTasks(d: PlanDeployment): Task[] {
-  const steps: (Task | null)[] = [
-    taskRbCheckout(d),
-    d.envSecretKey ? taskRbEnv(d) : null,
-    composeTask('rb_build', d),
-    composeTask('rb_up', d),
-    taskRbTag(d),
-  ]
-  return steps.filter((t): t is Task => t !== null)
+function deploymentTasks(kind: 'release' | 'rollback', d: PlanDeployment): Task[] {
+  return sequence(kind, d, stepsRun(kind, d)).flatMap((x) => ('builtin' in x ? BUILTIN[x.builtin](d) : [stepTask(d, x.step, x.step.anchor as StepAnchor)]))
 }
 
 function playFor(plan: DeployPlan, h: PlanHost, deps: PlanDeployment[]): Play {
@@ -608,11 +756,11 @@ function playFor(plan: DeployPlan, h: PlanHost, deps: PlanDeployment[]): Play {
   switch (plan.kind) {
     case 'release':
       tasks.push(taskPrep(h), taskLock(h))
-      for (const d of deps) tasks.push(block(d, plan.kind, releaseTasks(d), rescueRelease(d)))
+      for (const d of deps) tasks.push(block(d, plan.kind, deploymentTasks('release', d), rescueRelease(d)))
       break
     case 'rollback':
       tasks.push(taskPrep(h), taskLock(h))
-      for (const d of deps) tasks.push(block(d, plan.kind, rollbackTasks(d), rescueRollback(d)))
+      for (const d of deps) tasks.push(block(d, plan.kind, deploymentTasks('rollback', d), rescueRollback(d)))
       break
     case 'preflight':
       tasks.push(taskPreflightLock(h))

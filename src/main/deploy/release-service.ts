@@ -1182,6 +1182,9 @@ export class ReleaseService {
       previousCommit: kind === 'rollback' ? (o.previous?.get(run.id) ?? null) : null,
       useSudo: dep.useSudo,
       composeProject: dep.composeProject,
+      // Task 5 resolves saved steps; until then the generator migrates the hooks to steps itself.
+      steps: [],
+      whenBase: null,
       ...planFields(dep, sel, metas),
     }))
     return {

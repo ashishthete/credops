@@ -34,6 +34,10 @@ export const COMPOSE_PROJECT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/
 export const COMPOSE_SERVICE = COMPOSE_PROJECT
 export const MAX_URL = 2048
 export const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
+/** A name, run id or label the playbook generator accepts as is. */
+export const SAFE_IDENT = /^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$/
+/** Anything outside [A-Za-z0-9._@-] becomes `_`; at most 64 characters. */
+export const sanitizeIdent = (s: string): string => s.replace(/[^A-Za-z0-9._@-]/g, '_').slice(0, 64)
 
 /** Errors cross IPC as messages only, so the renderer matches on this text. */
 export const BREAK_LOCK_CONFIRM_MESSAGE = 'Type the host label to confirm'

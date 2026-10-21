@@ -1,4 +1,5 @@
-import type { DeployPlan, PlanDeployment, PlanHop } from '../../src/main/deploy/runner'
+import type { DeployPlan, PlanDeployment, PlanHop, PlanStep } from '../../src/main/deploy/runner'
+import type { StepAnchor, StepBody } from '../../src/shared/steps'
 import { DeployStore, dbSecretRefs } from '../../src/main/deploy/deploy-store'
 import { ReleaseStore } from '../../src/main/deploy/release-store'
 import { ServiceStore } from '../../src/main/deploy/service-store'
@@ -116,6 +117,35 @@ export function depFixture(n: number, hostId: string, over: Partial<PlanDeployme
     composeProject: null,
     services: null,
     commitBases: { shas: [], tag: true },
+    steps: [],
+    whenBase: null,
+    ...over,
+  }
+}
+
+/** A custom step `c_<n>` at an anchor: a shell step that always runs and stops the release on failure. */
+export function stepFixture(n: number, anchor: StepAnchor, body: Partial<StepBody> = {}, over: Partial<PlanStep> = {}): PlanStep {
+  return {
+    key: `c_${n}`,
+    label: `step${n}`,
+    step: {
+      id: `step-${n}`,
+      name: `step${n}`,
+      run: 'shell',
+      service: null,
+      script: `echo step ${n}`,
+      cwd: null,
+      sudo: 'docker',
+      timeoutSec: 300,
+      onFailure: 'stop',
+      when: { kind: 'always' },
+      secrets: [],
+      ...body,
+    },
+    anchor,
+    alsoOnRollback: false,
+    secretKeys: [],
+    paramKeys: [],
     ...over,
   }
 }

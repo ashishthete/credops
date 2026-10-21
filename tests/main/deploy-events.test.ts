@@ -8,7 +8,7 @@ import { generatePlaybook } from '../../src/main/deploy/generate'
 import { MARK, parseMarker, parsePfLine, parsePrev } from '../../src/main/deploy/markers'
 import type { DeployPlan } from '../../src/main/deploy/runner'
 import { MAX_LOG_LINE, type RunEventBody } from '../../src/shared/deploy'
-import { FIX, planFixture } from './deploy-helpers'
+import { FIX, planFixture, stepFixture } from './deploy-helpers'
 
 const FIXTURES = join(__dirname, 'fixtures/ansible')
 const NOW = Date.parse('2026-10-19T10:00:00.000Z')
@@ -736,6 +736,10 @@ describe('markers and the generator agree', () => {
       const text = generatePlaybook(planFixture({ kind, lock: { expectRaw: { 'host-od-1': '{}', 'host-od-2': '{}' } } }))
       for (const m of text.matchAll(/OD-[A-Z]+(?:-[A-Z]+)*/g)) seen.add(m[0])
     }
+    // a step that continues on failure reports OD-STEP; one whose `when` finds nothing changed reports OD-SKIP
+    const plan = planFixture()
+    plan.deployments[2] = { ...plan.deployments[2], steps: [stepFixture(0, 'after_up', { onFailure: 'continue', when: { kind: 'changed' } })] }
+    for (const m of generatePlaybook(plan).matchAll(/OD-[A-Z]+(?:-[A-Z]+)*/g)) seen.add(m[0])
     for (const s of seen) expect(names.has(s as never), s).toBe(true)
     for (const n of names) expect(seen.has(n), n).toBe(true)
   })
@@ -752,6 +756,7 @@ describe('parseStreamLine', () => {
     expect(parseStreamLine(`${R1}:build\tStep 1/9 : FROM node`)).toEqual({ runId: R1, kind: 'build', text: 'Step 1/9 : FROM node' })
     expect(parseStreamLine(`${R1}:up\t`)).toEqual({ runId: R1, kind: 'up', text: '' })
     expect(parseStreamLine(`${R1}:pre_hook\ta\tb`)).toEqual({ runId: R1, kind: 'pre_hook', text: 'a\tb' })
+    expect(parseStreamLine(`${R1}:c_12\tmigrating`)).toEqual({ runId: R1, kind: 'c_12', text: 'migrating' })
     expect(parseStreamLine('no prefix here')).toBeNull()
     expect(parseStreamLine(`${R1}:build no tab`)).toBeNull()
   })

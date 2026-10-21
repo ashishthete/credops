@@ -11,7 +11,7 @@ describe('playbookSteps', () => {
     expect(plays[0].deployments.map((d) => d.name)).toEqual(['dep1', 'dep2'])
     const [one, two] = plays[0].deployments
     expect(one.runId).toBe('0190a1b2-c3d4-7e5f-8a6b-000000000001')
-    expect(one.steps.map((s) => s.kind)).toEqual(['record', 'backup', 'fetch', 'checkout', 'env', 'pre_hook', 'build', 'up', 'health', 'post_hook', 'tag'])
+    expect(one.steps.map((s) => s.kind)).toEqual(['record', 'backup', 'fetch', 'checkout', 'env', 'c_0', 'build', 'up', 'health', 'c_1', 'tag'])
     expect(two.steps.map((s) => s.label)).toEqual(['Record', 'Fetch', 'Checkout', 'Build', 'Up', 'Health', 'Tag'])
     expect(one.steps[2]).toEqual({ kind: 'fetch', label: 'Fetch', name: 'fetch dep1', stepId: `${one.runId}:fetch` })
     expect(one.rollback).toBe(true)

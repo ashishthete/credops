@@ -1,12 +1,13 @@
 import { spawnSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 import { matchSshConfig } from '../../src/main/inventory/ssh-config'
-import { generateAnsibleCfg, generateInventory, generateKnownHosts, generatePlaybook, generateSshConfig, knownHostsToken, socketPathFits } from '../../src/main/deploy/generate'
+import { generateAnsibleCfg, generateInventory, generateKnownHosts, generatePlaybook, generateSshConfig, knownHostsToken, socketPathFits, stepList } from '../../src/main/deploy/generate'
 import { b64, lockJson, sanitizeIdent } from '../../src/main/deploy/quote'
-import type { DeployPlan, PlanKind } from '../../src/main/deploy/runner'
+import type { DeployPlan, PlanDeployment, PlanKind, PlanStep } from '../../src/main/deploy/runner'
 import { COMPOSE_AUTO, COMPOSE_FILE } from '../../src/shared/deploy'
 import { MAX_SERVICES } from '../../src/shared/services'
-import { FIX, planFixture, shellWords } from './deploy-helpers'
+import type { StepAnchor } from '../../src/shared/steps'
+import { FIX, planFixture, shellWords, stepFixture } from './deploy-helpers'
 
 type Task = Record<string, unknown> & { block?: Task[]; rescue?: Task[]; tags?: string[]; no_log?: boolean }
 type Play = Record<string, unknown> & { hosts: string; tasks: Task[]; vars: Record<string, unknown> }
@@ -44,7 +45,7 @@ describe('release playbook', () => {
     expect(ps[0].strategy).toBe('linear')
     expect(steps(ps[0])).toEqual([
       'lock', 'lock',
-      'record', 'backup', 'fetch', 'checkout', 'env', 'pre_hook', 'build', 'up', 'health', 'post_hook', 'tag',
+      'record', 'backup', 'fetch', 'checkout', 'env', 'c_0', 'build', 'up', 'health', 'c_1', 'tag',
       'record', 'fetch', 'checkout', 'build', 'up', 'health', 'tag',
     ])
     expect(steps(ps[1])).toEqual(['lock', 'lock', 'record', 'fetch', 'checkout', 'build', 'up', 'tag'])
@@ -91,14 +92,14 @@ describe('release playbook', () => {
     expect(by('up')).toBe(120)
     expect(by('fetch')).toBe(120)
     expect(by('backup')).toBe(1800)
-    expect(by('pre_hook')).toBe(600)
+    expect(by('c_0')).toBe(600)
   })
 
   it('takes become per docker mode', () => {
     const ps = plays(planFixture())
     const t = (i: number, k: string) => flat(ps[0].tasks).filter((x) => step(x) === k)[i]
     expect(t(0, 'build').become).toBe(true)
-    expect(t(0, 'pre_hook').become).toBe(true)
+    expect(t(0, 'c_0').become).toBe(true)
     expect(t(1, 'up').become).toBe(true)
     expect(flat(ps[1].tasks).find((x) => step(x) === 'build')!.become).toBeUndefined()
     expect(t(0, 'fetch').become).toBeUndefined()
@@ -116,8 +117,10 @@ describe('release playbook', () => {
     expect(build).toContain('tail -n 40')
     const up = cmdOf(flat(ps[0].tasks).find((t) => step(t) === 'up')!)
     expect(dockerWords(up)).toEqual(['docker', 'compose', '-f', FIX.compose, 'up', '-d'])
-    const pre = cmdOf(flat(ps[0].tasks).find((t) => step(t) === 'pre_hook')!)
-    expect(pre).toContain('| base64 -d | bash -e')
+    const pre = cmdOf(flat(ps[0].tasks).find((t) => step(t) === 'c_0')!)
+    expect(pre).toContain('P="{{ d.run }}:c_0"')
+    expect(pre).toContain('S=$(echo {{ d.steps.c_0.script_b64 | quote }} | base64 -d && printf .) || exit 2')
+    expect(pre).toContain('bash -e -c "$S"')
     const backup = cmdOf(flat(ps[0].tasks).find((t) => step(t) === 'backup')!)
     expect(backup).not.toContain('. ./.env')
     expect(backup).not.toContain('set -a')
@@ -637,7 +640,7 @@ describe('fix round 1', () => {
   it('no_log only where a secret value flows; become tasks stay visible', () => {
     const plan = planFixture()
     const p = plays(plan)[0]
-    for (const k of ['build', 'up', 'pre_hook', 'post_hook']) for (const t of flat(p.tasks).filter((x) => step(x) === k)) expect(t.no_log, k).toBeUndefined()
+    for (const k of ['build', 'up', 'c_0', 'c_1']) for (const t of flat(p.tasks).filter((x) => step(x) === k)) expect(t.no_log, k).toBeUndefined()
     expect(flat(p.tasks).find((t) => step(t) === 'env')!.no_log).toBe(true)
     expect(p.vars.ansible_become_password).toContain('s.become_1')
     const pfs = every(plays({ ...plan, kind: 'preflight' })[0].tasks).map(({ t }) => t)
@@ -877,5 +880,189 @@ describe('compose file auto (row 11)', () => {
     expect(COMPOSE_FILE.test(COMPOSE_AUTO)).toBe(true)
     expect(COMPOSE_AUTO).toBe('')
     for (const bad of ['-f', '/etc/x', '../x', 'a b', '{{x}}']) expect(COMPOSE_FILE.test(bad), bad).toBe(false)
+  })
+})
+
+describe('custom steps', () => {
+  const ANCHORS: StepAnchor[] = ['before_fetch', 'after_checkout', 'before_build', 'after_build', 'after_up', 'after_health', 'after_tag']
+  /** dep1 (backup, env, health, sudo-password docker) without hooks, with the given steps. */
+  const withSteps = (steps: PlanStep[], over: Partial<DeployPlan> = {}, dep: Partial<PlanDeployment> = {}): DeployPlan => {
+    const plan = planFixture(over)
+    plan.deployments[0] = { ...plan.deployments[0], preHookB64: null, postHookB64: null, steps, ...dep }
+    return plan
+  }
+  const dep1 = (plan: DeployPlan): Task & { vars: { d: Record<string, any> } } =>
+    plays(plan)[0].tasks.find((t) => t.name === 'deployment dep1') as never
+  const task = (plan: DeployPlan, key: string): Task => flat(dep1(plan).block!).find((t) => step(t) === key)!
+  const shellOf = (t: Task) => t['ansible.builtin.shell'] as { cmd: string; chdir?: string; stdin?: string; stdin_add_newline?: boolean }
+
+  it('puts a step at each anchor in its slot, in the order the step list gives', () => {
+    const plan = withSteps(ANCHORS.map((a, i) => stepFixture(i, a)))
+    expect(flat(dep1(plan).block!).map(step)).toEqual([
+      'record', 'backup', 'c_0', 'fetch', 'checkout', 'c_1', 'env', 'c_2', 'build', 'c_3', 'up', 'c_4', 'health', 'c_5', 'tag', 'c_6',
+    ])
+    const list = stepList('release', plan.deployments).get(plan.deployments[0].runId)!
+    expect(list.map((s) => s.key)).toEqual(flat(dep1(plan).block!).map(step))
+    expect(list.find((s) => s.key === 'c_2')).toEqual({ key: 'c_2', kind: 'custom', label: 'step2' })
+    expect(list[0]).toEqual({ key: 'record', kind: 'record', label: 'Record' })
+    // health is one entry however many URLs the playbook checks
+    const two = withSteps([], {}, { urls: [{ url: 'https://a.example.com/h', from: 'mac' }, { url: 'https://b.example.com/h', from: 'mac' }] })
+    expect(stepList('release', two.deployments).get(two.deployments[0].runId)!.filter((s) => s.kind === 'health')).toHaveLength(1)
+  })
+
+  it('a rollback runs only the steps marked alsoOnRollback, at their anchors', () => {
+    const steps = ANCHORS.map((a, i) => stepFixture(i, a, {}, { alsoOnRollback: i % 2 === 0 }))
+    const plan = withSteps(steps, { kind: 'rollback' })
+    expect(flat(dep1(plan).block!).map(step)).toEqual(['c_0', 'rb_checkout', 'rb_env', 'c_2', 'rb_build', 'rb_up', 'c_4', 'rb_tag', 'c_6'])
+    expect(Object.keys(dep1(plan).vars.d.steps)).toEqual(['c_0', 'c_2', 'c_4', 'c_6'])
+    expect(stepList('rollback', plan.deployments).get(plan.deployments[0].runId)!.map((s) => s.key)).toEqual(flat(dep1(plan).block!).map(step))
+    // preflight and version run no step, so they carry none
+    for (const kind of ['preflight', 'version'] as const) expect(generatePlaybook(withSteps(steps, { kind }))).not.toContain('script_b64')
+  })
+
+  it('names a step task by its key, streams it as c_<n>, and takes timeout, chdir and sudo from the step', () => {
+    const plan = withSteps([
+      stepFixture(0, 'after_up', { sudo: 'docker', timeoutSec: 42, cwd: '/srv/apps/alpha1/tools' }),
+      stepFixture(1, 'after_up', { sudo: 'yes' }),
+      stepFixture(2, 'after_up', { sudo: 'no' }),
+    ])
+    const t0 = task(plan, 'c_0')
+    expect(t0.name).toBe('c_0 dep1')
+    expect(t0.timeout).toBe(42)
+    expect(t0.when).toBe('not (od_failed | default(false))')
+    expect(shellOf(t0).chdir).toBe('/srv/apps/alpha1/tools')
+    expect(shellOf(t0).cmd).toContain('P="{{ d.run }}:c_0"')
+    expect(t0.become).toBe(true)
+    expect(task(plan, 'c_1').become).toBe(true)
+    expect(task(plan, 'c_2').become).toBeUndefined()
+    expect(shellOf(task(plan, 'c_2')).chdir).toBe('{{ d.repo }}')
+    // docker sudo follows the deployment's docker mode
+    const plain = plays(withSteps([stepFixture(0, 'after_up')], {}, { docker: 'plain' }))[0]
+    expect(flat(plain.tasks).find((t) => step(t) === 'c_0')!.become).toBeUndefined()
+  })
+
+  it('a step that continues on failure never fails the host and reports OD-STEP; so does any after_tag step', () => {
+    const plan = withSteps([stepFixture(0, 'after_up', { onFailure: 'continue' }), stepFixture(1, 'after_up'), stepFixture(2, 'after_tag')])
+    const c0 = task(plan, 'c_0')
+    expect(c0.failed_when).toBe(false)
+    expect(shellOf(c0).cmd).toContain('if [ "$rc" -ne 0 ]; then echo "OD-STEP rc=$rc"; fi')
+    expect(task(plan, 'c_1').failed_when).toBeUndefined()
+    expect(shellOf(task(plan, 'c_1')).cmd).not.toContain('OD-STEP')
+    expect(task(plan, 'c_2').failed_when).toBe(false)
+  })
+
+  it('when changed and when paths skip with OD-SKIP when nothing changed since the base, globs carried as base64', () => {
+    const base = 'f'.repeat(40)
+    const plan = withSteps(
+      [stepFixture(0, 'before_build', { when: { kind: 'changed' } }), stepFixture(1, 'before_build', { when: { kind: 'paths', paths: ['db/migrations/*', 'package.json'] } }), stepFixture(2, 'before_build')],
+      {},
+      { whenBase: base },
+    )
+    const d = dep1(plan).vars.d.steps
+    expect(d.c_0).toEqual({ script_b64: b64('echo step 0'), base })
+    expect(d.c_1).toEqual({ script_b64: b64('echo step 1'), base, paths_b64: b64('db/migrations/*\npackage.json') })
+    expect(d.c_2).toEqual({ script_b64: b64('echo step 2') })
+    const changed = shellOf(task(plan, 'c_0')).cmd
+    expect(changed).toContain('B={{ d.steps.c_0.base | quote }}')
+    expect(changed).toContain('rev-parse HEAD')
+    expect(changed).toContain('echo "OD-SKIP"; exit 0')
+    const paths = shellOf(task(plan, 'c_1')).cmd
+    expect(paths).toContain('echo {{ d.steps.c_1.paths_b64 | quote }} | base64 -d')
+    expect(paths).toContain('a+=(":(glob)$g")')
+    expect(paths).toContain('diff --quiet "$B" HEAD -- "${a[@]}"; then echo "OD-SKIP"; exit 0; fi')
+    // the skip check runs before the stream log, so the marker reaches stdout
+    expect(paths.indexOf('OD-SKIP')).toBeLessThan(paths.indexOf('stream.log'))
+    expect(JSON.stringify(dep1(plan))).not.toContain('db/migrations')
+    expect(shellOf(task(plan, 'c_2')).cmd).not.toContain('OD-SKIP')
+    // no base: the step always counts as changed
+    expect(dep1(withSteps([stepFixture(0, 'before_build', { when: { kind: 'changed' } })])).vars.d.steps.c_0.base).toBe('')
+  })
+
+  const secretPlan = () => {
+    const p = withSteps([
+      stepFixture(0, 'after_up', { script: `curl -H "x: $API_TOKEN" '{{ 9*9 }}' $(whoami)`, secrets: [{ envName: 'API_TOKEN', secretId: 'sec-9' }] }, {
+        secretKeys: [{ envName: 'API_TOKEN', key: 'step_1_0' }],
+        paramKeys: [{ envName: 'OD_PARAM_REGION', valueB64: b64('eu-west-1;rm -rf /') }],
+      }),
+      stepFixture(1, 'after_up', { run: 'compose-exec', service: 'api', script: 'php artisan migrate', secrets: [{ envName: 'DB_PASSWORD', secretId: 'sec-8' }] }, {
+        secretKeys: [{ envName: 'DB_PASSWORD', key: 'step_1_1' }],
+      }),
+      stepFixture(2, 'after_up', {}, { paramKeys: [{ envName: 'OD_PARAM_N', valueB64: b64('7') }] }),
+    ])
+    p.secretRefs = { ...p.secretRefs, step_1_0: { secretId: 'sec-9' }, step_1_1: { secretId: 'sec-8' } }
+    return p
+  }
+
+  it('hands secrets and params to a step on stdin by reference, never in environment or argv', () => {
+    const plan = secretPlan()
+    const raw = generatePlaybook(plan)
+    expect(raw).not.toContain('{{ 9*9 }}')
+    expect(raw).not.toContain('$(whoami)')
+    expect(raw).not.toContain('php artisan')
+    expect(raw).not.toContain('eu-west-1')
+    expect(raw).not.toContain('sec-9')
+    expect(raw).not.toMatch(/"environment"/)
+    const c0 = task(plan, 'c_0')
+    expect(shellOf(c0).stdin).toBe('API_TOKEN={{ s.step_1_0 }}\nOD_PARAM_REGION={{ d.steps.c_0.params[0] }}\n')
+    expect(shellOf(c0).stdin_add_newline).toBe(false)
+    expect(c0.no_log).toBe(true)
+    expect(dep1(plan).vars.d.steps.c_0.params).toEqual([b64('eu-west-1;rm -rf /')])
+    // a step name or env name appears only in its stdin line
+    for (const name of ['API_TOKEN', 'DB_PASSWORD', 'OD_PARAM_REGION']) expect(raw.split(name).length - 1, name).toBe(1)
+    const c1 = shellOf(task(plan, 'c_1')).cmd
+    expect(dockerWords(c1.slice(c1.lastIndexOf('docker compose')))).toEqual(['docker', 'compose', '-f', FIX.compose, 'exec', '-T', '${E[@]}', 'api', 'sh', '-c', '$S'])
+    expect(c1).not.toMatch(/\| *docker/)
+    // a step with params only is not hidden from the log: no secret flows through it
+    expect(task(plan, 'c_2').no_log).toBeUndefined()
+    expect(shellOf(task(plan, 'c_2')).cmd).toContain('export "$k=${x%.}"')
+  })
+
+  it('every step body parses with bash -n (parse only, nothing runs)', () => {
+    const plan = secretPlan()
+    plan.deployments[0].steps.push(
+      stepFixture(3, 'before_fetch', { onFailure: 'continue', when: { kind: 'changed' } }),
+      stepFixture(4, 'after_checkout', { when: { kind: 'paths', paths: ['a/**', 'b.txt'] } }),
+    )
+    plan.deployments[0].whenBase = 'a'.repeat(40)
+    for (const kind of ['release', 'rollback'] as PlanKind[]) {
+      const p = { ...plan, kind, deployments: plan.deployments.map((d) => ({ ...d, steps: d.steps.map((s) => ({ ...s, alsoOnRollback: true })) })) }
+      const bodies = flat(plays(p)[0].tasks).filter((t) => /^c_\d+$/.test(step(t)))
+      expect(bodies).toHaveLength(5)
+      for (const t of bodies) {
+        const cmd = cmdOf(t).replace(/\{\{[^}]*\}\}/g, 'x')
+        const r = spawnSync('/bin/bash', ['-n'], { input: cmd, encoding: 'utf8' })
+        expect(r.stderr, cmd).toBe('')
+        expect(r.status).toBe(0)
+      }
+      expect(generatePlaybook(p).replace(/\{\{[^}]*\}\}/g, '')).not.toMatch(/\{[%#]/)
+    }
+  })
+
+  it('rejects step data the playbook could not carry safely', () => {
+    const bad = (mut: (p: DeployPlan) => void) => {
+      const p = secretPlan()
+      mut(p)
+      expect(() => generatePlaybook(p)).toThrow()
+    }
+    const s0 = (p: DeployPlan) => p.deployments[0].steps[0]
+    bad((p) => { p.deployments[0].preHookB64 = b64('echo hi') })
+    bad((p) => { s0(p).key = 'c_x' })
+    bad((p) => { p.deployments[0].steps[1].key = 'c_0' })
+    bad((p) => { s0(p).anchor = null })
+    bad((p) => { s0(p).anchor = 'after_lunch' as StepAnchor })
+    bad((p) => { s0(p).secretKeys[0].envName = 'LD_PRELOAD' })
+    bad((p) => { s0(p).secretKeys[0].envName = 'api token' })
+    bad((p) => { s0(p).secretKeys[0].key = 'step_9' })
+    bad((p) => { s0(p).secretKeys[0].key = 'a.b' })
+    bad((p) => { s0(p).paramKeys[0].envName = 'REGION' })
+    bad((p) => { s0(p).paramKeys[0].envName = 'API_TOKEN' })
+    bad((p) => { s0(p).paramKeys[0].valueB64 = '$(id)' })
+    bad((p) => { s0(p).step.timeoutSec = 5 })
+    bad((p) => { s0(p).step.cwd = '/srv/a b' })
+    bad((p) => { s0(p).step.name = 'a b' })
+    bad((p) => { s0(p).step.when = { kind: 'paths', paths: ['$(id)'] } })
+    bad((p) => { p.deployments[0].steps[1].step.service = 'api;id' })
+    bad((p) => { p.deployments[0].whenBase = 'HEAD' })
+    bad((p) => { p.deployments[0].steps = Array.from({ length: 21 }, (_, i) => stepFixture(i, 'after_up')) })
   })
 })

@@ -1,4 +1,5 @@
 import type { Actor, DockerMode, HealthUrl, PreflightReport, RunEventBody, UseSudo } from '../../shared/deploy'
+import type { StepAnchor, StepBody } from '../../shared/steps'
 
 /** One SSH hop. `hostId` is null for a hop that isn't an inventory host. */
 export interface PlanHop {
@@ -20,6 +21,24 @@ export interface PlanHost {
   hops: PlanHop[]
 }
 
+/**
+ * A custom step as the playbook runs it. Secrets and params are references and base64 only: `secretKeys` name
+ * OPSDECK_SECRETS keys, and each env name passes ENV_NAME and the deny-list (params are `OD_PARAM_<NAME>`).
+ */
+export interface PlanStep {
+  /** `c_<n>`: n is the step's index in its checkout's effective steps; the log and tag kind. */
+  key: string
+  /** stepLabel(step), snapshotted for the step list. */
+  label: string
+  step: StepBody
+  /** Null for a step outside a release (a runbook or a flow stage). */
+  anchor: StepAnchor | null
+  /** A rollback runs only the steps that set this. */
+  alsoOnRollback?: boolean
+  secretKeys: { envName: string; key: string }[]
+  paramKeys: { envName: string; valueB64: string }[]
+}
+
 export interface PlanDeployment {
   /** deployment_runs.id */
   runId: string
@@ -34,8 +53,13 @@ export interface PlanDeployment {
   healthStatus: number
   healthTimeoutSec: number
   backup: { dir: string; label: string } | null
+  /** Legacy hooks: null whenever `steps` is used. A plan that still carries them gets them as steps (effectiveSteps). */
   preHookB64: string | null
   postHookB64: string | null
+  /** In anchor order within each anchor; empty when the checkout has none. */
+  steps: PlanStep[]
+  /** The previous commit `when` compares against (SHA-checked); null counts as changed. */
+  whenBase: string | null
   buildTimeoutSec: number
   composeTimeoutSec: number
   docker: DockerMode

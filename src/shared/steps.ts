@@ -1,6 +1,6 @@
 // Imported by the renderer: keep runtime code to plain constants and pure functions (no node or electron imports).
 import { DeployError } from './deploy-error'
-import { REPO_PATH, STEP_TIMEOUT_RANGE } from './deploy'
+import { REPO_PATH, SAFE_IDENT, STEP_TIMEOUT_RANGE, sanitizeIdent } from './deploy'
 
 export type StepAnchor = 'before_fetch' | 'after_checkout' | 'before_build' | 'after_build' | 'after_up' | 'after_health' | 'after_tag'
 /** In pipeline order. */
@@ -47,13 +47,11 @@ export const MAX_STEP_SCRIPT = 16000
 export const MAX_FLOW_STAGES = 50
 export const MAX_WHEN_PATHS = 20
 const MAX_STEP_SECRETS = 10
-/** The same rule the playbook generator applies to idents. */
-const SAFE_IDENT = /^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$/
 const STEP_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/
 const COMPOSE_SERVICE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/
 
-/** Anything outside [A-Za-z0-9._@-] becomes `_`; at most 64 characters. */
-export const stepLabel = (s: StepBody): string => s.name.replace(/[^A-Za-z0-9._@-]/g, '_').slice(0, 64)
+/** The step's name as logs and the step list show it (sanitizeIdent). */
+export const stepLabel = (s: StepBody): string => sanitizeIdent(s.name)
 
 /** The saved steps, or the legacy hooks migrated to steps when there are none. */
 export function effectiveSteps(d: { steps: Step[]; preHook: string | null; postHook: string | null }): Step[] {
