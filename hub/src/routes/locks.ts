@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify'
-import { FREEZE_MAX_HOURS, MAX_FREEZE_REASON, type HubActor, type HubEnvLock } from '../../../src/shared/hub'
+import { FREEZE_MAX_HOURS, MAX_FREEZE_REASON, type HubActor, type HubEnvLock, type HubGroup, type HubUser } from '../../../src/shared/hub'
 import type { Directory } from '../access/directory'
 import { decide } from '../access/policy'
 import type { makeAuth } from '../auth/plugin'
@@ -13,13 +13,24 @@ const actorOf = (req: FastifyRequest): HubActor => ({ oid: req.user.oid, upn: re
 
 export function registerLocks(
   app: FastifyInstance,
-  deps: { locks: EnvLocks; directory: Pick<Directory, 'listGroups'>; audit: Pick<HubAudit, 'append'>; auth: ReturnType<typeof makeAuth> },
+  deps: {
+    locks: EnvLocks
+    directory: Pick<Directory, 'listGroups'>
+    audit: Pick<HubAudit, 'append'>
+    auth: ReturnType<typeof makeAuth>
+    /** The caller's copy of a lock; a deployment-scoped member does not learn the id of a release they cannot view. */
+    view?: (user: HubUser, groups: HubGroup[], lock: HubEnvLock) => HubEnvLock | null
+  },
 ): void {
   const { locks, directory, audit, auth } = deps
+  const view = deps.view ?? ((_user: HubUser, _groups: HubGroup[], lock: HubEnvLock) => lock)
 
   app.get('/api/v1/locks', { onRequest: auth.requireUser }, async (req): Promise<HubEnvLock[]> => {
     const groups = directory.listGroups()
-    return locks.list().filter((l) => decide(req.user, groups, 'deploy.view', { environmentId: l.environmentId }).allowed)
+    return locks
+      .list()
+      .filter((l) => decide(req.user, groups, 'deploy.view', { environmentId: l.environmentId }).allowed)
+      .flatMap((l) => view(req.user, groups, l) ?? [])
   })
 
   app.post<{ Params: { id: string }; Body: { reason: string; hours?: number } }>(

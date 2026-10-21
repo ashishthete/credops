@@ -7,6 +7,9 @@ import type { HubDb } from '../db'
  * tied to a visible part (an unattributed log line) is left out.
  */
 
+/** Shown for a release error that may come from a part the viewer cannot see. */
+export const HIDDEN_ERROR = "The details are not shown because they may concern deployments you don't have access to."
+
 /** What a release's deployment runs say about who may see which part of it. */
 export interface RunRef {
   id: string
@@ -16,10 +19,16 @@ export interface RunRef {
 }
 
 export interface Visible {
+  /** The release's runs, all of them, for the counts. */
+  all: RunRef[]
   runs: Set<string>
   deployments: ReadonlySet<string>
   hosts: Set<string>
+  /** Visible hosts that also run a hidden checkout: a raw line there can be either's. */
+  shared: Set<string>
   services: Set<string>
+  /** Error texts of visible failed steps and lock waits; a release error is shown only when it is one of them. */
+  errors: Set<string>
 }
 
 export function runRefs(db: HubDb, releaseId: string): RunRef[] {
@@ -41,23 +50,40 @@ function serviceIdsOf(json: string): string[] {
   }
 }
 
-/** The visible parts, or null when the release has none for this viewer. */
-export function visibleOf(deploymentIds: ReadonlySet<string>, runs: RunRef[]): Visible | null {
-  const mine = runs.filter((r) => r.deploymentId !== null && deploymentIds.has(r.deploymentId))
+/** The parts of `releaseId` a viewer granted `deploymentIds` sees, or null when it has none. */
+export function visibleIn(db: HubDb, deploymentIds: ReadonlySet<string>, releaseId: string): Visible | null {
+  const all = runRefs(db, releaseId)
+  const mine = all.filter((r) => r.deploymentId !== null && deploymentIds.has(r.deploymentId))
   if (mine.length === 0) return null
-  return {
+  const hostsOf = (rs: RunRef[]) => new Set(rs.flatMap((r) => (r.hostId === null ? [] : [r.hostId])))
+  const hosts = hostsOf(mine)
+  const hiddenHosts = hostsOf(all.filter((r) => !mine.includes(r)))
+  const v: Visible = {
+    all,
     runs: new Set(mine.map((r) => r.id)),
     deployments: deploymentIds,
-    hosts: new Set(mine.flatMap((r) => (r.hostId === null ? [] : [r.hostId]))),
+    hosts,
+    shared: new Set([...hosts].filter((h) => hiddenHosts.has(h))),
     services: new Set(mine.flatMap((r) => r.serviceIds)),
+    errors: new Set(),
   }
+  const rows = db.prepare("SELECT payload FROM run_events WHERE release_id = ? AND type IN ('step.failed', 'lock.busy')").all(releaseId) as { payload: string }[]
+  for (const row of rows) {
+    const e = JSON.parse(row.payload) as { type: string; stepId?: string; error?: string; hostId?: string; text?: string }
+    if (e.type === 'step.failed' && e.stepId && e.error && stepVisible(e.stepId, v)) v.errors.add(e.error)
+    if (e.type === 'lock.busy' && e.hostId && e.text && v.hosts.has(e.hostId)) v.errors.add(e.text)
+  }
+  return v
 }
 
-/** The summary with its counts over the visible runs only. */
-export function scopeSummary<T extends ReleaseSummary>(s: T, runs: RunRef[], v: Visible): T {
-  const mine = runs.filter((r) => v.runs.has(r.id))
+const errorFor = (error: string | null, v: Visible): string | null => (error === null || v.errors.has(error) ? error : HIDDEN_ERROR)
+
+/** The summary with its counts over the visible runs only, and its error only when it comes from a visible part. */
+export function scopeSummary<T extends ReleaseSummary>(s: T, v: Visible): T {
+  const mine = v.all.filter((r) => v.runs.has(r.id))
   return {
     ...s,
+    error: errorFor(s.error, v),
     deploymentCount: mine.length,
     hostCount: v.hosts.size,
     serviceIds: s.serviceIds.filter((id) => v.services.has(id)),
@@ -83,14 +109,16 @@ function scopeReport(p: PreflightReport, v: Visible): PreflightReport {
   }
 }
 
-export function scopeDetail(d: ReleaseDetail, runs: RunRef[], v: Visible): ReleaseDetail {
+export function scopeDetail(d: ReleaseDetail, v: Visible): ReleaseDetail {
   const shown: DeploymentRunMeta[] = d.runs.filter((r) => v.runs.has(r.id))
+  // The playbook and the release notes cover every deployment of the release: theirs only when all of them are.
+  const whole = shown.length === d.runs.length
   return {
-    ...scopeSummary(d, runs, v),
+    ...scopeSummary(d, v),
     runs: shown,
     preflight: d.preflight === null ? null : scopeReport(d.preflight, v),
-    // The playbook covers every deployment of the release; it is hers only when they all are.
-    playbook: shown.length === d.runs.length ? d.playbook : null,
+    playbook: whole ? d.playbook : null,
+    releaseNotes: whole ? d.releaseNotes : null,
   }
 }
 
@@ -114,8 +142,10 @@ function scopeEvent(e: RunEvent, v: Visible): RunEvent | null {
     case 'task.done':
       return stepVisible(e.stepId, v) ? e : null
     case 'log':
+      // The version step runs once per repository, so its output can name the other checkouts' repositories.
+      if (e.stepId === 'release:version') return null
       if (e.stepId !== null) return stepVisible(e.stepId, v) ? e : null
-      return e.hostId !== null && v.hosts.has(e.hostId) ? e : null
+      return e.hostId !== null && v.hosts.has(e.hostId) && !v.shared.has(e.hostId) ? e : null
     case 'lock.busy':
       return v.hosts.has(e.hostId) ? e : null
     case 'deployment.updated':
@@ -124,8 +154,10 @@ function scopeEvent(e: RunEvent, v: Visible): RunEvent | null {
       const ids = e.deploymentRunIds.filter((id) => v.runs.has(id))
       return ids.length ? { ...e, deploymentRunIds: ids } : null
     }
+    case 'run.finished':
+      return e.error === undefined ? e : { ...e, error: errorFor(e.error, v)! }
     default:
-      // run.started, log.truncated, rollback.done, version.bumped, run.finished: the release as a whole.
+      // run.started, log.truncated, rollback.done, version.bumped: the release as a whole.
       return e
   }
 }

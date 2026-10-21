@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Actor, PlaybookPreview, PreflightRequest, ReleaseConfirm, ReleaseDetail, ReleaseListFilter, ReleaseStatus, ReleaseSummary, RunEvent } from '../../../src/shared/deploy'
-import { READY_RELEASE_TTL_MS, type HubAction, type HubEnvManifest, type HubGroup, type HubLiveMessage, type HubUser } from '../../../src/shared/hub'
+import { READY_RELEASE_TTL_MS, type HubAction, type HubDecision, type HubEnvManifest, type HubEnvLock, type HubGroup, type HubLiveMessage, type HubUser } from '../../../src/shared/hub'
 import { startPrivateAgent, type ChildLike } from '../../../src/main/deploy/agent'
 import { DeployError } from '../../../src/main/deploy/access'
 import { noopFinalize, type FinalizeSteps } from '../../../src/main/deploy/finalize'
@@ -28,7 +28,7 @@ import type { Registry } from '../registry'
 import type { DeployKeys } from '../secrets/deploykeys'
 import type { SecretStore } from '../secrets/store'
 import { HubDeployAccess, hubAudit, hubDeploys, hubIdentities, hubInventory, hubResolve, hubSecrets, hubServices, hubVerify } from './adapters'
-import { runRefs, scopeDetail, scopeEvents, scopeSummary, visibleOf, type RunRef, type Visible } from './scope'
+import { scopeDetail, scopeEvents, scopeSummary, visibleIn, type Visible } from './scope'
 
 /** Statuses after which a release holds no lock: it has ended, or it can never start. */
 const LOCK_FREE: ReadonlySet<ReleaseStatus> = new Set(['blocked', 'succeeded', 'failed', 'rolled_back', 'cancelled', 'discarded'])
@@ -115,6 +115,11 @@ function localRunner(deps: HubReleasesDeps, build: { resolve: ReturnType<typeof 
  * Every mutating call runs the same checks in the same order: signed in, allowed to do this here, the typed
  * confirmation, the environment lock, and only then the service.
  */
+/** A refusal over a release's deployments names none of them: the caller may not be allowed to know them. */
+function refusal(decision: Extract<HubDecision, { allowed: false }>, deploymentIds: string[]): string {
+  return decision.code === 'no_grant' && deploymentIds.length ? "This release includes deployments you don't have access to." : decision.reason
+}
+
 export class HubReleases {
   readonly service: ReleaseService
   /** The deploy key as a runner resolves it; tests drive it as a run would. */
@@ -294,7 +299,7 @@ export class HubReleases {
     const decision = decide(user, this.d.directory.listGroups(), action, { environmentId, ...(deploymentIds.length ? { deploymentIds } : {}) })
     if (decision.allowed) return
     this.deny(user, attempted, environmentId, 'forbidden', releaseId)
-    throw new HubHttpError(403, 'forbidden', decision.reason)
+    throw new HubHttpError(403, 'forbidden', refusal(decision, deploymentIds))
   }
 
   /** Step 3: a protected environment is deployed to only by someone who types its name. */
@@ -367,7 +372,7 @@ export class HubReleases {
     this.viewOf(user, releaseId)
     const deploymentIds = this.deploymentsOf(releaseId)
     const decision = decide(user, this.d.directory.listGroups(), 'release.start', { environmentId, ...(deploymentIds.length ? { deploymentIds } : {}) })
-    if (!decision.allowed) throw new HubHttpError(403, 'forbidden', decision.reason)
+    if (!decision.allowed) throw new HubHttpError(403, 'forbidden', refusal(decision, deploymentIds))
     try {
       return await this.service.previewPlaybook(releaseId, { actor: this.actorOf(user) })
     } catch (err) {
@@ -377,6 +382,7 @@ export class HubReleases {
 
   async start(user: HubUser, releaseId: string, confirm: ReleaseConfirm): Promise<void> {
     const { environmentId } = this.known(releaseId)
+    this.reachable(user, releaseId, environmentId, 'release.start')
     this.allow(user, 'release.start', environmentId, this.deploymentsOf(releaseId), 'release.start', releaseId)
     this.confirm(user, environmentId, confirm.typedName, 'release.start', releaseId)
     this.holdsLock(environmentId, releaseId)
@@ -389,6 +395,7 @@ export class HubReleases {
 
   async cancel(user: HubUser, releaseId: string): Promise<void> {
     const { environmentId } = this.known(releaseId)
+    this.reachable(user, releaseId, environmentId, 'release.cancel')
     this.allow(user, 'release.cancel', environmentId, this.deploymentsOf(releaseId), 'release.cancel', releaseId)
     try {
       await this.service.cancel(releaseId, { actor: this.actorOf(user) })
@@ -399,6 +406,7 @@ export class HubReleases {
 
   async rollback(user: HubUser, releaseId: string, confirm: ReleaseConfirm): Promise<{ releaseId: string }> {
     const { environmentId } = this.known(releaseId)
+    this.reachable(user, releaseId, environmentId, 'release.rollback')
     this.allow(user, 'release.rollback', environmentId, this.deploymentsOf(releaseId), 'release.rollback', releaseId)
     this.confirm(user, environmentId, confirm.typedName, 'release.rollback', releaseId)
     // A rollback is a release of its own and takes the environment lock itself.
@@ -417,6 +425,7 @@ export class HubReleases {
 
   async breakLock(user: HubUser, releaseId: string, hostId: string, typedLabel: string): Promise<void> {
     const { environmentId } = this.known(releaseId)
+    this.reachable(user, releaseId, environmentId, 'deploy.lock_break')
     this.allow(user, 'lock.break', environmentId, [], 'deploy.lock_break', releaseId)
     try {
       await this.service.breakLock(releaseId, hostId, { typedLabel }, { actor: this.actorOf(user) })
@@ -427,6 +436,7 @@ export class HubReleases {
 
   async discard(user: HubUser, releaseId: string): Promise<void> {
     const { environmentId } = this.known(releaseId)
+    this.reachable(user, releaseId, environmentId, 'release.discard')
     this.allow(user, 'release.start', environmentId, this.deploymentsOf(releaseId), 'release.discard', releaseId)
     try {
       await this.service.discard(releaseId, { actor: this.actorOf(user) })
@@ -437,6 +447,7 @@ export class HubReleases {
 
   async retryVersion(user: HubUser, releaseId: string): Promise<void> {
     const { environmentId } = this.known(releaseId)
+    this.reachable(user, releaseId, environmentId, 'release.retry_version')
     this.allow(user, 'release.start', environmentId, this.deploymentsOf(releaseId), 'release.retry_version', releaseId)
     // The retry runs again, so it holds the environment lock like any release: a freeze or another release refuses it.
     this.d.locks.acquireRelease(environmentId, releaseId, { oid: user.oid, name: user.name })
@@ -466,74 +477,96 @@ export class HubReleases {
   }
 
   /** Marks the releases of an unpublished environment. */
-  private marked<T extends ReleaseSummary>(r: T): T {
-    return this.d.registry.historyOf(r.environmentId)?.unpublished ? { ...r, unpublished: true } : r
+  private marked<T extends ReleaseSummary>(r: T, unpublished = this.d.registry.historyOf(r.environmentId)?.unpublished ?? false): T {
+    return unpublished ? { ...r, unpublished: true } : r
   }
 
   /** The caller's copy of a summary: whole, cut to their deployments, or null when they see none of it. */
-  private shown(scope: ViewScope | null, r: ReleaseSummary): ReleaseSummary | null {
+  private shown(scope: ViewScope | null, r: ReleaseSummary, unpublished?: boolean): ReleaseSummary | null {
     if (scope === null) return null
-    if (scope.all) return this.marked(r)
-    const runs = runRefs(this.d.db, r.id)
-    const v = visibleOf(scope.deploymentIds, runs)
-    return v ? this.marked(scopeSummary(r, runs, v)) : null
-  }
-
-  private viewable(user: HubUser): (r: ReleaseSummary) => ReleaseSummary | null {
-    const scopes = new Map<string, ViewScope | null>()
-    return (r) => {
-      if (!scopes.has(r.environmentId)) scopes.set(r.environmentId, this.scopeOf(user, r.environmentId))
-      return this.shown(scopes.get(r.environmentId)!, r)
-    }
-  }
-
-  /** Newest first; the limit counts only what the caller sees, so it pages past what they don't. */
-  list(user: HubUser, filter: ReleaseListFilter): ReleaseSummary[] {
-    if (filter.environmentId !== undefined && this.scopeOf(user, filter.environmentId) === null) throw new HubHttpError(403, 'forbidden', 'You cannot view this environment')
-    const limit = Math.max(1, Math.min(Math.floor(filter.limit ?? 50), 200))
-    const see = this.viewable(user)
-    const out: ReleaseSummary[] = []
-    let before = filter.before
-    for (;;) {
-      const page = this.service.list({ ...filter, limit, before })
-      for (const r of page) {
-        const s = see(r)
-        if (s) out.push(s)
-        if (out.length === limit) return out
-      }
-      if (page.length < limit) return out
-      before = page[page.length - 1].id
-    }
-  }
-
-  active(user: HubUser): ReleaseSummary[] {
-    const see = this.viewable(user)
-    return this.service.listActive().flatMap((r) => see(r) ?? [])
+    if (scope.all) return this.marked(r, unpublished)
+    const v = visibleIn(this.d.db, scope.deploymentIds, r.id)
+    return v ? this.marked(scopeSummary(r, v), unpublished) : null
   }
 
   /**
-   * What of a release the caller sees: everything (`visible` null) or their deployments' part. One they cannot
-   * view at all is a 404 like an unknown one, so its existence does not leak.
+   * Newest first. The query itself keeps only releases the caller sees (whole environments, or releases with a run
+   * of one of their deployments), so the limit counts only those and a request never scans past them.
    */
-  private viewOf(user: HubUser, releaseId: string): { runs: RunRef[]; visible: Visible | null } {
+  list(user: HubUser, filter: ReleaseListFilter): ReleaseSummary[] {
+    if (filter.environmentId !== undefined && this.scopeOf(user, filter.environmentId) === null) throw new HubHttpError(403, 'forbidden', 'You cannot view this environment')
+    const limit = Math.max(1, Math.min(Math.floor(filter.limit ?? 50), 200))
+    const envs = (
+      filter.environmentId !== undefined
+        ? this.d.db.prepare('SELECT id, unpublished_at FROM environments WHERE id = ?').all(filter.environmentId)
+        : this.d.db.prepare('SELECT id, unpublished_at FROM environments').all()
+    ) as { id: string; unpublished_at: string | null }[]
+    const scopes = new Map<string, { scope: ViewScope; unpublished: boolean }>()
+    const whole: string[] = []
+    const parts: string[] = []
+    const args: string[] = []
+    for (const e of envs) {
+      const scope = this.scopeOf(user, e.id)
+      if (scope === null) continue
+      scopes.set(e.id, { scope, unpublished: e.unpublished_at !== null })
+      if (scope.all) whole.push(e.id)
+      else {
+        parts.push(`(r.environment_id = ? AND EXISTS (SELECT 1 FROM deployment_runs d WHERE d.release_id = r.id AND d.deployment_id IN (${[...scope.deploymentIds].map(() => '?').join(', ')})))`)
+        args.push(e.id, ...scope.deploymentIds)
+      }
+    }
+    if (whole.length) parts.unshift(`r.environment_id IN (${whole.map(() => '?').join(', ')})`)
+    if (parts.length === 0) return []
+    const where = [`(${parts.join(' OR ')})`, ...(filter.before !== undefined ? ['r.id < ?'] : [])]
+    const rows = this.d.db
+      .prepare(`SELECT r.id, r.environment_id FROM releases r WHERE ${where.join(' AND ')} ORDER BY r.id DESC LIMIT ?`)
+      .all(...whole, ...args, ...(filter.before !== undefined ? [filter.before] : []), limit) as { id: string; environment_id: string }[]
+    return rows.flatMap((row) => {
+      const e = scopes.get(row.environment_id)!
+      return this.shown(e.scope, this.store.get(row.id), e.unpublished) ?? []
+    })
+  }
+
+  active(user: HubUser): ReleaseSummary[] {
+    const scopes = new Map<string, ViewScope | null>()
+    return this.service.listActive().flatMap((r) => {
+      if (!scopes.has(r.environmentId)) scopes.set(r.environmentId, this.scopeOf(user, r.environmentId))
+      return this.shown(scopes.get(r.environmentId)!, r) ?? []
+    })
+  }
+
+  /**
+   * What of a release the caller sees: everything (null) or their deployments' part. One they cannot view at all
+   * is a 404 like an unknown one, so its existence does not leak.
+   */
+  private viewOf(user: HubUser, releaseId: string): Visible | null {
     const environmentId = this.envOf(releaseId)
     const scope = environmentId === null || this.d.registry.historyOf(environmentId) === null ? null : this.scopeOf(user, environmentId)
-    if (scope?.all) return { runs: [], visible: null }
-    const runs = scope ? runRefs(this.d.db, releaseId) : []
-    const visible = scope ? visibleOf(scope.deploymentIds, runs) : null
+    if (scope?.all) return null
+    const visible = scope ? visibleIn(this.d.db, scope.deploymentIds, releaseId) : null
     if (!visible) throw new HubHttpError(404, 'not_found', 'That release was not found')
-    return { runs, visible }
+    return visible
+  }
+
+  /** For a change: a release the caller cannot view is a 404, and the attempt is audited like any refusal. */
+  private reachable(user: HubUser, releaseId: string, environmentId: string, attempted: string): void {
+    try {
+      this.viewOf(user, releaseId)
+    } catch (err) {
+      this.deny(user, attempted, environmentId, 'not_visible', releaseId)
+      throw err
+    }
   }
 
   detail(user: HubUser, releaseId: string): ReleaseDetail {
-    const { runs, visible } = this.viewOf(user, releaseId)
+    const visible = this.viewOf(user, releaseId)
     const d = this.marked(this.service.detail(releaseId))
-    return visible ? scopeDetail(d, runs, visible) : d
+    return visible ? scopeDetail(d, visible) : d
   }
 
   /** A page is filled with events the caller sees; `afterSeq` of the last one fetches the next. */
   events(user: HubUser, releaseId: string, afterSeq: number, limit: number): RunEvent[] {
-    const { visible } = this.viewOf(user, releaseId)
+    const visible = this.viewOf(user, releaseId)
     const max = Math.min(limit, MAX_EVENTS)
     if (!visible) return this.service.events(releaseId, afterSeq, max)
     const out: RunEvent[] = []
@@ -549,20 +582,31 @@ export class HubReleases {
     }
   }
 
+  /** An environment lock as the caller may see it: the id of a release they cannot view is left out. */
+  lockView(user: HubUser, groups: HubGroup[], lock: HubEnvLock | null): HubEnvLock | null {
+    if (lock === null || lock.releaseId === null) return lock
+    const scope = viewScope(user, groups, lock.environmentId)
+    if (scope?.all) return lock
+    return scope && visibleIn(this.d.db, scope.deploymentIds, lock.releaseId) ? lock : { ...lock, releaseId: null }
+  }
+
   /** The live feed's copy of a message for one subscriber: unchanged, cut to their deployments, or null. */
   liveView(user: HubUser, groups: HubGroup[], msg: HubLiveMessage): HubLiveMessage | null {
+    if (msg.type === 'lock.updated') {
+      const lock = this.lockView(user, groups, msg.lock)
+      return lock === msg.lock ? msg : { ...msg, lock }
+    }
     if (msg.type !== 'deploy.events' && msg.type !== 'release.state') return msg
     const environmentId = msg.type === 'release.state' ? msg.summary.environmentId : msg.environmentId
     const scope = viewScope(user, groups, environmentId)
     if (scope === null) return null
     if (scope.all) return msg
     if (msg.type === 'release.state') {
-      const runs = runRefs(this.d.db, msg.summary.id)
-      const v = visibleOf(scope.deploymentIds, runs)
-      return v ? { ...msg, summary: scopeSummary(msg.summary, runs, v) } : null
+      const v = visibleIn(this.d.db, scope.deploymentIds, msg.summary.id)
+      return v ? { ...msg, summary: scopeSummary(msg.summary, v) } : null
     }
     const events = [...new Set(msg.events.map((e) => e.runId))].flatMap((id) => {
-      const v = visibleOf(scope.deploymentIds, runRefs(this.d.db, id))
+      const v = visibleIn(this.d.db, scope.deploymentIds, id)
       return v ? scopeEvents(msg.events.filter((e) => e.runId === id), v) : []
     })
     return events.length ? { ...msg, events } : null

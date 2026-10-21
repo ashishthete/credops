@@ -601,7 +601,7 @@ export class ReleaseService {
     const live = this.live.get(releaseId)
     if (!live) throw new DeployError('INVALID_STATE', 'This release is not running')
     const env = this.inv.environment(live.environmentId)
-    await this.guard(ctx?.actor ?? this.d.actor, 'release.cancel', 'release.cancel', env, [], releaseId)
+    await this.guard(ctx?.actor ?? this.d.actor, 'release.cancel', 'release.cancel', env, this.depIds(this.d.releases.detail(releaseId)), releaseId)
     this.abort(live)
     this.audit('release.cancel', 'success', live, { releaseId, ...this.rowCounts(releaseId) }, ctx?.actor)
     await live.done
@@ -872,7 +872,7 @@ export class ReleaseService {
     }
     if (!checking() && rel.status !== 'ready' && rel.status !== 'blocked') throw new DeployError('INVALID_STATE', `A ${rel.status} release cannot be discarded`)
     const env = this.inv.environment(rel.environmentId)
-    await this.guard(actor, 'deploy.edit', 'release.discard', env, [], releaseId)
+    await this.guard(actor, 'deploy.edit', 'release.discard', env, this.depIds(this.d.releases.detail(releaseId)), releaseId)
     // Re-check after the await: a start that began meanwhile has registered and moved the row to running.
     const live = checking()
     let settled: ReleaseStatus[] = ['ready', 'blocked']

@@ -16,8 +16,19 @@ const get = async <T>(t: string, url: string): Promise<T> => {
 const ids = (l: ReleaseSummary[]) => l.map((x) => x.id)
 const lines = (evs: RunEvent[]) => evs.flatMap((e) => (e.type === 'log' ? [e.line] : []))
 
-/** A release run writes a step and a log line per checkout, plus host, release-level and unattributed lines. */
+/** What a scripted run does besides its usual lines: fail one checkout, or wait before it ends. */
+interface Script {
+  fail?: { name: string; error: string }
+  hold?: Promise<void>
+}
+let script: Script = {}
+
+/**
+ * A release run writes a step and a log line per checkout, plus host, release-level (one of them the version
+ * step's), raw host and unattributed lines.
+ */
 async function scoped(): Promise<Rig> {
+  script = {}
   r = await rig()
   r.fr.checks = [
     { id: 'repo', deploymentId: DEP_WEB, hostId: HOST_ID, label: 'Repo', level: 'ok', message: 'web repo ok' },
@@ -25,7 +36,7 @@ async function scoped(): Promise<Rig> {
     { id: 'disk', deploymentId: null, hostId: HOST_ID, label: 'Disk', level: 'ok', message: 'host disk ok' },
   ]
   const commits = r.fr.on.release!
-  r.fr.on.release = (plan, secrets, emit, runId) => {
+  r.fr.on.release = async (plan, secrets, emit, runId) => {
     emit({ type: 'step.started', stepId: `host:${HOST_ID}:lock`, kind: 'lock', name: 'Lock', hostId: HOST_ID, deploymentRunId: null })
     emit({ type: 'log', stepId: `host:${HOST_ID}:lock`, hostId: HOST_ID, stream: 'out', line: 'host lock line' })
     for (const d of plan.deployments) {
@@ -33,11 +44,17 @@ async function scoped(): Promise<Rig> {
       emit({ type: 'step.started', stepId, kind: 'checkout', name: `Checkout ${d.name}`, hostId: d.hostId, deploymentRunId: d.runId })
       emit({ type: 'log', stepId, hostId: d.hostId, stream: 'out', line: `pulled ${d.name}` })
       emit({ type: 'task.done', stepId, task: 'git', hostId: d.hostId, state: 'ok', rc: 0, attempts: null, durationMs: 1 })
-      emit({ type: 'step.done', stepId, state: 'ok', durationMs: 1 })
+      if (script.fail?.name === d.name) emit({ type: 'step.failed', stepId, error: script.fail.error, durationMs: 1 })
+      else emit({ type: 'step.done', stepId, state: 'ok', durationMs: 1 })
     }
-    emit({ type: 'log', stepId: 'release:version', hostId: null, stream: 'ansible', line: 'release line' })
+    emit({ type: 'log', stepId: 'release:record', hostId: null, stream: 'ansible', line: 'release line' })
+    emit({ type: 'log', stepId: 'release:version', hostId: null, stream: 'ansible', line: 'version line' })
+    emit({ type: 'log', stepId: null, hostId: HOST_ID, stream: 'out', line: 'host raw line' })
     emit({ type: 'log', stepId: null, hostId: null, stream: 'err', line: 'unattributed line' })
-    return commits(plan, secrets, emit, runId)
+    if (script.hold) await script.hold
+    const out = (await commits(plan, secrets, emit, runId)) || {}
+    const failed = plan.deployments.find((d) => d.name === script.fail?.name)
+    return failed ? { ...out, exitCode: 2, failedDeploymentRunIds: [failed.runId], reachedCheckout: plan.deployments.map((d) => d.runId) } : out
   }
   return r
 }
@@ -108,7 +125,7 @@ describe('deployment-scoped access to releases', () => {
       expect(all.runs).toHaveLength(2)
       expect(all.playbook).not.toBeNull()
       // Theirs include the finish-up notices, which carry no step or host and so are never in a scoped view.
-      expect(lines(await get<RunEvent[]>(t, `/api/v1/releases/${both}/events`)).slice(0, 5)).toEqual(['host lock line', 'pulled web', 'pulled api', 'release line', 'unattributed line'])
+      expect(lines(await get<RunEvent[]>(t, `/api/v1/releases/${both}/events`)).slice(0, 7)).toEqual(['host lock line', 'pulled web', 'pulled api', 'release line', 'version line', 'host raw line', 'unattributed line'])
     }
   })
 
@@ -157,7 +174,7 @@ describe('deployment-scoped access to releases', () => {
     expect(carol.filter((f) => f.event === 'release.state').every((f) => f.data.summary.deploymentCount === 1)).toBe(true)
     for (const fs of [bob, admin]) {
       expect(releasesIn(fs)).toEqual(new Set([both, webOnly]))
-      expect(feedLines(fs, both).slice(0, 5)).toEqual(['host lock line', 'pulled web', 'pulled api', 'release line', 'unattributed line'])
+      expect(feedLines(fs, both).slice(0, 7)).toEqual(['host lock line', 'pulled web', 'pulled api', 'release line', 'version line', 'host raw line', 'unattributed line'])
     }
   })
 
@@ -175,5 +192,118 @@ describe('deployment-scoped access to releases', () => {
     expect(d.runs.map((x) => x.deploymentId)).toEqual([DEP_API])
     expect(lines(await get<RunEvent[]>(r.carol, `/api/v1/releases/${both}/events`))).toEqual(['host lock line', 'pulled api', 'release line'])
     expect(ids(await get(r.bob, `/api/v1/releases?environmentId=${ENV_ID}`))).toEqual([webOnly, both])
+  })
+})
+
+describe('deployment-scoped access: what else could name the other deployment', () => {
+  const HIDDEN_ERROR = /may concern deployments you don't have access to/
+
+  it('a raw line on a host shared with a hidden checkout, and the version step lines, are not hers', async () => {
+    await scoped()
+    const both = await r.release(r.bob, [SVC_WEB, SVC_API])
+    const apiOnly = await r.release(r.carol, [SVC_API])
+    expect(lines(await get<RunEvent[]>(r.carol, `/api/v1/releases/${both}/events`))).toEqual(['host lock line', 'pulled api', 'release line'])
+    // On her own release the host runs nothing else, so its raw lines are hers.
+    expect(lines(await get<RunEvent[]>(r.carol, `/api/v1/releases/${apiOnly}/events`))).toEqual(['host lock line', 'pulled api', 'release line', 'host raw line'])
+  })
+
+  it('the release notes are hers only when the release is all hers', async () => {
+    await scoped()
+    const both = await r.release(r.bob, [SVC_WEB, SVC_API])
+    const apiOnly = await r.release(r.carol, [SVC_API])
+    r.hub.db.prepare("UPDATE releases SET release_notes = 'web: new checkout page' WHERE id IN (?, ?)").run(both, apiOnly)
+    expect((await get<ReleaseDetail>(r.carol, `/api/v1/releases/${both}`)).releaseNotes).toBeNull()
+    expect((await get<ReleaseDetail>(r.carol, `/api/v1/releases/${apiOnly}`)).releaseNotes).toBe('web: new checkout page')
+    expect((await get<ReleaseDetail>(r.bob, `/api/v1/releases/${both}`)).releaseNotes).toBe('web: new checkout page')
+  })
+
+  it("the error of a part she can't view is replaced; her own part's error is shown", async () => {
+    await scoped()
+    const feed: { event: string; data: any }[] = []
+    r.hub.app.live.subscribe(CAROL.oid, (f) => {
+      const m = /^event: (\S+)\ndata: (.*)\n\n$/s.exec(f)
+      if (m) feed.push({ event: m[1], data: JSON.parse(m[2]) })
+    }, () => {})
+    script.fail = { name: 'web', error: 'web broke on web-secret-host' }
+    const webFailed = await r.release(r.bob, [SVC_WEB, SVC_API])
+    expect((await get<ReleaseDetail>(r.bob, `/api/v1/releases/${webFailed}`)).error).toBe('web broke on web-secret-host')
+    const d = await get<ReleaseDetail>(r.carol, `/api/v1/releases/${webFailed}`)
+    expect(d.error).toMatch(HIDDEN_ERROR)
+    expect((await get<ReleaseSummary[]>(r.carol, '/api/v1/releases')).find((x) => x.id === webFailed)!.error).toMatch(HIDDEN_ERROR)
+    const fin = (await get<RunEvent[]>(r.carol, `/api/v1/releases/${webFailed}/events`)).find((e) => e.type === 'run.finished')
+    expect(fin && fin.type === 'run.finished' ? fin.error : null).toMatch(HIDDEN_ERROR)
+    expect(JSON.stringify(feed)).not.toContain('web-secret-host')
+
+    script.fail = { name: 'api', error: 'api broke' }
+    const apiFailed = await r.release(r.bob, [SVC_WEB, SVC_API])
+    expect((await get<ReleaseDetail>(r.carol, `/api/v1/releases/${apiFailed}`)).error).toBe('api broke')
+  })
+
+  it('the environment lock does not give her the id of a release she cannot view', async () => {
+    await scoped()
+    let go!: () => void
+    script.hold = new Promise((res) => (go = res))
+    const frames: string[] = []
+    r.hub.app.live.subscribe(CAROL.oid, (f) => frames.push(f), () => {})
+    const pf = await r.call(r.bob, 'POST', '/api/v1/releases/preflight', { environmentId: ENV_ID, serviceIds: [SVC_WEB], bump: 'none', options: OPTIONS })
+    const id = pf.json().releaseId as string
+    await r.hub.app.releases.whenIdle()
+    expect((await r.call(r.bob, 'POST', `/api/v1/releases/${id}/start`, { redeploy: true })).statusCode).toBe(204)
+    await new Promise((res) => setTimeout(res, 20))
+    const carolLocks = await get<{ releaseId: string | null; kind: string }[]>(r.carol, '/api/v1/locks')
+    expect(carolLocks).toEqual([expect.objectContaining({ kind: 'release', releaseId: null })])
+    expect((await get<{ releaseId: string | null }[]>(r.bob, '/api/v1/locks'))[0].releaseId).toBe(id)
+    expect(frames.join('')).not.toContain(id)
+    go()
+    await r.hub.app.releases.whenIdle()
+  })
+
+  it('a change to a release she cannot view is a 404, audited; one she views in part is refused without naming the rest', async () => {
+    await scoped()
+    const webOnly = await r.release(r.bob, [SVC_WEB])
+    const both = await r.release(r.bob, [SVC_WEB, SVC_API])
+    const denied = () => r.hub.audit.list({ actions: ['access.denied'] }).filter((a) => a.targetId === webOnly).length
+    const before = denied()
+    const posts: [string, unknown][] = [
+      ['start', { redeploy: true }],
+      ['cancel', undefined],
+      ['rollback', {}],
+      ['discard', undefined],
+      ['retry-version', undefined],
+      ['break-lock', { hostId: HOST_ID, typedLabel: 'x' }],
+    ]
+    for (const [op, body] of posts) {
+      const res = await r.call(r.carol, 'POST', `/api/v1/releases/${webOnly}/${op}`, body)
+      expect(res.statusCode, `${op}: ${res.body}`).toBe(404)
+    }
+    expect(denied() - before).toBe(posts.length)
+    expect(r.hub.audit.list({ actions: ['access.denied'] }).find((a) => a.targetId === webOnly)!.details).toMatchObject({ code: 'not_visible' })
+
+    for (const res of [await r.call(r.carol, 'POST', `/api/v1/releases/${both}/rollback`, {}), await r.call(r.carol, 'GET', `/api/v1/releases/${both}/playbook`)]) {
+      expect(res.statusCode).toBe(403)
+      expect(res.body).not.toContain(DEP_WEB)
+      expect(res.json().message).toBe("This release includes deployments you don't have access to.")
+    }
+  })
+
+  it('she can discard and cancel her own release', async () => {
+    await scoped()
+    const pf = await r.call(r.carol, 'POST', '/api/v1/releases/preflight', { environmentId: ENV_ID, serviceIds: [SVC_API], bump: 'none', options: OPTIONS })
+    await r.hub.app.releases.whenIdle()
+    const dc = await r.call(r.carol, 'POST', `/api/v1/releases/${pf.json().releaseId}/discard`)
+    expect(dc.statusCode, dc.body).toBe(204)
+
+    let go!: () => void
+    script.hold = new Promise((res) => (go = res))
+    const pf2 = await r.call(r.carol, 'POST', '/api/v1/releases/preflight', { environmentId: ENV_ID, serviceIds: [SVC_API], bump: 'none', options: OPTIONS })
+    const id = pf2.json().releaseId as string
+    await r.hub.app.releases.whenIdle()
+    expect((await r.call(r.carol, 'POST', `/api/v1/releases/${id}/start`, { redeploy: true })).statusCode).toBe(204)
+    await new Promise((res) => setTimeout(res, 20))
+    const cancel = r.call(r.carol, 'POST', `/api/v1/releases/${id}/cancel`)
+    go()
+    const res = await cancel
+    expect(res.statusCode, res.body).toBe(204)
+    await r.hub.app.releases.whenIdle()
   })
 })
