@@ -136,6 +136,16 @@ export interface EnvDeploySettings {
 }
 /** `currentVersion` is a manual correction (null clears it); it must match VERSION. */
 export type EnvDeploySettingsPatch = Partial<Pick<EnvDeploySettings, 'versioned' | 'autoRollback' | 'currentVersion'>>
+/** Several edits to one environment saved together: all of them or none (the script-compatible preset and its Undo). */
+export interface DeployBatch {
+  settings?: EnvDeploySettingsPatch
+  deployments: { id: string; patch: DeploymentPatch }[]
+}
+export interface DeployBatchResult {
+  settings: EnvDeploySettings
+  /** Every deployment the batch named, as saved. */
+  deployments: DeploymentMeta[]
+}
 
 // ---- Versions ----
 export type VersionBump = 'major' | 'minor' | 'patch' | 'none'

@@ -68,6 +68,7 @@ import {
   type DeploymentPatch,
   type BreakLockConfirm,
   type EnvDeploySettingsPatch,
+  type DeployBatch,
   type HealthUrl,
   type PreflightRequest,
   type ReleaseConfirm,
@@ -311,6 +312,10 @@ export const asEnvDeploySettingsPatch: Check<EnvDeploySettingsPatch> = v.object(
   autoRollback: v.optional(v.bool()),
   currentVersion: v.optional(v.nullable(v.str({ max: 64, pattern: VERSION }))),
 }) as Check<EnvDeploySettingsPatch>
+export const asDeployBatch: Check<DeployBatch> = v.object({
+  settings: v.optional(asEnvDeploySettingsPatch),
+  deployments: v.array(v.object({ id: v.uuid(), patch: asDeploymentPatch }), MAX_DEPLOYMENTS),
+}) as Check<DeployBatch>
 export const asPreflightRequest: Check<PreflightRequest> = v.object({
   environmentId: v.uuid(),
   serviceIds: v.array(v.uuid(), MAX_SERVICES),
@@ -766,6 +771,7 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'deploy:reorder': args(v.uuid(), v.array(v.uuid(), MAX_DEPLOYMENTS)),
   'deploy:settings': args(v.uuid()),
   'deploy:updateSettings': args(v.uuid(), asEnvDeploySettingsPatch),
+  'deploy:applyBatch': args(v.uuid(), asDeployBatch),
   'deploy:tooling': args(),
   'service:list': args(v.optional(v.uuid())),
   'service:create': args(asServiceInput),

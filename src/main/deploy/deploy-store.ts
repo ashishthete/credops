@@ -17,6 +17,8 @@ import {
   isHttpUrl,
   VERSION,
   parseEnvTemplate,
+  type DeployBatch,
+  type DeployBatchResult,
   type DeploymentInput,
   type DeploymentMeta,
   type DeploymentPatch,
@@ -113,6 +115,7 @@ const FIELDS = [
 const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
 
 const MOVE_MESSAGE = 'a deployment cannot move to another environment or host; recreate it'
+const BATCH_ENV_MESSAGE = 'deployment is not in this environment'
 const REORDER_MESSAGE = "ids must be exactly the environment's deployments"
 
 /**
@@ -381,6 +384,38 @@ export class DeployStore {
       .prepare('UPDATE environments SET versioned = ?, auto_rollback = ?, current_version = ?, updated_at = ? WHERE id = ?')
       .run(next.versioned ? 1 : 0, next.autoRollback ? 1 : 0, next.currentVersion, this.now().toISOString(), environmentId)
     return changed
+  }
+
+  /** Settings and deployment patches of one environment in one transaction: a failing patch saves nothing. One `onChanged`. */
+  applyBatch(environmentId: string, batch: DeployBatch): DeployBatchResult {
+    this.vault.assertUnlocked()
+    if (batch.settings?.currentVersion !== undefined && batch.settings.currentVersion !== null && !VERSION.test(batch.settings.currentVersion)) {
+      throw new Error('version must look like v1.2.3')
+    }
+    const { settings, deployments } = inTransaction(this.db, () => {
+      const settings = this.updateSettingsInTx(environmentId, batch.settings ?? {})
+      const deployments = batch.deployments.map(({ id, patch }) => {
+        if (this.get(id).environmentId !== environmentId) throw new Error(BATCH_ENV_MESSAGE)
+        return { id, fields: this.updateInTx(id, patch) }
+      })
+      return { settings, deployments }
+    })
+    if (settings.length) {
+      this.audit.append({
+        action: 'deploy.settings',
+        outcome: 'success',
+        targetType: 'environment',
+        targetId: environmentId,
+        targetLabel: this.envName(environmentId),
+        details: { fields: settings },
+      })
+    }
+    const changed = deployments.filter((d) => d.fields.length)
+    for (const { id, fields } of changed) {
+      this.audit.append({ action: 'deploy.update', outcome: 'success', targetType: 'deployment', targetId: id, targetLabel: this.get(id).name, details: { fields } })
+    }
+    if (settings.length || changed.length) this.onChanged?.(environmentId)
+    return { settings: this.settings(environmentId), deployments: batch.deployments.map(({ id }) => this.get(id)) }
   }
 
   /** Always null: the compose file lives on the host. Exists so Phase 9's AI context compiles. */

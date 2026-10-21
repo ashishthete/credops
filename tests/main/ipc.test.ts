@@ -124,6 +124,7 @@ describe('deploy contract', () => {
     'deploy:reorder',
     'deploy:settings',
     'deploy:updateSettings',
+    'deploy:applyBatch',
     'deploy:tooling',
     'deploy:previewPlaybook',
     'deploy:savePlaybook',

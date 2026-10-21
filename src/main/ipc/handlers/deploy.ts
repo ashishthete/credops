@@ -22,6 +22,7 @@ type DeployChannel =
   | 'deploy:reorder'
   | 'deploy:settings'
   | 'deploy:updateSettings'
+  | 'deploy:applyBatch'
   | 'deploy:tooling'
   | 'deploy:previewPlaybook'
   | 'deploy:savePlaybook'
@@ -72,6 +73,7 @@ export function createDeployHandlers(deps: {
       return deploys.settings(environmentId)
     },
     'deploy:updateSettings': (environmentId, patch) => deploys.updateSettings(environmentId, patch),
+    'deploy:applyBatch': (environmentId, batch) => deploys.applyBatch(environmentId, batch),
     'deploy:tooling': () => tooling(),
     'release:preflight': (request) => releases.preflight(request),
     'deploy:previewPlaybook': async (id) => {

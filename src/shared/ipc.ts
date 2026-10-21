@@ -54,6 +54,8 @@ import type {
   DeploymentPatch,
   EnvDeploySettings,
   EnvDeploySettingsPatch,
+  DeployBatch,
+  DeployBatchResult,
   BreakLockConfirm,
   PlaybookPreview,
   PreflightRequest,
@@ -213,6 +215,8 @@ export interface IpcContract {
   'deploy:reorder': { args: [environmentId: string, ids: string[]]; result: void }
   'deploy:settings': { args: [environmentId: string]; result: EnvDeploySettings }
   'deploy:updateSettings': { args: [environmentId: string, patch: EnvDeploySettingsPatch]; result: EnvDeploySettings }
+  // All of it or nothing: the settings and every named deployment of that environment, in one transaction.
+  'deploy:applyBatch': { args: [environmentId: string, batch: DeployBatch]; result: DeployBatchResult }
   'deploy:tooling': { args: []; result: Tooling }
   // The playbook a ready release would run, for review; generating it writes nothing. `release:start` carries its sha256.
   'deploy:previewPlaybook': { args: [releaseId: string]; result: PlaybookPreview }
@@ -416,6 +420,7 @@ export const CHANNELS = [
   'deploy:reorder',
   'deploy:settings',
   'deploy:updateSettings',
+  'deploy:applyBatch',
   'deploy:tooling',
   'deploy:previewPlaybook',
   'deploy:savePlaybook',

@@ -198,7 +198,7 @@ export function DeploymentsPage() {
                 </Badge>
               </div>
             )}
-            {envId && <EnvDeploySettings settings={currentSettings} />}
+            {envId && <EnvDeploySettings settings={currentSettings} environment={env} deployments={deployments} />}
             {envId && (
               <div>
                 <Segmented size="sm" label="View" options={TABS} value={tab} onChange={(t) => setParam('tab', t === 'checkouts' ? null : t)} />

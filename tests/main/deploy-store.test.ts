@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { asDeploymentInput, asDeploymentPatch, asEnvDeploySettingsPatch } from '../../src/main/ipc/validators'
+import { asDeployBatch, asDeploymentInput, asDeploymentPatch, asEnvDeploySettingsPatch } from '../../src/main/ipc/validators'
 import { InvalidArgs } from '../../src/main/ipc/validate'
 import { MAX_DEPLOYMENTS } from '../../src/shared/deploy'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
@@ -279,6 +279,47 @@ describe('DeployStore', () => {
     expect(f.changed).toContain(f.staging.id)
   })
 
+  it('applyBatch: settings and several deployments in one transaction, one onChanged', async () => {
+    const f = await makeDeployFixture()
+    f.deploys.updateSettings(f.staging.id, { versioned: true })
+    const a = f.deploys.create(f.input({ name: 'a' }))
+    const b = f.deploys.create(f.input({ name: 'b' }))
+    f.changed.length = 0
+    const out = f.deploys.applyBatch(f.staging.id, {
+      settings: { versioned: false },
+      deployments: [
+        { id: a.id, patch: { useSudo: 'yes', composeFile: '' } },
+        { id: b.id, patch: { buildTimeoutSec: 3600, composeTimeoutSec: 900 } },
+      ],
+    })
+    expect(out.settings.versioned).toBe(false)
+    expect(out.deployments.map((d) => [d.name, d.useSudo, d.composeFile, d.buildTimeoutSec])).toEqual([
+      ['a', 'yes', '', 300],
+      ['b', 'auto', 'docker-compose.yml', 3600],
+    ])
+    expect(f.changed).toEqual([f.staging.id])
+    expect(f.audit.list({ actions: ['deploy.settings'] })[0].details).toEqual({ fields: ['versioned'] })
+    expect(f.audit.list({ actions: ['deploy.update'] }).map((e) => e.targetId).sort()).toEqual([a.id, b.id].sort())
+  })
+
+  it('applyBatch: a bad patch or a deployment of another environment changes nothing', async () => {
+    const f = await makeDeployFixture()
+    const a = f.deploys.create(f.input({ name: 'a' }))
+    const p = f.deploys.create(f.input({ name: 'p', environmentId: f.prod.id }))
+    f.changed.length = 0
+    expect(() =>
+      f.deploys.applyBatch(f.staging.id, { settings: { versioned: true }, deployments: [{ id: a.id, patch: { useSudo: 'yes' } }, { id: p.id, patch: { useSudo: 'yes' } }] }),
+    ).toThrow('deployment is not in this environment')
+    expect(() =>
+      f.deploys.applyBatch(f.staging.id, { settings: { versioned: true }, deployments: [{ id: a.id, patch: { useSudo: 'yes' } }, { id: a.id, patch: { composeFile: '../x' } }] }),
+    ).toThrow('compose file must be a relative path inside the repo')
+    expect(f.deploys.get(a.id).useSudo).toBe('auto')
+    expect(f.deploys.settings(f.staging.id).versioned).toBe(false)
+    expect(f.changed).toEqual([])
+    f.vault.lock('manual')
+    expect(() => f.deploys.applyBatch(f.staging.id, { deployments: [] })).toThrow(/locked/i)
+  })
+
   it('composeSnippet is always null', async () => {
     const f = await makeDeployFixture()
     expect(f.deploys.composeSnippet('x')).toBeNull()
@@ -312,5 +353,12 @@ describe('DeployStore', () => {
     expect(asDeploymentInput(ok, 'args[0]')).toMatchObject({ name: 'api' })
     expect(() => asEnvDeploySettingsPatch({ versioned: 'yes' }, 'args[1]')).toThrow(/args\[1\]\.versioned must be a boolean/)
     expect(asDeploymentPatch({ preHook: null, urls: [] }, 'args[1]')).toEqual({ preHook: null, urls: [] })
+    const id = '00000000-0000-4000-8000-000000000001'
+    expect(asDeployBatch({ settings: { versioned: false }, deployments: [{ id, patch: { useSudo: 'yes' } }] }, 'args[1]')).toEqual({
+      settings: { versioned: false },
+      deployments: [{ id, patch: { useSudo: 'yes' } }],
+    })
+    expect(() => asDeployBatch({ deployments: [{ id, patch: { environmentId: id } }] }, 'args[1]')).toThrow(InvalidArgs)
+    expect(() => asDeployBatch({ deployments: [{ id: 'x', patch: {} }] }, 'args[1]')).toThrow(/args\[1\]\.deployments\[0\]\.id/)
   })
 })
