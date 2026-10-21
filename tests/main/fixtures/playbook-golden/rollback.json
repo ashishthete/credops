@@ -1,0 +1,381 @@
+[
+  {
+    "name": "rollback od-1",
+    "hosts": "od-1",
+    "gather_facts": false,
+    "strategy": "linear",
+    "vars": {
+      "od": {
+        "rel": "0190a1b2-c3d4-7e5f-8a6b-1234567890ab",
+        "env": "prod_east",
+        "lock_repos": [
+          "/srv/apps/alpha1",
+          "/srv/apps/alpha2"
+        ],
+        "lock_b64": "eyJyZWxlYXNlSWQiOiIwMTkwYTFiMi1jM2Q0LTdlNWYtOGE2Yi0xMjM0NTY3ODkwYWIiLCJ1c2VyIjoiYW5hIiwibWFjaGluZSI6Im1icCIsImVudmlyb25tZW50IjoicHJvZCBlYXN0IiwidmVyc2lvbiI6InYxLjIuMyIsInN0YXJ0ZWRBdCI6IjIwMjYtMTAtMTlUMTA6MDA6MDAuMDAwWiJ9",
+        "version": "v1.2.3"
+      },
+      "s": "{{ lookup('env','OPSDECK_SECRETS') | default('{}', true) | from_json }}",
+      "ansible_become_password": "{{ (s.become_1 | b64decode) if s.become_1 is defined else omit }}"
+    },
+    "tasks": [
+      {
+        "name": "lock prep od-1",
+        "ansible.builtin.shell": {
+          "cmd": "umask 077\nmkdir -p \"$HOME/.opsdeck/runs/{{ od.rel }}\"\ntouch \"$HOME/.opsdeck/runs/{{ od.rel }}\"/stream.log",
+          "executable": "/bin/bash",
+          "chdir": "/"
+        },
+        "timeout": 120,
+        "tags": [
+          "od_step=lock",
+          "od_run=host:host-od-1"
+        ]
+      },
+      {
+        "name": "lock od-1",
+        "ansible.builtin.shell": {
+          "cmd": "J=$(echo {{ od.lock_b64 | quote }} | base64 -d)\numask 077\nacq=\"\"\nfor r in {{ od.lock_repos | map('quote') | join(' ') }}; do\n  f=\"$r/.opsdeck-deploy.lock\"\n  if ( set -C; printf '%s' \"$J\" > \"$f\" ) 2>/dev/null; then acq=\"$acq $r\"; echo \"OD-LOCK $J\"; continue; fi\n  cur=$(cat \"$f\" 2>/dev/null)\n  echo \"OD-LOCK $cur\"\n  case \"$cur\" in *'\"releaseId\":\"{{ od.rel }}\"'*) continue;; esac\n  for a in $acq; do rm -f \"$a/.opsdeck-deploy.lock\"; done\n  [ -n \"$cur\" ] && exit 42\n  echo \"OD-LOCK-ERROR cannot create the lock in $r\"; exit 2\ndone\nexit 0",
+          "executable": "/bin/bash",
+          "chdir": "/"
+        },
+        "timeout": 120,
+        "tags": [
+          "od_step=lock",
+          "od_run=host:host-od-1"
+        ]
+      },
+      {
+        "name": "deployment dep1",
+        "vars": {
+          "d": {
+            "run": "0190a1b2-c3d4-7e5f-8a6b-000000000001",
+            "name": "dep1",
+            "repo": "/srv/apps/alpha1",
+            "branch": "release-2026",
+            "compose": "deploy/compose.yml",
+            "tag": "deploy_prod_x",
+            "prev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "health_status": 200,
+            "health_timeout": 60,
+            "backup_dir": "/var/backups/app",
+            "backup_label": "alpha",
+            "pre_hook": "ZWNobyAne3sgNyo3IH19JyAiJChpZCkiIDsgZWNobyBkb25l",
+            "post_hook": "ZWNobyBwb3N0",
+            "urls": [
+              {
+                "url": "https://app.example.com/health",
+                "from": "mac"
+              }
+            ]
+          }
+        },
+        "block": [
+          {
+            "name": "rb_checkout dep1",
+            "ansible.builtin.shell": {
+              "cmd": "P={{ d.prev | quote }}\ngit checkout -q --detach \"$P\" || exit $?\necho \"OD-HEAD $(git rev-parse HEAD)\"",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 120,
+            "tags": [
+              "od_step=rb_checkout",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"
+            ],
+            "when": "not (od_failed | default(false))"
+          },
+          {
+            "name": "rb_env dep1",
+            "ansible.builtin.shell": {
+              "cmd": "umask 077\nif [ \"$(cat .env.opsdeck-rel 2>/dev/null)\" = {{ od.rel | quote }} ]; then\n  if [ -f .env.opsdeck-prev ]; then mv -f .env.opsdeck-prev .env\n  elif [ -f .env.opsdeck-none ]; then rm -f .env\n  fi\n  echo \"OD-ENV restored\"\nelse\n  echo \"OD-ENV skipped: .env was not written by this release\"\nfi\nrm -f .env.opsdeck-rel .env.opsdeck-prev .env.opsdeck-none",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 120,
+            "tags": [
+              "od_step=rb_env",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"
+            ]
+          },
+          {
+            "name": "rb_build dep1",
+            "ansible.builtin.shell": {
+              "cmd": "U=\"${SUDO_USER:-}\"\nif [ -n \"$U\" ]; then H=$(awk -F: -v u=\"$U\" '$1==u {print $6; exit}' /etc/passwd 2>/dev/null); fi\nH=\"${H:-$HOME}\"\nL=\"$H/.opsdeck/runs/{{ od.rel }}/stream.log\"\numask 022\nP=\"{{ d.run }}:rb_build\"\n(\ndocker compose '-f' deploy/compose.yml build\n) 2>&1 | while IFS= read -r l || [ -n \"$l\" ]; do printf '%s\\t%s\\n' \"$P\" \"$l\"; done >> \"$L\"; rc=${PIPESTATUS[0]}\nif [ \"$rc\" -ne 0 ]; then grep -F \"$P\"$'\\t' \"$L\" | tail -n 40; fi\nexit \"$rc\"",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 300,
+            "tags": [
+              "od_step=rb_build",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"
+            ],
+            "become": true
+          },
+          {
+            "name": "rb_up dep1",
+            "ansible.builtin.shell": {
+              "cmd": "U=\"${SUDO_USER:-}\"\nif [ -n \"$U\" ]; then H=$(awk -F: -v u=\"$U\" '$1==u {print $6; exit}' /etc/passwd 2>/dev/null); fi\nH=\"${H:-$HOME}\"\nL=\"$H/.opsdeck/runs/{{ od.rel }}/stream.log\"\numask 022\nP=\"{{ d.run }}:rb_up\"\n(\ndocker compose '-f' deploy/compose.yml up '-d'\n) 2>&1 | while IFS= read -r l || [ -n \"$l\" ]; do printf '%s\\t%s\\n' \"$P\" \"$l\"; done >> \"$L\"; rc=${PIPESTATUS[0]}\nif [ \"$rc\" -ne 0 ]; then grep -F \"$P\"$'\\t' \"$L\" | tail -n 40; fi\nexit \"$rc\"",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 120,
+            "tags": [
+              "od_step=rb_up",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"
+            ],
+            "become": true
+          },
+          {
+            "name": "rb_tag dep1",
+            "ansible.builtin.shell": {
+              "cmd": "T={{ d.tag | quote }}\nP={{ d.prev | quote }}\n{ GIT_COMMITTER_NAME=OpsDeck GIT_COMMITTER_EMAIL=opsdeck@localhost git tag -fa \"$T\" -m \"OpsDeck rollback\" \"$P\" && git push -f origin \"refs/tags/$T\"; } || echo \"OD-TAG failed rc=$?\"",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 120,
+            "tags": [
+              "od_step=rb_tag",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"
+            ],
+            "failed_when": false,
+            "when": "not (od_failed | default(false))"
+          }
+        ],
+        "rescue": [
+          {
+            "name": "rollback failed dep1",
+            "ansible.builtin.set_fact": {
+              "rollback_failed": true
+            }
+          }
+        ]
+      },
+      {
+        "name": "deployment dep2",
+        "vars": {
+          "d": {
+            "run": "0190a1b2-c3d4-7e5f-8a6b-000000000002",
+            "name": "dep2",
+            "repo": "/srv/apps/alpha2",
+            "branch": "release-2026",
+            "compose": "deploy/compose.yml",
+            "tag": "deploy_prod_x",
+            "prev": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "health_status": 200,
+            "health_timeout": 60,
+            "backup_dir": "",
+            "backup_label": "",
+            "pre_hook": "",
+            "post_hook": "",
+            "urls": [
+              {
+                "url": "http://127.0.0.1:8080/up",
+                "from": "host"
+              }
+            ]
+          }
+        },
+        "block": [
+          {
+            "name": "rb_checkout dep2",
+            "ansible.builtin.shell": {
+              "cmd": "P={{ d.prev | quote }}\ngit checkout -q --detach \"$P\" || exit $?\necho \"OD-HEAD $(git rev-parse HEAD)\"",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 120,
+            "tags": [
+              "od_step=rb_checkout",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"
+            ],
+            "when": "not (od_failed | default(false))"
+          },
+          {
+            "name": "rb_build dep2",
+            "ansible.builtin.shell": {
+              "cmd": "U=\"${SUDO_USER:-}\"\nif [ -n \"$U\" ]; then H=$(awk -F: -v u=\"$U\" '$1==u {print $6; exit}' /etc/passwd 2>/dev/null); fi\nH=\"${H:-$HOME}\"\nL=\"$H/.opsdeck/runs/{{ od.rel }}/stream.log\"\numask 022\nP=\"{{ d.run }}:rb_build\"\n(\ndocker compose '-f' deploy/compose.yml build\n) 2>&1 | while IFS= read -r l || [ -n \"$l\" ]; do printf '%s\\t%s\\n' \"$P\" \"$l\"; done >> \"$L\"; rc=${PIPESTATUS[0]}\nif [ \"$rc\" -ne 0 ]; then grep -F \"$P\"$'\\t' \"$L\" | tail -n 40; fi\nexit \"$rc\"",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 300,
+            "tags": [
+              "od_step=rb_build",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"
+            ],
+            "become": true
+          },
+          {
+            "name": "rb_up dep2",
+            "ansible.builtin.shell": {
+              "cmd": "U=\"${SUDO_USER:-}\"\nif [ -n \"$U\" ]; then H=$(awk -F: -v u=\"$U\" '$1==u {print $6; exit}' /etc/passwd 2>/dev/null); fi\nH=\"${H:-$HOME}\"\nL=\"$H/.opsdeck/runs/{{ od.rel }}/stream.log\"\numask 022\nP=\"{{ d.run }}:rb_up\"\n(\ndocker compose '-f' deploy/compose.yml up '-d'\n) 2>&1 | while IFS= read -r l || [ -n \"$l\" ]; do printf '%s\\t%s\\n' \"$P\" \"$l\"; done >> \"$L\"; rc=${PIPESTATUS[0]}\nif [ \"$rc\" -ne 0 ]; then grep -F \"$P\"$'\\t' \"$L\" | tail -n 40; fi\nexit \"$rc\"",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 120,
+            "tags": [
+              "od_step=rb_up",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"
+            ],
+            "become": true
+          },
+          {
+            "name": "rb_tag dep2",
+            "ansible.builtin.shell": {
+              "cmd": "T={{ d.tag | quote }}\nP={{ d.prev | quote }}\n{ GIT_COMMITTER_NAME=OpsDeck GIT_COMMITTER_EMAIL=opsdeck@localhost git tag -fa \"$T\" -m \"OpsDeck rollback\" \"$P\" && git push -f origin \"refs/tags/$T\"; } || echo \"OD-TAG failed rc=$?\"",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 120,
+            "tags": [
+              "od_step=rb_tag",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"
+            ],
+            "failed_when": false,
+            "when": "not (od_failed | default(false))"
+          }
+        ],
+        "rescue": [
+          {
+            "name": "rollback failed dep2",
+            "ansible.builtin.set_fact": {
+              "rollback_failed": true
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "rollback od-2",
+    "hosts": "od-2",
+    "gather_facts": false,
+    "strategy": "linear",
+    "vars": {
+      "od": {
+        "rel": "0190a1b2-c3d4-7e5f-8a6b-1234567890ab",
+        "env": "prod_east",
+        "lock_repos": [
+          "/srv/apps/alpha3"
+        ],
+        "lock_b64": "eyJyZWxlYXNlSWQiOiIwMTkwYTFiMi1jM2Q0LTdlNWYtOGE2Yi0xMjM0NTY3ODkwYWIiLCJ1c2VyIjoiYW5hIiwibWFjaGluZSI6Im1icCIsImVudmlyb25tZW50IjoicHJvZCBlYXN0IiwidmVyc2lvbiI6InYxLjIuMyIsInN0YXJ0ZWRBdCI6IjIwMjYtMTAtMTlUMTA6MDA6MDAuMDAwWiJ9",
+        "version": "v1.2.3"
+      },
+      "s": "{{ lookup('env','OPSDECK_SECRETS') | default('{}', true) | from_json }}"
+    },
+    "tasks": [
+      {
+        "name": "lock prep od-2",
+        "ansible.builtin.shell": {
+          "cmd": "umask 077\nmkdir -p \"$HOME/.opsdeck/runs/{{ od.rel }}\"\ntouch \"$HOME/.opsdeck/runs/{{ od.rel }}\"/stream.log",
+          "executable": "/bin/bash",
+          "chdir": "/"
+        },
+        "timeout": 120,
+        "tags": [
+          "od_step=lock",
+          "od_run=host:host-od-2"
+        ]
+      },
+      {
+        "name": "lock od-2",
+        "ansible.builtin.shell": {
+          "cmd": "J=$(echo {{ od.lock_b64 | quote }} | base64 -d)\numask 077\nacq=\"\"\nfor r in {{ od.lock_repos | map('quote') | join(' ') }}; do\n  f=\"$r/.opsdeck-deploy.lock\"\n  if ( set -C; printf '%s' \"$J\" > \"$f\" ) 2>/dev/null; then acq=\"$acq $r\"; echo \"OD-LOCK $J\"; continue; fi\n  cur=$(cat \"$f\" 2>/dev/null)\n  echo \"OD-LOCK $cur\"\n  case \"$cur\" in *'\"releaseId\":\"{{ od.rel }}\"'*) continue;; esac\n  for a in $acq; do rm -f \"$a/.opsdeck-deploy.lock\"; done\n  [ -n \"$cur\" ] && exit 42\n  echo \"OD-LOCK-ERROR cannot create the lock in $r\"; exit 2\ndone\nexit 0",
+          "executable": "/bin/bash",
+          "chdir": "/"
+        },
+        "timeout": 120,
+        "tags": [
+          "od_step=lock",
+          "od_run=host:host-od-2"
+        ]
+      },
+      {
+        "name": "deployment dep3",
+        "vars": {
+          "d": {
+            "run": "0190a1b2-c3d4-7e5f-8a6b-000000000003",
+            "name": "dep3",
+            "repo": "/srv/apps/alpha3",
+            "branch": "release-2026",
+            "compose": "deploy/compose.yml",
+            "tag": "deploy_prod_x",
+            "prev": "cccccccccccccccccccccccccccccccccccccccc",
+            "health_status": 200,
+            "health_timeout": 60,
+            "backup_dir": "",
+            "backup_label": "",
+            "pre_hook": "",
+            "post_hook": "",
+            "urls": []
+          }
+        },
+        "block": [
+          {
+            "name": "rb_checkout dep3",
+            "ansible.builtin.shell": {
+              "cmd": "P={{ d.prev | quote }}\ngit checkout -q --detach \"$P\" || exit $?\necho \"OD-HEAD $(git rev-parse HEAD)\"",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 120,
+            "tags": [
+              "od_step=rb_checkout",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"
+            ],
+            "when": "not (od_failed | default(false))"
+          },
+          {
+            "name": "rb_build dep3",
+            "ansible.builtin.shell": {
+              "cmd": "U=\"${SUDO_USER:-}\"\nif [ -n \"$U\" ]; then H=$(awk -F: -v u=\"$U\" '$1==u {print $6; exit}' /etc/passwd 2>/dev/null); fi\nH=\"${H:-$HOME}\"\nL=\"$H/.opsdeck/runs/{{ od.rel }}/stream.log\"\numask 022\nP=\"{{ d.run }}:rb_build\"\n(\ndocker compose '-f' deploy/compose.yml build\n) 2>&1 | while IFS= read -r l || [ -n \"$l\" ]; do printf '%s\\t%s\\n' \"$P\" \"$l\"; done >> \"$L\"; rc=${PIPESTATUS[0]}\nif [ \"$rc\" -ne 0 ]; then grep -F \"$P\"$'\\t' \"$L\" | tail -n 40; fi\nexit \"$rc\"",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 300,
+            "tags": [
+              "od_step=rb_build",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"
+            ]
+          },
+          {
+            "name": "rb_up dep3",
+            "ansible.builtin.shell": {
+              "cmd": "U=\"${SUDO_USER:-}\"\nif [ -n \"$U\" ]; then H=$(awk -F: -v u=\"$U\" '$1==u {print $6; exit}' /etc/passwd 2>/dev/null); fi\nH=\"${H:-$HOME}\"\nL=\"$H/.opsdeck/runs/{{ od.rel }}/stream.log\"\numask 022\nP=\"{{ d.run }}:rb_up\"\n(\ndocker compose '-f' deploy/compose.yml up '-d'\n) 2>&1 | while IFS= read -r l || [ -n \"$l\" ]; do printf '%s\\t%s\\n' \"$P\" \"$l\"; done >> \"$L\"; rc=${PIPESTATUS[0]}\nif [ \"$rc\" -ne 0 ]; then grep -F \"$P\"$'\\t' \"$L\" | tail -n 40; fi\nexit \"$rc\"",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 120,
+            "tags": [
+              "od_step=rb_up",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"
+            ]
+          },
+          {
+            "name": "rb_tag dep3",
+            "ansible.builtin.shell": {
+              "cmd": "T={{ d.tag | quote }}\nP={{ d.prev | quote }}\n{ GIT_COMMITTER_NAME=OpsDeck GIT_COMMITTER_EMAIL=opsdeck@localhost git tag -fa \"$T\" -m \"OpsDeck rollback\" \"$P\" && git push -f origin \"refs/tags/$T\"; } || echo \"OD-TAG failed rc=$?\"",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 120,
+            "tags": [
+              "od_step=rb_tag",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"
+            ],
+            "failed_when": false,
+            "when": "not (od_failed | default(false))"
+          }
+        ],
+        "rescue": [
+          {
+            "name": "rollback failed dep3",
+            "ansible.builtin.set_fact": {
+              "rollback_failed": true
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

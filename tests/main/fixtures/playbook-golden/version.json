@@ -1,0 +1,217 @@
+[
+  {
+    "name": "version od-1",
+    "hosts": "od-1",
+    "gather_facts": false,
+    "strategy": "linear",
+    "vars": {
+      "od": {
+        "rel": "0190a1b2-c3d4-7e5f-8a6b-1234567890ab",
+        "env": "prod_east",
+        "lock_repos": [
+          "/srv/apps/alpha1",
+          "/srv/apps/alpha2"
+        ],
+        "lock_b64": "eyJyZWxlYXNlSWQiOiIwMTkwYTFiMi1jM2Q0LTdlNWYtOGE2Yi0xMjM0NTY3ODkwYWIiLCJ1c2VyIjoiYW5hIiwibWFjaGluZSI6Im1icCIsImVudmlyb25tZW50IjoicHJvZCBlYXN0IiwidmVyc2lvbiI6InYxLjIuMCIsInN0YXJ0ZWRBdCI6IjIwMjYtMTAtMTlUMTA6MDA6MDAuMDAwWiJ9",
+        "version": "v1.2.0"
+      },
+      "s": "{{ lookup('env','OPSDECK_SECRETS') | default('{}', true) | from_json }}",
+      "ansible_become_password": "{{ (s.become_1 | b64decode) if s.become_1 is defined else omit }}"
+    },
+    "tasks": [
+      {
+        "name": "lock prep od-1",
+        "ansible.builtin.shell": {
+          "cmd": "umask 077\nmkdir -p \"$HOME/.opsdeck/runs/{{ od.rel }}\"\ntouch \"$HOME/.opsdeck/runs/{{ od.rel }}\"/stream.log",
+          "executable": "/bin/bash",
+          "chdir": "/"
+        },
+        "timeout": 120,
+        "tags": [
+          "od_step=lock",
+          "od_run=host:host-od-1"
+        ]
+      },
+      {
+        "name": "lock od-1",
+        "ansible.builtin.shell": {
+          "cmd": "J=$(echo {{ od.lock_b64 | quote }} | base64 -d)\numask 077\nacq=\"\"\nfor r in {{ od.lock_repos | map('quote') | join(' ') }}; do\n  f=\"$r/.opsdeck-deploy.lock\"\n  if ( set -C; printf '%s' \"$J\" > \"$f\" ) 2>/dev/null; then acq=\"$acq $r\"; echo \"OD-LOCK $J\"; continue; fi\n  cur=$(cat \"$f\" 2>/dev/null)\n  echo \"OD-LOCK $cur\"\n  case \"$cur\" in *'\"releaseId\":\"{{ od.rel }}\"'*) continue;; esac\n  for a in $acq; do rm -f \"$a/.opsdeck-deploy.lock\"; done\n  [ -n \"$cur\" ] && exit 42\n  echo \"OD-LOCK-ERROR cannot create the lock in $r\"; exit 2\ndone\nexit 0",
+          "executable": "/bin/bash",
+          "chdir": "/"
+        },
+        "timeout": 120,
+        "tags": [
+          "od_step=lock",
+          "od_run=host:host-od-1"
+        ]
+      },
+      {
+        "name": "deployment dep1",
+        "vars": {
+          "d": {
+            "run": "0190a1b2-c3d4-7e5f-8a6b-000000000001",
+            "name": "dep1",
+            "repo": "/srv/apps/alpha1",
+            "branch": "release-2026",
+            "compose": "deploy/compose.yml",
+            "tag": "deploy_prod_x",
+            "prev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "health_status": 200,
+            "health_timeout": 60,
+            "backup_dir": "/var/backups/app",
+            "backup_label": "alpha",
+            "pre_hook": "ZWNobyAne3sgNyo3IH19JyAiJChpZCkiIDsgZWNobyBkb25l",
+            "post_hook": "ZWNobyBwb3N0",
+            "urls": [
+              {
+                "url": "https://app.example.com/health",
+                "from": "mac"
+              }
+            ]
+          }
+        },
+        "block": [
+          {
+            "name": "version dep1",
+            "ansible.builtin.shell": {
+              "cmd": "V={{ od.version | quote }}\nE={{ od.env | quote }}\nh=$(git rev-parse HEAD 2>/dev/null)\nif [ -n \"$h\" ] && [ \"$(git rev-parse -q --verify \"refs/tags/$V^{commit}\" 2>/dev/null)\" = \"$h\" ]; then\n  echo \"$V is already on HEAD in this repository; skipping the tag and push\"\nelse\n  GIT_COMMITTER_NAME=OpsDeck GIT_COMMITTER_EMAIL=opsdeck@localhost git tag -a \"$V\" -m \"$E release $V\" && git push origin \"$V\"\nfi",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 120,
+            "tags": [
+              "od_step=version",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"
+            ]
+          }
+        ],
+        "rescue": []
+      },
+      {
+        "name": "deployment dep2",
+        "vars": {
+          "d": {
+            "run": "0190a1b2-c3d4-7e5f-8a6b-000000000002",
+            "name": "dep2",
+            "repo": "/srv/apps/alpha2",
+            "branch": "release-2026",
+            "compose": "deploy/compose.yml",
+            "tag": "deploy_prod_x",
+            "prev": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "health_status": 200,
+            "health_timeout": 60,
+            "backup_dir": "",
+            "backup_label": "",
+            "pre_hook": "",
+            "post_hook": "",
+            "urls": [
+              {
+                "url": "http://127.0.0.1:8080/up",
+                "from": "host"
+              }
+            ]
+          }
+        },
+        "block": [
+          {
+            "name": "version dep2",
+            "ansible.builtin.shell": {
+              "cmd": "V={{ od.version | quote }}\nE={{ od.env | quote }}\nh=$(git rev-parse HEAD 2>/dev/null)\nif [ -n \"$h\" ] && [ \"$(git rev-parse -q --verify \"refs/tags/$V^{commit}\" 2>/dev/null)\" = \"$h\" ]; then\n  echo \"$V is already on HEAD in this repository; skipping the tag and push\"\nelse\n  GIT_COMMITTER_NAME=OpsDeck GIT_COMMITTER_EMAIL=opsdeck@localhost git tag -a \"$V\" -m \"$E release $V\" && git push origin \"$V\"\nfi",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 120,
+            "tags": [
+              "od_step=version",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"
+            ]
+          }
+        ],
+        "rescue": []
+      }
+    ]
+  },
+  {
+    "name": "version od-2",
+    "hosts": "od-2",
+    "gather_facts": false,
+    "strategy": "linear",
+    "vars": {
+      "od": {
+        "rel": "0190a1b2-c3d4-7e5f-8a6b-1234567890ab",
+        "env": "prod_east",
+        "lock_repos": [
+          "/srv/apps/alpha3"
+        ],
+        "lock_b64": "eyJyZWxlYXNlSWQiOiIwMTkwYTFiMi1jM2Q0LTdlNWYtOGE2Yi0xMjM0NTY3ODkwYWIiLCJ1c2VyIjoiYW5hIiwibWFjaGluZSI6Im1icCIsImVudmlyb25tZW50IjoicHJvZCBlYXN0IiwidmVyc2lvbiI6InYxLjIuMCIsInN0YXJ0ZWRBdCI6IjIwMjYtMTAtMTlUMTA6MDA6MDAuMDAwWiJ9",
+        "version": "v1.2.0"
+      },
+      "s": "{{ lookup('env','OPSDECK_SECRETS') | default('{}', true) | from_json }}"
+    },
+    "tasks": [
+      {
+        "name": "lock prep od-2",
+        "ansible.builtin.shell": {
+          "cmd": "umask 077\nmkdir -p \"$HOME/.opsdeck/runs/{{ od.rel }}\"\ntouch \"$HOME/.opsdeck/runs/{{ od.rel }}\"/stream.log",
+          "executable": "/bin/bash",
+          "chdir": "/"
+        },
+        "timeout": 120,
+        "tags": [
+          "od_step=lock",
+          "od_run=host:host-od-2"
+        ]
+      },
+      {
+        "name": "lock od-2",
+        "ansible.builtin.shell": {
+          "cmd": "J=$(echo {{ od.lock_b64 | quote }} | base64 -d)\numask 077\nacq=\"\"\nfor r in {{ od.lock_repos | map('quote') | join(' ') }}; do\n  f=\"$r/.opsdeck-deploy.lock\"\n  if ( set -C; printf '%s' \"$J\" > \"$f\" ) 2>/dev/null; then acq=\"$acq $r\"; echo \"OD-LOCK $J\"; continue; fi\n  cur=$(cat \"$f\" 2>/dev/null)\n  echo \"OD-LOCK $cur\"\n  case \"$cur\" in *'\"releaseId\":\"{{ od.rel }}\"'*) continue;; esac\n  for a in $acq; do rm -f \"$a/.opsdeck-deploy.lock\"; done\n  [ -n \"$cur\" ] && exit 42\n  echo \"OD-LOCK-ERROR cannot create the lock in $r\"; exit 2\ndone\nexit 0",
+          "executable": "/bin/bash",
+          "chdir": "/"
+        },
+        "timeout": 120,
+        "tags": [
+          "od_step=lock",
+          "od_run=host:host-od-2"
+        ]
+      },
+      {
+        "name": "deployment dep3",
+        "vars": {
+          "d": {
+            "run": "0190a1b2-c3d4-7e5f-8a6b-000000000003",
+            "name": "dep3",
+            "repo": "/srv/apps/alpha3",
+            "branch": "release-2026",
+            "compose": "deploy/compose.yml",
+            "tag": "deploy_prod_x",
+            "prev": "cccccccccccccccccccccccccccccccccccccccc",
+            "health_status": 200,
+            "health_timeout": 60,
+            "backup_dir": "",
+            "backup_label": "",
+            "pre_hook": "",
+            "post_hook": "",
+            "urls": []
+          }
+        },
+        "block": [
+          {
+            "name": "version dep3",
+            "ansible.builtin.shell": {
+              "cmd": "V={{ od.version | quote }}\nE={{ od.env | quote }}\nh=$(git rev-parse HEAD 2>/dev/null)\nif [ -n \"$h\" ] && [ \"$(git rev-parse -q --verify \"refs/tags/$V^{commit}\" 2>/dev/null)\" = \"$h\" ]; then\n  echo \"$V is already on HEAD in this repository; skipping the tag and push\"\nelse\n  GIT_COMMITTER_NAME=OpsDeck GIT_COMMITTER_EMAIL=opsdeck@localhost git tag -a \"$V\" -m \"$E release $V\" && git push origin \"$V\"\nfi",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 120,
+            "tags": [
+              "od_step=version",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000003"
+            ]
+          }
+        ],
+        "rescue": []
+      }
+    ]
+  }
+]

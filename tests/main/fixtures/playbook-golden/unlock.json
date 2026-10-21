@@ -1,0 +1,70 @@
+[
+  {
+    "name": "unlock od-1",
+    "hosts": "od-1",
+    "gather_facts": false,
+    "strategy": "linear",
+    "vars": {
+      "od": {
+        "rel": "0190a1b2-c3d4-7e5f-8a6b-1234567890ab",
+        "env": "prod_east",
+        "lock_repos": [
+          "/srv/apps/alpha1",
+          "/srv/apps/alpha2"
+        ],
+        "lock_b64": "eyJyZWxlYXNlSWQiOiIwMTkwYTFiMi1jM2Q0LTdlNWYtOGE2Yi0xMjM0NTY3ODkwYWIiLCJ1c2VyIjoiYW5hIiwibWFjaGluZSI6Im1icCIsImVudmlyb25tZW50IjoicHJvZCBlYXN0IiwidmVyc2lvbiI6InYxLjIuMyIsInN0YXJ0ZWRBdCI6IjIwMjYtMTAtMTlUMTA6MDA6MDAuMDAwWiJ9",
+        "version": "v1.2.3"
+      },
+      "s": "{{ lookup('env','OPSDECK_SECRETS') | default('{}', true) | from_json }}",
+      "ansible_become_password": "{{ (s.become_1 | b64decode) if s.become_1 is defined else omit }}"
+    },
+    "tasks": [
+      {
+        "name": "unlock od-1",
+        "ansible.builtin.shell": {
+          "cmd": "rc=0\nfor r in {{ od.lock_repos | map('quote') | join(' ') }}; do\n  f=\"$r/.opsdeck-deploy.lock\"\n  cur=$(cat \"$f\" 2>/dev/null)\n  [ -n \"$cur\" ] || continue\n  echo \"OD-LOCK $cur\"\n  if case \"$cur\" in *'\"releaseId\":\"{{ od.rel }}\"'*) true;; *) false;; esac; then rm -f \"$f\"; echo \"OD-UNLOCK released $r\"; else echo \"OD-UNLOCK kept $r\"; :; fi\ndone\nrm -rf \"$HOME/.opsdeck/runs/{{ od.rel }}\"\nexit \"$rc\"",
+          "executable": "/bin/bash",
+          "chdir": "/"
+        },
+        "timeout": 120,
+        "tags": [
+          "od_step=unlock",
+          "od_run=host:host-od-1"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "unlock od-2",
+    "hosts": "od-2",
+    "gather_facts": false,
+    "strategy": "linear",
+    "vars": {
+      "od": {
+        "rel": "0190a1b2-c3d4-7e5f-8a6b-1234567890ab",
+        "env": "prod_east",
+        "lock_repos": [
+          "/srv/apps/alpha3"
+        ],
+        "lock_b64": "eyJyZWxlYXNlSWQiOiIwMTkwYTFiMi1jM2Q0LTdlNWYtOGE2Yi0xMjM0NTY3ODkwYWIiLCJ1c2VyIjoiYW5hIiwibWFjaGluZSI6Im1icCIsImVudmlyb25tZW50IjoicHJvZCBlYXN0IiwidmVyc2lvbiI6InYxLjIuMyIsInN0YXJ0ZWRBdCI6IjIwMjYtMTAtMTlUMTA6MDA6MDAuMDAwWiJ9",
+        "version": "v1.2.3"
+      },
+      "s": "{{ lookup('env','OPSDECK_SECRETS') | default('{}', true) | from_json }}"
+    },
+    "tasks": [
+      {
+        "name": "unlock od-2",
+        "ansible.builtin.shell": {
+          "cmd": "rc=0\nfor r in {{ od.lock_repos | map('quote') | join(' ') }}; do\n  f=\"$r/.opsdeck-deploy.lock\"\n  cur=$(cat \"$f\" 2>/dev/null)\n  [ -n \"$cur\" ] || continue\n  echo \"OD-LOCK $cur\"\n  if case \"$cur\" in *'\"releaseId\":\"{{ od.rel }}\"'*) true;; *) false;; esac; then rm -f \"$f\"; echo \"OD-UNLOCK released $r\"; else echo \"OD-UNLOCK kept $r\"; :; fi\ndone\nrm -rf \"$HOME/.opsdeck/runs/{{ od.rel }}\"\nexit \"$rc\"",
+          "executable": "/bin/bash",
+          "chdir": "/"
+        },
+        "timeout": 120,
+        "tags": [
+          "od_step=unlock",
+          "od_run=host:host-od-2"
+        ]
+      }
+    ]
+  }
+]
