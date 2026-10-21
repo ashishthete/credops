@@ -675,6 +675,27 @@ describe('fix round 1', () => {
     expect(c).toContain('miss="$miss,$t"')
   })
 
+  it('the version tag step is idempotent per git repository (row 40)', () => {
+    const plan = planFixture({ kind: 'version' })
+    expect(plan.deployments[0].repoPath).not.toBe(plan.deployments[1].repoPath)
+    const p = plays(plan)[0]
+    const tagTasks = flat(p.tasks).filter((t) => step(t) === 'version')
+    expect(tagTasks.length).toBeGreaterThanOrEqual(2)
+    for (const t of tagTasks) {
+      const c = cmdOf(t)
+      const guard = c.indexOf('rev-parse -q --verify "refs/tags/$V^{commit}"')
+      expect(guard).toBeGreaterThanOrEqual(0)
+      expect(c).toContain('= "$(git rev-parse HEAD)"')
+      expect(c).toContain("already tagged")
+      // the guard comes first, and tag + push sit in its else branch
+      expect(c.indexOf('git tag -a')).toBeGreaterThan(guard)
+      expect(c.indexOf('git push origin "$V"')).toBeGreaterThan(c.indexOf('else'))
+      // V reaches the shell only through `| quote`
+      expect(c).toContain('V={{ od.version | quote }}')
+      expect(c.replace('V={{ od.version | quote }}', '')).not.toContain('od.version')
+    }
+  })
+
   it('version tag message names the environment (sanitised), not free text', () => {
     const plan = planFixture({ kind: 'version' })
     const p = plays(plan)[0]

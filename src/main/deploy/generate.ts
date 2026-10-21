@@ -410,7 +410,17 @@ function taskUnlock(h: PlanHost, breakLock: boolean): Task {
 
 // ---- version
 const taskVersion = (d: PlanDeployment): Task =>
-  sh(nm('version', d), 'version', runOf(d), ['V={{ od.version | quote }}', 'E={{ od.env | quote }}', `${GIT_ID} git tag -a "$V" -m "$E release $V" && git push origin "$V"`].join('\n'), {
+  sh(nm('version', d), 'version', runOf(d), [
+      'V={{ od.version | quote }}',
+      'E={{ od.env | quote }}',
+      // Deployments in different directories can share one git repo (the second would hit "tag already exists"):
+      // a tag already on HEAD is done. A tag at another commit falls through to `git tag`, which fails as before.
+      'if [ "$(git rev-parse -q --verify "refs/tags/$V^{commit}" 2>/dev/null)" = "$(git rev-parse HEAD)" ]; then',
+      '  echo "OD-TAG $V already tagged at HEAD"',
+      'else',
+      `  ${GIT_ID} git tag -a "$V" -m "$E release $V" && git push origin "$V"`,
+      'fi',
+    ].join('\n'), {
     timeout: T_SHORT,
     chdir: IN_REPO,
   })
