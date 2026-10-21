@@ -215,4 +215,11 @@ describe('playbook review handlers', () => {
     expect(got.preflight!.checks[0].message).toBe('auth ‹redacted› refused')
     expect(got.id).toBe(ID)
   })
+  it('release:events masks known secret values in main, as a Hub release sends its events unmasked', async () => {
+    const SECRET = 'hunter2-secret-value'
+    const raw = [{ id: 'e1', runId: ID, seq: 1, at: 'now', type: 'log', stepId: 'r1:health', hostId: 'h1', stream: 'out', line: `GET /?t=${SECRET}` }]
+    const handlers = createDeployHandlers({ deploys: {} as never, releases: { events: vi.fn(async () => raw) } as unknown as ReleaseService, tooling: async () => ({}) as never, knownSecrets: () => [SECRET] })
+    const got = await (handlers as unknown as Record<string, (id: string, after: number) => Promise<unknown>>)['release:events'](ID, 0)
+    expect(got).toEqual([{ ...raw[0], line: 'GET /?t=‹redacted›' }])
+  })
 })

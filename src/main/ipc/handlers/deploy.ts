@@ -11,7 +11,7 @@ import {
 } from '../../../shared/deploy'
 import type { Handlers } from '../../../shared/ipc'
 import { DeployError } from '../../deploy/access'
-import { redact } from '../../security/redact'
+import { maskDetail, maskEvents } from '../../deploy/mask'
 import type { DeployStore } from '../../deploy/deploy-store'
 import type { ReleaseApi } from '../../hub/runner'
 import type { HubCatalog } from '../../hub/catalog'
@@ -57,25 +57,13 @@ export function createDeployHandlers(deps: {
   playbookFile?: { saveDialog: (releaseId: string) => Promise<string | undefined>; write: (path: string, text: string) => Promise<void> }
   /** Each local environment's newest release that ran (`release:latest`). */
   lastReleases?: () => EnvLastRelease[]
-  /** The vault's and Hub's secret values, masked out of a stored playbook before it is written to a file. */
+  /** The vault's and Hub's secret values, masked out of a release's text before it leaves over IPC or to a file. */
   knownSecrets?: () => readonly string[]
 }): Pick<Handlers, DeployChannel> {
   const { deploys, releases, tooling, catalog, published, playbookFile, lastReleases, knownSecrets } = deps
-  /** A stored text with every known secret value (and key block) masked, in main, before it leaves over IPC or to a file. */
-  const mask = (text: string): string => redact(text, knownSecrets?.() ?? [])
-  /**
-   * A release as `release:get` returns it, local or Hub: its playbook, error and check messages masked again,
-   * since a Hub release's text reaches this desktop unredacted by it.
-   */
-  const maskedDetail = async (id: string): Promise<ReleaseDetail> => {
-    const d = await releases.detail(id)
-    return {
-      ...d,
-      playbook: d.playbook === null ? null : mask(d.playbook),
-      error: d.error === null ? null : mask(d.error),
-      preflight: d.preflight && { ...d.preflight, checks: d.preflight.checks.map((c) => ({ ...c, message: mask(c.message) })) },
-    }
-  }
+  const secrets = () => knownSecrets?.() ?? []
+  /** A release as `release:get` returns it, local or Hub, with its text masked again in main (see `maskDetail`). */
+  const maskedDetail = async (id: string): Promise<ReleaseDetail> => maskDetail(await releases.detail(id), secrets())
   // The last playbook reviewed per release. Saving writes this text, so the renderer sends only its hash, never a path or text.
   const reviewed = new Map<string, PlaybookPreview>()
   return {
@@ -143,7 +131,7 @@ export function createDeployHandlers(deps: {
     'release:list': (filter) => releases.list(filter),
     'release:get': (id) => maskedDetail(id),
     // The validator caps `limit`; the clamp keeps a direct caller honest too.
-    'release:events': (id, afterSeq, limit) => releases.events(id, afterSeq, Math.min(limit ?? 1000, MAX_EVENTS_PAGE)),
+    'release:events': async (id, afterSeq, limit) => maskEvents(await releases.events(id, afterSeq, Math.min(limit ?? 1000, MAX_EVENTS_PAGE)), secrets()),
     'release:active': () => releases.listActive(),
     'release:latest': () => lastReleases?.() ?? [],
   }

@@ -47,6 +47,7 @@ import { startPrivateAgent, type ChildLike } from './deploy/agent'
 import { prepareHosts } from './deploy/hostkeys'
 import { LocalRunner, nodeFs, nodeSpawn } from './deploy/local-runner'
 import { startTap } from './deploy/log-tap'
+import { maskEvents } from './deploy/mask'
 import { localAllowAll } from './deploy/access'
 import { HubAccess, RoutingAccess } from './hub/access'
 import { HubCatalog } from './hub/catalog'
@@ -437,7 +438,8 @@ if (!app.requestSingleInstanceLock()) {
         backoff: backoffMs,
         sleep: sleepUnlessAborted,
         push: {
-          events: (batch) => pushEvent(mainWindow, 'deploy:event', batch),
+          // The Hub's text reaches this desktop as the Hub sent it: mask it here, as `release:events` does.
+          events: (batch) => pushEvent(mainWindow, 'deploy:event', maskEvents(batch, knownSecrets())),
           state: (summary) => pushEvent(mainWindow, 'release:state', summary),
           locks: () => pushEvent(mainWindow, 'hub:locks', {}),
           catalog: () => void hubCatalog.refresh().catch(() => undefined),
