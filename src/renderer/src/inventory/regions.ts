@@ -28,3 +28,18 @@ export function regionsOfEnvironment(
   if (!env) return []
   return regionRefs(environmentRegions(hostRegions(data.hosts), env, checkouts, services), data.regions)
 }
+
+/**
+ * Hosts grouped by region for pickers (`<optgroup>` per region), regions ordered by code and hosts by label. Every
+ * host picker uses this so they all read the same way.
+ */
+export function hostsByRegion<H extends { label: string; regionId: string }>(
+  regions: readonly RegionMeta[],
+  hosts: readonly H[],
+): { region: RegionMeta | undefined; hosts: H[] }[] {
+  const groups = new Map<string, H[]>()
+  for (const h of hosts) groups.set(h.regionId, [...(groups.get(h.regionId) ?? []), h])
+  return [...groups.entries()]
+    .map(([id, hs]) => ({ region: regionById(regions, id), hosts: [...hs].sort((a, b) => a.label.localeCompare(b.label)) }))
+    .sort((a, b) => (a.region?.code ?? '').localeCompare(b.region?.code ?? ''))
+}
