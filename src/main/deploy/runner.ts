@@ -120,6 +120,8 @@ export interface RunOutcome {
   failedDeploymentRunIds: string[]
   /** Deployment runs whose checkout step started, so a rollback has something to undo. */
   reachedCheckout: string[]
+  /** Deployment runs whose `up` step started, so a rollback knows what may be running new code. */
+  reachedUp?: string[]
   commits: Record<string, { previous?: string; deployed?: string }>
 }
 

@@ -18,8 +18,10 @@ import {
 } from '../../shared/deploy'
 import { isHelperTask } from '../../shared/playbook-steps'
 import { redact } from '../security/redact'
+import { planSteps, stepList } from './generate'
+import { withBase64Forms } from './mask'
 import { MARK, RC_BREAK_KEPT, RC_LOCK_BUSY, parseMarker, parsePfLine, parsePrev, parseStreamLine } from './markers'
-import type { DeployPlan, PlanDeployment, PlanHost, RunnerPreflight } from './runner'
+import type { DeployPlan, PlanDeployment, PlanHost, PlanStep, RunnerPreflight } from './runner'
 
 export { parseStreamLine }
 
@@ -44,7 +46,10 @@ interface ResultEvent {
 
 interface Active {
   startedAt: number
+  stepId: string
   kind: StepKind
+  /** The task's `od_step` tag: the kind, or `c_<n>` for a custom step. */
+  key: string
   deploymentRunId: string | null
   hostId: string | null
   seen: number
@@ -52,6 +57,15 @@ interface Active {
   done: boolean
 }
 
+/** A step as a task's tag names it. */
+interface Ref {
+  kind: StepKind
+  key: string
+}
+type Desc = Ref & { stepId: string; hostId: string | null; deploymentRunId: string | null; name: string; expected: number }
+type StepNote = { state: 'skipped' } | { state: 'warn'; rc: number }
+
+const CUSTOM_KEY = /^c_\d{1,3}$/
 const STEP_KINDS = new Set<string>(Object.keys(STEP_LABEL))
 const cut = (s: string): string => (s.length > MAX_LOG_LINE ? `${s.slice(0, MAX_LOG_LINE - 7)} …(cut)` : s)
 
@@ -60,6 +74,7 @@ export class EventTranslator {
   private readonly depByRun = new Map<string, PlanDeployment>()
   private readonly hostByAlias = new Map<string, PlanHost>()
   private readonly hostById = new Map<string, PlanHost>()
+  /** Open steps, keyed `${hostId}|${stepId}` so hosts of one play keep separate state. */
   private readonly active = new Map<string, Active>()
   private readonly failedRuns = new Set<string>()
   private readonly pf = new Map<string, string[]>()
@@ -68,18 +83,43 @@ export class EventTranslator {
   private readonly unknownPrevious = new Set<string>()
   /** When each task (by name) last started, for its task.done duration. */
   private readonly taskBegan = new Map<string, number>()
-  private current: { stepId: string; kind: StepKind; run: string; name: string } | null = null
+  /** The step each host last started (a task_start carries no host, so it is the host of the task's run). */
+  private readonly currentStep = new Map<string, string>()
+  private lastStep: string | null = null
   private sawFailure = false
-  private tagNote: string | null = null
+  /** OD-TAG failures and custom step markers, by `${hostId}|${stepId}`. */
+  private readonly tagNotes = new Map<string, string>()
+  private readonly stepNotes = new Map<string, StepNote>()
+  /** `${run}:c_<n>` -> the PlanStep label. */
+  private readonly customLabel = new Map<string, string>()
+  /** Run id -> the key of the last step of its block. */
+  private readonly lastKey = new Map<string, string>()
   private readonly versionTasks: number
 
   constructor(private readonly o: { plan: DeployPlan; secrets: () => string[]; now: () => number }) {
     for (const d of o.plan.deployments) this.depByRun.set(d.runId, d)
+    this.readSteps(o.plan)
     // one version task per repo on each host (the generator skips repeats)
     this.versionTasks = Math.max(1, new Set(o.plan.deployments.map((d) => `${d.hostId}\n${d.repoPath}`)).size)
     for (const h of o.plan.hosts) {
       this.hostByAlias.set(h.alias, h)
       this.hostById.set(h.hostId, h)
+    }
+  }
+
+  private readSteps(plan: DeployPlan): void {
+    for (const d of plan.deployments) {
+      let steps: PlanStep[]
+      try {
+        steps = planSteps(d)
+      } catch {
+        continue
+      }
+      for (const p of steps) this.customLabel.set(`${d.runId}:${p.key}`, p.label)
+      if (plan.kind !== 'release' && plan.kind !== 'rollback') continue
+      const list = stepList(plan.kind, [{ ...d, steps }]).get(d.runId) ?? []
+      const last = list.at(-1)
+      if (last) this.lastKey.set(d.runId, last.key)
     }
   }
 
@@ -101,8 +141,21 @@ export class EventTranslator {
     return [...this.unknownPrevious]
   }
 
+  /** Every secret, plus its base64 forms (mask.ts's), so an event is stored without either. */
+  private forms(): string[] {
+    const known = this.o.secrets()
+    const sig = known.join('\0')
+    if (this.formsFor !== sig) {
+      this.formsFor = sig
+      this.formsCache = withBase64Forms(known.filter((x) => x !== ''))
+    }
+    return this.formsCache
+  }
+  private formsFor: string | null = null
+  private formsCache: string[] = []
+
   private red(s: string): string {
-    return redact(s, this.o.secrets())
+    return redact(s, this.forms())
   }
   private line(s: string): string {
     return cut(this.red(s))
@@ -146,20 +199,20 @@ export class EventTranslator {
     if (cancelled) {
       // a cancel is not a failure: running steps and their deployments close as cancelled
       const runs = new Set<string>()
-      for (const [stepId, a] of this.active) {
+      for (const a of this.active.values()) {
         if (a.done) continue
         a.done = true
-        out.push({ type: 'step.done', stepId, state: 'cancelled', durationMs: this.o.now() - a.startedAt })
+        out.push({ type: 'step.done', stepId: a.stepId, state: 'cancelled', durationMs: this.o.now() - a.startedAt })
         if (a.deploymentRunId && !this.failedRuns.has(a.deploymentRunId)) runs.add(a.deploymentRunId)
       }
       for (const run of runs) out.push({ type: 'deployment.updated', deploymentRunId: run, status: 'cancelled' })
       return out
     }
     const why = signal ? `Ansible was stopped (${signal}) before this step finished` : `Ansible exited with code ${exitCode} before this step finished`
-    for (const [stepId, a] of this.active) {
+    for (const a of this.active.values()) {
       if (a.done) continue
       a.done = true
-      out.push({ type: 'step.failed', stepId, error: this.line(why), durationMs: this.o.now() - a.startedAt })
+      out.push({ type: 'step.failed', stepId: a.stepId, error: this.line(why), durationMs: this.o.now() - a.startedAt })
       this.markFailed(a, out)
     }
     if ((exitCode !== 0 || signal) && out.length === 0 && !this.sawFailure) out.push(this.ansibleLog(signal ? `ansible-playbook was stopped (${signal})` : `ansible-playbook exited with code ${exitCode}`))
@@ -167,8 +220,9 @@ export class EventTranslator {
   }
 
   // ---- internals
-  private ansibleLog(line: string): RunEventBody {
-    return { type: 'log', stepId: this.current?.stepId || null, hostId: null, stream: 'ansible', line: this.line(line) }
+  private ansibleLog(line: string, hostId: string | null = null): RunEventBody {
+    const stepId = (hostId === null ? this.lastStep : (this.currentStep.get(hostId) ?? null)) || null
+    return { type: 'log', stepId, hostId: null, stream: 'ansible', line: this.line(line) }
   }
 
   private tagsOf(tags: string[] | undefined): { kind: string; run: string } | null {
@@ -177,19 +231,50 @@ export class EventTranslator {
     return kind && run ? { kind, run } : null
   }
 
-  private describe(kind: StepKind, run: string): { stepId: string; hostId: string | null; deploymentRunId: string | null; name: string; expected: number } {
-    // a version tag is a release-level step: its failure never fails the deployment that is already up
-    if (kind === 'version') return { stepId: 'release:version', hostId: null, deploymentRunId: null, name: STEP_LABEL.version, expected: this.versionTasks }
+  /** A task's `od_step` tag as a step: a built-in kind, or `c_<n>` for a custom step. */
+  private ref(tagKind: string): Ref | null {
+    if (CUSTOM_KEY.test(tagKind)) return { kind: 'custom', key: tagKind }
+    return tagKind !== 'custom' && STEP_KINDS.has(tagKind) ? { kind: tagKind as StepKind, key: tagKind } : null
+  }
+
+  /** The host a run's tasks belong to; null for a release-level run. */
+  private runHost(run: string): string | null {
     const dep = this.depByRun.get(run)
+    if (dep) return dep.hostId
+    return run.startsWith('host:') ? run.slice(5) : null
+  }
+
+  /** True when the result came from another host than the one the task's run belongs to (a multi-host play). */
+  private foreign(e: ResultEvent, run: string): boolean {
+    const own = this.runHost(run)
+    const alias = own === null ? undefined : this.hostById.get(own)?.alias
+    return alias !== undefined && e.host !== undefined && e.host !== alias
+  }
+
+  private describe(r: Ref, run: string): Desc {
+    const { kind } = r
+    // a version tag is a release-level step: its failure never fails the deployment that is already up
+    if (kind === 'version') return { ...r, stepId: 'release:version', hostId: null, deploymentRunId: null, name: STEP_LABEL.version, expected: this.versionTasks }
+    const dep = this.depByRun.get(run)
+    const label = kind === 'custom' ? this.labelOf(run, r.key) : STEP_LABEL[kind]
     if (dep) {
       const expected = kind === 'health' ? Math.max(1, dep.urls.length) : 1
-      return { stepId: `${run}:${kind}`, hostId: dep.hostId, deploymentRunId: run, name: `${STEP_LABEL[kind]} ${dep.name}`, expected }
+      return { ...r, stepId: `${run}:${r.key}`, hostId: dep.hostId, deploymentRunId: run, name: kind === 'custom' ? label : `${label} ${dep.name}`, expected }
     }
     if (run.startsWith('host:')) {
       const hostId = run.slice(5)
-      return { stepId: `${run}:${kind}`, hostId, deploymentRunId: null, name: `${STEP_LABEL[kind]} ${this.hostById.get(hostId)?.label ?? hostId}`, expected: 1 }
+      return { ...r, stepId: `${run}:${r.key}`, hostId, deploymentRunId: null, name: `${label} ${this.hostById.get(hostId)?.label ?? hostId}`, expected: 1 }
     }
-    return { stepId: `release:${kind}`, hostId: null, deploymentRunId: null, name: STEP_LABEL[kind], expected: 1 }
+    return { ...r, stepId: `release:${r.key}`, hostId: null, deploymentRunId: null, name: label, expected: 1 }
+  }
+
+  /** A custom step's own name (the PlanStep label); its key when the plan has no such step. */
+  private labelOf(run: string, key: string): string {
+    return this.customLabel.get(`${run}:${key}`) ?? key
+  }
+
+  private akey(d: Desc): string {
+    return `${d.hostId ?? ''}|${d.stepId}`
   }
 
   /** The lock task's mkdir/touch helper is part of the lock step, not a step of its own. */
@@ -200,26 +285,28 @@ export class EventTranslator {
   private taskStart(name: string, tags: string[]): RunEventBody[] {
     this.taskBegan.set(name, this.o.now())
     const t = this.tagsOf(tags)
-    if (!t || !STEP_KINDS.has(t.kind)) {
-      this.current = t?.kind === 'preflight' ? { stepId: '', kind: 'record', run: t.run, name } : null
+    const r = t ? this.ref(t.kind) : null
+    if (!t || !r) {
+      if (t) this.currentStep.delete(this.runHost(t.run) ?? '')
+      this.lastStep = null
       return []
     }
-    const kind = t.kind as StepKind
-    const d = this.describe(kind, t.run)
-    this.current = { stepId: d.stepId, kind, run: t.run, name }
+    const d = this.describe(r, t.run)
+    this.currentStep.set(d.hostId ?? '', d.stepId)
+    this.lastStep = d.stepId
     if (this.internal(name)) return []
     const out: RunEventBody[] = []
-    this.begin(d, kind, out)
+    this.begin(d, out)
     return out
   }
 
-  private begin(d: ReturnType<EventTranslator['describe']>, kind: StepKind, out: RunEventBody[]): Active {
-    const known = this.active.get(d.stepId)
+  private begin(d: Desc, out: RunEventBody[]): Active {
+    const known = this.active.get(this.akey(d))
     if (known) return known
-    const a: Active = { startedAt: this.o.now(), kind, deploymentRunId: d.deploymentRunId, hostId: d.hostId, seen: 0, expected: d.expected, done: false }
-    this.active.set(d.stepId, a)
-    out.push({ type: 'step.started', stepId: d.stepId, kind, name: d.name, hostId: d.hostId, deploymentRunId: d.deploymentRunId })
-    if (d.deploymentRunId && (kind === 'record' || kind === 'rb_checkout')) {
+    const a: Active = { startedAt: this.o.now(), stepId: d.stepId, kind: d.kind, key: d.key, deploymentRunId: d.deploymentRunId, hostId: d.hostId, seen: 0, expected: d.expected, done: false }
+    this.active.set(this.akey(d), a)
+    out.push({ type: 'step.started', stepId: d.stepId, kind: d.kind, name: d.kind === 'custom' ? this.line(d.name) : d.name, hostId: d.hostId, deploymentRunId: d.deploymentRunId })
+    if (d.deploymentRunId && (d.kind === 'record' || d.kind === 'rb_checkout')) {
       out.push({ type: 'deployment.updated', deploymentRunId: d.deploymentRunId, status: 'running' })
     }
     return a
@@ -227,11 +314,13 @@ export class EventTranslator {
 
   /** A task's result: what it means for its step, then the task's own row (helper and untagged tasks have none). */
   private result(e: ResultEvent): RunEventBody[] {
-    const out = this.stepResult(e)
     const t = this.tagsOf(e.tags)
+    if (t && this.foreign(e, t.run)) return []
+    const out = this.stepResult(e)
+    const r = t ? this.ref(t.kind) : null
     const name = e.task ?? ''
-    if (!t || !STEP_KINDS.has(t.kind) || this.internal(name)) return out
-    const d = this.describe(t.kind as StepKind, t.run)
+    if (!t || !r || this.internal(name)) return out
+    const d = this.describe(r, t.run)
     const began = this.taskBegan.get(name)
     const state: TaskState =
       e.event === 'skipped' ? 'skipped' : e.event === 'unreachable' || (e.event === 'failed' && e.ignored !== true) ? 'failed' : e.changed === true ? 'changed' : 'ok'
@@ -252,6 +341,7 @@ export class EventTranslator {
 
   private stepResult(e: ResultEvent): RunEventBody[] {
     const t = this.tagsOf(e.tags)
+    const r = t ? this.ref(t.kind) : null
     const out: RunEventBody[] = []
     const host = e.host ? this.hostByAlias.get(e.host) : undefined
     const hostLabel = host?.label ?? e.host ?? 'host'
@@ -264,7 +354,7 @@ export class EventTranslator {
         out.push({ type: 'preflight.check', check: this.reachCheck(host, error) })
         return out
       }
-      if (t && STEP_KINDS.has(t.kind)) return this.failStep(t.kind as StepKind, t.run, error, out)
+      if (t && r) return this.failStep(r, t.run, error, out)
       out.push(this.ansibleLog(error))
       return out
     }
@@ -277,24 +367,26 @@ export class EventTranslator {
       this.collectPreflight(t.run, e)
       return out
     }
-    if (!STEP_KINDS.has(t.kind)) return out
-    const kind = t.kind as StepKind
-    const d = this.describe(kind, t.run)
+    if (!r) return out
+    const { kind } = r
+    const d = this.describe(r, t.run)
     const prep = this.internal(e.task ?? '')
-    const a = prep ? null : this.begin(d, kind, out)
+    const a = prep ? null : this.begin(d, out)
+    const key = this.akey(d)
 
     const lines = hidden ? [] : this.splitOutput(e, d, out)
     const rc = typeof e.rc === 'number' ? e.rc : null
-    if (e.event === 'skipped') {
-      if (a) this.settle(d.stepId, a, { state: 'skipped' }, out)
+    const note = this.stepNotes.get(key)
+    if (e.event === 'skipped' || (kind === 'custom' && note?.state === 'skipped')) {
+      if (a) this.settle(a, { state: 'skipped' }, out)
       return out
     }
     if ((kind === 'tag' || kind === 'rb_tag') && a) {
       // best effort: the playbook never fails on tagging, so a failure arrives as the OD-TAG marker or a non-zero rc
-      const note = this.tagNote
-      this.tagNote = null
-      const tagRc = note !== null ? Number(/rc=(\d+)/.exec(note)?.[1] ?? 1) : rc
-      if (note !== null || (e.event === 'ok' && rc !== null && rc !== 0)) {
+      const tagged = this.tagNotes.get(key)
+      this.tagNotes.delete(key)
+      const tagRc = tagged !== undefined ? Number(/rc=(\d+)/.exec(tagged)?.[1] ?? 1) : rc
+      if (tagged !== undefined || (e.event === 'ok' && rc !== null && rc !== 0)) {
         a.done = true
         const text = this.errorText(kind, d.name, tagRc, msg, lines.slice(-ERROR_CONTEXT_LINES), hidden)
         out.push({ type: 'step.done', stepId: d.stepId, state: 'warn', durationMs: this.o.now() - a.startedAt, message: text })
@@ -304,9 +396,20 @@ export class EventTranslator {
     }
     if (e.event === 'failed' && e.ignored !== true) {
       const ctx = lines.slice(-ERROR_CONTEXT_LINES)
-      return this.failStep(kind, t.run, this.errorText(kind, d.name, rc, msg, ctx, hidden), out, lines, rc)
+      return this.failStep(r, t.run, this.errorText(kind, d.name, rc, msg, ctx, hidden), out, lines, rc)
     }
-    if (a) this.settle(d.stepId, a, { state: 'ok', message: this.prevNote(kind, t.run) }, out)
+    if (kind === 'custom' && a) {
+      // a step set to continue reports OD-STEP rc=<n> (on stdout, or only as a stream line under no_log); a non-zero rc says the same
+      const failedRc = note?.state === 'warn' ? note.rc : rc !== null && rc !== 0 ? rc : null
+      if (failedRc !== null) {
+        a.done = true
+        this.stepNotes.delete(key)
+        out.push({ type: 'step.done', stepId: d.stepId, state: 'warn', durationMs: this.o.now() - a.startedAt, message: hidden ? this.line(`${d.name} failed with exit code ${failedRc} (output hidden)`) : this.errorText(kind, d.name, failedRc, msg, lines.slice(-ERROR_CONTEXT_LINES), hidden) })
+        this.onDone(a, out)
+        return out
+      }
+    }
+    if (a) this.settle(a, { state: 'ok', message: this.prevNote(kind, t.run) }, out)
     return out
   }
 
@@ -315,33 +418,41 @@ export class EventTranslator {
   }
 
   /** Counts a finished task toward its step; the step closes once all its tasks are in. */
-  private settle(stepId: string, a: Active, r: { state: 'ok' | 'skipped'; message?: string }, out: RunEventBody[]): void {
+  private settle(a: Active, r: { state: 'ok' | 'skipped'; message?: string }, out: RunEventBody[]): void {
     if (a.done) return
     a.seen++
     if (a.seen < a.expected && r.state === 'ok') return
     a.done = true
+    this.stepNotes.delete(`${a.hostId ?? ''}|${a.stepId}`)
     const warn = r.state === 'ok' && r.message !== undefined
-    out.push({ type: 'step.done', stepId, state: warn ? 'warn' : r.state, durationMs: this.o.now() - a.startedAt, ...(r.message ? { message: this.line(r.message) } : {}) })
-    if (r.state === 'ok') this.onDone(a, out)
+    out.push({ type: 'step.done', stepId: a.stepId, state: warn ? 'warn' : r.state, durationMs: this.o.now() - a.startedAt, ...(r.message ? { message: this.line(r.message) } : {}) })
+    this.onDone(a, out)
   }
 
-  /** Release: the tag step finishing makes the deployment succeeded. Rollback: rb_tag makes it rolled back. */
+  /**
+   * The deployment succeeds when the last step of its block finishes (a skipped or warned last step counts), not on
+   * `tag`: a custom step after the tag is part of the release. A rollback's last step makes it rolled back.
+   */
   private onDone(a: Active, out: RunEventBody[]): void {
     if (!a.deploymentRunId || this.failedRuns.has(a.deploymentRunId)) return
-    if (a.kind === 'tag') out.push({ type: 'deployment.updated', deploymentRunId: a.deploymentRunId, status: 'succeeded' })
-    if (a.kind === 'rb_tag') out.push({ type: 'deployment.updated', deploymentRunId: a.deploymentRunId, status: 'rolled_back' })
+    const last = this.lastKey.get(a.deploymentRunId)
+    const isLast = last !== undefined ? last === a.key : a.key === 'tag' || a.key === 'rb_tag'
+    if (!isLast) return
+    const back = this.o.plan.kind === 'rollback' || a.key.startsWith('rb_')
+    out.push({ type: 'deployment.updated', deploymentRunId: a.deploymentRunId, status: back ? 'rolled_back' : 'succeeded' })
   }
 
   private markFailed(a: Active, out: RunEventBody[]): void {
     this.sawFailure = true
     if (!a.deploymentRunId) return
     this.failedRuns.add(a.deploymentRunId)
-    out.push({ type: 'deployment.updated', deploymentRunId: a.deploymentRunId, status: a.kind.startsWith('rb_') ? 'rollback_failed' : 'failed' })
+    out.push({ type: 'deployment.updated', deploymentRunId: a.deploymentRunId, status: a.key.startsWith('rb_') ? 'rollback_failed' : 'failed' })
   }
 
-  private failStep(kind: StepKind, run: string, error: string, out: RunEventBody[], lines: string[] = [], rc: number | null = null): RunEventBody[] {
-    const d = this.describe(kind, run)
-    const a = this.active.get(d.stepId) ?? this.begin(d, kind, out)
+  private failStep(r: Ref, run: string, error: string, out: RunEventBody[], lines: string[] = [], rc: number | null = null): RunEventBody[] {
+    const { kind } = r
+    const d = this.describe(r, run)
+    const a = this.active.get(this.akey(d)) ?? this.begin(d, out)
     if (a.done) return out
     a.done = true
     const dur = this.o.now() - a.startedAt
@@ -395,7 +506,7 @@ export class EventTranslator {
   }
 
   /** stdout / stderr into log events and markers. Returns the (raw, unredacted) lines for error context. */
-  private splitOutput(e: ResultEvent, d: ReturnType<EventTranslator['describe']>, out: RunEventBody[]): string[] {
+  private splitOutput(e: ResultEvent, d: Desc, out: RunEventBody[]): string[] {
     const ctx: string[] = []
     const task = e.task ? { task: this.line(e.task) } : {}
     const emit = (stream: 'out' | 'err', text: string | undefined): void => {
@@ -424,31 +535,62 @@ export class EventTranslator {
     return ctx
   }
 
-  /** Returns true when the marker was consumed (no log line). */
-  private marker(mark: string, rest: string, d: ReturnType<EventTranslator['describe']>, out: RunEventBody[]): boolean {
+  /**
+   * Returns true when the marker was consumed (no log line). A marker counts only in the step that prints it: a custom
+   * step's output never sets a commit, a backup file or a tag note.
+   */
+  private marker(mark: string, rest: string, d: Desc, out: RunEventBody[]): boolean {
     const run = d.deploymentRunId
-    if (mark === MARK.PREV && run) {
+    if (mark === MARK.PREV && run && d.key === 'record') {
       const p = parsePrev(rest)
       if (p?.kind === 'sha') out.push({ type: 'deployment.updated', deploymentRunId: run, status: 'running', previousCommit: p.sha })
       else if (p?.kind === 'unknown') this.unknownPrevious.add(run)
       return true
     }
-    if (mark === MARK.HEAD && run) {
+    if (mark === MARK.HEAD && run && (d.key === 'checkout' || d.key === 'rb_checkout')) {
       const sha = rest.trim()
-      if (/^[0-9a-f]{40}$/.test(sha) && d.stepId.endsWith(':checkout')) out.push({ type: 'deployment.updated', deploymentRunId: run, status: 'running', deployedCommit: sha })
-      return d.stepId.endsWith(':checkout') || d.stepId.endsWith(':rb_checkout')
+      if (/^[0-9a-f]{40}$/.test(sha) && d.key === 'checkout') out.push({ type: 'deployment.updated', deploymentRunId: run, status: 'running', deployedCommit: sha })
+      return true
     }
-    if (mark === MARK.BACKUP && run) {
+    if (mark === MARK.BACKUP && run && d.key === 'backup') {
       const file = rest.trim()
       if (file) out.push({ type: 'deployment.updated', deploymentRunId: run, status: 'running', backupFile: this.red(file) })
       return true
     }
-    if (mark === MARK.TAG) {
-      this.tagNote = rest
+    if (mark === MARK.TAG && (d.key === 'tag' || d.key === 'rb_tag')) {
+      this.tagNotes.set(this.akey(d), rest)
+      return true
+    }
+    if (d.kind === 'custom' && (mark === MARK.STEP || mark === MARK.SKIP)) {
+      this.noteStep(this.akey(d), mark, rest)
       return true
     }
     // lock lines carry the holder; the busy one is read from the failed result
-    return mark === MARK.LOCK
+    return mark === MARK.LOCK && (d.key === 'lock' || d.key === 'unlock')
+  }
+
+  /** Records what a custom step reported. Setting (not counting) the same note from stdout and from the stream line is harmless. */
+  private noteStep(key: string, mark: string, rest: string): void {
+    if (mark === MARK.SKIP) this.stepNotes.set(key, { state: 'skipped' })
+    else {
+      const rc = /^rc=(\d+)$/.exec(rest.trim())?.[1]
+      if (rc !== undefined) this.stepNotes.set(key, { state: 'warn', rc: Number(rc) })
+    }
+  }
+
+  /**
+   * A line of a run's stream.log (the live tap). Under no_log a custom step's `OD-SKIP` and `OD-STEP rc=<n>` reach
+   * the app only here; the note settles the step when its result arrives. A step that has already settled keeps its state.
+   */
+  observeStreamLine(line: string): void {
+    const s = parseStreamLine(line)
+    const dep = s ? this.depByRun.get(s.runId) : undefined
+    if (!s || !dep || !CUSTOM_KEY.test(s.kind)) return
+    const m = parseMarker(s.text)
+    if (!m || (m.mark !== MARK.STEP && m.mark !== MARK.SKIP)) return
+    const key = `${dep.hostId}|${s.runId}:${s.kind}`
+    if (this.active.get(key)?.done) return
+    this.noteStep(key, m.mark, m.rest)
   }
 
   // ---- preflight

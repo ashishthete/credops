@@ -166,7 +166,7 @@ export class LocalRunner implements DeployRunner {
     const known = [...secrets.known, ...Object.values(secrets.values), ...Object.values(secrets.values).map((v) => Buffer.from(v, 'utf8').toString('base64'))].filter((s) => s !== '')
     const red = (s: string): string => redact(s, known)
 
-    const outcome: RunOutcome = { exitCode: null, signal: null, cancelled: false, failedDeploymentRunIds: [], reachedCheckout: [], commits: {} }
+    const outcome: RunOutcome = { exitCode: null, signal: null, cancelled: false, failedDeploymentRunIds: [], reachedCheckout: [], reachedUp: [], commits: {} }
     const send = (body: RunEventBody): void => {
       if (body.type === 'deployment.updated') {
         if (body.status === 'failed' && !outcome.failedDeploymentRunIds.includes(body.deploymentRunId)) outcome.failedDeploymentRunIds.push(body.deploymentRunId)
@@ -177,6 +177,7 @@ export class LocalRunner implements DeployRunner {
         }
       }
       if (body.type === 'step.started' && body.kind === 'checkout' && body.deploymentRunId && !outcome.reachedCheckout.includes(body.deploymentRunId)) outcome.reachedCheckout.push(body.deploymentRunId)
+      if (body.type === 'step.started' && body.kind === 'up' && body.deploymentRunId && !outcome.reachedUp!.includes(body.deploymentRunId)) outcome.reachedUp!.push(body.deploymentRunId)
       this.emit(plan.releaseId, body)
     }
 
@@ -243,6 +244,7 @@ export class LocalRunner implements DeployRunner {
               link,
               plan.releaseId,
               (line) => {
+                translator.observeStreamLine(line)
                 const s = parseStreamLine(line)
                 const dep = s ? plan.deployments.find((d) => d.runId === s.runId) : undefined
                 send({

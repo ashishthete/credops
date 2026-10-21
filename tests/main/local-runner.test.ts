@@ -82,7 +82,7 @@ describe('LocalRunner', () => {
     const t = setup()
     t.ansible.stdout = fixtureLines('release-ok.jsonl')
     const out = await t.runner.start(planFixture(), SECRETS).done
-    expect(out).toMatchObject({ exitCode: 0, signal: null, cancelled: false, failedDeploymentRunIds: [], reachedCheckout: [R2] })
+    expect(out).toMatchObject({ exitCode: 0, signal: null, cancelled: false, failedDeploymentRunIds: [], reachedCheckout: [R2], reachedUp: [R2] })
     expect(out.commits[R2]).toEqual({ previous: 'b'.repeat(40), deployed: 'd'.repeat(40) })
     const started = t.events.filter((e) => e.type === 'step.started').map((e) => (e as { stepId: string }).stepId)
     expect(started[0]).toBe('host:host-od-1:lock')

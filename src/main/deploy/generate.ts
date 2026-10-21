@@ -106,7 +106,7 @@ const STEP_KEY = /^c_\d{1,2}$/
 const PARAM_ENV = /^OD_PARAM_[A-Z0-9_]{1,55}$/
 
 /** A checkout's steps: the plan's, or its legacy hooks migrated by effectiveSteps (so a hook is never dropped). */
-function planSteps(d: PlanDeployment): PlanStep[] {
+export function planSteps(d: PlanDeployment): PlanStep[] {
   if (d.steps.length > 0) {
     need(d.preHookB64 === null && d.postHookB64 === null, 'hooks next to steps')
     return d.steps

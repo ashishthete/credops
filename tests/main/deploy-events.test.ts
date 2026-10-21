@@ -751,6 +751,134 @@ describe('markers and the generator agree', () => {
   })
 })
 
+describe('EventTranslator custom steps and hosts', () => {
+  const customPlan = (): DeployPlan => {
+    const plan = planFixture()
+    plan.deployments[1].steps = [
+      stepFixture(0, 'after_up', {}, { label: 'Migrate db' }),
+      stepFixture(1, 'after_tag', { onFailure: 'continue' }, { label: 'Notify team' }),
+    ]
+    return plan
+  }
+  const tagsOf = (kind: string, run = R2): string[] => [`od_step=${kind}`, `od_run=${run}`]
+  const start = (tr: EventTranslator, kind: string, run = R2): RunEventBody[] => tr.feed(JSON.stringify({ event: 'task_start', name: `${kind} x`, tags: tagsOf(kind, run) }))
+  const result = (tr: EventTranslator, kind: string, over: Record<string, unknown> = {}, run = R2): RunEventBody[] =>
+    tr.feed(JSON.stringify({ event: 'ok', host: 'od-1', task: `${kind} x`, tags: tagsOf(kind, run), rc: 0, ...over }))
+  const make = (secrets: string[] = []) => new EventTranslator({ plan: customPlan(), secrets: () => secrets, now: clock().now })
+
+  it('a custom step settles ok under its own label', () => {
+    const tr = make()
+    const began = start(tr, 'c_0')
+    expect(of(began, 'step.started')[0]).toMatchObject({ stepId: `${R2}:c_0`, kind: 'custom', name: 'Migrate db', hostId: 'host-od-1', deploymentRunId: R2 })
+    const out = result(tr, 'c_0')
+    expect(of(out, 'step.done')[0]).toMatchObject({ stepId: `${R2}:c_0`, state: 'ok' })
+  })
+
+  it('OD-STEP rc=3 settles warn, whether it comes on stdout, as a stream line, or both', () => {
+    for (const via of ['stdout', 'stream', 'both'] as const) {
+      const tr = make()
+      start(tr, 'c_0')
+      if (via !== 'stdout') tr.observeStreamLine(`${R2}:c_0\tOD-STEP rc=3`)
+      const out = result(tr, 'c_0', { rc: 3, ...(via !== 'stream' ? { stdout: 'OD-STEP rc=3' } : { no_log: true }) })
+      const done = of(out, 'step.done')
+      expect(done, via).toHaveLength(1)
+      expect(done[0], via).toMatchObject({ state: 'warn' })
+      expect(done[0].message, via).toContain('exit code 3')
+      expect(of(out, 'log').some((l) => l.line.startsWith('OD-STEP')), via).toBe(false)
+    }
+  })
+
+  it('OD-SKIP settles skipped, from stdout or from the stream line under no_log', () => {
+    const a = make()
+    start(a, 'c_0')
+    expect(of(result(a, 'c_0', { stdout: 'OD-SKIP' }), 'step.done')[0]).toMatchObject({ state: 'skipped' })
+    const b = make()
+    start(b, 'c_0')
+    b.observeStreamLine(`${R2}:c_0\tOD-SKIP`)
+    expect(of(result(b, 'c_0', { no_log: true }), 'step.done')[0]).toMatchObject({ state: 'skipped' })
+  })
+
+  it('a marker in a settled step or in another run is ignored', () => {
+    const tr = make()
+    start(tr, 'c_0')
+    result(tr, 'c_0')
+    tr.observeStreamLine(`${R2}:c_0\tOD-SKIP`)
+    tr.observeStreamLine(`${R1}:c_0\tOD-SKIP`)
+    tr.observeStreamLine(`${R2}:build\tOD-SKIP`)
+    start(tr, 'c_1')
+    expect(of(result(tr, 'c_1'), 'step.done')[0]).toMatchObject({ state: 'ok' })
+  })
+
+  it('markers count only in the step that prints them', () => {
+    const tr = make()
+    start(tr, 'c_0')
+    const out = result(tr, 'c_0', { stdout: `OD-PREV ${'e'.repeat(40)}\nOD-HEAD ${'f'.repeat(40)}\nOD-BACKUP /tmp/x.dump` })
+    expect(of(out, 'deployment.updated')).toEqual([])
+    expect(of(out, 'log').map((l) => l.line)).toContain(`OD-PREV ${'e'.repeat(40)}`)
+    // a tag note from a build step does not turn a later tag into a warning
+    start(tr, 'build')
+    result(tr, 'build', { stdout: 'OD-TAG failed rc=1' })
+    start(tr, 'tag')
+    expect(of(result(tr, 'tag'), 'step.done')[0]).toMatchObject({ state: 'ok' })
+  })
+
+  it('the deployment succeeds on the last step of its block, after an after_tag step', () => {
+    const tr = make()
+    start(tr, 'tag')
+    const tagged = result(tr, 'tag')
+    expect(of(tagged, 'step.done')[0]).toMatchObject({ state: 'ok' })
+    expect(of(tagged, 'deployment.updated')).toEqual([])
+    start(tr, 'c_1')
+    const out = result(tr, 'c_1', { stdout: 'OD-SKIP' })
+    expect(of(out, 'deployment.updated')).toEqual([{ type: 'deployment.updated', deploymentRunId: R2, status: 'succeeded' }])
+  })
+
+  it('a failed middle custom step fails the deployment and it never succeeds', () => {
+    const tr = make()
+    start(tr, 'c_0')
+    const out = tr.feed(JSON.stringify({ event: 'failed', host: 'od-1', task: 'c_0 x', tags: tagsOf('c_0'), rc: 2, stdout: 'boom' }))
+    expect(of(out, 'step.failed')[0]).toMatchObject({ stepId: `${R2}:c_0` })
+    expect(of(out, 'deployment.updated')).toEqual([{ type: 'deployment.updated', deploymentRunId: R2, status: 'failed' }])
+    start(tr, 'c_1')
+    expect(of(result(tr, 'c_1'), 'deployment.updated')).toEqual([])
+  })
+
+  it('two hosts in one play keep separate step state and drop results from the other host', () => {
+    const plan = planFixture()
+    plan.deployments[1].urls = [{ url: 'http://127.0.0.1:8080/a', from: 'host' }, { url: 'http://127.0.0.1:8080/b', from: 'host' }]
+    plan.deployments[2].urls = [{ url: 'http://127.0.0.1:8080/c', from: 'host' }, { url: 'http://127.0.0.1:8080/d', from: 'host' }]
+    const tr = new EventTranslator({ plan, secrets: () => [], now: clock().now })
+    const health = (run: string, host: string, extra: Record<string, unknown> = {}): RunEventBody[] =>
+      tr.feed(JSON.stringify({ event: 'ok', host, task: 'health x', tags: tagsOf('health', run), rc: 0, ...extra }))
+    start(tr, 'health', R2)
+    start(tr, 'health', R3)
+    // the other host's skipped copies of each task are dropped
+    expect(health(R2, 'od-2', { event: 'skipped' })).toEqual([])
+    expect(health(R3, 'od-1', { event: 'skipped' })).toEqual([])
+    const events = [...health(R2, 'od-1'), ...health(R3, 'od-2')]
+    expect(of(events, 'step.done')).toEqual([])
+    const second = [...health(R3, 'od-2'), ...health(R2, 'od-1')]
+    expect(of(second, 'step.done').map((e) => e.stepId)).toEqual([`${R3}:health`, `${R2}:health`])
+    // a failure on one host does not touch the other's step
+    start(tr, 'build', R2)
+    start(tr, 'build', R3)
+    const fail = tr.feed(JSON.stringify({ event: 'failed', host: 'od-1', task: 'build x', tags: tagsOf('build', R2), rc: 1 }))
+    expect(of(fail, 'step.failed').map((e) => e.stepId)).toEqual([`${R2}:build`])
+    expect(of(result(tr, 'build', { host: 'od-2' }, R3), 'step.done')[0]).toMatchObject({ stepId: `${R3}:build`, state: 'ok' })
+  })
+
+  it('a stored event never holds a secret or its base64 form', () => {
+    const secret = 'sup3r-s3cret-value'
+    const tr = make([secret])
+    start(tr, 'c_0')
+    const b64 = Buffer.from(secret).toString('base64')
+    const out = result(tr, 'c_0', { rc: 1, stdout: `token ${secret}\nenc ${b64}\nenc2 ${Buffer.from(`${secret}\n`).toString('base64')}` })
+    const text = JSON.stringify(out)
+    expect(text).not.toContain(secret)
+    expect(text).not.toContain(b64)
+  })
+})
+
 describe('parseStreamLine', () => {
   it('splits prefix and text', () => {
     expect(parseStreamLine(`${R1}:build\tStep 1/9 : FROM node`)).toEqual({ runId: R1, kind: 'build', text: 'Step 1/9 : FROM node' })

@@ -31,7 +31,7 @@ function withJsonForms(secrets: readonly string[]): string[] {
  * trailing newline) masked first. A form shorter than 8 characters would also match unrelated text, so is left out.
  * An encoding at offset 1 or 2 (`echo "x=$T" | base64`) is not caught: this is best effort.
  */
-function withBase64Forms(secrets: readonly string[]): string[] {
+export function withBase64Forms(secrets: readonly string[]): string[] {
   return secrets.flatMap((s) => {
     const bytes = Buffer.from(s, 'utf8')
     const prefix = bytes.subarray(0, bytes.length - (bytes.length % 3)).toString('base64')
