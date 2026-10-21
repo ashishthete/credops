@@ -50,6 +50,7 @@ import { INTERRUPTED_MESSAGE, type ReleaseStore } from './release-store'
 import type { DeployPlan, DeployRunner, PlanDeployment, PlanHop, PlanHost, PlanKind, RunOutcome, RunSecrets } from './runner'
 import { generatePlaybook } from './generate'
 import { ToolingError } from './tooling'
+import { type EditError, validateEditedPlaybook } from './playbook-validate'
 
 /* The release lifecycle: preflight, start, rollback, versioning, locks. It owns the stream (run.started /
    run.finished / preflight.done), the access and confirmation boundaries and the secrets' lifetime; the runner
@@ -399,6 +400,24 @@ export class ReleaseService {
     for (const [k, p] of this.previews) if (now.getTime() - p.at > PREVIEW_KEEP_MS) this.previews.delete(k)
     this.previews.set(reviewKey(releaseId, actor), { releaseId, startedAt, at: now.getTime() })
     return { playbook, sha256: sha256(playbook) }
+  }
+
+  /**
+   * Checks an edited playbook against the one the preview shows (same start time, same plan). Static only:
+   * nothing is written, no secret is decrypted and no agent or shell runs. The sha256 is of the canonical text,
+   * which is what a start bound to this edit must carry.
+   */
+  validateEdit(releaseId: string, text: string, ctx?: CallCtx): { ok: true; canonical: string; sha256: string } | { ok: false; errors: EditError[] } {
+    const actor = ctx?.actor ?? this.d.actor
+    this.d.vault.assertUnlocked()
+    const rel = this.d.releases.detail(releaseId)
+    this.assertStartable(rel)
+    const env = this.inv.environment(rel.environmentId)
+    this.assertCurrent(rel, env)
+    const reviewed = this.previews.get(reviewKey(releaseId, actor))
+    const { playbook } = this.releasePlan(rel, env, actor, reviewed?.startedAt ?? this.d.now().toISOString())
+    const res = validateEditedPlaybook(text, playbook)
+    return res.ok ? { ok: true, canonical: res.canonical, sha256: sha256(res.canonical) } : res
   }
 
   /**
