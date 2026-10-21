@@ -14,6 +14,9 @@ import { registerAdmin } from './routes/admin'
 import { EnvLocks } from './locks'
 import { Registry } from './registry'
 import { registerLocks } from './routes/locks'
+import { registerReleases } from './routes/releases'
+import { HubReleases } from './releases/service'
+import type { DeployRunner } from '../../src/main/deploy/runner'
 import { registerRegistry } from './routes/registry'
 import { registerSecrets } from './routes/secrets'
 import { DeployKeys } from './secrets/deploykeys'
@@ -35,6 +38,8 @@ export interface HubDeps {
   ids: () => string
   /** Extra values the live stream must mask (tests; the Hub also masks secrets in flight). */
   liveKnownSecrets?: () => readonly string[]
+  /** Tests inject a scripted runner; production runs ansible through Phase 8's LocalRunner. */
+  runner?: DeployRunner
   /** pino destination; defaults to stdout */
   log?: { write(msg: string): void }
 }
@@ -43,6 +48,8 @@ declare module 'fastify' {
   interface FastifyInstance {
     /** The live SSE bus; the release service publishes deploy events and release state here. */
     live: LiveBus
+    /** Server-side releases; boot recovery calls `releases.recover()`. */
+    releases: HubReleases
   }
 }
 
@@ -68,14 +75,17 @@ export function buildApp(deps: HubDeps): FastifyInstance {
       ...(deps.log ? { stream: deps.log } : {}),
     },
   })
-  installErrorHandler(app, () => [...secrets.inflight])
+  // Bound once the release service exists; until then there is nothing to mask beyond secrets in flight.
+  let releases: HubReleases | null = null
+  const releaseSecrets = (): string[] => releases?.knownSecrets() ?? []
+  installErrorHandler(app, () => [...secrets.inflight, ...releaseSecrets()])
   app.addHook('onClose', async () => {
     deps.audit.append({ action: 'hub.stop', outcome: 'info', actor: null })
   })
   registerMeta(app, deps)
   const sessions = new SessionStore(deps.db, { now: deps.now, ttlHours: deps.config.sessionTtlHours })
   const directory = new Directory(deps.db, { firstAdmin: deps.config.firstAdmin, now: deps.now, ids: deps.ids, audit: deps.audit, sessions })
-  const live = new LiveBus({ directory, now: deps.now, knownSecrets: () => [...secrets.inflight, ...(deps.liveKnownSecrets?.() ?? [])] })
+  const live = new LiveBus({ directory, now: deps.now, knownSecrets: () => [...secrets.inflight, ...releaseSecrets(), ...(deps.liveKnownSecrets?.() ?? [])] })
   app.decorate('live', live)
   // Streams must end before the server can close.
   app.addHook('preClose', async () => live.closeAll())
@@ -105,5 +115,9 @@ export function buildApp(deps: HubDeps): FastifyInstance {
   registerRegistry(app, { registry, directory, auth })
   registerLocks(app, { locks, directory, audit: deps.audit, auth })
   registerSecrets(app, { secrets, deployKeys, registry, locks, directory, audit: deps.audit, auth })
+  releases = new HubReleases({ config: deps.config, db: deps.db, audit: deps.audit, directory, registry, locks, secrets, deployKeys, live, now: deps.now, ids: deps.ids, ...(deps.runner ? { runner: deps.runner } : {}) })
+  app.decorate('releases', releases)
+  app.addHook('onClose', async () => releases?.close())
+  registerReleases(app, { releases, auth })
   return app
 }

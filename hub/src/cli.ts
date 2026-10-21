@@ -31,8 +31,10 @@ async function serve(configFile: string): Promise<void> {
   }
   process.once('SIGTERM', shutdown)
   process.once('SIGINT', shutdown)
+  // A restart ends every release: fail what it interrupted and drop their locks before anyone can ask.
+  const recovered = app.releases.recover()
   await app.listen({ host: config.listen.host, port: config.listen.port })
-  audit.append({ action: 'hub.start', outcome: 'info', actor: null, details: { name: config.name } })
+  audit.append({ action: 'hub.start', outcome: 'info', actor: null, details: { name: config.name, recovered } })
 }
 
 function findOnPath(name: string): string | null {

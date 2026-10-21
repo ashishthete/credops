@@ -1,7 +1,7 @@
 import { lstat, readFile, stat } from 'node:fs/promises'
 import { Socket } from 'node:net'
 import { isAbsolute, join, relative, sep } from 'node:path'
-import { OpenSSHAgent } from 'ssh2'
+import ssh2 from 'ssh2'
 import type { AuthenticationType, AuthHandlerMiddleware, GetStreamCallback, KeyboardInteractiveAuthMethod } from 'ssh2'
 import type { IdentityRef } from '../../shared/inventory'
 import type { SshConfigMatch, SshConfigTarget } from '../inventory/ssh-config'
@@ -41,7 +41,7 @@ const AGENT_ASK_MS = 1000
 export type AgentKeyCount = number | null | 'unreachable'
 
 /** OpenSSHAgent's stream, kept so a probe that times out can close it. */
-class ProbeAgent extends OpenSSHAgent {
+class ProbeAgent extends ssh2.OpenSSHAgent {
   readonly sock = new Socket()
   constructor(private readonly path: string) {
     super(path)

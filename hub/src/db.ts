@@ -93,12 +93,50 @@ CREATE TABLE env_locks(environment_id TEXT PRIMARY KEY REFERENCES environments(i
   CHECK (kind = 'release' OR frozen_reason IS NULL), CHECK (kind <> 'manual' OR reason IS NOT NULL));
 `
 
+// Phase 8's release tables without the foreign keys to inventory rows the Hub replaces on republish.
+const RELEASES = `
+CREATE TABLE releases(id TEXT PRIMARY KEY,
+  environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('release','rollback')),
+  status TEXT NOT NULL CHECK (status IN ('preflight','ready','blocked','running','rolling_back',
+    'succeeded','failed','rolled_back','cancelled','discarded')),
+  version TEXT, previous_version TEXT,
+  version_bump TEXT NOT NULL DEFAULT 'none' CHECK (version_bump IN ('major','minor','patch','none')),
+  redeploy INTEGER NOT NULL DEFAULT 0 CHECK (redeploy IN (0,1)),
+  rollback_of TEXT REFERENCES releases(id) ON DELETE SET NULL,
+  options TEXT NOT NULL DEFAULT '{}', service_ids TEXT NOT NULL DEFAULT '[]', release_notes TEXT, error TEXT, playbook TEXT,
+  triggered_by TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT);
+CREATE INDEX releases_env ON releases(environment_id, created_at);
+CREATE TABLE deployment_runs(id TEXT PRIMARY KEY,
+  release_id TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+  deployment_id TEXT,
+  deployment_name TEXT NOT NULL, host_id TEXT, host_label TEXT NOT NULL, position INTEGER NOT NULL,
+  branch TEXT NOT NULL, previous_commit TEXT, deployed_commit TEXT,
+  commits TEXT NOT NULL DEFAULT '[]', services TEXT NOT NULL DEFAULT '[]',
+  whole_checkout INTEGER NOT NULL DEFAULT 1 CHECK (whole_checkout IN (0,1)), steps TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL CHECK (status IN ('pending','running','succeeded','failed','skipped',
+    'cancelled','rolled_back','rollback_failed')),
+  rolled_back INTEGER NOT NULL DEFAULT 0 CHECK (rolled_back IN (0,1)),
+  backup_file TEXT, started_at TEXT, finished_at TEXT);
+CREATE INDEX deployment_runs_release ON deployment_runs(release_id, position);
+CREATE TABLE run_events(id TEXT PRIMARY KEY,
+  release_id TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL, at TEXT NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL,
+  UNIQUE(release_id, seq));
+CREATE TRIGGER run_events_append_only BEFORE UPDATE ON run_events
+  BEGIN SELECT RAISE(ABORT, 'run_events is append-only'); END;
+-- What each service last deployed. Kept apart from services, whose rows a republish replaces.
+CREATE TABLE service_deploy_state(service_id TEXT PRIMARY KEY, environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+  last_deployed_commit TEXT, last_release_id TEXT);
+`
+
 export const HUB_MIGRATIONS: Migration[] = [
   { version: 1, name: 'core', up: CORE },
   { version: 2, name: 'registry', up: REGISTRY },
   { version: 3, name: 'secrets', up: SECRETS },
   { version: 4, name: 'locks', up: LOCKS },
   { version: 5, name: 'services', up: SERVICES },
+  { version: 6, name: 'releases', up: RELEASES },
 ]
 
 export function openHubDb(file: string): HubDb {

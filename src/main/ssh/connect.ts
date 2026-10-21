@@ -1,5 +1,5 @@
-import { Client } from 'ssh2'
-import type { ClientChannel } from 'ssh2'
+import ssh2 from 'ssh2'
+import type { Client, ClientChannel } from 'ssh2'
 import type { IdentityRef, ResolvedHost } from '../../shared/inventory'
 import { READY_TIMEOUT_MS } from '../../shared/ssh'
 import type { HopState, HostKeyInfo, SessionError } from '../../shared/ssh'
@@ -161,7 +161,7 @@ async function dialHop(
       missing: plan.missing ?? [],
       notes: [...plan.notes, ...agentNotes],
     })
-  const client = new Client()
+  const client = new ssh2.Client()
   // Errors after ready also emit 'close', which is what the caller watches.
   client.on('error', () => {})
   track(client)

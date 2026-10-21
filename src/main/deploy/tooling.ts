@@ -22,6 +22,8 @@ export interface DetectOptions {
   execFile: (file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>
   exists: (path: string) => boolean | Promise<boolean>
   now?: () => number
+  /** A fixed ansible-playbook (the Hub's config) instead of searching for one. */
+  ansibleBin?: string
 }
 
 let cache: { at: number; value: Tooling } | null = null
@@ -51,7 +53,8 @@ export async function detectTools(o: DetectOptions): Promise<Tooling> {
   const now = (o.now ?? Date.now)()
   if (cache && now - cache.at < TOOLING_CACHE_MS) return cache.value
   const dirs = searchDirs(o)
-  const [ansible, sshAgent, sshAdd, ssh] = await Promise.all(['ansible-playbook', 'ssh-agent', 'ssh-add', 'ssh'].map((n) => find(n, dirs, o.exists)))
+  const [found, sshAgent, sshAdd, ssh] = await Promise.all(['ansible-playbook', 'ssh-agent', 'ssh-add', 'ssh'].map((n) => find(n, dirs, o.exists)))
+  const ansible = o.ansibleBin ?? found
   const problems: string[] = []
   let ansiblePlaybook: Tooling['ansiblePlaybook'] = null
   let ansibleStatus: Tooling['ansibleStatus'] = 'ok'

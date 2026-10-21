@@ -13,6 +13,10 @@ export interface HubConfig {
   sessionTtlHours: number
   /** File holding the 32-byte base64 master key (mode 0600). The key itself is never in this JSON. */
   masterKeyFile?: string
+  /** ansible-playbook to run releases with; found on PATH when not set. */
+  ansibleBin?: string
+  /** Where release run dirs live (mode 0700); defaults to <dataDir>/runs. */
+  runRoot?: string
 }
 
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -108,6 +112,11 @@ export function loadConfig(file: string): HubConfig {
   }
   if (root.masterKey !== undefined) bad('masterKey', 'is not allowed here; use masterKeyFile or OPSDECK_HUB_MASTER_KEY')
 
+  const ansibleBin = root.ansibleBin === undefined ? undefined : str(root.ansibleBin, 'ansibleBin')
+  if (ansibleBin !== undefined && !ansibleBin.startsWith('/')) bad('ansibleBin', 'must be an absolute path')
+  const runRoot = root.runRoot === undefined ? undefined : str(root.runRoot, 'runRoot')
+  if (runRoot !== undefined && !runRoot.startsWith('/')) bad('runRoot', 'must be an absolute path')
+
   return {
     name,
     listen: { host, port: port as number },
@@ -118,6 +127,8 @@ export function loadConfig(file: string): HubConfig {
     firstAdmin,
     sessionTtlHours: ttl as number,
     ...(masterKeyFile ? { masterKeyFile } : {}),
+    ...(ansibleBin ? { ansibleBin } : {}),
+    ...(runRoot ? { runRoot } : {}),
   }
 }
 

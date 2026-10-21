@@ -80,6 +80,7 @@ export const HUB_AUDIT_ACTIONS = [
   'release.finish',
   'release.cancel',
   'release.rollback',
+  'release.discard',
   'deploy.lock_break',
   'notify.sent',
   'notify.failed',

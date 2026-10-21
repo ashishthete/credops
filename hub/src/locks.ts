@@ -129,6 +129,13 @@ export class EnvLocks {
     return toLock(row)
   }
 
+  /** Moves a release lock from the id it was taken under to the release row's real id. */
+  rebind(environmentId: string, from: string, to: string): void {
+    const res = this.db.prepare("UPDATE env_locks SET release_id = ? WHERE environment_id = ? AND kind = 'release' AND release_id = ?").run(to, environmentId, from)
+    if (Number(res.changes) !== 1) throw new HubHttpError(409, 'conflict', 'The environment lock was lost')
+    this.emit(environmentId)
+  }
+
   /** Ends a release lock; the holder's set-aside freeze comes back if it has not expired. */
   releaseFor(releaseId: string): void {
     const ids = inTransaction(this.db, () => this.endReleases("kind = 'release' AND release_id = ?", [releaseId]))
