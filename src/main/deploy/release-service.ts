@@ -1219,7 +1219,7 @@ export class ReleaseService {
           throw new DeployError('INVALID_STATE', `${e.name} was deployed since preflight; run preflight again`)
         }
       }
-      if (run.deploymentId === null || run.services.length === 0) continue
+      if (run.deploymentId === null || (run.services.length === 0 && !run.wholeCheckout)) continue
       const inCheckout = [...now.values()].filter((s) => s.deploymentId === run.deploymentId).map((s) => s.id)
       const mine = new Set(run.services.map((e) => e.id))
       // A whole run lists every service the checkout had; a partial one left at least one out.
@@ -1228,12 +1228,13 @@ export class ReleaseService {
     }
   }
 
-  /** Manual rollback only while no later release (of either kind) has touched any service the rollback rebuilds. */
+  /** Manual rollback only while no later release (of either kind) has deployed any service the rollback rebuilds. */
   private assertLatestTouching(src: ReleaseDetail, eligible: DeploymentRunMeta[]): void {
     // Names in run order, though the rollback walks the runs last first.
     const entries = [...eligible].reverse().flatMap((r) => r.services)
     const latest = this.d.releases.latestTouching(entries.map((e) => e.id))
-    const names = [...new Set(entries.filter((e) => (latest.get(e.id) ?? src.id) !== src.id).map((e) => e.name))]
+    // Only a newer deploy blocks; a run of this release that failed leaves an older one (or none) as the latest.
+    const names = [...new Set(entries.filter((e) => (latest.get(e.id) ?? src.id) > src.id).map((e) => e.name))]
     if (names.length > 0) throw new DeployError('INVALID_STATE', `Can't roll back: ${listNames(names)} ${names.length === 1 ? 'was' : 'were'} deployed again since this release`)
   }
 

@@ -145,6 +145,13 @@ const SELECT = `SELECT r.*, e.name AS environment_name,
  * Releases, their per-deployment runs and the append-only event stream. Holds no secrets: events are
  * redacted by the engine before they get here. `transaction()` lets a caller group run updates with events.
  */
+/**
+ * A run (`d`) of release `r` that left its services deployed: a release run that succeeded and was not rolled back, in a
+ * release that was not rolled back, or a rollback run that succeeded (rollback runs end `rolled_back`).
+ */
+const DEPLOYED = `((r.kind = 'release' AND r.status <> 'rolled_back' AND d.status = 'succeeded' AND d.rolled_back = 0)
+  OR (r.kind = 'rollback' AND d.status = 'rolled_back'))`
+
 export class ReleaseStore {
   private readonly db: Db
   private readonly now: () => Date
@@ -277,7 +284,10 @@ export class ReleaseStore {
     if (res.changes === 0) throw new Error('deployment run not found')
   }
 
-  /** Each service → the newest started release (either kind) with a run that lists it. */
+  /**
+   * Each service → the newest started release (either kind) whose run left it deployed (see `DEPLOYED`). A failed or
+   * rolled-back release does not count.
+   */
   latestTouching(serviceIds: string[]): Map<string, string> {
     const out = new Map<string, string>()
     if (serviceIds.length === 0) return out
@@ -285,7 +295,7 @@ export class ReleaseStore {
       .prepare(
         `SELECT j.value ->> '$.id' AS service_id, MAX(r.id) AS release_id
          FROM releases r JOIN deployment_runs d ON d.release_id = r.id, json_each(d.services) j
-         WHERE r.started_at IS NOT NULL AND j.value ->> '$.id' IN (SELECT value FROM json_each(?))
+         WHERE r.started_at IS NOT NULL AND j.value ->> '$.id' IN (SELECT value FROM json_each(?)) AND ${DEPLOYED}
          GROUP BY service_id`,
       )
       .all(JSON.stringify(serviceIds)) as { service_id: string; release_id: string }[]
@@ -302,9 +312,7 @@ export class ReleaseStore {
       .prepare(
         `SELECT r.id AS release_id, j.value ->> '$.deployedCommit' AS commit_sha
          FROM releases r JOIN deployment_runs d ON d.release_id = r.id, json_each(d.services) j
-         WHERE r.started_at IS NOT NULL AND r.id < ? AND j.value ->> '$.id' = ?
-           AND ((r.kind = 'release' AND r.status <> 'rolled_back' AND d.status = 'succeeded' AND d.rolled_back = 0)
-             OR (r.kind = 'rollback' AND d.status = 'rolled_back'))
+         WHERE r.started_at IS NOT NULL AND r.id < ? AND j.value ->> '$.id' = ? AND ${DEPLOYED}
          ORDER BY r.id DESC LIMIT 1`,
       )
       .get(beforeReleaseId, serviceId) as { release_id: string; commit_sha: string | null } | undefined

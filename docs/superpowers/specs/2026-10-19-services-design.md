@@ -88,6 +88,10 @@ playbook for exactly those** the way deploys happen.
 - The protected-environment typed-name confirmation applies to every deploy
   and rollback into a protected environment (existing rule; Phase 8
   `ReleaseConfirm.typedName`).
+- Creating, editing or deleting a service or checkout in a protected
+  environment through the UI asks for no typed name, because nothing runs
+  until a deploy or rollback, which does ask. Config import does ask, because
+  it is a bulk retarget.
 - No new npm dependencies.
 
 ## 6. Reconciling with Phase 8
@@ -182,10 +186,14 @@ migration 7 in place (see Migration below).
    - runs `build`/`up` in the same form the release used.
 
    A manual rollback is allowed only if, for every service the release
-   deployed, it is the latest release that touched that service. Otherwise it
-   is refused and the refusal names the services deployed since. On rollback,
-   each service's `last_deployed_commit` goes back to the previous commit
-   stored for it in `deployment_runs.services`.
+   deployed, no later release left that service deployed. A later release
+   that failed, or was rolled back, does not count, so "the new release
+   failed, roll back one more" works. Otherwise it is refused and the refusal
+   names the services deployed since. On rollback, each service's
+   `last_deployed_commit` is set to the commit the rollback checked out for
+   its checkout (the run's previous commit), not each service's own stored
+   previous commit: the whole checkout moves together, so siblings that had
+   different last commits all end at the one that is now on the host.
 10. **Release record.** `releases` gains `service_ids TEXT` (JSON, the
     selected service ids, as confirmed). Each `deployment_runs` row gains
     `services TEXT`: a JSON array with one entry per deployed service, holding
@@ -223,7 +231,7 @@ no data is migrated. Migration 7 is amended in place:
 | `compose_service` | Required for kind `service`: the service name in the compose file (`esg`, `js_foundry`, `fastapi-app`, …). Unique per checkout. The form defaults it to the service name (controller's call). |
 | `url` | Optional, http(s), `MAX_URL`. Used for Open and for health checks. |
 | `url_check_from` | `mac` (default) or `host`: where the health check of `url` runs (controller's call). |
-| `last_deployed_commit`, `last_release_id` | Set when a release that included it succeeds. A rollback restores the previous commit stored for it in `deployment_runs.services`. |
+| `last_deployed_commit`, `last_release_id` | Set when a release that included it succeeds. A rollback sets it to the commit the rollback checked out for its checkout. |
 | **kind `db`** | |
 | `db_engine` | `postgres`, `mysql`, `mongodb`, `redis` or `other`, used for the icon and the default port. |
 | `db_address`, `db_port` | Address as seen **from the via-host**: a hostname, IP or an inventory host's address. |

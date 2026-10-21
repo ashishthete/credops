@@ -310,11 +310,14 @@ describe('ReleaseStore', () => {
       expect(f.releases.get(id).serviceCount).toBe(0)
     })
 
-    it('latestTouching ignores releases that never started', async () => {
+    it('latestTouching counts only started releases that left the service deployed', async () => {
       const { f, d } = await release()
-      const r1 = rel(f, d, [entry('s1'), entry('s2')])
-      const r2 = rel(f, d, [entry('s2')], { kind: 'rollback' })
-      rel(f, d, [entry('s1'), entry('s2')], { started: false })
+      const r1 = rel(f, d, [entry('s1'), entry('s2')], { runStatus: 'succeeded' })
+      const r2 = rel(f, d, [entry('s2')], { kind: 'rollback', runStatus: 'rolled_back' })
+      rel(f, d, [entry('s1'), entry('s2')], { runStatus: 'succeeded', started: false })
+      rel(f, d, [entry('s1'), entry('s2')], { runStatus: 'failed' })
+      rel(f, d, [entry('s1'), entry('s2')], { runStatus: 'succeeded', status: 'rolled_back' })
+      rel(f, d, [entry('s1'), entry('s2')], { kind: 'rollback', runStatus: 'failed' })
       const m = f.releases.latestTouching(['s1', 's2', 's3'])
       expect(Object.fromEntries(m)).toEqual({ s1: r1.id, s2: r2.id })
       expect(f.releases.latestTouching([]).size).toBe(0)
