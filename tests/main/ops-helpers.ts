@@ -23,6 +23,7 @@ export const idleSessions = { vaultLocked() {}, closeAll() {} }
 export const idleTunnels = { vaultLocked() {}, vaultUnlocked() {}, vaultReset() {} }
 export const idleContainers = { vaultLocked() {}, vaultReset() {} }
 export const idleReleases = { vaultReset() {} }
+export const idleAi = { cancelAll() {} }
 
 export interface ShellHost {
   /** The tmp dir every command runs in; also its `HOME`. */
@@ -193,7 +194,7 @@ export async function makeRunSetup(deps: Partial<RunManagerDeps> = {}) {
     ...deps,
   })
   // The app's own wiring: runs, then links, then the broker on lock; runs, then links before a reset's erase.
-  wireVaultHooks(f.vault, { sessions: idleSessions, tunnels: idleTunnels, runs, links, containers: idleContainers, releases: idleReleases, prompts: broker })
+  wireVaultHooks(f.vault, { sessions: idleSessions, tunnels: idleTunnels, runs, links, containers: idleContainers, releases: idleReleases, ai: idleAi, prompts: broker })
   onTestFinished(() => {
     runs.closeAll()
     links.closeAll()

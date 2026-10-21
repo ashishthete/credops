@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { AiRequests } from '../../src/main/ai/claude'
 import { wireVaultHooks, type VaultHookTargets } from '../../src/main/vault/hooks'
 import { SecretStore } from '../../src/main/vault/secret-store'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
@@ -15,6 +16,7 @@ function recording() {
     links: { vaultLocked: rec('links.vaultLocked'), closeForReset: rec('links.closeForReset') },
     containers: { vaultLocked: rec('containers.vaultLocked'), vaultReset: rec('containers.vaultReset') },
     releases: { vaultReset: rec('releases.vaultReset') },
+    ai: { cancelAll: rec('ai.cancelAll') },
     prompts: { cancelAll: rec('prompts.cancelAll') },
   }
   return { calls, targets }
@@ -35,17 +37,34 @@ describe('wireVaultHooks', () => {
       'runs.vaultLocked',
       'containers.vaultLocked',
       'links.vaultLocked',
+      'ai.cancelAll',
       'prompts.cancelAll',
     ])
     await vault.reset('RESET')
     expect(calls.splice(0)).toEqual([
       'releases.vaultReset',
+      'ai.cancelAll',
       'sessions.closeAll(reset)',
       'tunnels.vaultReset',
       'runs.vaultReset',
       'containers.vaultReset',
       'links.closeForReset',
     ])
+  })
+
+  it('a lock and a reset each abort every AI request in flight', async () => {
+    const { vault } = makeVault()
+    const { targets } = recording()
+    const ai = new AiRequests()
+    wireVaultHooks(vault, { ...targets, ai })
+    await vault.setup('correct horse')
+    const before = [ai.start(), ai.start()]
+    vault.lock('manual')
+    expect(before.map((r) => r.signal.aborted)).toEqual([true, true])
+    // Ids are free again, and a request started while locked (none should be) is still stopped by a reset.
+    const during = ai.start(before[0].id)
+    await vault.reset('RESET')
+    expect(during.signal.aborted).toBe(true)
   })
 
   it('stops everything before the erase, while the secrets are still there', async () => {

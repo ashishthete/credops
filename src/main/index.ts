@@ -268,7 +268,6 @@ if (!app.requestSingleInstanceLock()) {
       qa.onState((item) => pushEvent(mainWindow, 'qa:state', item))
       const aiRequests = new AiRequests()
       const claude = new ClaudeClient({ settings: settingsStore, secrets, vault: service, knownSecrets })
-      service.onLock(() => aiRequests.cancelAll())
       const notesIdentities = identities
       const notesHosts = hosts
       const notesDeps: NotesDeps = {
@@ -489,7 +488,7 @@ if (!app.requestSingleInstanceLock()) {
       // Lock, unlock and reset hooks (order and reasons in vault/hooks.ts). Quit (before-quit) stops
       // tunnels, closes sessions, cancels runs (writing their run.finish), stops container log
       // follows, closes exec links, and only then locks the vault.
-      wireVaultHooks(service, { sessions: manager, tunnels: runner, runs, links, containers, releases: release, prompts })
+      wireVaultHooks(service, { sessions: manager, tunnels: runner, runs, links, containers, releases: release, ai: aiRequests, prompts })
       stopAutoLock = new AutoLock({
         idleSeconds: () => powerMonitor.getSystemIdleTime(),
         minutes: () => service.autoLockMinutes(),

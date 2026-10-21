@@ -206,9 +206,21 @@ export function parseEnvTemplate(text: string): { lines: EnvLine[]; secretIds: s
   return { lines, secretIds, errors }
 }
 
-/** The template with every `${secret:…}` value emptied (`KEY=`), each line and line ending kept. */
+/**
+ * The template with every value parseEnvTemplate reads as a secret reference emptied (`KEY=`);
+ * comments, other lines and line endings are kept as they are.
+ */
 export function stripEnvSecretRefs(text: string): string {
-  return text.replace(/^([^=\r\n]+)=\$\{secret:[^}\r\n]*\}(?=\r?$)/gm, '$1=')
+  return text
+    .split('\n')
+    .map((line) => {
+      const cr = line.endsWith('\r') ? '\r' : ''
+      const raw = cr ? line.slice(0, -1) : line
+      const eq = raw.indexOf('=')
+      if (raw.trimStart().startsWith('#') || eq <= 0 || !SECRET_REF.test(raw.slice(eq + 1))) return line
+      return `${raw.slice(0, eq + 1)}${cr}`
+    })
+    .join('\n')
 }
 
 const shq = (v: string): string => `'${v.replace(/'/g, `'\\''`)}'`

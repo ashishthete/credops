@@ -72,6 +72,7 @@ describe('forgot password', () => {
     expect(within(dialog).getByText(/permanently erases every secret in every vault/)).toBeInTheDocument()
     expect(within(dialog).getByText(/turns off Touch ID quick unlock/)).toBeInTheDocument()
     expect(within(dialog).getByText('Running deploys and rollbacks are cancelled first, and open terminals and tunnels are closed.')).toBeInTheDocument()
+    expect(within(dialog).getByText('A host whose deploy is cancelled may stay deploy-locked; break the lock from its release.')).toBeInTheDocument()
     expect(within(dialog).getByText(/^Deployment secret links are cleared: become passwords and \.env template secrets/)).toBeInTheDocument()
     expect(
       within(dialog).getByText('Products, environments, hosts, tunnels and other settings are kept. Files in ~/.ssh are not touched.'),
