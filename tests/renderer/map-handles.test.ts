@@ -8,10 +8,11 @@ describe('tunnel edge handles', () => {
     const graph = buildGraph({
       data: {
         products: [product({ id: 'p1', name: 'Web' })],
-        environments: [environment({ id: 'e1', name: 'Prod', productIds: ['p1'], hosts: [{ hostId: 'h1', role: 'app' }] })],
+        environments: [environment({ id: 'e1', name: 'Prod', productId: 'p1', hosts: [{ hostId: 'h1', role: 'app' }] })],
         hosts: [host({ id: 'h1', label: 'web' })],
         identities: [],
         vaults: [],
+        regions: [],
       },
       tunnels: [
         tunnelMeta({ id: 'tl', hostId: 'h1', environmentId: 'e1', type: 'L' }),

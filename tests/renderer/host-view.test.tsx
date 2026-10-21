@@ -11,7 +11,7 @@ import { Toaster } from '../../src/renderer/src/ui/Toaster'
 import { vaultStatusStore } from '../../src/renderer/src/vault/status'
 import type { HostMeta, ResolvedHost } from '../../src/shared/inventory'
 import { DEFAULT_VAULT_ID, type IdentityMeta, type SshKeyMeta, type VaultMeta } from '../../src/shared/vault'
-import { defaultVault, environment, host, mockBridge, tunnelMeta, tunnelRuntime, vaultStatus } from './helpers'
+import { REGION, defaultVault, environment, host, mockBridge, tunnelMeta, tunnelRuntime, vaultStatus } from './helpers'
 
 // framer-motion caches matchMedia, so reduced motion is driven through useMotionSafe (F18).
 const motion = vi.hoisted(() => ({ safe: true }))
@@ -85,6 +85,7 @@ function world(): InventoryData {
     ],
     identities: [deploy],
     vaults: [defaultVault],
+    regions: [REGION],
   }
 }
 
@@ -809,6 +810,7 @@ describe('HostDialog', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Create host' }))
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith('host:create', {
+        regionId: REGION.id,
         label: 'db-2',
         address: '10.0.0.9',
         port: null,
@@ -1038,5 +1040,107 @@ describe('HostDialog', () => {
       expect(within(dialog).getByLabelText('Host')).toHaveValue('web1')
       expect(within(dialog).getByLabelText('Environment')).toHaveValue('')
     })
+  })
+})
+
+describe('regions', () => {
+  const noop = () => {}
+  const EU = { ...REGION, id: 'region-eu', code: 'eu-west-1', displayName: 'Ireland' }
+  /** Adds eu-west-1 and app-eu-1, a host there in no environment. */
+  const withEu = (): InventoryData => {
+    const data = world()
+    data.regions = [REGION, EU]
+    data.hosts = [...data.hosts, host({ id: 'appeu', label: 'app-eu-1', regionId: EU.id })]
+    return data
+  }
+
+  it('HostView shows the region and moves the host with Change region…', async () => {
+    const user = userEvent.setup()
+    const invoke = setup(withEu())
+    render(<HostView hostId="web1" environmentId="prod" />)
+    expect(await screen.findByTitle('Test')).toHaveTextContent('test-1')
+    await user.click(screen.getByRole('button', { name: 'Change region…' }))
+    const dialog = await screen.findByRole('dialog', { name: "Change web-1's region" })
+    const move = within(dialog).getByRole('button', { name: 'Move host' })
+    expect(move).toBeDisabled()
+    await user.selectOptions(within(dialog).getByLabelText('Region'), EU.id)
+    await user.click(move)
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('host:update', 'web1', { regionId: EU.id }))
+  })
+
+  it("joining an environment in a region it doesn't use hints, but still joins", async () => {
+    const user = userEvent.setup()
+    const invoke = setup(withEu())
+    render(<HostView hostId="appeu" />)
+    await user.click(await screen.findByRole('button', { name: 'Add to environment…' }))
+    await user.click(screen.getByRole('menuitem', { name: /prod/ }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:putHost', 'prod', 'appeu', 'app'))
+    expect(await screen.findByRole('status')).toHaveTextContent("prod's hosts are all in test-1; app-eu-1 is in eu-west-1.")
+    await user.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('an empty environment, or one already in the region, gives no hint', async () => {
+    const user = userEvent.setup()
+    const invoke = setup(withEu())
+    render(<HostView hostId="appeu" />)
+    await user.click(await screen.findByRole('button', { name: 'Add to environment…' }))
+    await user.click(screen.getByRole('menuitem', { name: /staging/ }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:putHost', 'staging', 'appeu', 'app'))
+    expect(await screen.findByRole('combobox', { name: 'Role in staging' })).toBeInTheDocument()
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('HostDialog needs a region before it creates', async () => {
+    const user = userEvent.setup()
+    const invoke = setup(withEu())
+    render(<HostDialog open onClose={noop} onSaved={noop} />)
+    const dialog = screen.getByRole('dialog', { name: 'New host' })
+    await user.type(within(dialog).getByLabelText('Label'), 'db-2')
+    await user.type(within(dialog).getByLabelText('Address'), '10.0.0.9')
+    expect(within(dialog).getByLabelText('Region')).toHaveValue('')
+    expect(within(dialog).getByRole('button', { name: 'Create host' })).toBeDisabled()
+    await user.selectOptions(within(dialog).getByLabelText('Region'), EU.id)
+    await user.click(within(dialog).getByRole('button', { name: 'Create host' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('host:create', expect.objectContaining({ label: 'db-2', regionId: EU.id })))
+  })
+
+  it("HostDialog starts in the environment's only region", () => {
+    setup(withEu())
+    render(<HostDialog open presetEnvironment={{ environmentId: 'prod', role: 'app' }} onClose={noop} onSaved={noop} />)
+    expect(screen.getByLabelText('Region')).toHaveValue(REGION.id)
+  })
+
+  it('HostDialog starts empty when the environment spans regions', () => {
+    const data = withEu()
+    data.environments = data.environments.map((e) => (e.id === 'prod' ? { ...e, hosts: [...e.hosts, { hostId: 'appeu', role: 'app' as const }] } : e))
+    setup(data)
+    render(<HostDialog open presetEnvironment={{ environmentId: 'prod', role: 'app' }} onClose={noop} onSaved={noop} />)
+    expect(screen.getByLabelText('Region')).toHaveValue('')
+  })
+
+  it('HostDialog takes the region it was asked for over the guess', () => {
+    setup(withEu())
+    render(<HostDialog open presetRegionId={EU.id} presetEnvironment={{ environmentId: 'prod', role: 'app' }} onClose={noop} onSaved={noop} />)
+    expect(screen.getByLabelText('Region')).toHaveValue(EU.id)
+  })
+
+  it('with no regions, the select offers only New region…', () => {
+    const data = world()
+    data.regions = []
+    setup(data)
+    render(<HostDialog open onClose={noop} onSaved={noop} />)
+    const offered = within(screen.getByLabelText('Region'))
+      .getAllByRole('option', { hidden: true })
+      .filter((o) => !(o as HTMLOptionElement).hidden)
+    expect(offered.map((o) => o.textContent)).toEqual(['New region…'])
+  })
+
+  it('the jump host picker groups hosts by region code', () => {
+    setup(withEu())
+    render(<HostDialog open onClose={noop} onSaved={noop} />)
+    const groups = within(screen.getByLabelText('Jump host')).getAllByRole('group')
+    expect(groups.map((g) => g.getAttribute('label'))).toEqual(['eu-west-1', 'test-1'])
+    expect(within(groups[0]).getAllByRole('option').map((o) => o.textContent)).toEqual(['app-eu-1'])
   })
 })

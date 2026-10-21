@@ -19,6 +19,7 @@ import { CANCELLED_RUNNING } from '../../src/main/ops/run-manager'
 import { auditRows } from './vault-helpers'
 import { GATED, STAGING_HOSTS, makeRunSetup } from './ops-helpers'
 import { startServer } from './ssh-server'
+import { PRODUCT, REGION } from './inventory-helpers'
 
 type Setup = Awaited<ReturnType<typeof makeRunSetup>>
 
@@ -74,7 +75,7 @@ describe('RunManager', () => {
     expect(run.hosts.map((h) => h.label)).toEqual(['db-1', 'app-2'])
     expect(run.environmentId).toBeNull()
     await t.finished(run.id)
-    t.envs.create({ name: 'empty', color: '#aabbcc' })
+    t.envs.create({ productId: PRODUCT, name: 'empty', color: '#aabbcc' })
     const empty = t.envs.list().find((e) => e.name === 'empty')!
     expect(() => t.runs.start({ target: { kind: 'environment', environmentId: empty.id }, command: text('true') })).toThrow(
       /^No hosts match this target$/,
@@ -253,7 +254,7 @@ describe('RunManager', () => {
 
   it('a dial failure fails that host with the dial error', async () => {
     const t = await makeRunSetup()
-    const bad = t.hosts.create({ label: 'gone-1', address: '127.0.0.1', port: 1 }).id
+    const bad = t.hosts.create({ regionId: REGION, label: 'gone-1', address: '127.0.0.1', port: 1 }).id
     const run = t.runs.start({ target: { kind: 'hosts', hostIds: [t.ids['app-1']!, bad] }, command: text('true') })
     const done = await t.finished(run.id)
     expect(done.hosts.map((h) => h.state)).toEqual(['ok', 'failed'])
@@ -301,7 +302,7 @@ describe('RunManager', () => {
 
   it('hosts in more than one protected environment are refused', async () => {
     const t = await makeRunSetup()
-    const dr = t.envs.create({ name: 'dr', color: '#cc0000', protected: true })
+    const dr = t.envs.create({ productId: PRODUCT, name: 'dr', color: '#cc0000', protected: true })
     t.envs.putHost(dr.id, t.ids['app-1']!, 'app')
     const req: RunRequest = { target: onHosts(t, ['app-1', 'prod-app-1']), command: text('uptime'), confirm: 'prod' }
     expect(() => t.runs.start(req)).toThrow(MULTIPLE_PROTECTED_MESSAGE)
@@ -419,7 +420,7 @@ describe('RunManager', () => {
     const t = await makeRunSetup()
     // An untrusted key asks a host-key prompt, so the dial waits until the lock.
     const untrusted = await startServer({ users: [{ username: 'x', password: 'y' }] })
-    const id = t.hosts.create({ label: 'new-1', address: '127.0.0.1', port: untrusted.port }).id
+    const id = t.hosts.create({ regionId: REGION, label: 'new-1', address: '127.0.0.1', port: untrusted.port }).id
     try {
       const run = t.runs.start({ target: { kind: 'hosts', hostIds: [id] }, command: text('true') })
       await t.reached(run, 'new-1', 'connecting')
@@ -436,7 +437,7 @@ describe('RunManager', () => {
     const t = await makeRunSetup()
     // An untrusted key asks a host-key prompt, so the dial waits until the cancel.
     const untrusted = await startServer({ users: [{ username: 'x', password: 'y' }] })
-    const id = t.hosts.create({ label: 'new-1', address: '127.0.0.1', port: untrusted.port }).id
+    const id = t.hosts.create({ regionId: REGION, label: 'new-1', address: '127.0.0.1', port: untrusted.port }).id
     try {
       const run = t.runs.start({ target: { kind: 'hosts', hostIds: [id] }, command: text('true') })
       await t.reached(run, 'new-1', 'connecting')

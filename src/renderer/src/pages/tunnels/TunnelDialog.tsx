@@ -4,6 +4,7 @@ import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type
 import { MAX_ADDRESS } from '../../../../shared/inventory'
 import { MAX_BIND_ADDRESS, TUNNEL_ROUTE_FIELDS, isLoopback, type TunnelInput, type TunnelMeta, type TunnelType } from '../../../../shared/tunnels'
 import { MAX_LABEL } from '../../../../shared/vault'
+import { hostsByRegion } from '../../inventory/regions'
 import { useInventory } from '../../inventory/store'
 import {
   PLACEHOLDER,
@@ -89,7 +90,8 @@ export function TunnelDialog({ request, onClose }: TunnelDialogProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gone, requestKey])
 
-  const hosts = useMemo(() => [...(data?.hosts ?? [])].sort((a, b) => a.label.localeCompare(b.label)), [data])
+  const hosts = useMemo(() => data?.hosts ?? [], [data])
+  const hostGroups = useMemo(() => hostsByRegion(data?.regions ?? [], hosts), [data, hosts])
   const environments = useMemo(() => data?.environments ?? [], [data])
   const hostEnvs = useMemo(
     () => environments.filter((e) => e.hosts.some((h) => h.hostId === form.hostId)).sort((a, b) => a.name.localeCompare(b.name)),
@@ -217,10 +219,14 @@ export function TunnelDialog({ request, onClose }: TunnelDialogProps) {
             <option value="" disabled>
               Choose a host
             </option>
-            {hosts.map((h) => (
-              <option key={h.id} value={h.id}>
-                {h.label}
-              </option>
+            {hostGroups.map((g) => (
+              <optgroup key={g.hosts[0].regionId} label={g.region?.code ?? 'Unknown region'}>
+                {g.hosts.map((h) => (
+                  <option key={h.id} value={h.id}>
+                    {h.label}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </SelectField>
           <SelectField

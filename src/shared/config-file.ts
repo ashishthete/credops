@@ -41,7 +41,9 @@ import {
   MAX_TAGS,
   MAX_URL,
   OS_ICONS,
+  MAX_PROVIDER,
   PRODUCT_ICONS,
+  REGION_CODE,
   REPO_URL,
   TAG,
   UNSAFE_SSH_CHAR,
@@ -57,7 +59,7 @@ import { BIND_ADDRESS, MAX_BIND_ADDRESS, MAX_TUNNELS, type TunnelType } from './
 import { IDENTITY_AUTHS, MAX_LABEL, MAX_SECRET_NAME, MAX_USERNAME, MAX_VAULT_NAME, VAULT_COLOR, type IdentityAuth } from './vault'
 
 export const CONFIG_FORMAT = 'opsdeck-config'
-export const CONFIG_VERSION = 1
+export const CONFIG_VERSION = 2
 export const CONFIG_MAX_BYTES = 5 * 1024 * 1024
 export const CONFIG_FILE_NAME = 'opsdeck-config.json'
 
@@ -70,6 +72,12 @@ export interface ItemRef {
   itemName: string
 }
 
+export interface ConfigRegion {
+  id: string
+  code: string
+  provider: string
+  displayName: string
+}
 export interface ConfigProduct {
   id: string
   name: string
@@ -90,6 +98,8 @@ export interface ConfigHost {
   id: string
   label: string
   address: string
+  /** Null only in a version 1 file: the import puts those hosts in the region the user picks. */
+  regionId: string | null
   port: number | null
   identityId: string | null
   jumpHostId: string | null
@@ -111,7 +121,8 @@ export interface ConfigEnvironment {
   versioned: boolean
   autoRollback: boolean
   domain: string | null
-  productIds: string[]
+  /** Null only for a version 1 environment that had no product: the import puts it in Unassigned. */
+  productId: string | null
   hosts: { hostId: string; role: HostRole }[]
 }
 export interface ConfigTunnel {
@@ -190,6 +201,7 @@ export interface ConfigFile {
   exportedAt: string
   /** Keys `ref-1`, `ref-2`…, assigned in (vaultName, itemName) order. */
   secretRefs: Record<string, ItemRef>
+  regions: ConfigRegion[]
   products: ConfigProduct[]
   identities: ConfigIdentity[]
   hosts: ConfigHost[]
@@ -197,9 +209,15 @@ export interface ConfigFile {
   tunnels: ConfigTunnel[]
   deployments: ConfigDeployment[]
   services: ConfigService[]
+  /**
+   * Set when the file was version 1 (read, never written): each environment's product links as they were, so the
+   * import can say what it kept. `productId` holds the one kept, the product whose name sorts first.
+   */
+  fromV1?: { productIds: Record<string, string[]> }
 }
 
 export interface ConfigCounts {
+  regions: number
   products: number
   identities: number
   hosts: number
@@ -210,6 +228,7 @@ export interface ConfigCounts {
 }
 
 export const countConfig = (file: ConfigFile): ConfigCounts => ({
+  regions: file.regions.length,
   products: file.products.length,
   identities: file.identities.length,
   hosts: file.hosts.length,
@@ -372,6 +391,13 @@ const envTemplate: Check<string | null> = nullable((value, path, errs) => {
   return BAD
 })
 
+const region = object({
+  id,
+  code: str({ min: 1, max: 63, pattern: REGION_CODE }),
+  provider: str({ max: MAX_PROVIDER, ok: (s) => !UNSAFE_SSH_CHAR.test(s), rule: 'has control or format characters' }),
+  displayName: text(MAX_NAME),
+}) as Check<ConfigRegion>
+
 const product = object({
   id,
   name: text(MAX_NAME),
@@ -393,7 +419,7 @@ const identity = object(
   (o, path, errs) => (o.auth === 'key' && o.key === null ? fail(errs, `${path}.key`, 'is required for key auth') !== BAD : true),
 ) as Check<ConfigIdentity>
 
-const host = object({
+const hostFields = {
   id,
   label: text(MAX_LABEL),
   address,
@@ -406,9 +432,10 @@ const host = object({
   keepaliveSec: nullable(int(0, MAX_KEEPALIVE_SEC)),
   envVars,
   vaults: vaultRefs,
-}) as Check<ConfigHost>
+}
+const host = object({ ...hostFields, regionId: uuid }) as Check<ConfigHost>
 
-const environment = object({
+const environmentFields = {
   id,
   name: text(MAX_NAME),
   color,
@@ -419,9 +446,9 @@ const environment = object({
   versioned: bool,
   autoRollback: bool,
   domain: nullable(str({ max: MAX_URL, ok: (s) => parseEnvDomain(s).ok, rule: 'must be a domain or http(s) URL' })),
-  productIds: array(uuid, MAX_LINKS),
   hosts: array(object({ hostId: uuid, role: oneOf(HOST_ROLES) }), MAX_LINKS),
-}) as Check<ConfigEnvironment>
+}
+const environment = object({ ...environmentFields, productId: uuid }) as Check<ConfigEnvironment>
 
 const tunnel = object(
   {
@@ -514,19 +541,64 @@ const service: Check<ConfigService> = (value, path, errs) => {
 
 // No limit of their own for products, identities, hosts or environments: the 5 MB cap bounds them.
 const BIG = Number.MAX_SAFE_INTEGER
+const version =
+  (n: number): Check<number> =>
+  (v, path, errs) =>
+    v === n ? n : fail(errs, path, 'is not a supported version')
+// Both versions check the keys in file order, so errors come out in that order too.
+const exportedAt = str({ max: 64, ok: (s) => !Number.isNaN(Date.parse(s)), rule: 'must be an ISO timestamp' })
+const secretRefs = record(SECRET_REF_KEY, itemRef, BIG)
+const tail = {
+  tunnels: array(tunnel, MAX_TUNNELS),
+  deployments: array(deployment, MAX_DEPLOYMENTS),
+  services: array(service, MAX_SERVICES),
+}
 const fileShape = object({
   format: oneOf([CONFIG_FORMAT] as const),
-  version: (v: unknown, path: string, errs: string[]) => (v === CONFIG_VERSION ? CONFIG_VERSION : fail(errs, path, 'is not a supported version')),
-  exportedAt: str({ max: 64, ok: (s) => !Number.isNaN(Date.parse(s)), rule: 'must be an ISO timestamp' }),
-  secretRefs: record(SECRET_REF_KEY, itemRef, BIG),
+  version: version(CONFIG_VERSION),
+  exportedAt,
+  secretRefs,
+  regions: array(region, BIG),
   products: array(product, BIG),
   identities: array(identity, BIG),
   hosts: array(host, BIG),
   environments: array(environment, BIG),
-  tunnels: array(tunnel, MAX_TUNNELS),
-  deployments: array(deployment, MAX_DEPLOYMENTS),
-  services: array(service, MAX_SERVICES),
+  ...tail,
 }) as Check<ConfigFile>
+
+/** Version 1: no regions, and an environment had any number of products. */
+type ConfigFileV1 = Omit<ConfigFile, 'version' | 'regions' | 'hosts' | 'environments' | 'fromV1'> & {
+  version: 1
+  hosts: Omit<ConfigHost, 'regionId'>[]
+  environments: (Omit<ConfigEnvironment, 'productId'> & { productIds: string[] })[]
+}
+const fileShapeV1 = object({
+  format: oneOf([CONFIG_FORMAT] as const),
+  version: version(1),
+  exportedAt,
+  secretRefs,
+  products: array(product, BIG),
+  identities: array(identity, BIG),
+  hosts: array(object(hostFields), BIG),
+  environments: array(object({ ...environmentFields, productIds: array(uuid, MAX_LINKS) }), BIG),
+  ...tail,
+}) as Check<ConfigFileV1>
+
+/** Reads a version 1 file as version 2: hosts without a region, and each environment in the product whose name sorts first. */
+function upgradeV1(v1: ConfigFileV1): ConfigFile {
+  // Lowercased name then id, compared as the upgrade's SQL does.
+  const key = new Map(v1.products.map((p) => [p.id, `${p.name.toLowerCase()}\u0000${p.id}`]))
+  const first = (ids: string[]): string | null => [...ids].sort((a, b) => ((key.get(a) ?? a) < (key.get(b) ?? b) ? -1 : 1))[0] ?? null
+  const { version: _, hosts, environments, ...rest } = v1
+  return {
+    ...rest,
+    version: CONFIG_VERSION,
+    regions: [],
+    hosts: hosts.map((h) => ({ ...h, regionId: null })),
+    environments: environments.map(({ productIds, ...e }) => ({ ...e, productId: first(productIds) })),
+    fromV1: { productIds: Object.fromEntries(environments.map((e) => [e.id, e.productIds])) },
+  }
+}
 
 /** Duplicate ids and references to ids (or secret refs) that the file doesn't define. */
 function checkReferences(file: ConfigFile, errs: string[]): void {
@@ -538,6 +610,7 @@ function checkReferences(file: ConfigFile, errs: string[]): void {
     })
     return seen
   }
+  const regions = ids(file.regions, 'regions')
   const products = ids(file.products, 'products')
   const identities = ids(file.identities, 'identities')
   const hosts = ids(file.hosts, 'hosts')
@@ -552,6 +625,7 @@ function checkReferences(file: ConfigFile, errs: string[]): void {
 
   file.hosts.forEach((h, i) => {
     const p = `$.hosts[${i}]`
+    ref(regions, 'a region', h.regionId, `${p}.regionId`)
     ref(identities, 'an identity', h.identityId, `${p}.identityId`)
     if (h.jumpHostId === h.id) fail(errs, `${p}.jumpHostId`, "can't be the host itself")
     else ref(hosts, 'a host', h.jumpHostId, `${p}.jumpHostId`)
@@ -560,7 +634,8 @@ function checkReferences(file: ConfigFile, errs: string[]): void {
     const p = `$.environments[${i}]`
     ref(identities, 'an identity', e.defaultIdentityId, `${p}.defaultIdentityId`)
     ref(hosts, 'a host', e.defaultJumpHostId, `${p}.defaultJumpHostId`)
-    e.productIds.forEach((pid, j) => ref(products, 'a product', pid, `${p}.productIds[${j}]`))
+    if (file.fromV1) file.fromV1.productIds[e.id]?.forEach((pid, j) => ref(products, 'a product', pid, `${p}.productIds[${j}]`))
+    else ref(products, 'a product', e.productId, `${p}.productId`)
     e.hosts.forEach((m, j) => ref(hosts, 'a host', m.hostId, `${p}.hosts[${j}].hostId`))
   })
   file.tunnels.forEach((t, i) => {
@@ -605,7 +680,13 @@ export function parseConfigFile(text: string): { ok: true; file: ConfigFile } | 
   if (typeof version === 'number' && version > CONFIG_VERSION) return { ok: false, errors: ['This file is from a newer OpsDeck'] }
 
   const errs: string[] = []
-  const file = fileShape(raw, '$', errs)
+  let file: ConfigFile | typeof BAD
+  if (version === 1) {
+    const v1 = fileShapeV1(raw, '$', errs)
+    file = v1 === BAD ? BAD : upgradeV1(v1)
+  } else {
+    file = fileShape(raw, '$', errs)
+  }
   if (file !== BAD) checkReferences(file, errs)
   if (file === BAD || errs.length > 0) {
     const errors = errs.length > MAX_ERRORS ? [...errs.slice(0, MAX_ERRORS), `and ${errs.length - MAX_ERRORS} more problems`] : errs
@@ -628,6 +709,8 @@ export interface ImportItem {
   reason?: string
   /** For an update: the fields that differ. */
   fields?: string[]
+  /** What the import left alone or mapped, e.g. "region not changed", "kept Leaf, removed Globe". */
+  notes?: string[]
 }
 
 /** A field the import leaves unset because the secret (or the object holding one) isn't here; `reason` says why when it isn't plain. */
@@ -645,6 +728,8 @@ export interface ImportPreview {
   needsSecret: ImportNeedsSecret[]
   /** Existing protected environments the import changes: each name must be typed to confirm. */
   protectedEnvironments: string[]
+  /** A version 1 file adds hosts: the apply needs the region to put them in. */
+  needsRegion: boolean
 }
 
 export interface ImportResult {

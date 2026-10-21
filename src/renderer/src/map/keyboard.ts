@@ -17,10 +17,10 @@ export function focusModel(graph: MapGraph): FocusModel {
   const parent: Record<string, string | null> = {}
   const children: Record<string, string[]> = {}
   for (const id of order) children[id] = []
-  // A group belongs to its primary product only, as it is drawn.
-  const primary = new Map(graph.edges.flatMap((e) => (e.data.kind === 'membership' && e.data.primary ? [[e.target, e.source] as const] : [])))
+  // A group belongs to its product.
+  const product = new Map(graph.edges.flatMap((e) => (e.data.kind === 'membership' ? [[e.target, e.source] as const] : [])))
   for (const n of graph.nodes) {
-    const up = n.parentId ?? primary.get(n.id) ?? null
+    const up = n.parentId ?? product.get(n.id) ?? null
     parent[n.id] = up
     if (up) children[up].push(n.id)
   }

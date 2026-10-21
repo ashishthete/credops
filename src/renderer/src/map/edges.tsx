@@ -181,17 +181,9 @@ const JumpEdge = memo(function JumpEdge({
 })
 
 const MembershipEdge = memo(function MembershipEdge({ sourceX, sourceY, targetX, targetY, data }: EdgeProps<Edge<MembershipFlowData, 'membership'>>) {
-  const { primary, color } = data!
+  const { color } = data!
   const [path] = getStraightPath({ sourceX, sourceY, targetX, targetY })
-  return (
-    <BaseEdge
-      path={path}
-      interactionWidth={0}
-      strokeDasharray={primary ? undefined : DOTTED}
-      strokeLinecap="round"
-      style={{ stroke: color, strokeWidth: 1, opacity: primary ? 0.7 : 0.4 }}
-    />
-  )
+  return <BaseEdge path={path} interactionWidth={0} strokeLinecap="round" style={{ stroke: color, strokeWidth: 1, opacity: 0.7 }} />
 })
 
 export const edgeTypes = { tunnel: TunnelEdge, jump: JumpEdge, membership: MembershipEdge }

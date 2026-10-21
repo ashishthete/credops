@@ -16,6 +16,7 @@ import {
   type OsIcon,
   type ProductIcon,
   type ProductMeta,
+  type RegionMeta,
 } from '../../shared/inventory'
 import { MAX_LABEL, VAULT_COLOR } from '../../shared/vault'
 import type { Db } from '../db/connection'
@@ -102,6 +103,7 @@ interface HostRow {
   id: string
   label: string
   address: string
+  region_id: string
   port: number | null
   identity_id: string | null
   jump_host_id: string | null
@@ -169,6 +171,7 @@ function toHostMeta(
     id: r.id,
     label: r.label,
     address: r.address,
+    regionId: r.region_id,
     port: r.port,
     identityId: r.identity_id,
     jumpHostId: r.jump_host_id,
@@ -193,6 +196,7 @@ interface EnvironmentRow {
   default_port: number | null
   default_jump_host_id: string | null
   domain: string | null
+  product_id: string
   created_at: string
   updated_at: string
 }
@@ -200,25 +204,15 @@ interface EnvironmentRow {
 export function environmentMeta(db: Db, id: string): EnvironmentMeta {
   const r = db.prepare('SELECT * FROM environments WHERE id = ?').get(id) as EnvironmentRow | undefined
   if (!r) throw new Error('environment not found')
-  const products = db
-    .prepare('SELECT product_id FROM product_environments WHERE environment_id = ? ORDER BY product_id')
-    .all(id) as { product_id: string }[]
   const hosts = db
     .prepare('SELECT host_id, role FROM environment_hosts WHERE environment_id = ? ORDER BY host_id')
     .all(id) as { host_id: string; role: HostRole }[]
-  return toEnvironmentMeta(r, products, hosts)
+  return toEnvironmentMeta(r, hosts)
 }
 
-/** Every environment, sorted by name, in three queries rather than three per environment. */
+/** Every environment, sorted by name, in two queries rather than two per environment. */
 export function environmentMetas(db: Db): EnvironmentMeta[] {
   const rows = db.prepare('SELECT * FROM environments ORDER BY name COLLATE NOCASE, id').all() as unknown as EnvironmentRow[]
-  const products = groupBy(
-    db.prepare('SELECT environment_id, product_id FROM product_environments ORDER BY product_id').all() as {
-      environment_id: string
-      product_id: string
-    }[],
-    'environment_id',
-  )
   const hosts = groupBy(
     db.prepare('SELECT environment_id, host_id, role FROM environment_hosts ORDER BY host_id').all() as {
       environment_id: string
@@ -227,12 +221,11 @@ export function environmentMetas(db: Db): EnvironmentMeta[] {
     }[],
     'environment_id',
   )
-  return rows.map((r) => toEnvironmentMeta(r, products.get(r.id) ?? [], hosts.get(r.id) ?? []))
+  return rows.map((r) => toEnvironmentMeta(r, hosts.get(r.id) ?? []))
 }
 
 function toEnvironmentMeta(
   r: EnvironmentRow,
-  products: { product_id: string }[],
   hosts: { host_id: string; role: HostRole }[],
 ): EnvironmentMeta {
   return {
@@ -244,7 +237,7 @@ function toEnvironmentMeta(
     defaultPort: r.default_port,
     defaultJumpHostId: r.default_jump_host_id,
     domain: r.domain,
-    productIds: products.map((p) => p.product_id),
+    productId: r.product_id,
     hosts: hosts.map((h) => ({ hostId: h.host_id, role: h.role })),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -266,8 +259,8 @@ export function productMeta(db: Db, id: string): ProductMeta {
     | undefined
   if (!r) throw new Error('product not found')
   const envs = db
-    .prepare('SELECT environment_id FROM product_environments WHERE product_id = ? ORDER BY environment_id')
-    .all(id) as { environment_id: string }[]
+    .prepare('SELECT id FROM environments WHERE product_id = ? ORDER BY id')
+    .all(id) as { id: string }[]
   return {
     id: r.id,
     name: r.name,
@@ -275,8 +268,43 @@ export function productMeta(db: Db, id: string): ProductMeta {
     icon: r.icon,
     description: r.description,
     repoUrl: r.repo_url,
-    environmentIds: envs.map((e) => e.environment_id),
+    environmentIds: envs.map((e) => e.id),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   }
+}
+
+interface RegionRow {
+  id: string
+  code: string
+  provider: string
+  display_name: string
+  host_count: number
+  created_at: string
+  updated_at: string
+}
+
+const REGION_SELECT = `SELECT r.*, (SELECT COUNT(*) FROM hosts h WHERE h.region_id = r.id) AS host_count FROM regions r`
+
+function toRegionMeta(r: RegionRow): RegionMeta {
+  return {
+    id: r.id,
+    code: r.code,
+    provider: r.provider,
+    displayName: r.display_name,
+    hostCount: r.host_count,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  }
+}
+
+export function regionMeta(db: Db, id: string): RegionMeta {
+  const r = db.prepare(`${REGION_SELECT} WHERE r.id = ?`).get(id) as RegionRow | undefined
+  if (!r) throw new Error('region not found')
+  return toRegionMeta(r)
+}
+
+/** Every region, sorted by code. */
+export function regionMetas(db: Db): RegionMeta[] {
+  return (db.prepare(`${REGION_SELECT} ORDER BY r.code COLLATE NOCASE, r.id`).all() as unknown as RegionRow[]).map(toRegionMeta)
 }

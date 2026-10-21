@@ -57,8 +57,8 @@ const IN_VIEW: Viewport = { x: 100, y: 100, zoom: 0.01 }
 const OFF_SCREEN: Viewport = { x: -100000, y: -100000, zoom: 1 }
 
 const platform = product({ id: 'p1', name: 'Platform' })
-const prod = environment({ id: 'e1', name: 'Prod', productIds: ['p1'], hosts: [{ hostId: 'h1', role: 'bastion' }, { hostId: 'h2', role: 'db' }] })
-const stage = environment({ id: 'e2', name: 'Stage', productIds: ['p1'], hosts: [{ hostId: 'h1', role: 'app' }] })
+const prod = environment({ id: 'e1', name: 'Prod', productId: 'p1', hosts: [{ hostId: 'h1', role: 'bastion' }, { hostId: 'h2', role: 'db' }] })
+const stage = environment({ id: 'e2', name: 'Stage', productId: 'p1', hosts: [{ hostId: 'h1', role: 'app' }] })
 const hosts = [host({ id: 'h1', label: 'web', address: '10.0.0.5' }), host({ id: 'h2', label: 'pg', address: '10.0.0.6' })]
 const t1 = tunnelMeta({ id: 't1', label: 'pg-local', hostId: 'h1', environmentId: 'e1' })
 
@@ -403,6 +403,7 @@ describe('map list view', () => {
 
     const web = row('web', 'Prod')
     expect(web).toHaveTextContent('10.0.0.5')
+    expect(web).toHaveTextContent('test-1')
     expect(web).toHaveTextContent('Bastion')
     expect(web).toHaveTextContent('Not checked')
     expect(within(web).getByRole('list', { name: 'web tunnels' })).toHaveTextContent('pg-local')

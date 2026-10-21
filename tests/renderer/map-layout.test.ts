@@ -8,14 +8,14 @@ import {
 import { environment, host, product, tunnelMeta } from './helpers'
 
 const ALL: MapScope = { kind: 'all' }
-const empty: InventoryData = { products: [], environments: [], hosts: [], identities: [], vaults: [] }
+const empty: InventoryData = { products: [], environments: [], hosts: [], identities: [], vaults: [], regions: [] }
 
-function inventory(envs: { id: string; name: string; productIds: string[]; hostIds: string[] }[], products: string[] = []): InventoryData {
+function inventory(envs: { id: string; name: string; productId: string; hostIds: string[] }[], products: string[] = []): InventoryData {
   const hostIds = [...new Set(envs.flatMap((e) => e.hostIds))]
   return {
     ...empty,
     products: products.map((id) => product({ id, name: id.toUpperCase() })),
-    environments: envs.map((e) => environment({ id: e.id, name: e.name, productIds: e.productIds, hosts: e.hostIds.map((hostId) => ({ hostId, role: 'app' as const })) })),
+    environments: envs.map((e) => environment({ id: e.id, name: e.name, productId: e.productId, hosts: e.hostIds.map((hostId) => ({ hostId, role: 'app' as const })) })),
     hosts: hostIds.map((id) => host({ id, label: id })),
   }
 }
@@ -25,7 +25,7 @@ const hosts = (n: number, prefix = 'h') => Array.from({ length: n }, (_, i) => `
 
 describe('layoutGraph', () => {
   it('packs four hosts in a 2×2 grid inside the group', () => {
-    const l = layout(inventory([{ id: 'e1', name: 'Prod', productIds: [], hostIds: ['h1', 'h2', 'h3', 'h4'] }]))
+    const l = layout(inventory([{ id: 'e1', name: 'Prod', productId: 'none', hostIds: ['h1', 'h2', 'h3', 'h4'] }]))
     const at = (id: string) => [l.positions[`e:e1/h:${id}`].x, l.positions[`e:e1/h:${id}`].y]
     expect(at('h1')).toEqual([16, 40])
     expect(at('h2')).toEqual([240, 40])
@@ -37,7 +37,7 @@ describe('layoutGraph', () => {
   })
 
   it('caps columns at six', () => {
-    const l = layout(inventory([{ id: 'e1', name: 'Prod', productIds: [], hostIds: hosts(50) }]))
+    const l = layout(inventory([{ id: 'e1', name: 'Prod', productId: 'none', hostIds: hosts(50) }]))
     const g = l.positions['e:e1']
     expect(g.width).toBe(2 * GROUP_PAD + 6 * HOST_W + 5 * GAP)
     expect(g.height).toBe(GROUP_HEADER + GROUP_PAD + 9 * (HOST_H + ATTACH_H) + 8 * GAP)
@@ -45,18 +45,18 @@ describe('layoutGraph', () => {
   })
 
   it('sizes an empty group as one host cell', () => {
-    const l = layout(inventory([{ id: 'e1', name: 'Prod', productIds: [], hostIds: [] }]))
+    const l = layout(inventory([{ id: 'e1', name: 'Prod', productId: 'none', hostIds: [] }]))
     expect(l.positions['e:e1'].width).toBe(2 * GROUP_PAD + HOST_W)
   })
 
-  it('stacks groups under their primary product and centres the product', () => {
+  it('stacks groups under their product and centres the product', () => {
     const l = layout(
       inventory(
         [
-          { id: 'e1', name: 'Prod', productIds: ['a'], hostIds: ['h1'] },
-          { id: 'e2', name: 'Stage', productIds: ['a'], hostIds: ['h2'] },
-          { id: 'e3', name: 'Prod', productIds: ['b'], hostIds: ['h3'] },
-          { id: 'e4', name: 'Loose', productIds: [], hostIds: ['h4'] },
+          { id: 'e1', name: 'Prod', productId: 'a', hostIds: ['h1'] },
+          { id: 'e2', name: 'Stage', productId: 'a', hostIds: ['h2'] },
+          { id: 'e3', name: 'Prod', productId: 'b', hostIds: ['h3'] },
+          { id: 'e4', name: 'Loose', productId: 'none', hostIds: ['h4'] },
         ],
         ['a', 'b', 'c'],
       ),
@@ -74,8 +74,8 @@ describe('layoutGraph', () => {
 
   it('places this Mac right of the widest group, centred on tunnelled hosts', () => {
     const data = inventory([
-      { id: 'e1', name: 'Prod', productIds: [], hostIds: ['h1'] },
-      { id: 'e2', name: 'Stage', productIds: [], hostIds: ['h2', 'h3', 'h4', 'h5'] },
+      { id: 'e1', name: 'Prod', productId: 'none', hostIds: ['h1'] },
+      { id: 'e2', name: 'Stage', productId: 'none', hostIds: ['h2', 'h3', 'h4', 'h5'] },
     ])
     const l = layout(data, [tunnelMeta({ id: 't1', hostId: 'h1' }), tunnelMeta({ id: 't2', hostId: 'h2', type: 'R' })])
     const e2 = l.positions['e:e2']
@@ -105,17 +105,17 @@ describe('layoutGraph', () => {
 
   it('adding a product-less group leaves earlier groups, including earlier product-less ones, untouched', () => {
     const base = [
-      { id: 'e1', name: 'Prod', productIds: ['a'], hostIds: ['h1', 'h2'] },
-      { id: 'e2', name: 'Alpha', productIds: [], hostIds: ['h3'] },
+      { id: 'e1', name: 'Prod', productId: 'a', hostIds: ['h1', 'h2'] },
+      { id: 'e2', name: 'Alpha', productId: 'none', hostIds: ['h3'] },
     ]
     const before = layout(inventory(base, ['a']))
-    const after = layout(inventory([...base, { id: 'e3', name: 'Zulu', productIds: [], hostIds: ['h4'] }], ['a']))
+    const after = layout(inventory([...base, { id: 'e3', name: 'Zulu', productId: 'none', hostIds: ['h4'] }], ['a']))
     for (const id of Object.keys(before.positions)) expect(after.positions[id]).toEqual(before.positions[id])
     expect(after.positions['e:e3'].y).toBeGreaterThan(after.positions['e:e2'].y)
   })
 
   it('bounds cover the whole extent, including negative pins and a Mac above the origin', () => {
-    const data = inventory([{ id: 'e1', name: 'Prod', productIds: [], hostIds: ['h1'] }])
+    const data = inventory([{ id: 'e1', name: 'Prod', productId: 'none', hostIds: ['h1'] }])
     const l = layout(data, [tunnelMeta({ id: 't1', hostId: 'h1' })], { 'e:e1': { x: -100, y: -200 } })
     const g = l.positions['e:e1']
     const mac = l.positions.mac
@@ -126,7 +126,7 @@ describe('layoutGraph', () => {
   })
 
   it('pins override computed positions and are clamped inside the group', () => {
-    const data = inventory([{ id: 'e1', name: 'Prod', productIds: [], hostIds: ['h1', 'h2'] }])
+    const data = inventory([{ id: 'e1', name: 'Prod', productId: 'none', hostIds: ['h1', 'h2'] }])
     const base = layout(data)
     const l = layout(data, [], {
       'e:e1': { x: 500, y: 300 },
@@ -143,8 +143,8 @@ describe('layoutGraph', () => {
 function basic(): InventoryData {
   return inventory(
     [
-      { id: 'e1', name: 'Prod', productIds: ['a'], hostIds: ['h1', 'h2'] },
-      { id: 'e2', name: 'Stage', productIds: ['a'], hostIds: ['h3'] },
+      { id: 'e1', name: 'Prod', productId: 'a', hostIds: ['h1', 'h2'] },
+      { id: 'e2', name: 'Stage', productId: 'a', hostIds: ['h3'] },
     ],
     ['a'],
   )
@@ -172,10 +172,10 @@ describe('diffLayout', () => {
 
   it('reports the added host as entering, the removed host as leaving, and the pinned group plus resized ripples as moved', () => {
     const envs = (e1: string[], e4: string[]) => [
-      { id: 'e1', name: 'A', productIds: [], hostIds: e1 },
-      { id: 'e2', name: 'B', productIds: [], hostIds: ['h5'] },
-      { id: 'e3', name: 'C', productIds: [], hostIds: ['h6'] },
-      { id: 'e4', name: 'D', productIds: [], hostIds: e4 },
+      { id: 'e1', name: 'A', productId: 'none', hostIds: e1 },
+      { id: 'e2', name: 'B', productId: 'none', hostIds: ['h5'] },
+      { id: 'e3', name: 'C', productId: 'none', hostIds: ['h6'] },
+      { id: 'e4', name: 'D', productId: 'none', hostIds: e4 },
     ]
     const prev = layout(inventory(envs(['h1', 'h2', 'h3'], ['h4', 'h7'])))
     // e1 keeps its 2x2 size with a 4th host; e4 drops from 2 hosts to 1, so it narrows and h7 slides to the first cell.
@@ -188,7 +188,7 @@ describe('diffLayout', () => {
   })
 
   it('a pin on one group moves only that group', () => {
-    const data = inventory([{ id: 'e1', name: 'A', productIds: [], hostIds: ['h1'] }, { id: 'e2', name: 'B', productIds: [], hostIds: ['h2'] }])
+    const data = inventory([{ id: 'e1', name: 'A', productId: 'none', hostIds: ['h1'] }, { id: 'e2', name: 'B', productId: 'none', hostIds: ['h2'] }])
     const d = diffLayout(layout(data), layout(data, [], { 'e:e2': { x: 900, y: 0 } }))
     expect(d).toEqual({ entering: [], leaving: [], moved: ['e:e2'] })
   })
@@ -212,7 +212,7 @@ describe('performance and overlap', () => {
   function big(): InventoryData {
     const rnd = seeded(7)
     const ids = hosts(200)
-    const envs = Array.from({ length: 12 }, (_, i) => ({ id: `e${i}`, name: `env${i}`, productIds: [`p${i % 3}`], hostIds: [] as string[] }))
+    const envs = Array.from({ length: 12 }, (_, i) => ({ id: `e${i}`, name: `env${i}`, productId: `p${i % 3}`, hostIds: [] as string[] }))
     ids.forEach((id) => envs[Math.floor(rnd() * 12)].hostIds.push(id))
     return inventory(envs, ['p0', 'p1', 'p2'])
   }

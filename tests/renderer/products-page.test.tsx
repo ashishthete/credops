@@ -12,7 +12,7 @@ import { vaultStatusStore } from '../../src/renderer/src/vault/status'
 import { cancelUnlock } from '../../src/renderer/src/vault/unlock'
 import type { EnvironmentMeta, HostMeta, ProductMeta } from '../../src/shared/inventory'
 import { DEFAULT_VAULT_ID, type IdentityMeta } from '../../src/shared/vault'
-import { appService, defaultVault, deploymentMeta, environment, host, mockBridge, product, vaultStatus } from './helpers'
+import { appService, defaultVault, deploymentMeta, environment, host, mockBridge, product, REGION, vaultStatus } from './helpers'
 
 // framer-motion caches matchMedia, so reduced motion is driven through useMotionSafe (F18).
 const motion = vi.hoisted(() => ({ safe: true }))
@@ -49,24 +49,24 @@ interface World {
   hosts: HostMeta[]
 }
 
-/** Acme holds prod (protected, web-1 as app) and staging; analytics-db is shared with Essentials. */
+/** Acme holds prod (protected, web-1 as app), staging and analytics-db; Essentials is empty. */
 function world(): World {
   return {
     products: [
       product({ id: 'acme', name: 'Acme', environmentIds: ['analytics', 'prod', 'staging'] }),
-      product({ id: 'essentials', name: 'Essentials', color: '#2fbf71', environmentIds: ['analytics'] }),
+      product({ id: 'essentials', name: 'Essentials', color: '#2fbf71', environmentIds: [] }),
     ],
     environments: [
-      environment({ id: 'analytics', name: 'analytics-db', productIds: ['acme', 'essentials'] }),
+      environment({ id: 'analytics', name: 'analytics-db', productId: 'acme' }),
       environment({
         id: 'prod',
         name: 'prod',
         color: '#ef5b5b',
         protected: true,
-        productIds: ['acme'],
+        productId: 'acme',
         hosts: [{ hostId: 'web1', role: 'app' }],
       }),
-      environment({ id: 'staging', name: 'staging', color: '#f2a93b', productIds: ['acme'] }),
+      environment({ id: 'staging', name: 'staging', color: '#f2a93b', productId: 'acme' }),
     ],
     hosts: [host({ id: 'web1', label: 'web-1', environments: [{ environmentId: 'prod', role: 'app' }] })],
   }
@@ -104,7 +104,7 @@ function renderPage(w: World = world(), extra: Record<string, unknown> = {}) {
         return p
       }
       case 'env:create': {
-        const input = args[0] as { name: string; productIds: string[] }
+        const input = args[0] as { name: string; productId: string }
         const e = environment({ id: 'new-env', ...input })
         w.environments = [...w.environments, e]
         return e
@@ -143,12 +143,12 @@ function renderPage(w: World = world(), extra: Record<string, unknown> = {}) {
         w.hosts = w.hosts.map((h) => (h.id === hostId ? { ...h, environments: h.environments.filter((m) => m.environmentId !== envId) } : h))
         return w.environments.find((e) => e.id === envId)
       }
-      case 'env:setProducts': {
-        const [envId, productIds] = args as [string, string[]]
-        w.environments = w.environments.map((e) => (e.id === envId ? { ...e, productIds } : e))
+      case 'env:setProduct': {
+        const [envId, productId] = args as [string, string]
+        w.environments = w.environments.map((e) => (e.id === envId ? { ...e, productId } : e))
         w.products = w.products.map((p) => ({
           ...p,
-          environmentIds: productIds.includes(p.id)
+          environmentIds: p.id === productId
             ? [...new Set([...p.environmentIds, envId])]
             : p.environmentIds.filter((id) => id !== envId),
         }))
@@ -206,16 +206,15 @@ describe('products page', () => {
     const acme = await screen.findByRole('treeitem', { name: 'Acme' })
     expect(acme).toHaveAttribute('aria-expanded', 'true')
     expect(acme).toHaveAttribute('aria-level', '1')
-    expect(within(item('analytics-db')).getByText('Shared')).toBeInTheDocument()
     expect(item('prod')).toHaveAttribute('aria-level', '2')
 
     const all = new Set(['p:acme', 'p:essentials', 'p:acme/e:prod'])
-    const order = buildTree({ ...w, identities: [], vaults: [] }, all).map((r) => r.label)
+    const order = buildTree({ ...w, identities: [], vaults: [], regions: [] }, all).map((r) => r.label)
     expect(items().map((el) => el.getAttribute('aria-label'))).toEqual(order)
 
     await user.click(chevron(acme))
     expect(acme).toHaveAttribute('aria-expanded', 'false')
-    expect(items().map((el) => el.getAttribute('aria-label'))).toEqual(['Acme', 'Essentials', 'analytics-db'])
+    expect(items().map((el) => el.getAttribute('aria-label'))).toEqual(['Acme', 'Essentials'])
   })
 
   it('keyboard navigation', async () => {
@@ -251,7 +250,7 @@ describe('products page', () => {
 
     await user.keyboard('{End}')
     const last = items().at(-1)!
-    expect(last).toHaveAttribute('aria-label', 'analytics-db')
+    expect(last).toHaveAttribute('aria-label', 'Essentials')
     expect(last).toHaveFocus()
     expect(last).toHaveAttribute('aria-selected', 'true')
 
@@ -260,11 +259,11 @@ describe('products page', () => {
     expect(item('Acme')).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('protected and shared state is in the row description', async () => {
+  it('protected state is in the row description', async () => {
     renderPage()
     await screen.findByRole('treeitem', { name: 'Acme' })
     expect(item('prod')).toHaveAccessibleDescription('Environment prod. Protected')
-    expect(item('analytics-db')).toHaveAccessibleDescription('Environment analytics-db. No hosts. Shared')
+    expect(item('analytics-db')).toHaveAccessibleDescription('Environment analytics-db. No hosts')
     expect(item('staging')).toHaveAccessibleDescription('Environment staging. No hosts')
   })
 
@@ -280,7 +279,6 @@ describe('products page', () => {
     const user = userEvent.setup()
     const w = world()
     w.products = w.products.filter((p) => p.id !== 'essentials')
-    w.environments = w.environments.map((e) => ({ ...e, productIds: e.productIds.filter((id) => id !== 'essentials') }))
     const { invoke } = renderPage(w)
     await screen.findByRole('treeitem', { name: 'Acme' })
     await user.click(screen.getAllByRole('button', { name: 'New product' })[0])
@@ -336,8 +334,9 @@ describe('products page', () => {
     await screen.findByRole('treeitem', { name: 'Acme' })
     await user.click(within(screen.getByRole('region', { name: 'Details' })).getByRole('button', { name: 'New environment' }))
     const dialog = await screen.findByRole('dialog', { name: 'New environment' })
-    expect(within(dialog).getByRole('button', { name: 'Acme' })).toHaveAttribute('aria-pressed', 'true')
-    expect(within(dialog).getByRole('button', { name: 'Essentials' })).toHaveAttribute('aria-pressed', 'false')
+    // Opened from Acme: the product is set and can't change here.
+    expect(within(dialog).getByLabelText('Product')).toHaveDisplayValue('Acme')
+    expect(within(dialog).getByLabelText('Product')).toBeDisabled()
     await user.type(within(dialog).getByLabelText('Name'), 'staging')
     await user.type(within(dialog).getByLabelText('Default port'), '2222')
     await user.selectOptions(within(dialog).getByLabelText('Default identity'), 'id-deploy')
@@ -351,9 +350,41 @@ describe('products page', () => {
         defaultIdentityId: 'id-deploy',
         defaultJumpHostId: null,
         domain: null,
-        productIds: ['acme'],
+        productId: 'acme',
       }),
     )
+  })
+
+  it('environment dialog edits move an environment with one product select', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderPage()
+    await user.click(await screen.findByRole('treeitem', { name: 'staging' }))
+    await user.click(within(screen.getByRole('region', { name: 'Details' })).getByRole('button', { name: 'Edit' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Edit environment' })
+    const select = within(dialog).getByLabelText('Product')
+    expect(select).toBeEnabled()
+    expect(select).toHaveDisplayValue('Acme')
+    expect([...(select as HTMLSelectElement).options].map((o) => o.textContent)).toEqual(['Acme', 'Essentials'])
+    await user.selectOptions(select, 'Essentials')
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:setProduct', 'staging', 'essentials'))
+  })
+
+  it('a new environment from the tree needs a product picked', async () => {
+    const user = userEvent.setup()
+    const w = world()
+    w.hosts = [...w.hosts, host({ id: 'loose', label: 'loose-1' })]
+    renderPage(w)
+    await user.click(await screen.findByRole('treeitem', { name: 'Unassigned hosts' }))
+    await user.click(screen.getAllByRole('button', { name: 'New environment' })[0])
+    const dialog = await screen.findByRole('dialog', { name: 'New environment' })
+    const select = within(dialog).getByLabelText('Product')
+    expect(select).toBeEnabled()
+    expect(select).toHaveDisplayValue('Pick a product')
+    await user.type(within(dialog).getByLabelText('Name'), 'qa')
+    expect(within(dialog).getByRole('button', { name: 'Create environment' })).toBeDisabled()
+    await user.selectOptions(select, 'Essentials')
+    expect(within(dialog).getByRole('button', { name: 'Create environment' })).toBeEnabled()
   })
 
   /** Wraps the page's bridge with env:update (applied to the world) and a scripted env:openDomain. */
@@ -474,7 +505,7 @@ describe('products page', () => {
 
     await waitFor(() => expect(screen.getAllByRole('treeitem', { name: 'web-1' })).toHaveLength(2))
     const [inProd, inStaging] = screen.getAllByRole('treeitem', { name: 'web-1' })
-    expect(inStaging).toHaveAccessibleDescription('Host web-1. Role App. Also in Acme › prod')
+    expect(inStaging).toHaveAccessibleDescription('Host web-1. Role App. Also in Acme · prod')
     fireEvent.mouseEnter(inProd)
     expect(inStaging).toHaveAttribute('data-shared-highlight', 'true')
     expect(inStaging).toHaveAttribute('data-pulse', 'true')
@@ -495,7 +526,51 @@ describe('products page', () => {
     expect(item('Essentials')).toHaveAttribute('data-drop-target', 'true')
     expect(item('Acme')).not.toHaveAttribute('data-drop-target')
     fireEvent.drop(item('Essentials'), { dataTransfer: dataTransfer() })
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:setProducts', 'staging', ['acme', 'essentials']))
+    const ask = await screen.findByRole('dialog', { name: 'Move staging to Essentials?' })
+    expect(invoke).not.toHaveBeenCalledWith('env:setProduct', expect.anything(), expect.anything())
+    fireEvent.click(within(ask).getByRole('button', { name: 'Move' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:setProduct', 'staging', 'essentials'))
+    expect(await screen.findByText('Moved staging to Essentials')).toBeInTheDocument()
+  })
+
+  it('cancelling the move leaves the environment where it is', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderPage()
+    const staging = await screen.findByRole('treeitem', { name: 'staging' })
+    fireEvent.dragStart(staging, { dataTransfer: dataTransfer() })
+    fireEvent.drop(item('Essentials'), { dataTransfer: dataTransfer() })
+    const ask = await screen.findByRole('dialog', { name: 'Move staging to Essentials?' })
+    await user.click(within(ask).getByRole('button', { name: 'Cancel' }))
+    expect(invoke).not.toHaveBeenCalledWith('env:setProduct', expect.anything(), expect.anything())
+  })
+
+  it('a host dropped into an environment in another region says so, and still joins', async () => {
+    const us = { ...REGION, id: 'region-2', code: 'us-east-1', displayName: 'US East' }
+    const w = world()
+    w.environments = w.environments.map((e) => (e.id === 'staging' ? { ...e, hosts: [{ hostId: 'web1', role: 'app' }] } : e))
+    w.hosts = [
+      host({ id: 'web1', label: 'web-1', environments: [{ environmentId: 'prod', role: 'app' }, { environmentId: 'staging', role: 'app' }] }),
+      host({ id: 'us1', label: 'app-us-1', regionId: us.id }),
+    ]
+    const { invoke } = renderPage(w, { 'region:list': [REGION, us] })
+    const loose = await screen.findByRole('treeitem', { name: 'app-us-1' })
+    fireEvent.dragStart(loose, { dataTransfer: dataTransfer() })
+    fireEvent.drop(item('staging'), { dataTransfer: dataTransfer() })
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:putHost', 'staging', 'us1', 'app'))
+    expect(await screen.findByText("staging's hosts are all in test-1; app-us-1 is in us-east-1.")).toBeInTheDocument()
+  })
+
+  it('a host dropped into an empty environment gets no region hint', async () => {
+    const us = { ...REGION, id: 'region-2', code: 'us-east-1', displayName: 'US East' }
+    const w = world()
+    w.hosts = [...w.hosts, host({ id: 'us1', label: 'app-us-1', regionId: us.id })]
+    const { invoke } = renderPage(w, { 'region:list': [REGION, us] })
+    const loose = await screen.findByRole('treeitem', { name: 'app-us-1' })
+    fireEvent.dragStart(loose, { dataTransfer: dataTransfer() })
+    fireEvent.drop(item('staging'), { dataTransfer: dataTransfer() })
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:putHost', 'staging', 'us1', 'app'))
+    expect(await screen.findByText('Added app-us-1 to staging')).toBeInTheDocument()
+    expect(screen.queryByText(/is in us-east-1/)).not.toBeInTheDocument()
   })
 
   it('a drop in flight blocks further drops', async () => {
@@ -579,40 +654,117 @@ describe('products page', () => {
     await waitFor(() => expect(screen.queryByRole('treeitem', { name: 'prod' })).not.toBeInTheDocument())
   })
 
-  it('deleting a shared environment names its other products', async () => {
-    const user = userEvent.setup()
+  it('product cards offer no way to take an environment out of its product', async () => {
     renderPage()
-    await screen.findByRole('treeitem', { name: 'Acme' })
-    await user.click(item('analytics-db', 0))
-    await screen.findByRole('heading', { name: 'analytics-db', level: 2 })
-    await user.click(screen.getByRole('button', { name: 'analytics-db options' }))
-    await user.click(screen.getByRole('menuitem', { name: 'Delete' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Delete analytics-db?' })
-    expect(dialog).toHaveTextContent('Essentials')
-  })
-
-  it('removes a shared environment from one product only', async () => {
-    const user = userEvent.setup()
-    const { invoke } = renderPage()
-    await screen.findByRole('treeitem', { name: 'Acme' })
-    await user.click(item('analytics-db', 0))
-    await screen.findByRole('heading', { name: 'analytics-db', level: 2 })
-    await user.click(screen.getByRole('button', { name: 'analytics-db options' }))
-    await user.click(screen.getByRole('menuitem', { name: 'Remove from Acme' }))
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:setProducts', 'analytics', ['essentials']))
-    expect(invoke).not.toHaveBeenCalledWith('env:delete', expect.anything())
-    await waitFor(() => expect(screen.getAllByRole('treeitem', { name: 'analytics-db' })).toHaveLength(1))
-    await waitFor(() => expect(new URLSearchParams(where.split('?')[1]).get('node')).toBe('p:essentials/e:analytics'))
-  })
-
-  it("removes an environment from the product's card menu", async () => {
-    const user = userEvent.setup()
-    const { invoke } = renderPage()
     await screen.findByRole('heading', { name: 'Acme', level: 2 })
-    await user.click(screen.getByRole('button', { name: 'staging options' }))
-    await user.click(screen.getByRole('menuitem', { name: 'Remove from Acme' }))
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:setProducts', 'staging', []))
-    expect(await screen.findByText('Moved staging to Unassigned')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'staging options' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/Remove from/)).not.toBeInTheDocument()
+  })
+
+  it('deleting a product that still has environments shows why it was refused', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderPage()
+    const prev = invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
+    invoke.mockImplementation(async (c: string, ...a: unknown[]) => {
+      if (c === 'product:delete') throw new Error('Acme still has 3 environments: move or delete them first')
+      return prev(c, ...a)
+    })
+    await screen.findByRole('heading', { name: 'Acme', level: 2 })
+    await user.click(screen.getByRole('button', { name: 'Acme options' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Delete' }))
+    expect(await screen.findByText("Couldn't delete Acme")).toBeInTheDocument()
+    expect(screen.getByText('Acme still has 3 environments: move or delete them first')).toBeInTheDocument()
+    expect(invoke).toHaveBeenCalledWith('product:delete', 'acme')
+    expect(item('Acme')).toBeInTheDocument()
+  })
+
+  it('an empty product deletes after a confirm', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderPage()
+    await user.click(await screen.findByRole('treeitem', { name: 'Essentials' }))
+    await user.click(screen.getByRole('button', { name: 'Essentials options' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Delete' }))
+    const ask = await screen.findByRole('dialog', { name: 'Delete Essentials?' })
+    expect(within(ask).getByText('It has no environments, so nothing else is removed.')).toBeInTheDocument()
+    await user.click(within(ask).getByRole('button', { name: 'Delete product' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('product:delete', 'essentials'))
+  })
+
+  describe('regions', () => {
+    const US = { ...REGION, id: 'region-2', code: 'us-east-1', displayName: 'US East' }
+    /** prod runs web-1 in test-1 and app-us-1 in us-east-1. */
+    const split = (): World => {
+      const w = world()
+      w.environments = w.environments.map((e) => (e.id === 'prod' ? { ...e, hosts: [...e.hosts, { hostId: 'us1', role: 'app' }] } : e))
+      w.hosts = [...w.hosts, host({ id: 'us1', label: 'app-us-1', regionId: US.id, environments: [{ environmentId: 'prod', role: 'app' }] })]
+      return w
+    }
+
+    it('an environment in one region shows that region and no per-host chips', async () => {
+      const user = userEvent.setup()
+      renderPage()
+      await user.click(await screen.findByRole('treeitem', { name: 'prod' }))
+      const main = screen.getByRole('region', { name: 'Details' })
+      expect(within(main).getAllByText('test-1')).toHaveLength(1)
+      expect(within(main).queryByText('Regions:')).not.toBeInTheDocument()
+      expect(within(item('web-1')).queryByText('test-1')).not.toBeInTheDocument()
+    })
+
+    it('an environment over several regions lists them and marks each host', async () => {
+      const user = userEvent.setup()
+      renderPage(split(), { 'region:list': [REGION, US] })
+      await user.click(await screen.findByRole('treeitem', { name: 'prod' }))
+      const main = screen.getByRole('region', { name: 'Details' })
+      const header = within(main).getByLabelText('Regions: test-1, us-east-1')
+      expect(header).toHaveTextContent('Regions:')
+      // Header chip plus one per host.
+      expect(within(main).getAllByText('us-east-1')).toHaveLength(2)
+      expect(within(main).getAllByText('test-1')).toHaveLength(2)
+      expect(within(item('app-us-1')).getByText('us-east-1')).toBeInTheDocument()
+      expect(item('app-us-1')).toHaveAccessibleDescription(/Region us-east-1/)
+    })
+
+    it('an environment with no hosts shows no region', async () => {
+      const user = userEvent.setup()
+      renderPage()
+      await user.click(await screen.findByRole('treeitem', { name: 'staging' }))
+      expect(within(screen.getByRole('region', { name: 'Details' })).queryByText('test-1')).not.toBeInTheDocument()
+    })
+
+    const REPORT = {
+      region: { id: REGION.id, code: REGION.code, displayName: 'Default region', hostCount: 1 },
+      productLinks: [{ environmentId: 'staging', environmentName: 'staging', kept: { id: 'acme', name: 'Acme' }, removed: [{ id: 'old', name: 'Globe' }] }],
+      unassigned: { product: { id: 'acme', name: 'Acme' }, environments: [{ id: 'analytics', name: 'analytics-db' }] },
+      renamed: [{ environmentId: 'prod', from: 'prod', to: 'prod (2)' }],
+    }
+
+    it('the upgrade banner says what moved and links to each environment', async () => {
+      const user = userEvent.setup()
+      renderPage(world(), { 'region:upgradeReport': REPORT })
+      const banner = await screen.findByRole('status', { name: 'Regions upgrade' })
+      expect(banner).toHaveTextContent('Hosts now have a region. Everything is in Default region for now. Create your regions and move hosts.')
+      expect(banner).toHaveTextContent('staging: kept Acme, removed Globe')
+      expect(banner).toHaveTextContent('In no product, now in Acme: analytics-db')
+      expect(banner).toHaveTextContent('Renamed prod to prod (2)')
+      await user.click(within(banner).getByRole('button', { name: 'analytics-db' }))
+      expect(item('analytics-db')).toHaveAttribute('aria-selected', 'true')
+    })
+
+    it('dismissing the banner hides it and tells main', async () => {
+      const user = userEvent.setup()
+      const { invoke } = renderPage(world(), { 'region:upgradeReport': REPORT })
+      const banner = await screen.findByRole('status', { name: 'Regions upgrade' })
+      await user.click(within(banner).getByRole('button', { name: 'Dismiss' }))
+      expect(screen.queryByRole('status', { name: 'Regions upgrade' })).not.toBeInTheDocument()
+      expect(invoke).toHaveBeenCalledWith('region:dismissUpgradeReport')
+    })
+
+    it('no report, no banner', async () => {
+      const { invoke } = renderPage()
+      await screen.findByRole('treeitem', { name: 'Acme' })
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith('region:upgradeReport'))
+      expect(screen.queryByRole('status', { name: 'Regions upgrade' })).not.toBeInTheDocument()
+    })
   })
 
   it('environment view groups hosts and shows defaults', async () => {
@@ -741,9 +893,9 @@ describe('products page', () => {
     renderPage(sharedWorld())
     await screen.findByRole('treeitem', { name: 'staging' })
     const [inProd, inStaging] = screen.getAllByRole('treeitem', { name: 'web-1' })
-    expect(inProd).toHaveAccessibleDescription('Host web-1. Role App. Also in Acme › staging')
-    expect(inStaging).toHaveAccessibleDescription('Host web-1. Role App. Also in Acme › prod')
-    expect(within(inProd).getByTitle('Also in Acme › staging')).toBeInTheDocument()
+    expect(inProd).toHaveAccessibleDescription('Host web-1. Role App. Also in Acme · staging')
+    expect(inStaging).toHaveAccessibleDescription('Host web-1. Role App. Also in Acme · prod')
+    expect(within(inProd).getByTitle('Also in Acme · staging')).toBeInTheDocument()
   })
 
   it('an empty expanded environment shows a hint that arrow keys skip', async () => {
@@ -780,15 +932,15 @@ describe('products page', () => {
         environment({
           id: 'stage',
           name: 'Stage',
-          productIds: ['ent'],
+          productId: 'ent',
           hosts: [
             { hostId: 'alpha', role: 'app' },
             { hostId: 'uat2', role: 'db' },
             { hostId: 'jump', role: 'bastion' },
           ],
         }),
-        environment({ id: 'uat', name: 'UAT', productIds: ['ent'], hosts: [{ hostId: 'alpha', role: 'db' }] }),
-        environment({ id: 'alpha', name: 'alpha', productIds: ['ess'], hosts: [{ hostId: 'alpha', role: 'app' }] }),
+        environment({ id: 'uat', name: 'UAT', productId: 'ent', hosts: [{ hostId: 'alpha', role: 'db' }] }),
+        environment({ id: 'alpha', name: 'alpha', productId: 'ess', hosts: [{ hostId: 'alpha', role: 'app' }] }),
       ],
       hosts: [
         host({
@@ -821,9 +973,9 @@ describe('products page', () => {
       const rows = screen.getAllByRole('treeitem', { name: 'alpha' }).filter((el) => el.getAttribute('aria-level') === '3')
       expect(rows).toHaveLength(3)
       const descs = rows.map((r) => r.getAttribute('aria-describedby') && document.getElementById(r.getAttribute('aria-describedby')!)?.textContent)
-      expect(descs).toContain('Host alpha. Role App. Also in Enterprize › UAT, Essentials › alpha')
-      expect(descs).toContain('Host alpha. Role Database. Also in Enterprize › Stage, Essentials › alpha')
-      expect(descs).toContain('Host alpha. Role App. Also in Enterprize › Stage, Enterprize › UAT')
+      expect(descs).toContain('Host alpha. Role App. Also in Enterprize · UAT, Essentials · alpha')
+      expect(descs).toContain('Host alpha. Role Database. Also in Enterprize · Stage, Essentials · alpha')
+      expect(descs).toContain('Host alpha. Role App. Also in Enterprize · Stage, Enterprize · UAT')
     })
 
     it('D: roles belong to the membership', async () => {

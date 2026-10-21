@@ -24,13 +24,13 @@ const web = product({ id: 'pA', name: 'Web' })
 const prod = environment({
   id: 'e1',
   name: 'Prod',
-  productIds: ['pA'],
+  productId: 'pA',
   hosts: [
     { hostId: 'h1', role: 'app' },
     { hostId: 'h2', role: 'db' },
   ],
 })
-const stage = environment({ id: 'e2', name: 'Stage', productIds: ['pA'], hosts: [{ hostId: 'h3', role: 'app' }] })
+const stage = environment({ id: 'e2', name: 'Stage', productId: 'pA', hosts: [{ hostId: 'h3', role: 'app' }] })
 const hosts = [host({ id: 'h1', label: 'web-1' }), host({ id: 'h2', label: 'pg' }), host({ id: 'h3', label: 'stage-1' })]
 const t1 = tunnelMeta({ id: 't1', label: 'pg-local', hostId: 'h2', environmentId: 'e1' })
 // A third Prod host wraps the group onto a second row, so Stage below it moves down by one row.

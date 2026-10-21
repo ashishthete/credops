@@ -121,7 +121,7 @@ let stopSync: (() => void) | null = null
 
 async function renderTab(results: Record<string, unknown> = {}, entry = '/ops/run') {
   const invoke = mockBridge({ 'snippets:list': [snippet], ...results })
-  inventoryStore.set({ products: [], environments: [prod, staging, audit], hosts: [...prodHosts, stg, ops], identities: [], vaults: [] })
+  inventoryStore.set({ products: [], environments: [prod, staging, audit], hosts: [...prodHosts, stg, ops], identities: [], vaults: [], regions: [] })
   stopSync = startOpsSync()
   const view = render(
     <MemoryRouter initialEntries={[entry]}>
@@ -522,7 +522,7 @@ describe('run tab', () => {
       hosts: r.hosts.map((h) => ({ ...h, state: h.hostId === 'h-db-2' ? 'failed' : 'ok', exitCode: h.hostId === 'h-db-2' ? 1 : 0 })),
     })
     mockBridge({ 'snippets:list': [snippet] })
-    inventoryStore.set({ products: [], environments: [prod, staging, audit], hosts: [...prodHosts, stg, ops], identities: [], vaults: [] })
+    inventoryStore.set({ products: [], environments: [prod, staging, audit], hosts: [...prodHosts, stg, ops], identities: [], vaults: [], regions: [] })
     stopSync = startOpsSync()
     const { unmount } = render(
       <MemoryRouter initialEntries={['/ops/snippets']}>
@@ -668,7 +668,7 @@ describe('run tab', () => {
       if (channel === 'runs:start') throw new Error("Error invoking remote method 'runs:start': Error: Type the environment name to confirm")
       return channel === 'snippets:list' ? [] : null
     })
-    inventoryStore.set({ products: [], environments: [prod, staging, audit], hosts: [...prodHosts, stg, ops], identities: [], vaults: [] })
+    inventoryStore.set({ products: [], environments: [prod, staging, audit], hosts: [...prodHosts, stg, ops], identities: [], vaults: [], regions: [] })
     const onConfirm = vi.fn()
     await launch(
       { target: { kind: 'hosts', hostIds: ['h-web-1'], environmentId: 'e-prod' }, command: { kind: 'text', text: 'uptime' }, concurrency: 4, timeoutSec: 600 } as never,

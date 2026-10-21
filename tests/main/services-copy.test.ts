@@ -3,6 +3,7 @@ import { copyServices } from '../../src/main/deploy/service-copy'
 import type { CopyServicesRequest } from '../../src/shared/services'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import { makeDeployFixture } from './deploy-helpers'
+import { REGION } from './inventory-helpers'
 
 /** staging holds two checkouts with services and a db; prod (protected) is the target. */
 async function setup() {
@@ -39,7 +40,7 @@ async function setup() {
   const tunnel = f.tunnels.create({ label: 'db', hostId: f.host.id, type: 'L', bindPort: 15432, targetHost: '10.0.0.9', targetPort: 5432 })
   f.services.setTunnel(pg.id, tunnel.id, 15432)
   f.services.recordDeployed([{ serviceId: esg.id, commit: 'abc1234', releaseId: null }])
-  const app2 = f.hosts.create({ label: 'app2', address: '10.0.1.7' })
+  const app2 = f.hosts.create({ regionId: REGION, label: 'app2', address: '10.0.1.7' })
   const request = (over: Partial<CopyServicesRequest> = {}): CopyServicesRequest => ({
     sourceEnvironmentId: f.staging.id,
     targetEnvironmentId: f.prod.id,

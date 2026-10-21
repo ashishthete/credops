@@ -3,16 +3,16 @@ import { mkdtempSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { applyImport, planImport } from '../../src/main/config/import'
+import { applyImport, planImport, REGION_MESSAGE } from '../../src/main/config/import'
 import { buildConfigExport, serializeConfig } from '../../src/main/config/export'
 import { DeployError } from '../../src/main/deploy/access'
 import type { Db } from '../../src/main/db/connection'
 import { createConfigHandlers } from '../../src/main/ipc/handlers/config'
 import { SecretStore } from '../../src/main/vault/secret-store'
-import { CONFIG_MAX_BYTES, type ConfigFile } from '../../src/shared/config-file'
+import { CONFIG_MAX_BYTES, parseConfigFile, type ConfigFile } from '../../src/shared/config-file'
 import { DEFAULT_VAULT_ID, VAULT_LOCKED } from '../../src/shared/vault'
 import { makeConfigFixture, SECRET_VALUES, type ConfigFixture } from './config-helpers'
-import { makeInventory, type InventoryFixture } from './inventory-helpers'
+import { makeInventory, type InventoryFixture, PRODUCT, REGION } from './inventory-helpers'
 
 const clock = () => new Date('2026-10-20T10:00:00.000Z')
 const later = () => new Date('2026-10-21T10:00:00.000Z')
@@ -21,12 +21,12 @@ const deps = (t: { db: Db; audit: ConfigFixture['audit']; vault: ConfigFixture['
 const copy = (file: ConfigFile): ConfigFile => JSON.parse(JSON.stringify(file)) as ConfigFile
 
 const TABLES = [
+  'regions',
   'products',
   'identities',
   'hosts',
   'host_vaults',
   'environments',
-  'product_environments',
   'environment_hosts',
   'tunnels',
   'deployments',
@@ -71,6 +71,22 @@ async function makeTarget(
   return { ...t, teamVaultId, secrets }
 }
 
+/** `file` as version 1 wrote it, read back the way the import reads it. */
+function asV1(file: ConfigFile, fn: (raw: any) => void = () => {}): ConfigFile {
+  const raw = JSON.parse(JSON.stringify(file))
+  raw.version = 1
+  delete raw.regions
+  for (const h of raw.hosts) delete h.regionId
+  for (const e of raw.environments) {
+    e.productIds = [e.productId]
+    delete e.productId
+  }
+  fn(raw)
+  const res = parseConfigFile(JSON.stringify(raw))
+  if (!res.ok) throw new Error(res.errors.join('\n'))
+  return res.file
+}
+
 function otherKey(): string {
   return generateKeyPairSync('ed25519', { privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } }).privateKey
 }
@@ -80,7 +96,9 @@ describe('config import', () => {
     const { f, file } = await sourceFile()
     const t = await makeTarget(f)
     const plan = planImport(t.db, file)
-    expect(plan.counts).toEqual({ add: 10, update: 0, unchanged: 0, skip: 0 })
+    // The fixtures share their region and Fixture product ids: those match as they are.
+    expect(plan.counts).toEqual({ add: 10, update: 0, unchanged: 2, skip: 0 })
+    expect(plan.needsRegion).toBe(false)
     expect(plan.needsSecret).toEqual([])
     // Adding a protected environment needs no typed name.
     expect(plan.protectedEnvironments).toEqual([])
@@ -103,7 +121,7 @@ describe('config import', () => {
     const before = snapshot(f.db)
     const plan = planImport(f.db, file)
     expect(plan.items.every((i) => i.action === 'unchanged')).toBe(true)
-    expect(plan.counts).toEqual({ add: 0, update: 0, unchanged: 11, skip: 0 })
+    expect(plan.counts).toEqual({ add: 0, update: 0, unchanged: 13, skip: 0 })
     expect(plan.needsSecret).toEqual([])
     expect(plan.protectedEnvironments).toEqual([])
 
@@ -111,7 +129,7 @@ describe('config import', () => {
     expect(snapshot(f.db)).toBe(before)
     const events = f.audit.list({ actions: ['config.import'] })
     expect(events).toHaveLength(1)
-    expect(events[0].details).toEqual({ counts: { add: 0, update: 0, unchanged: 11, skip: 0 }, unresolved: 0 })
+    expect(events[0].details).toEqual({ counts: { add: 0, update: 0, unchanged: 13, skip: 0 }, unresolved: 0 })
   })
 
   it('matches by id, then by name within the parent, and remaps references', async () => {
@@ -122,8 +140,10 @@ describe('config import', () => {
       .prepare(`INSERT INTO products(id, name, color, icon, description, repo_url, created_at, updated_at) VALUES (?, 'Old shop', '#3366ff', 'rocket', 'The shop', 'git@example.com:shop.git', 'x', 'x')`)
       .run(f.ids.product)
     // By name: a host labelled like the file's app1, under its own id.
-    const app1 = t.hosts.create({ label: 'APP1', address: '10.9.9.9' })
-    const staging = t.envs.create({ name: 'staging', color: '#112233' })
+    const app1 = t.hosts.create({ regionId: REGION, label: 'APP1', address: '10.9.9.9' })
+    // By name within the product the file's staging maps to; one of the same name in another product doesn't match.
+    const staging = t.envs.create({ productId: f.ids.product, name: 'staging', color: '#112233' })
+    const elsewhere = t.envs.create({ productId: PRODUCT, name: 'STAGING', color: '#112233' })
 
     const plan = planImport(t.db, file)
     expect(itemOf(plan, 'products', 'Shop')).toMatchObject({ id: f.ids.product, action: 'update', fields: ['name'] })
@@ -151,7 +171,8 @@ describe('config import', () => {
         { hostId: f.ids.bastion, role: 'bastion' },
       ]),
     )
-    expect(t.envs.get(staging.id).productIds).toEqual([f.ids.product])
+    expect(t.envs.get(staging.id).productId).toBe(f.ids.product)
+    expect(t.envs.get(elsewhere.id).hosts).toEqual([])
     // The file's own ids for app1 and staging were never used.
     expect(t.db.prepare('SELECT 1 FROM hosts WHERE id = ?').get(f.host.id)).toBeUndefined()
     expect(t.db.prepare('SELECT 1 FROM environments WHERE id = ?').get(f.staging.id)).toBeUndefined()
@@ -162,7 +183,7 @@ describe('config import', () => {
     const t = await makeTarget(f)
     t.identities.create({ vaultId: t.teamVaultId!, label: 'deployer', username: 'a', auth: 'agent' })
     t.identities.create({ vaultId: t.teamVaultId!, label: 'deployer', username: 'b', auth: 'agent' })
-    const app1 = t.hosts.create({ label: 'app1', address: '10.0.0.7' })
+    const app1 = t.hosts.create({ regionId: REGION, label: 'app1', address: '10.0.0.7' })
     t.tunnels.create({ label: 'pg', hostId: app1.id, type: 'D', bindPort: 1080 })
     t.tunnels.create({ label: 'pg', hostId: app1.id, type: 'D', bindPort: 1081 })
 
@@ -194,26 +215,26 @@ describe('config import', () => {
     const f = await makeConfigFixture()
     const file = buildConfigExport(f.db, clock).file
     // Objects and links the file doesn't know.
-    const extra = f.hosts.create({ label: 'extra', address: '10.0.0.99' })
+    const extra = f.hosts.create({ regionId: REGION, label: 'extra', address: '10.0.0.99' })
     const other = f.products.create({ name: 'Other', color: '#111111', icon: 'rocket' })
-    f.envs.setProducts(f.prod.id, [other.id])
+    f.envs.setProduct(f.prod.id, other.id)
     f.envs.putHost(f.staging.id, extra.id, 'other')
     f.hosts.setVaults(extra.id, [f.teamVaultId])
     f.hosts.setVaults(f.host.id, [DEFAULT_VAULT_ID])
-    f.envs.setProducts(f.staging.id, [])
     const t2 = f.tunnels.create({ label: 'extra-tunnel', hostId: extra.id, type: 'D', bindPort: 1090 })
     const d2 = f.deploys.create(f.input({ name: 'worker' }))
     const before = snapshot(f.db)
 
     const plan = planImport(f.db, file)
     expect(plan.counts.skip).toBe(0)
+    // An environment never moves product on import: it stays where it is, and the item says so.
+    expect(itemOf(plan, 'environments', 'prod')).toMatchObject({ action: 'unchanged', notes: ['product not changed'] })
     importFile(f, file)
     expect(f.hosts.list().map((h) => h.label).sort()).toEqual(['app1', 'bastion', 'extra'])
-    expect(f.products.list().map((p) => p.name).sort()).toEqual(['Other', 'Shop'])
-    expect(f.envs.get(f.prod.id).productIds).toEqual([other.id])
+    expect(f.products.list().map((p) => p.name).sort()).toEqual(['Fixture', 'Other', 'Shop'])
+    expect(f.envs.get(f.prod.id).productId).toBe(other.id)
     expect(f.envs.get(f.staging.id).hosts).toContainEqual({ hostId: extra.id, role: 'other' })
     // Links in the file come back; none is removed.
-    expect(f.envs.get(f.staging.id).productIds).toEqual([f.ids.product])
     expect(f.hosts.list().find((h) => h.id === f.host.id)!.vaultIds.sort()).toEqual([DEFAULT_VAULT_ID, f.teamVaultId].sort())
     expect(f.hosts.list().find((h) => h.id === extra.id)!.vaultIds).toEqual([f.teamVaultId])
     expect(f.tunnels.get(t2.id).label).toBe('extra-tunnel')
@@ -333,10 +354,10 @@ describe('config import', () => {
   it('a host a protected environment reaches through a db service or checkout needs its typed name', async () => {
     const f = await makeConfigFixture()
     // None of these hosts is linked to prod; prod reaches each through one of its own rows.
-    const jump = f.hosts.create({ label: 'tunjump', address: '10.5.0.1' })
-    const via = f.hosts.create({ label: 'tunhost', address: '10.5.0.2', jumpHostId: jump.id })
+    const jump = f.hosts.create({ regionId: REGION, label: 'tunjump', address: '10.5.0.1' })
+    const via = f.hosts.create({ regionId: REGION, label: 'tunhost', address: '10.5.0.2', jumpHostId: jump.id })
     f.services.create({ kind: 'db', environmentId: f.prod.id, name: 'prod-db', dbEngine: 'postgres', dbAddress: '10.5.0.9', viaHostId: via.id })
-    const build = f.hosts.create({ label: 'buildbox', address: '10.5.0.3' })
+    const build = f.hosts.create({ regionId: REGION, label: 'buildbox', address: '10.5.0.3' })
     f.deploys.create(f.input({ name: 'prod-build', environmentId: f.prod.id, hostId: build.id, deployTag: 'deploy_prod_build' }))
     // The checkout joined prod silently; taking the host out of prod leaves the checkout on it.
     f.envs.removeHost(f.prod.id, build.id)
@@ -420,6 +441,68 @@ describe('config import', () => {
     )
   })
 
+  it('matches regions by id, then by code; a host keeps its own region and says so', async () => {
+    const { f, file } = await sourceFile()
+    const t = await makeTarget(f)
+    const moved = copy(file)
+    const eu = '0190a1b2-c3d4-4e5f-8a6b-00000000e001'
+    moved.regions.push({ id: eu, code: 'EU-1', provider: 'aws', displayName: 'Europe' })
+    moved.hosts.find((h) => h.label === 'bastion')!.regionId = eu
+    // A local region with the same code (any case) under its own id.
+    const local = t.regions.create({ code: 'eu-1', displayName: 'Europe' })
+    const plan = planImport(t.db, moved)
+    expect(itemOf(plan, 'regions', 'EU-1')).toMatchObject({ id: local.id, action: 'update', fields: ['provider'] })
+    importFile(t, moved)
+    expect(t.regions.list().map((r) => [r.code, r.hostCount])).toEqual([
+      ['eu-1', 1],
+      ['test-1', 1],
+    ])
+    expect(hostRow(t.db, f.ids.bastion).region_id).toBe(local.id)
+
+    // Re-imported with bastion back in test-1: the host stays in eu-1.
+    const back = planImport(t.db, file)
+    expect(itemOf(back, 'hosts', 'bastion')).toMatchObject({ action: 'unchanged', notes: ['region not changed'] })
+    importFile(t, file)
+    expect(hostRow(t.db, f.ids.bastion).region_id).toBe(local.id)
+  })
+
+  it('a version 1 file needs a region for its new hosts, and says what became of its product links', async () => {
+    const { f, file } = await sourceFile()
+    const t = await makeTarget(f)
+    const extraProduct = '0190a1b2-c3d4-4e5f-8a6b-00000000a001'
+    const v1 = asV1(file, (r) => {
+      r.products.push({ ...r.products[0], id: extraProduct, name: 'Zebra' })
+      r.environments.find((e: { id: string }) => e.id === f.staging.id).productIds.push(extraProduct)
+      r.environments.find((e: { id: string }) => e.id === f.prod.id).productIds = []
+    })
+    const plan = planImport(t.db, v1)
+    expect(plan.needsRegion).toBe(true)
+    expect(itemOf(plan, 'environments', 'staging').notes).toEqual(['kept Shop, removed Zebra'])
+    expect(itemOf(plan, 'environments', 'prod').notes).toEqual(['no product: put in Unassigned'])
+    expect(itemOf(plan, 'products', 'Unassigned')).toMatchObject({ action: 'add' })
+    // The dry run's stand-in region is never kept, nor listed.
+    expect(plan.items.some((i) => i.kind === 'regions')).toBe(false)
+    expect(t.regions.list().map((r) => r.code)).toEqual(['test-1'])
+
+    const before = snapshot(t.db)
+    expect(() => applyImport(deps(t), v1, { typedNames: [], expected: plan.counts })).toThrow(REGION_MESSAGE)
+    expect(snapshot(t.db)).toBe(before)
+    const eu = t.regions.create({ code: 'eu-1', displayName: 'Europe' })
+    applyImport(deps(t), v1, { typedNames: [], expected: plan.counts, regionId: eu.id })
+    expect(t.regions.list().map((r) => [r.code, r.hostCount])).toEqual([
+      ['eu-1', 2],
+      ['test-1', 0],
+    ])
+    const unassigned = t.products.list().find((p) => p.name === 'Unassigned')!
+    expect(t.envs.get(f.prod.id).productId).toBe(unassigned.id)
+    expect(t.envs.get(f.staging.id).productId).toBe(f.ids.product)
+
+    // A second version 1 file reuses that Unassigned, and adds no host so needs no region.
+    const again = planImport(t.db, v1)
+    expect(again.needsRegion).toBe(false)
+    expect(again.counts.add).toBe(0)
+  })
+
   it('the preview refuses to run inside an open transaction', async () => {
     const f = await makeConfigFixture()
     const file = buildConfigExport(f.db, clock).file
@@ -470,6 +553,14 @@ function handlers(f: ConfigFixture, openDialog: () => Promise<string | undefined
   })
 }
 
+/** The keys a version 1 file has in place of the version 2 ones. */
+const v1Shape = (file: ConfigFile) => ({
+  version: 1,
+  regions: undefined,
+  hosts: file.hosts.map(({ regionId: _, ...h }) => h),
+  environments: file.environments.map(({ productId, ...e }) => ({ ...e, productIds: [productId] })),
+})
+
 const writeTmp = (text: string): string => {
   const path = join(mkdtempSync(join(tmpdir(), 'opsdeck-import-')), 'opsdeck-config.json')
   writeFileSync(path, text)
@@ -480,7 +571,7 @@ describe('config import over IPC', () => {
   it('opens a preview under a token, applies it once and audits counts only', async () => {
     const f = await makeConfigFixture()
     const file = copy(buildConfigExport(f.db, clock).file)
-    file.products[0].description = 'A new description'
+    file.products.find((p) => p.name === 'Shop')!.description = 'A new description'
     const path = writeTmp(serializeConfig(file))
     const changed: string[][] = []
     const h = handlers(f, async () => path, { onImported: (ids) => changed.push(ids) })
@@ -488,12 +579,13 @@ describe('config import over IPC', () => {
     const preview = await h['config:importOpen']()
     if (!preview || 'errors' in preview) throw new Error('expected a preview')
     expect(preview.token).toMatch(/^[0-9a-f]{32}$/)
-    expect(preview.counts).toEqual({ add: 0, update: 1, unchanged: 10, skip: 0 })
+    expect(preview.counts).toEqual({ add: 0, update: 1, unchanged: 12, skip: 0 })
+    expect(preview.needsRegion).toBe(false)
     expect(JSON.stringify(preview)).not.toContain(path)
 
     const res = await h['config:importApply'](preview.token, { typedNames: [] })
     expect(res.counts).toEqual(preview.counts)
-    expect(f.products.list()[0].description).toBe('A new description')
+    expect(f.products.list().find((p) => p.name === 'Shop')!.description).toBe('A new description')
     // The product is linked to staging only: its page reloads.
     expect(changed).toEqual([[f.staging.id]])
 
@@ -513,10 +605,25 @@ describe('config import over IPC', () => {
     const last = Math.max(0, ...t.audit.list({}).map((x) => x.id))
     importFile(t, file)
     const [e] = t.audit.list({ actions: ['config.import'] })
-    expect(e.details).toEqual({ counts: { add: 10, update: 0, unchanged: 0, skip: 0 }, unresolved: 1 })
+    expect(e.details).toEqual({ counts: { add: 10, update: 0, unchanged: 2, skip: 0 }, unresolved: 1 })
     expect(e.targetId ?? null).toBeNull()
     // No per-row audits: the import's one event is all it wrote.
     expect(t.audit.list({}).filter((x) => x.id > last).map((x) => x.action)).toEqual(['config.import'])
+  })
+
+  it('passes the chosen region through for a version 1 file', async () => {
+    const { f, file } = await sourceFile()
+    const t = await makeTarget(f)
+    const path = writeTmp(JSON.stringify({ ...JSON.parse(serializeConfig(file)), ...v1Shape(file) }))
+    const h = handlers(t as unknown as ConfigFixture, async () => path)
+    const preview = await h['config:importOpen']()
+    if (!preview || 'errors' in preview) throw new Error(`expected a preview: ${JSON.stringify(preview)}`)
+    expect(preview.needsRegion).toBe(true)
+    await expect(h['config:importApply'](preview.token, { typedNames: [] })).rejects.toThrow(REGION_MESSAGE)
+    const again = await h['config:importOpen']()
+    if (!again || 'errors' in again) throw new Error('expected a preview')
+    await h['config:importApply'](again.token, { typedNames: [], regionId: REGION })
+    expect(hostRow(t.db, f.host.id).region_id).toBe(REGION)
   })
 
   it('a cancelled dialog returns null and holds nothing', async () => {
@@ -540,7 +647,7 @@ describe('config import over IPC', () => {
     const file = buildConfigExport(f.db, clock).file
     const wrong = handlers(f, async () => writeTmp(JSON.stringify({ ...file, format: 'something-else' })))
     expect(await wrong['config:importOpen']()).toEqual({ errors: ["This isn't an OpsDeck config file"] })
-    const newer = handlers(f, async () => writeTmp(JSON.stringify({ ...file, version: 2 })))
+    const newer = handlers(f, async () => writeTmp(JSON.stringify({ ...file, version: 3 })))
     expect(await newer['config:importOpen']()).toEqual({ errors: ['This file is from a newer OpsDeck'] })
     const notJson = handlers(f, async () => writeTmp('{ not json'))
     expect(await notJson['config:importOpen']()).toEqual({ errors: ["The file isn't valid JSON"] })

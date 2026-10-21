@@ -8,13 +8,14 @@ function data(): InventoryData {
   return {
     products: [product({ id: 'p1', name: 'Platform' }), product({ id: 'p2', name: 'Shop' })],
     environments: [
-      environment({ id: 'e1', name: 'Prod', productIds: ['p1'], hosts: [{ hostId: 'h1', role: 'bastion' }, { hostId: 'h2', role: 'app' }, { hostId: 'h3', role: 'db' }] }),
-      environment({ id: 'e2', name: 'Stage', productIds: ['p1'], hosts: [{ hostId: 'h2', role: 'app' }] }),
-      environment({ id: 'e3', name: 'Checkout', productIds: ['p2'], hosts: [{ hostId: 'h3', role: 'db' }] }),
+      environment({ id: 'e1', name: 'Prod', productId: 'p1', hosts: [{ hostId: 'h1', role: 'bastion' }, { hostId: 'h2', role: 'app' }, { hostId: 'h3', role: 'db' }] }),
+      environment({ id: 'e2', name: 'Stage', productId: 'p1', hosts: [{ hostId: 'h2', role: 'app' }] }),
+      environment({ id: 'e3', name: 'Checkout', productId: 'p2', hosts: [{ hostId: 'h3', role: 'db' }] }),
     ],
     hosts: [host({ id: 'h1', label: 'web' }), host({ id: 'h2', label: 'api' }), host({ id: 'h3', label: 'pg' })],
     identities: [],
     vaults: [],
+    regions: [],
   }
 }
 

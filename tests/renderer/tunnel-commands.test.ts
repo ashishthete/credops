@@ -38,7 +38,7 @@ async function sync(tunnels: TunnelMeta[], runtime: TunnelRuntime[]) {
 beforeEach(() => {
   vi.useFakeTimers()
   resetTunnels()
-  inventoryStore.set({ products: [], environments: [], hosts: [db, web], identities: [], vaults: [] })
+  inventoryStore.set({ products: [], environments: [], hosts: [db, web], identities: [], vaults: [], regions: [] })
 })
 
 afterEach(async () => {

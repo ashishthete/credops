@@ -37,7 +37,7 @@ describe('hub db', () => {
 
   it('migrating twice is a no-op', () => {
     const db = openHubDb(':memory:')
-    expect(migrate(db, HUB_MIGRATIONS)).toEqual({ from: 9, to: 9 })
+    expect(migrate(db, HUB_MIGRATIONS)).toEqual({ from: 10, to: 10 })
     expect((db.prepare('SELECT COUNT(*) AS n FROM groups').get() as { n: number }).n).toBe(1)
   })
 
@@ -64,7 +64,7 @@ describe('hub db', () => {
     v8.exec(`INSERT INTO environments VALUES ('e1','prod',0,0,0,NULL,'{}','h','u','t',NULL), ('e2','staging',0,0,0,NULL,'{}','h','u','t',NULL)`)
     v8.exec(`INSERT INTO hosts VALUES ('h1','e1','l','a',22,'u','[]','[]','auto')`)
     v8.exec(`INSERT INTO deployments VALUES ('d1','e1','h1','web',0,'{}')`)
-    migrate(v8, HUB_MIGRATIONS)
+    migrate(v8, HUB_MIGRATIONS.filter((m) => m.version <= 9))
     expect(v8.prepare('SELECT host_id FROM deployments WHERE id = ?').get('d1')).toEqual({ host_id: 'h1' })
     expect(v8.prepare('PRAGMA foreign_key_check').all()).toEqual([])
     // The same host id now fits in a second environment, and a deployment can only use its own environment's host.
@@ -74,5 +74,18 @@ describe('hub db', () => {
     v8.exec(`DELETE FROM environments WHERE id = 'e1'`)
     expect(v8.prepare('SELECT environment_id FROM hosts').all()).toEqual([{ environment_id: 'e2' }])
     expect(v8.prepare('SELECT COUNT(*) AS n FROM deployments').get()).toEqual({ n: 0 })
+  })
+  it('upgrades a v9 hub to v10: rows stay, and product and region start empty', () => {
+    const v9 = new DatabaseSync(':memory:')
+    v9.exec('PRAGMA foreign_keys = ON')
+    expect(migrate(v9, HUB_MIGRATIONS.filter((m) => m.version <= 9))).toMatchObject({ to: 9 })
+    v9.exec(`INSERT INTO environments VALUES ('e1','prod',0,0,0,NULL,'{}','h','u','t',NULL)`)
+    v9.exec(`INSERT INTO hosts VALUES ('h1','e1','l','a',22,'u','[]','[]','auto')`)
+    v9.exec(`INSERT INTO deployments VALUES ('d1','e1','h1','web',0,'{}')`)
+    expect(migrate(v9, HUB_MIGRATIONS)).toEqual({ from: 9, to: 10 })
+    expect(v9.prepare('SELECT name, product_id, product_name FROM environments').all()).toEqual([{ name: 'prod', product_id: null, product_name: null }])
+    expect(v9.prepare('SELECT label, region_code, region_name FROM hosts').all()).toEqual([{ label: 'l', region_code: null, region_name: null }])
+    expect(v9.prepare('SELECT host_id FROM deployments').all()).toEqual([{ host_id: 'h1' }])
+    expect(v9.prepare('PRAGMA foreign_key_check').all()).toEqual([])
   })
 })

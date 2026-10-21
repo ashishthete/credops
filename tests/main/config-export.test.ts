@@ -4,12 +4,15 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { buildConfigExport, exportConfig, serializeConfig } from '../../src/main/config/export'
 import { createConfigHandlers } from '../../src/main/ipc/handlers/config'
-import { parseConfigFile } from '../../src/shared/config-file'
+import { parseConfigFile, type ConfigFile } from '../../src/shared/config-file'
 import { DEFAULT_VAULT_ID, VAULT_LOCKED } from '../../src/shared/vault'
 import { makeConfigFixture, NOT_CONFIG, SECRET_VALUES, type ConfigFixture } from './config-helpers'
+import { PRODUCT, REGION } from './inventory-helpers'
 
 const clock = () => new Date('2026-10-20T10:00:00.000Z')
 const sortedById = <T extends { id: string }>(xs: T[]): boolean => xs.every((x, i) => i === 0 || xs[i - 1].id < x.id)
+/** The fixture's own product, not the one every fixture shares. */
+const shop = (file: ConfigFile) => file.products.find((p) => p.name === 'Shop')!
 const tmpPath = () => join(mkdtempSync(join(tmpdir(), 'opsdeck-config-')), 'opsdeck-config.json')
 const exportDeps = (f: ConfigFixture, now = clock) => ({ db: f.db, vault: f.vault, audit: f.audit, now })
 
@@ -18,15 +21,19 @@ describe('config export', () => {
     const f = await makeConfigFixture()
     const { file, counts } = buildConfigExport(f.db, clock)
     expect(file.format).toBe('opsdeck-config')
-    expect(file.version).toBe(1)
+    expect(file.version).toBe(2)
     expect(file.exportedAt).toBe('2026-10-20T10:00:00.000Z')
-    expect(Object.keys(file)).toEqual(['format', 'version', 'exportedAt', 'secretRefs', 'products', 'identities', 'hosts', 'environments', 'tunnels', 'deployments', 'services'])
-    expect(counts).toEqual({ products: 1, identities: 2, hosts: 2, environments: 2, tunnels: 1, deployments: 1, services: 2 })
-    for (const list of [file.products, file.identities, file.hosts, file.environments, file.tunnels, file.deployments, file.services] as { id: string }[][]) {
+    expect(Object.keys(file)).toEqual(['format', 'version', 'exportedAt', 'secretRefs', 'regions', 'products', 'identities', 'hosts', 'environments', 'tunnels', 'deployments', 'services'])
+    expect(counts).toEqual({ regions: 1, products: 2, identities: 2, hosts: 2, environments: 2, tunnels: 1, deployments: 1, services: 2 })
+    for (const list of [file.regions, file.products, file.identities, file.hosts, file.environments, file.tunnels, file.deployments, file.services] as { id: string }[][]) {
       expect(sortedById(list)).toBe(true)
     }
 
-    expect(file.products).toEqual([{ id: f.ids.product, name: 'Shop', color: '#3366ff', icon: 'rocket', description: 'The shop', repoUrl: 'git@example.com:shop.git' }])
+    expect(file.regions).toEqual([{ id: REGION, code: 'test-1', provider: '', displayName: 'Test' }])
+    expect(file.products).toEqual([
+      { id: PRODUCT, name: 'Fixture', color: '#445566', icon: 'boxes', description: '', repoUrl: null },
+      { id: f.ids.product, name: 'Shop', color: '#3366ff', icon: 'rocket', description: 'The shop', repoUrl: 'git@example.com:shop.git' },
+    ].sort((a, b) => (a.id < b.id ? -1 : 1)))
     const byId = <T extends { id: string }>(xs: T[], id: string) => xs.find((x) => x.id === id)!
     expect(byId(file.identities, f.ids.keyIdentity)).toEqual({
       id: f.ids.keyIdentity,
@@ -48,6 +55,7 @@ describe('config export', () => {
       id: f.host.id,
       label: 'app1',
       address: '10.0.0.7',
+      regionId: REGION,
       port: null,
       identityId: f.ids.passwordIdentity,
       jumpHostId: f.ids.bastion,
@@ -70,10 +78,10 @@ describe('config export', () => {
       versioned: true,
       autoRollback: false,
       domain: 'staging.example.com',
-      productIds: [f.ids.product],
+      productId: f.ids.product,
       hosts: [{ hostId: f.host.id, role: 'app' }, { hostId: f.ids.bastion, role: 'bastion' }].sort((a, b) => (a.hostId < b.hostId ? -1 : 1)),
     })
-    expect(byId(file.environments, f.prod.id).protected).toBe(true)
+    expect(byId(file.environments, f.prod.id)).toMatchObject({ protected: true, productId: PRODUCT })
     expect(file.tunnels).toEqual([
       {
         id: f.ids.tunnel,
@@ -150,7 +158,7 @@ describe('config export', () => {
     const text = serializeConfig(file)
     expect(text).not.toContain('SECRETVAL')
     expect(file.hosts.find((h) => h.id === f.host.id)!.envVars).toEqual({ LANG: 'C.UTF-8', GITHUB_TOKEN: '', db_password: '' })
-    expect(file.products[0].repoUrl).toBe('https://host/x.git')
+    expect(shop(file).repoUrl).toBe('https://host/x.git')
     // An ssh user is not a secret: only the password goes.
     expect(file.deployments[0].repoUrl).toBe('ssh://git@host/x.git')
     // The token and the two URL passwords; an already blank value is not counted.
@@ -213,14 +221,14 @@ describe('config export', () => {
     const { file, omitted } = buildConfigExport(f.db, clock)
     const text = serializeConfig(file)
     expect(text).not.toMatch(/tok|pw@/)
-    expect(file.products[0].repoUrl).toBeNull()
+    expect(shop(file).repoUrl).toBeNull()
     expect(file.deployments[0].repoUrl).toBeNull()
     expect(omitted).toBe(2)
     expect(parseConfigFile(text).ok).toBe(true)
     f.db.prepare('UPDATE products SET repo_url = ? WHERE id = ?').run('ssh://u%3Apw@host/r', f.ids.product)
     const again = buildConfigExport(f.db, clock)
     expect(serializeConfig(again.file)).not.toContain('%3Apw')
-    expect(again.file.products[0].repoUrl).toBe('ssh://u@host/r')
+    expect(shop(again.file).repoUrl).toBe('ssh://u@host/r')
   })
 
   it('template lines: only a whole ref is exempt, comments are checked, a bare http(s) token counts, a stray ? does not hide params', async () => {
@@ -316,7 +324,7 @@ describe('config export', () => {
     const path = tmpPath()
     const h = createConfigHandlers({ ...exportDeps(f), openDialog: async () => undefined, saveDialog: async () => path })
     const res = await h['config:export']()
-    expect(res).toEqual({ path, counts: { products: 1, identities: 2, hosts: 2, environments: 2, tunnels: 1, deployments: 1, services: 2 }, omitted: 0 })
+    expect(res).toEqual({ path, counts: { regions: 1, products: 2, identities: 2, hosts: 2, environments: 2, tunnels: 1, deployments: 1, services: 2 }, omitted: 0 })
     const [e] = f.audit.list({ actions: ['config.export'] })
     expect(e).toMatchObject({ outcome: 'success', targetType: 'config', targetLabel: 'config', targetId: null })
     expect(e.details).toEqual({ counts: res!.counts, omitted: 0 })

@@ -15,7 +15,7 @@ import { checkColor, checkDomain, checkName, checkPort, environmentMeta, environ
 
 const exists = (db: Db, table: string, id: string): boolean => db.prepare(`SELECT 1 FROM ${table} WHERE id = ?`).get(id) !== undefined
 
-/** Environments: defaults, shared product links and host memberships with roles. Every write is audited without values. */
+/** Environments: defaults, their one product and host memberships with roles. Every write is audited without values. */
 export class EnvironmentStore {
   constructor(
     private readonly db: Db,
@@ -23,7 +23,7 @@ export class EnvironmentStore {
     private readonly audit: AuditLog,
   ) {}
 
-  /** Works while locked. Environments with no product are included (shown as unassigned). */
+  /** Works while locked. */
   list(): EnvironmentMeta[] {
     return environmentMetas(this.db)
   }
@@ -43,7 +43,7 @@ export class EnvironmentStore {
       targetType: 'environment',
       targetId: id,
       targetLabel: meta.name,
-      details: { products: meta.productIds.length },
+      details: { productId: meta.productId },
     })
     return meta
   }
@@ -72,18 +72,15 @@ export class EnvironmentStore {
     const port = input.defaultPort == null ? null : checkPort(input.defaultPort)
     const jumpHostId = this.checkJump(input.defaultJumpHostId)
     const domain = checkDomain(input.domain)
-    const productIds = this.checkProducts(input.productIds ?? [])
-    this.checkNamesFree(name, productIds)
+    const productId = this.checkProduct(input.productId)
+    this.checkNameFree(name, productId)
     const ts = new Date().toISOString()
     this.db
       .prepare(
-        `INSERT INTO environments(id, name, color, protected, default_identity_id, default_port, default_jump_host_id, domain, created_at, updated_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO environments(id, name, color, protected, default_identity_id, default_port, default_jump_host_id, domain,
+          product_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
       )
-      .run(id, name, color, input.protected ? 1 : 0, identityId, port, jumpHostId, domain, ts, ts)
-    for (const p of productIds) {
-      this.db.prepare('INSERT INTO product_environments(product_id, environment_id) VALUES (?,?)').run(p, id)
-    }
+      .run(id, name, color, input.protected ? 1 : 0, identityId, port, jumpHostId, domain, productId, ts, ts)
     return id
   }
 
@@ -91,7 +88,7 @@ export class EnvironmentStore {
   updateInTx(id: string, patch: EnvironmentPatch): { name: string; fields: string[] } | null {
     const before = environmentMeta(this.db, id)
     const name = patch.name === undefined ? before.name : checkName(patch.name, 'environment name', MAX_NAME)
-    if (name !== before.name) this.checkNamesFree(name, before.productIds, id)
+    if (name !== before.name) this.checkNameFree(name, before.productId, id)
     const color = patch.color === undefined ? before.color : checkColor(patch.color, 'environment')
     const isProtected = patch.protected === undefined ? before.protected : patch.protected === true
     const identityId = patch.defaultIdentityId === undefined ? before.defaultIdentityId : this.checkIdentity(patch.defaultIdentityId)
@@ -118,17 +115,6 @@ export class EnvironmentStore {
     return { name, fields }
   }
 
-  /** Links the products the environment doesn't have yet (never unlinks); no transaction and no audit. Returns the added ids. */
-  addProductsInTx(id: string, productIds: string[]): string[] {
-    const before = environmentMeta(this.db, id)
-    const added = this.checkProducts(productIds).filter((p) => !before.productIds.includes(p))
-    if (added.length === 0) return []
-    this.checkNamesFree(before.name, added, id)
-    for (const p of added) this.db.prepare('INSERT INTO product_environments(product_id, environment_id) VALUES (?,?)').run(p, id)
-    this.db.prepare('UPDATE environments SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), id)
-    return added
-  }
-
   /** putHost() without the transaction, the unlock check or the audit; false when the host already has that role. */
   putHostInTx(id: string, hostId: string, role: HostRole): boolean {
     if (!(HOST_ROLES as readonly string[]).includes(role)) throw new Error('host role is not allowed')
@@ -145,7 +131,7 @@ export class EnvironmentStore {
     return true
   }
 
-  /** Removes the environment and its links; hosts and products stay. */
+  /** Removes the environment and its links; hosts and its product stay. */
   delete(id: string): void {
     this.vault.assertUnlocked()
     const before = environmentMeta(this.db, id)
@@ -156,35 +142,33 @@ export class EnvironmentStore {
       targetType: 'environment',
       targetId: id,
       targetLabel: before.name,
-      details: { hosts: before.hosts.length, products: before.productIds.length },
+      details: { hosts: before.hosts.length, productId: before.productId },
     })
   }
 
-  /** Replaces the environment's product set. */
-  setProducts(id: string, productIds: string[]): EnvironmentMeta {
+  /**
+   * Moves the environment to another product. Refused while it is published to the Hub: there is no manifest-change
+   * tracking to carry the move, so the user unpublishes, moves and publishes again.
+   */
+  setProduct(id: string, productId: string): EnvironmentMeta {
     this.vault.assertUnlocked()
     const before = environmentMeta(this.db, id)
-    const wanted = this.checkProducts(productIds)
-    const added = wanted.filter((p) => !before.productIds.includes(p)).sort()
-    const removed = before.productIds.filter((p) => !wanted.includes(p)).sort()
-    if (added.length === 0 && removed.length === 0) return before
+    const to = this.checkProduct(productId)
+    if (to === before.productId) return before
     inTransaction(this.db, () => {
-      this.checkNamesFree(before.name, added, id)
-      for (const p of removed) {
-        this.db.prepare('DELETE FROM product_environments WHERE product_id = ? AND environment_id = ?').run(p, id)
+      if (this.db.prepare('SELECT 1 FROM hub_env_links WHERE environment_id = ?').get(id)) {
+        throw new Error('this environment is published to the Hub: unpublish it, move it, then publish it again')
       }
-      for (const p of added) {
-        this.db.prepare('INSERT INTO product_environments(product_id, environment_id) VALUES (?,?)').run(p, id)
-      }
-      this.db.prepare('UPDATE environments SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), id)
+      this.checkNameFree(before.name, to, id)
+      this.db.prepare('UPDATE environments SET product_id = ?, updated_at = ? WHERE id = ?').run(to, new Date().toISOString(), id)
     })
     this.audit.append({
-      action: 'environment.products',
+      action: 'environment.product',
       outcome: 'success',
       targetType: 'environment',
       targetId: id,
       targetLabel: before.name,
-      details: { added, removed },
+      details: { from: before.productId, to },
     })
     return environmentMeta(this.db, id)
   }
@@ -251,24 +235,20 @@ export class EnvironmentStore {
     return id
   }
 
-  private checkProducts(ids: string[]): string[] {
-    const unique = [...new Set(ids)]
-    for (const p of unique) if (!exists(this.db, 'products', p)) throw new Error('product not found')
-    return unique
+  private checkProduct(id: string | undefined): string {
+    if (typeof id !== 'string' || id === '') throw new Error('an environment needs a product')
+    if (!exists(this.db, 'products', id)) throw new Error('product not found')
+    return id
   }
 
-  /** An environment name is unique within each product (case-insensitive); other environments may reuse it. */
-  private checkNamesFree(name: string, productIds: string[], selfId = ''): void {
-    const clash = this.db.prepare(
-      `SELECT e.name AS name FROM environments e JOIN product_environments pe ON pe.environment_id = e.id
-        WHERE pe.product_id = ? AND e.name = ? COLLATE NOCASE AND e.id <> ?`,
-    )
-    for (const p of productIds) {
-      const hit = clash.get(p, name, selfId) as { name: string } | undefined
-      if (hit) {
-        const product = (this.db.prepare('SELECT name FROM products WHERE id = ?').get(p) as { name: string }).name
-        throw new Error(`product ${product} already has an environment named ${hit.name}`)
-      }
+  /** An environment name is unique within its product (case-insensitive); other products may reuse it. */
+  private checkNameFree(name: string, productId: string, selfId = ''): void {
+    const hit = this.db
+      .prepare('SELECT name FROM environments WHERE product_id = ? AND name = ? COLLATE NOCASE AND id <> ?')
+      .get(productId, name, selfId) as { name: string } | undefined
+    if (hit) {
+      const product = (this.db.prepare('SELECT name FROM products WHERE id = ?').get(productId) as { name: string }).name
+      throw new Error(`product ${product} already has an environment named ${hit.name}`)
     }
   }
 }

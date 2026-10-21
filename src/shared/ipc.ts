@@ -31,6 +31,10 @@ import type {
   ProductInput,
   ProductMeta,
   ProductPatch,
+  RegionInput,
+  RegionMeta,
+  RegionPatch,
+  RegionsUpgradeReport,
   ResolvedHost,
   SshImportPreview,
   SshImportRequest,
@@ -177,13 +181,20 @@ export interface IpcContract {
   'env:update': { args: [id: string, patch: EnvironmentPatch]; result: EnvironmentMeta }
   'env:delete': { args: [id: string]; result: void }
   'env:openDomain': { args: [id: string]; result: void }
-  'env:setProducts': { args: [id: string, productIds: string[]]; result: EnvironmentMeta }
+  'env:setProduct': { args: [id: string, productId: string]; result: EnvironmentMeta }
   'env:putHost': { args: [id: string, hostId: string, role: HostRole]; result: EnvironmentMeta }
   'env:removeHost': { args: [id: string, hostId: string]; result: EnvironmentMeta }
   'product:list': { args: []; result: ProductMeta[] }
   'product:create': { args: [input: ProductInput]; result: ProductMeta }
   'product:update': { args: [id: string, patch: ProductPatch]; result: ProductMeta }
   'product:delete': { args: [id: string]; result: void }
+  'region:list': { args: []; result: RegionMeta[] }
+  'region:create': { args: [input: RegionInput]; result: RegionMeta }
+  'region:update': { args: [id: string, patch: RegionPatch]; result: RegionMeta }
+  'region:delete': { args: [id: string]; result: void }
+  /** What the regions upgrade moved, until dismissed; null when there is nothing to show. */
+  'region:upgradeReport': { args: []; result: RegionsUpgradeReport | null }
+  'region:dismissUpgradeReport': { args: []; result: void }
   'sshconfig:preview': { args: []; result: SshImportPreview }
   'sshconfig:import': { args: [req: SshImportRequest]; result: SshImportResult }
   // Returns at once in the connecting state; progress arrives as session:state events.
@@ -335,7 +346,8 @@ export interface IpcContract {
   /** Asks which file with a dialog in main and previews it; the file stays in main under the token. */
   'config:importOpen': { args: []; result: ImportPreview | { errors: string[] } | null }
   /** `typedNames`: the protected environments the user typed to confirm. */
-  'config:importApply': { args: [token: string, opts: { typedNames: string[] }]; result: ImportResult }
+  /** `regionId`: where a version 1 file's new hosts go (the preview's `needsRegion`). */
+  'config:importApply': { args: [token: string, opts: { typedNames: string[]; regionId?: string }]; result: ImportResult }
   'config:importDiscard': { args: [token: string]; result: void }
 }
 
@@ -390,13 +402,19 @@ export const CHANNELS = [
   'env:update',
   'env:delete',
   'env:openDomain',
-  'env:setProducts',
+  'env:setProduct',
   'env:putHost',
   'env:removeHost',
   'product:list',
   'product:create',
   'product:update',
   'product:delete',
+  'region:list',
+  'region:create',
+  'region:update',
+  'region:delete',
+  'region:upgradeReport',
+  'region:dismissUpgradeReport',
   'sshconfig:preview',
   'sshconfig:import',
   'ssh:open',

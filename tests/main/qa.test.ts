@@ -9,7 +9,7 @@ import { SettingsStore } from '../../src/main/settings/settings-store'
 import { SecretStore } from '../../src/main/vault/secret-store'
 import type { QaDispatch } from '../../src/shared/settings'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
-import { makeInventory } from './inventory-helpers'
+import { makeInventory, PRODUCT } from './inventory-helpers'
 import { auditRows } from './vault-helpers'
 
 const TOKEN = 'ghp_qaTokenValue1234567890abcdef'
@@ -27,7 +27,7 @@ async function setup(route: Route = () => new Response(null, { status: 204 })) {
   const integrations = new IntegrationStore({ db: f.db, audit: f.audit, vault: f.vault, secrets })
   const token = secrets.create({ vaultId: DEFAULT_VAULT_ID, name: 'gh', kind: 'token', value: TOKEN })
   settings.update({ githubTokenSecretId: token.id })
-  const env = f.envs.create({ name: 'staging', color: '#112233' })
+  const env = f.envs.create({ productId: PRODUCT, name: 'staging', color: '#112233' })
   integrations.update(env.id, { qa: { repo: 'acme/shop-qa', workflow: 'qa.yml', ref: 'main' }, qaWait: true })
   const calls: { url: string; init: RequestInit }[] = []
   const fetch = vi.fn(async (url: string, init: RequestInit) => {
@@ -86,8 +86,9 @@ describe('QaDispatcher', () => {
   it('defaults qa off for prod-like environments', async () => {
     const t = await setup()
     const qa = { repo: 'acme/shop-qa', workflow: 'qa.yml', ref: 'main' }
+    const product = t.f.products.create({ name: 'QA defaults', color: '#000000', icon: 'boxes' })
     for (const [name, on] of [['prod', false], ['UAT', false], ['uat_eu', false], ['staging', true]] as const) {
-      const env = t.f.envs.create({ name, color: '#000000' })
+      const env = t.f.envs.create({ productId: product.id, name, color: '#000000' })
       t.integrations.update(env.id, { qa })
       expect(t.integrations.get(env.id).qaOnDeploy).toBe(on)
     }
@@ -99,7 +100,7 @@ describe('QaDispatcher', () => {
     const step = qaFinalizeStep({ qa: t.qa, integrations: t.integrations })
     const ctx = (run: ReleaseRunMeta) => ({ run, log: (l: string) => void lines.push(l), signal: new AbortController().signal })
     await step(ctx({ ...t.run, options: { backup: true, notify: true, qa: false } }))
-    const bare = t.f.envs.create({ name: 'dev', color: '#000000' })
+    const bare = t.f.envs.create({ productId: PRODUCT, name: 'dev', color: '#000000' })
     await step(ctx({ ...t.run, environmentId: bare.id }))
     expect(t.fetch).not.toHaveBeenCalled()
     expect(lines).toEqual(['QA: skipped (off for this run)', 'QA: skipped (no QA workflow)'])

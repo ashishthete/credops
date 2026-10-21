@@ -1,9 +1,10 @@
 import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
-import { CircleDashed, Database, FileDown, Fingerprint, Plus, Search, Server, ShieldHalf, SquareTerminal, X, type LucideIcon } from 'lucide-react'
+import { ChevronRight, CircleDashed, Database, FileDown, Fingerprint, Globe2, Plus, Search, Server, ShieldHalf, SquareTerminal, X, type LucideIcon } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react'
 import { useSearchParams } from 'react-router'
-import type { EnvironmentMeta, HostMeta, HostRole } from '../../../../shared/inventory'
+import type { EnvironmentMeta, HostMeta, HostRole, RegionMeta } from '../../../../shared/inventory'
 import type { HostsAction } from '../../inventory/commands'
+import { hostsByRegion } from '../../inventory/regions'
 import { useInventory } from '../../inventory/store'
 import { useConnect } from '../../terminal/connect'
 import { Badge } from '../../ui/Badge'
@@ -11,6 +12,7 @@ import { Button } from '../../ui/Button'
 import { EmptyState } from '../../ui/EmptyState'
 import { exitFast, fast, spring, staggerDelay, useMotionSafe } from '../../ui/motion'
 import { useShortcut } from '../../ui/shortcuts'
+import { plural } from '../../ui/common'
 import { Skeleton } from '../../ui/Skeleton'
 import { createStore } from '../../ui/store'
 import { ROLE_LABEL, ROLE_ORDER } from '../products/ProductView'
@@ -18,6 +20,7 @@ import { HostDialog } from './HostDialog'
 import { openKnownHosts } from '../terminals/KnownHostsDialog'
 import { HostView } from './HostView'
 import { ImportDialog } from './ImportDialog'
+import { RegionsDialog } from './RegionsDialog'
 
 const ROLE_ICON: Record<HostRole, LucideIcon> = { bastion: ShieldHalf, app: Server, db: Database, other: CircleDashed }
 
@@ -25,10 +28,14 @@ const ROLE_ICON: Record<HostRole, LucideIcon> = { bastion: ShieldHalf, app: Serv
 const primaryRole = (h: HostMeta): HostRole | null =>
   ROLE_ORDER.find((r) => h.environments.some((m) => m.role === r)) ?? null
 
-function matchesQuery(h: HostMeta, q: string): boolean {
+function matchesQuery(h: HostMeta, q: string, region: RegionMeta | undefined): boolean {
   if (!q) return true
-  return [h.label, h.address, ...h.tags].some((s) => s.toLowerCase().includes(q))
+  return [h.label, h.address, ...h.tags, ...(region ? [region.code, region.displayName] : [])].some((s) => s.toLowerCase().includes(q))
 }
+
+type RegionGroup = ReturnType<typeof hostsByRegion<HostMeta>>[number]
+/** A group's region id; a group always has a host, and hosts whose region is missing still group by its id. */
+const groupKey = (g: RegionGroup) => g.hosts[0]!.regionId
 
 const IMPORT_LABEL = 'Import from ~/.ssh/config'
 
@@ -37,18 +44,34 @@ export function HostsPage() {
   const [params, setParams] = useSearchParams()
   const [query, setQuery] = useState('')
   const [tags, setTags] = useState<string[]>([])
+  const [regionId, setRegionId] = useState('')
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   const [dialog, setDialog] = useState<HostsAction | null>(null)
+  // The region a new host starts in: the group its "New host" was clicked in, else the one in view.
+  const [newIn, setNewIn] = useState<string | undefined>()
   // Rows cascade in on the first view only, not on every selection or filter.
   const [fresh, setFresh] = useState(true)
   const search = useRef<HTMLInputElement>(null)
 
   const hosts = useMemo(() => [...(data?.hosts ?? [])].sort((a, b) => a.label.localeCompare(b.label)), [data])
   const allTags = useMemo(() => [...new Set(hosts.flatMap((h) => h.tags))].sort((a, b) => a.localeCompare(b)), [hosts])
+  const regions = useMemo(() => [...(data?.regions ?? [])].sort((a, b) => a.code.localeCompare(b.code)), [data])
+  // A filter left on a region that has since gone shows everything.
+  const regionFilter = regions.some((r) => r.id === regionId) ? regionId : ''
   const q = query.trim().toLowerCase()
-  const visible = useMemo(() => hosts.filter((h) => matchesQuery(h, q) && tags.every((t) => h.tags.includes(t))), [hosts, q, tags])
+  const groups = useMemo(() => {
+    const byId = new Map(regions.map((r) => [r.id, r]))
+    const shown = hosts.filter(
+      (h) => (!regionFilter || h.regionId === regionFilter) && matchesQuery(h, q, byId.get(h.regionId)) && tags.every((t) => h.tags.includes(t)),
+    )
+    return hostsByRegion(regions, shown)
+  }, [hosts, regions, regionFilter, q, tags])
+  // What the list shows, in its order: hosts in a collapsed group are left out.
+  const visible = useMemo(() => groups.flatMap((g) => (collapsed.has(groupKey(g)) ? [] : g.hosts)), [groups, collapsed])
 
   const wanted = params.get('host')
   const selected = wanted && hosts.some((h) => h.id === wanted) ? wanted : (visible[0]?.id ?? null)
+  const selectedRegion = hosts.find((h) => h.id === selected)?.regionId
 
   const updateParams = useCallback(
     (change: (p: URLSearchParams) => void) =>
@@ -70,23 +93,35 @@ export function HostsPage() {
     [updateParams],
   )
 
-  // Palette commands arrive as ?action=new|import; open the dialog and drop the param.
+  // Palette commands arrive as ?action=new|import|regions; open the dialog and drop the param.
   const action = params.get('action')
   useEffect(() => {
-    if (action !== 'new' && action !== 'import') return
+    if (action !== 'new' && action !== 'import' && action !== 'regions') return
+    setNewIn(undefined)
     setDialog(action)
     updateParams((p) => p.delete('action'))
   }, [action, updateParams])
 
-  useShortcut('mod+n', () => setDialog('new'))
+  const newHost = (inRegion?: string) => {
+    setNewIn(inRegion)
+    setDialog('new')
+  }
+  useShortcut('mod+n', () => newHost())
   useShortcut('mod+f', () => search.current?.focus())
 
   const toggleTag = (t: string) => setTags((ts) => (ts.includes(t) ? ts.filter((x) => x !== t) : [...ts, t]))
+  const toggleGroup = (id: string) =>
+    setCollapsed((c) => {
+      const next = new Set(c)
+      if (!next.delete(id)) next.add(id)
+      return next
+    })
 
   const dialogs = (
     <>
       <HostDialog
         open={dialog === 'new'}
+        presetRegionId={newIn ?? (regionFilter || selectedRegion)}
         onClose={() => setDialog(null)}
         onSaved={(h) => {
           setDialog(null)
@@ -94,6 +129,7 @@ export function HostsPage() {
         }}
       />
       <ImportDialog open={dialog === 'import'} onClose={() => setDialog(null)} onImported={(first) => first && select(first)} />
+      <RegionsDialog open={dialog === 'regions'} onClose={() => setDialog(null)} />
     </>
   )
 
@@ -109,7 +145,7 @@ export function HostsPage() {
             text="Add one by hand, or bring in everything from your SSH config at once."
             actions={
               <>
-                <Button variant="ghost" icon={<Plus aria-hidden className="size-3.5" />} onClick={() => setDialog('new')}>
+                <Button variant="ghost" icon={<Plus aria-hidden className="size-3.5" />} onClick={() => newHost()}>
                   New host
                 </Button>
                 <Button icon={<FileDown aria-hidden className="size-3.5" />} onClick={() => setDialog('import')}>
@@ -131,7 +167,7 @@ export function HostsPage() {
                 ref={search}
                 type="search"
                 aria-label="Search hosts"
-                placeholder="Label, address or tag"
+                placeholder="Label, address, tag or region"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => {
@@ -144,19 +180,29 @@ export function HostsPage() {
                 className="h-8 w-full rounded-lg border border-line bg-canvas/60 pr-2.5 pl-8 text-[12.5px] text-fg placeholder:text-muted/60 transition-[border-color,box-shadow] focus:border-accent/60 focus:shadow-[0_0_0_3px_color-mix(in_oklab,var(--accent)_18%,transparent)] focus:outline-none"
               />
             </label>
-            {allTags.length > 0 && <TagFilter tags={allTags} active={tags} onToggle={toggleTag} />}
+            {(regions.length > 1 || allTags.length > 0) && (
+              <div className="flex items-start gap-1.5">
+                {regions.length > 1 && <RegionFilter regions={regions} value={regionFilter} onChange={setRegionId} />}
+                {allTags.length > 0 && <TagFilter tags={allTags} active={tags} onToggle={toggleTag} />}
+              </div>
+            )}
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
             {data ? (
               <HostList
+                groups={groups}
+                collapsed={collapsed}
                 hosts={visible}
                 environments={data.environments}
                 selected={selected}
                 stagger={fresh}
                 onSelect={select}
+                onToggleGroup={toggleGroup}
+                onNewIn={newHost}
                 onClearFilters={() => {
                   setQuery('')
                   setTags([])
+                  setRegionId('')
                 }}
               />
             ) : (
@@ -168,8 +214,9 @@ export function HostsPage() {
             )}
           </div>
           <div className="flex flex-col gap-0.5 border-t border-line/70 p-2.5">
-            <RailButton icon={Plus} label="New host" onClick={() => setDialog('new')} />
+            <RailButton icon={Plus} label="New host" onClick={() => newHost()} />
             <RailButton icon={FileDown} label={IMPORT_LABEL} onClick={() => setDialog('import')} />
+            <RailButton icon={Globe2} label="Regions…" onClick={() => setDialog('regions')} />
             <RailButton icon={Fingerprint} label="Known hosts…" onClick={openKnownHosts} />
           </div>
         </aside>
@@ -208,6 +255,26 @@ function PageTitle({ count }: { count?: number }) {
   )
 }
 
+function RegionFilter({ regions, value, onChange }: { regions: RegionMeta[]; value: string; onChange: (id: string) => void }) {
+  return (
+    <select
+      aria-label="Region"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className={`h-6 max-w-32 shrink-0 rounded-md border-0 px-1.5 font-mono text-[11.5px] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 ${
+        value ? 'bg-accent/18 text-fg' : 'bg-white/[0.04] text-muted hover:text-fg'
+      }`}
+    >
+      <option value="">All regions</option>
+      {regions.map((r) => (
+        <option key={r.id} value={r.id}>
+          {r.code}
+        </option>
+      ))}
+    </select>
+  )
+}
+
 function TagFilter({ tags, active, onToggle }: { tags: string[]; active: string[]; onToggle: (tag: string) => void }) {
   const motionSafe = useMotionSafe()
   return (
@@ -235,11 +302,17 @@ function TagFilter({ tags, active, onToggle }: { tags: string[]; active: string[
 }
 
 interface HostListProps {
+  groups: RegionGroup[]
+  /** Region ids whose group is folded away. */
+  collapsed: ReadonlySet<string>
+  /** The rows in view, in list order: what the arrow keys move through. */
   hosts: HostMeta[]
   environments: EnvironmentMeta[]
   selected: string | null
   stagger: boolean
   onSelect: (id: string) => void
+  onToggleGroup: (regionId: string) => void
+  onNewIn: (regionId: string) => void
   onClearFilters: () => void
 }
 
@@ -254,7 +327,7 @@ const useIs = (store: SelectionStore, which: keyof ListSelection, id: string) =>
  * A listbox: arrows, Home and End move the selection, which follows focus. The rows are built once per
  * list and read the selection from a store, so moving it re-renders two rows, not every row.
  */
-function HostList({ hosts, environments, selected, stagger, onSelect, onClearFilters }: HostListProps) {
+function HostList({ groups, collapsed, hosts, environments, selected, stagger, onSelect, onToggleGroup, onNewIn, onClearFilters }: HostListProps) {
   const list = useRef<HTMLUListElement>(null)
   const envById = useMemo(() => new Map(environments.map((e) => [e.id, e])), [environments])
   const focusId = useRef<string | null>(null)
@@ -289,32 +362,69 @@ function HostList({ hosts, environments, selected, stagger, onSelect, onClearFil
     onSelect(hosts[to].id)
   }
 
-  const rows = useMemo(
-    () => (
-      <AnimatePresence initial={false}>
-        {hosts.map((h, i) => (
-          <HostRow
-            key={h.id}
-            host={h}
-            envs={h.environments.flatMap((m) => envById.get(m.environmentId) ?? [])}
-            index={i}
-            stagger={stagger}
-            selection={selection}
-            onSelect={pick}
-            onConnect={connect}
-          />
-        ))}
-      </AnimatePresence>
-    ),
-    [hosts, envById, stagger, selection, pick, connect],
-  )
+  const rows = useMemo(() => {
+    const index = new Map(hosts.map((h, i) => [h.id, i]))
+    return groups.map((g) => {
+      const key = groupKey(g)
+      const open = !collapsed.has(key)
+      const code = g.region?.code ?? 'Unknown region'
+      return (
+        <li key={key} role="group" aria-label={code} className="flex flex-col gap-0.5">
+          <div role="presentation" className="group/region flex h-7 items-center gap-1 pr-1 pl-1.5">
+            <button
+              type="button"
+              aria-expanded={open}
+              aria-label={`${code}, ${plural(g.hosts.length, 'host')}`}
+              title={g.region?.displayName}
+              onClick={() => onToggleGroup(key)}
+              className="flex h-6 min-w-0 items-center gap-1.5 rounded-md px-1 text-[11.5px] text-muted hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+            >
+              <ChevronRight aria-hidden className={`size-3 shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />
+              <span className="truncate font-mono">{code}</span>
+              {g.region?.displayName && g.region.displayName !== code && <span className="truncate text-muted/70">{g.region.displayName}</span>}
+              <span className="rounded-full bg-white/[0.05] px-1.5 text-[10.5px] tabular-nums">{g.hosts.length}</span>
+            </button>
+            {g.region && (
+              <button
+                type="button"
+                aria-label={`New host in ${code}`}
+                title={`New host in ${code}`}
+                onClick={() => onNewIn(key)}
+                className="ml-auto grid size-6 place-items-center rounded-md text-muted opacity-0 transition-opacity group-hover/region:opacity-100 hover:text-fg focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+              >
+                <Plus aria-hidden className="size-3" />
+              </button>
+            )}
+          </div>
+          {open && (
+            <ul role="presentation" className="flex flex-col gap-0.5">
+              <AnimatePresence initial={false}>
+                {g.hosts.map((h) => (
+                  <HostRow
+                    key={h.id}
+                    host={h}
+                    envs={h.environments.flatMap((m) => envById.get(m.environmentId) ?? [])}
+                    index={index.get(h.id) ?? 0}
+                    stagger={stagger}
+                    selection={selection}
+                    onSelect={pick}
+                    onConnect={connect}
+                  />
+                ))}
+              </AnimatePresence>
+            </ul>
+          )}
+        </li>
+      )
+    })
+  }, [groups, collapsed, hosts, envById, stagger, selection, pick, connect, onToggleGroup, onNewIn])
 
   return (
     <>
-      <ul ref={list} role="listbox" aria-label="Hosts" onKeyDown={onKeyDown} className="flex flex-col gap-0.5">
+      <ul ref={list} role="listbox" aria-label="Hosts" onKeyDown={onKeyDown} className="flex flex-col gap-2">
         {rows}
       </ul>
-      {hosts.length === 0 && (
+      {groups.length === 0 && (
         <div className="flex flex-col items-center gap-2 pt-10 text-center text-[12.5px] text-muted">
           No hosts match.
           <Button size="sm" variant="ghost" icon={<X aria-hidden className="size-3" />} onClick={onClearFilters}>

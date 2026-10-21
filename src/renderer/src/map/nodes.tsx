@@ -8,13 +8,14 @@ import { OS_META } from '../pages/hosts/HostDialog'
 import { PRODUCT_ICON } from '../pages/products/ProductDialog'
 import { GlowDot, ROLE_LABEL } from '../pages/products/ProductView'
 import { plural } from '../ui/common'
+import { RegionChip } from '../ui/RegionChip'
 import { useMotionSafe } from '../ui/motion'
 import type { EnvironmentNodeData, HostNodeData, MacNodeData, ProductNodeData } from './graph'
 import { REACH_TEXT, useHostPresence, type Reach } from './presence'
 
 /** React Flow wants an index signature on node data; the graph's interfaces don't carry one. */
 type FlowData<T> = T & Record<string, unknown>
-export type EnvironmentFlowData = FlowData<EnvironmentNodeData & { alsoIn: string[] }>
+export type EnvironmentFlowData = FlowData<EnvironmentNodeData>
 export type MapFlowNode =
   | Node<FlowData<ProductNodeData>, 'product'>
   | Node<EnvironmentFlowData, 'environment'>
@@ -84,7 +85,6 @@ const EnvironmentNode = memo(function EnvironmentNode({ data }: NodeProps<Node<E
           )}
           <span className="ml-auto shrink-0 text-[11px] text-muted tabular-nums">{plural(data.hostCount, 'host')}</span>
         </div>
-        {data.alsoIn.length > 0 && <p className="truncate text-[10.5px] leading-tight text-muted">also in {data.alsoIn.join(', ')}</p>}
       </div>
       <Anchor type="target" position={Position.Left} />
     </div>
@@ -127,6 +127,7 @@ const HostNode = memo(function HostNode({ data, selected }: NodeProps<Node<FlowD
       <div className="flex min-w-0 items-center gap-1">
         <span className="min-w-0 truncate font-mono text-[10.5px] text-muted">{data.address}</span>
         <span className="ml-auto flex shrink-0 items-center gap-1">
+          {data.region && <RegionChip region={data.region} className="h-4! px-1.5! text-[10px]!" />}
           {/* Names can repeat across vaults and the data carries no ids, so position is the key. */}
           {data.vaultNames.slice(0, 2).map((name, i) => (
             <Chip key={i} className="max-w-14">

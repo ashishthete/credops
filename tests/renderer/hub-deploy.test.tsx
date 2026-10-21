@@ -54,7 +54,7 @@ const teamEnv = (over: Partial<HubCatalogEnv['environment']> = {}, extra: Partia
   ...extra,
 })
 
-const staging = environment({ id: 'e1', name: 'staging', hosts: [{ hostId: 'h1', role: 'app' }] })
+const staging = environment({ id: 'e1', name: 'staging', productId: 'p1', hosts: [{ hostId: 'h1', role: 'app' }] })
 const calls = (invoke: ReturnType<typeof mockBridge>, channel: string) => (invoke.mock.calls as unknown[][]).filter((c) => c[0] === channel)
 
 async function open(results: Record<string, unknown> = {}, path = '/deployments?env=hub-prod') {
@@ -112,6 +112,46 @@ describe('team deployments', () => {
     expect(screen.queryByRole('button', { name: 'New deployment' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'eu-app1' })).toBeInTheDocument()
+  })
+
+  it("team environments join their product's group by name, ignoring case; one without a product stays in Team (Hub)", async () => {
+    const SHOP = { id: 'f-remote-shop', name: 'shop' }
+    await open(
+      {
+        'hub:catalog': [
+          teamEnv({ product: SHOP }),
+          teamEnv({ id: 'hub-pay', name: 'pay-eu', protected: false, product: { id: 'f-remote-pay', name: 'Payments' } }),
+          teamEnv({ id: 'hub-old', name: 'old-eu', protected: false }),
+        ],
+      },
+      '/deployments',
+    )
+    // The local product's own id differs: only the name matches, and the local spelling names the group.
+    const shop = await screen.findByRole('group', { name: 'Shop' })
+    expect(within(shop).getAllByRole('listitem').map((li) => li.getAttribute('aria-label'))).toEqual(['staging', 'prod-eu'])
+    const pay = screen.getByRole('group', { name: 'Payments' })
+    expect(within(pay).getAllByRole('listitem').map((li) => li.getAttribute('aria-label'))).toEqual(['pay-eu'])
+    const team = screen.getByRole('group', { name: 'Team (Hub)' })
+    expect(within(team).getAllByRole('listitem').map((li) => li.getAttribute('aria-label'))).toEqual(['old-eu'])
+    expect(screen.getAllByRole('group').map((g) => g.getAttribute('aria-label'))).toEqual(['Shop', 'Payments', 'Team (Hub)'])
+    // New deployment offers only this machine's environments.
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'New deployment' }))
+    const menu = screen.getByRole('menu', { name: 'New deployment in' })
+    expect(within(menu).getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['staging'])
+    await user.keyboard('{Escape}')
+    await user.click(within(shop).getByRole('button', { name: /^prod-eu,/ }))
+    expect(await screen.findByRole('navigation', { name: 'Breadcrumb' })).toHaveTextContent('Deployments›Shop›prod-eu')
+  })
+
+  it("a team environment's hosts show their region when the manifest has one", async () => {
+    await open({ 'hub:catalog': [teamEnv({}, { hosts: [{ id: 'hh1', label: 'eu-app1', region: { code: 'eu-west', displayName: 'EU West' } }] })] })
+    const region = await screen.findByRole('region', { name: 'eu-app1' })
+    expect(within(region).getByText('eu-west')).toHaveAttribute('title', 'EU West')
+    cleanup()
+    resetHub()
+    await open()
+    expect(within(await screen.findByRole('region', { name: 'eu-app1' })).queryByText('eu-west')).not.toBeInTheDocument()
   })
 
   it('a release lock reads Releasing and a local env published to the Hub gets the chip', async () => {

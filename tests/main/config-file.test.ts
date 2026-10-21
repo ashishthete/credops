@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { buildConfigExport, serializeConfig } from '../../src/main/config/export'
 import { CONFIG_MAX_BYTES, parseConfigFile, type ConfigFile } from '../../src/shared/config-file'
 import { makeConfigFixture } from './config-helpers'
+import { REGION } from './inventory-helpers'
 
 const clock = () => new Date('2026-10-20T10:00:00.000Z')
 
@@ -15,6 +16,20 @@ function edit(file: ConfigFile, fn: (raw: any) => void): string {
   const raw = JSON.parse(JSON.stringify(file))
   fn(raw)
   return JSON.stringify(raw, null, 2)
+}
+
+/** The file written the way version 1 wrote it: no regions, and product links as a list. */
+function v1(file: ConfigFile, fn: (raw: any) => void = () => {}): string {
+  return edit(file, (r) => {
+    r.version = 1
+    delete r.regions
+    for (const h of r.hosts) delete h.regionId
+    for (const e of r.environments) {
+      e.productIds = [e.productId]
+      delete e.productId
+    }
+    fn(r)
+  })
 }
 
 function errorsOf(text: string): string[] {
@@ -32,9 +47,10 @@ describe('parseConfigFile', () => {
   it('accepts an empty config', () => {
     const empty: ConfigFile = {
       format: 'opsdeck-config',
-      version: 1,
+      version: 2,
       exportedAt: '2026-10-20T10:00:00.000Z',
       secretRefs: {},
+      regions: [],
       products: [],
       identities: [],
       hosts: [],
@@ -53,10 +69,44 @@ describe('parseConfigFile', () => {
     expect(errorsOf('null')).toEqual(["This isn't an OpsDeck config file"])
   })
 
-  it('refuses version 2 with "This file is from a newer OpsDeck"', async () => {
+  it('refuses version 3 with "This file is from a newer OpsDeck"', async () => {
     const file = await exported()
-    expect(errorsOf(edit(file, (r) => (r.version = 2)))).toEqual(['This file is from a newer OpsDeck'])
-    expect(errorsOf(edit(file, (r) => (r.version = '1')))).toEqual(['$.version is not a supported version'])
+    expect(errorsOf(edit(file, (r) => (r.version = 3)))).toEqual(['This file is from a newer OpsDeck'])
+    expect(errorsOf(edit(file, (r) => (r.version = '2')))).toEqual(['$.version is not a supported version'])
+  })
+
+  it('exports regions, host regions and one product per environment', async () => {
+    const file = await exported()
+    expect(file.version).toBe(2)
+    expect(file.regions).toEqual([{ id: REGION, code: 'test-1', provider: '', displayName: 'Test' }])
+    expect(file.hosts.every((h) => h.regionId === REGION)).toBe(true)
+    expect(file.environments.map((e) => e.productId)).not.toContain(null)
+    expect(file.fromV1).toBeUndefined()
+  })
+
+  it('reads a version 1 file: hosts without a region, each environment in the product whose name sorts first', async () => {
+    const file = await exported()
+    const a = '0190a1b2-c3d4-4e5f-8a6b-00000000000a'
+    const b = '0190a1b2-c3d4-4e5f-8a6b-00000000000b'
+    const text = v1(file, (r) => {
+      r.products.push({ ...r.products[0], id: b, name: 'alpha' }, { ...r.products[0], id: a, name: 'Alpha' })
+      r.environments[0].productIds = [r.products[0].id, b, a]
+      for (const e of r.environments.slice(1)) e.productIds = []
+    })
+    const res = parseConfigFile(text)
+    if (!res.ok) throw new Error(res.errors.join('\n'))
+    expect(res.file.version).toBe(2)
+    expect(res.file.regions).toEqual([])
+    expect(res.file.hosts.map((h) => h.regionId)).toEqual(file.hosts.map(() => null))
+    // 'alpha' and 'Alpha' tie on the lowercased name; the smaller id wins.
+    expect(res.file.environments[0]!.productId).toBe(a)
+    expect(res.file.environments.slice(1).map((e) => e.productId)).toEqual(file.environments.slice(1).map(() => null))
+    expect(res.file.fromV1!.productIds[file.environments[0]!.id]).toEqual([file.products[0]!.id, b, a])
+    // Version 1 shapes only: a region field, or a v2 productId, is refused.
+    expect(errorsOf(v1(file, (r) => (r.hosts[0].regionId = REGION)))).toEqual(['$.hosts[0].regionId is not an allowed key'])
+    expect(errorsOf(v1(file, (r) => (r.regions = [])))).toEqual(['$.regions is not an allowed key'])
+    const dangling = '0190a1b2-c3d4-4e5f-8a6b-999999999999'
+    expect(errorsOf(v1(file, (r) => (r.environments[0].productIds = [dangling])))).toEqual(['$.environments[0].productIds[0] is not a product in this file'])
   })
 
   it('refuses unknown keys, wrong types and dangling ids with a JSON path and no value', async () => {
@@ -96,7 +146,11 @@ describe('parseConfigFile', () => {
 
     const dangling = '0190a1b2-c3d4-4e5f-8a6b-999999999999'
     expect(errorsOf(edit(file, (r) => (r.hosts[host].jumpHostId = dangling)))).toEqual([`$.hosts[${host}].jumpHostId is not a host in this file`])
-    expect(errorsOf(edit(file, (r) => (r.environments[0].productIds = [dangling])))).toEqual(['$.environments[0].productIds[0] is not a product in this file'])
+    expect(errorsOf(edit(file, (r) => (r.environments[0].productId = dangling)))).toEqual(['$.environments[0].productId is not a product in this file'])
+    expect(errorsOf(edit(file, (r) => (r.environments[0].productId = null)))).toEqual(['$.environments[0].productId must be a uuid'])
+    expect(errorsOf(edit(file, (r) => (r.hosts[host].regionId = dangling)))).toEqual([`$.hosts[${host}].regionId is not a region in this file`])
+    expect(errorsOf(edit(file, (r) => delete r.hosts[host].regionId))).toEqual([`$.hosts[${host}].regionId is required`])
+    expect(errorsOf(edit(file, (r) => (r.regions[0].code = 'EU West')))).toEqual(['$.regions[0].code has an invalid format'])
     expect(errorsOf(edit(file, (r) => (r.deployments[0].becomeSecret = 'ref-99')))).toEqual(['$.deployments[0].becomeSecret is not a secret ref in this file'])
     expect(errorsOf(edit(file, (r) => (r.deployments[0].envTemplate = 'X=${secret:ref-42}\n')))).toEqual([
       '$.deployments[0].envTemplate refers to a secret ref not in this file',

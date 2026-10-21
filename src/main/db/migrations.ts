@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { AuditLog } from '../audit/audit-log'
-import { hasRepoCredentials, stripRepoCredentials } from '../../shared/inventory'
+import { REGIONS_REPORT_KEY, hasRepoCredentials, stripRepoCredentials, type RegionsUpgradeReport } from '../../shared/inventory'
 
 export type Db = DatabaseSync
 
@@ -284,7 +284,132 @@ ALTER TABLE environment_integrations ADD COLUMN qa_wait_minutes INTEGER CHECK (q
       stripSavedRepoCredentials(db)
     },
   },
+  {
+    // Regions on hosts, and one product per environment. migrate() holds a transaction, so the new columns can't
+    // be NOT NULL (no table rebuild): triggers are the backstop, the stores reject first. What moved is recorded
+    // in settings for the banner and summarised in one audit event; nothing is written when nothing moved.
+    version: 12,
+    name: 'regions',
+    up: `
+CREATE TABLE regions(id TEXT PRIMARY KEY,
+  code TEXT NOT NULL UNIQUE COLLATE NOCASE
+    CHECK (length(code) BETWEEN 1 AND 63 AND code NOT GLOB '*[^a-z0-9-]*' AND code NOT GLOB '-*'),
+  provider TEXT NOT NULL DEFAULT '', display_name TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+ALTER TABLE hosts ADD COLUMN region_id TEXT REFERENCES regions(id);
+ALTER TABLE environments ADD COLUMN product_id TEXT REFERENCES products(id);
+
+CREATE TEMP TABLE m12_now AS SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now') AS at;
+-- A random v4 UUID per row: the Hub validates ids as UUIDs.
+CREATE TEMP VIEW m12_uuid AS SELECT lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' ||
+  substr(hex(randomblob(2)), 2) || '-' || substr('89ab', 1 + abs(random() % 4), 1) || substr(hex(randomblob(2)), 2) || '-' ||
+  hex(randomblob(6))) AS id;
+
+-- 1, 2: a Default region, only when there are hosts to put in it.
+INSERT INTO regions(id, code, provider, display_name, created_at, updated_at)
+  SELECT (SELECT id FROM m12_uuid), 'default', '', 'Default', at, at FROM m12_now WHERE EXISTS (SELECT 1 FROM hosts);
+UPDATE hosts SET region_id = (SELECT id FROM regions WHERE code = 'default');
+
+-- 3: the product whose name sorts first; the rest are dropped links.
+CREATE TEMP TABLE m12_links AS
+  SELECT pe.environment_id AS env_id, p.id AS product_id, p.name AS product_name,
+    row_number() OVER (PARTITION BY pe.environment_id ORDER BY lower(p.name), p.id) AS n
+  FROM product_environments pe JOIN products p ON p.id = pe.product_id;
+UPDATE environments SET product_id = (SELECT product_id FROM m12_links WHERE env_id = environments.id AND n = 1);
+
+-- No product: an Unassigned product, named past any product that already has the name.
+CREATE TEMP TABLE m12_orphans AS SELECT id FROM environments WHERE product_id IS NULL;
+CREATE TEMP TABLE m12_unassigned AS
+  WITH RECURSIVE k(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM k WHERE n < 1000),
+  names(n, name) AS (SELECT n, CASE n WHEN 1 THEN 'Unassigned' ELSE 'Unassigned ' || n END FROM k)
+  SELECT (SELECT id FROM m12_uuid) AS id, name FROM names
+  WHERE EXISTS (SELECT 1 FROM m12_orphans) AND NOT EXISTS (SELECT 1 FROM products WHERE products.name = names.name)
+  ORDER BY n LIMIT 1;
+INSERT INTO products(id, name, color, icon, description, repo_url, created_at, updated_at)
+  SELECT id, name, '#8a91a3', 'boxes', '', NULL, at, at FROM m12_unassigned, m12_now;
+UPDATE environments SET product_id = (SELECT id FROM m12_unassigned) WHERE product_id IS NULL;
+
+-- Names stay unique within a product: the later by created_at gets " (2)", and the id when that is taken too.
+CREATE TEMP TABLE m12_renames AS
+  SELECT id AS env_id, name AS old_name FROM (
+    SELECT id, name, row_number() OVER (PARTITION BY product_id, lower(name) ORDER BY created_at, id) AS n FROM environments
+  ) WHERE n > 1;
+UPDATE environments SET name = name || ' (' || (
+    SELECT n FROM (SELECT id, row_number() OVER (PARTITION BY product_id, lower(name) ORDER BY created_at, id) AS n FROM environments) r
+    WHERE r.id = environments.id) || ')'
+  WHERE id IN (SELECT env_id FROM m12_renames);
+UPDATE environments SET name = name || ' ' || substr(id, 1, 8)
+  WHERE id IN (SELECT env_id FROM m12_renames) AND EXISTS (
+    SELECT 1 FROM environments o WHERE o.product_id = environments.product_id AND lower(o.name) = lower(environments.name) AND o.id <> environments.id);
+
+INSERT INTO settings(key, value, updated_at)
+  SELECT 'migration.regions.report', json_object(
+    'region', json((SELECT json_object('id', id, 'code', code, 'displayName', display_name, 'hostCount', (SELECT count(*) FROM hosts))
+      FROM regions)),
+    'productLinks', json((SELECT json_group_array(json(x)) FROM (
+      SELECT json_object('environmentId', e.id, 'environmentName', e.name,
+        'kept', json_object('id', k.product_id, 'name', k.product_name),
+        'removed', json((SELECT json_group_array(json(r)) FROM (
+          SELECT json_object('id', product_id, 'name', product_name) AS r FROM m12_links WHERE env_id = e.id AND n > 1 ORDER BY n)))) AS x
+      FROM m12_links k JOIN environments e ON e.id = k.env_id
+      WHERE k.n = 1 AND EXISTS (SELECT 1 FROM m12_links d WHERE d.env_id = k.env_id AND d.n > 1)
+      ORDER BY lower(e.name), e.id))),
+    'unassigned', json((SELECT json_object('product', json_object('id', u.id, 'name', u.name),
+      'environments', json((SELECT json_group_array(json(x)) FROM (
+        SELECT json_object('id', e.id, 'name', e.name) AS x FROM environments e JOIN m12_orphans o ON o.id = e.id ORDER BY e.created_at, e.id))))
+      FROM m12_unassigned u)),
+    'renamed', json((SELECT json_group_array(json(x)) FROM (
+      SELECT json_object('environmentId', e.id, 'from', r.old_name, 'to', e.name) AS x
+      FROM m12_renames r JOIN environments e ON e.id = r.env_id ORDER BY e.created_at, e.id)))
+  ), at FROM m12_now
+  WHERE EXISTS (SELECT 1 FROM regions) OR EXISTS (SELECT 1 FROM m12_links WHERE n > 1)
+    OR EXISTS (SELECT 1 FROM m12_orphans) OR EXISTS (SELECT 1 FROM m12_renames);
+
+DROP VIEW m12_uuid;
+DROP TABLE m12_now;
+DROP TABLE m12_links;
+DROP TABLE m12_orphans;
+DROP TABLE m12_unassigned;
+DROP TABLE m12_renames;
+
+-- 4
+DROP TABLE product_environments;
+CREATE INDEX hosts_region ON hosts(region_id);
+CREATE INDEX environments_product ON environments(product_id);
+CREATE UNIQUE INDEX environments_product_name ON environments(product_id, name COLLATE NOCASE);
+CREATE TRIGGER hosts_region_required BEFORE INSERT ON hosts WHEN NEW.region_id IS NULL
+  BEGIN SELECT RAISE(ABORT, 'a host needs a region'); END;
+CREATE TRIGGER hosts_region_kept BEFORE UPDATE OF region_id ON hosts WHEN NEW.region_id IS NULL
+  BEGIN SELECT RAISE(ABORT, 'a host needs a region'); END;
+CREATE TRIGGER environments_product_required BEFORE INSERT ON environments WHEN NEW.product_id IS NULL
+  BEGIN SELECT RAISE(ABORT, 'an environment needs a product'); END;
+CREATE TRIGGER environments_product_kept BEFORE UPDATE OF product_id ON environments WHEN NEW.product_id IS NULL
+  BEGIN SELECT RAISE(ABORT, 'an environment needs a product'); END;
+`,
+    after: (db) => {
+      auditRegionsUpgrade(db)
+    },
+  },
 ]
+
+/** One audit event summarising migration 12's report, by id and count only; none when there is no report. */
+function auditRegionsUpgrade(db: Db): void {
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(REGIONS_REPORT_KEY) as { value: string } | undefined
+  if (!row) return
+  const r = JSON.parse(row.value) as RegionsUpgradeReport
+  new AuditLog(db).appendInTx({
+    action: 'inventory.regions_upgrade',
+    outcome: 'info',
+    targetType: 'region',
+    targetId: r.region?.id,
+    targetLabel: r.region?.code,
+    details: {
+      hostsMoved: r.region?.hostCount ?? 0,
+      productLinksRemoved: r.productLinks.map((l) => ({ environmentId: l.environmentId, kept: l.kept.id, removed: l.removed.map((p) => p.id) })),
+      unassigned: r.unassigned ? { productId: r.unassigned.product.id, environments: r.unassigned.environments.length } : null,
+      renamed: r.renamed.map((x) => x.environmentId),
+    },
+  })
+}
 
 /**
  * Removes userinfo from every saved repo URL (products and deployments), leaving the rest byte for byte.

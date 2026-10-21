@@ -22,7 +22,7 @@ function world() {
   const base = invoke.getMockImplementation()!
   let n = 0
   invoke.mockImplementation(async (channel: string) => (channel === 'service:logs' ? `f${++n}` : base(channel)))
-  inventoryStore.set({ products: [], environments: [staging], hosts: [host({ id: 'h1', label: 'app1' })], identities: [], vaults: [] })
+  inventoryStore.set({ products: [], environments: [staging], hosts: [host({ id: 'h1', label: 'app1' })], identities: [], vaults: [], regions: [] })
   deployStore.set({ ...deployStore.get(), deployments: [deploymentMeta({ id: 'd1', name: 'core', hostId: 'h1', environmentId: 'e1' })], loaded: true })
   return invoke
 }
@@ -127,7 +127,7 @@ describe('service logs', () => {
     await flush()
     expect(screen.getByRole('dialog', { name: 'api logs on its host' })).toBeInTheDocument()
     act(() => applyContainerLog({ followId: 'f1', chunk: 'kept\n' }))
-    act(() => inventoryStore.set({ products: [], environments: [staging], hosts: [host({ id: 'h1', label: 'app1' })], identities: [], vaults: [] }))
+    act(() => inventoryStore.set({ products: [], environments: [staging], hosts: [host({ id: 'h1', label: 'app1' })], identities: [], vaults: [], regions: [] }))
     await flush()
     expect(screen.getByRole('dialog', { name: 'api logs on app1' })).toBeInTheDocument()
     expect(calls(invoke, 'service:logs')).toHaveLength(1)

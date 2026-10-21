@@ -2,6 +2,8 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { ArrowUpRight, Cable, Filter, Laptop, Lock, SquareTerminal, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
+import { deployStore } from '../deploy/store'
+import { regionsOfEnvironment } from '../inventory/regions'
 import { useInventory, type InventoryData } from '../inventory/store'
 import { environmentKey, ROLE_ORDER } from '../inventory/tree'
 import { OS_META } from '../pages/hosts/HostDialog'
@@ -14,6 +16,7 @@ import { tunnelStore, useTunnel } from '../tunnels/store'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { plural } from '../ui/common'
+import { RegionChip } from '../ui/RegionChip'
 import { exitFast, fast, spring, useMotionSafe } from '../ui/motion'
 import type { EnvironmentNodeData, HostNodeData, MapGraph, MapNode, MapScope, ProductNodeData, TunnelEdgeData } from './graph'
 import { REACH_TEXT, useHostPresence } from './presence'
@@ -193,6 +196,16 @@ function HostDetails({ d, data, onClose }: { d: HostNodeData; data: InventoryDat
         sub={<span className="block truncate font-mono">{d.address}</span>}
         onClose={onClose}
       />
+      <Section label="Region">
+        {d.region ? (
+          <span className="flex items-center gap-2">
+            <RegionChip region={d.region} />
+            {d.region.displayName}
+          </span>
+        ) : (
+          <span className="text-muted">Unknown</span>
+        )}
+      </Section>
       <Section label="Role">{d.role ? ROLE_LABEL[d.role] : 'No role'}</Section>
       <Section label="Status">
         {REACH_TEXT[reach]} · {plural(sessions, 'session')}
@@ -308,6 +321,10 @@ function EnvironmentDetails({
 }) {
   const navigate = useNavigate()
   const env = d.environmentId ? data.environments.find((e) => e.id === d.environmentId) : undefined
+  // Derived from its member, checkout and via-hosts, as the Products page shows them.
+  const checkouts = useSyncExternalStore(deployStore.subscribe, () => deployStore.get().deployments)
+  const services = useSyncExternalStore(deployStore.subscribe, () => deployStore.get().services)
+  const regions = useMemo(() => (env ? regionsOfEnvironment(data, env.id, checkouts, services) : []), [data, env, checkouts, services])
   // The count and the breakdown both come from the group's drawn host nodes, so they always agree.
   const { hostCount, roles } = useMemo(() => {
     const count = new Map<string, number>()
@@ -336,7 +353,22 @@ function EnvironmentDetails({
         }
         onClose={onClose}
       />
-      <Section label="Products">{d.productNames.length ? d.productNames.join(', ') : <span className="text-muted">None</span>}</Section>
+      {env && <Section label="Product">{d.productName ?? <span className="text-muted">None</span>}</Section>}
+      {env && (
+        <Section label="Regions">
+          {regions.length ? (
+            <ul aria-label="Regions" className="flex flex-wrap gap-1.5">
+              {regions.map((r) => (
+                <li key={r.id}>
+                  <RegionChip region={r} />
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <span className="text-muted">None yet</span>
+          )}
+        </Section>
+      )}
       <Section label="Hosts">
         {plural(hostCount, 'host')}
         {roles && <span className="block text-muted">{roles}</span>}
