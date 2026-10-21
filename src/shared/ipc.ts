@@ -525,6 +525,8 @@ export interface EventContract {
   'hub:catalog': Record<string, never>
   // A lock was taken or lifted by this client; refetch with hub:locks.
   'hub:locks': Record<string, never>
+  // Something about the Hub the person should hear once, e.g. that team releases are hidden while it is unreachable.
+  'hub:notice': { message: string }
   // A clicked macOS alert: the renderer navigates to this hash route.
   'app:navigate': { route: string }
   // One notification reached a terminal state (sent, failed or skipped); detail never holds a URL or value.
@@ -552,6 +554,7 @@ export const EVENTS = [
   'hub:state',
   'hub:catalog',
   'hub:locks',
+  'hub:notice',
   'app:navigate',
   'notify:sent',
   'qa:state',

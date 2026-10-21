@@ -1,7 +1,8 @@
-import { MAX_EVENTS_PAGE, type Tooling } from '../../../shared/deploy'
+import { MAX_EVENTS_PAGE, type DeploymentMeta, type EnvDeploySettings, type Tooling } from '../../../shared/deploy'
 import type { Handlers } from '../../../shared/ipc'
 import type { DeployStore } from '../../deploy/deploy-store'
-import type { ReleaseService } from '../../deploy/release-service'
+import type { ReleaseApi } from '../../hub/runner'
+import type { HubCatalog } from '../../hub/catalog'
 
 type DeployChannel =
   | 'deploy:list'
@@ -27,17 +28,31 @@ type DeployChannel =
 
 export function createDeployHandlers(deps: {
   deploys: DeployStore
-  releases: ReleaseService
+  releases: ReleaseApi
   tooling: () => Promise<Tooling>
+  /** The signed-in person's Hub catalog: where the wizard reads a Hub environment this desktop has no local copy of. */
+  catalog?: Pick<HubCatalog, 'get' | 'list'>
 }): Pick<Handlers, DeployChannel> {
-  const { deploys, releases, tooling } = deps
+  const { deploys, releases, tooling, catalog } = deps
   return {
-    'deploy:list': (environmentId) => deploys.list(environmentId),
+    'deploy:list': (environmentId) => {
+      const local = deploys.list(environmentId)
+      if (!catalog) return local
+      const known = new Set(local.map((d) => d.id))
+      const envs = environmentId === undefined ? catalog.list() : [catalog.get(environmentId)].flatMap((e) => (e ? [e] : []))
+      const extra = envs.flatMap((e) => e.deployments.filter((d) => !known.has(d.id)).map(catalogDeployment))
+      return extra.length ? [...local, ...extra] : local
+    },
     'deploy:create': (input) => deploys.create(input),
     'deploy:update': (id, patch) => deploys.update(id, patch),
     'deploy:delete': (id) => deploys.delete(id),
     'deploy:reorder': (environmentId, ids) => deploys.reorder(environmentId, ids),
-    'deploy:settings': (environmentId) => deploys.settings(environmentId),
+    'deploy:settings': (environmentId) => {
+      // The Hub is the authority for a Hub environment's version and rollback settings.
+      const hub = catalog?.get(environmentId)?.environment
+      if (hub) return catalogSettings(environmentId, hub)
+      return deploys.settings(environmentId)
+    },
     'deploy:updateSettings': (environmentId, patch) => deploys.updateSettings(environmentId, patch),
     'deploy:tooling': () => tooling(),
     'release:preflight': (request) => releases.preflight(request),
@@ -54,4 +69,15 @@ export function createDeployHandlers(deps: {
     'release:events': (id, afterSeq, limit) => releases.events(id, afterSeq, Math.min(limit ?? 1000, MAX_EVENTS_PAGE)),
     'release:active': () => releases.listActive(),
   }
+}
+
+function catalogDeployment(d: Omit<DeploymentMeta, 'vaultIds' | 'createdAt' | 'updatedAt'>): DeploymentMeta {
+  return { ...d, vaultIds: [], createdAt: '', updatedAt: '' }
+}
+
+function catalogSettings(
+  environmentId: string,
+  env: { versioned: boolean; autoRollback: boolean; currentVersion: string | null },
+): EnvDeploySettings {
+  return { environmentId, versioned: env.versioned, autoRollback: env.autoRollback, currentVersion: env.currentVersion }
 }

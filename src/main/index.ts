@@ -49,6 +49,9 @@ import { localAllowAll } from './deploy/access'
 import { HubAccess, RoutingAccess } from './hub/access'
 import { HubCatalog } from './hub/catalog'
 import { HubConnection } from './hub/connection'
+import { LiveFeed, sleepUnlessAborted } from './hub/live'
+import { HubRunner, RoutingReleases } from './hub/runner'
+import { backoffMs } from './tunnels/backoff'
 import { HubPublisher } from './hub/publish'
 import { createHubHandlers } from './ipc/handlers/hub'
 import { ReleaseService } from './deploy/release-service'
@@ -137,6 +140,7 @@ let runManager: RunManager | null = null
 let containerService: ContainerService | null = null
 let releaseService: ReleaseService | null = null
 let hubConnection: HubConnection | null = null
+let hubFeedStop: (() => void) | null = null
 let quitConfirmed = false
 let quitPrompting = false
 const RELEASE_QUIT_WAIT_MS = 20_000
@@ -385,10 +389,11 @@ if (!app.requestSingleInstanceLock()) {
         onChanged: () => hubCatalog.refresh().catch(() => undefined),
       })
       const hubEnvLink = db.prepare('SELECT 1 AS x FROM hub_env_links WHERE environment_id = ?')
+      const isHubEnv = (environmentId: string): boolean => hubEnvLink.get(environmentId) !== undefined || hubCatalog.isHubEnv(environmentId)
       const access = new RoutingAccess({
         local: localAllowAll,
         hub: new HubAccess(hub, { now: () => Date.now() }),
-        isHubTarget: (environmentId) => hubEnvLink.get(environmentId) !== undefined || hubCatalog.isHubEnv(environmentId),
+        isHubTarget: isHubEnv,
       })
       const release = new ReleaseService({
         db,
@@ -421,6 +426,53 @@ if (!app.requestSingleInstanceLock()) {
       // Startup recovery lives here (Task 7 must not add a second call): a release left preflight, running or
       // rolling back by a quit can never finish, so mark it failed (and audit it) before anything reads it.
       release.recoverInterrupted()
+      // Team releases run on the Hub: its live stream feeds the same pushes as a local run, and release calls
+      // for a Hub environment (or a release the Hub told us about) go to the Hub.
+      const hubReleaseIds = new Set<string>()
+      const hubFeed = new LiveFeed({
+        client: () => hub.client(),
+        renew: () => hub.renew(),
+        backoff: backoffMs,
+        sleep: sleepUnlessAborted,
+        push: {
+          events: (batch) => pushEvent(mainWindow, 'deploy:event', batch),
+          state: (summary) => pushEvent(mainWindow, 'release:state', summary),
+          locks: () => pushEvent(mainWindow, 'hub:locks', {}),
+          catalog: () => void hubCatalog.refresh().catch(() => undefined),
+        },
+        isMine: (s) => {
+          const st = hub.status()
+          return st.linked && st.user !== null && s.triggeredBy === `${st.user.upn}@${st.hubName}`
+        },
+        notifier: macNotifier,
+        track: (id) => void hubReleaseIds.add(id),
+        now: () => new Date(),
+      })
+      const syncHubFeed = (): void => {
+        const st = hub.status()
+        if (st.linked && st.signedIn) hubFeed.start()
+        else hubFeed.stop()
+      }
+      hub.onState(syncHubFeed)
+      hubFeedStop = () => hubFeed.stop()
+      syncHubFeed()
+      const releases = new RoutingReleases({
+        local: release,
+        hub: new HubRunner({
+          client: () => hub.client(),
+          audit: log,
+          ids: hubReleaseIds,
+          envName: (environmentId) => hubCatalog.get(environmentId)?.environment.name,
+          feed: hubFeed,
+        }),
+        isHubEnv,
+        hubReleaseIds,
+        hubActive: () => {
+          const st = hub.status()
+          return st.linked && st.signedIn
+        },
+        notice: (message) => pushEvent(mainWindow, 'hub:notice', { message }),
+      })
       sessions = new SessionManager({
         resolve,
         hostInfo: (hostId) => {
@@ -586,7 +638,7 @@ if (!app.requestSingleInstanceLock()) {
           }),
           ...createSshImportHandlers(importer),
           ...createTunnelHandlers({ store: tunnels, manager: runner }),
-          ...createDeployHandlers({ deploys, releases: release, tooling: () => detectTools(toolDeps) }),
+          ...createDeployHandlers({ deploys, releases, tooling: () => detectTools(toolDeps), catalog: hubCatalog }),
           ...createServiceHandlers({
             services,
             copy: (req) => copyServices(copyDeps, req),
@@ -594,6 +646,7 @@ if (!app.requestSingleInstanceLock()) {
             containers,
             tunnels: serviceTunnels,
             openExternal: (url) => shell.openExternal(url),
+            catalog: hubCatalog,
           }),
           ...createSettingsHandlers({ settings: settingsStore, integrations }),
           ...createQaHandlers({ qa, integrations }),
@@ -674,6 +727,11 @@ if (!app.requestSingleInstanceLock()) {
       runManager?.closeAll()
     } catch (err) {
       console.error('Failed to cancel runs on quit:', err)
+    }
+    try {
+      hubFeedStop?.()
+    } catch (err) {
+      console.error('Failed to stop the Hub live feed on quit:', err)
     }
     try {
       containerService?.closeAll()

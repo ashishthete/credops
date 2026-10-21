@@ -1,5 +1,6 @@
 import type { Handlers } from '../../../shared/ipc'
-import type { CopyServicesRequest, CopyServicesResult } from '../../../shared/services'
+import type { AppServiceMeta, CopyServicesRequest, CopyServicesResult, ServiceMeta } from '../../../shared/services'
+import type { HubCatalog } from '../../hub/catalog'
 import type { DeployStore } from '../../deploy/deploy-store'
 import type { ServiceStore } from '../../deploy/service-store'
 import type { ServiceTunnels } from '../../deploy/service-tunnel'
@@ -26,10 +27,24 @@ export function createServiceHandlers(deps: {
   tunnels: Pick<ServiceTunnels, 'afterUpdate' | 'remove' | 'open' | 'close' | 'sync'>
   /** `shell.openExternal`, injected so nothing under test opens a browser. */
   openExternal: (url: string) => Promise<void>
+  /** The signed-in person's Hub catalog: the services of a Hub environment this desktop has no local copy of. */
+  catalog?: Pick<HubCatalog, 'get' | 'list'>
 }): Pick<Handlers, ServiceChannel> {
-  const { services, copy, deploys, containers, tunnels, openExternal } = deps
+  const { services, copy, deploys, containers, tunnels, openExternal, catalog } = deps
   return {
-    'service:list': (environmentId) => services.list(environmentId),
+    'service:list': (environmentId) => {
+      const local = services.list(environmentId)
+      if (!catalog) return local
+      const known = new Set(local.map((s) => s.id))
+      const envs = environmentId === undefined ? catalog.list() : [catalog.get(environmentId)].flatMap((e) => (e ? [e] : []))
+      // Only app services: a release deploys those. A db is reached through a local tunnel and has no Hub-side meaning here.
+      const extra = envs.flatMap((e) =>
+        e.services.flatMap((s, i): ServiceMeta[] =>
+          s.kind === 'service' && !known.has(s.id) ? [catalogService(e.environment.id, s, i)] : [],
+        ),
+      )
+      return extra.length ? [...local, ...extra] : local
+    },
     'service:create': (input) => services.create(input),
     'service:update': (id, patch) => {
       const service = services.update(id, patch)
@@ -61,5 +76,28 @@ export function createServiceHandlers(deps: {
     'service:tunnelOpen': (id) => tunnels.open(id),
     'service:tunnelClose': (id) => tunnels.close(id),
     'service:tunnelSync': (id) => tunnels.sync(id),
+  }
+}
+
+function catalogService(
+  environmentId: string,
+  s: { id: string; name: string; composeService: string | null; deploymentId: string | null },
+  position: number,
+): AppServiceMeta {
+  return {
+    id: s.id,
+    environmentId,
+    name: s.name,
+    position,
+    description: '',
+    createdAt: '',
+    updatedAt: '',
+    kind: 'service',
+    deploymentId: s.deploymentId,
+    composeService: s.composeService ?? s.name,
+    url: null,
+    urlCheckFrom: 'host',
+    lastDeployedCommit: null,
+    lastReleaseId: null,
   }
 }

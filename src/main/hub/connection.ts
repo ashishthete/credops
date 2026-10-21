@@ -287,7 +287,7 @@ export class HubConnection {
   }
 
   /** Uses the stored refresh token for a new Entra token, then a new Hub session. Never opens a browser. */
-  private renew(): Promise<boolean> {
+  renew(): Promise<boolean> {
     this.renewing ??= this.doRenew().finally(() => (this.renewing = null))
     return this.renewing
   }

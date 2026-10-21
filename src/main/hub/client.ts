@@ -32,7 +32,7 @@ export interface HubClientDeps {
 
 const ERROR_CODES: readonly string[] = [
   'bad_request', 'unauthenticated', 'session_expired', 'forbidden', 'not_found', 'conflict',
-  'last_group', 'last_admin', 'builtin_group', 'unavailable', 'internal',
+  'last_group', 'last_admin', 'builtin_group', 'unavailable', 'env_locked', 'confirm_required', 'internal',
 ]
 
 export class HubClient {
@@ -112,9 +112,39 @@ export class HubClient {
       parsed = undefined
     }
     if (res.ok) return parsed as T
+    throw this.httpError(res.status, parsed)
+  }
+
+  private httpError(status: number, parsed: unknown): HubError {
     const b = (parsed ?? {}) as { error?: unknown; message?: unknown }
     const code = (typeof b.error === 'string' && ERROR_CODES.includes(b.error) ? b.error : 'internal') as HubErrorCode
-    const message = typeof b.message === 'string' && b.message ? b.message : `The Hub returned an error (${res.status})`
-    throw new HubError(code, redact(message, this.d.knownSecrets()), res.status)
+    const message = typeof b.message === 'string' && b.message ? b.message : `The Hub returned an error (${status})`
+    return new HubError(code, redact(message, this.d.knownSecrets()), status)
+  }
+
+  /**
+   * Opens a long-lived response (the live feed). One attempt: no timeout once connected and no renewal here, so the
+   * caller decides what a 401 means. A non-2xx answer throws the Hub's error.
+   */
+  async stream(path: string, signal: AbortSignal): Promise<Response> {
+    const headers: Record<string, string> = { accept: 'text/event-stream' }
+    const token = this.d.token()
+    if (token) headers.authorization = `Bearer ${token}`
+    let res: Response
+    try {
+      res = await this.d.fetch(this.url(path), { method: 'GET', headers, signal })
+    } catch {
+      if (!signal.aborted) this.d.onReach?.(false)
+      throw new HubError('network', "Can't reach the Hub")
+    }
+    this.d.onReach?.(true)
+    if (res.ok && res.body) return res
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(await res.text())
+    } catch {
+      parsed = undefined
+    }
+    throw this.httpError(res.status, parsed)
   }
 }

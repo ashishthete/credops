@@ -50,9 +50,11 @@ export function AppEvents(): null {
         }),
       )
     })
+    const offNotice = api.on('hub:notice', ({ message }) => toast({ title: message, tone: 'error' }))
     return () => {
       offNav()
       offSent()
+      offNotice()
     }
   }, [])
   return null

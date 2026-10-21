@@ -15,6 +15,7 @@ export const AUDIT_ACTIONS = [
   'hub.publish',
   'hub.unpublish',
   'hub.secret.set',
+  'hub.release',
   'vault.setup',
   'vault.unlock',
   'vault.lock',
