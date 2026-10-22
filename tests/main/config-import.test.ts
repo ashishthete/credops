@@ -934,6 +934,20 @@ describe('config import of playbook ops settings', () => {
     expect(names).toEqual(['Reindex'])
   })
 
+  it('a malformed runbook with a lost secret step is one skip row and no needs-secret entry', async () => {
+    const { f, file } = await playbookSource()
+    const edited = copy(file)
+    const bad = { ...structuredClone(edited.runbooks![0]), id: '0190a1b2-c3d4-7e5f-8a6b-cccccccccccc', name: 'Broken' }
+    ;(bad.params[0] as { pattern: string }).pattern = 'bogus'
+    edited.runbooks!.push(bad)
+    // A target without the secret: the step's secret is lost.
+    const t = await makeTarget(f)
+    t.db.prepare('DELETE FROM secrets').run()
+    const plan = planImport(t.db, edited)
+    expect(plan.items.filter((i) => i.kind === 'runbooks' && i.name === 'Broken')).toHaveLength(1)
+    expect(plan.needsSecret.filter((n) => n.kind === 'runbooks' && n.name === 'Broken')).toEqual([])
+  })
+
   it('a flow or runbook that points at a service of another environment is refused', async () => {
     const { f, file } = await playbookSource()
     const other = f.services.create({ kind: 'service', environmentId: f.prod.id, name: 'prod-web', deploymentId: null, composeService: 'web' })

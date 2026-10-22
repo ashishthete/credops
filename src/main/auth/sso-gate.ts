@@ -96,8 +96,12 @@ export class SsoGate implements SignInGate {
    */
   private clockOk(now: number, lv: number, b = this.binding()): boolean {
     const hw = b ? ms(b.high_water_at) : this.seenAt
-    this.seenAt = Math.max(this.seenAt ?? now, now)
     return lv <= now + CLOCK_BACK_TOLERANCE_MS && (hw === null || now >= hw - CLOCK_BACK_TOLERANCE_MS)
+  }
+
+  /** Records the clock as read, whatever the verdict: called after the checks, so a rewind is compared with what came before. */
+  private sawClock(now = this.d.now()): void {
+    this.seenAt = Math.max(this.seenAt ?? now, now)
   }
 
   /** Verified within the hour, for the bound account, with a session still stored. Never touches the network. */
@@ -134,11 +138,15 @@ export class SsoGate implements SignInGate {
   }
 
   verdict(): SsoVerdict {
-    if (!this.required()) return 'not-required'
-    const r = this.result
-    if (r === null || r === 'verified') return this.fresh() ? 'verified' : 'needs-signin'
-    if (r === 'grace') return this.inGrace() ? 'grace' : 'needs-signin'
-    return r
+    try {
+      if (!this.required()) return 'not-required'
+      const r = this.result
+      if (r === null || r === 'verified') return this.fresh() ? 'verified' : 'needs-signin'
+      if (r === 'grace') return this.inGrace() ? 'grace' : 'needs-signin'
+      return r
+    } finally {
+      this.sawClock()
+    }
   }
 
   state(): SsoState {
@@ -260,6 +268,7 @@ export class SsoGate implements SignInGate {
 
   /** Never lowers it, so a clock turned back can't reset the mark. */
   private raiseHighWater(): void {
+    this.sawClock()
     const b = this.binding()
     if (!b) return
     const now = this.d.now()
@@ -294,12 +303,14 @@ export class SsoGate implements SignInGate {
     if (this.isBound()) throw new Error('already bound')
     const p = this.pending
     const lv = p && p.oid === s.user.oid && p.hubId === s.hubId ? this.iso(p.at) : null
+    // The mark carries over from before the binding: a clock turned back meanwhile does not lower it.
     const now = this.iso()
+    const mark = this.iso(Math.max(this.d.now(), this.seenAt ?? 0))
     this.d.db
       .prepare(
         'INSERT INTO sso_binding(id, hub_id, user_oid, user_upn, bound_at, last_verified_at, high_water_at) VALUES (1, ?, ?, ?, ?, ?, ?)',
       )
-      .run(s.hubId, s.user.oid, s.user.upn, now, lv, now)
+      .run(s.hubId, s.user.oid, s.user.upn, now, lv, mark)
     this.pending = null
     this.d.audit.append({ action: 'auth.bind', outcome: 'success', targetType: 'hub', targetId: s.hubId, targetLabel: s.hubName })
   }

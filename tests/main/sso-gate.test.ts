@@ -611,6 +611,35 @@ describe('SsoGate', () => {
       expect(await g.check()).toBe('needs-signin')
     })
 
+    it('a clock turned back after the hour has passed unchecked does not bring the verification back', async () => {
+      hub.link()
+      const g = gate()
+      hub.checks.push({ kind: 'ok', user: ALICE })
+      await g.check()
+      now.t = T0 + 2 * H
+      expect(g.verdict()).toBe('needs-signin')
+      now.t = T0 + 10 * MIN
+      expect(g.verdict()).toBe('needs-signin')
+    })
+
+    it('binding after a rewind keeps the highest time seen as the high-water mark', async () => {
+      hub.link()
+      const g = gate()
+      hub.checks.push({ kind: 'ok', user: ALICE })
+      await g.check()
+      now.t = T0 + 50 * MIN
+      expect(g.verdict()).toBe('verified')
+      now.t = T0 + 20 * MIN
+      g.bind()
+      expect(row()).toMatchObject({ last_verified_at: iso(T0), high_water_at: iso(T0 + 50 * MIN) })
+      expect(g.verdict()).toBe('needs-signin')
+      // The window still ends at T0 + 60 min, as it would have without the rewind.
+      now.t = T0 + 55 * MIN
+      expect(g.verdict()).toBe('verified')
+      now.t = T0 + 61 * MIN
+      expect(g.verdict()).toBe('needs-signin')
+    })
+
     it('a small clock step within the tolerance keeps the unbound verification', async () => {
       hub.link()
       const g = gate()

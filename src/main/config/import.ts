@@ -756,12 +756,11 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
     const allowed = stepSecretIds(db, environmentId)
     const lost: string[] = []
     const runbookItems = x.items.map((it): RunbookItem => (it.type === 'step' ? { type: 'step', step: stepBody(it.step, allowed, lost) } : it))
-    if (lost.length > 0) {
-      need('runbooks', x.name, 'items', lost.join(', ') + (local === null ? '' : '; kept the local runbook'))
-      if (local !== null) {
-        done('runbooks', local, x.name, false, [])
-        continue
-      }
+    const lostNote = lost.join(', ') + (local === null ? '' : '; kept the local runbook')
+    if (lost.length > 0 && local !== null) {
+      need('runbooks', x.name, 'items', lostNote)
+      done('runbooks', local, x.name, false, [])
+      continue
     }
     // The IPC shape check first (the same one a runbook saved in the app passes), then the store's content rules.
     // A hand-edited file can fail it: skip that runbook, like any other object kind, rather than abort the import.
@@ -775,6 +774,8 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
       item('runbooks', local ?? x.id, x.name, 'skip', { reason: `runbook ${x.name} is malformed: ${e instanceof Error ? e.message : String(e)}` })
       continue
     }
+    // Only now, so a skipped runbook is one plan row and not also a needs-secret entry.
+    if (lost.length > 0) need('runbooks', x.name, 'items', lostNote)
     if (local === null) {
       s.runbooks.insertInTx(input, x.id)
       touch(environmentId)
