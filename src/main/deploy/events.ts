@@ -683,7 +683,10 @@ export class EventTranslator {
       list.push(e.stdout)
       this.pf.set(run, list)
     }
-    if (e.event !== 'failed' || e.ignored === true) return null
+    // failed_when: false turns a shell that could not run (no bash, a bad chdir, a module crash) into "ok":
+    // a check that printed no marker but carries an error failed all the same
+    const broken = e.event === 'failed' ? e.ignored !== true : e.event === 'ok' && !/(^|\n)OD-PF /.test(e.stdout ?? '') && (Boolean(e.msg) || Boolean(e.stderr?.trim()) || (typeof e.rc === 'number' && e.rc !== 0))
+    if (!broken) return null
     const error = this.line(failureText(e))
     const errs = this.pfErr.get(run) ?? new Map<string, string>()
     if (!errs.has(check ?? '')) errs.set(check ?? '', error)

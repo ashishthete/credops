@@ -325,16 +325,20 @@ describe('preflight parsing', () => {
     p.deployments = [p.deployments[2]]
     p.hosts = [p.hosts[1]]
     const tr = new EventTranslator({ plan: p, secrets: () => ['hunter2'], now: clock().now })
-    const fail = (task: string, run: string, extra: Record<string, unknown>) => {
+    const fail = (task: string, run: string, extra: Record<string, unknown>, event = 'failed') => {
       const tags = ['od_step=preflight', `od_run=${run}`]
       tr.feed(JSON.stringify({ event: 'task_start', name: task, tags }))
-      return tr.feed(JSON.stringify({ event: 'failed', host: 'od-2', task, tags, ...extra }))
+      return tr.feed(JSON.stringify({ event, host: 'od-2', task, tags, ...extra }))
     }
     const logged = [
       ...fail('preflight tools dep3', R3, { msg: 'MODULE FAILURE\nSee stdout/stderr for the exact error', stderr: '/bin/sh: 1: /usr/bin/python3: not found\n' }),
       ...fail('preflight docker dep3', R3, { msg: 'The shell action failed to execute in the expected time frame (30) and was terminated' }),
       ...fail('preflight lock od-2', 'host:host-od-2', { msg: 'Incorrect sudo password hunter2' }),
       ...fail('preflight repo dep3', R3, { msg: 'secret', no_log: true }),
+      // failed_when: false reports a shell that never ran as ok, with the error and no marker
+      ...fail('preflight clean dep3', R3, { rc: 2, msg: "[Errno 2] No such file or directory: b'/bin/bash'" }, 'ok'),
+      // a check that printed its marker is fine whatever its exit code
+      ...fail('preflight disk dep3', R3, { rc: 1, stdout: 'OD-PF disk avail_kb=9999999', stderr: 'df: /x: noise' }, 'ok'),
     ]
     const r = parsePreflight(p, tr.preflightOutput(), { now: NOW, errors: tr.preflightErrors(), secrets: ['hunter2'] })
     const m = (id: string) => r.checks.filter((c) => c.id === id).map((c) => `${c.level}: ${c.message}`)
@@ -343,9 +347,13 @@ describe('preflight parsing', () => {
     expect(m('lock')).toEqual(['block: The lock check failed on label od-2: Incorrect sudo password ‹redacted›'])
     // a no_log failure keeps its text hidden: still "no result"
     expect(m('repo')).toEqual(['block: The repository check gave no result on label od-2'])
+    expect(r.checks.some((c) => c.message.startsWith('The clean check failed'))).toBe(false) // hidden behind the repo block
+    expect(r.checks.filter((c) => c.level === 'block').map((c) => c.message)).not.toContain('The disk check failed on label od-2: df: /x: noise')
     // the failures reach the run log too, redacted, so the reason is visible there as well
     const lines = logged.filter((b) => b.type === 'log').map((b) => (b as { line: string }).line)
     expect(lines).toContain('label od-2: preflight tools dep3 failed: MODULE FAILURE: /bin/sh: 1: /usr/bin/python3: not found')
+    expect(lines).toContain("label od-2: preflight clean dep3 failed: [Errno 2] No such file or directory: b'/bin/bash'")
+    expect(lines.some((l) => l.includes('preflight disk'))).toBe(false)
     expect(lines.join('\n')).not.toContain('hunter2')
     expect(lines.join('\n')).not.toContain('secret')
   })
