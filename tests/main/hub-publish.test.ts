@@ -319,7 +319,7 @@ describe('buildManifest by Hub schema', () => {
     expect(() => readManifest(JSON.parse(JSON.stringify(m)))).not.toThrow()
   })
 
-  it('requiredSecrets includes step, flow and runbook secrets', async () => {
+  it('requiredSecrets includes deployment step secrets', async () => {
     const { f, deps, dep, secrets } = await ready()
     const extra = secrets.create({ vaultId: DEFAULT_VAULT_ID, name: 'stepsecret', kind: 'password', value: 'step-value-77' })
     const svc = f.services.create({ kind: 'service', environmentId: f.prod.id, name: 'web', deploymentId: dep.id })
@@ -329,6 +329,23 @@ describe('buildManifest by Hub schema', () => {
     expect(m.requiredSecrets.find((r) => r.name === 'stepsecret')?.usedBy).toEqual([dep.name])
     expect(JSON.stringify(m)).not.toContain('step-value-77')
     void svc
+  })
+
+  it('requiredSecrets names the flow and the runbook as the users of their step secrets', async () => {
+    const { f, deps, dep, secrets } = await ready()
+    const flowSecret = secrets.create({ vaultId: DEFAULT_VAULT_ID, name: 'flowsecret', kind: 'password', value: 'flow-value-78' })
+    const runbookSecret = secrets.create({ vaultId: DEFAULT_VAULT_ID, name: 'runbooksecret', kind: 'password', value: 'runbook-value-79' })
+    const svc = f.services.create({ kind: 'service', environmentId: f.prod.id, name: 'web', deploymentId: dep.id })
+    const { anchor: _a, alsoOnRollback: _r, ...body } = step({ secrets: [{ envName: 'FLOW_TOKEN', secretId: flowSecret.id }] })
+    f.deploys.updateSettings(f.prod.id, { flow: { stages: [{ kind: 'step', serviceId: svc.id, step: body }, { kind: 'services', serviceIds: [svc.id] }], onFailure: 'stop-all' } })
+    const runbooks = new RunbookStore({ db: f.db, audit: f.audit, vault: f.vault })
+    const { anchor: _a2, alsoOnRollback: _r2, ...rbBody } = step({ id: 'rb_1', name: 'reindex', secrets: [{ envName: 'RB_TOKEN', secretId: runbookSecret.id }] })
+    runbooks.create({ environmentId: f.prod.id, name: 'Reindex', description: '', targetServiceIds: [svc.id], items: [{ type: 'step', step: rbBody }], params: [], lock: true, notify: false }, { osUser: 'a', machine: 'm' })
+    const m = await buildManifest(f.prod.id, { ...deps, runbooks }, { hubSchema: 2 })
+    expect(m.requiredSecrets.find((r) => r.name === 'flowsecret')?.usedBy).toEqual(['release flow'])
+    expect(m.requiredSecrets.find((r) => r.name === 'runbooksecret')?.usedBy).toEqual(['Reindex'])
+    expect(JSON.stringify(m)).not.toContain('flow-value-78')
+    expect(JSON.stringify(m)).not.toContain('runbook-value-79')
   })
 })
 
