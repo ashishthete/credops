@@ -195,6 +195,17 @@ describe('hub runner and release routing', () => {
     expect(r.ids.has('h-op')).toBe(true)
   })
 
+  it('an older Hub that ignores the operations filter returns every row; the runner filters them itself', async () => {
+    const operation = { runbookId: 'rb', name: 'Restart', params: {}, readOnly: false, lock: true, targetServiceIds: [] }
+    const { operation: _none, ...old } = summary('h-rel', HUB_ENV, '2026-10-20T09:00:00.000Z')
+    const mixed = [{ ...summary('h-op', HUB_ENV, '2026-10-20T10:00:00.000Z'), operation }, { ...summary('h-null', HUB_ENV, '2026-10-20T08:00:00.000Z'), operation: null }, old]
+    const r = rig({ gets: () => mixed })
+    expect((await r.runner.list({ operations: 'only' })).map((s) => s.id)).toEqual(['h-op'])
+    expect((await r.runner.list({ operations: 'exclude' })).map((s) => s.id)).toEqual(['h-null', 'h-rel'])
+    expect((await r.runner.list({})).map((s) => s.id)).toEqual(['h-op', 'h-null', 'h-rel'])
+    expect(r.calls.map((c) => c.query)).toEqual([{ operations: 'only' }, { operations: 'exclude' }, {}])
+  })
+
   it('offline Hub hides team releases once, local still works', async () => {
     const r = rig({
       gets: () => {

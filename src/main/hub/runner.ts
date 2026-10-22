@@ -132,11 +132,16 @@ export class HubRunner implements ReleaseApi {
     throw new Error('Release notes of a Hub release are set when it is prepared')
   }
 
-  /** `operations` is sent as is: the Hub filters its own operation rows. */
+  /**
+   * `operations` is sent as is, and the answer is filtered by it again: a Hub older than operations drops the
+   * unknown query key and returns every row, none of them carrying `operation`.
+   */
   async list(filter: ReleaseListFilter = {}): Promise<ReleaseSummary[]> {
     const rows = await this.d.client().get<ReleaseSummary[]>('/api/v1/releases', { ...filter })
     for (const r of rows) this.remember(r.id, r.environmentName)
-    return rows
+    if (filter.operations === undefined) return rows
+    const only = filter.operations === 'only'
+    return rows.filter((r) => (r.operation != null) === only)
   }
 
   async listActive(): Promise<ReleaseSummary[]> {

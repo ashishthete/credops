@@ -150,6 +150,54 @@ describe('ReleaseService edited runs', () => {
     expect(audits(r, 'playbook.edited').map((x) => x.details)).toEqual([{ lineDelta: e.text.split('\n').length - e.generated.split('\n').length }])
   })
 
+  it('an edited lock-free operation holds its environment like a release; run as generated it still runs beside one', async () => {
+    const r = await rig()
+    const d = dep(r, 'api')
+    const ids = tracked(r, d).map((x) => x.id)
+    const logs = () => runbook(r, ids, { name: `Logs ${Math.random()}`, items: [{ type: 'builtin', builtin: 'logs', tail: 20 }], lock: false })
+    const gate = () => {
+      let open!: () => void
+      return { p: new Promise<void>((res) => (open = res)), open: () => open() }
+    }
+    const busy = async (p: Promise<void>) => {
+      const err = await p.catch((x: unknown) => x)
+      expect(err).toBeInstanceOf(DeployError)
+      expect((err as DeployError).code).toBe('BUSY')
+    }
+    const [rel, rel2] = [await ready(r, [d]), await ready(r, [d])]
+    const [editedOp, plainOp, editedOp2] = [await opReady(r, logs()), await opReady(r, logs()), await opReady(r, logs())]
+    expect(r.svc.detail(editedOp).operation).toMatchObject({ readOnly: true, lock: false })
+    const [e, e2] = [await edited(r, editedOp), await edited(r, editedOp2)]
+
+    // A release is running: the edited one is refused by the capacity rule, the unedited one runs beside it.
+    const g = gate()
+    r.runner.on.release = async () => {
+      await g.p
+    }
+    await r.svc.start(rel, {})
+    await busy(r.svc.start(editedOp, { editedPlaybook: e.text, playbookSha256: e.sha256 }))
+    await r.svc.start(plainOp, {})
+    g.open()
+    await r.svc.whenIdle()
+    expect(r.svc.detail(plainOp).status).toBe('succeeded')
+    expect(r.svc.detail(editedOp).status).toBe('ready')
+
+    // An edited one is running: it holds the environment, so a release is refused until it ends.
+    const g2 = gate()
+    r.runner.on.operation = async () => {
+      await g2.p
+    }
+    await r.svc.start(editedOp2, { editedPlaybook: e2.text, playbookSha256: e2.sha256 })
+    await busy(r.svc.start(rel2, {}))
+    g2.open()
+    await r.svc.whenIdle()
+    expect(r.svc.detail(editedOp2).status).toBe('succeeded')
+    expect(r.svc.detail(editedOp2).playbookSource).toBe('edited')
+    await r.svc.start(rel2, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(rel2).status).toBe('succeeded')
+  })
+
   describe('masked secrets', () => {
     /** The repo path stands for a secret value that the generated playbook holds; the preview shows it masked. */
     const HIDDEN = '/srv/api'

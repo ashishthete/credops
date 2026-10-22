@@ -368,6 +368,23 @@ describe('the Hub calls the release service itself: no 503 seam', () => {
   const RB = 'b4444444-4444-4444-8444-444444444444'
   const statusBook = { id: RB, name: 'status', description: '', targetServiceIds: [SVC_WEB], items: [{ type: 'builtin' as const, builtin: 'status' as const }], params: [], lock: false, notify: false }
 
+  it('the manifest hash covers the runbooks: a change to them alone is a new manifest', async () => {
+    r = await rig()
+    const hashOf = async (m: HubEnvManifest) => {
+      const res = await r!.call(r!.admin, 'PUT', `/api/v1/admin/environments/${ENV_ID}`, m)
+      expect(res.statusCode, res.body).toBe(200)
+      return res.json().manifestHash as string
+    }
+    const m = envManifest()
+    const none = await hashOf(m)
+    expect(await hashOf(m)).toBe(none)
+    m.runbooks = [statusBook]
+    const one = await hashOf(m)
+    expect(one).not.toBe(none)
+    m.runbooks = [{ ...statusBook, description: 'changed' }]
+    expect(await hashOf(m)).not.toBe(one)
+  })
+
   it('a runbook runs end to end through the real service: preflight, preview, start with the reviewed hash', async () => {
     r = await rig()
     const m = envManifest()
@@ -390,26 +407,43 @@ describe('the Hub calls the release service itself: no 503 seam', () => {
 
   it("validate-edit runs the real validator; its hash is the preview's and the start's, with the same forced services", async () => {
     r = await rig({ allowPlaybookEdits: true })
-    const pf = await r.call(r.admin, 'POST', '/api/v1/releases/preflight', { environmentId: ENV_ID, serviceIds: [SVC_WEB], bump: 'none', options: OPTIONS })
+    const pf = await r.call(r.admin, 'POST', '/api/v1/releases/preflight', { environmentId: ENV_ID, serviceIds: [SVC_WEB, SVC_API], bump: 'none', options: OPTIONS })
     expect(pf.statusCode, pf.body).toBe(201)
     const id = pf.json().releaseId as string
     await r.hub.app.releases.whenIdle()
+    // Web is unchanged since its last deploy, so a start leaves it out unless it is forced.
+    const row = r.hub.db.prepare("SELECT seq, payload FROM run_events WHERE release_id = ? AND type = 'preflight.done' ORDER BY seq DESC LIMIT 1").get(id) as { seq: number; payload: string }
+    const ev = JSON.parse(row.payload) as { report: { serviceCommits: Record<string, unknown> } }
+    ev.report.serviceCommits[SVC_WEB] = { since: 'a'.repeat(40), count: 0, known: true, skippable: true }
+    r.hub.db.prepare("INSERT INTO run_events(id, release_id, seq, at, type, payload) SELECT ?, release_id, ?, at, type, ? FROM run_events WHERE release_id = ? AND seq = ?")
+      .run(`${id}-seed`, row.seq + 1000, JSON.stringify(ev), id, row.seq)
+    const plain = (await r.call(r.admin, 'GET', `/api/v1/releases/${id}/playbook`)).json() as { playbook: string; sha256: string }
     const pv = await r.call(r.admin, 'GET', `/api/v1/releases/${id}/playbook?forceServiceIds=${SVC_WEB}`)
     expect(pv.statusCode, pv.body).toBe(200)
     const { playbook, sha256 } = pv.json() as { playbook: string; sha256: string }
+    // Forcing the skipped service changes what runs, so it changes the hash.
+    expect(sha256).not.toBe(plain.sha256)
     const url = `/api/v1/releases/${id}/validate-edit`
     const same = await r.call(r.admin, 'POST', url, { text: playbook, forceServiceIds: [SVC_WEB] })
     expect(same.statusCode, same.body).toBe(200)
     expect(same.json()).toEqual({ ok: true, canonical: playbook, sha256 })
+    const unforced = await r.call(r.admin, 'POST', url, { text: playbook })
+    expect(unforced.statusCode, unforced.body).toBe(200)
+    expect(unforced.json().sha256).not.toBe(sha256)
     // Generated content may not change: the validator answers with the line at fault.
-    const bad = await r.call(r.admin, 'POST', url, { text: playbook.replace('"hosts"', '"hostz"') })
+    const bad = await r.call(r.admin, 'POST', url, { text: playbook.replace('"hosts"', '"hostz"'), forceServiceIds: [SVC_WEB] })
     expect(bad.statusCode, bad.body).toBe(200)
     expect(bad.json().ok).toBe(false)
     expect((await r.call(r.admin, 'POST', url, { text: playbook, forceServiceIds: ['not-an-id'] })).statusCode).toBe(400)
+    // The hash binds the forced services: without them the same edit and hash are refused.
+    const stale = await r.call(r.admin, 'POST', `/api/v1/releases/${id}/start`, { editedPlaybook: playbook, playbookSha256: sha256 })
+    expect(stale.statusCode, stale.body).toBe(409)
+    expect(r.fr.kinds).not.toContain('release')
     const st = await r.call(r.admin, 'POST', `/api/v1/releases/${id}/start`, { editedPlaybook: playbook, playbookSha256: sha256, forceServiceIds: [SVC_WEB] })
     expect(st.statusCode, st.body).toBe(204)
     await r.hub.app.releases.whenIdle()
     expect(r.fr.call('release').releaseId).toBe(id)
+    expect(r.fr.call('release').deployments.map((d) => d.name).sort()).toEqual(['api', 'web'])
   })
 
   it('an edited start bound to a stale hash is refused by the service', async () => {
@@ -421,5 +455,72 @@ describe('the Hub calls the release service itself: no 503 seam', () => {
     const st = await r.call(r.admin, 'POST', `/api/v1/releases/${id}/start`, { editedPlaybook: playbook, playbookSha256: 'f'.repeat(64) })
     expect(st.statusCode).toBe(409)
     expect(r.fr.kinds).not.toContain('release')
+  })
+
+  it('with edits on, a maintainer\'s edited start is refused with a plain message before the service runs', async () => {
+    r = await rig({ allowPlaybookEdits: true })
+    const pf = await r.call(r.bob, 'POST', '/api/v1/releases/preflight', { environmentId: ENV_ID, serviceIds: [SVC_WEB], bump: 'none', options: OPTIONS })
+    const id = pf.json().releaseId as string
+    await r.hub.app.releases.whenIdle()
+    const pv = (await r.call(r.bob, 'GET', `/api/v1/releases/${id}/playbook`)).json() as { playbook: string; sha256: string }
+    const st = await r.call(r.bob, 'POST', `/api/v1/releases/${id}/start`, { typedName: 'prod', editedPlaybook: pv.playbook, playbookSha256: pv.sha256 })
+    expect(st.statusCode).toBe(403)
+    expect(st.json()).toMatchObject({ error: 'forbidden', message: 'Only Hub admins can do this' })
+    expect(r.fr.kinds).not.toContain('release')
+    expect(r.hub.audit.list({ actions: ['access.denied'] }).length).toBeGreaterThan(0)
+  })
+
+  it('an edited lock-free runbook takes the environment lock; run as generated it takes none', async () => {
+    r = await rig({ allowPlaybookEdits: true })
+    const m = envManifest()
+    m.runbooks = [statusBook]
+    expect((await r.call(r.admin, 'PUT', `/api/v1/admin/environments/${ENV_ID}`, m)).statusCode).toBe(200)
+    const lockOf = () => (r!.hub.db.prepare('SELECT release_id FROM env_locks WHERE environment_id = ?').get(ENV_ID) as { release_id: string } | undefined)?.release_id
+    const op = async () => {
+      const pf = await r!.call(r!.admin, 'POST', '/api/v1/releases/preflight-operation', { environmentId: ENV_ID, runbookId: RB, serviceIds: [SVC_WEB], params: {} })
+      expect(pf.statusCode, pf.body).toBe(201)
+      await r!.hub.app.releases.whenIdle()
+      return pf.json().releaseId as string
+    }
+    const [editedOp, plainOp] = [await op(), await op()]
+    expect(lockOf()).toBeUndefined()
+    const pv = (await r.call(r.admin, 'GET', `/api/v1/releases/${editedOp}/playbook`)).json() as { playbook: string }
+    const plays = JSON.parse(pv.playbook) as Record<string, unknown[]>[]
+    plays[0].tasks.push({ name: 'extra', 'ansible.builtin.shell': 'echo extra-step', timeout: 30, tags: ['extra'] })
+    const ve = (await r.call(r.admin, 'POST', `/api/v1/releases/${editedOp}/validate-edit`, { text: JSON.stringify(plays, null, 2) })).json()
+    expect(ve.ok, JSON.stringify(ve)).toBe(true)
+    const edit = { editedPlaybook: ve.canonical as string, playbookSha256: ve.sha256 as string }
+
+    // A release holds the lock: the edited run is refused, the generated one runs beside it.
+    const pf = await r.call(r.bob, 'POST', '/api/v1/releases/preflight', { environmentId: ENV_ID, serviceIds: [SVC_WEB], bump: 'none', options: OPTIONS })
+    expect(pf.statusCode, pf.body).toBe(201)
+    const held = pf.json().releaseId as string
+    await r.hub.app.releases.whenIdle()
+    expect(lockOf()).toBe(held)
+    expect((await r.call(r.admin, 'POST', `/api/v1/releases/${editedOp}/start`, edit)).statusCode).toBe(409)
+    expect(lockOf()).toBe(held)
+    expect((await r.call(r.admin, 'POST', `/api/v1/releases/${plainOp}/start`, {})).statusCode).toBe(204)
+    await r.hub.app.releases.whenIdle()
+    expect((await r.call(r.admin, 'GET', `/api/v1/releases/${plainOp}`)).json().status).toBe('succeeded')
+    expect(lockOf()).toBe(held)
+    expect((await r.call(r.bob, 'POST', `/api/v1/releases/${held}/discard`, {})).statusCode).toBeLessThan(300)
+    expect(lockOf()).toBeUndefined()
+
+    // The edited run holds the lock while it runs, so a release preflight is refused, and lets it go at the end.
+    let open!: () => void
+    const gate = new Promise<void>((res) => (open = res))
+    r.fr.on.operation = async () => {
+      await gate
+    }
+    const st = await r.call(r.admin, 'POST', `/api/v1/releases/${editedOp}/start`, edit)
+    expect(st.statusCode, st.body).toBe(204)
+    expect(lockOf()).toBe(editedOp)
+    expect((await r.call(r.bob, 'POST', '/api/v1/releases/preflight', { environmentId: ENV_ID, serviceIds: [SVC_WEB], bump: 'none', options: OPTIONS })).statusCode).toBe(409)
+    open()
+    await r.hub.app.releases.whenIdle()
+    const done = (await r.call(r.admin, 'GET', `/api/v1/releases/${editedOp}`)).json()
+    expect(done.status).toBe('succeeded')
+    expect(done.playbookSource).toBe('edited')
+    expect(lockOf()).toBeUndefined()
   })
 })

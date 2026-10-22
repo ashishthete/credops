@@ -174,6 +174,8 @@ interface Live {
   finalize: AbortController | null
   /** Set while a runbook operation preflights or runs. */
   op: OperationMeta | null
+  /** A lock-free read-only operation run as generated: it neither waits for nor blocks its environment's one run. */
+  lockFree: boolean
 }
 
 /** The decrypted values of one release. Held by reference so `drop` can let go of them. */
@@ -788,7 +790,8 @@ export class ReleaseService {
       ...this.rowCounts(releaseId),
     })
     this.assertOpCurrent(rel)
-    const lockFree = !op.lock && op.readOnly
+    // An edited playbook can do anything, so it holds the environment like a release even when its runbook is lock-free.
+    const lockFree = !op.lock && op.readOnly && confirm.editedPlaybook === undefined
     this.assertCapacity(env, lockFree)
     const reviewed = confirm.playbookSha256 !== undefined ? this.previews.get(reviewKey(releaseId, actor)) : undefined
     if (reviewed !== undefined && this.d.now().getTime() - reviewed.at > PREVIEW_TTL_MS) throw new DeployError('INVALID_STATE', REVIEW_EXPIRED_MESSAGE)
@@ -799,6 +802,7 @@ export class ReleaseService {
     }
     const live = this.register(releaseId, env, 'release', op.name, actor)
     live.op = op
+    live.lockFree = lockFree
     try {
       this.dropPreviews(releaseId)
       const infos = this.infosFor(rel)
@@ -1872,12 +1876,12 @@ export class ReleaseService {
   }
 
   /**
-   * One run per environment, MAX_ACTIVE_RELEASES in all. A lock-free read-only operation (`lockFree`) holds no host
-   * lock, so it neither waits for nor blocks the one run of its environment; it still counts toward the total.
+   * One run per environment, MAX_ACTIVE_RELEASES in all. A lock-free read-only operation run unedited (`lockFree`) holds
+   * no host lock, so it neither waits for nor blocks the one run of its environment; it still counts toward the total.
    */
   private assertCapacity(env: { id: string; name: string }, lockFree = false): void {
     const running = [...this.live.values()].filter((l) => l.phase !== 'preflight')
-    const holdsEnv = (l: Live): boolean => l.environmentId === env.id && !(l.op !== null && !l.op.lock && l.op.readOnly)
+    const holdsEnv = (l: Live): boolean => l.environmentId === env.id && !l.lockFree
     if (!lockFree && running.some(holdsEnv)) throw new DeployError('BUSY', `A release is already running on ${env.name}`)
     if (running.length >= MAX_ACTIVE_RELEASES) throw new DeployError('BUSY', `At most ${MAX_ACTIVE_RELEASES} releases can run at once`)
   }
@@ -1908,6 +1912,7 @@ export class ReleaseService {
       failedStep: null,
       finalize: null,
       op: null,
+      lockFree: false,
     }
     this.live.set(id, live)
     return live

@@ -464,11 +464,15 @@ export class HubReleases {
     if (confirm.editedPlaybook !== undefined) this.editGuard(user, environmentId, 'playbook.edit', releaseId)
     const forced = this.forcedOf(releaseId, confirm.forceServiceIds)
     this.confirm(user, environmentId, confirm.typedName, 'release.start', releaseId)
-    // A read-only runbook takes no environment lock, so there is none to hold.
-    if (!operation || operation.lock) this.holdsLock(environmentId, releaseId)
+    // A read-only runbook takes no environment lock at preflight. Run edited it can do anything, so it takes the lock
+    // now, as a retry does; the lock goes when the run ends.
+    const takesLock = !!operation && !operation.lock && confirm.editedPlaybook !== undefined
+    if (takesLock) this.d.locks.acquireRelease(environmentId, releaseId, { oid: user.oid, name: user.name })
+    else if (!operation || operation.lock) this.holdsLock(environmentId, releaseId)
     try {
       await this.service.start(releaseId, forced === undefined ? confirm : { ...confirm, forceServiceIds: forced }, { actor: this.actorOf(user) })
     } catch (err) {
+      if (takesLock) this.d.locks.releaseFor(releaseId)
       this.fail(err)
     }
   }
