@@ -335,6 +335,20 @@ describe('hosts page', () => {
     expect(invoke).toHaveBeenCalledWith('config:importOpen', 'hosts')
   })
 
+  it('Import hosts… and Export hosts… are busy while a file dialog is open', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderApp(world())
+    const base = invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
+    invoke.mockImplementation((channel: string, ...args: unknown[]) =>
+      channel === 'config:export' || channel === 'config:importOpen' ? new Promise(() => {}) : base(channel, ...args),
+    )
+    const exportButton = await screen.findByRole('button', { name: 'Export hosts…' })
+    await user.dblClick(exportButton)
+    expect(exportButton).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Import hosts…' })).toBeDisabled()
+    expect(invoke.mock.calls.filter(([c]) => c === 'config:export' || c === 'config:importOpen')).toEqual([['config:export', 'hosts']])
+  })
+
   it('the empty state offers Import hosts…', async () => {
     renderApp(world({ hosts: [], environments: [] }))
     expect(await screen.findByText('No hosts yet')).toBeInTheDocument()

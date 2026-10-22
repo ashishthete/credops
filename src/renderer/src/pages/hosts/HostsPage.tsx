@@ -155,7 +155,7 @@ export function HostsPage() {
                 <Button icon={<FileDown aria-hidden className="size-3.5" />} onClick={() => setDialog('import')}>
                   {IMPORT_LABEL}
                 </Button>
-                <Button variant="ghost" icon={<Upload aria-hidden className="size-3.5" />} onClick={() => void transfer.openImport()}>
+                <Button variant="ghost" loading={transfer.opening} disabled={transfer.busy} icon={<Upload aria-hidden className="size-3.5" />} onClick={() => void transfer.openImport()}>
                   Import hosts…
                 </Button>
               </>
@@ -225,8 +225,8 @@ export function HostsPage() {
             <RailButton icon={FileDown} label={IMPORT_LABEL} onClick={() => setDialog('import')} />
             <RailButton icon={Globe2} label="Regions…" onClick={() => setDialog('regions')} />
             <RailButton icon={Fingerprint} label="Known hosts…" onClick={openKnownHosts} />
-            <RailButton icon={Upload} label="Import hosts…" onClick={() => void transfer.openImport()} />
-            <RailButton icon={Download} label="Export hosts…" onClick={() => void transfer.exportConfig()} />
+            <RailButton icon={Upload} label="Import hosts…" disabled={transfer.busy} onClick={() => void transfer.openImport()} />
+            <RailButton icon={Download} label="Export hosts…" disabled={transfer.busy} onClick={() => void transfer.exportConfig()} />
           </div>
         </aside>
 
@@ -547,12 +547,13 @@ function HostRow({ host, envs, index, stagger, selection, onSelect, onConnect: c
   )
 }
 
-function RailButton({ icon: Icon, label, onClick }: { icon: LucideIcon; label: string; onClick: () => void }) {
+function RailButton({ icon: Icon, label, onClick, disabled = false }: { icon: LucideIcon; label: string; onClick: () => void; disabled?: boolean }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-[12.5px] font-medium text-muted transition-colors hover:bg-white/[0.04] hover:text-fg"
+      disabled={disabled}
+      className="flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-[12.5px] font-medium text-muted transition-colors hover:bg-white/[0.04] hover:text-fg disabled:cursor-wait disabled:opacity-55 disabled:hover:bg-transparent disabled:hover:text-muted"
     >
       <Icon aria-hidden className="size-3.5" />
       {label}

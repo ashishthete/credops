@@ -1,5 +1,5 @@
 import { Download, Upload } from 'lucide-react'
-import { useState, type ReactNode } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import type { ConfigCounts, ConfigSegment, ImportPreview } from '../../../../shared/config-file'
 import { api } from '../../lib/api'
 import { attempt, plural, RowMenu } from '../../ui/common'
@@ -17,18 +17,24 @@ const basename = (path: string): string => path.split(/[\\/]/).pop() ?? path
 export function useConfigTransfer(segment?: ConfigSegment): {
   exporting: boolean
   opening: boolean
+  /** Either file dialog is open: a second one would only stack on it. */
+  busy: boolean
   exportConfig: () => Promise<void>
   openImport: () => Promise<void>
   dialog: ReactNode
 } {
   const [exporting, setExporting] = useState(false)
   const [opening, setOpening] = useState(false)
+  // A ref, not state: a double click lands before the first click's render.
+  const running = useRef(false)
   const [preview, setPreview] = useState<ImportPreview | { errors: string[] } | null>(null)
   // The whole config sends no segment at all.
   const seg = segment ? ([segment] as const) : ([] as const)
   const what = segment ? `the ${segment}` : 'the config'
 
   const exportConfig = async () => {
+    if (running.current) return
+    running.current = true
     setExporting(true)
     try {
       // null: the save dialog was closed, which needs no comment.
@@ -40,23 +46,27 @@ export function useConfigTransfer(segment?: ConfigSegment): {
           tone: 'success',
         })
     } finally {
+      running.current = false
       setExporting(false)
     }
   }
 
   const openImport = async () => {
+    if (running.current) return
+    running.current = true
     setOpening(true)
     try {
       // null: the open dialog was closed.
       const res = await attempt(segment ? "Couldn't open the file" : "Couldn't open the config", () => api.invoke('config:importOpen', ...seg))
       if (res) setPreview(res)
     } finally {
+      running.current = false
       setOpening(false)
     }
   }
 
   const dialog = preview && <ImportConfigDialog preview={preview} segment={segment} onClose={() => setPreview(null)} />
-  return { exporting, opening, exportConfig, openImport, dialog }
+  return { exporting, opening, busy: exporting || opening, exportConfig, openImport, dialog }
 }
 
 /** A page's "⋯" menu with Import and Export of its segment, for a page header. */

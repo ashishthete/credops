@@ -51,6 +51,16 @@ describe('page config import and export', () => {
     expect(within(menu).getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['Import tunnels…', 'Export tunnels…'])
   })
 
+  it('a second click while a file dialog is open opens no other', async () => {
+    const invoke = mockBridge({ 'config:export': new Promise(() => {}), 'config:importOpen': new Promise(() => {}) })
+    const user = renderMenu()
+    for (const action of ['Export tunnels…', 'Export tunnels…', 'Import tunnels…']) {
+      await user.click(screen.getByRole('button', { name: 'Import or export tunnels' }))
+      await user.click(screen.getByRole('menuitem', { name: action }))
+    }
+    expect(invoke.mock.calls.filter(([c]) => c === 'config:export' || c === 'config:importOpen')).toEqual([['config:export', 'tunnels']])
+  })
+
   it('Export tunnels… exports the segment and toasts the file name only', async () => {
     const invoke = mockBridge({ 'config:export': { path: '/Users/me/Desktop/opsdeck-tunnels.json', counts, omitted: 1 } })
     const user = renderMenu()

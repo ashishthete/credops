@@ -350,8 +350,8 @@ export function ProductsPage() {
         <div className="flex flex-col gap-0.5 border-t border-line/70 p-2.5">
           <RailButton label="New product" onClick={newProduct} />
           <RailButton label="New environment" onClick={() => newEnvironment()} />
-          <RailButton icon={Upload} label="Import products…" onClick={() => void transfer.openImport()} />
-          <RailButton icon={Download} label="Export products…" onClick={() => void transfer.exportConfig()} />
+          <RailButton icon={Upload} label="Import products…" disabled={transfer.busy} onClick={() => void transfer.openImport()} />
+          <RailButton icon={Download} label="Export products…" disabled={transfer.busy} onClick={() => void transfer.exportConfig()} />
         </div>
       </aside>
 
@@ -429,12 +429,13 @@ export function ProductsPage() {
   )
 }
 
-function RailButton({ icon: Icon = Plus, label, onClick }: { icon?: LucideIcon; label: string; onClick: () => void }) {
+function RailButton({ icon: Icon = Plus, label, onClick, disabled = false }: { icon?: LucideIcon; label: string; onClick: () => void; disabled?: boolean }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-[12.5px] font-medium text-muted transition-colors hover:bg-white/[0.04] hover:text-fg"
+      disabled={disabled}
+      className="flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-[12.5px] font-medium text-muted transition-colors hover:bg-white/[0.04] hover:text-fg disabled:cursor-wait disabled:opacity-55 disabled:hover:bg-transparent disabled:hover:text-muted"
     >
       <Icon aria-hidden className="size-3.5" />
       {label}
