@@ -43,6 +43,7 @@ export const EDIT_RULE = {
   jinjaExpr: 'Only {{ name.path | filter }} is allowed, with the filters quote, b64decode, default, from_json, bool and int; to use literal braces, move the script into a step',
   jinjaUnterminated: 'A {{ is not closed',
   secretRef: 'Secrets, hostvars and the become password can be read only by generated tasks',
+  generatedRef: 'Names the generator sets (its vars, facts and registered results, such as d, od and r) can be read only by generated tasks',
   lookup: 'lookup() and query() are not allowed',
   condition: 'A condition must be true, false, a generated condition, or <register>.rc == <number>',
   reserved: (k: string): string => `"${k}" is a name the generator owns and cannot be set or registered`,
@@ -216,6 +217,8 @@ const TAG = /^[A-Za-z0-9_.=:-]{1,64}$/
 const VARNAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/
 // od_* covers the facts the generator sets and reads (od_failed, od_stage, od_prepared, od_prep_failed, od_bj_N).
 const RESERVED = /^(?:ansible_.*|s|d|od|od_.*|rollback_failed|hostvars|vars|environment|inventory_hostname|groups|lookup|query|cacheable|omit)$/
+/** Names an added task may never read: the secrets, the host facts and vars, and the become password. */
+const SECRET_ROOT = /^(?:s|hostvars|ansible_.*|vars|environment)$/
 /** A literal `sleep N` in a script; seconds unless suffixed. */
 const SLEEP = /\bsleep\s+(infinity|\d+(?:\.\d+)?)([smhd]?)\b/g
 const UNIT: Record<string, number> = { '': 1, s: 1, m: 60, h: 3600, d: 86400 }
@@ -368,6 +371,8 @@ class Checker {
   private readonly genTasks = new Set<string>()
   private readonly genVars = new Set<string>()
   private readonly genConds = new Set<string>()
+  /** Every variable name the generated playbook sets: play and task vars, set_fact keys and registers. */
+  private readonly genNames = new Set<string>()
   private readonly genPlaces = new Map<string, Set<Place>>()
   /** Each generated task list, by place, as stable texts in generated order. */
   private readonly genLists = new Map<Place, string[]>()
@@ -388,7 +393,26 @@ class Checker {
       this.genTasks.add(stable(t))
       if (isObj(t.vars)) this.genVars.add(stable(t.vars))
       for (const k of ['when', 'failed_when', 'changed_when', 'until']) if (typeof t[k] === 'string') this.genConds.add(t[k] as string)
+      if (isObj(t.vars)) for (const k of Object.keys(t.vars)) this.genNames.add(k)
+      if (typeof t.register === 'string') this.genNames.add(t.register)
+      for (const [k, x] of Object.entries(t)) if (moduleOf(k) === 'set_fact' && isObj(x)) for (const n of Object.keys(x)) this.genNames.add(n)
     }
+    for (const p of gen) if (isObj(p.vars)) for (const k of Object.keys(p.vars)) this.genNames.add(k)
+  }
+
+  /** A name an added task may not set, register or pass as a var. */
+  private owned(k: string): boolean {
+    return RESERVED.test(k) || this.genNames.has(k)
+  }
+
+  /**
+   * Why a Jinja expression may not run in an added task: it names a secret or a generated variable anywhere
+   * outside quoted text, however it is spelled (`d.x`, `d['x']`, `(d)`, `d | default`). Null when it names neither.
+   */
+  private readsGenerated(expr: string): string | null {
+    const names = [...expr.replace(/'[^']*'|"[^"]*"/g, "''").matchAll(/(?<![.\w])[A-Za-z_]\w*/g)].map((m) => m[0])
+    if (names.some((n) => SECRET_ROOT.test(n))) return EDIT_RULE.secretRef
+    return names.some((n) => this.genNames.has(n)) ? EDIT_RULE.generatedRef : null
   }
 
   err(path: string, message: string): void {
@@ -592,7 +616,7 @@ class Checker {
     if ('register' in t) {
       const r = t.register
       if (typeof r !== 'string' || !REGISTER.test(r)) this.err(`${path}/register`, EDIT_RULE.reserved(String(r).slice(0, 40)))
-      else if (RESERVED.test(r)) this.err(`${path}/register`, EDIT_RULE.reserved(r))
+      else if (this.owned(r)) this.err(`${path}/register`, EDIT_RULE.reserved(r))
     }
     if ('tags' in t) this.tagList(t.tags, `${path}/tags`)
     if ('vars' in t && !this.genVars.has(stable(t.vars))) this.taskVars(t.vars, `${path}/vars`)
@@ -625,7 +649,7 @@ class Checker {
   private taskVars(v: unknown, path: string): void {
     if (!isObj(v)) return this.err(path, EDIT_RULE.vars)
     for (const [k, x] of Object.entries(v)) {
-      if (!VARNAME.test(k) || RESERVED.test(k)) this.err(`${path}/${k}`, EDIT_RULE.reserved(k.slice(0, 40)))
+      if (!VARNAME.test(k) || this.owned(k)) this.err(`${path}/${k}`, EDIT_RULE.reserved(k.slice(0, 40)))
       this.strings(x, `${path}/${k}`)
     }
   }
@@ -636,7 +660,11 @@ class Checker {
 
   private cond(v: unknown, path: string): void {
     if (typeof v === 'boolean') return
-    if (typeof v === 'string' && (this.genConds.has(v) || COND.test(v))) return
+    if (typeof v === 'string' && this.genConds.has(v)) return
+    if (typeof v === 'string' && COND.test(v)) {
+      const why = this.readsGenerated(v)
+      return why ? this.err(path, why) : undefined
+    }
     this.err(path, EDIT_RULE.condition)
   }
 
@@ -663,7 +691,7 @@ class Checker {
     for (const [k, x] of Object.entries(v)) {
       const kp = `${path}/${k}`
       if (m === 'set_fact') {
-        if (!VARNAME.test(k) || RESERVED.test(k)) this.err(kp, EDIT_RULE.reserved(k.slice(0, 40)))
+        if (!VARNAME.test(k) || this.owned(k)) this.err(kp, EDIT_RULE.reserved(k.slice(0, 40)))
       } else if (!allowed?.includes(k)) this.err(kp, EDIT_RULE.moduleParam(m, k.slice(0, 40)))
       if (k === 'timeout' || k === 'connect_timeout') this.timeout(x, kp)
       if (k === 'executable' && x !== '/bin/bash') this.err(kp, EDIT_RULE.moduleParam(m, k))
@@ -706,13 +734,11 @@ class Checker {
       if (close < 0) return this.err(path, EDIT_RULE.jinjaUnterminated)
       const inner = rest.slice(open + 2, close).trim()
       const m = EXPR.exec(inner)
-      if (!m) {
-        this.err(path, /\blookup\s*\(|\bquery\s*\(/.test(inner) ? EDIT_RULE.lookup : EDIT_RULE.jinjaExpr)
-      } else {
-        const segs = m[1].split(/\.|\[|\]/).filter(Boolean)
-        if (segs[0] === 's' || segs[0] === 'hostvars' || /^ansible_/.test(segs[0]) || segs[0] === 'vars' || segs[0] === 'environment') this.err(path, EDIT_RULE.secretRef)
-        else if (segs.some((x) => x.startsWith('_'))) this.err(path, EDIT_RULE.jinjaExpr)
-      }
+      // Before the shape check, so that `d['x']` or `(s)` says why as plainly as `d.x` does.
+      const why = this.readsGenerated(inner)
+      if (why) this.err(path, why)
+      else if (!m) this.err(path, /\blookup\s*\(|\bquery\s*\(/.test(inner) ? EDIT_RULE.lookup : EDIT_RULE.jinjaExpr)
+      else if (m[1].split(/\.|\[|\]/).some((x) => x.startsWith('_'))) this.err(path, EDIT_RULE.jinjaExpr)
       rest = rest.slice(close + 2)
     }
     if (/\{[%#]/.test(plain)) this.err(path, EDIT_RULE.jinjaStatement)

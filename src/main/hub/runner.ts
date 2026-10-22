@@ -14,6 +14,7 @@ import { DeployError } from '../../shared/deploy-error'
 import type { OperationRequest } from '../../shared/runbooks'
 import type { AuditLog } from '../audit/audit-log'
 import type { ReleaseRunMeta } from '../deploy/finalize'
+import type { CallCtx } from '../deploy/release-service'
 import { HubError, type HubClient } from './client'
 
 type Maybe<T> = T | Promise<T>
@@ -26,9 +27,10 @@ export interface ReleaseApi {
   preflight(req: PreflightRequest): Maybe<{ releaseId: string }>
   /** A runbook operation's preflight: a `ready` row that `start` runs. */
   preflightOperation(req: OperationRequest): Maybe<{ releaseId: string }>
-  previewPlaybook(releaseId: string): Maybe<PlaybookPreview>
+  /** `forceServiceIds` as `start` will carry them, so the preview is of the playbook that start generates. */
+  previewPlaybook(releaseId: string, ctx?: CallCtx, forceServiceIds?: string[]): Maybe<PlaybookPreview>
   /** Checks an edit of the previewed playbook; static, writes nothing. */
-  validateEdit(releaseId: string, text: string): Maybe<PlaybookEditResult>
+  validateEdit(releaseId: string, text: string, ctx?: CallCtx, forceServiceIds?: string[]): Maybe<PlaybookEditResult>
   start(releaseId: string, confirm?: ReleaseConfirm): Maybe<void>
   cancel(releaseId: string): Maybe<void>
   rollback(releaseId: string, confirm?: ReleaseConfirm): Maybe<{ releaseId: string }>
@@ -265,11 +267,11 @@ export class RoutingReleases implements ReleaseApi {
   async preflightOperation(req: OperationRequest): Promise<{ releaseId: string }> {
     return this.d.isHubEnv(req.environmentId) ? this.d.hub.preflightOperation(req) : this.d.local.preflightOperation(req)
   }
-  previewPlaybook(releaseId: string): Maybe<PlaybookPreview> {
-    return this.pick(releaseId).previewPlaybook(releaseId)
+  previewPlaybook(releaseId: string, ctx?: CallCtx, forceServiceIds?: string[]): Maybe<PlaybookPreview> {
+    return this.pick(releaseId).previewPlaybook(releaseId, ctx, forceServiceIds)
   }
-  validateEdit(releaseId: string, text: string): Maybe<PlaybookEditResult> {
-    return this.pick(releaseId).validateEdit(releaseId, text)
+  validateEdit(releaseId: string, text: string, ctx?: CallCtx, forceServiceIds?: string[]): Maybe<PlaybookEditResult> {
+    return this.pick(releaseId).validateEdit(releaseId, text, ctx, forceServiceIds)
   }
   start(releaseId: string, confirm?: ReleaseConfirm): Maybe<void> {
     return this.pick(releaseId).start(releaseId, confirm)

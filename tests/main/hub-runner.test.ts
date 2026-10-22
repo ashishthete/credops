@@ -103,7 +103,9 @@ describe('hub runner and release routing', () => {
     expect(r.calls).toHaveLength(1)
     r.local.validateEdit.mockResolvedValue({ ok: true, canonical: '[]', sha256: 'b'.repeat(64) })
     expect(await r.routing.validateEdit('l-1', '[]')).toEqual({ ok: true, canonical: '[]', sha256: 'b'.repeat(64) })
-    expect(r.local.validateEdit).toHaveBeenCalledWith('l-1', '[]')
+    expect(r.local.validateEdit).toHaveBeenCalledWith('l-1', '[]', undefined, undefined)
+    await r.routing.validateEdit('l-1', '[]', undefined, ['f-1'])
+    expect(r.local.validateEdit).toHaveBeenLastCalledWith('l-1', '[]', undefined, ['f-1'])
   })
 
   it('routes hub environments to the Hub and others to local', async () => {

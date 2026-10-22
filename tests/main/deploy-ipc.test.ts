@@ -29,6 +29,8 @@ describe('release:* validators', () => {
     expect(() => check('deploy:savePlaybook', [ID, HASH])).not.toThrow()
     expect(() => check('release:savePlaybook', [ID])).not.toThrow()
     expect(() => check('release:validateEdit', [ID, '[]'])).not.toThrow()
+    expect(() => check('release:validateEdit', [ID, '[]', [ID]])).not.toThrow()
+    expect(() => check('deploy:previewPlaybook', [ID, [ID]])).not.toThrow()
     expect(() => check('release:start', [ID, { playbookSha256: HASH, editedPlaybook: '[]' }])).not.toThrow()
     expect(() => check('release:break-lock', [ID, ID, { typedLabel: 'app1' }])).not.toThrow()
     expect(() => check('release:list', [{ environmentId: ID, limit: 10 }])).not.toThrow()
@@ -63,6 +65,9 @@ describe('release:* validators', () => {
     ['release:validateEdit', [ID], /./],
     ['release:validateEdit', [ID, 7], /./],
     ['release:validateEdit', [ID, 'x'.repeat(256 * 1024 + 1)], /./],
+    ['release:validateEdit', [ID, '[]', ['x']], /./],
+    ['release:validateEdit', [ID, '[]', ID], /./],
+    ['deploy:previewPlaybook', [ID, ['x']], /./],
     ['release:cancel', [], /./],
     ['release:rollback', [ID, { typedName: {} }], /typedName/],
     ['release:break-lock', [ID, ID, {}], /typedLabel/],
@@ -135,7 +140,15 @@ describe('playbook review handlers', () => {
     const { releases, h } = setup({ secrets: ['hunter22'] })
     expect(await h['release:validateEdit'](ID, '[{"x":"hunter22"}]')).toEqual({ ok: true, canonical: '[{"x":"‹redacted›"}]', sha256: HASH })
     expect(await h['release:validateEdit'](ID, 'bad')).toEqual({ ok: false, errors: [{ line: 3, message: 'unknown ‹redacted›' }] })
-    expect(releases.validateEdit).toHaveBeenCalledWith(ID, 'bad')
+    expect(releases.validateEdit).toHaveBeenCalledWith(ID, 'bad', undefined, undefined)
+  })
+
+  it('release:validateEdit and deploy:previewPlaybook pass forced services through, as start carries them', async () => {
+    const { releases, h } = setup()
+    await h['deploy:previewPlaybook'](ID, [ID])
+    expect(releases.previewPlaybook).toHaveBeenCalledWith(ID, undefined, [ID])
+    await h['release:validateEdit'](ID, '[]', [ID])
+    expect(releases.validateEdit).toHaveBeenCalledWith(ID, '[]', undefined, [ID])
   })
 
   it('release:start refuses a start without a reviewed hash and forwards one with it', async () => {

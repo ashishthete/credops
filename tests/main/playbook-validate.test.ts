@@ -98,8 +98,8 @@ describe('validateEditedPlaybook', () => {
       const b = block(p).block
       b.push(
         { name: 'a', 'ansible.builtin.command': { argv: ['ls', '-l'] }, timeout: 10, register: 'x' },
-        { name: 'b', 'ansible.builtin.set_fact': { mine: '{{ d.repo | quote }}' }, when: 'x.rc == 0' },
-        { name: 'c', 'ansible.builtin.debug': { msg: 'repo {{ d.repo }}' } },
+        { name: 'b', 'ansible.builtin.set_fact': { mine: '{{ x.stdout | quote }}' }, when: 'x.rc == 0' },
+        { name: 'c', 'ansible.builtin.debug': { msg: 'out {{ mine }}' } },
         { name: 'd', 'ansible.builtin.wait_for': { host: 'localhost', port: 80, timeout: 30 } },
         { name: 'e', 'ansible.builtin.uri': { url: 'http://x.test/', timeout: 20, status_code: [200] } },
         { name: 'f', 'ansible.builtin.fail': { msg: 'stop' }, failed_when: false },
@@ -155,10 +155,10 @@ describe('validateEditedPlaybook', () => {
     ['jinja statement', (p) => block(p).block.push({ name: 'l', 'ansible.builtin.shell': '{% for x in y %}{% endfor %}' }), EDIT_RULE.jinjaStatement],
     ['{{ s }} in debug', (p) => block(p).block.push({ name: 'l', 'ansible.builtin.debug': { msg: '{{ s }}' } }), EDIT_RULE.secretRef],
     ['{{ s.key }} in shell', (p) => block(p).block.push({ name: 'l', 'ansible.builtin.shell': 'echo {{ s.env_1 }}' }), EDIT_RULE.secretRef],
-    ['s via a filter chain', (p) => block(p).block.push({ name: 'l', 'ansible.builtin.debug': { msg: '{{ s | to_json }}' } }), EDIT_RULE.jinjaExpr],
+    ['s via a filter chain', (p) => block(p).block.push({ name: 'l', 'ansible.builtin.debug': { msg: '{{ s | to_json }}' } }), EDIT_RULE.secretRef],
     ['hostvars', (p) => block(p).block.push({ name: 'l', 'ansible.builtin.debug': { msg: '{{ hostvars }}' } }), EDIT_RULE.secretRef],
     ['the become password', (p) => block(p).block.push({ name: 'l', 'ansible.builtin.debug': { msg: '{{ ansible_become_password }}' } }), EDIT_RULE.secretRef],
-    ['a dunder path', (p) => block(p).block.push({ name: 'l', 'ansible.builtin.debug': { msg: '{{ d.__class__ }}' } }), EDIT_RULE.jinjaExpr],
+    ['a dunder path', (p) => block(p).block.push({ name: 'l', 'ansible.builtin.debug': { msg: '{{ x.__class__ }}' } }), EDIT_RULE.jinjaExpr],
     ['debug var', (p) => block(p).block.push({ name: 'l', 'ansible.builtin.debug': { var: 's' } }), EDIT_RULE.moduleParam('debug', 'var')],
     ['Jinja in a uri header key', (p) => block(p).block.push({ name: 'u', 'ansible.builtin.uri': { url: 'http://x.test', headers: { '{{ s.env_1 }}': 'x' } } }), EDIT_RULE.secretRef],
     ['set_fact ansible_connection', (p) => block(p).block.push({ name: 'l', 'ansible.builtin.set_fact': { ansible_connection: 'local' } }), EDIT_RULE.reserved('ansible_connection')],
@@ -416,6 +416,68 @@ describe('validateEditedPlaybook', () => {
       expect(failing(edit((p) => void block(p).block.push({ ...NEW, 'ansible.builtin.shell': 'echo ‹redacted›' })))).toContain(EDIT_RULE.masked)
       const b64 = Buffer.from('token=‹redacted›').toString('base64')
       expect(failing(edit((p) => void block(p).block.push({ ...NEW, vars: { x_b64: b64 } })))).toContain(EDIT_RULE.masked)
+    })
+  })
+
+  describe('generated names (Task 10b fix round 1)', () => {
+    /** The repo path stands for a secret: it masks the block's own vars, so the edit gets `d` back unmasked. */
+    const SECRET = '/srv/apps/alpha1'
+    const masked = (): string => maskPlaybook(gen(), [SECRET])
+    const editMasked = (fn: (plays: Obj[]) => void) => {
+      const plays = JSON.parse(masked()) as Obj[]
+      fn(plays)
+      return validateEditedPlaybook(JSON.stringify(plays, null, 2), gen(), masked())
+    }
+    const { 'ansible.builtin.shell': _shell, ...DEBUG } = NEW
+
+    it('the block vars are masked and an unrelated added task unmasks them', () => {
+      expect(JSON.stringify(block(JSON.parse(masked())).vars)).not.toContain(SECRET)
+      const r = editMasked((p) => void block(p).block.push({ ...NEW }))
+      expect(r.ok && r.canonical).toContain(SECRET)
+    })
+
+    it.each([
+      '{{ d.pre_hook }}',
+      '{{d.post_hook}}',
+      '{{   d.pre_hook   }}',
+      '{{ d . pre_hook }}',
+      '{{ d\n.pre_hook }}',
+      "{{ d['pre_hook'] }}",
+      '{{ d["post_hook"] }}',
+      '{{ d | default }}',
+      "{{ d|default('x') }}",
+      '{{ d.pre_hook | b64decode }}',
+      '{{ (d) }}',
+      '{{ (d).pre_hook }}',
+      '{{ d }}',
+      'hook: {{ d.pre_hook }} done',
+      '{{ od }}',
+      '{{ r.stdout }}',
+      '{{ r }}',
+    ])('an added task cannot read a generated name: %j', (msg) => {
+      const r = editMasked((p) => void block(p).block.push({ ...DEBUG, 'ansible.builtin.debug': { msg } }))
+      expect(failing(r)).toContain(EDIT_RULE.generatedRef)
+    })
+
+    it('nor through a task name, a vars value or a condition', () => {
+      expect(failing(editMasked((p) => void block(p).block.push({ ...NEW, name: 'x {{ d.pre_hook }}' })))).toContain(EDIT_RULE.generatedRef)
+      expect(failing(editMasked((p) => void block(p).block.push({ ...NEW, vars: { h: '{{ d.post_hook }}' } })))).toContain(EDIT_RULE.generatedRef)
+      expect(failing(editMasked((p) => void block(p).block.push({ ...NEW, when: 'r.rc == 0' })))).toContain(EDIT_RULE.generatedRef)
+    })
+
+    it('still allows names that only look alike, quoted text and generated conditions', () => {
+      for (const msg of ['{{ dd }}', '{{ item_d.x }}', "{{ x | default('d') }}", 'd and r in plain text'])
+        expect(failing(editMasked((p) => void block(p).block.push({ ...DEBUG, 'ansible.builtin.debug': { msg } })))).toEqual([])
+      expect(failing(editMasked((p) => void block(p).block.push({ ...NEW, until: 'r.status == 200', retries: 2, delay: 1 })))).toEqual([])
+    })
+
+    it.each([
+      ['register', { register: 'r' }],
+      ['set_fact', { 'ansible.builtin.set_fact': { r: { status: 200 } } }],
+      ['vars', { vars: { r: { status: 200 } } }],
+    ])('rejects overwriting the generated register r through %s', (_, extra) => {
+      const t = 'ansible.builtin.set_fact' in extra ? { ...DEBUG, ...extra } : { ...NEW, ...extra }
+      expect(failing(edit((p) => void block(p).block.splice(8, 0, t)))).toContain(EDIT_RULE.reserved('r'))
     })
   })
 

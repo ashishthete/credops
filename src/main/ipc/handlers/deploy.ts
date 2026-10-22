@@ -103,8 +103,8 @@ export function createDeployHandlers(deps: {
     'deploy:tooling': () => tooling(),
     'release:preflight': (request) => releases.preflight(request),
     'release:preflightOperation': (request) => releases.preflightOperation(request),
-    'deploy:previewPlaybook': async (id) => {
-      const preview = await releases.previewPlaybook(id)
+    'deploy:previewPlaybook': async (id, forceServiceIds) => {
+      const preview = await releases.previewPlaybook(id, undefined, forceServiceIds)
       reviewed.set(id, preview)
       // Shown and saved masked, as a stored release's playbook is (`release:get`); the hash stays that of the raw text.
       return { ...preview, playbook: maskPlaybook(preview.playbook, secrets()) }
@@ -129,8 +129,8 @@ export function createDeployHandlers(deps: {
       return { path }
     },
     // Masked as the preview is: the canonical text is the edit the person sends back to start; the hash stays that of the raw text.
-    'release:validateEdit': async (id, text) => {
-      const res = await releases.validateEdit(id, text)
+    'release:validateEdit': async (id, text, forceServiceIds) => {
+      const res = await releases.validateEdit(id, text, undefined, forceServiceIds)
       if (res.ok) return { ...res, canonical: maskPlaybook(res.canonical, secrets()) }
       return { ok: false, errors: res.errors.map((e) => ({ line: e.line, message: maskPlaybook(e.message, secrets()) })) }
     },

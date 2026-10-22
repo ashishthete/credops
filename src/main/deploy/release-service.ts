@@ -530,8 +530,11 @@ export class ReleaseService {
     if (!allowed.allowed) throw new DeployError('DENIED', redact(allowed.reason ?? 'Not allowed'))
     if (rel.operation) this.assertOpCurrent(rel)
     else this.assertCurrent(rel, env)
+    // An edit is of the preview this actor saw: without it (or once it is too old to start from) there is
+    // nothing to check against, and a start time made up here would generate different lock text.
     const reviewed = this.previews.get(reviewKey(releaseId, actor))
-    const startedAt = reviewed?.startedAt ?? this.d.now().toISOString()
+    if (reviewed === undefined || this.d.now().getTime() - reviewed.at > PREVIEW_TTL_MS) throw new DeployError('INVALID_STATE', REVIEW_EXPIRED_MESSAGE)
+    const startedAt = reviewed.startedAt
     const skips = rel.operation ? NO_SKIPS : this.skips(rel, forceServiceIds)
     const { playbook, inventory } = rel.operation ? this.opPlan(rel, env, actor, startedAt) : this.releasePlan(rel, env, actor, startedAt, skips)
     const res = validateEditedPlaybook(text, playbook, this.masked(playbook))
