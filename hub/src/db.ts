@@ -182,6 +182,8 @@ const PLAYBOOK_OPS = `
 ALTER TABLE releases ADD COLUMN operation TEXT NULL;
 ALTER TABLE releases ADD COLUMN playbook_source TEXT NULL;
 ALTER TABLE releases ADD COLUMN playbook_generated TEXT NULL;
+-- {flow, parallelPrepare, prepareCap, runbooks} as published; '{}' reads as the defaults (parallel prepare on, cap 3, no flow, no runbooks).
+ALTER TABLE environments ADD COLUMN playbook_ops TEXT NOT NULL DEFAULT '{}';
 `
 
 export const HUB_MIGRATIONS: Migration[] = [

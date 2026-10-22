@@ -10,7 +10,6 @@ import type {
   ReleaseSummary,
   RunEvent,
 } from '../../shared/deploy'
-import { DeployError } from '../../shared/deploy-error'
 import type { OperationRequest } from '../../shared/runbooks'
 import type { AuditLog } from '../audit/audit-log'
 import type { ReleaseRunMeta } from '../deploy/finalize'
@@ -47,9 +46,7 @@ export interface ReleaseApi {
   onEvent(fn: (batch: RunEvent[]) => void): () => void
 }
 
-export const HUB_EDIT_MESSAGE = 'Playbook edits run on local environments only'
-
-type Op = 'preflight' | 'start' | 'cancel' | 'rollback' | 'break-lock' | 'discard' | 'retry-version'
+type Op = 'preflight' | 'preflight-operation' | 'start' | 'cancel' | 'rollback' | 'break-lock' | 'discard' | 'retry-version'
 
 export interface HubRunnerDeps {
   client: () => Pick<HubClient, 'get' | 'post'>
@@ -79,23 +76,30 @@ export class HubRunner implements ReleaseApi {
     return res
   }
 
-  /** The Hub has no runbook route yet: an operation on a Hub environment is refused before anything is sent. */
-  preflightOperation(_req: OperationRequest): Promise<{ releaseId: string }> {
-    return Promise.reject(new DeployError('INVALID_STATE', 'Runbooks run on local environments only'))
+  /** A mutation: the audit row names the environment and the number of services, never a host or a param. */
+  async preflightOperation(req: OperationRequest): Promise<{ releaseId: string }> {
+    const envName = this.d.envName(req.environmentId) ?? ''
+    const res = await this.audited('preflight-operation', null, envName, () => this.d.client().post<{ releaseId: string }>('/api/v1/releases/preflight-operation', req), { serviceCount: req.serviceIds.length })
+    this.remember(res.releaseId, envName)
+    return res
   }
 
   /** A read: not audited, like `detail`. */
-  previewPlaybook(releaseId: string): Promise<PlaybookPreview> {
-    return this.d.client().get<PlaybookPreview>(`/api/v1/releases/${releaseId}/playbook`)
+  previewPlaybook(releaseId: string, _ctx?: undefined, forceServiceIds?: string[]): Promise<PlaybookPreview> {
+    const q = new URLSearchParams((forceServiceIds ?? []).map((id) => ['forceServiceIds', id])).toString()
+    return this.d.client().get<PlaybookPreview>(`/api/v1/releases/${releaseId}/playbook${q === '' ? '' : `?${q}`}`)
   }
 
-  /** The Hub runs its own generated playbook: an edit is refused before anything is sent. */
-  validateEdit(_releaseId: string, _text: string): Promise<PlaybookEditResult> {
-    return Promise.reject(new DeployError('INVALID_STATE', HUB_EDIT_MESSAGE))
+  /**
+   * A read of the Hub's checker: not audited. The text is sent once and never kept. The Hub refuses unless it
+   * allows edits and the caller is a Hub admin; its refusal comes back as a HubError with the Hub's own message.
+   */
+  validateEdit(releaseId: string, text: string, _ctx?: undefined, forceServiceIds?: string[]): Promise<PlaybookEditResult> {
+    return this.d.client().post<PlaybookEditResult>(`/api/v1/releases/${releaseId}/validate-edit`, { text, ...(forceServiceIds ? { forceServiceIds } : {}) })
   }
 
+  /** An edit and its hash go to the Hub as they are: the Hub re-validates the text and checks the hash itself. */
   async start(releaseId: string, confirm: ReleaseConfirm = {}): Promise<void> {
-    if (confirm.editedPlaybook !== undefined) throw new DeployError('INVALID_STATE', HUB_EDIT_MESSAGE)
     await this.audited('start', releaseId, await this.nameOf(releaseId), () => this.d.client().post<void>(`/api/v1/releases/${releaseId}/start`, confirm))
   }
 
@@ -128,10 +132,9 @@ export class HubRunner implements ReleaseApi {
     throw new Error('Release notes of a Hub release are set when it is prepared')
   }
 
-  /** The Hub runs no operations, so every row is a release: `operations` is the router's to apply, never sent. */
+  /** `operations` is sent as is: the Hub filters its own operation rows. */
   async list(filter: ReleaseListFilter = {}): Promise<ReleaseSummary[]> {
-    const { operations: _operations, ...query } = filter
-    const rows = await this.d.client().get<ReleaseSummary[]>('/api/v1/releases', query)
+    const rows = await this.d.client().get<ReleaseSummary[]>('/api/v1/releases', { ...filter })
     for (const r of rows) this.remember(r.id, r.environmentName)
     return rows
   }
@@ -212,27 +215,27 @@ export class HubRunner implements ReleaseApi {
     }
   }
 
-  private async audited<T>(op: Op, releaseId: string | null, environmentName: string, run: () => Promise<T>): Promise<T> {
+  private async audited<T>(op: Op, releaseId: string | null, environmentName: string, run: () => Promise<T>, counts?: { serviceCount: number }): Promise<T> {
     let result: T
     try {
       result = await run()
     } catch (err) {
-      this.audit(op, releaseId, environmentName, 'failure', err instanceof HubError ? err.code : undefined)
+      this.audit(op, releaseId, environmentName, 'failure', err instanceof HubError ? err.code : undefined, counts)
       throw err
     }
     const made = (result as { releaseId?: unknown } | undefined)?.releaseId
-    this.audit(op, typeof made === 'string' && (op === 'preflight' || op === 'rollback') ? made : releaseId, environmentName, 'success')
+    this.audit(op, typeof made === 'string' && (op === 'preflight' || op === 'preflight-operation' || op === 'rollback') ? made : releaseId, environmentName, 'success', undefined, counts)
     return result
   }
 
-  private audit(op: Op, releaseId: string | null, environmentName: string, outcome: 'success' | 'failure', reason?: string): void {
+  private audit(op: Op, releaseId: string | null, environmentName: string, outcome: 'success' | 'failure', reason?: string, counts?: { serviceCount: number }): void {
     this.d.audit.append({
       action: 'hub.release',
       outcome,
       targetType: 'release',
       ...(releaseId ? { targetId: releaseId } : {}),
       ...(environmentName ? { targetLabel: environmentName } : {}),
-      details: { op, releaseId, environmentName, ...(reason ? { reason } : {}) },
+      details: { op, releaseId, environmentName, ...(counts ?? {}), ...(reason ? { reason } : {}) },
     })
   }
 }
@@ -307,8 +310,7 @@ export class RoutingReleases implements ReleaseApi {
   async list(filter: ReleaseListFilter = {}): Promise<ReleaseSummary[]> {
     const env = filter.environmentId
     const hubOnly = env !== undefined && this.d.isHubEnv(env)
-    // The Hub has no operations yet: an operations-only list never asks it.
-    const localOnly = (env !== undefined && !hubOnly) || filter.operations === 'only'
+    const localOnly = env !== undefined && !hubOnly
     const local = hubOnly ? [] : await this.d.local.list(filter)
     const hub = localOnly ? [] : await this.fromHub(() => this.d.hub.list(filter))
     return this.merge(local, hub, filter.limit)

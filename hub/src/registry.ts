@@ -18,7 +18,11 @@ import {
   VERSION,
 } from '../../src/shared/deploy'
 import { hasRepoCredentials, MAX_JUMP_DEPTH, REPO_URL } from '../../src/shared/inventory'
+import { DeployError } from '../../src/shared/deploy-error'
+import { MAX_RUNBOOKS, validateRunbook } from '../../src/shared/runbooks'
 import { MAX_SERVICES } from '../../src/shared/services'
+import { effectiveSteps, MAX_FLOW_STAGES, MAX_STEPS_PER_CHECKOUT, validateStep, type Step } from '../../src/shared/steps'
+import type { FlowStage, ReleaseFlow } from '../../src/shared/deploy'
 import {
   MAX_MANIFEST_BYTES,
   type HubActor,
@@ -116,6 +120,42 @@ function readIntegrations(v: unknown): HubIntegrations {
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
 const byLabel = (a: { label: string; id: string }, b: { label: string; id: string }): number => cmp(a.label, b.label) || cmp(a.id, b.id)
 
+/** Runs a shared validator, turning its rule message into a manifest error at `path`. The message names the rule, never a value. */
+function rule<T>(path: string, f: () => T): T {
+  try {
+    return f()
+  } catch (err) {
+    if (err instanceof DeployError) return bad(`invalid manifest: ${path}: ${err.message}`)
+    throw err
+  }
+}
+
+function readFlow(v: unknown, serviceIds: ReadonlySet<string>, allowedSecretIds: ReadonlySet<string>, serviceNames: readonly string[]): ReleaseFlow | null {
+  const path = '/environment/flow'
+  if (v === null || v === undefined) return null
+  const f = obj(v, path)
+  const onFailure = oneOf(f.onFailure, `${path}/onFailure`, ['stop-all', 'continue-other-hosts'] as const)
+  const stepIds = new Set<string>()
+  const stages = arr(f.stages, `${path}/stages`, MAX_FLOW_STAGES).map((raw, i): FlowStage => {
+    const p = `${path}/stages/${i}`
+    const st = obj(raw, p)
+    if (st.kind === 'services') {
+      const ids = arr(st.serviceIds, `${p}/serviceIds`, MAX_SERVICES).map((x, j) => uuid(x, `${p}/serviceIds/${j}`))
+      if (ids.length === 0 || ids.some((id) => !serviceIds.has(id))) bad(`invalid manifest: ${p}/serviceIds must name services of the manifest`)
+      return { kind: 'services', serviceIds: [...new Set(ids)] }
+    }
+    if (st.kind !== 'step') return bad(`invalid manifest: ${p}/kind must be one of services, step`)
+    const serviceId = uuid(st.serviceId, `${p}/serviceId`)
+    if (!serviceIds.has(serviceId)) bad(`invalid manifest: ${p}/serviceId is not one of the manifest services`)
+    const step = rule(`${p}/step`, () => validateStep(st.step, { allowedSecretIds, serviceNames, body: true }))
+    if (stepIds.has(step.id)) bad(`invalid manifest: ${p}/step/id is duplicated`)
+    stepIds.add(step.id)
+    return { kind: 'step', serviceId, step }
+  })
+  if (stages.length === 0) bad(`invalid manifest: ${path}/stages must not be empty`)
+  return { stages, onFailure }
+}
+
 /** One order for every list, so the same state always hashes and reads back the same. */
 function sortManifest(m: HubEnvManifest): HubEnvManifest {
   return {
@@ -124,6 +164,7 @@ function sortManifest(m: HubEnvManifest): HubEnvManifest {
     services: [...m.services].sort((a, b) => cmp(a.name, b.name) || cmp(a.id, b.id)),
     deployments: [...m.deployments].sort((a, b) => a.position - b.position || cmp(a.name, b.name) || cmp(a.id, b.id)),
     requiredSecrets: [...m.requiredSecrets].sort((a, b) => cmp(a.name, b.name) || cmp(a.secretId, b.secretId)),
+    ...(m.runbooks ? { runbooks: [...m.runbooks].sort((a, b) => cmp(a.name, b.name) || cmp(a.id, b.id)) } : {}),
   }
 }
 
@@ -138,7 +179,10 @@ export function readManifest(input: unknown): HubEnvManifest {
     versioned: bool(e.versioned, '/environment/versioned'),
     autoRollback: bool(e.autoRollback, '/environment/autoRollback'),
     currentVersion: nullable(e.currentVersion, (x) => match(x, '/environment/currentVersion', VERSION, 'a version')),
+    ...(e.parallelPrepare === undefined ? {} : { parallelPrepare: bool(e.parallelPrepare, '/environment/parallelPrepare') }),
+    ...(e.prepareCap === undefined ? {} : { prepareCap: int(e.prepareCap, '/environment/prepareCap', 1, 8) }),
   }
+  const schema = m.schema === undefined || m.schema === 1 || m.schema === 2 ? (m.schema ?? 1) : bad('invalid manifest: /schema must be 1 or 2')
 
   const hostIds = new Set<string>()
   const hosts = arr(m.hosts, '/hosts', MAX_HOSTS).map((raw, i): HubEnvManifest['hosts'][number] => {
@@ -171,6 +215,7 @@ export function readManifest(input: unknown): HubEnvManifest {
   })
 
   const depIds = new Set<string>()
+  const rawSteps = new Map<string, unknown>()
   const deployments = arr(m.deployments, '/deployments', MAX_DEPLOYMENTS).map((raw, i): HubEnvManifest['deployments'][number] => {
     const p = `/deployments/${i}`
     const d = obj(raw, p)
@@ -200,6 +245,8 @@ export function readManifest(input: unknown): HubEnvManifest {
       typeof x === 'string' && x.length <= MAX_ENV_TEMPLATE ? x : bad(`invalid manifest: ${p}/envTemplate is too long`),
     )
     if (envTemplate !== null && parseEnvTemplate(envTemplate).errors.length > 0) bad(`invalid manifest: ${p}/envTemplate is not a valid .env template`)
+    // Steps are checked below, once the services and required secrets they refer to are known.
+    if (d.steps !== undefined) rawSteps.set(id, arr(d.steps, `${p}/steps`, MAX_STEPS_PER_CHECKOUT))
     return {
       id,
       name: str(d.name, `${p}/name`),
@@ -246,9 +293,11 @@ export function readManifest(input: unknown): HubEnvManifest {
     const viaHostId = nullable(s.viaHostId, (x) => uuid(x, `${p}/viaHostId`))
     const composeService = nullable(s.composeService, (x) => match(x, `${p}/composeService`, COMPOSE_SERVICE, 'a compose service name'))
     const name = str(s.name, `${p}/name`)
+    const skipUnchanged = s.skipUnchanged === undefined ? undefined : bool(s.skipUnchanged, `${p}/skipUnchanged`)
     if (viaHostId !== null && !hostIds.has(viaHostId)) bad(`invalid manifest: ${p}/viaHostId is not one of the manifest hosts`)
     if (kind === 'db') {
       if (composeService !== null || deploymentId !== null || hostId !== null) bad(`invalid manifest: ${p} is a db and has no compose service, checkout or host`)
+      if (skipUnchanged) bad(`invalid manifest: ${p}/skipUnchanged is only for a service`)
       return { id, name, kind, composeService, deploymentId, hostId, viaHostId }
     }
     if (viaHostId !== null) bad(`invalid manifest: ${p}/viaHostId is only for a db`)
@@ -256,7 +305,7 @@ export function readManifest(input: unknown): HubEnvManifest {
     if (deploymentId === null ? hostId !== null : hostId !== depHost.get(deploymentId)) {
       bad(`invalid manifest: ${p}/hostId must be its checkout's host (and null without a checkout)`)
     }
-    return { id, name, kind, composeService, deploymentId, hostId, viaHostId }
+    return { id, name, kind, composeService, deploymentId, hostId, viaHostId, ...(skipUnchanged === undefined ? {} : { skipUnchanged }) }
   })
 
   const secretIds = new Set<string>()
@@ -274,7 +323,50 @@ export function readManifest(input: unknown): HubEnvManifest {
     if (refs.some((r) => !secretIds.has(r))) bad(`invalid manifest: /deployments/${i} uses a secret that is not in requiredSecrets`)
   })
 
-  const canonical = sortManifest({ environment, hosts, services, deployments, integrations: readIntegrations(m.integrations), requiredSecrets })
+  // A step may use any required secret of the environment; one outside requiredSecrets is refused.
+  const stepSecretIds: ReadonlySet<string> = secretIds
+  const namesOf = (deploymentId: string): string[] => services.flatMap((s) => (s.kind === 'service' && s.deploymentId === deploymentId && s.composeService ? [s.composeService] : []))
+  const withSteps = deployments.map((d, i): HubEnvManifest['deployments'][number] => {
+    const raw = rawSteps.get(d.id)
+    const p = `/deployments/${i}/steps`
+    const given = (raw as unknown[] | undefined ?? []).map((x, j) => rule(`${p}/${j}`, () => validateStep(x, { allowedSecretIds: stepSecretIds, serviceNames: namesOf(d.id) })))
+    if (new Set(given.map((x) => x.id)).size !== given.length) bad(`invalid manifest: ${p} ids must be unique`)
+    // A schema-1 publisher has hooks and no steps: they become steps here, so the Hub runs them as the desktop does.
+    if (schema === 2 && given.length > 0 && (d.preHook !== null || d.postHook !== null)) bad(`invalid manifest: ${p} cannot be set next to preHook or postHook`)
+    const steps: Step[] = schema === 2 ? given : effectiveSteps({ steps: given, preHook: d.preHook, postHook: d.postHook })
+    // Steps non-empty means no hooks, as in the app's store: the hooks live on as steps.
+    return steps.length > 0 ? { ...d, preHook: null, postHook: null, steps } : d
+  })
+
+  const serviceIdSet = new Set(services.map((s) => s.id))
+  const appServiceNames = services.flatMap((s) => (s.kind === 'service' && s.composeService ? [s.composeService] : []))
+  const flow = e.flow === undefined ? undefined : readFlow(e.flow, serviceIdSet, stepSecretIds, appServiceNames)
+  const runbookIds = new Set<string>()
+  const runbooks = m.runbooks === undefined ? undefined : arr(m.runbooks, '/runbooks', MAX_RUNBOOKS).map((raw, i): NonNullable<HubEnvManifest['runbooks']>[number] => {
+    const p = `/runbooks/${i}`
+    const r = obj(raw, p)
+    const id = uuid(r.id, `${p}/id`)
+    if (runbookIds.has(id)) bad(`invalid manifest: ${p}/id is duplicated`)
+    runbookIds.add(id)
+    const v = rule(p, () => validateRunbook({ ...r, environmentId: environment.id }, { allowedSecretIds: stepSecretIds, serviceIds: [...serviceIdSet], serviceNames: appServiceNames }))
+    const { environmentId: _e, ...rest } = v
+    return { id, ...rest }
+  })
+  if (runbooks) {
+    const names = runbooks.map((r) => r.name.toLowerCase())
+    if (new Set(names).size !== names.length) bad('invalid manifest: /runbooks names must be unique')
+  }
+  if (flow !== undefined) environment.flow = flow
+
+  const canonical = sortManifest({
+    environment,
+    hosts,
+    services,
+    deployments: withSteps,
+    integrations: readIntegrations(m.integrations),
+    requiredSecrets,
+    ...(runbooks ? { runbooks } : {}),
+  })
   if (Buffer.byteLength(JSON.stringify(canonical)) > MAX_MANIFEST_BYTES) bad('invalid manifest: it is larger than the limit')
   return canonical
 }
@@ -289,6 +381,7 @@ interface EnvRow {
   auto_rollback: number
   current_version: string | null
   integrations: string
+  playbook_ops: string
   manifest_hash: string
   published_by: string
   published_at: string
@@ -421,13 +514,14 @@ export class Registry {
 
       this.db
         .prepare(
-          `INSERT INTO environments(id, name, protected, versioned, auto_rollback, current_version, integrations, manifest_hash, published_by, published_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?)
+          `INSERT INTO environments(id, name, protected, versioned, auto_rollback, current_version, integrations, manifest_hash, published_by, published_at, playbook_ops)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(id) DO UPDATE SET name = excluded.name, protected = excluded.protected, versioned = excluded.versioned,
              auto_rollback = excluded.auto_rollback,
              current_version = CASE WHEN EXISTS (SELECT 1 FROM releases WHERE environment_id = environments.id AND version IS NOT NULL AND status IN ('succeeded','rolled_back')) THEN environments.current_version ELSE excluded.current_version END,
              integrations = excluded.integrations,
              manifest_hash = excluded.manifest_hash, published_by = excluded.published_by, published_at = excluded.published_at,
+             playbook_ops = excluded.playbook_ops,
              unpublished_at = NULL`,
         )
         .run(
@@ -442,6 +536,8 @@ export class Registry {
           hash,
           actor.upn,
           now,
+          // Undefined keys drop out of the JSON, so an absent setting reads back as the default.
+          JSON.stringify({ flow: env.flow, parallelPrepare: env.parallelPrepare, prepareCap: env.prepareCap, runbooks: manifest.runbooks }),
         )
       // A republish: from now on its history follows the grants given again, not the ones it had.
       this.db.prepare('DELETE FROM unpublished_grants WHERE environment_id = ?').run(env.id)
@@ -462,7 +558,7 @@ export class Registry {
       )
       for (const s of manifest.services) {
         this.guardForeign('services', s.id, env.id)
-        putService.run(s.id, env.id, s.kind, s.name, JSON.stringify({ composeService: s.composeService, deploymentId: s.deploymentId, hostId: s.hostId, viaHostId: s.viaHostId }))
+        putService.run(s.id, env.id, s.kind, s.name, JSON.stringify({ composeService: s.composeService, deploymentId: s.deploymentId, hostId: s.hostId, viaHostId: s.viaHostId, skipUnchanged: s.skipUnchanged }))
       }
       const putDep = this.db.prepare(
         `INSERT INTO deployments(id, environment_id, host_id, name, position, meta) VALUES (?,?,?,?,?,?)
@@ -576,6 +672,7 @@ export class Registry {
       (d) =>
         ({ id: d.id, name: d.name, environmentId: r.id, hostId: d.host_id, repoUrl: null, composeProject: null, position: d.position, ...JSON.parse(d.meta) }) as HubEnvManifest['deployments'][number],
     )
+    const ops = JSON.parse(r.playbook_ops) as { flow?: ReleaseFlow | null; parallelPrepare?: boolean; prepareCap?: number; runbooks?: HubEnvManifest['runbooks'] }
     return sortManifest({
       environment: {
         id: r.id,
@@ -584,12 +681,16 @@ export class Registry {
         versioned: r.versioned === 1,
         autoRollback: r.auto_rollback === 1,
         currentVersion: r.current_version,
+        ...(ops.parallelPrepare === undefined ? {} : { parallelPrepare: ops.parallelPrepare }),
+        ...(ops.prepareCap === undefined ? {} : { prepareCap: ops.prepareCap }),
+        ...(ops.flow === undefined ? {} : { flow: ops.flow }),
       },
       hosts,
       services,
       deployments,
       integrations: stored.integrations,
       requiredSecrets: stored.requiredSecrets,
+      ...(ops.runbooks ? { runbooks: ops.runbooks } : {}),
     })
   }
 

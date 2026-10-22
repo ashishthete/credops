@@ -1,4 +1,4 @@
-import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto'
+import { generateKeyPairSync, randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -188,7 +188,7 @@ describe('hub releases', () => {
 
   it('a failure with auto-rollback rolls back and frees the lock', async () => {
     const { fr, bob } = await setup({ autoRollback: true })
-    fr.on.release = (plan) => ({ exitCode: 2, failedDeploymentRunIds: runIds(plan), reachedCheckout: runIds(plan), commits: { [runIds(plan)[0]]: { previous: A } } })
+    fr.on.release = (plan) => ({ exitCode: 2, failedDeploymentRunIds: runIds(plan), reachedCheckout: runIds(plan), reachedUp: runIds(plan), commits: { [runIds(plan)[0]]: { previous: A } } })
     const id = await ready(bob)
     expect((await call(bob, 'POST', `/api/v1/releases/${id}/start`, { typedName: 'prod' })).statusCode).toBe(204)
     await hub.app.releases.whenIdle()
@@ -230,7 +230,6 @@ describe('hub releases', () => {
   })
 
   describe('playbook review', () => {
-    const sha = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex')
     const preview = (t: string, id: string) => call(t, 'GET', `/api/v1/releases/${id}/playbook`)
     const auditCount = () => hub.audit.list({ limit: 1000 }).length
 
@@ -241,7 +240,8 @@ describe('hub releases', () => {
       const res = await preview(bob, id)
       expect(res.statusCode, res.body).toBe(200)
       const p = res.json() as { playbook: string; sha256: string }
-      expect(p.sha256).toBe(sha(p.playbook))
+      // Of the playbook with the skips and inventory bound in (the review hash), so not the text's own sha256.
+      expect(p.sha256).toMatch(/^[0-9a-f]{64}$/)
       expect(JSON.parse(p.playbook)).toBeInstanceOf(Array)
       expect({ detail: await detail(bob, id), events: await events(bob, id), audit: auditCount(), locks: lockRows(), kinds: [...fr.kinds] }).toEqual(before)
       const start = await call(bob, 'POST', `/api/v1/releases/${id}/start`, { typedName: 'prod', playbookSha256: p.sha256 })

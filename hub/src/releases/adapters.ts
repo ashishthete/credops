@@ -1,11 +1,13 @@
 import type { AuditInput } from '../../../src/shared/audit'
-import type { Actor, DeploymentMeta, EnvDeploySettings, EnvDeploySettingsPatch } from '../../../src/shared/deploy'
+import type { Actor, DeploymentMeta, EnvDeploySettings, EnvDeploySettingsPatch, ReleaseFlow } from '../../../src/shared/deploy'
 import { HUB_AUDIT_ACTIONS, type HubAction, type HubAuditAction, type HubDecision } from '../../../src/shared/hub'
 import type { ResolvedHost } from '../../../src/shared/inventory'
+import type { Runbook } from '../../../src/shared/runbooks'
 import type { AppServiceMeta, ServiceMeta } from '../../../src/shared/services'
 import type { DeployAccess, DeployAction } from '../../../src/main/deploy/access'
 import type { DeployStore } from '../../../src/main/deploy/deploy-store'
 import type { ReleaseInventory } from '../../../src/main/deploy/release-service'
+import type { RunbookStore } from '../../../src/main/deploy/runbook-store'
 import type { ServiceStore } from '../../../src/main/deploy/service-store'
 import { HostKeyError } from '../../../src/main/ssh/connect'
 import { fingerprintOf, hostToken, parseKnownHosts } from '../../../src/main/ssh/known-hosts'
@@ -31,14 +33,24 @@ const stamp = (db: HubDb, environmentId: string): string =>
 export function hubDeploys(db: HubDb, registry: Registry): Pick<DeployStore, 'get' | 'list' | 'settings' | 'updateSettings'> {
   const metas = (environmentId: string): DeploymentMeta[] => {
     const at = stamp(db, environmentId)
-    return registry.get(environmentId).deployments.map((d) => ({ ...d, steps: [], vaultIds: [], createdAt: at, updatedAt: at }))
+    return registry.get(environmentId).deployments.map((d) => ({ ...d, steps: d.steps ?? [], vaultIds: [], createdAt: at, updatedAt: at }))
   }
   const settings = (environmentId: string): EnvDeploySettings => {
-    const row = db.prepare('SELECT versioned, auto_rollback, current_version FROM environments WHERE id = ?').get(environmentId) as
-      | { versioned: number; auto_rollback: number; current_version: string | null }
+    const row = db.prepare('SELECT versioned, auto_rollback, current_version, playbook_ops FROM environments WHERE id = ?').get(environmentId) as
+      | { versioned: number; auto_rollback: number; current_version: string | null; playbook_ops: string }
       | undefined
     if (!row) throw new Error('environment not found')
-    return { environmentId, versioned: row.versioned === 1, autoRollback: row.auto_rollback === 1, currentVersion: row.current_version, parallelPrepare: true, prepareCap: 3, flow: null }
+    // An environment published before schema 2 stores '{}': parallel prepare on, cap 3, no flow.
+    const ops = JSON.parse(row.playbook_ops) as { flow?: ReleaseFlow | null; parallelPrepare?: boolean; prepareCap?: number }
+    return {
+      environmentId,
+      versioned: row.versioned === 1,
+      autoRollback: row.auto_rollback === 1,
+      currentVersion: row.current_version,
+      parallelPrepare: ops.parallelPrepare ?? true,
+      prepareCap: ops.prepareCap ?? 3,
+      flow: ops.flow ?? null,
+    }
   }
   return {
     get: (id) => {
@@ -96,7 +108,7 @@ export function hubServices(db: HubDb, registry: Registry): Pick<ServiceStore, '
           urlCheckFrom: 'host',
           lastDeployedCommit: l?.commit ?? null,
           lastReleaseId: l?.releaseId ?? null,
-          skipUnchanged: false,
+          skipUnchanged: s.skipUnchanged ?? false,
         }
         return app
       }
@@ -118,6 +130,25 @@ export function hubServices(db: HubDb, registry: Registry): Pick<ServiceStore, '
         const row = envOf.get(e.serviceId) as { environment_id: string } | undefined
         if (row) put.run(e.serviceId, row.environment_id, e.commit, e.releaseId)
       }
+    },
+  }
+}
+
+/** An environment's runbooks as published in its manifest. They are read-only here: only a republish changes them. */
+export function hubRunbooks(db: HubDb, registry: Registry): Pick<RunbookStore, 'list' | 'get'> {
+  const listOf = (environmentId: string): Runbook[] => {
+    const at = stamp(db, environmentId)
+    return (registry.get(environmentId).runbooks ?? []).map((r) => ({ ...r, environmentId, createdAt: at, updatedAt: at }))
+  }
+  return {
+    list: (environmentId) => (registry.exists(environmentId) ? listOf(environmentId) : []),
+    get: (id) => {
+      const envs = db.prepare(`SELECT id FROM environments WHERE ${PUBLISHED}`).all() as { id: string }[]
+      for (const e of envs) {
+        const found = listOf(e.id).find((r) => r.id === id)
+        if (found) return found
+      }
+      throw new Error('runbook not found')
     },
   }
 }
@@ -149,8 +180,7 @@ const ACTION: Record<DeployAction, HubAction> = {
   'release.rollback': 'release.rollback',
   'release.cancel': 'release.cancel',
   'lock.break': 'lock.break',
-  // A runbook run is a start decision until the Hub has its own ops permission.
-  'ops.run': 'release.start',
+  'ops.run': 'ops.run',
 }
 
 /** The group a decision went through, as the audit trail names it. */

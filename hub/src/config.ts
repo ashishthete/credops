@@ -20,6 +20,8 @@ export interface HubConfig {
   sendgridFrom?: string
   /** Where release run dirs live (mode 0700); defaults to <dataDir>/runs. */
   runRoot?: string
+  /** Lets a Hub admin edit a release's playbook before it starts. Off unless set; only admins can use it. */
+  allowPlaybookEdits?: boolean
 }
 
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -120,6 +122,9 @@ export function loadConfig(file: string): HubConfig {
   const runRoot = root.runRoot === undefined ? undefined : str(root.runRoot, 'runRoot')
   if (runRoot !== undefined && !runRoot.startsWith('/')) bad('runRoot', 'must be an absolute path')
 
+  if (root.allowPlaybookEdits !== undefined && typeof root.allowPlaybookEdits !== 'boolean') bad('allowPlaybookEdits', 'must be true or false')
+  const allowPlaybookEdits = root.allowPlaybookEdits === true
+
   const sendgridFrom = root.sendgridFrom === undefined ? undefined : str(root.sendgridFrom, 'sendgridFrom')
   if (sendgridFrom !== undefined && !EMAIL.test(sendgridFrom)) bad('sendgridFrom', 'must be an email address')
 
@@ -136,6 +141,7 @@ export function loadConfig(file: string): HubConfig {
     ...(ansibleBin ? { ansibleBin } : {}),
     ...(runRoot ? { runRoot } : {}),
     ...(sendgridFrom ? { sendgridFrom } : {}),
+    allowPlaybookEdits,
   }
 }
 

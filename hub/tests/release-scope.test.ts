@@ -59,7 +59,7 @@ async function scoped(): Promise<Rig> {
     if (script.hold) await script.hold
     const out = (await commits(plan, secrets, emit, runId)) || {}
     const failed = plan.deployments.find((d) => d.name === script.fail?.name)
-    return failed ? { ...out, exitCode: 2, failedDeploymentRunIds: [failed.runId], reachedCheckout: plan.deployments.map((d) => d.runId) } : out
+    return failed ? { ...out, exitCode: 2, failedDeploymentRunIds: [failed.runId], reachedCheckout: plan.deployments.map((d) => d.runId), reachedUp: plan.deployments.map((d) => d.runId) } : out
   }
   return r
 }

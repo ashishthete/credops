@@ -55,6 +55,9 @@ function serviceIdsOf(json: string): string[] {
 /** The parts of `releaseId` a viewer granted `deploymentIds` sees, or null when it has none. */
 export function visibleIn(db: HubDb, deploymentIds: ReadonlySet<string>, releaseId: string): Visible | null {
   const all = runRefs(db, releaseId)
+  // An operation is visible only to someone who may view every checkout it ran on.
+  const op = db.prepare('SELECT operation FROM releases WHERE id = ?').get(releaseId) as { operation: string | null } | undefined
+  if (op?.operation && all.some((r) => r.deploymentId === null || !deploymentIds.has(r.deploymentId))) return null
   const mine = all.filter((r) => r.deploymentId !== null && deploymentIds.has(r.deploymentId))
   if (mine.length === 0) return null
   const hostsOf = (rs: RunRef[]) => new Set(rs.flatMap((r) => (r.hostId === null ? [] : [r.hostId])))
