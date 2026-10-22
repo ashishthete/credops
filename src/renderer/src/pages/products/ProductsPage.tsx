@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { Boxes, Inbox, Plus } from 'lucide-react'
+import { Boxes, Download, Inbox, Plus, Upload, type LucideIcon } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
 import type { EnvironmentMeta, Membership, ProductMeta } from '../../../../shared/inventory'
@@ -24,6 +24,7 @@ import { InventoryTree } from './InventoryTree'
 import { ProductDialog } from './ProductDialog'
 import { PaneHeader, ProductView } from './ProductView'
 import { RegionsUpgradeBanner } from './RegionsUpgradeBanner'
+import { useConfigTransfer } from '../settings/ConfigTransfer'
 
 /** Every node of the fully expanded tree: the expandable ones, and all keys. */
 function everyNode(data: InventoryData): { expandable: Set<NodeKey>; all: Set<NodeKey> } {
@@ -58,6 +59,8 @@ export function ProductsPage() {
   const [dialog, setDialog] = useState<Dialogs>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
+  // Products, environments, services and runbooks: what this page and its environment views edit.
+  const transfer = useConfigTransfer('products')
 
   // The shell loads the inventory on mount; this covers the page rendered on its own (F22).
   useEffect(() => {
@@ -347,6 +350,8 @@ export function ProductsPage() {
         <div className="flex flex-col gap-0.5 border-t border-line/70 p-2.5">
           <RailButton label="New product" onClick={newProduct} />
           <RailButton label="New environment" onClick={() => newEnvironment()} />
+          <RailButton icon={Upload} label="Import products…" onClick={() => void transfer.openImport()} />
+          <RailButton icon={Download} label="Export products…" onClick={() => void transfer.exportConfig()} />
         </div>
       </aside>
 
@@ -419,18 +424,19 @@ export function ProductsPage() {
         />
       )}
       <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
+      {transfer.dialog}
     </div>
   )
 }
 
-function RailButton({ label, onClick }: { label: string; onClick: () => void }) {
+function RailButton({ icon: Icon = Plus, label, onClick }: { icon?: LucideIcon; label: string; onClick: () => void }) {
   return (
     <button
       type="button"
       onClick={onClick}
       className="flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-[12.5px] font-medium text-muted transition-colors hover:bg-white/[0.04] hover:text-fg"
     >
-      <Plus aria-hidden className="size-3.5" />
+      <Icon aria-hidden className="size-3.5" />
       {label}
     </button>
   )

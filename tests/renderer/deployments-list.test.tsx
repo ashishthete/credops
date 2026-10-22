@@ -121,6 +121,16 @@ describe('deployments environment list', () => {
     clearToasts()
   })
 
+  it('the header menu offers Import deployments… and Export deployments…', async () => {
+    const invoke = world()
+    const user = await open()
+    await user.click(await screen.findByRole('button', { name: 'Import or export deployments' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Export deployments…' }))
+    expect(invoke).toHaveBeenCalledWith('config:export', 'deployments')
+    await user.click(screen.getByRole('button', { name: 'Import or export deployments' }))
+    expect(screen.getByRole('menuitem', { name: 'Import deployments…' })).toBeInTheDocument()
+  })
+
   it("groups each environment under its one product, after the product's own order, with no 'No product' group", async () => {
     // p1-x isn't in Billing's environmentIds yet: its productId still places it, after the listed ones.
     const extra = environment({ id: 'p1-x', name: 'billing-x', productId: 'p1' })

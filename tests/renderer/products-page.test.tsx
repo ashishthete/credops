@@ -199,6 +199,15 @@ describe('products page', () => {
     expect(screen.getAllByRole('button', { name: 'New product' }).length).toBeGreaterThan(0)
   })
 
+  it('offers Import products… and Export products… for the products segment', async () => {
+    const { invoke } = renderPage()
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'Export products…' }))
+    expect(invoke).toHaveBeenCalledWith('config:export', 'products')
+    await user.click(screen.getByRole('button', { name: 'Import products…' }))
+    expect(invoke).toHaveBeenCalledWith('config:importOpen', 'products')
+  })
+
   it('renders the tree', async () => {
     const user = userEvent.setup()
     const w = world()

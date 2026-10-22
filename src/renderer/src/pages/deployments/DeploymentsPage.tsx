@@ -22,6 +22,7 @@ import { toast } from '../../ui/Toaster'
 import { HubLockBadge } from './HubLockBadge'
 import { DeploymentDialog, type DeploymentRequest } from './DeploymentDialog'
 import { EnvList, EnvListFilters, NewDeploymentMenu, TEAM_GROUP, envGroups, filterGroups } from './EnvList'
+import { ConfigTransferMenu } from '../settings/ConfigTransfer'
 import { EnvSettingsSection } from './EnvSettingsSection'
 import { DeployWizard } from './release/DeployWizard'
 import { ReleaseHistory } from './release/ReleaseHistory'
@@ -256,10 +257,15 @@ export function DeploymentsPage() {
           </div>
         ) : (
           !resolving &&
-          envCount > 0 && (
+          !listLoading && (
             <div className="flex items-center gap-2">
-              <EnvListFilters products={envGroupsAll} query={query} productId={productId} onQuery={setQuery} onProduct={setProductId} />
-              <NewDeploymentMenu groups={envGroupsAll} onPick={(id) => newDeployment(id)} />
+              {envCount > 0 && (
+                <>
+                  <EnvListFilters products={envGroupsAll} query={query} productId={productId} onQuery={setQuery} onProduct={setProductId} />
+                  <NewDeploymentMenu groups={envGroupsAll} onPick={(id) => newDeployment(id)} />
+                </>
+              )}
+              <ConfigTransferMenu segment="deployments" />
             </div>
           )
         )}

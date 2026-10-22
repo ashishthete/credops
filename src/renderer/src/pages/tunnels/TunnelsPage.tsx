@@ -14,6 +14,7 @@ import { exitFast, fast, spring, useMotionSafe } from '../../ui/motion'
 import { RegionChip } from '../../ui/RegionChip'
 import { Skeleton } from '../../ui/Skeleton'
 import { ImportDialog } from '../hosts/ImportDialog'
+import { ConfigTransferMenu } from '../settings/ConfigTransfer'
 import { isRunning, TunnelCard } from './TunnelCard'
 import { tunnelDeleteRequest } from './deleteRequest'
 import { TunnelDialog, type TunnelRequest } from './TunnelDialog'
@@ -140,16 +141,19 @@ export function TunnelsPage() {
             </p>
           )}
         </div>
-        {!empty && (
-          <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" icon={<FileDown aria-hidden className="size-3.5" />} onClick={importConfig}>
-              {IMPORT_LABEL}
-            </Button>
-            <Button size="sm" icon={<Plus aria-hidden className="size-3.5" />} onClick={newTunnel}>
-              New tunnel
-            </Button>
-          </div>
-        )}
+        <div className="flex items-center gap-2">
+          {!empty && (
+            <>
+              <Button variant="ghost" size="sm" icon={<FileDown aria-hidden className="size-3.5" />} onClick={importConfig}>
+                {IMPORT_LABEL}
+              </Button>
+              <Button size="sm" icon={<Plus aria-hidden className="size-3.5" />} onClick={newTunnel}>
+                New tunnel
+              </Button>
+            </>
+          )}
+          {loaded && <ConfigTransferMenu segment="tunnels" />}
+        </div>
       </header>
 
       {!loaded ? (

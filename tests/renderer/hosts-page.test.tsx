@@ -326,6 +326,21 @@ describe('hosts page', () => {
     expect(within(empty).getByRole('button', { name: 'Import from ~/.ssh/config' })).toBeInTheDocument()
   })
 
+  it('offers Import hosts… and Export hosts… for the hosts segment', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderApp(world())
+    await user.click(await screen.findByRole('button', { name: 'Export hosts…' }))
+    expect(invoke).toHaveBeenCalledWith('config:export', 'hosts')
+    await user.click(screen.getByRole('button', { name: 'Import hosts…' }))
+    expect(invoke).toHaveBeenCalledWith('config:importOpen', 'hosts')
+  })
+
+  it('the empty state offers Import hosts…', async () => {
+    renderApp(world({ hosts: [], environments: [] }))
+    expect(await screen.findByText('No hosts yet')).toBeInTheDocument()
+    expect(within(screen.getByTestId('hosts-empty')).getByRole('button', { name: 'Import hosts…' })).toBeInTheDocument()
+  })
+
   it('import wizard', async () => {
     const user = userEvent.setup()
     const { invoke } = renderApp(world())

@@ -1,7 +1,7 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronRight, KeyRound } from 'lucide-react'
 import { useState } from 'react'
-import { IMPORT_ACTIONS, type ImportAction, type ImportItem, type ImportPreview, type ImportNeedsSecret } from '../../../../shared/config-file'
+import { IMPORT_ACTIONS, type ConfigSegment, type ImportAction, type ImportItem, type ImportPreview, type ImportNeedsSecret } from '../../../../shared/config-file'
 import { reloadInventory, useInventory } from '../../inventory/store'
 import { api } from '../../lib/api'
 import { loadTunnels } from '../../tunnels/store'
@@ -38,14 +38,25 @@ const FIELD_LABEL: Record<string, string> = {
   defaultIdentityId: 'default identity',
 }
 
-/** The preview of a config file opened in main, or why it can't be imported. Cancel drops main's copy of the file. */
-export function ImportConfigDialog({ preview, onClose }: { preview: ImportPreview | { errors: string[] }; onClose: () => void }) {
+/**
+ * The preview of a config file opened in main, or why it can't be imported. Cancel drops main's copy of the file.
+ * With `segment`, a page's import: its notes say which objects came along as dependencies, and how many were ignored.
+ */
+export function ImportConfigDialog({
+  preview,
+  segment,
+  onClose,
+}: {
+  preview: ImportPreview | { errors: string[] }
+  segment?: ConfigSegment
+  onClose: () => void
+}) {
   if ('errors' in preview) {
     return (
       <Dialog
         open
         onClose={onClose}
-        title="Import config"
+        title={segment ? `Import ${segment}` : 'Import config'}
         width={520}
         footer={
           <Button variant="primary" onClick={onClose}>
@@ -62,10 +73,10 @@ export function ImportConfigDialog({ preview, onClose }: { preview: ImportPrevie
       </Dialog>
     )
   }
-  return <PreviewDialog preview={preview} onClose={onClose} />
+  return <PreviewDialog preview={preview} segment={segment} onClose={onClose} />
 }
 
-function PreviewDialog({ preview, onClose }: { preview: ImportPreview; onClose: () => void }) {
+function PreviewDialog({ preview, segment, onClose }: { preview: ImportPreview; segment?: ConfigSegment; onClose: () => void }) {
   const [typed, setTyped] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(false)
   const [regionId, setRegionId] = useState('')
@@ -75,19 +86,26 @@ function PreviewDialog({ preview, onClose }: { preview: ImportPreview; onClose: 
   const region = regionId || (regions.length === 1 ? regions[0].id : '')
   const confirmed = preview.protectedEnvironments.every((name) => typed[name] === name) && (!preview.needsRegion || !!region)
 
+  // The whole config sends no segment at all.
+  const seg = segment ? ([segment] as const) : ([] as const)
   const cancel = () => {
-    void api.invoke('config:importDiscard', preview.token).catch(() => undefined)
+    void api.invoke('config:importDiscard', preview.token, ...seg).catch(() => undefined)
     onClose()
   }
 
   const apply = async () => {
     setBusy(true)
     try {
-      const res = await attempt("Couldn't import the config", async () =>
-        api.invoke('config:importApply', preview.token, {
-          typedNames: preview.protectedEnvironments.filter((n) => typed[n] === n),
-          ...(preview.needsRegion ? { regionId: region } : {}),
-        }),
+      const res = await attempt(segment ? `Couldn't import the ${segment}` : "Couldn't import the config", async () =>
+        api.invoke(
+          'config:importApply',
+          preview.token,
+          {
+            typedNames: preview.protectedEnvironments.filter((n) => typed[n] === n),
+            ...(preview.needsRegion ? { regionId: region } : {}),
+          },
+          ...seg,
+        ),
       )
       if (!res) return
       const n = res.needsSecret.length
@@ -104,8 +122,12 @@ function PreviewDialog({ preview, onClose }: { preview: ImportPreview; onClose: 
     <Dialog
       open
       onClose={cancel}
-      title="Import config"
-      description="Nothing is deleted. Objects that are not in the file stay as they are."
+      title={segment ? `Import ${segment}` : 'Import config'}
+      description={
+        segment
+          ? `Only ${segment} are imported, with what they need that isn't here yet. Nothing is deleted, and nothing here that they need is changed.`
+          : 'Nothing is deleted. Objects that are not in the file stay as they are.'
+      }
       width={560}
       footer={
         <>
@@ -120,8 +142,13 @@ function PreviewDialog({ preview, onClose }: { preview: ImportPreview; onClose: 
     >
       <div className="max-h-[52vh] space-y-1 overflow-y-auto">
         {IMPORT_ACTIONS.map((a) => (
-          <Group key={a} action={a} items={preview.items.filter((i) => i.action === a)} count={preview.counts[a]} />
+          <Group key={a} action={a} items={preview.items.filter((i) => i.action === a)} count={preview.counts[a]} notes={!!segment} />
         ))}
+        {segment && !!preview.ignored && (
+          <p className="px-1.5 py-1 text-[12.5px] font-semibold text-muted">
+            Ignored {preview.ignored}: not {segment} and not needed by them
+          </p>
+        )}
       </div>
       {preview.needsRegion && (
         <div className="mt-4">
@@ -147,7 +174,8 @@ function PreviewDialog({ preview, onClose }: { preview: ImportPreview; onClose: 
   )
 }
 
-function Group({ action, items, count }: { action: ImportAction; items: ImportItem[]; count: number }) {
+/** `notes`: show each object's notes (a page import's dependency rows). */
+function Group({ action, items, count, notes }: { action: ImportAction; items: ImportItem[]; count: number; notes: boolean }) {
   const [open, setOpen] = useState(false)
   const motionSafe = useMotionSafe()
   return (
@@ -176,6 +204,7 @@ function Group({ action, items, count }: { action: ImportAction; items: ImportIt
                 <span className="w-[84px] shrink-0 text-muted">{KIND_LABEL[i.kind]}</span>
                 <span className="truncate text-fg">{i.name}</span>
                 {i.fields && i.fields.length > 0 && <span className="truncate text-muted">{i.fields.join(', ')}</span>}
+                {notes && i.notes && <span className="truncate text-muted">{i.notes.join('; ')}</span>}
                 {i.reason && <span className="truncate text-warn">{i.reason}</span>}
               </li>
             ))}

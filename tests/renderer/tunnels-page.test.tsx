@@ -90,6 +90,15 @@ describe('tunnels page', () => {
     expect(screen.getByRole('button', { name: 'Import from ssh config' })).toBeInTheDocument()
   })
 
+  it('the header menu offers Import tunnels… and Export tunnels…, empty or not', async () => {
+    const invoke = await renderPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Import or export tunnels' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Export tunnels…' }))
+    expect(invoke).toHaveBeenCalledWith('config:export', 'tunnels')
+    fireEvent.click(screen.getByRole('button', { name: 'Import or export tunnels' }))
+    expect(screen.getByRole('menuitem', { name: 'Import tunnels…' })).toBeInTheDocument()
+  })
+
   it('summarises states in the header', async () => {
     await renderPage(
       ['a', 'b', 'c', 'd', 'e'].map((id) => tunnelMeta({ id, hostId: 'h-db' })),

@@ -1,16 +1,7 @@
 import { Download, FileJson, Upload } from 'lucide-react'
-import { useState } from 'react'
-import type { ConfigCounts, ImportPreview } from '../../../../shared/config-file'
-import { api } from '../../lib/api'
 import { Button } from '../../ui/Button'
-import { attempt, plural } from '../../ui/common'
-import { toast } from '../../ui/Toaster'
-import { ImportConfigDialog } from './ImportConfigDialog'
+import { useConfigTransfer } from './ConfigTransfer'
 import { IntegrationsSection } from './IntegrationsPage'
-
-const total = (counts: ConfigCounts): number => Object.values(counts).reduce((a, b) => a + b, 0)
-/** The toast names the file only: the full path stays in main's dialog. */
-const basename = (path: string): string => path.split(/[\\/]/).pop() ?? path
 
 export function SettingsPage() {
   return (
@@ -27,36 +18,7 @@ export function SettingsPage() {
 }
 
 function ConfigSection() {
-  const [exporting, setExporting] = useState(false)
-  const [opening, setOpening] = useState(false)
-  const [preview, setPreview] = useState<ImportPreview | { errors: string[] } | null>(null)
-
-  const exportConfig = async () => {
-    setExporting(true)
-    try {
-      // null: the save dialog was closed, which needs no comment.
-      const res = await attempt("Couldn't export the config", () => api.invoke('config:export'))
-      if (res)
-        toast({
-          title: `Exported ${plural(total(res.counts), 'item')} to ${basename(res.path)}`,
-          ...(res.omitted ? { description: `${plural(res.omitted, 'secret value')} ${res.omitted === 1 ? 'was' : 'were'} left out` } : {}),
-          tone: 'success',
-        })
-    } finally {
-      setExporting(false)
-    }
-  }
-
-  const openImport = async () => {
-    setOpening(true)
-    try {
-      // null: the open dialog was closed.
-      const res = await attempt("Couldn't open the config", () => api.invoke('config:importOpen'))
-      if (res) setPreview(res)
-    } finally {
-      setOpening(false)
-    }
-  }
+  const { exporting, opening, exportConfig, openImport, dialog } = useConfigTransfer()
 
   return (
     <section aria-labelledby="settings-config" className="mt-2 max-w-[640px] rounded-xl border border-line bg-surface p-5">
@@ -83,7 +45,7 @@ function ConfigSection() {
           Import config…
         </Button>
       </div>
-      {preview && <ImportConfigDialog preview={preview} onClose={() => setPreview(null)} />}
+      {dialog}
     </section>
   )
 }

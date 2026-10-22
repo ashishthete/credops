@@ -1,5 +1,5 @@
 import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
-import { ChevronRight, CircleDashed, Database, FileDown, Fingerprint, Globe2, Plus, Search, Server, ShieldHalf, SquareTerminal, X, type LucideIcon } from 'lucide-react'
+import { ChevronRight, CircleDashed, Database, Download, FileDown, Fingerprint, Globe2, Plus, Search, Server, ShieldHalf, SquareTerminal, Upload, X, type LucideIcon } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react'
 import { useSearchParams } from 'react-router'
 import type { EnvironmentMeta, HostMeta, HostRole, RegionMeta } from '../../../../shared/inventory'
@@ -16,6 +16,7 @@ import { plural } from '../../ui/common'
 import { Skeleton } from '../../ui/Skeleton'
 import { createStore } from '../../ui/store'
 import { ROLE_LABEL, ROLE_ORDER } from '../products/ProductView'
+import { useConfigTransfer } from '../settings/ConfigTransfer'
 import { HostDialog } from './HostDialog'
 import { openKnownHosts } from '../terminals/KnownHostsDialog'
 import { HostView } from './HostView'
@@ -47,6 +48,8 @@ export function HostsPage() {
   const [regionId, setRegionId] = useState('')
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   const [dialog, setDialog] = useState<HostsAction | null>(null)
+  // Regions, identities and hosts: what this page and its dialogs edit.
+  const transfer = useConfigTransfer('hosts')
   // The region a new host starts in: the group its "New host" was clicked in, else the one in view.
   const [newIn, setNewIn] = useState<string | undefined>()
   // Rows cascade in on the first view only, not on every selection or filter.
@@ -130,6 +133,7 @@ export function HostsPage() {
       />
       <ImportDialog open={dialog === 'import'} onClose={() => setDialog(null)} onImported={(first) => first && select(first)} />
       <RegionsDialog open={dialog === 'regions'} onClose={() => setDialog(null)} />
+      {transfer.dialog}
     </>
   )
 
@@ -150,6 +154,9 @@ export function HostsPage() {
                 </Button>
                 <Button icon={<FileDown aria-hidden className="size-3.5" />} onClick={() => setDialog('import')}>
                   {IMPORT_LABEL}
+                </Button>
+                <Button variant="ghost" icon={<Upload aria-hidden className="size-3.5" />} onClick={() => void transfer.openImport()}>
+                  Import hosts…
                 </Button>
               </>
             }
@@ -218,6 +225,8 @@ export function HostsPage() {
             <RailButton icon={FileDown} label={IMPORT_LABEL} onClick={() => setDialog('import')} />
             <RailButton icon={Globe2} label="Regions…" onClick={() => setDialog('regions')} />
             <RailButton icon={Fingerprint} label="Known hosts…" onClick={openKnownHosts} />
+            <RailButton icon={Upload} label="Import hosts…" onClick={() => void transfer.openImport()} />
+            <RailButton icon={Download} label="Export hosts…" onClick={() => void transfer.exportConfig()} />
           </div>
         </aside>
 
