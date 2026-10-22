@@ -97,7 +97,7 @@ export class RunbookStore {
     const before = this.get(id)
     const v = this.validate({ ...input, environmentId: before.environmentId })
     this.assertUniqueName(before.environmentId, v.name, id)
-    if (skipIfSame && before.name === v.name && before.description === v.description && definitionOf(v) === definitionOf(before)) return false
+    if (skipIfSame && before.name === v.name && before.description === v.description && definitionOf(sortedTargets(v)) === definitionOf(sortedTargets(before))) return false
     this.db
       .prepare('UPDATE runbooks SET name = ?, description = ?, definition = ?, updated_at = ? WHERE id = ?')
       .run(v.name, v.description, definitionOf(v), this.now().toISOString(), id)
@@ -128,6 +128,8 @@ export class RunbookStore {
     if (dup && dup.id !== selfId) throw new DeployError('VALIDATION', 'a runbook with that name already exists in this environment')
   }
 }
+
+const sortedTargets = <T extends { targetServiceIds: string[] }>(r: T): T => ({ ...r, targetServiceIds: [...r.targetServiceIds].sort() })
 
 const definitionOf = (v: RunbookInput): string =>
   JSON.stringify({ targetServiceIds: v.targetServiceIds, items: v.items, params: v.params, lock: v.lock, notify: v.notify } satisfies Definition)

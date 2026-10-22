@@ -778,4 +778,52 @@ describe('config import of playbook ops settings', () => {
     expect(itemOf(plan, 'runbooks', 'Reindex')).toMatchObject({ action: 'update' })
     expect(plan.counts).toMatchObject({ update: 2, unchanged: 9 })
   })
+
+  it('a flow that uses a skipped service is not imported, with a reason, and the rest of the import goes on', async () => {
+    const { f, file } = await playbookSource()
+    const t = await makeTarget(f)
+    const r = readers(t)
+    importFile(t, file)
+    const before = r.deploys.settings(f.staging.id).flow
+    // Here the same id lives in another environment, so the file's app service is skipped.
+    const edited = copy(file)
+    t.db.prepare('UPDATE services SET environment_id = ? WHERE id = ?').run(f.prod.id, f.ids.appService)
+    edited.environments.find((e) => e.id === f.staging.id)!.flow!.stages.push({ kind: 'services', serviceIds: [f.ids.appService] })
+    const plan = planImport(t.db, edited)
+    expect(itemOf(plan, 'environments', 'staging').reason).toBe('Flow not imported: it uses web, which was skipped')
+    importFile(t, edited)
+    expect(r.deploys.settings(f.staging.id).flow).toEqual(before)
+  })
+
+  it('a re-import of an unchanged runbook shows no update even when the stored targets are in another order', async () => {
+    const { f, file } = await playbookSource()
+    const second = f.services.create({ kind: 'service', environmentId: f.staging.id, name: 'worker', deploymentId: f.ids.deployment, composeService: 'worker' })
+    const runbooks = new RunbookStore({ db: f.db, audit: f.audit, vault: f.vault })
+    const id = file.runbooks![0].id
+    const [rb] = runbooks.list(f.staging.id)
+    runbooks.update(id, { ...rb, targetServiceIds: [second.id, f.ids.appService] })
+    const now = buildConfigExport(f.db, clock).file
+    const again = copy(now)
+    for (const order of [[second.id, f.ids.appService], [f.ids.appService, second.id]]) {
+      again.runbooks![0].targetServiceIds = order
+      expect(itemOf(planImport(f.db, again), 'runbooks', 'Reindex').action).toBe('unchanged')
+    }
+  })
+
+  it('a flow or runbook that points at a service of another environment is refused', async () => {
+    const { f, file } = await playbookSource()
+    const other = f.services.create({ kind: 'service', environmentId: f.prod.id, name: 'prod-web', deploymentId: null, composeService: 'web' })
+    const flowEdit = copy(file)
+    flowEdit.services.push({ ...(flowEdit.services.find((x) => x.id === f.ids.appService)!), id: other.id, environmentId: f.prod.id, name: 'prod-web', deploymentId: null } as ConfigFile['services'][number])
+    ;(flowEdit.environments.find((e) => e.id === f.staging.id)!.flow!.stages[1] as { serviceIds: string[] }).serviceIds = [other.id]
+    expect(parseConfigFile(JSON.stringify(flowEdit)).ok).toBe(false)
+    const rbEdit = copy(file)
+    rbEdit.services = flowEdit.services
+    rbEdit.runbooks![0].targetServiceIds = [other.id]
+    expect(parseConfigFile(JSON.stringify(rbEdit)).ok).toBe(false)
+    // Past the reader (a hand-built object), the stores refuse them.
+    const t = await makeTarget(f)
+    expect(() => planImport(t.db, flowEdit)).toThrow()
+    expect(() => planImport(t.db, rbEdit)).toThrow()
+  })
 })

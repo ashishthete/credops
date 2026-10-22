@@ -643,23 +643,27 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
   }
 
   // ---- release flows ----
-  const localService = (fileId: string): string => {
-    const id = map.services.get(fileId)
-    if (!id) throw new DeployError('VALIDATION', 'the flow names a service that was not imported')
-    return id
-  }
+  const fileServiceName = new Map(file.services.map((x) => [x.id, x.name]))
+  const serviceCheckout = db.prepare('SELECT deployment_id FROM services WHERE id = ?')
   for (const r of flows) {
     setAt(`Environment ${r.x.name}`)
-    const allowed = stepSecretIds(db, r.local)
-    const lost: string[] = []
     const flow = r.x.flow as ConfigFlow
+    const fileIds = flow.stages.flatMap((st) => (st.kind === 'services' ? st.serviceIds : [st.serviceId]))
+    const skipped = fileIds.find((id) => !map.services.get(id))
+    if (skipped !== undefined) {
+      items[r.item].reason = `Flow not imported: it uses ${fileServiceName.get(skipped) ?? 'a service'}, which was skipped`
+      continue
+    }
+    const lost: string[] = []
     const local: ReleaseFlow = {
       onFailure: flow.onFailure,
-      stages: flow.stages.map((st) =>
-        st.kind === 'services'
-          ? { kind: 'services' as const, serviceIds: st.serviceIds.map(localService) }
-          : { kind: 'step' as const, serviceId: localService(st.serviceId), step: stepBody(st.step, allowed, lost) },
-      ),
+      stages: flow.stages.map((st) => {
+        if (st.kind === 'services') return { kind: 'services' as const, serviceIds: st.serviceIds.map((id) => map.services.get(id)!) }
+        const serviceId = map.services.get(st.serviceId)!
+        // The same scope checkFlow applies: the secrets of the service's own checkout.
+        const checkout = (serviceCheckout.get(serviceId) as { deployment_id: string | null } | undefined)?.deployment_id ?? null
+        return { kind: 'step' as const, serviceId, step: stepBody(st.step, stepSecretIds(db, r.local, checkout), lost) }
+      }),
     }
     if (lost.length > 0) {
       need('environments', r.x.name, 'flow', lost.join(', ') + (r.added ? '' : '; kept the local flow'))

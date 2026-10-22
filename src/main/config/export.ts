@@ -112,6 +112,7 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: numbe
   )
   const used = new Set<string>()
   const stepsOf = (v: unknown): Step[] => JSON.parse(optStr(v) ?? '[]') as Step[]
+  const deploySteps = new Map(deployRows.map((r) => [str(r.id), stepsOf(r.steps)]))
   const flowRows = all('SELECT id, release_flow FROM environments WHERE release_flow IS NOT NULL')
   const runbookRows = all('SELECT id, environment_id, name, description, definition FROM runbooks')
   const runbookDefs = runbookRows.map((r) => JSON.parse(str(r.definition)) as Pick<Runbook, 'targetServiceIds' | 'items' | 'params' | 'lock' | 'notify'>)
@@ -122,7 +123,7 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: numbe
   for (const d of deployRows) {
     if (d.become_secret_id !== null) used.add(str(d.become_secret_id))
     for (const m of (optStr(d.env_template) ?? '').matchAll(TEMPLATE_SECRET_REF)) if (secretItems.has(m[1])) used.add(m[1])
-    useSecrets(stepsOf(d.steps))
+    useSecrets(deploySteps.get(str(d.id))!)
   }
   for (const r of flowRows) useSecrets(flowSteps(JSON.parse(str(r.release_flow)) as ReleaseFlow))
   for (const d of runbookDefs) useSecrets(d.items.flatMap((i) => (i.type === 'step' ? [i.step] : [])))
@@ -283,7 +284,7 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: numbe
     backupDir: optStr(r.backup_dir),
     preHook: optStr(r.pre_hook),
     postHook: optStr(r.post_hook),
-    ...(stepsOf(r.steps).length === 0 ? {} : { steps: stepsOf(r.steps).map(configStep) }),
+    ...(deploySteps.get(str(r.id))!.length === 0 ? {} : { steps: deploySteps.get(str(r.id))!.map(configStep) }),
     buildTimeoutSec: Number(r.build_timeout_sec),
     composeTimeoutSec: Number(r.compose_timeout_sec),
     useSudo: r.use_sudo as ConfigDeployment['useSudo'],
