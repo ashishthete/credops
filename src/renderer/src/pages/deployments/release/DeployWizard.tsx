@@ -387,7 +387,7 @@ export function DeployWizard({
   return (
     <>
       <Dialog open onClose={close} width={680} title={`Deploy to ${env?.name ?? ''}`} footer={<div className="flex justify-end gap-2">{footer}</div>}>
-        <div className="flex max-h-[60vh] flex-col gap-4 overflow-y-auto">
+        <div className="flex max-h-[60vh] min-w-0 flex-col gap-4 overflow-x-hidden overflow-y-auto">
           {step === 'pick' && (
             <>
               <ServicePicker
@@ -405,7 +405,8 @@ export function DeployWizard({
                   {preview && <span className="font-mono text-[12.5px] text-fg/85 tabular-nums">{preview}</span>}
                 </div>
               )}
-              <div className="flex flex-wrap items-center gap-4 text-[12.5px] text-fg/90">
+              <div role="group" aria-label="Options" className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-line pt-3 text-[12.5px] text-fg/90">
+                <span className="text-[11px] font-medium tracking-wide text-muted uppercase">Options</span>
                 <label className="flex items-center gap-2">
                   <input type="checkbox" className="size-3.5 accent-(--accent)" checked={backup} onChange={(e) => setBackup(e.target.checked)} />
                   Back up databases

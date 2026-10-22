@@ -79,6 +79,9 @@ export function SkipRows({ services, onForce }: { services: { id: string; name: 
   )
 }
 
+/** The checkout's repo, as shown under its name: the masked URL, else the path on the host. */
+const repo = (g: PickerGroup): string => (g.checkout.repoUrl ? maskRepoUrl(g.checkout.repoUrl) : g.checkout.repoPath)
+
 /** Services under their checkouts, each group with its own select-all; dbs are never listed. */
 export function ServicePicker({ groups, unavailable, hostLabel, report, onToggle, onToggleGroup, onAll }: ServicePickerProps) {
   const motionSafe = useMotionSafe()
@@ -90,55 +93,61 @@ export function ServicePicker({ groups, unavailable, hostLabel, report, onToggle
     transition: motionSafe ? { ...spring, delay: staggerDelay(i) } : fast,
   })
   return (
-    <div className="flex flex-col gap-3">
-      <label className="flex h-7 items-center gap-2 text-[12.5px] font-medium text-fg">
+    <div className="flex min-w-0 flex-col gap-3">
+      <label className="flex h-7 w-fit cursor-pointer items-center gap-2 text-[12.5px] font-medium text-fg">
         <Check checked={rows.length > 0 && ticked === rows.length} mixed={ticked > 0 && ticked < rows.length} disabled={!rows.length} onChange={onAll} />
         All
       </label>
       {groups.map((g, i) => {
         const none = !g.services.length
         return (
-          <motion.fieldset key={g.checkout.id} aria-label={g.checkout.name} {...enter(i)} className="flex flex-col gap-2 rounded-xl border border-line p-3">
+          <motion.fieldset
+            key={g.checkout.id}
+            aria-label={g.checkout.name}
+            {...enter(i)}
+            className={`flex min-w-0 flex-col gap-2 rounded-xl border p-3 transition-colors ${g.whole || g.partial ? 'border-accent/50 bg-accent/5' : 'border-line'}`}
+          >
             <legend className="sr-only">{g.checkout.name}</legend>
-            <div className="flex min-w-0 items-center gap-2">
-              {!none && (
-                <Check aria-label={`All of ${g.checkout.name}`} checked={g.whole} mixed={g.partial} onChange={() => onToggleGroup(g)} />
-              )}
-              <span className="truncate text-[13px] font-semibold text-fg">{g.checkout.name}</span>
-              {g.whole && <Badge tone="success">whole checkout</Badge>}
-              <span className="ml-auto flex min-w-0 items-center gap-3 text-[11.5px] text-muted">
-                <span className="truncate font-mono">{g.checkout.repoUrl ? maskRepoUrl(g.checkout.repoUrl) : g.checkout.repoPath}</span>
-                {g.checkout.repoUrl && isLegacyRepoUrl(g.checkout.repoUrl) && <span className="shrink-0 text-warn">{REPO_URL_LEGACY_WARNING}</span>}
-                <span className="flex items-center gap-1">
-                  <GitBranch aria-hidden className="size-3" />
-                  <span className="font-mono">{g.checkout.defaultBranch}</span>
+            <div className="flex min-w-0 items-start gap-2.5">
+              <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-2.5">
+                <span className="flex h-5 items-center">
+                  <Check aria-label={none ? 'Whole checkout' : `All of ${g.checkout.name}`} checked={g.whole} mixed={!none && g.partial} onChange={() => onToggleGroup(g)} />
                 </span>
-                <span className="flex items-center gap-1">
-                  <Server aria-hidden className="size-3" />
-                  <span>{hostLabel(g.checkout.hostId)}</span>
+                <span className="flex min-w-0 flex-1 flex-col gap-1">
+                  <span className="flex min-w-0 flex-wrap items-center gap-2">
+                    <span className="text-[13px] leading-5 font-semibold break-words text-fg">{g.checkout.name}</span>
+                    {g.whole && <Badge tone="success">whole checkout</Badge>}
+                  </span>
+                  <span className="flex min-w-0 items-center gap-3 text-[11.5px] text-muted">
+                    <span className="flex min-w-0 shrink items-center gap-1" title={g.checkout.defaultBranch}>
+                      <GitBranch aria-hidden className="size-3 shrink-0" />
+                      <span className="truncate font-mono">{g.checkout.defaultBranch}</span>
+                    </span>
+                    <span className="min-w-0 flex-1 truncate font-mono" title={repo(g)}>
+                      {repo(g)}
+                    </span>
+                  </span>
+                  {g.checkout.repoUrl && isLegacyRepoUrl(g.checkout.repoUrl) && <span className="text-[11.5px] text-warn">{REPO_URL_LEGACY_WARNING}</span>}
                 </span>
+              </label>
+              <span className="flex max-w-[40%] shrink-0 items-center gap-1 rounded-md bg-fg/5 px-2 py-0.5 text-[11.5px] text-fg/80" title={hostLabel(g.checkout.hostId)}>
+                <Server aria-hidden className="size-3 shrink-0" />
+                <span className="truncate">{hostLabel(g.checkout.hostId)}</span>
               </span>
             </div>
-            <ul className="flex flex-col gap-0.5 pl-1">
-              {none ? (
-                <li>
-                  <label className="flex h-7 items-center gap-2 text-[12.5px] text-fg/90">
-                    <Check checked={g.whole} onChange={() => onToggleGroup(g)} />
-                    Whole checkout
-                  </label>
-                </li>
-              ) : (
-                g.services.map((s) => (
+            {!none && (
+              <ul className="flex flex-col gap-0.5 border-t border-line/60 pt-2 pl-6.5">
+                {g.services.map((s) => (
                   <li key={s.id}>
-                    <label className="flex h-7 items-center gap-2 text-[12.5px] text-fg/90">
+                    <label className="flex h-7 min-w-0 cursor-pointer items-center gap-2 text-[12.5px] text-fg/90">
                       <Check checked={g.selected.has(s.id)} onChange={() => onToggle(s.id)} />
-                      {s.name}
-                      {s.composeService !== s.name && <span className="font-mono text-[11.5px] text-muted">{s.composeService}</span>}
+                      <span className="truncate">{s.name}</span>
+                      {s.composeService !== s.name && <span className="truncate font-mono text-[11.5px] text-muted">{s.composeService}</span>}
                     </label>
                   </li>
-                ))
-              )}
-            </ul>
+                ))}
+              </ul>
+            )}
             <DatabaseRows checkoutId={g.checkout.id} report={report} />
             <CheckoutNotice group={g} report={report} />
           </motion.fieldset>
