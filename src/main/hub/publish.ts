@@ -103,6 +103,8 @@ export async function buildManifest(environmentId: string, deps: ManifestDeps, o
   }
   const hostOf = new Map(deployments.map((d) => [d.id, d.hostId]))
   const labelOf = deps.db.prepare('SELECT label FROM hosts WHERE id = ?')
+  const regionOf = deps.db.prepare('SELECT r.code, r.display_name AS displayName FROM hosts h JOIN regions r ON r.id = h.region_id WHERE h.id = ?')
+  const product = deps.db.prepare('SELECT id, name FROM products WHERE id = ?').get(env.productId) as { id: string; name: string }
 
   const services = deps.services.list(environmentId)
   // A db's via-host is published too, so the Hub can reach it even when no checkout runs there.
@@ -110,6 +112,7 @@ export async function buildManifest(environmentId: string, deps: ManifestDeps, o
   const hosts: HubEnvManifest['hosts'] = []
   for (const hostId of hostIds) {
     const label = (labelOf.get(hostId) as { label: string } | undefined)?.label ?? 'host'
+    const region = regionOf.get(hostId) as { code: string; displayName: string } | undefined
     const r = deps.resolve(hostId, environmentId)
     const stops = [
       ...r.chain.map((h) => ({ hostId: h.hostId as string | null, label: h.label, address: h.address, port: h.port, identity: h.identity })),
@@ -133,6 +136,7 @@ export async function buildManifest(environmentId: string, deps: ManifestDeps, o
       useSudo: 'auto',
       hops,
       knownHosts: [...lines].sort(),
+      ...(region ? { region: { code: region.code, displayName: region.displayName } } : {}),
     })
   }
 
@@ -145,6 +149,7 @@ export async function buildManifest(environmentId: string, deps: ManifestDeps, o
       autoRollback: settings.autoRollback,
       currentVersion: settings.currentVersion,
       ...(v2 ? { parallelPrepare: settings.parallelPrepare, prepareCap: settings.prepareCap, ...(settings.flow ? { flow: settings.flow } : {}) } : {}),
+      product: { id: product.id, name: product.name },
     },
     hosts,
     services: services.map((s): HubEnvManifest['services'][number] =>

@@ -80,6 +80,7 @@ import { VALIDATORS } from './ipc/validators'
 import { EnvironmentStore } from './inventory/environment-store'
 import { HostStore } from './inventory/host-store'
 import { ProductStore } from './inventory/product-store'
+import { RegionStore } from './inventory/region-store'
 import { resolveHost } from './inventory/resolve'
 import { hostMeta } from './inventory/rows'
 import { readSshConfigMatch } from './inventory/ssh-config'
@@ -231,6 +232,7 @@ if (!app.requestSingleInstanceLock()) {
       hosts = new HostStore(db, service, log)
       environments = new EnvironmentStore(db, service, log)
       products = new ProductStore(db, service, log)
+      const regions = new RegionStore(db, service, log)
       const tunnels = new TunnelStore({ db, audit: log, vault: service })
       const settingsStore = new SettingsStore({ db, audit: log, vault: service, secrets })
       const integrations = new IntegrationStore({ db, audit: log, vault: service, secrets })
@@ -299,7 +301,7 @@ if (!app.requestSingleInstanceLock()) {
       const runbooks = new RunbookStore({ db, audit: log, vault: service })
       runbooks.onChanged = (environmentId) => pushEvent(mainWindow, 'deploy:changed', { environmentId })
       const copyDeps = { db, deploys, services, audit: log, vault: service }
-      const releaseStore = new ReleaseStore({ db })
+      const releaseStore = new ReleaseStore({ db, regions: true })
       const importer = new SshImporter({
         db,
         vault: service,
@@ -640,6 +642,7 @@ if (!app.requestSingleInstanceLock()) {
             hosts,
             environments,
             products,
+            regions,
             resolve,
             tunnels: runner,
             openExternal: (url) => shell.openExternal(url),

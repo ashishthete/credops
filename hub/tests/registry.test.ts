@@ -341,3 +341,89 @@ describe('environment registry', () => {
     expect((await hub.app.inject({ method: 'GET', url: '/api/v1/catalog' })).statusCode).toBe(401)
   })
 })
+
+describe('product and region', () => {
+  const PRODUCT = { id: 'f1111111-1111-4111-8111-111111111111', name: 'Shop' }
+  const EU = { code: 'eu-west', displayName: 'EU West' }
+  const withProduct = (): HubEnvManifest => {
+    const m = manifest()
+    return { ...m, environment: { ...m.environment, product: PRODUCT }, hosts: m.hosts.map((h) => ({ ...h, region: EU })) }
+  }
+  const inventory = () => hubInventory(hub.db, new Registry(hub.db, { audit: hub.audit, directory: { listGroups: () => [] }, locks: { get: () => null }, now: () => new Date() }))
+
+  it('stores the product and each host region, and returns them in the manifest and the catalog', async () => {
+    const { admin } = await setup()
+    const m = withProduct()
+    expect((await put(admin, m)).statusCode).toBe(200)
+    expect((await call(admin, 'GET', `/api/v1/admin/environments/${ENV_ID}`)).json()).toEqual(m)
+    const cat = (await call(admin, 'GET', '/api/v1/catalog')).json() as HubEnvManifest[]
+    expect(cat[0].environment.product).toEqual(PRODUCT)
+    expect(cat[0].hosts).toEqual([{ id: HOST_ID, label: 'web-1', region: EU }])
+    const list = (await call(admin, 'GET', '/api/v1/admin/environments')).json() as HubEnvManifest[]
+    expect(list[0].environment.product).toEqual(PRODUCT)
+  })
+
+  it("accepts an older desktop's manifest without them, and keeps its hash", async () => {
+    const { admin } = await setup()
+    const old = manifest()
+    const before = (await put(admin, old)).json().manifestHash
+    const got = (await call(admin, 'GET', `/api/v1/admin/environments/${ENV_ID}`)).json() as HubEnvManifest
+    expect(got).toEqual(old)
+    expect(got.environment).not.toHaveProperty('product')
+    expect(got.hosts[0]).not.toHaveProperty('region')
+    const cat = (await call(admin, 'GET', '/api/v1/catalog')).json() as HubEnvManifest[]
+    expect(cat[0].hosts).toEqual([{ id: HOST_ID, label: 'web-1' }])
+
+    // The next publish from a newer desktop fills them in; an older one publishing again clears them.
+    const newer = (await put(admin, withProduct())).json().manifestHash
+    expect(newer).not.toBe(before)
+    expect(hub.db.prepare('SELECT product_name FROM environments').get()).toEqual({ product_name: 'Shop' })
+    expect((await put(admin, old)).json().manifestHash).toBe(before)
+    expect(hub.db.prepare('SELECT product_id, product_name FROM environments').get()).toEqual({ product_id: null, product_name: null })
+    expect(hub.db.prepare('SELECT region_code, region_name FROM hosts').get()).toEqual({ region_code: null, region_name: null })
+  })
+
+  it('validates them', async () => {
+    const { admin } = await setup()
+    const m = withProduct()
+    const cases: [HubEnvManifest, string][] = [
+      [{ ...m, environment: { ...m.environment, product: { ...PRODUCT, id: 'nope' } } }, '/environment/product/id is not a valid id'],
+      [{ ...m, environment: { ...m.environment, product: { ...PRODUCT, name: '' } } }, '/environment/product/name must be'],
+      [{ ...m, environment: { ...m.environment, product: 'Shop' as never } }, '/environment/product must be an object'],
+      [{ ...m, hosts: [{ ...m.hosts[0], region: { ...EU, code: 'EU West' } }] }, '/hosts/0/region/code is not a region code'],
+      [{ ...m, hosts: [{ ...m.hosts[0], region: { ...EU, displayName: 'x'.repeat(129) } }] }, '/hosts/0/region/displayName must be'],
+    ]
+    for (const [bad, message] of cases) {
+      const r = await put(admin, bad)
+      expect(r.statusCode).toBe(400)
+      expect(r.json().message).toContain(message)
+    }
+  })
+
+  it('accepts and drops fields it does not know, so a newer desktop can still publish to it', async () => {
+    const { admin } = await setup()
+    const m = withProduct()
+    const newer = {
+      ...m,
+      later: { anything: true },
+      environment: { ...m.environment, later: 1, product: { ...PRODUCT, later: 'x' } },
+      hosts: m.hosts.map((h) => ({ ...h, later: [1], region: { ...EU, provider: 'aws' } })),
+    }
+    const r = await put(admin, newer as HubEnvManifest)
+    expect(r.statusCode).toBe(200)
+    expect(r.json().manifestHash).toBe((await put(admin, m)).json().manifestHash)
+    expect((await call(admin, 'GET', `/api/v1/admin/environments/${ENV_ID}`)).json()).toEqual(m)
+  })
+
+  it("names a release's product from the manifest", async () => {
+    const { admin } = await setup()
+    await put(admin, manifest())
+    expect(inventory().environment(ENV_ID).productId).toBeNull()
+    await put(admin, withProduct())
+    const env = inventory().environment(ENV_ID)
+    expect(env.productId).toBe(PRODUCT.id)
+    expect(inventory().productName(env.productId as string)).toBe('Shop')
+    // A product id the Hub no longer holds keeps today's name.
+    expect(inventory().productName('f9999999-9999-4999-8999-999999999999')).toBe('Hub')
+  })
+})

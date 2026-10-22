@@ -3,7 +3,7 @@ import { IntegrationStore } from '../../src/main/settings/integration-store'
 import { SecretStore } from '../../src/main/vault/secret-store'
 import { DEFAULT_NOTIFY_EVENTS, NOTIFY_EVENTS } from '../../src/shared/settings'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
-import { makeInventory } from './inventory-helpers'
+import { makeInventory, PRODUCT } from './inventory-helpers'
 import { auditRows } from './vault-helpers'
 
 async function setup() {
@@ -11,7 +11,7 @@ async function setup() {
   const clipboard = { text: '', async writeText(t: string) { this.text = t }, async readText() { return this.text } }
   const secrets = new SecretStore(f.db, f.vault, f.audit, { clipboard })
   const store = new IntegrationStore({ db: f.db, audit: f.audit, vault: f.vault, secrets })
-  const env = (name: string) => f.envs.create({ name, color: '#aabbcc' })
+  const env = (name: string) => f.envs.create({ productId: PRODUCT, name, color: '#aabbcc' })
   return { f, secrets, store, env }
 }
 

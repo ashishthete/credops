@@ -174,6 +174,48 @@ export function isBareName(address: string): boolean {
 
 export type AddressSource = 'host' | 'domain'
 
+/** Lowercase letters, digits and hyphens, not starting with a hyphen; unique ignoring case. */
+export const REGION_CODE = /^[a-z0-9][a-z0-9-]{0,62}$/
+export const MAX_PROVIDER = 64
+export interface RegionInput {
+  code: string
+  /** Free text such as aws, azure or on-prem; may be empty. */
+  provider?: string
+  displayName: string
+}
+export type RegionPatch = Partial<RegionInput>
+export interface RegionMeta {
+  id: string
+  code: string
+  provider: string
+  displayName: string
+  hostCount: number
+  createdAt: string
+  updatedAt: string
+}
+/** Enough of a region to show as a chip. */
+export interface RegionRef {
+  id: string
+  code: string
+  displayName: string
+}
+
+/** The product that upgraded and version 1 imported environments without a product land in. */
+export const UNASSIGNED_PRODUCT = { name: 'Unassigned', color: '#8a91a3', icon: 'boxes' } as const
+
+/** Settings key migration 12 writes its report to; absent when the upgrade had nothing to report. */
+export const REGIONS_REPORT_KEY = 'migration.regions.report'
+export interface RegionsUpgradeReport {
+  /** The Default region every host was put in; null when there were no hosts. */
+  region: (RegionRef & { hostCount: number }) | null
+  /** Environments that were in several products: they kept the first by name. */
+  productLinks: { environmentId: string; environmentName: string; kept: { id: string; name: string }; removed: { id: string; name: string }[] }[]
+  /** Environments that had no product. */
+  unassigned: { product: { id: string; name: string }; environments: { id: string; name: string }[] } | null
+  /** Environments renamed so names stay unique within their product. */
+  renamed: { environmentId: string; from: string; to: string }[]
+}
+
 export interface ProductInput {
   name: string
   color: string
@@ -207,9 +249,10 @@ export interface EnvironmentInput {
   defaultJumpHostId?: string | null
   /** A hostname or an http(s) URL, stored as entered. */
   domain?: string | null
-  productIds?: string[]
+  productId: string
 }
-export type EnvironmentPatch = Partial<Omit<EnvironmentInput, 'productIds'>>
+/** The product changes through its own call (env:setProduct), which has its own rules. */
+export type EnvironmentPatch = Partial<Omit<EnvironmentInput, 'productId'>>
 export interface EnvironmentMeta {
   id: string
   name: string
@@ -219,7 +262,7 @@ export interface EnvironmentMeta {
   defaultPort: number | null
   defaultJumpHostId: string | null
   domain: string | null
-  productIds: string[]
+  productId: string
   hosts: { hostId: string; role: HostRole }[]
   createdAt: string
   updatedAt: string
@@ -228,6 +271,7 @@ export interface EnvironmentMeta {
 export interface HostInput {
   label: string
   address: string
+  regionId: string
   port?: number | null
   identityId?: string | null
   jumpHostId?: string | null
@@ -245,6 +289,7 @@ export interface HostMeta {
   id: string
   label: string
   address: string
+  regionId: string
   port: number | null
   identityId: string | null
   jumpHostId: string | null
@@ -320,6 +365,8 @@ export interface SshImportPreview {
 }
 export interface SshImportRequest {
   vaultId: string
+  /** Every imported host goes in this region. */
+  regionId: string
   aliases: string[]
   environmentId?: string
   role?: HostRole

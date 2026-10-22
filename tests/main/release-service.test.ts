@@ -12,6 +12,7 @@ import { BREAK_LOCK_CONFIRM_MESSAGE, DEFAULT_RELEASE_OPTIONS, PREPARE_FAILED_MES
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import type { AppServiceMeta } from '../../src/shared/services'
 import { A, B, C, NOW, SECRET, dep, opReady, ready, rig, runbook, tracked, type Rig } from './release-rig'
+import { PRODUCT } from './inventory-helpers'
 
 const audits = (r: Rig, action: string) => r.f.audit.list({ actions: [action as never] })
 const runIds = (plan: DeployPlan): string[] => plan.deployments.map((d) => d.runId)
@@ -329,7 +330,7 @@ describe('ReleaseService', () => {
 
   it('a vault reset flags every release before cancelling, so one failing cancel never skips the rest', async () => {
     const r = await rig()
-    const qa = r.f.envs.create({ name: 'qa', color: '#334455' })
+    const qa = r.f.envs.create({ productId: PRODUCT, name: 'qa', color: '#334455' })
     r.f.envs.putHost(qa.id, r.f.host.id, 'app')
     const ids = [await ready(r, [dep(r, 'api')]), await ready(r, [dep(r, 'web', { environmentId: qa.id, deployTag: 'deploy_qa' })], { envId: qa.id })]
     const g = gate()
@@ -436,14 +437,14 @@ describe('ReleaseService', () => {
     // Three more environments fill the remaining slots; the fifth run is refused.
     const started: string[] = [first]
     for (let i = 0; i < 3; i++) {
-      const env = r.f.envs.create({ name: `env${i}`, color: '#112233' })
+      const env = r.f.envs.create({ productId: PRODUCT, name: `env${i}`, color: '#112233' })
       r.f.envs.putHost(env.id, r.f.host.id, 'app')
       const d = dep(r, `svc${i}`, { environmentId: env.id })
       const id = await ready(r, [d], { envId: env.id })
       await r.svc.start(id, {})
       started.push(id)
     }
-    const env = r.f.envs.create({ name: 'env-extra', color: '#112233' })
+    const env = r.f.envs.create({ productId: PRODUCT, name: 'env-extra', color: '#112233' })
     r.f.envs.putHost(env.id, r.f.host.id, 'app')
     const extra = await ready(r, [dep(r, 'extra', { environmentId: env.id })], { envId: env.id })
     await expect(r.svc.start(extra, {})).rejects.toThrow(/At most 4 releases/)
@@ -663,7 +664,7 @@ describe('ReleaseService', () => {
     expect(r.svc.detail(id).status).toBe('succeeded')
 
     // Two protected environments on the hosts are refused outright.
-    const other = r.f.envs.create({ name: 'dr', color: '#aa0000', protected: true })
+    const other = r.f.envs.create({ productId: PRODUCT, name: 'dr', color: '#aa0000', protected: true })
     r.f.envs.putHost(other.id, r.f.host.id, 'app')
     const id2 = await ready(r, [r.f.deploys.list(r.f.staging.id)[0]])
     const err2 = await r.svc.start(id2, { typedName: 'prod' }).catch((e: unknown) => e)

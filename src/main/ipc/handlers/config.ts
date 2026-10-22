@@ -58,12 +58,12 @@ export function createConfigHandlers(
       held = { token, file: parsed.file, counts: plan.counts, expires: deps.now().getTime() + IMPORT_TTL_MS }
       return { token, ...plan }
     },
-    'config:importApply': async (token, { typedNames }) => {
+    'config:importApply': async (token, { typedNames, regionId }) => {
       const h = held
       if (!h || h.token !== token || deps.now().getTime() > h.expires) throw new Error(EXPIRED_MESSAGE)
       let res: ReturnType<typeof applyImport>
       try {
-        res = applyImport({ ...deps, onChanged: deps.onImported }, h.file, { typedNames, expected: h.counts })
+        res = applyImport({ ...deps, onChanged: deps.onImported }, h.file, { typedNames, regionId, expected: h.counts })
       } catch (e) {
         // A changed config can't match this preview again; a missing typed name can be retried.
         if (e instanceof Error && e.message === CHANGED_MESSAGE) held = null

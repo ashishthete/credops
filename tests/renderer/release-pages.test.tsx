@@ -113,6 +113,20 @@ describe('the release page', () => {
     expect(within(header).getByText('failed')).toBeInTheDocument()
   })
 
+  it("shows the release's regions in its header, emphasised when there is more than one", async () => {
+    const eu = { id: 'r-eu', code: 'eu-west-1', displayName: 'EU West' }
+    const us = { id: 'r-us', code: 'us-east-1', displayName: 'US East' }
+    await open(`/deployments/release/${REL}`, failingRun(), detailWithPlaybook({ status: 'failed', regions: [eu, us] }))
+    const header = screen.getByRole('banner', { name: 'Release summary' })
+    expect(within(header).getByText('eu-west-1')).toHaveAttribute('title', 'EU West')
+    expect(within(header).getByText('us-east-1').className).toContain('warn')
+  })
+
+  it('a release without regions (a Hub one) shows no region chips', async () => {
+    await open(`/deployments/release/${REL}`, failingRun(), detailWithPlaybook({ status: 'failed' }))
+    expect(within(screen.getByRole('banner', { name: 'Release summary' })).queryByTitle(/./)).toBeNull()
+  })
+
   it('the progress bar counts finished tasks out of all of them, and moves live', async () => {
     const all = failingRun()
     const at = all.findIndex((e) => e.type === 'task.done' && e.task === 'health site 1')

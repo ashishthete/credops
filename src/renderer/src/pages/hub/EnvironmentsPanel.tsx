@@ -10,7 +10,10 @@ import { Button } from '../../ui/Button'
 import { ConfirmDialog, plural, type ConfirmRequest } from '../../ui/common'
 import { EmptyState } from '../../ui/EmptyState'
 import { toast } from '../../ui/Toaster'
+import { byProduct } from './names'
 import { ListSkeleton } from './shared'
+
+type Entry = { id: string; env: EnvironmentMeta } | { id: string; hub: HubCatalogEnv }
 
 const counts = (hosts: number, services: number, deployments: number) =>
   `${plural(hosts, 'host')}, ${plural(services, 'service')}, ${plural(deployments, 'deployment')}`
@@ -23,17 +26,27 @@ export function EnvironmentsPanel({ onOpenSecrets }: { onOpenSecrets: () => void
   if (!adminLoaded || !data) return <ListSkeleton />
   const published = new Map(adminEnvs.map((e) => [e.environment.id, e]))
   const hubOnly = adminEnvs.filter((e) => !data.environments.some((l) => l.id === e.environment.id))
+  // This machine's environments first, then the Hub's that it has no copy of; each goes under its product.
+  const entries: Entry[] = [...data.environments.map((env) => ({ id: env.id, env })), ...hubOnly.map((hub) => ({ id: hub.environment.id, hub }))]
+  const { groups, rest } = byProduct(entries, (e) => e.id, data, (e) => ('hub' in e ? e.hub.environment.product?.name : undefined))
+  const row = (e: Entry) =>
+    'env' in e ? (
+      <LocalEnvRow key={e.id} env={e.env} hub={published.get(e.id) ?? null} onConfirm={setConfirm} onOpenSecrets={onOpenSecrets} />
+    ) : (
+      <HubOnlyRow key={e.id} hub={e.hub} onConfirm={setConfirm} onOpenSecrets={onOpenSecrets} />
+    )
   if (data.environments.length === 0 && hubOnly.length === 0) {
     return <EmptyState icon={Cloud} title="No environments yet" text="Create an environment in the inventory, then publish it here for your team." />
   }
   return (
     <div className="flex max-w-3xl flex-col gap-3">
-      {data.environments.map((env) => (
-        <LocalEnvRow key={env.id} env={env} hub={published.get(env.id) ?? null} onConfirm={setConfirm} onOpenSecrets={onOpenSecrets} />
+      {groups.map((g) => (
+        <section key={g.id} aria-label={g.name} className="flex flex-col gap-3">
+          <h3 className="mt-1 text-[11px] font-medium tracking-wide text-muted uppercase">{g.name}</h3>
+          {g.items.map(row)}
+        </section>
       ))}
-      {hubOnly.map((hub) => (
-        <HubOnlyRow key={hub.environment.id} hub={hub} onConfirm={setConfirm} onOpenSecrets={onOpenSecrets} />
-      ))}
+      {rest.map(row)}
       <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
     </div>
   )

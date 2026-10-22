@@ -67,12 +67,12 @@ export function layoutGraph(graph: MapGraph, pins: Pins = {}): MapLayout {
     }
   }
 
-  const primaryProduct = new Map<string, string>()
-  for (const e of graph.edges) if (e.data.kind === 'membership' && e.data.primary) primaryProduct.set(e.target, e.source)
+  const productOf = new Map<string, string>()
+  for (const e of graph.edges) if (e.data.kind === 'membership') productOf.set(e.target, e.source)
 
   const groupX = PRODUCT_W + COL_GAP
   const size = new Map(groups.map((g) => [g.id, groupSize(hostsByGroup.get(g.id)?.length ?? 0)]))
-  const groupsOf = (productId: string | null) => groups.filter((g) => (primaryProduct.get(g.id) ?? null) === productId)
+  const groupsOf = (productId: string | null) => groups.filter((g) => (productOf.get(g.id) ?? null) === productId)
 
   // Groups stacked in product order, then those with no product (`u` last, as buildGraph orders them).
   const groupTop = new Map<string, number>()

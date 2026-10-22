@@ -6,7 +6,7 @@ import { useInventory } from './store'
 import { environmentKey } from './tree'
 
 /** `/hosts?action=…` opens one of the Hosts page's dialogs, so these commands work from any page. */
-export type HostsAction = 'new' | 'import'
+export type HostsAction = 'new' | 'import' | 'regions'
 export const hostsActionPath = (action: HostsAction) => `/hosts?action=${action}`
 
 /** Palette commands built from the inventory: "Go to" every host and environment, plus new and import. */
@@ -31,6 +31,13 @@ export function useInventoryCommands(): void {
         run: go(hostsActionPath('import')),
       }),
       registerCommand({
+        id: 'hosts.regions',
+        title: 'Manage regions',
+        section: 'Hosts',
+        keywords: ['region', 'cloud', 'datacenter', 'location'],
+        run: go(hostsActionPath('regions')),
+      }),
+      registerCommand({
         id: 'terminal.local',
         title: 'New local shell',
         section: 'Terminals',
@@ -47,14 +54,16 @@ export function useInventoryCommands(): void {
     if (!data) return
     const productName = new Map(data.products.map((p) => [p.id, p.name]))
     const envById = new Map(data.environments.map((e) => [e.id, e]))
+    const regionById = new Map(data.regions.map((r) => [r.id, r]))
     return registerCommands([
       ...data.hosts.map((h) => {
         const envs = h.environments.flatMap((m) => envById.get(m.environmentId) ?? [])
+        const region = regionById.get(h.regionId)
         return {
           id: `connect:${h.id}`,
-          title: `Connect to ${h.label}`,
+          title: region ? `Connect to ${h.label} · ${region.code}` : `Connect to ${h.label}`,
           section: 'Terminals',
-          keywords: [h.address, ...h.tags, ...envs.map((e) => e.name)],
+          keywords: [h.address, ...h.tags, ...envs.map((e) => e.name), ...(region ? [region.code, region.displayName] : [])],
           // A host in exactly one environment connects with its defaults; otherwise there is no single context.
           run: () => void connect(h.id, envs.length === 1 ? envs[0].id : undefined),
         }
@@ -67,10 +76,9 @@ export function useInventoryCommands(): void {
         run: go(`/hosts?host=${encodeURIComponent(h.id)}`),
       })),
       ...data.environments.map((e) => {
-        const products = e.productIds.flatMap((id) => productName.get(id) ?? []).sort((a, b) => a.localeCompare(b))
         return {
           id: `environments.go.${e.id}`,
-          title: `Go to ${e.name} · ${products.length ? products.join(', ') : 'Unassigned'}`,
+          title: `Go to ${e.name} · ${productName.get(e.productId) ?? 'Unassigned'}`,
           section: 'Environments',
           keywords: [e.name],
           run: go(`/products?${new URLSearchParams({ node: environmentKey(e) })}`),

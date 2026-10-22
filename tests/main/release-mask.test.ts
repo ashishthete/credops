@@ -115,6 +115,7 @@ const detail = (): Required<ReleaseDetail> => ({
   }],
   preflight: report(),
   lastSeq: 9,
+  regions: [{ id: UUID, code: 'eu-west-1', displayName: 'Ireland' }],
 })
 const allEvents = (): RunEvent[] => {
   const step = `${RUN}:build`

@@ -52,7 +52,7 @@ function filterParams(productId: string, environmentId: string, current: URLSear
   out.delete('env')
   const env = data.environments.find((e) => e.id === environmentId)
   if (productId) out.set('product', productId)
-  if (env && (!productId || env.productIds.includes(productId))) out.set('env', env.id)
+  if (env && (!productId || env.productId === productId)) out.set('env', env.id)
   return out
 }
 
@@ -203,7 +203,7 @@ function MapBody() {
   const environmentId = data?.environments.some((e) => e.id === params.get('env')) ? params.get('env')! : ''
   const products = useMemo(() => [...(data?.products ?? [])].sort((a, b) => byName(a.name, b.name)), [data])
   const environments = useMemo(
-    () => (data?.environments ?? []).filter((e) => !productId || e.productIds.includes(productId)).sort((a, b) => byName(a.name, b.name)),
+    () => (data?.environments ?? []).filter((e) => !productId || e.productId === productId).sort((a, b) => byName(a.name, b.name)),
     [data, productId],
   )
   const setFilter = useCallback(
@@ -211,6 +211,29 @@ function MapBody() {
       if (data) setParams((p) => filterParams(product, env, p, data))
     },
     [data, setParams],
+  )
+  // Region: `?region=<code>` keeps every environment drawn and fades the hosts in other regions.
+  const region = data?.regions.find((r) => r.code === params.get('region'))
+  const regions = useMemo(() => [...(data?.regions ?? [])].sort((a, b) => a.code.localeCompare(b.code)), [data])
+  const setRegion = useCallback(
+    (code: string) =>
+      setParams((p) => {
+        const out = new URLSearchParams(p)
+        if (code) out.set('region', code)
+        else out.delete('region')
+        return out
+      }),
+    [setParams],
+  )
+  const clearFilters = () =>
+    setParams((p) => {
+      const out = new URLSearchParams(p)
+      for (const k of ['product', 'env', 'region']) out.delete(k)
+      return out
+    })
+  const outsideRegion = useMemo(
+    () => (graph && region ? new Set(graph.nodes.flatMap((n) => (n.data.kind === 'host' && n.data.region?.id !== region.id ? [n.id] : []))) : null),
+    [graph, region],
   )
 
   // Search: matches in view, plus the whole inventory's when the filter hides them all.
@@ -225,14 +248,14 @@ function MapBody() {
     () => (data && filtered && searching && found.best === null ? searchGraph(fullGraph(data, metas), query) : NO_MATCHES),
     [data, metas, filtered, searching, found, query],
   )
-  // Everything but the matches and the groups they sit in fades.
+  // Everything but the matches and the groups they sit in fades, and so do hosts outside the region.
   const dimmed = useMemo(() => {
-    if (!graph || !searching) return null
+    if (!graph || !searching) return outsideRegion
     const keep = new Set(found.matches)
     const parent = new Map(graph.nodes.map((n) => [n.id, n.parentId]))
     for (const id of found.matches) for (let p = parent.get(id); p; p = parent.get(p)) keep.add(p)
-    return new Set(graph.nodes.flatMap((n) => (keep.has(n.id) ? [] : [n.id])))
-  }, [graph, searching, found])
+    return new Set(graph.nodes.flatMap((n) => (keep.has(n.id) && !outsideRegion?.has(n.id) ? [] : [n.id])))
+  }, [graph, searching, found, outsideRegion])
 
   // Zooming to a match selects it and rings it once; typing stays in the search box, so Enter cycles.
   const [highlightId, setHighlightId] = useState<string | null>(null)
@@ -411,16 +434,18 @@ function MapBody() {
   }, [])
 
   // The list hides what the search doesn't find, rather than fading it: a host stays when it, its
-  // environment or its product matches.
+  // environment or its product matches. Hosts outside the region are hidden the same way.
   const listGraph = useMemo(() => {
-    if (!graph || !model || !searching) return graph
+    if (!graph || !model || (!searching && !outsideRegion)) return graph
     const keep = new Set(found.matches)
     const kept = (id: string): boolean => {
+      if (outsideRegion?.has(id)) return false
+      if (!searching) return true
       for (let at: string | null = id; at; at = model.parent[at] ?? null) if (keep.has(at)) return true
       return false
     }
     return { ...graph, nodes: graph.nodes.filter((n) => n.data.kind !== 'host' || kept(n.id)) }
-  }, [graph, model, searching, found])
+  }, [graph, model, searching, found, outsideRegion])
   const onListConnect = useCallback((hostId: string, environmentId: string | null) => void connect(hostId, environmentId ?? undefined), [connect])
 
   return (
@@ -464,11 +489,21 @@ function MapBody() {
                 </option>
               ))}
             </select>
-            {(productId || environmentId) && (
+            {(regions.length > 1 || region) && (
+              <select aria-label="Region" value={region?.code ?? ''} onChange={(e) => setRegion(e.target.value)} className={FIELD}>
+                <option value="">All regions</option>
+                {regions.map((r) => (
+                  <option key={r.id} value={r.code}>
+                    {r.code}
+                  </option>
+                ))}
+              </select>
+            )}
+            {(productId || environmentId || region) && (
               <button
                 type="button"
                 aria-label="Clear filter"
-                onClick={() => setFilter('', '')}
+                onClick={clearFilters}
                 className="inline-flex h-6 items-center gap-1 rounded-full border border-line bg-surface-2/60 pr-2 pl-1.5 text-[12px] text-muted transition-colors hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
               >
                 <X aria-hidden className="size-3" />

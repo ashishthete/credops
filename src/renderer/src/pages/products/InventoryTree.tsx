@@ -4,6 +4,7 @@ import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, typ
 import { HOST_ROLES, type HostRole, type ProductIcon } from '../../../../shared/inventory'
 import { isFocusable, moveFocus, type NodeKey, type TreeRow } from '../../inventory/tree'
 import { exitFast, fast, spring, useMotionSafe } from '../../ui/motion'
+import { RegionChip } from '../../ui/RegionChip'
 import { PRODUCT_ICON } from './ProductDialog'
 import { ROLE_LABEL } from './ProductView'
 
@@ -275,7 +276,7 @@ const TreeItem = memo(function TreeItem({
   const draggable = present && (row.kind === 'host' || row.kind === 'environment')
   const pulse = sharedHighlight && motionSafe
   const descId = useId()
-  // The visible Shared badge and a hidden "Protected" describe the row; its name stays the bare label.
+  // A hidden description carries the role, protection, region and other places; its name stays the bare label.
   // What the row is, since an environment and a host can share a name.
   const kindLabel = row.kind === 'host' ? `Host ${row.label}` : row.kind === 'environment' ? `Environment ${row.label}` : undefined
   const alsoIn = row.alsoIn?.length ? `Also in ${row.alsoIn.join(', ')}` : undefined
@@ -285,7 +286,7 @@ const TreeItem = memo(function TreeItem({
         row.kind === 'host' && row.role && `Role ${ROLE_LABEL[row.role]}`,
         row.protected && 'Protected',
         row.kind === 'environment' && row.childCount === 0 && 'No hosts',
-        row.kind === 'environment' && row.sharedCount > 0 && 'Shared',
+        row.region && `Region ${row.region.code}`,
         alsoIn,
       ]
         .filter(Boolean)
@@ -414,20 +415,7 @@ const TreeItem = memo(function TreeItem({
             <Link2 aria-hidden className="size-3" strokeWidth={2.4} />
           </span>
         )}
-        {row.kind !== 'host' && row.sharedCount > 0 && (
-          <span
-            title={`Also in ${row.sharedCount} other ${row.sharedCount === 1 ? 'place' : 'places'}`}
-            className="relative inline-flex h-[18px] shrink-0 items-center gap-1 rounded-full px-1.5 text-[10.5px] font-medium"
-            style={{
-              color: row.color,
-              background: tint(13),
-              boxShadow: `inset 0 0 0 1px ${tint(26)}`,
-            }}
-          >
-            <Link2 aria-hidden className="size-2.5" strokeWidth={2.4} />
-            Shared
-          </span>
-        )}
+        {row.region && <RegionChip region={row.region} className="relative" />}
         {row.kind === 'host' && row.role && (
           <span
             title={`Role: ${ROLE_LABEL[row.role]}`}

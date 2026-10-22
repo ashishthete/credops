@@ -2,11 +2,13 @@ import { motion } from 'framer-motion'
 import { Box, Copy, Database, ExternalLink, Leaf, Pencil, Plug, RotateCw, Rocket, ScrollText, Trash2, Unplug, Zap } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
+import type { RegionRef } from '../../../../../shared/inventory'
 import type { AppServiceMeta, DbEngine, DbServiceMeta } from '../../../../../shared/services'
 import type { TunnelState } from '../../../../../shared/tunnels'
 import { closeServiceTunnel, openService, openServiceTunnel, syncServiceTunnel } from '../../../deploy/store'
 import { useTunnel } from '../../../tunnels/store'
 import { RowMenu } from '../../../ui/common'
+import { RegionChip } from '../../../ui/RegionChip'
 import { fast, spring, staggerDelay, useMotionSafe } from '../../../ui/motion'
 import { toast } from '../../../ui/Toaster'
 import { STATE_DOT, TunnelStateWord } from '../../tunnels/TunnelCard'
@@ -41,6 +43,8 @@ interface RowProps<T> {
   index: number
   onEdit: () => void
   onDelete: () => void
+  /** Set only when the environment spans more than one region. */
+  region?: RegionRef
 }
 
 export function ServiceRow({
@@ -48,6 +52,7 @@ export function ServiceRow({
   index,
   onEdit,
   onDelete,
+  region,
   onLogs,
   onDeploy,
 }: RowProps<AppServiceMeta> & { onLogs?: (svc: AppServiceMeta) => void; onDeploy?: (preselect: string[]) => void }) {
@@ -94,6 +99,7 @@ export function ServiceRow({
       <Box aria-hidden className="size-3.5 shrink-0 text-muted" />
       <span className="truncate text-[13px] font-medium text-fg">{svc.name}</span>
       <span className="truncate font-mono text-[12px] text-muted">{svc.composeService}</span>
+      {region && <RegionChip region={region} />}
       <span className="ml-auto shrink-0 text-[12px] text-muted">
         {orphan ? (
           'No checkout; only Open works'
@@ -111,7 +117,7 @@ export function ServiceRow({
 
 const LIVE: TunnelState[] = ['connecting', 'up', 'retrying']
 
-export function DbRow({ svc, index, viaLabel, routeChanged, onEdit, onDelete }: RowProps<DbServiceMeta> & { viaLabel: string | null; routeChanged: boolean }) {
+export function DbRow({ svc, index, viaLabel, routeChanged, onEdit, onDelete, region }: RowProps<DbServiceMeta> & { viaLabel: string | null; routeChanged: boolean }) {
   const motionSafe = useMotionSafe()
   const { runtime } = useTunnel(svc.tunnelId ?? '')
   const state: TunnelState = (svc.tunnelId && runtime?.state) || 'stopped'
@@ -172,6 +178,7 @@ export function DbRow({ svc, index, viaLabel, routeChanged, onEdit, onDelete }: 
       <span className="shrink-0 text-[12px] text-muted">{svc.dbEngine}</span>
       <span className="truncate font-mono text-[12px] text-muted">{`${svc.dbAddress}:${svc.dbPort}`}</span>
       {viaLabel && <span className="truncate text-[12px] text-muted">{`via ${viaLabel}`}</span>}
+      {region && <RegionChip region={region} />}
       {routeChanged && (
         <span className="ml-auto flex shrink-0 items-center gap-1 text-[12px] text-warn">
           Route changed; restart to apply

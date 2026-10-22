@@ -15,7 +15,7 @@ import { resolveHost } from '../../src/main/inventory/resolve'
 import { hostMeta } from '../../src/main/inventory/rows'
 import { ExecLinks, type ExecLinksDeps, type Lease } from '../../src/main/ops/exec-links'
 import { STOP_GRACE_MS, execOnce, type ExecResult } from '../../src/main/ops/exec'
-import { makeInventory } from './inventory-helpers'
+import { makeInventory, PRODUCT, REGION } from './inventory-helpers'
 import { idleAi, idleContainers, idleReleases, idleSessions, idleTunnels, shellExec, type ShellHost } from './ops-helpers'
 import { startServer, type ServerOpts, type TestServer } from './ssh-server'
 import { TUNNEL_USER, manualTimers } from './tunnel-helpers'
@@ -75,7 +75,7 @@ async function setup(deps: Partial<ExecLinksDeps> = {}) {
   let hostN = 0
   const host = (srv: TestServer, o: { trust?: boolean; envVars?: Record<string, string> } = {}): string => {
     if (o.trust !== false) knownHosts.trust('127.0.0.1', srv.port, srv.hostKeyType, srv.hostKeyBase64)
-    return f.hosts.create({ label: `host-${++hostN}`, address: '127.0.0.1', port: srv.port, envVars: o.envVars }).id
+    return f.hosts.create({ regionId: REGION, label: `host-${++hostN}`, address: '127.0.0.1', port: srv.port, envVars: o.envVars }).id
   }
   const prompts = (): SessionPrompt[] => events.flatMap((e) => (e.event === 'session:prompt' ? [e.payload] : []))
   const promptDone = (): string[] => events.flatMap((e) => (e.event === 'session:promptDone' ? [e.payload.promptId] : []))
@@ -179,7 +179,7 @@ describe('ExecLinks and execOnce', () => {
     const t = await setup()
     const srv = await server()
     const hostId = t.host(srv)
-    const env = t.envs.create({ name: 'staging', color: '#aabbcc' })
+    const env = t.envs.create({ productId: PRODUCT, name: 'staging', color: '#aabbcc' })
     t.envs.putHost(env.id, hostId, 'db')
     const a = await t.lease(hostId)
     const b = await t.lease(hostId, env.id)
@@ -509,7 +509,7 @@ describe('ExecLinks and execOnce', () => {
     const t = await setup()
     const srv = await server()
     const hostId = t.host(srv)
-    const env = t.envs.create({ name: 'prod', color: '#aabbcc' })
+    const env = t.envs.create({ productId: PRODUCT, name: 'prod', color: '#aabbcc' })
     await expect(t.lease(hostId, env.id)).rejects.toMatchObject({ code: 'unknown', message: 'host is not in that environment' })
     expect(srv.connections()).toBe(0)
   })

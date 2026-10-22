@@ -17,7 +17,7 @@ import {
   REPO_PATH,
   VERSION,
 } from '../../src/shared/deploy'
-import { hasRepoCredentials, MAX_JUMP_DEPTH, REPO_URL } from '../../src/shared/inventory'
+import { hasRepoCredentials, MAX_JUMP_DEPTH, REGION_CODE, REPO_URL } from '../../src/shared/inventory'
 import { DeployError } from '../../src/shared/deploy-error'
 import { MAX_RUNBOOKS, validateRunbook } from '../../src/shared/runbooks'
 import { MAX_SERVICES } from '../../src/shared/services'
@@ -30,7 +30,9 @@ import {
   type HubEnvManifest,
   type HubGrant,
   type HubIntegrations,
+  type HubProductRef,
   type HubPublishResult,
+  type HubRegionRef,
   type HubUser,
 } from '../../src/shared/hub'
 import { decide } from './access/policy'
@@ -101,6 +103,16 @@ function readHop(v: unknown, path: string): HubEnvManifest['hosts'][number]['hop
     port: int(o.port, `${path}/port`, 1, 65535),
     username: match(o.username, `${path}/username`, USERNAME, 'a user name'),
   }
+}
+
+function readProduct(v: unknown, path: string): HubProductRef {
+  const o = obj(v, path)
+  return { id: uuid(o.id, `${path}/id`), name: str(o.name, `${path}/name`) }
+}
+
+function readRegion(v: unknown, path: string): HubRegionRef {
+  const o = obj(v, path)
+  return { code: match(o.code, `${path}/code`, REGION_CODE, 'a region code'), displayName: str(o.displayName, `${path}/displayName`) }
 }
 
 function readIntegrations(v: unknown): HubIntegrations {
@@ -181,6 +193,8 @@ export function readManifest(input: unknown): HubEnvManifest {
     currentVersion: nullable(e.currentVersion, (x) => match(x, '/environment/currentVersion', VERSION, 'a version')),
     ...(e.parallelPrepare === undefined ? {} : { parallelPrepare: bool(e.parallelPrepare, '/environment/parallelPrepare') }),
     ...(e.prepareCap === undefined ? {} : { prepareCap: int(e.prepareCap, '/environment/prepareCap', 1, 8) }),
+    // Only when sent: an older desktop's manifest has no product, and hashes exactly as before.
+    ...(e.product !== undefined ? { product: readProduct(e.product, '/environment/product') } : {}),
   }
   const schema = m.schema === undefined || m.schema === 1 || m.schema === 2 ? (m.schema ?? 1) : bad('invalid manifest: /schema must be 1 or 2')
 
@@ -211,6 +225,7 @@ export function readManifest(input: unknown): HubEnvManifest {
       useSudo: oneOf(h.useSudo, `${p}/useSudo`, ['auto', 'yes', 'no']),
       hops,
       knownHosts,
+      ...(h.region !== undefined ? { region: readRegion(h.region, `${p}/region`) } : {}),
     }
   })
 
@@ -385,6 +400,8 @@ interface EnvRow {
   manifest_hash: string
   published_by: string
   published_at: string
+  product_id: string | null
+  product_name: string | null
 }
 interface HostRow {
   id: string
@@ -395,6 +412,8 @@ interface HostRow {
   hops: string
   known_hosts: string
   use_sudo: string
+  region_code: string | null
+  region_name: string | null
 }
 interface DepRow {
   id: string
@@ -514,15 +533,16 @@ export class Registry {
 
       this.db
         .prepare(
-          `INSERT INTO environments(id, name, protected, versioned, auto_rollback, current_version, integrations, manifest_hash, published_by, published_at, playbook_ops)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)
+          `INSERT INTO environments(id, name, protected, versioned, auto_rollback, current_version, integrations, manifest_hash, published_by, published_at,
+             playbook_ops, product_id, product_name)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(id) DO UPDATE SET name = excluded.name, protected = excluded.protected, versioned = excluded.versioned,
              auto_rollback = excluded.auto_rollback,
              current_version = CASE WHEN EXISTS (SELECT 1 FROM releases WHERE environment_id = environments.id AND version IS NOT NULL AND status IN ('succeeded','rolled_back')) THEN environments.current_version ELSE excluded.current_version END,
              integrations = excluded.integrations,
              manifest_hash = excluded.manifest_hash, published_by = excluded.published_by, published_at = excluded.published_at,
              playbook_ops = excluded.playbook_ops,
-             unpublished_at = NULL`,
+             product_id = excluded.product_id, product_name = excluded.product_name, unpublished_at = NULL`,
         )
         .run(
           env.id,
@@ -538,6 +558,8 @@ export class Registry {
           now,
           // Undefined keys drop out of the JSON, so an absent setting reads back as the default.
           JSON.stringify({ flow: env.flow, parallelPrepare: env.parallelPrepare, prepareCap: env.prepareCap, runbooks: manifest.runbooks }),
+          env.product?.id ?? null,
+          env.product?.name ?? null,
         )
       // A republish: from now on its history follows the grants given again, not the ones it had.
       this.db.prepare('DELETE FROM unpublished_grants WHERE environment_id = ?').run(env.id)
@@ -545,12 +567,13 @@ export class Registry {
       // Upsert by id, then remove what is gone: ids stay stable for grants and for the history that will hang off them.
       // Hosts may be shared, so each environment upserts its own row for a host.
       const putHost = this.db.prepare(
-        `INSERT INTO hosts(id, environment_id, label, address, port, username, hops, known_hosts, use_sudo) VALUES (?,?,?,?,?,?,?,?,?)
+        `INSERT INTO hosts(id, environment_id, label, address, port, username, hops, known_hosts, use_sudo, region_code, region_name) VALUES (?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(environment_id, id) DO UPDATE SET label = excluded.label, address = excluded.address,
-           port = excluded.port, username = excluded.username, hops = excluded.hops, known_hosts = excluded.known_hosts, use_sudo = excluded.use_sudo`,
+           port = excluded.port, username = excluded.username, hops = excluded.hops, known_hosts = excluded.known_hosts, use_sudo = excluded.use_sudo,
+           region_code = excluded.region_code, region_name = excluded.region_name`,
       )
       for (const h of manifest.hosts) {
-        putHost.run(h.id, env.id, h.label, h.address, h.port, h.username, JSON.stringify(h.hops), JSON.stringify(h.knownHosts), h.useSudo)
+        putHost.run(h.id, env.id, h.label, h.address, h.port, h.username, JSON.stringify(h.hops), JSON.stringify(h.knownHosts), h.useSudo, h.region?.code ?? null, h.region?.displayName ?? null)
       }
       const putService = this.db.prepare(
         `INSERT INTO services(id, environment_id, kind, name, meta) VALUES (?,?,?,?,?)
@@ -663,6 +686,7 @@ export class Registry {
         useSudo: h.use_sudo as HubEnvManifest['hosts'][number]['useSudo'],
         hops: JSON.parse(h.hops),
         knownHosts: JSON.parse(h.known_hosts),
+        ...(h.region_code !== null && h.region_name !== null ? { region: { code: h.region_code, displayName: h.region_name } } : {}),
       }),
     )
     const services = (this.db.prepare('SELECT * FROM services WHERE environment_id = ? ORDER BY name COLLATE NOCASE, id').all(r.id) as unknown as ServiceRow[]).map(
@@ -684,6 +708,7 @@ export class Registry {
         ...(ops.parallelPrepare === undefined ? {} : { parallelPrepare: ops.parallelPrepare }),
         ...(ops.prepareCap === undefined ? {} : { prepareCap: ops.prepareCap }),
         ...(ops.flow === undefined ? {} : { flow: ops.flow }),
+        ...(r.product_id !== null && r.product_name !== null ? { product: { id: r.product_id, name: r.product_name } } : {}),
       },
       hosts,
       services,
@@ -703,7 +728,7 @@ export class Registry {
     const present = this.secretIdsPresent(r.id)
     return {
       environment: m.environment,
-      hosts: view.hosts.map((h) => ({ id: h.id, label: h.label })),
+      hosts: view.hosts.map((h) => ({ id: h.id, label: h.label, ...(h.region ? { region: h.region } : {}) })),
       services: view.services,
       deployments: view.deployments,
       missingSecrets: m.requiredSecrets.filter((s) => !present.has(s.secretId)).length,

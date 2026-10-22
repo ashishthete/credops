@@ -9,6 +9,7 @@ import {
   type StepState,
   type TaskState,
 } from '../../../shared/deploy'
+import type { RegionRef } from '../../../shared/inventory'
 import { playbookSteps, type PlaybookPlay } from '../../../shared/playbook-steps'
 import { listNames } from '../../../shared/services'
 
@@ -67,6 +68,8 @@ export interface PipelineState {
   rollback: { active: boolean; runIds: string[]; ok: boolean | null }
   version: { from: string | null; to: string | null }
   lockBusy: { hostId: string; text: string; stale: boolean }[]
+  /** The regions of the release's hosts, ordered by code; empty for a Hub release, which doesn't carry them. */
+  regions: RegionRef[]
   /** Per step id, its tasks' results in arrival order; empty for releases from before `task.done`. */
   tasks: Record<string, TaskResult[]>
   /** The stored release playbook's tasks, for the step list; empty until the release has one. */
@@ -120,6 +123,7 @@ export function initialPipeline(detail: ReleaseDetail): PipelineState {
     rollback: { active: false, runIds: [], ok: null },
     version: { from: detail.previousVersion, to: detail.version },
     lockBusy: [],
+    regions: detail.regions ?? [],
     tasks: {},
     plays: detail.playbook ? playbookSteps(detail.playbook) : [],
     lastSeq: 0,

@@ -11,7 +11,7 @@ import { ATTACH_H, HOST_H, layoutGraph } from '../../src/renderer/src/map/layout
 import { nodeTypes } from '../../src/renderer/src/map/nodes'
 import type { ReleaseSummary } from '../../src/shared/deploy'
 import { releaseDetail } from './fixtures/release-events'
-import { appService, dbService, deploymentMeta, environment, host, product, tunnelMeta } from './helpers'
+import { appService, dbService, deploymentMeta, environment, host, product, REGION, tunnelMeta } from './helpers'
 
 // framer-motion caches matchMedia, so reduced motion is driven through its hook directly.
 const reduced = vi.hoisted(() => ({ on: false }))
@@ -33,7 +33,7 @@ function releaseSummary(id: string, serviceIds: string[]): ReleaseSummary {
 
 
 const ALL: MapScope = { kind: 'all' }
-const empty: InventoryData = { products: [], environments: [], hosts: [], identities: [], vaults: [] }
+const empty: InventoryData = { products: [], environments: [], hosts: [], identities: [], vaults: [], regions: [] }
 const ids = (g: ReturnType<typeof buildGraph>) => g.nodes.map((n) => n.id)
 const build = (data: InventoryData, scope: MapScope = ALL, tunnels = [] as ReturnType<typeof tunnelMeta>[]) => buildGraph({ data, tunnels, scope })
 
@@ -42,8 +42,8 @@ function basic(): InventoryData {
     ...empty,
     products: [product({ id: 'p1', name: 'Web' })],
     environments: [
-      environment({ id: 'e1', name: 'Prod', productIds: ['p1'], hosts: [{ hostId: 'h1', role: 'app' }, { hostId: 'h2', role: 'app' }] }),
-      environment({ id: 'e2', name: 'Stage', productIds: ['p1'], hosts: [{ hostId: 'h3', role: 'db' }] }),
+      environment({ id: 'e1', name: 'Prod', productId: 'p1', hosts: [{ hostId: 'h1', role: 'app' }, { hostId: 'h2', role: 'app' }] }),
+      environment({ id: 'e2', name: 'Stage', productId: 'p1', hosts: [{ hostId: 'h3', role: 'db' }] }),
     ],
     hosts: [
       host({ id: 'h1', label: 'alpha', environments: [{ environmentId: 'e1', role: 'app' }] }),
@@ -60,11 +60,21 @@ describe('buildGraph', () => {
     for (const n of g.nodes.filter((n) => n.data.kind === 'host')) expect(n.parentId).toBe(n.id.split('/')[0])
   })
 
+  it('an environment carries its one product, with one membership edge, and a host its region', () => {
+    const g = build({ ...basic(), regions: [REGION] })
+    const env = g.nodes.find((n) => n.id === 'e:e1')!.data
+    expect(env).toMatchObject({ kind: 'environment', productName: 'Web' })
+    expect(g.edges.filter((e) => e.data.kind === 'membership').map((e) => e.id)).toEqual(['m:p1>e:e1', 'm:p1>e:e2'])
+    expect(g.nodes.find((n) => n.id === 'e:e1/h:h1')!.data).toMatchObject({ region: { id: REGION.id, code: 'test-1', displayName: 'Test' } })
+    // A region the inventory doesn't list leaves the host without one.
+    expect(build(basic()).nodes.find((n) => n.id === 'e:e1/h:h1')!.data).toMatchObject({ region: null })
+  })
+
   it('orders hosts by role, then label', () => {
     const d = basic()
     d.environments = [
       environment({
-        id: 'e1', name: 'Prod', productIds: ['p1'],
+        id: 'e1', name: 'Prod', productId: 'p1',
         hosts: [{ hostId: 'h1', role: 'other' }, { hostId: 'h2', role: 'db' }, { hostId: 'h3', role: 'app' }, { hostId: 'h4', role: 'bastion' }],
       }),
     ]
@@ -81,29 +91,6 @@ describe('buildGraph', () => {
     expect(hosts.map((n) => (n.data as HostNodeData).sharedCount)).toEqual([2, 2])
   })
 
-  it('an environment in two products sits under its primary product only', () => {
-    const d = basic()
-    d.products.push(product({ id: 'pB', name: 'Api' }))
-    d.products[0] = product({ id: 'pA', name: 'Web' })
-    d.environments[0].productIds = ['pB', 'pA']
-    d.environments = [d.environments[0]]
-    const g = build(d)
-    expect(g.nodes.filter((n) => n.id === 'e:e1')).toHaveLength(1)
-    const m = Object.fromEntries(g.edges.filter((e) => e.data.kind === 'membership').map((e) => [e.id, e.data]))
-    expect(m['m:pA>e:e1']).toEqual({ kind: 'membership', primary: true })
-    expect(m['m:pB>e:e1']).toEqual({ kind: 'membership', primary: false })
-  })
-
-  it('product scope restricts the primary product', () => {
-    const d = basic()
-    d.products = [product({ id: 'pA', name: 'Web' }), product({ id: 'pB', name: 'Api' })]
-    d.environments = [d.environments[0]]
-    d.environments[0].productIds = ['pA', 'pB']
-    const g = build(d, { kind: 'product', productId: 'pB' })
-    expect(g.edges.filter((e) => e.data.kind === 'membership').map((e) => [e.id, e.data])).toEqual([['m:pB>e:e1', { kind: 'membership', primary: true }]])
-    expect(ids(g)).toEqual(['p:pB', 'e:e1', 'e:e1/h:h1', 'e:e1/h:h2'])
-  })
-
   it('hosts in no environment land in the unassigned group', () => {
     const d = basic()
     expect(ids(build(d))).not.toContain('u')
@@ -116,9 +103,9 @@ describe('buildGraph', () => {
     expect(ids(build(d, { kind: 'product', productId: 'p1' }))).not.toContain('u')
   })
 
-  it('an environment with no product is its own group with no edge', () => {
+  it('an environment whose product is not in the list is its own group with no edge', () => {
     const d = basic()
-    d.environments[1].productIds = []
+    d.environments[1].productId = 'gone'
     const g = build(d)
     expect(ids(g)).toContain('e:e2')
     expect(g.edges.some((e) => e.target === 'e:e2')).toBe(false)
@@ -195,17 +182,17 @@ describe('buildGraph', () => {
   it("product scope keeps only that product's environments", () => {
     const d = basic()
     d.products.push(product({ id: 'p2', name: 'Api' }))
-    d.environments.push(environment({ id: 'e3', name: 'Other', productIds: ['p2'] }))
+    d.environments.push(environment({ id: 'e3', name: 'Other', productId: 'p2' }))
     const g = build(d, { kind: 'product', productId: 'p1' })
     expect(ids(g)).toEqual(['p:p1', 'e:e1', 'e:e1/h:h1', 'e:e1/h:h2', 'e:e2', 'e:e2/h:h3'])
   })
 
-  it('environment scope shows the environment and all its products', () => {
+  it('environment scope shows the environment and its product', () => {
     const d = basic()
     d.products.push(product({ id: 'p2', name: 'Api' }), product({ id: 'p3', name: 'Zed' }))
-    d.environments[0].productIds = ['p1', 'p2']
+    d.environments[0].productId = 'p2'
     const g = build(d, { kind: 'environment', environmentId: 'e1' })
-    expect(ids(g)).toEqual(['p:p2', 'p:p1', 'e:e1', 'e:e1/h:h1', 'e:e1/h:h2'])
+    expect(ids(g)).toEqual(['p:p2', 'e:e1', 'e:e1/h:h1', 'e:e1/h:h2'])
   })
 
   it('resolves vault names and skips unknown ids', () => {
@@ -229,7 +216,7 @@ describe('buildGraph', () => {
       const environments = Array.from({ length: rnd(5) }, (_, k) =>
         environment({
           id: `e${k}`, name: `E${rnd(9)}`,
-          productIds: products.filter(() => rnd(2) === 0).map((p) => p.id).concat(rnd(5) === 0 ? ['ghost'] : []),
+          productId: (rnd(5) === 0 ? null : pick(products)?.id) ?? 'ghost',
           defaultJumpHostId: rnd(2) ? pick(hostIds) : null,
           hosts: hostIds.filter(() => rnd(2) === 0).map((hostId) => ({ hostId, role: 'app' as const })),
         }),

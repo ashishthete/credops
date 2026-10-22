@@ -9,6 +9,7 @@ import { api } from '../../../lib/api'
 import { Badge } from '../../../ui/Badge'
 import { Button } from '../../../ui/Button'
 import { attempt, ConfirmDialog, type ConfirmRequest } from '../../../ui/common'
+import { RegionChip } from '../../../ui/RegionChip'
 import { AnsibleSteps } from './AnsibleSteps'
 import { Celebrate } from './Celebrate'
 import { Pipeline } from './Pipeline'
@@ -225,6 +226,9 @@ export function ReleaseView({ releaseId }: { releaseId: string }) {
         )}
         {summary.playbookSource === 'edited' && <Badge tone="warn">Edited playbook</Badge>}
         {deployments && <span className="text-[12.5px] text-fg/85">{deployments}</span>}
+        {state.regions.map((r) => (
+          <RegionChip key={r.id} region={r} emphasis={state.regions.length > 1} />
+        ))}
         {version && <span className="font-mono text-[12.5px] text-fg/85 tabular-nums">{version}</span>}
         <Badge tone={STATUS_TONE[state.status]} dot>
           {cancelling && running ? 'cancelling' : STATUS_WORD[state.status]}

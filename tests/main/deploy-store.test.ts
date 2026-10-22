@@ -5,6 +5,7 @@ import { MAX_DEPLOYMENTS } from '../../src/shared/deploy'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import { makeDeployFixture } from './deploy-helpers'
 import { auditRows } from './vault-helpers'
+import { REGION } from './inventory-helpers'
 
 describe('DeployStore', () => {
   it('creates a deployment with defaults and audits without paths', async () => {
@@ -67,7 +68,7 @@ describe('DeployStore', () => {
 
   it('a checkout on a non-member host adds it as an app host', async () => {
     const f = await makeDeployFixture()
-    const other = f.hosts.create({ label: 'lonely', address: '10.0.0.8' })
+    const other = f.hosts.create({ regionId: REGION, label: 'lonely', address: '10.0.0.8' })
     const role = (hostId: string) =>
       (f.db.prepare('SELECT role FROM environment_hosts WHERE environment_id = ? AND host_id = ?').get(f.staging.id, hostId) as { role: string } | undefined)?.role
     expect(role(other.id)).toBeUndefined()
@@ -83,7 +84,7 @@ describe('DeployStore', () => {
     f.deploys.update(d.id, { name: 'api2' })
     expect(role(other.id)).toBe('app')
     // A failed save adds nothing.
-    const third = f.hosts.create({ label: 'third', address: '10.0.0.10' })
+    const third = f.hosts.create({ regionId: REGION, label: 'third', address: '10.0.0.10' })
     expect(() => f.deploys.create(f.input({ name: 'bad', hostId: third.id, repoPath: 'relative' }))).toThrow()
     expect(role(third.id)).toBeUndefined()
     expect(() => f.deploys.create(f.input({ hostId: '00000000-0000-4000-8000-000000000000' }))).toThrow('host not found')
@@ -235,7 +236,7 @@ describe('DeployStore', () => {
     const msg = 'a deployment cannot move to another environment or host; recreate it'
     expect(() => f.deploys.update(d.id, { environmentId: f.prod.id })).toThrow(msg)
     expect(() => f.deploys.update(d.id, { hostId: f.host.id })).not.toThrow()
-    const h2 = f.hosts.create({ label: 'h2', address: '10.1.1.1' })
+    const h2 = f.hosts.create({ regionId: REGION, label: 'h2', address: '10.1.1.1' })
     expect(() => f.deploys.update(d.id, { hostId: h2.id })).toThrow(msg)
     expect(f.deploys.get(d.id).environmentId).toBe(f.staging.id)
     expect(() => asDeploymentPatch({ environmentId: f.prod.id }, 'args[1]')).toThrow(/not an allowed key/)
@@ -322,7 +323,7 @@ describe('DeployStore', () => {
 
   it('applyBatch: never turns versioned off on a protected or prod environment; turning it on is fine', async () => {
     const f = await makeDeployFixture()
-    const live = f.envs.create({ name: 'Prod', color: '#aa0000' })
+    const live = f.envs.create({ productId: f.products.create({ name: 'Other', color: '#111111', icon: 'boxes' }).id, name: 'Prod', color: '#aa0000' })
     for (const id of [f.prod.id, live.id]) {
       f.deploys.updateSettings(id, { versioned: true })
       expect(() => f.deploys.applyBatch(id, { settings: { versioned: false }, deployments: [] })).toThrow(

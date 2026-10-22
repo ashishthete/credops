@@ -8,7 +8,7 @@ import { IntegrationStore } from '../../src/main/settings/integration-store'
 import { SettingsStore } from '../../src/main/settings/settings-store'
 import { SecretStore } from '../../src/main/vault/secret-store'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
-import { makeInventory } from './inventory-helpers'
+import { makeInventory, PRODUCT, REGION } from './inventory-helpers'
 import { auditRows } from './vault-helpers'
 
 const HOOK = 'https://x.webhook.office.com/abc/SECRETPATH'
@@ -65,7 +65,7 @@ async function setup(fetchImpl: () => Promise<Response> = async () => new Respon
     notifier,
     knownSecrets: () => [...secrets.knownValues()],
   })
-  const env = f.envs.create({ name: 'prod', color: '#ef4444' })
+  const env = f.envs.create({ productId: PRODUCT, name: 'prod', color: '#ef4444' })
   const handlers = createNotifyHandlers({
     db: f.db,
     sink,
@@ -190,8 +190,8 @@ describe('notify:log', () => {
 
   it('filters to one environment through its releases and tunnels', async () => {
     const { f, handlers, env } = await setup()
-    const other = f.envs.create({ name: 'staging', color: '#22c55e' })
-    const host = f.hosts.create({ label: 'app1', address: '10.0.0.7' })
+    const other = f.envs.create({ productId: PRODUCT, name: 'staging', color: '#22c55e' })
+    const host = f.hosts.create({ regionId: REGION, label: 'app1', address: '10.0.0.7' })
     const now = '2026-10-19T09:00:00.000Z'
     const rel = f.db.prepare("INSERT INTO releases(id, environment_id, kind, status, triggered_by, created_at) VALUES (?,?,'release','failed','t',?)")
     rel.run('r-prod', env.id, now)

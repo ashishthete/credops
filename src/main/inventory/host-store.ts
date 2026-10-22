@@ -77,6 +77,7 @@ export class HostStore {
   insertInTx(input: HostInput, id: string = randomUUID()): string {
     const label = this.uniqueLabel(checkLabel(input.label))
     const address = checkAddress(input.address)
+    const regionId = this.checkRegion(input.regionId)
     const port = input.port == null ? null : checkPort(input.port)
     const identityId = this.checkIdentity(input.identityId)
     const jumpHostId = input.jumpHostId == null ? null : this.checkJump(input.jumpHostId)
@@ -90,10 +91,10 @@ export class HostStore {
     const ts = new Date().toISOString()
     this.db
       .prepare(
-        `INSERT INTO hosts(id, label, address, port, identity_id, jump_host_id, tags, os_icon, notes, keepalive_sec, env_vars, created_at, updated_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO hosts(id, label, address, region_id, port, identity_id, jump_host_id, tags, os_icon, notes, keepalive_sec, env_vars,
+          created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
-      .run(id, label, address, port, identityId, jumpHostId, JSON.stringify(tags), osIcon, notes, keepaliveSec, envVars, ts, ts)
+      .run(id, label, address, regionId, port, identityId, jumpHostId, JSON.stringify(tags), osIcon, notes, keepaliveSec, envVars, ts, ts)
     for (const vaultId of vaultIds) {
       this.db.prepare('INSERT INTO host_vaults(host_id, vault_id) VALUES (?,?)').run(id, vaultId)
     }
@@ -126,6 +127,7 @@ export class HostStore {
     const before = hostRow(this.db, id)
     const label = patch.label === undefined ? before.label : this.uniqueLabel(checkLabel(patch.label), id)
     const address = patch.address === undefined ? before.address : checkAddress(patch.address)
+    const regionId = patch.regionId === undefined ? before.region_id : this.checkRegion(patch.regionId)
     const port = patch.port === undefined ? before.port : patch.port === null ? null : checkPort(patch.port)
     const identityId = patch.identityId === undefined ? before.identity_id : this.checkIdentity(patch.identityId)
     const jumpHostId =
@@ -144,6 +146,7 @@ export class HostStore {
     const fields = [
       label !== before.label && 'label',
       address !== before.address && 'address',
+      regionId !== before.region_id && 'regionId',
       port !== before.port && 'port',
       identityId !== before.identity_id && 'identityId',
       jumpHostId !== before.jump_host_id && 'jumpHostId',
@@ -156,10 +159,10 @@ export class HostStore {
     if (fields.length === 0) return null
     this.db
       .prepare(
-        `UPDATE hosts SET label = ?, address = ?, port = ?, identity_id = ?, jump_host_id = ?, tags = ?,
+        `UPDATE hosts SET label = ?, address = ?, region_id = ?, port = ?, identity_id = ?, jump_host_id = ?, tags = ?,
           os_icon = ?, notes = ?, keepalive_sec = ?, env_vars = ?, updated_at = ? WHERE id = ?`,
       )
-      .run(label, address, port, identityId, jumpHostId, tagsJson, osIcon, notes, keepaliveSec, envVars, new Date().toISOString(), id)
+      .run(label, address, regionId, port, identityId, jumpHostId, tagsJson, osIcon, notes, keepaliveSec, envVars, new Date().toISOString(), id)
     return { label, fields }
   }
 
@@ -238,6 +241,12 @@ export class HostStore {
       throw new Error('a host with that label already exists')
     }
     return label
+  }
+
+  private checkRegion(id: string | null | undefined): string {
+    if (typeof id !== 'string' || id === '') throw new Error('a host needs a region')
+    if (!exists(this.db, 'regions', id)) throw new Error('region not found')
+    return id
   }
 
   private checkIdentity(id: string | null | undefined): string | null {

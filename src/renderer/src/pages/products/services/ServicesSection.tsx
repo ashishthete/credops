@@ -3,8 +3,10 @@ import { ArrowUpDown, Boxes, CopyPlus, Database, FolderGit2, GitBranch, Pencil, 
 import { useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import type { DeploymentMeta } from '../../../../../shared/deploy'
 import { REPO_URL_LEGACY_WARNING, isLegacyRepoUrl, maskRepoUrl, type EnvironmentMeta } from '../../../../../shared/inventory'
+import { hostRegions, serviceRegion } from '../../../../../shared/regions'
 import { envAppHost, type AppServiceMeta, type DbServiceMeta, type ServiceKind, type ServiceMeta } from '../../../../../shared/services'
 import { reorderServices, useDeploy, useDeployments, useServices } from '../../../deploy/store'
+import { regionById, regionsOfEnvironment } from '../../../inventory/regions'
 import type { InventoryData } from '../../../inventory/store'
 import { Button } from '../../../ui/Button'
 import { ConfirmDialog, RowMenu, type ConfirmRequest } from '../../../ui/common'
@@ -57,6 +59,13 @@ export function ServicesSection({ env, data, onDeploy, onLogs, onCopy }: Service
     }
   }, [services, checkouts])
 
+  // Region chips only where they tell services apart: an environment spanning more than one region.
+  const regionOf = useMemo(() => {
+    if (regionsOfEnvironment(data, env.id, checkouts, services).length < 2) return () => undefined
+    const byHost = hostRegions(data.hosts)
+    return (svc: ServiceMeta) => regionById(data.regions, serviceRegion(byHost, svc, checkouts))
+  }, [data, env.id, checkouts, services])
+
   const ask = (svc: ServiceMeta) => setConfirm(deleteRequest(env, svc))
   const edit = (svc: ServiceMeta) => setEditing({ kind: svc.kind, service: svc })
   const add = (kind: ServiceKind) => setEditing({ kind })
@@ -64,7 +73,7 @@ export function ServicesSection({ env, data, onDeploy, onLogs, onCopy }: Service
   // One running index across the groups, so the cascade reads top to bottom.
   let index = 0
   const appRow = (s: AppServiceMeta) => (
-    <ServiceRow key={s.id} svc={s} index={index++} onEdit={() => edit(s)} onDelete={() => ask(s)} onLogs={onLogs} onDeploy={onDeploy} />
+    <ServiceRow key={s.id} svc={s} index={index++} region={regionOf(s)} onEdit={() => edit(s)} onDelete={() => ask(s)} onLogs={onLogs} onDeploy={onDeploy} />
   )
 
   return (
@@ -147,6 +156,7 @@ export function ServicesSection({ env, data, onDeploy, onLogs, onCopy }: Service
                       index={index++}
                       viaLabel={via ? (hostLabel.get(via) ?? null) : null}
                       routeChanged={!!routeChanged[s.id]}
+                      region={regionOf(s)}
                       onEdit={() => edit(s)}
                       onDelete={() => ask(s)}
                     />

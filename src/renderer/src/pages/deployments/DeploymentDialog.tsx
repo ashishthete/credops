@@ -1,10 +1,11 @@
 import { Plus, X } from 'lucide-react'
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { MAX_URLS } from '../../../../shared/deploy'
-import { REPO_URL_LEGACY_WARNING, isLegacyRepoUrl } from '../../../../shared/inventory'
+import { REPO_URL_LEGACY_WARNING, isLegacyRepoUrl, type RegionMeta } from '../../../../shared/inventory'
 import type { SecretMeta } from '../../../../shared/vault'
 import { blankForm, checkForm, formFrom, stepErrors, toInput, toPatch, type DeploymentForm, type FormField } from '../../deploy/form'
 import { createDeployment, deployStore, updateDeployment, useServices } from '../../deploy/store'
+import { hostsByRegion } from '../../inventory/regions'
 import { reloadInventory, useInventory } from '../../inventory/store'
 import { api } from '../../lib/api'
 import { Button } from '../../ui/Button'
@@ -15,6 +16,8 @@ import { Switch } from '../../ui/Switch'
 import { toast } from '../../ui/Toaster'
 import { EnvTemplateEditor } from './EnvTemplateEditor'
 import { StepsSection } from './StepsSection'
+
+const regionLabel = (r: RegionMeta | undefined) => (r ? `${r.code} · ${r.displayName}` : 'No region')
 
 /** `focus: 'useSudo'` opens the edit on the sudo setting (from a logs follow docker refused). */
 export type DeploymentRequest = { kind: 'new'; environmentId: string } | { kind: 'edit'; id: string; focus?: 'useSudo' }
@@ -175,20 +178,25 @@ export function DeploymentDialog({ request, onClose }: DeploymentDialogProps) {
           <div className="grid grid-cols-2 gap-3">
             <SelectField label="Host" value={form.hostId} onChange={(e) => set({ hostId: e.target.value })} error={err('hostId')}>
               <option value="">Choose a host…</option>
-              {hosts.map((h) => (
-                <option key={h.id} value={h.id}>
-                  {h.label}
-                </option>
-              ))}
-              {others.length > 0 && (
-                <optgroup label="Other hosts (joins as an app host)">
-                  {others.map((h) => (
+              {/* Members by region, then the other hosts by region. */}
+              {hostsByRegion(data?.regions ?? [], hosts).map((g) => (
+                <optgroup key={g.region?.id ?? ''} label={regionLabel(g.region)}>
+                  {g.hosts.map((h) => (
                     <option key={h.id} value={h.id}>
                       {h.label}
                     </option>
                   ))}
                 </optgroup>
-              )}
+              ))}
+              {hostsByRegion(data?.regions ?? [], others).map((g) => (
+                <optgroup key={`other:${g.region?.id ?? ''}`} label={`Other hosts in ${regionLabel(g.region)} (joins as an app host)`}>
+                  {g.hosts.map((h) => (
+                    <option key={h.id} value={h.id}>
+                      {h.label}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
             </SelectField>
             <TextField
               label="Compose project"

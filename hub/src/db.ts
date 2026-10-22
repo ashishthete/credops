@@ -177,7 +177,16 @@ ALTER TABLE hosts_v9 RENAME TO hosts;
 ALTER TABLE deployments_v9 RENAME TO deployments;
 `
 
-// The shared ReleaseStore reads these columns. Version 10 is reserved by the regions branch.
+// The publisher's product and each host's region. Nullable: an older desktop's manifest has neither, and rows
+// published before this get them on their next publish.
+const PRODUCT_REGION = `
+ALTER TABLE environments ADD COLUMN product_id TEXT;
+ALTER TABLE environments ADD COLUMN product_name TEXT;
+ALTER TABLE hosts ADD COLUMN region_code TEXT;
+ALTER TABLE hosts ADD COLUMN region_name TEXT;
+`
+
+// The shared ReleaseStore reads these columns.
 const PLAYBOOK_OPS = `
 ALTER TABLE releases ADD COLUMN operation TEXT NULL;
 ALTER TABLE releases ADD COLUMN playbook_source TEXT NULL;
@@ -196,6 +205,7 @@ export const HUB_MIGRATIONS: Migration[] = [
   { version: 7, name: 'notify', up: NOTIFY },
   { version: 8, name: 'history', up: HISTORY },
   { version: 9, name: 'shared_hosts', up: SHARED_HOSTS },
+  { version: 10, name: 'product_region', up: PRODUCT_REGION },
   { version: 11, name: 'playbook_ops', up: PLAYBOOK_OPS },
 ]
 

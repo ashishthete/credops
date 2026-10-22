@@ -3,16 +3,18 @@ import { Boxes, Inbox, Plus } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
 import type { EnvironmentMeta, Membership, ProductMeta } from '../../../../shared/inventory'
-import { inv, inventoryStore, loadInventory, useInventory, type InventoryData } from '../../inventory/store'
+import { regionHintText } from '../../inventory/regions'
+import { inv, inventoryStore, loadInventory, reloadInventory, useInventory, type InventoryData } from '../../inventory/store'
 import { buildTree, environmentKey, selectionFromKey, type NodeKey, type TreeRow } from '../../inventory/tree'
 import { Badge } from '../../ui/Badge'
 import { registerCommand } from '../../ui/commands'
-import { ConfirmDialog, plural, type ConfirmRequest } from '../../ui/common'
+import { attempt, ConfirmDialog, plural, type ConfirmRequest } from '../../ui/common'
 import { EmptyState } from '../../ui/EmptyState'
 import { fast, useMotionSafe } from '../../ui/motion'
 import { useShortcut } from '../../ui/shortcuts'
 import { Skeleton } from '../../ui/Skeleton'
 import { toast } from '../../ui/Toaster'
+import { api } from '../../lib/api'
 import { useVaultStatus } from '../../vault/status'
 import { HostDialog } from '../hosts/HostDialog'
 import { HostView } from '../hosts/HostView'
@@ -21,6 +23,7 @@ import { EnvironmentView } from './EnvironmentView'
 import { InventoryTree } from './InventoryTree'
 import { ProductDialog } from './ProductDialog'
 import { PaneHeader, ProductView } from './ProductView'
+import { RegionsUpgradeBanner } from './RegionsUpgradeBanner'
 
 /** Every node of the fully expanded tree: the expandable ones, and all keys. */
 function everyNode(data: InventoryData): { expandable: Set<NodeKey>; all: Set<NodeKey> } {
@@ -38,7 +41,8 @@ const parentOf = (key: NodeKey) => (key.includes('/') ? key.slice(0, key.lastInd
 
 type Dialogs =
   | { kind: 'product'; product?: ProductMeta }
-  | { kind: 'environment'; environment?: EnvironmentMeta; productIds: string[] }
+  /** `productId` presets a new environment's product; `locked` keeps it there (opened from that product). */
+  | { kind: 'environment'; environment?: EnvironmentMeta; productId?: string; locked?: boolean }
   | { kind: 'host'; presetEnvironment: Membership; envKey: NodeKey }
   | null
 
@@ -102,7 +106,7 @@ export function ProductsPage() {
   const closeDialog = () => setDialogOpen(false)
 
   const newProduct = () => openDialog({ kind: 'product' })
-  const newEnvironment = (productId = sel.productId) => openDialog({ kind: 'environment', productIds: productId ? [productId] : [] })
+  const newEnvironment = (productId = sel.productId, locked = false) => openDialog({ kind: 'environment', productId, locked })
 
   const openNewRef = useRef({ newProduct, newEnvironment, hasProduct: !!sel.productId })
   useEffect(() => {
@@ -145,7 +149,7 @@ export function ProductsPage() {
   const canDrop = (drag: TreeRow, target: TreeRow) => {
     if (dropping) return false
     if (drag.kind === 'host' && target.kind === 'environment') return !env(target.id)?.hosts.some((h) => h.hostId === drag.id)
-    if (drag.kind === 'environment' && target.kind === 'product') return !env(drag.id)?.productIds.includes(target.id)
+    if (drag.kind === 'environment' && target.kind === 'product') return env(drag.id)?.productId !== target.id
     return false
   }
 
@@ -153,42 +157,73 @@ export function ProductsPage() {
     whileDropping(async () => {
       // A new membership starts as app; the role in the source environment doesn't carry over.
       const role = env(target.id)?.defaultJumpHostId === host.id ? 'bastion' : 'app'
+      // Worked out before the drop; the host itself never counts, so the order doesn't matter.
+      const meta = data?.hosts.find((h) => h.id === host.id)
+      const hint = data && meta ? regionHintText(data, target.id, meta) : null
       if (await inv.putHost(target.id, host.id, role)) {
         expand(target.key)
-        toast({ title: `Added ${host.label} to ${target.label}`, tone: 'success' })
+        toast({ title: `Added ${host.label} to ${target.label}`, description: hint ?? undefined, tone: 'success' })
       }
     })
 
+  // A drop re-parents the environment, so it asks first.
   const dropEnvironment = (from: TreeRow, target: TreeRow) =>
-    whileDropping(async () => {
-      const e = env(from.id)
-      if (!e) return
-      if (await inv.setEnvironmentProducts(e.id, [...e.productIds, target.id])) {
-        expand(target.key)
-        toast({ title: `Added ${from.label} to ${target.label}`, tone: 'success' })
-      }
+    setConfirm({
+      title: `Move ${from.label} to ${target.label}?`,
+      description: 'Its hosts, checkouts and services go with it.',
+      confirmLabel: 'Move',
+      gentle: { cancelLabel: 'Cancel' },
+      run: () =>
+        whileDropping(async () => {
+          if (await inv.setEnvironmentProduct(from.id, target.id)) {
+            expand(target.key)
+            toast({ title: `Moved ${from.label} to ${target.label}`, tone: 'success' })
+          }
+        }),
     })
 
-  const askDeleteProduct = (p: ProductMeta) =>
+  /** Opens a product with its environments in view. */
+  const showProduct = (id: string) => {
+    expand(`p:${id}`)
+    select(`p:${id}`)
+  }
+
+  const askDeleteProduct = (p: ProductMeta) => {
+    // Main refuses while the product has environments; its message says so, and the toast offers to show them.
+    if (data?.environments.some((e) => e.productId === p.id)) {
+      void (async () => {
+        const refuse = (message: string) =>
+          toast({ title: `Couldn't delete ${p.name}`, description: message, tone: 'error', action: { label: 'Show them', run: () => showProduct(p.id) } })
+        const deleted = await attempt(
+          "Couldn't delete the product",
+          async () => {
+            await api.invoke('product:delete', p.id)
+            return true
+          },
+          refuse,
+        )
+        if (deleted) {
+          // They were moved away since this view last read them.
+          await reloadInventory()
+          toast({ title: `Deleted ${p.name}`, tone: 'success' })
+        }
+      })()
+      return
+    }
     setConfirm({
       title: `Delete ${p.name}?`,
-      description: 'Its environments and hosts are kept. Environments in no other product move to Unassigned.',
+      description: 'It has no environments, so nothing else is removed.',
       confirmLabel: 'Delete product',
       run: async () => {
         if (await inv.deleteProduct(p.id)) toast({ title: `Deleted ${p.name}`, tone: 'success' })
       },
     })
-
-  const productName = (id: string) => data?.products.find((p) => p.id === id)?.name ?? id
+  }
 
   const askDeleteEnvironment = (e: EnvironmentMeta, key: NodeKey) => {
-    // A shared environment is one record, so deleting it here takes it out of every product.
-    const others = e.productIds.filter((id) => id !== selectionFromKey(key).productId).map(productName)
     setConfirm({
       title: `Delete ${e.name}?`,
-      description: others.length
-        ? `It's also in ${others.join(', ')}; deleting removes it there too. To keep it there, use Remove from this product instead. Its hosts are kept.`
-        : 'Its hosts are kept, along with their places in other environments.',
+      description: 'Its hosts are kept, along with their places in other environments.',
       confirmLabel: 'Delete environment',
       typeToConfirm: e.protected ? e.name : undefined,
       run: async () => {
@@ -198,19 +233,6 @@ export function ProductsPage() {
         }
       },
     })
-  }
-
-  /** Takes the environment out of one product; it stays in the others, or moves to Unassigned. */
-  const removeFromProduct = async (e: EnvironmentMeta, productId: string) => {
-    const rest = e.productIds.filter((id) => id !== productId)
-    const row = await inv.setEnvironmentProducts(e.id, rest)
-    if (!row) return
-    toast({ title: rest.length ? `Removed ${e.name} from ${productName(productId)}` : `Moved ${e.name} to Unassigned`, tone: 'success' })
-    if (sel.environmentId === e.id && sel.productId === productId) {
-      const key = environmentKey(row)
-      expand(parentOf(key))
-      select(key)
-    }
   }
 
   const askRemoveHost = (e: EnvironmentMeta, hostId: string) => {
@@ -255,13 +277,8 @@ export function ProductsPage() {
           onSelect={select}
           onRemoveHost={(id) => askRemoveHost(e, id)}
           onNewHost={() => openDialog({ kind: 'host', presetEnvironment: { environmentId: e.id, role: 'app' }, envKey: selected })}
-          onEdit={() => openDialog({ kind: 'environment', environment: e, productIds: e.productIds })}
+          onEdit={() => openDialog({ kind: 'environment', environment: e })}
           onDelete={() => askDeleteEnvironment(e, selected)}
-          removeFrom={
-            sel.productId && e.productIds.includes(sel.productId)
-              ? { productName: productName(sel.productId), run: () => void removeFromProduct(e, sel.productId!) }
-              : undefined
-          }
         />
       )
     }
@@ -277,24 +294,18 @@ export function ProductsPage() {
             expand(selected)
             select(`${selected}/e:${id}`)
           }}
-          onNewEnvironment={() => newEnvironment(p.id)}
+          onNewEnvironment={() => newEnvironment(p.id, true)}
           onEdit={() => openDialog({ kind: 'product', product: p })}
           onDelete={() => askDeleteProduct(p)}
-          onRemoveEnvironment={(id) => {
-            const e = env(id)
-            if (e) void removeFromProduct(e, p.id)
-          }}
         />
       )
     }
-    const loose = data.environments.filter((e) => e.productIds.length === 0).length
     const looseHosts = data.hosts.filter((h) => h.environments.length === 0).length
     return (
       <>
-        <PaneHeader lead={<Inbox aria-hidden className="size-4 text-muted" />} title="Unassigned" />
+        <PaneHeader lead={<Inbox aria-hidden className="size-4 text-muted" />} title="Unassigned hosts" />
         <p className="max-w-[64ch] px-8 pt-2 text-[13px] leading-5 text-muted">
-          {plural(loose, 'environment')} in no product and {plural(looseHosts, 'host')} in no environment. Drag them onto a product
-          or environment in the tree.
+          {plural(looseHosts, 'host')} in no environment. Drag them onto an environment in the tree.
         </p>
       </>
     )
@@ -340,6 +351,18 @@ export function ProductsPage() {
       </aside>
 
       <section aria-label="Details" className="flex min-w-0 flex-1 flex-col">
+        {data && (
+          <RegionsUpgradeBanner
+            data={data}
+            onOpen={(id) => {
+              const e = env(id)
+              if (!e) return
+              const key = environmentKey(e)
+              expand(parentOf(key))
+              select(key)
+            }}
+          />
+        )}
         <motion.div
           key={selected ?? 'none'}
           className="flex min-h-0 flex-1 flex-col"
@@ -366,13 +389,14 @@ export function ProductsPage() {
         <EnvironmentDialog
           open={dialogOpen}
           environment={dialog.environment}
-          productIds={dialog.productIds}
+          productId={dialog.productId}
+          productLocked={dialog.locked}
           data={data}
           corruptVaultIds={corruptIds}
           onClose={closeDialog}
           onSaved={(e) => {
             closeDialog()
-            const key = environmentKey(e, sel.productId)
+            const key = environmentKey(e)
             expand(parentOf(key))
             if (key !== selected) select(key)
           }}
@@ -387,6 +411,10 @@ export function ProductsPage() {
             closeDialog()
             expand(dialog.envKey)
             select(`${dialog.envKey}/h:${h.id}`)
+            const envId = dialog.presetEnvironment.environmentId
+            const d = inventoryStore.get()
+            const hint = d && h.environments.some((m) => m.environmentId === envId) ? regionHintText(d, envId, h) : null
+            if (hint) toast({ title: 'In another region', description: hint })
           }}
         />
       )}

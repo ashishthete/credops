@@ -153,21 +153,27 @@ export function hubRunbooks(db: HubDb, registry: Registry): Pick<RunbookStore, '
   }
 }
 
-/** Environments and hosts from the registry. A Hub host row belongs to exactly one environment and no product. */
+/**
+ * Environments and hosts from the registry. A Hub host row belongs to exactly one environment. The product is the
+ * publisher's, from the manifest: its id is that desktop's and only hands the environment's product back to
+ * productName for the run's name. An older desktop's manifest has none, so the run has no product, as before.
+ */
 export function hubInventory(db: HubDb, registry: Registry): ReleaseInventory {
   return {
     environment: (id) => {
       const name = registry.nameOf(id)
       if (name === null) throw new Error('environment not found')
-      const row = db.prepare('SELECT protected FROM environments WHERE id = ?').get(id) as { protected: number }
-      return { id, name, protected: row.protected === 1, productIds: [] }
+      const row = db.prepare('SELECT protected, product_id FROM environments WHERE id = ?').get(id) as { protected: number; product_id: string | null }
+      return { id, name, protected: row.protected === 1, productId: row.product_id }
     },
     hostLabel: (hostId, environmentId) => {
       const row = db.prepare('SELECT label FROM hosts WHERE id = ? AND environment_id = ?').get(hostId, environmentId) as { label: string } | undefined
       if (!row) throw new Error('host not found')
       return row.label
     },
-    productName: () => 'Hub',
+    productName: (productId) =>
+      (db.prepare('SELECT product_name FROM environments WHERE product_id = ? AND product_name IS NOT NULL ORDER BY published_at DESC LIMIT 1').get(productId) as { product_name: string } | undefined)
+        ?.product_name ?? 'Hub',
     environmentsOfHosts: () => [],
   }
 }

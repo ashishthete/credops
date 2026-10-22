@@ -1,9 +1,10 @@
 import { motion } from 'framer-motion'
 import { useId, useMemo, useRef, useState } from 'react'
 import { GIT_REF, REPO_PATH } from '../../../../../shared/deploy'
-import type { EnvironmentMeta, HostMeta } from '../../../../../shared/inventory'
+import type { EnvironmentMeta, HostMeta, RegionMeta } from '../../../../../shared/inventory'
 import { deriveTag, envAppHost, type CopyServicesRequest, type CopyServicesResult, type DbServiceMeta } from '../../../../../shared/services'
 import { deployStore, loadDeploy, useDeployments, useServices } from '../../../deploy/store'
+import { hostsByRegion, regionHintText } from '../../../inventory/regions'
 import { reloadInventory, useInventory } from '../../../inventory/store'
 import { api } from '../../../lib/api'
 import { Button } from '../../../ui/Button'
@@ -57,6 +58,14 @@ function CopyBody({ source, onClose }: { source: EnvironmentMeta; onClose: () =>
       deployStore.get().deployments.filter((d) => d.environmentId === env.id).map((d) => d.hostId),
     )
   const appHost = target ? appHostOf(target) : null
+  const regions = data?.regions ?? []
+  // A host from outside the target joins it; say so when it brings a region the target doesn't use yet.
+  const hintFor = (hostId: string) => {
+    const h = hosts.find((x) => x.id === hostId)
+    if (!data || !target || !h || target.hosts.some((m) => m.hostId === hostId)) return null
+    const { deployments, services } = deployStore.get()
+    return regionHintText(data, target.id, h, deployments, services)
+  }
   // The tag follows the environment's name when it holds it; otherwise it is asked for.
   const derived = (tag: string) => (target ? deriveTag(tag, source.name, target.name) : null)
 
@@ -139,12 +148,8 @@ function CopyBody({ source, onClose }: { source: EnvironmentMeta; onClose: () =>
   const hostOptions = (empty: string) => (
     <>
       <option value="">{empty}</option>
-      {members.map((h) => (
-        <option key={h.id} value={h.id}>
-          {h.label}
-        </option>
-      ))}
-      {others.length > 0 && <HostGroup hosts={others} />}
+      <RegionGroups regions={regions} hosts={members} />
+      <RegionGroups regions={regions} hosts={others} joins />
     </>
   )
   let index = 0
@@ -180,6 +185,7 @@ function CopyBody({ source, onClose }: { source: EnvironmentMeta; onClose: () =>
             const r = rows[d.id]
             if (!r) return null
             const tag = derived(d.deployTag)
+            const hint = hintFor(r.hostId)
             return (
               <motion.fieldset key={d.id} aria-label={d.name} {...enter()} className="flex flex-col gap-2 rounded-xl border border-line p-3">
                 <legend className="px-1 text-[12.5px] font-semibold text-fg">{d.name}</legend>
@@ -190,6 +196,7 @@ function CopyBody({ source, onClose }: { source: EnvironmentMeta; onClose: () =>
                     {hostOptions('Pick a host')}
                   </SelectField>
                 </div>
+                {hint && <p className="text-[12px] text-muted">{hint}</p>}
                 {tag === null ? (
                   <div className="w-64">
                     <TextField
@@ -219,11 +226,7 @@ function CopyBody({ source, onClose }: { source: EnvironmentMeta; onClose: () =>
                   <TextField label="Port" inputMode="numeric" value={r.dbPort} onChange={(e) => setDb(s.id, { dbPort: e.target.value })} error={errors.port(r)} />
                   <SelectField label="Via host" value={r.viaHostId} onChange={(e) => setDb(s.id, { viaHostId: e.target.value })}>
                     <option value="">{appHost ? `App host (${label(appHost)})` : 'App host'}</option>
-                    {members.map((h) => (
-                      <option key={h.id} value={h.id}>
-                        {h.label}
-                      </option>
-                    ))}
+                    <RegionGroups regions={regions} hosts={members} />
                   </SelectField>
                 </div>
               </motion.fieldset>
@@ -254,14 +257,18 @@ function CopyBody({ source, onClose }: { source: EnvironmentMeta; onClose: () =>
   )
 }
 
-function HostGroup({ hosts }: { hosts: HostMeta[] }) {
-  return (
-    <optgroup label="Other hosts (joins as an app host)">
-      {hosts.map((h) => (
-        <option key={h.id} value={h.id}>
-          {h.label}
-        </option>
-      ))}
-    </optgroup>
-  )
+/** One optgroup per region; `joins` marks hosts from outside the target, which join it as app hosts. */
+function RegionGroups({ regions, hosts, joins = false }: { regions: readonly RegionMeta[]; hosts: HostMeta[]; joins?: boolean }) {
+  return hostsByRegion(regions, hosts).map(({ region, hosts: group }) => {
+    const code = region?.code ?? 'No region'
+    return (
+      <optgroup key={group[0]!.regionId} label={joins ? `Other hosts in ${code} (joins as an app host)` : code}>
+        {group.map((h) => (
+          <option key={h.id} value={h.id}>
+            {h.label}
+          </option>
+        ))}
+      </optgroup>
+    )
+  })
 }

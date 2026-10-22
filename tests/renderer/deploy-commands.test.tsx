@@ -40,8 +40,8 @@ async function renderShell(path: string, active: ReleaseSummary[] = []) {
   mockBridge({
     'product:list': [product({ id: 'p1', name: 'Platform' })],
     'env:list': [
-      environment({ id: 'e1', name: 'staging', productIds: ['p1'], hosts: [{ hostId: 'h1', role: 'app' }] }),
-      environment({ id: 'e2', name: 'prod', productIds: ['p1'], hosts: [{ hostId: 'h1', role: 'app' }] }),
+      environment({ id: 'e1', name: 'staging', productId: 'p1', hosts: [{ hostId: 'h1', role: 'app' }] }),
+      environment({ id: 'e2', name: 'prod', productId: 'p1', hosts: [{ hostId: 'h1', role: 'app' }] }),
     ],
     'host:list': [host({ id: 'h1', label: 'app1' })],
     'identity:list': [],

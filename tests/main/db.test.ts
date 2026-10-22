@@ -97,11 +97,11 @@ describe('vault schema', () => {
 
 describe('migration versions', () => {
   // Version 12 is the regions branch's and merges from there, so this branch alone skips it.
-  it('are strictly increasing and unique, skipping only the regions branch\'s version 12', () => {
+  it('are strictly increasing and unique, with no gaps', () => {
     const versions = migrations.map((m) => m.version)
     expect(versions).toEqual([...new Set(versions)].sort((a, b) => a - b))
     const gaps = Array.from({ length: versions.at(-1)! }, (_, i) => i + 1).filter((v) => !versions.includes(v))
-    expect(gaps).toEqual([12])
+    expect(gaps).toEqual([])
   })
 })
 
@@ -125,7 +125,8 @@ describe('migration 13 playbook_ops', () => {
 
   it('keeps a runbook name unique per environment and removes runbooks with their environment', () => {
     const db = openDatabase(':memory:')
-    db.exec("INSERT INTO environments(id,name,color,created_at,updated_at) VALUES ('e','e','#000','t','t'),('f','f','#000','t','t')")
+    db.exec("INSERT INTO products(id,name,color,icon,created_at,updated_at) VALUES ('p','p','#000','boxes','t','t')")
+    db.exec("INSERT INTO environments(id,name,color,product_id,created_at,updated_at) VALUES ('e','e','#000','p','t','t'),('f','f','#000','p','t','t')")
     const ins = (id: string, env: string, name: string) =>
       db.prepare("INSERT INTO runbooks(id,environment_id,name,definition,created_at,updated_at) VALUES (?,?,?,'{}','t','t')").run(id, env, name)
     ins('a', 'e', 'restart')
@@ -140,7 +141,8 @@ describe('hub schema', () => {
   it('migration 10 adds a nullable, range-checked qa_wait_minutes', () => {
     const db = openDatabase(':memory:')
     expect(migrations.find((m) => m.version === 10)?.name).toBe('qa_wait_minutes')
-    db.exec("INSERT INTO environments(id,name,color,created_at,updated_at) VALUES ('e','e','#000','t','t')")
+    db.exec("INSERT INTO products(id,name,color,icon,created_at,updated_at) VALUES ('p','p','#000','i','t','t')")
+    db.exec("INSERT INTO environments(id,name,color,product_id,created_at,updated_at) VALUES ('e','e','#000','p','t','t')")
     const ins = (n: number | null) => db.prepare("INSERT OR REPLACE INTO environment_integrations(environment_id,updated_at,qa_wait_minutes) VALUES ('e','t',?)").run(n)
     ins(null)
     ins(5)

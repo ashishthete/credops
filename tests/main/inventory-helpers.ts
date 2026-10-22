@@ -5,6 +5,7 @@ import { createInventoryHandlers } from '../../src/main/ipc/handlers/inventory'
 import { EnvironmentStore } from '../../src/main/inventory/environment-store'
 import { HostStore } from '../../src/main/inventory/host-store'
 import { ProductStore } from '../../src/main/inventory/product-store'
+import { RegionStore } from '../../src/main/inventory/region-store'
 import { resolveHost } from '../../src/main/inventory/resolve'
 import { SshImporter } from '../../src/main/inventory/ssh-import'
 import { IdentityStore } from '../../src/main/vault/identity-store'
@@ -16,7 +17,12 @@ import type { Db } from '../../src/main/db/connection'
 import type { QuickUnlockDeps } from '../../src/main/vault/vault-service'
 import { makeVault, type VaultFixture } from './vault-helpers'
 
+/** The region and product every inventory fixture has: hosts need a region and environments a product. */
+export const REGION = '7e57c0de-0000-4000-8000-000000000001'
+export const PRODUCT = '7e57c0de-0000-4000-8000-000000000002'
+
 export type InventoryFixture = VaultFixture & {
+  regions: RegionStore
   hosts: HostStore
   envs: EnvironmentStore
   products: ProductStore
@@ -43,9 +49,13 @@ export async function makeInventory(opts: { db?: Db; quick?: QuickUnlockDeps } =
   const hosts = new HostStore(f.db, f.vault, f.audit)
   const envs = new EnvironmentStore(f.db, f.vault, f.audit)
   const products = new ProductStore(f.db, f.vault, f.audit)
+  const regions = new RegionStore(f.db, f.vault, f.audit)
+  regions.insertInTx({ code: 'test-1', displayName: 'Test' }, REGION)
+  products.insertInTx({ name: 'Fixture', color: '#445566', icon: 'boxes' }, PRODUCT)
   const tunnels = new TunnelStore({ db: f.db, audit: f.audit, vault: f.vault })
   return {
     ...f,
+    regions,
     hosts,
     envs,
     products,
@@ -69,6 +79,7 @@ export function inventoryHandlers(
     hosts: f.hosts,
     environments: f.envs,
     products: f.products,
+    regions: f.regions,
     resolve: (hostId, environmentId) => resolveHost(f.db, hostId, environmentId, { localUser: 'tester' }),
   })
 }

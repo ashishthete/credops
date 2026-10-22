@@ -1,5 +1,7 @@
+import { TriangleAlert } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType } from 'react'
 import { bumpVersion, stepBound, BREAK_LOCK_CONFIRM_MESSAGE, NOTHING_SELECTED_MESSAGE, ORIGIN_MOVED_MESSAGE, PLAYBOOK_CHANGED_MESSAGE, REVIEW_EXPIRED_MESSAGE, type PlaybookPreview, type VersionBump } from '../../../../../shared/deploy'
+import { hostRegions, regionRefs, regionsOfHosts } from '../../../../../shared/regions'
 import { pickerGroups, selectionRequest, type PickerGroup } from '../../../deploy/picker'
 import { originMoved } from '../../../deploy/pipeline'
 import { closeRelease, openRelease, startReleaseSync, usePipeline, usePreflight } from '../../../deploy/releases'
@@ -10,6 +12,7 @@ import { api } from '../../../lib/api'
 import { Button } from '../../../ui/Button'
 import { attempt, ConfirmDialog, plural, type ConfirmRequest } from '../../../ui/common'
 import { Dialog } from '../../../ui/Dialog'
+import { RegionChip } from '../../../ui/RegionChip'
 import { Segmented } from '../../../ui/Segmented'
 import { createStore } from '../../../ui/store'
 import { CommitList } from './CommitList'
@@ -328,6 +331,10 @@ export function DeployWizard({
   const moved = step === 'started' && !!pipeline && originMoved(pipeline)
   const hosts = new Set(picked.map((g) => g.checkout.hostId)).size
   const whole = request.checkoutIds.length
+  // What the confirm step names: the services (and whole checkouts) going out, and the regions of the hosts they run on.
+  const deploying = picked.flatMap((g) => (g.services.length ? g.services.filter((s) => g.selected.has(s.id)).map((s) => s.name) : [g.checkout.name]))
+  const regions = data ? regionRefs(regionsOfHosts(hostRegions(data.hosts), picked.map((g) => g.checkout.hostId)), data.regions) : []
+  const spread = regions.length > 1
   const summary = [`Deploying to ${env?.name ?? ''}`, plural(hosts, 'host'), plural(request.serviceIds.length, 'service'), ...(whole ? [plural(whole, 'whole checkout')] : [])].join(' · ')
 
   const footer = {
@@ -470,6 +477,17 @@ export function DeployWizard({
             <>
               <div className="flex flex-col gap-2 border-l-2 pl-3" style={{ borderColor: env?.color }}>
                 <p className="text-[13px] font-medium text-fg">{summary}</p>
+                <p
+                  aria-label={`Deploys ${deploying.join(', ')}${regions.length ? ` · ${regions.map((r) => r.code).join(', ')}` : ''}`}
+                  className={`flex flex-wrap items-center gap-1.5 text-[12.5px] text-fg/90 ${spread ? 'self-start rounded-lg border border-warn/40 bg-warn/8 px-3 py-2' : ''}`}
+                >
+                  {spread && <TriangleAlert role="img" aria-label={`Reaches ${regions.length} regions`} className="size-3.5 shrink-0 text-warn" />}
+                  <span>Deploys {deploying.join(', ')}</span>
+                  {regions.length > 0 && <span aria-hidden>·</span>}
+                  {regions.map((r) => (
+                    <RegionChip key={r.id} region={r} emphasis={spread} />
+                  ))}
+                </p>
                 {next && <p className="font-mono text-[12.5px] text-fg/85 tabular-nums">{preview}</p>}
                 <p className="text-[12px] text-muted">
                   {[backup ? 'Databases backed up first' : 'No database backup', ...(redeploy ? ['Redeploys the current commits'] : [])].join(' · ')}

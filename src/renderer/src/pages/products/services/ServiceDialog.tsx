@@ -14,6 +14,7 @@ import {
   type ServicePatch,
 } from '../../../../../shared/services'
 import { createService, deleteService, markRouteChanged, syncServiceTunnel, updateService, useDeployments } from '../../../deploy/store'
+import { hostsByRegion } from '../../../inventory/regions'
 import { useInventory } from '../../../inventory/store'
 import { tunnelStore } from '../../../tunnels/store'
 import { Button } from '../../../ui/Button'
@@ -188,6 +189,14 @@ export function ServiceDialog({ env, service, kind, onClose }: ServiceDialogProp
   const restarted = useRef(false)
 
   const hosts = useMemo(() => envHosts(env.hosts, data?.hosts ?? []), [data, env.hosts])
+  // Via-host choices, one group per region.
+  const viaGroups = useMemo(() => {
+    const regionOf = new Map((data?.hosts ?? []).map((h) => [h.id, h.regionId]))
+    return hostsByRegion(
+      data?.regions ?? [],
+      hosts.map((h) => ({ ...h, regionId: regionOf.get(h.hostId) ?? '' })),
+    )
+  }, [data, hosts])
   const appHost = useMemo(() => {
     const id = pickAppHost(
       hosts,
@@ -314,13 +323,15 @@ export function ServiceDialog({ env, service, kind, onClose }: ServiceDialogProp
                 </SelectField>
                 <SelectField label="Via host" value={form.viaHostId} onChange={(e) => set({ viaHostId: e.target.value })} hint="The tunnel goes through this host">
                   <option value="">{appHost ? `App host (${appHost})` : 'App host (none yet)'}</option>
-                  {[...hosts]
-                    .sort((a, b) => a.label.localeCompare(b.label))
-                    .map((h) => (
-                      <option key={h.hostId} value={h.hostId}>
-                        {h.label}
-                      </option>
-                    ))}
+                  {viaGroups.map(({ region, hosts: group }) => (
+                    <optgroup key={group[0]!.regionId} label={region?.code ?? 'No region'}>
+                      {group.map((h) => (
+                        <option key={h.hostId} value={h.hostId}>
+                          {h.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
                 </SelectField>
               </div>
               <div className="grid grid-cols-[1fr_120px] gap-3">

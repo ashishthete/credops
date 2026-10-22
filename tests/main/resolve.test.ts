@@ -11,7 +11,7 @@ import { readSshConfigMatch } from '../../src/main/inventory/ssh-config'
 import { MAX_JUMP_DEPTH } from '../../src/shared/inventory'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import { stubHandlers } from './ipc-helpers'
-import { inventoryHandlers, makeInventory, type InventoryFixture } from './inventory-helpers'
+import { inventoryHandlers, makeInventory, type InventoryFixture, PRODUCT, REGION } from './inventory-helpers'
 
 const COLOR = '#336699'
 const opts = { localUser: 'tester' }
@@ -20,8 +20,8 @@ async function setup() {
   const f = await makeInventory()
   const deploy = f.identities.create({ vaultId: DEFAULT_VAULT_ID, label: 'deploy', username: 'deploy', auth: 'agent' })
   const ops = f.identities.create({ vaultId: DEFAULT_VAULT_ID, label: 'ops', username: 'ops', auth: 'agent' })
-  const prod = f.envs.create({ name: 'prod', color: COLOR, defaultPort: 2222, defaultIdentityId: deploy.id })
-  const staging = f.envs.create({ name: 'staging', color: COLOR })
+  const prod = f.envs.create({ productId: PRODUCT, name: 'prod', color: COLOR, defaultPort: 2222, defaultIdentityId: deploy.id })
+  const staging = f.envs.create({ productId: PRODUCT, name: 'staging', color: COLOR })
   return { f, deploy, ops, prod, staging }
 }
 
@@ -30,7 +30,7 @@ const resolve = (f: InventoryFixture, hostId: string, envId?: string) => resolve
 describe('resolveHost', () => {
   it('host beats env beats global', async () => {
     const { f, deploy, prod } = await setup()
-    const h = f.hosts.create({ label: 'H', address: '10.0.0.1', port: 2200, environments: [{ environmentId: prod.id, role: 'app' }] })
+    const h = f.hosts.create({ regionId: REGION, label: 'H', address: '10.0.0.1', port: 2200, environments: [{ environmentId: prod.id, role: 'app' }] })
     const inProd = resolve(f, h.id, prod.id)
     expect(inProd).toMatchObject({ hostId: h.id, environmentId: prod.id, address: '10.0.0.1' })
     expect(inProd.port).toEqual({ value: 2200, source: 'host' })
@@ -49,13 +49,13 @@ describe('resolveHost', () => {
 
   it("host's own identity beats the environment's", async () => {
     const { f, ops, prod } = await setup()
-    const h = f.hosts.create({ label: 'H', address: 'h', identityId: ops.id, environments: [{ environmentId: prod.id, role: 'app' }] })
+    const h = f.hosts.create({ regionId: REGION, label: 'H', address: 'h', identityId: ops.id, environments: [{ environmentId: prod.id, role: 'app' }] })
     expect(resolve(f, h.id, prod.id).identity).toMatchObject({ source: 'host', label: 'ops', username: 'ops' })
   })
 
   it('outside env skips step 2', async () => {
     const { f, prod } = await setup()
-    const h = f.hosts.create({ label: 'H', address: 'h', environments: [{ environmentId: prod.id, role: 'app' }] })
+    const h = f.hosts.create({ regionId: REGION, label: 'H', address: 'h', environments: [{ environmentId: prod.id, role: 'app' }] })
     const r = resolve(f, h.id)
     expect(r.environmentId).toBeNull()
     expect(r.port).toEqual({ value: 22, source: 'global' })
@@ -65,7 +65,7 @@ describe('resolveHost', () => {
 
   it('not a member', async () => {
     const { f, prod, staging } = await setup()
-    const h = f.hosts.create({ label: 'H', address: 'h', environments: [{ environmentId: prod.id, role: 'app' }] })
+    const h = f.hosts.create({ regionId: REGION, label: 'H', address: 'h', environments: [{ environmentId: prod.id, role: 'app' }] })
     expect(() => resolve(f, h.id, staging.id)).toThrow(/not in that environment/)
     expect(() => resolve(f, h.id, randomUUID())).toThrow(/not in that environment/)
     expect(() => resolve(f, randomUUID())).toThrow(/host not found/)
@@ -73,9 +73,9 @@ describe('resolveHost', () => {
 
   it('jump chain', async () => {
     const { f, ops } = await setup()
-    const edge = f.hosts.create({ label: 'edge', address: 'edge.example', port: 2022, identityId: ops.id })
-    const bastion = f.hosts.create({ label: 'bastion', address: 'bastion.example', jumpHostId: edge.id })
-    const app = f.hosts.create({ label: 'App', address: 'app.internal', jumpHostId: bastion.id })
+    const edge = f.hosts.create({ regionId: REGION, label: 'edge', address: 'edge.example', port: 2022, identityId: ops.id })
+    const bastion = f.hosts.create({ regionId: REGION, label: 'bastion', address: 'bastion.example', jumpHostId: edge.id })
+    const app = f.hosts.create({ regionId: REGION, label: 'App', address: 'app.internal', jumpHostId: bastion.id })
     const r = resolve(f, app.id)
     expect(r.jump).toEqual({ hostId: bastion.id, source: 'host' })
     expect(r.chain.map((h) => h.label)).toEqual(['edge', 'bastion'])
@@ -98,9 +98,9 @@ describe('resolveHost', () => {
 
   it('hops take the context only when they are members', async () => {
     const { f, prod } = await setup()
-    const outer = f.hosts.create({ label: 'outer', address: 'outer' })
-    const inner = f.hosts.create({ label: 'inner', address: 'inner', jumpHostId: outer.id, environments: [{ environmentId: prod.id, role: 'bastion' }] })
-    const app = f.hosts.create({ label: 'App', address: 'app', jumpHostId: inner.id, environments: [{ environmentId: prod.id, role: 'app' }] })
+    const outer = f.hosts.create({ regionId: REGION, label: 'outer', address: 'outer' })
+    const inner = f.hosts.create({ regionId: REGION, label: 'inner', address: 'inner', jumpHostId: outer.id, environments: [{ environmentId: prod.id, role: 'bastion' }] })
+    const app = f.hosts.create({ regionId: REGION, label: 'App', address: 'app', jumpHostId: inner.id, environments: [{ environmentId: prod.id, role: 'app' }] })
     const [o, i] = resolve(f, app.id, prod.id).chain
     expect(i).toMatchObject({ label: 'inner', port: 2222, identity: { source: 'environment', label: 'deploy' } })
     expect(o).toMatchObject({ label: 'outer', port: 22, identity: { source: 'global' } })
@@ -108,8 +108,8 @@ describe('resolveHost', () => {
 
   it('env default jump', async () => {
     const { f, prod } = await setup()
-    const bastion = f.hosts.create({ label: 'bastion', address: 'b', environments: [{ environmentId: prod.id, role: 'bastion' }] })
-    const h = f.hosts.create({ label: 'H', address: 'h', environments: [{ environmentId: prod.id, role: 'app' }] })
+    const bastion = f.hosts.create({ regionId: REGION, label: 'bastion', address: 'b', environments: [{ environmentId: prod.id, role: 'bastion' }] })
+    const h = f.hosts.create({ regionId: REGION, label: 'H', address: 'h', environments: [{ environmentId: prod.id, role: 'app' }] })
     f.envs.update(prod.id, { defaultJumpHostId: bastion.id })
     const r = resolve(f, h.id, prod.id)
     expect(r.jump).toEqual({ hostId: bastion.id, source: 'environment' })
@@ -119,7 +119,7 @@ describe('resolveHost', () => {
 
   it('bastion never jumps through itself', async () => {
     const { f, prod } = await setup()
-    const bastion = f.hosts.create({ label: 'bastion', address: 'b', environments: [{ environmentId: prod.id, role: 'bastion' }] })
+    const bastion = f.hosts.create({ regionId: REGION, label: 'bastion', address: 'b', environments: [{ environmentId: prod.id, role: 'bastion' }] })
     f.envs.update(prod.id, { defaultJumpHostId: bastion.id })
     const r = resolve(f, bastion.id, prod.id)
     expect(r.jump).toEqual({ hostId: null, source: null })
@@ -129,8 +129,8 @@ describe('resolveHost', () => {
   it('detects loops through env defaults', async () => {
     const { f, prod } = await setup()
     // F7: both A and B are in prod, so the error is the loop and not the membership check.
-    const b = f.hosts.create({ label: 'B', address: 'b', environments: [{ environmentId: prod.id, role: 'bastion' }] })
-    const a = f.hosts.create({ label: 'A', address: 'a', jumpHostId: b.id, environments: [{ environmentId: prod.id, role: 'app' }] })
+    const b = f.hosts.create({ regionId: REGION, label: 'B', address: 'b', environments: [{ environmentId: prod.id, role: 'bastion' }] })
+    const a = f.hosts.create({ regionId: REGION, label: 'A', address: 'a', jumpHostId: b.id, environments: [{ environmentId: prod.id, role: 'app' }] })
     f.envs.update(prod.id, { defaultJumpHostId: a.id })
     expect(() => resolve(f, a.id, prod.id)).toThrow(/jump host loop: A → B → A$/)
     // Outside prod, B has no jump host and there is no loop.
@@ -139,9 +139,9 @@ describe('resolveHost', () => {
 
   it('detects a 3-hop loop closed by an env default', async () => {
     const { f, prod } = await setup()
-    const c = f.hosts.create({ label: 'C', address: 'c', environments: [{ environmentId: prod.id, role: 'bastion' }] })
-    const b = f.hosts.create({ label: 'B', address: 'b', jumpHostId: c.id })
-    const a = f.hosts.create({ label: 'A', address: 'a', jumpHostId: b.id, environments: [{ environmentId: prod.id, role: 'app' }] })
+    const c = f.hosts.create({ regionId: REGION, label: 'C', address: 'c', environments: [{ environmentId: prod.id, role: 'bastion' }] })
+    const b = f.hosts.create({ regionId: REGION, label: 'B', address: 'b', jumpHostId: c.id })
+    const a = f.hosts.create({ regionId: REGION, label: 'A', address: 'a', jumpHostId: b.id, environments: [{ environmentId: prod.id, role: 'app' }] })
     f.envs.update(prod.id, { defaultJumpHostId: a.id })
     expect(() => resolve(f, a.id, prod.id)).toThrow(/jump host loop: A → B → C → A$/)
   })
@@ -152,7 +152,7 @@ describe('resolveHost', () => {
     let jumpHostId: string | null = null
     const ids: string[] = []
     for (let i = 9; i >= 0; i--) {
-      const h = f.hosts.create({ label: `h${i}`, address: `h${i}`, jumpHostId })
+      const h = f.hosts.create({ regionId: REGION, label: `h${i}`, address: `h${i}`, jumpHostId })
       ids.unshift(h.id)
       jumpHostId = h.id
     }
@@ -166,6 +166,7 @@ describe('resolveHost', () => {
     const { f, ops, prod, staging } = await setup()
     f.envs.update(staging.id, { defaultIdentityId: ops.id, defaultPort: 2222 })
     const h = f.hosts.create({
+      regionId: REGION,
       label: 'H',
       address: 'h',
       environments: [
@@ -186,17 +187,18 @@ describe('resolveHost', () => {
     ])
     f.hosts.update(h.id, { identityId: ops.id, port: 22 })
     expect(inheritConflicts(f.db, h.id)).toEqual([])
-    const single = f.hosts.create({ label: 'S', address: 's', environments: [{ environmentId: prod.id, role: 'app' }] })
+    const single = f.hosts.create({ regionId: REGION, label: 'S', address: 's', environments: [{ environmentId: prod.id, role: 'app' }] })
     expect(inheritConflicts(f.db, single.id)).toEqual([])
     expect(resolve(f, single.id, prod.id).conflicts).toEqual([])
   })
 
   it('jump host conflicts', async () => {
     const { f, prod, staging } = await setup()
-    const b = f.hosts.create({ label: 'bastion', address: 'b' })
+    const b = f.hosts.create({ regionId: REGION, label: 'bastion', address: 'b' })
     f.envs.update(prod.id, { defaultJumpHostId: b.id })
     f.envs.update(staging.id, { defaultPort: 2222, defaultIdentityId: prod.defaultIdentityId })
     const h = f.hosts.create({
+      regionId: REGION,
       label: 'H',
       address: 'h',
       environments: [
@@ -211,6 +213,7 @@ describe('resolveHost', () => {
     const { f, prod, staging } = await setup()
     f.envs.update(staging.id, { defaultPort: 2222, defaultIdentityId: prod.defaultIdentityId })
     const bastion = f.hosts.create({
+      regionId: REGION,
       label: 'bastion',
       address: 'b',
       environments: [
@@ -226,8 +229,8 @@ describe('resolveHost', () => {
     const { f, prod } = await setup()
     const pw = f.identities.create({ vaultId: DEFAULT_VAULT_ID, label: 'pw', username: 'root', auth: 'password', password: 'hunter2-secret' })
     f.envs.update(prod.id, { defaultIdentityId: pw.id })
-    const bastion = f.hosts.create({ label: 'bastion', address: 'b', identityId: pw.id })
-    const h = f.hosts.create({ label: 'H', address: 'h', jumpHostId: bastion.id, environments: [{ environmentId: prod.id, role: 'app' }] })
+    const bastion = f.hosts.create({ regionId: REGION, label: 'bastion', address: 'b', identityId: pw.id })
+    const h = f.hosts.create({ regionId: REGION, label: 'H', address: 'h', jumpHostId: bastion.id, environments: [{ environmentId: prod.id, role: 'app' }] })
     const sealed = (f.db.prepare('SELECT password_enc FROM identities WHERE id = ?').get(pw.id) as { password_enc: string }).password_enc
     expect(sealed.length).toBeGreaterThan(0)
     const r = resolve(f, h.id, prod.id)
@@ -240,7 +243,7 @@ describe('resolveHost', () => {
 
   it('works while locked', async () => {
     const { f, prod } = await setup()
-    const h = f.hosts.create({ label: 'H', address: 'h', environments: [{ environmentId: prod.id, role: 'app' }] })
+    const h = f.hosts.create({ regionId: REGION, label: 'H', address: 'h', environments: [{ environmentId: prod.id, role: 'app' }] })
     f.vault.lock('manual')
     expect(resolve(f, h.id, prod.id).identity).toMatchObject({ source: 'environment', label: 'deploy' })
   })
@@ -249,7 +252,7 @@ describe('resolveHost', () => {
 describe('resolveHost with ~/.ssh/config', () => {
   it('a global identity takes User from the matching block and says so', async () => {
     const { f, deploy } = await setup()
-    const alpha = f.hosts.create({ label: 'alpha', address: '203.0.113.23' })
+    const alpha = f.hosts.create({ regionId: REGION, label: 'alpha', address: '203.0.113.23' })
     const seen: unknown[] = []
     const sshConfig = (t: { label: string; address: string }) => {
       seen.push(t)
@@ -260,7 +263,7 @@ describe('resolveHost with ~/.ssh/config', () => {
     expect(seen).toEqual([{ label: 'alpha', address: '203.0.113.23' }])
 
     // No match, or a match without User: the local user, with no ssh-config source.
-    const other = f.hosts.create({ label: 'other', address: '10.0.0.2' })
+    const other = f.hosts.create({ regionId: REGION, label: 'other', address: '10.0.0.2' })
     expect(resolveHost(f.db, other.id, undefined, { localUser: 'tester', sshConfig }).identity).toEqual({
       source: 'global', username: 'tester', auth: 'default',
     })
@@ -276,8 +279,8 @@ describe('resolveHost with ~/.ssh/config', () => {
 
   it('jump hops look up their own block', async () => {
     const { f } = await setup()
-    const bastion = f.hosts.create({ label: 'bastion', address: 'b.example.com' })
-    const h = f.hosts.create({ label: 'inner', address: '10.0.0.9', jumpHostId: bastion.id })
+    const bastion = f.hosts.create({ regionId: REGION, label: 'bastion', address: 'b.example.com' })
+    const h = f.hosts.create({ regionId: REGION, label: 'inner', address: '10.0.0.9', jumpHostId: bastion.id })
     const sshConfig = (t: { label: string }) => ({ user: `${t.label}-user`, identityFiles: [] })
     const r = resolveHost(f.db, h.id, undefined, { localUser: 'tester', sshConfig })
     expect(r.identity.username).toBe('inner-user')
@@ -291,7 +294,7 @@ describe('resolveHost with ~/.ssh/config', () => {
     mkdirSync(join(home, '.ssh'))
     writeFileSync(join(home, '.ssh', 'config'), 'Host alpha\n  HostName 203.0.113.23\n  User ubuntu\n')
     const sshConfig = readSshConfigMatch({ configPath: join(home, '.ssh', 'config'), home, sshDir: join(home, '.ssh') })
-    const byAddress = f.hosts.create({ label: 'Alpha prod', address: '203.0.113.23' })
+    const byAddress = f.hosts.create({ regionId: REGION, label: 'Alpha prod', address: '203.0.113.23' })
     expect(resolveHost(f.db, byAddress.id, undefined, { localUser: 'tester', sshConfig }).identity.username).toBe('ubuntu')
   })
 })
@@ -299,7 +302,7 @@ describe('resolveHost with ~/.ssh/config', () => {
 describe('host:resolve IPC', () => {
   it('validates args and resolves', async () => {
     const { f, prod } = await setup()
-    const h = f.hosts.create({ label: 'H', address: 'h', environments: [{ environmentId: prod.id, role: 'app' }] })
+    const h = f.hosts.create({ regionId: REGION, label: 'H', address: 'h', environments: [{ environmentId: prod.id, role: 'app' }] })
     const registered = new Map<string, (e: IpcMainInvokeEvent, ...a: unknown[]) => unknown>()
     registerHandlers(
       { handle: (c: string, fn: never) => void registered.set(c, fn) },
@@ -322,7 +325,7 @@ describe('resolveHost: environment domain', () => {
   async function withDomain(domain: string | null, address = 'db') {
     const { f, staging, prod } = await setup()
     f.envs.update(staging.id, { domain })
-    const h = f.hosts.create({ label: 'DB', address, environments: [{ environmentId: staging.id, role: 'db' }, { environmentId: prod.id, role: 'db' }] })
+    const h = f.hosts.create({ regionId: REGION, label: 'DB', address, environments: [{ environmentId: staging.id, role: 'db' }, { environmentId: prod.id, role: 'db' }] })
     return { f, staging, prod, h }
   }
 
@@ -359,10 +362,10 @@ describe('resolveHost: environment domain', () => {
 
   it('hops expand only when they take the context', async () => {
     const { f, staging } = await withDomain('staging.example.com')
-    const bastion = f.hosts.create({ label: 'bastion', address: 'bastion', environments: [{ environmentId: staging.id, role: 'bastion' }] })
-    const edge = f.hosts.create({ label: 'edge', address: 'edge' })
-    const viaBastion = f.hosts.create({ label: 'app', address: 'app', jumpHostId: bastion.id, environments: [{ environmentId: staging.id, role: 'app' }] })
-    const viaEdge = f.hosts.create({ label: 'app2', address: 'app2', jumpHostId: edge.id, environments: [{ environmentId: staging.id, role: 'app' }] })
+    const bastion = f.hosts.create({ regionId: REGION, label: 'bastion', address: 'bastion', environments: [{ environmentId: staging.id, role: 'bastion' }] })
+    const edge = f.hosts.create({ regionId: REGION, label: 'edge', address: 'edge' })
+    const viaBastion = f.hosts.create({ regionId: REGION, label: 'app', address: 'app', jumpHostId: bastion.id, environments: [{ environmentId: staging.id, role: 'app' }] })
+    const viaEdge = f.hosts.create({ regionId: REGION, label: 'app2', address: 'app2', jumpHostId: edge.id, environments: [{ environmentId: staging.id, role: 'app' }] })
     expect(resolve(f, viaBastion.id, staging.id).chain[0]).toMatchObject({ address: 'bastion.staging.example.com', addressSource: 'domain' })
     expect(resolve(f, viaEdge.id, staging.id).chain[0]).toMatchObject({ address: 'edge', addressSource: 'host' })
   })

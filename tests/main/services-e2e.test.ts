@@ -16,7 +16,7 @@ import { DEFAULT_RELEASE_OPTIONS, type ReleaseConfirm, type StepKind } from '../
 import type { AppServiceMeta, ServiceMeta } from '../../src/shared/services'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import { FakeAnsible, TOOLS_OK, fakeAgent, fakePrepare, fakeTap, makeDeployFixture, memFs, scriptFromPlaybook } from './deploy-helpers'
-import { makeInventory } from './inventory-helpers'
+import { makeInventory, REGION } from './inventory-helpers'
 
 const P0 = '1'.repeat(40)
 const S1 = '2'.repeat(40)
@@ -271,7 +271,7 @@ describe('services deploy end to end', () => {
     expect(commitOf(w, 'esg')).toBe(S5)
 
     // 9. Copy to prod on a new host, branch and path.
-    const app2 = f.hosts.create({ label: 'app2', address: '10.0.0.8' })
+    const app2 = f.hosts.create({ regionId: REGION, label: 'app2', address: '10.0.0.8' })
     const auditBefore = f.audit.list({ actions: ['services.copy'] }).length
     const copied = await w.ipc.copy({
       sourceEnvironmentId: f.staging.id,
@@ -364,7 +364,8 @@ describe('services deploy end to end', () => {
     expect({ ...again, exportedAt: '' }).toEqual({ ...first, exportedAt: '' })
     const second = await target['config:importOpen']()
     if (!second || 'errors' in second) throw new Error(`second preview failed: ${JSON.stringify(second)}`)
-    expect(second.counts).toEqual({ add: 0, update: 0, unchanged: preview.counts.add, skip: 0 })
+    // Both fixtures have the same region and product ids: those were unchanged the first time too.
+    expect(second.counts).toEqual({ add: 0, update: 0, unchanged: preview.counts.add + preview.counts.unchanged, skip: 0 })
 
     svc.close()
   })
