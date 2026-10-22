@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
 import { readStored, writeStored } from './storage'
 
 export const PANEL_MIN = 200
@@ -38,7 +38,7 @@ export function ResizablePanel({ panel, defaultWidth, as: Tag = 'aside', label, 
   const [dragging, setDragging] = useState(false)
   const drag = useRef<{ startX: number; startWidth: number } | null>(null)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const parent = wrapRef.current?.parentElement
     if (!parent) return
     const measure = () => setAvail(parent.clientWidth)
@@ -48,6 +48,18 @@ export function ResizablePanel({ panel, defaultWidth, as: Tag = 'aside', label, 
     ro.observe(parent)
     return () => ro.disconnect()
   }, [])
+
+  // Keep the resize cursor and block text selection for the whole drag, wherever the pointer strays.
+  useEffect(() => {
+    if (!dragging) return
+    const { cursor, userSelect } = document.body.style
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    return () => {
+      document.body.style.cursor = cursor
+      document.body.style.userSelect = userSelect
+    }
+  }, [dragging])
 
   const max = avail > 0 ? Math.max(PANEL_MIN, Math.min(PANEL_MAX, avail - CONTENT_MIN)) : PANEL_MAX
   const width = clamp(stored, PANEL_MIN, max)
@@ -72,12 +84,20 @@ export function ResizablePanel({ panel, defaultWidth, as: Tag = 'aside', label, 
     const d = drag.current
     if (d) setStored(clamp(d.startWidth + e.clientX - d.startX, PANEL_MIN, max))
   }
-  const endDrag = (e: PointerEvent<HTMLDivElement>) => {
+  const finishDrag = (e: PointerEvent<HTMLDivElement>) => {
     const d = drag.current
     if (!d) return
     drag.current = null
     setDragging(false)
     commit(d.startWidth + e.clientX - d.startX)
+  }
+  // A cancelled drag (or lost capture before pointerup) puts the width back and persists nothing.
+  const cancelDrag = () => {
+    const d = drag.current
+    if (!d) return
+    drag.current = null
+    setDragging(false)
+    setStored(d.startWidth)
   }
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'ArrowLeft') commit(width - KEY_STEP)
@@ -101,8 +121,9 @@ export function ResizablePanel({ panel, defaultWidth, as: Tag = 'aside', label, 
         tabIndex={0}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
-        onPointerUp={endDrag}
-        onPointerCancel={endDrag}
+        onPointerUp={finishDrag}
+        onPointerCancel={cancelDrag}
+        onLostPointerCapture={cancelDrag}
         onKeyDown={onKeyDown}
         onDoubleClick={() => commit(defaultWidth)}
         data-dragging={dragging || undefined}

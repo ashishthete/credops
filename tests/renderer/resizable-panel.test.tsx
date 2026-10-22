@@ -70,6 +70,26 @@ describe('ResizablePanel', () => {
     expect(localStorage.getItem(KEY)).toBe('340')
   })
 
+  it('reverts a cancelled drag without persisting', () => {
+    const h = setup()
+    fireEvent.pointerDown(h, { button: 0, clientX: 300, pointerId: 1 })
+    fireEvent.pointerMove(h, { clientX: 400, pointerId: 1 })
+    expect(document.body.style.cursor).toBe('col-resize')
+    fireEvent.pointerCancel(h, { clientX: 0, pointerId: 1 })
+    expect(widthOf()).toBe('300px')
+    expect(localStorage.getItem(KEY)).toBeNull()
+    expect(document.body.style.cursor).toBe('')
+  })
+
+  it('reverts when pointer capture is lost mid-drag', () => {
+    const h = setup()
+    fireEvent.pointerDown(h, { button: 0, clientX: 300, pointerId: 1 })
+    fireEvent.pointerMove(h, { clientX: 400, pointerId: 1 })
+    fireEvent.lostPointerCapture(h, { pointerId: 1 })
+    expect(widthOf()).toBe('300px')
+    expect(localStorage.getItem(KEY)).toBeNull()
+  })
+
   it('works when localStorage throws', () => {
     vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
       throw new Error('blocked')

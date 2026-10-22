@@ -51,12 +51,8 @@ const TOGGLE_SHORTCUT = 'mod+\\'
 /** Collapsed state, remembered across restarts; expanded when nothing (or nothing readable) is stored. */
 function useSidebarCollapsed() {
   const [collapsed, setCollapsed] = useState(() => readStored(COLLAPSED_KEY) === '1')
-  const toggle = useCallback(() => {
-    setCollapsed((c) => {
-      writeStored(COLLAPSED_KEY, c ? '0' : '1')
-      return !c
-    })
-  }, [])
+  const toggle = useCallback(() => setCollapsed((c) => !c), [])
+  useEffect(() => writeStored(COLLAPSED_KEY, collapsed ? '1' : '0'), [collapsed])
   return [collapsed, toggle] as const
 }
 
@@ -92,6 +88,19 @@ export function Sidebar() {
     }
   }, [])
 
+  const toggleButton = (
+    <button
+      type="button"
+      onClick={toggleCollapsed}
+      aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+      aria-expanded={!collapsed}
+      title={`${collapsed ? 'Expand' : 'Collapse'} sidebar (${formatShortcut(TOGGLE_SHORTCUT).join('')})`}
+      className="grid size-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-white/[0.06] hover:text-fg"
+    >
+      {collapsed ? <PanelLeftOpen aria-hidden className="size-4" /> : <PanelLeftClose aria-hidden className="size-4" />}
+    </button>
+  )
+
   return (
     <aside
       data-collapsed={collapsed || undefined}
@@ -109,19 +118,12 @@ export function Sidebar() {
             <span className="text-[14px] font-semibold tracking-tight text-fg">OpsDeck</span>
           </div>
         )}
-        <button
-          type="button"
-          onClick={toggleCollapsed}
-          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          aria-expanded={!collapsed}
-          title={`${collapsed ? 'Expand' : 'Collapse'} sidebar (${formatShortcut(TOGGLE_SHORTCUT).join('')})`}
-          className="grid size-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-white/[0.06] hover:text-fg"
-        >
-          {collapsed ? <PanelLeftOpen aria-hidden className="size-4" /> : <PanelLeftClose aria-hidden className="size-4" />}
-        </button>
+        {!collapsed && toggleButton}
       </div>
 
-      <div className={`${collapsed ? 'px-2' : 'px-3'} pt-4 pb-2`}>
+      <div className={`${collapsed ? 'flex flex-col items-center gap-2 px-2 pt-2' : 'px-3 pt-4'} pb-2`}>
+        {/* Collapsed, the toggle sits below the header so the traffic lights keep clear space. */}
+        {collapsed && toggleButton}
         {collapsed ? (
           <button
             type="button"
@@ -153,7 +155,6 @@ export function Sidebar() {
             <NavLink
               key={s.id}
               to={s.path}
-              aria-label={collapsed ? s.label : undefined}
               title={collapsed ? s.label : undefined}
               className={({ isActive }) =>
                 `group relative flex h-8 items-center rounded-lg text-[13px] font-medium transition-colors select-none ${
@@ -180,7 +181,7 @@ export function Sidebar() {
                     className={`relative size-4 transition-colors ${isActive ? 'text-accent' : ''}`}
                     strokeWidth={2}
                   />
-                  {!collapsed && <span className="relative flex-1">{s.label}</span>}
+                  {collapsed ? <span className="sr-only">{s.label}</span> : <span className="relative flex-1">{s.label}</span>}
                   {s.id === 'tunnels' && <TunnelBadge collapsed={collapsed} />}
                   {s.id === 'ops' && <RunBadge collapsed={collapsed} />}
                   {s.id === 'deployments' && <DeployBadge collapsed={collapsed} />}
@@ -431,7 +432,11 @@ function DeployBadge({ collapsed }: { collapsed: boolean }) {
 
 /** The collapsed rail's badge: a dot on the corner of the icon. */
 function BadgeDot({ tone, label }: { tone: string; label: string }) {
-  return <span data-badge aria-label={label} className={`absolute top-1 right-2 size-2 rounded-full ring-2 ring-surface ${tone}`} />
+  return (
+    <span data-badge className={`absolute top-1 right-2 size-2 rounded-full ring-2 ring-surface ${tone}`}>
+      <span className="sr-only">{label}</span>
+    </span>
+  )
 }
 
 function Keys({ combo, className = '' }: { combo: string; className?: string }) {
