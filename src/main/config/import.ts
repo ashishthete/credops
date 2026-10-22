@@ -464,15 +464,19 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
   // ---- environments and their links: matched by id, then by name within the product ----
   for (const x of file.environments) {
     setAt(`Environment ${x.name}`)
-    const productId = x.productId === null ? unassignedProduct() : map.products.get(x.productId)!
     let local: string | null = exists('environments', x.id) ? x.id : null
-    if (local === null) local = ids('SELECT id FROM environments WHERE product_id = ? AND name = ? COLLATE NOCASE', productId, x.name)[0] ?? null
+    if (local === null) {
+      // No product: matched in the Unassigned here, if there is one. Making it waits until it's needed.
+      const matchIn = x.productId === null ? (unassigned ?? ids('SELECT id FROM products WHERE name = ?', UNASSIGNED_PRODUCT.name)[0]) : map.products.get(x.productId)!
+      if (matchIn !== undefined) local = ids('SELECT id FROM environments WHERE product_id = ? AND name = ? COLLATE NOCASE', matchIn, x.name)[0] ?? null
+    }
     if (local !== null && isDependency('environments')) {
       map.environments.set(x.id, local)
       keptEnvs.add(local)
       kept('environments', local, x.name)
       continue
     }
+    const productId = x.productId === null ? unassignedProduct() : map.products.get(x.productId)!
     const defaultIdentityId = ref(map.identities, x.defaultIdentityId)
     if (defaultIdentityId === undefined) need('environments', x.name, 'defaultIdentityId')
     const defaultJumpHostId = ref(map.hosts, x.defaultJumpHostId) ?? null
@@ -596,7 +600,8 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
       | { environment_id: string; host_id: string }
       | undefined
     if (isDependency('deployments')) {
-      const here = byId ? x.id : ids('SELECT id FROM deployments WHERE environment_id = ? AND name = ? COLLATE NOCASE', environmentId, x.name)[0]
+      // One in another environment here can't serve this one's services: skipped below, as the full import does.
+      const here = byId ? (byId.environment_id === environmentId ? x.id : undefined) : ids('SELECT id FROM deployments WHERE environment_id = ? AND name = ? COLLATE NOCASE', environmentId, x.name)[0]
       if (here !== undefined) {
         map.deployments.set(x.id, here)
         kept('deployments', here, x.name)

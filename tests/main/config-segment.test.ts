@@ -22,9 +22,10 @@ const tables = ['regions', 'products', 'identities', 'hosts', 'environments', 'e
 const rows = (db: Db, table: string): string => JSON.stringify(db.prepare(`SELECT * FROM ${table} ORDER BY 1, 2`).all())
 
 /** The config fixture without its password identity: every ref in it can resolve elsewhere. */
-async function source(): Promise<{ f: ConfigFixture; file: ConfigFile }> {
+async function source(setup: (f: ConfigFixture) => void = () => {}): Promise<{ f: ConfigFixture; file: ConfigFile }> {
   const f = await makeConfigFixture()
   f.identities.delete(f.ids.passwordIdentity)
+  setup(f)
   return { f, file: buildConfigExport(f.db, clock).file }
 }
 
@@ -43,6 +44,13 @@ async function target(src: ConfigFixture) {
 function importSegment(t: { db: Db; audit: ConfigFixture['audit']; vault: ConfigFixture['vault'] }, file: ConfigFile, segment: ConfigSegment, typedNames: string[] = []) {
   const plan = planImport(t.db, file, segment)
   return { plan, res: applyImport({ db: t.db, audit: t.audit, vault: t.vault }, file, { typedNames, expected: plan.counts, segment }) }
+}
+
+/** A third staging host that no tunnel, checkout or service uses. */
+function addSpare(f: ConfigFixture): string {
+  const spare = f.hosts.create({ regionId: REGION, label: 'spare', address: 'spare.example.com' })
+  f.envs.putHost(f.staging.id, spare.id, 'app')
+  return spare.id
 }
 
 const itemOf = (plan: ReturnType<typeof planImport>, kind: string, name: string) => plan.items.find((i) => i.kind === kind && i.name === name)
@@ -162,6 +170,29 @@ describe('config segment export', () => {
     for (const leak of [path, f.host.id, f.ids.tunnel, 'app1', 'bastion', 'pg', '10.0.0.7', 'staging', 'Shop']) expect(json).not.toContain(leak)
   })
 
+  it('a dependency environment carries only the host links its page items use', async () => {
+    const f = await makeConfigFixture()
+    const spare = addSpare(f)
+    expect(ids(buildConfigExport(f.db, clock, 'products').file.hosts)).toContain(spare)
+    for (const segment of ['tunnels', 'deployments'] as const) {
+      const { file } = buildConfigExport(f.db, clock, segment)
+      expect(ids(file.hosts), segment).toEqual([f.host.id, f.ids.bastion].sort())
+      const links = file.environments.find((e) => e.id === f.staging.id)!.hosts.map((m) => m.hostId)
+      expect(links, segment).toContain(f.host.id)
+      expect(links, segment).not.toContain(spare)
+    }
+  })
+
+  it('a failed segment export is audited with its segment', async () => {
+    const f = await makeConfigFixture()
+    const path = join(mkdtempSync(join(tmpdir(), 'opsdeck-segment-')), 'missing-dir', 'opsdeck-tunnels.json')
+    await expect(exportConfig(exportDeps(f), path, 'tunnels')).rejects.toThrow("Couldn't write the config file")
+    await expect(exportConfig(exportDeps(f), path)).rejects.toThrow("Couldn't write the config file")
+    const entries = f.audit.list({ actions: ['config.export'] })
+    expect(entries.map((e) => e.outcome)).toEqual(['failure', 'failure'])
+    expect(entries.map((e) => e.details)).toEqual(expect.arrayContaining([{}, { segment: 'tunnels' }]))
+  })
+
   it('a direct export keeps the full file when no segment is given', async () => {
     const f = await makeConfigFixture()
     const path = tmpPath()
@@ -251,6 +282,52 @@ describe('config segment import', () => {
     // Fixture was here already: untouched.
     expect(t.db.prepare('SELECT name FROM products ORDER BY name').all()).toEqual([{ name: 'Fixture' }, { name: 'Shop' }])
     expect(rows(t.db, 'regions')).toBe(before.regions)
+  })
+
+  it('a full file imported on a page adds none of the hosts its items do not use', async () => {
+    for (const segment of ['tunnels', 'deployments'] as const) {
+      let spare = ''
+      const { f, file } = await source((src) => (spare = addSpare(src)))
+      const t = await target(f)
+      const { plan } = importSegment(t, file, segment)
+      expect(itemOf(plan, 'hosts', 'spare'), segment).toBeUndefined()
+      expect(t.db.prepare('SELECT 1 FROM hosts WHERE id = ?').get(spare), segment).toBeUndefined()
+      expect(t.envs.get(f.staging.id).hosts.map((m) => m.hostId), segment).toContain(f.host.id)
+    }
+  })
+
+  it('skips a dependency checkout that is in another environment here, rather than failing the preview', async () => {
+    const { f, file } = await source()
+    const t = await target(f)
+    importSegment(t, file, 'deployments')
+    // The checkout here has since moved to another environment; the file's web service uses it in staging.
+    const other = t.envs.create({ productId: PRODUCT, name: 'other', color: '#ffffff' })
+    t.db.prepare('UPDATE deployments SET environment_id = ? WHERE id = ?').run(other.id, f.ids.deployment)
+    const plan = planImport(t.db, file, 'products')
+    expect(itemOf(plan, 'deployments', 'api')).toMatchObject({ action: 'skip', reason: "can't move to another environment or host" })
+    // As in a full import, the service comes without its checkout.
+    expect(itemOf(plan, 'services', 'web')).toMatchObject({ action: 'add' })
+  })
+
+  it('a version 1 file on the Tunnels page adds no Unassigned product for an environment already here', async () => {
+    const { f, file } = await source()
+    const t = await target(f)
+    importSegment(t, file, 'tunnels')
+    t.db.prepare('DELETE FROM tunnels').run()
+    const raw = JSON.parse(serializeConfig(file))
+    raw.version = 1
+    delete raw.regions
+    for (const h of raw.hosts) delete h.regionId
+    for (const e of raw.environments) {
+      e.productIds = e.id === f.staging.id ? [] : [e.productId]
+      delete e.productId
+    }
+    const parsed = parseConfigFile(JSON.stringify(raw))
+    if (!parsed.ok) throw new Error(parsed.errors.join('\n'))
+    const { plan } = importSegment(t, parsed.file, 'tunnels')
+    expect(itemOf(plan, 'environments', 'staging')).toMatchObject({ action: 'unchanged', notes: [DEPENDENCY_KEPT] })
+    expect(itemOf(plan, 'tunnels', 'pg')).toMatchObject({ action: 'add' })
+    expect(t.db.prepare("SELECT 1 FROM products WHERE name = 'Unassigned'").get()).toBeUndefined()
   })
 
   it('skips a page item whose dependency here cannot take it, with a reason', async () => {

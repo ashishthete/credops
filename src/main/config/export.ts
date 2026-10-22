@@ -429,7 +429,7 @@ export interface ConfigExportDeps {
 export async function exportConfig(deps: ConfigExportDeps, path: string, segment?: ConfigSegment): Promise<{ counts: ConfigCounts; omitted: number }> {
   deps.vault.assertUnlocked()
   const failed = (message: string): Error => {
-    deps.audit.append({ action: 'config.export', outcome: 'failure', targetType: 'config', targetLabel: 'config', details: {} })
+    deps.audit.append({ action: 'config.export', outcome: 'failure', targetType: 'config', targetLabel: 'config', details: segment ? { segment } : {} })
     return new Error(message)
   }
   let built: ReturnType<typeof buildConfigExport>

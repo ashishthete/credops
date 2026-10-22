@@ -17,8 +17,8 @@ export interface SegmentSelection {
 
 /**
  * The part of `file` a page imports or exports: every object of the page's kinds, then, transitively, every object
- * they refer to. A dependency environment goes without its release flow, which would pull in its services; it keeps
- * its host links, which its tunnels need.
+ * they refer to. A dependency environment goes without its release flow, which would pull in its services, and keeps
+ * only its links to hosts kept for another reason: the ones its tunnels and checkouts use.
  */
 export function selectSegment(file: ConfigFile, segment: ConfigSegment): SegmentSelection {
   const own = new Set<Kind>(SEGMENT_KINDS[segment])
@@ -60,7 +60,7 @@ export function selectSegment(file: ConfigFile, segment: ConfigSegment): Segment
         for (const p of file.fromV1?.productIds[id] ?? []) need('products', p)
         need('identities', e.defaultIdentityId)
         need('hosts', e.defaultJumpHostId)
-        for (const m of e.hosts) need('hosts', m.hostId)
+        if (own.has('environments')) for (const m of e.hosts) need('hosts', m.hostId)
         if (own.has('environments')) for (const st of e.flow?.stages ?? []) for (const s of st.kind === 'services' ? st.serviceIds : [st.serviceId]) need('services', s)
         break
       }
@@ -97,9 +97,9 @@ export function selectSegment(file: ConfigFile, segment: ConfigSegment): Segment
 
   const pick = <T extends { id: string }>(kind: Kind, xs: T[]): T[] => xs.filter((x) => kept[kind].has(x.id))
   const environments = pick('environments', file.environments).map((e): ConfigEnvironment => {
-    if (own.has('environments') || e.flow === undefined) return e
+    if (own.has('environments')) return e
     const { flow: _, ...rest } = e
-    return rest
+    return { ...rest, hosts: e.hosts.filter((m) => kept.hosts.has(m.hostId)) }
   })
   const deployments = pick('deployments', file.deployments)
   const runbooks = pick('runbooks', file.runbooks ?? [])
