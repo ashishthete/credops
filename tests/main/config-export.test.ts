@@ -21,7 +21,7 @@ describe('config export', () => {
     expect(file.version).toBe(1)
     expect(file.exportedAt).toBe('2026-10-20T10:00:00.000Z')
     expect(Object.keys(file)).toEqual(['format', 'version', 'exportedAt', 'secretRefs', 'products', 'identities', 'hosts', 'environments', 'tunnels', 'deployments', 'services'])
-    expect(counts).toEqual({ products: 1, identities: 2, hosts: 2, environments: 2, tunnels: 1, deployments: 1, services: 2 })
+    expect(counts).toEqual({ products: 1, identities: 2, hosts: 2, environments: 2, tunnels: 1, deployments: 1, services: 2, runbooks: 0 })
     for (const list of [file.products, file.identities, file.hosts, file.environments, file.tunnels, file.deployments, file.services] as { id: string }[][]) {
       expect(sortedById(list)).toBe(true)
     }
@@ -70,6 +70,8 @@ describe('config export', () => {
       versioned: true,
       autoRollback: false,
       domain: 'staging.example.com',
+      parallelPrepare: true,
+      prepareCap: 3,
       productIds: [f.ids.product],
       hosts: [{ hostId: f.host.id, role: 'app' }, { hostId: f.ids.bastion, role: 'bastion' }].sort((a, b) => (a.hostId < b.hostId ? -1 : 1)),
     })
@@ -119,6 +121,7 @@ describe('config export', () => {
       composeService: 'web',
       url: 'https://staging.example.com',
       urlCheckFrom: 'mac',
+      skipUnchanged: false,
     })
     expect(byId(file.services, f.ids.dbService)).toEqual({
       id: f.ids.dbService,
@@ -316,7 +319,7 @@ describe('config export', () => {
     const path = tmpPath()
     const h = createConfigHandlers({ ...exportDeps(f), openDialog: async () => undefined, saveDialog: async () => path })
     const res = await h['config:export']()
-    expect(res).toEqual({ path, counts: { products: 1, identities: 2, hosts: 2, environments: 2, tunnels: 1, deployments: 1, services: 2 }, omitted: 0 })
+    expect(res).toEqual({ path, counts: { products: 1, identities: 2, hosts: 2, environments: 2, tunnels: 1, deployments: 1, services: 2, runbooks: 0 }, omitted: 0 })
     const [e] = f.audit.list({ actions: ['config.export'] })
     expect(e).toMatchObject({ outcome: 'success', targetType: 'config', targetLabel: 'config', targetId: null })
     expect(e.details).toEqual({ counts: res!.counts, omitted: 0 })

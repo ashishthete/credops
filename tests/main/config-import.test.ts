@@ -6,10 +6,15 @@ import { describe, expect, it, vi } from 'vitest'
 import { applyImport, planImport } from '../../src/main/config/import'
 import { buildConfigExport, serializeConfig } from '../../src/main/config/export'
 import { DeployError } from '../../src/main/deploy/access'
+import { DeployStore, dbSecretRefs } from '../../src/main/deploy/deploy-store'
+import { ServiceStore } from '../../src/main/deploy/service-store'
+import { RunbookStore } from '../../src/main/deploy/runbook-store'
 import type { Db } from '../../src/main/db/connection'
 import { createConfigHandlers } from '../../src/main/ipc/handlers/config'
 import { SecretStore } from '../../src/main/vault/secret-store'
-import { CONFIG_MAX_BYTES, type ConfigFile } from '../../src/shared/config-file'
+import { CONFIG_MAX_BYTES, parseConfigFile, type ConfigFile } from '../../src/shared/config-file'
+import type { StepBody } from '../../src/shared/steps'
+import { effectiveSteps } from '../../src/shared/steps'
 import { DEFAULT_VAULT_ID, VAULT_LOCKED } from '../../src/shared/vault'
 import { makeConfigFixture, SECRET_VALUES, type ConfigFixture } from './config-helpers'
 import { makeInventory, type InventoryFixture } from './inventory-helpers'
@@ -565,5 +570,260 @@ describe('config import over IPC', () => {
     await expect(h['config:importApply'](b.token, { typedNames: [] })).rejects.toThrow('The preview expired; open the file again')
     now += 10 * 60_000 + 1
     await expect(h['config:importApply'](c.token, { typedNames: [] })).rejects.toThrow('The preview expired; open the file again')
+  })
+})
+
+// ---- playbook ops: steps, flow, runbooks and prepare settings ----
+
+const stepBody = (over: Partial<StepBody> = {}): StepBody => ({
+  id: 'migrate',
+  name: 'migrate',
+  run: 'shell',
+  service: null,
+  script: 'echo migrate',
+  cwd: null,
+  sudo: 'docker',
+  timeoutSec: 600,
+  onFailure: 'stop',
+  when: { kind: 'always' },
+  secrets: [],
+  ...over,
+})
+
+/** The config fixture with saved steps (one holding a secret), a flow, a runbook and non-default prepare settings. */
+async function playbookSource(): Promise<{ f: ConfigFixture; file: ConfigFile; secretValue: string }> {
+  const f = await makeConfigFixture()
+  f.identities.delete(f.ids.passwordIdentity)
+  f.deploys.update(f.ids.deployment, {
+    steps: [
+      { ...stepBody({ secrets: [{ envName: 'DB_PASS', secretId: f.ids.dotenvSecret }] }), anchor: 'before_build', alsoOnRollback: false },
+      { ...stepBody({ id: 'exec', name: 'exec', run: 'compose-exec', service: 'web', script: 'ls' }), anchor: 'after_up', alsoOnRollback: true },
+    ],
+  })
+  f.services.update(f.ids.appService, { skipUnchanged: true })
+  f.deploys.updateSettings(f.staging.id, {
+    parallelPrepare: false,
+    prepareCap: 5,
+    flow: {
+      onFailure: 'continue-other-hosts',
+      stages: [
+        { kind: 'step', serviceId: f.ids.appService, step: stepBody({ id: 'warm', name: 'warm', secrets: [{ envName: 'TOKEN', secretId: f.ids.dotenvSecret }] }) },
+        { kind: 'services', serviceIds: [f.ids.appService] },
+      ],
+    },
+  })
+  const runbooks = new RunbookStore({ db: f.db, audit: f.audit, vault: f.vault })
+  runbooks.create({
+    environmentId: f.staging.id,
+    name: 'Reindex',
+    description: 'rebuild the index',
+    targetServiceIds: [f.ids.appService],
+    items: [
+      { type: 'step', step: stepBody({ id: 'reindex', name: 'reindex', secrets: [{ envName: 'DB_PASS', secretId: f.ids.dotenvSecret }] }) },
+      { type: 'builtin', builtin: 'logs', tail: 50 },
+    ],
+    params: [{ name: 'shard', label: 'Shard', type: 'text', pattern: 'number', choices: [] }],
+    lock: true,
+    notify: true,
+  })
+  return { f, file: buildConfigExport(f.db, clock).file, secretValue: SECRET_VALUES.dotenv }
+}
+
+/** The target's deploy and service stores, for reading back what an import wrote. */
+const readers = (t: InventoryFixture) => ({
+  deploys: new DeployStore({ db: t.db, audit: t.audit, vault: t.vault, secrets: dbSecretRefs(t.db) }),
+  services: new ServiceStore({ db: t.db, audit: t.audit, vault: t.vault }),
+})
+
+describe('config import of playbook ops settings', () => {
+  it('round-trips steps, flow, parallelPrepare, prepareCap, skipUnchanged and runbooks', async () => {
+    const { f, file } = await playbookSource()
+    expect(file.deployments[0].steps).toHaveLength(2)
+    expect(file.environments.find((e) => e.id === f.staging.id)).toMatchObject({ parallelPrepare: false, prepareCap: 5 })
+    expect(file.runbooks).toHaveLength(1)
+    // Step secrets are refs into secretRefs, never ids.
+    expect(file.deployments[0].steps![0].secrets).toEqual([{ envName: 'DB_PASS', secret: expect.stringMatching(/^ref-\d+$/) }])
+    expect(parseConfigFile(serializeConfig(file))).toEqual({ ok: true, file })
+
+    const t = await makeTarget(f)
+    const r = readers(t)
+    const plan = planImport(t.db, file)
+    expect(plan.needsSecret).toEqual([])
+    expect(plan.counts).toEqual({ add: 11, update: 0, unchanged: 0, skip: 0 })
+    importFile(t, file)
+
+    const again = buildConfigExport(t.db, later).file
+    expect({ ...again, exportedAt: '' }).toEqual({ ...file, exportedAt: '' })
+    // The secret resolved to the target's own item, not the source's id.
+    const local = r.deploys.get(f.ids.deployment).steps[0].secrets[0].secretId
+    expect(local).not.toBe(f.ids.dotenvSecret)
+    expect(t.db.prepare('SELECT name FROM secrets WHERE id = ?').get(local)).toEqual({ name: 'db-pass' })
+    expect(r.deploys.settings(f.staging.id)).toMatchObject({ parallelPrepare: false, prepareCap: 5 })
+    // Importing it again changes nothing.
+    const second = planImport(t.db, file)
+    expect(second.counts).toEqual({ add: 0, update: 0, unchanged: 11, skip: 0 })
+  })
+
+  it('an old file with only preHook/postHook imports as migrated steps pre-hook/post-hook', async () => {
+    const { f, file } = await sourceFile()
+    expect(file.deployments[0].steps).toBeUndefined()
+    expect(file.deployments[0].preHook).toBe('echo pre')
+    const t = await makeTarget(f)
+    const r = readers(t)
+    importFile(t, file)
+    const d = r.deploys.get(f.ids.deployment)
+    expect(d.steps).toEqual([])
+    expect(effectiveSteps(d).map((s) => s.id)).toEqual(['pre-hook'])
+    expect(effectiveSteps(d)).toEqual(effectiveSteps({ steps: [], preHook: 'echo pre', postHook: null }))
+  })
+
+  it('a file without parallelPrepare imports with parallelPrepare true and prepareCap 3', async () => {
+    const { f, file } = await sourceFile()
+    const old = copy(file)
+    for (const e of old.environments) {
+      delete e.parallelPrepare
+      delete e.prepareCap
+    }
+    const t = await makeTarget(f)
+    const r = readers(t)
+    importFile(t, old)
+    expect(r.deploys.settings(f.staging.id)).toMatchObject({ parallelPrepare: true, prepareCap: 3, flow: null })
+    expect(r.services.get(f.ids.appService)).toMatchObject({ skipUnchanged: false })
+  })
+
+  it('step secrets are exported as secret refs only, never values', async () => {
+    const { f, file } = await playbookSource()
+    const text = serializeConfig(file)
+    for (const value of Object.values(SECRET_VALUES)) {
+      expect(text).not.toContain(value)
+      expect(text).not.toContain(Buffer.from(value).toString('base64'))
+    }
+    expect(text).not.toContain(f.ids.dotenvSecret)
+    expect(Object.values(file.secretRefs)).toContainEqual({ vaultName: 'Team', itemName: 'db-pass' })
+  })
+
+  it('import rejects an invalid step (bad anchor, timeout 5, 21 steps) with a validation error naming the deployment', async () => {
+    const { f, file } = await playbookSource()
+    const t = await makeTarget(f)
+    const bad = (edit: (steps: NonNullable<ConfigFile['deployments'][number]['steps']>) => void): ConfigFile => {
+      const c = copy(file)
+      edit(c.deployments[0].steps!)
+      return c
+    }
+    const cases = [
+      bad((steps) => ((steps[0] as { anchor: string }).anchor = 'whenever')),
+      bad((steps) => (steps[0].timeoutSec = 5)),
+      bad((steps) => {
+        while (steps.length < 21) steps.push({ ...steps[0], id: `s${steps.length}` })
+      }),
+    ]
+    for (const c of cases) {
+      // The strict reader refuses it, and so do the stores if it gets past (a hand-built file object).
+      expect(parseConfigFile(JSON.stringify(c)).ok).toBe(false)
+      expect(() => planImport(t.db, c)).toThrow(/^Checkout api: /)
+    }
+    // A step that names no service of its checkout passes the reader but not the store.
+    const noService = bad((steps) => {
+      steps[1].service = 'nope'
+    })
+    expect(parseConfigFile(JSON.stringify(noService)).ok).toBe(true)
+    expect(() => planImport(t.db, noService)).toThrow(/^Checkout api: .*service/)
+    expect(t.db.prepare('SELECT COUNT(*) AS n FROM deployments').get()).toEqual({ n: 0 })
+  })
+
+  it('the reader refuses hostile steps, flows and runbooks', async () => {
+    const { file } = await playbookSource()
+    const refused = (edit: (c: ConfigFile) => void): string[] => {
+      const c = copy(file)
+      edit(c)
+      const r = parseConfigFile(JSON.stringify(c))
+      return r.ok ? [] : r.errors
+    }
+    expect(refused((c) => ((c.deployments[0].steps![0] as Record<string, unknown>).extra = 1))).not.toEqual([])
+    expect(refused((c) => (c.deployments[0].steps![0].secrets[0].secret = 'ref-99'))).toEqual(['$.deployments[0].steps[0].secrets[0].secret is not a secret ref in this file'])
+    expect(refused((c) => (c.deployments[0].steps![0].secrets[0].secret = '../../etc'))).not.toEqual([])
+    expect(refused((c) => ((c.environments.find((e) => e.flow)!.flow!.stages[1] as { serviceIds: string[] }).serviceIds = ['0190a1b2-c3d4-7e5f-8a6b-aaaaaaaaaaaa']))).not.toEqual([])
+    expect(refused((c) => (c.runbooks![0].targetServiceIds = ['0190a1b2-c3d4-7e5f-8a6b-aaaaaaaaaaaa']))).not.toEqual([])
+    expect(refused((c) => c.runbooks!.push({ ...c.runbooks![0], id: '0190a1b2-c3d4-7e5f-8a6b-aaaaaaaaaaaa' }))).toEqual(['$.runbooks[1].name is a duplicate name in its environment'])
+    expect(refused((c) => (c.runbooks![0].params[0].name = 'constructor'))).not.toEqual([])
+    expect(refused((c) => ((c as unknown as { runbooks: unknown }).runbooks = 'x'))).not.toEqual([])
+  })
+
+  it('a step secret the target lacks is left out and reported; an existing checkout keeps its own steps', async () => {
+    const { f, file } = await playbookSource()
+    const t = await makeTarget(f, { team: false })
+    const r = readers(t)
+    // Without the Team vault the secret cannot resolve: the vault link is reported as well.
+    const plan = planImport(t.db, file)
+    expect(plan.needsSecret.map((n) => `${n.kind}.${n.field}`)).toEqual(expect.arrayContaining(['deployments.steps', 'environments.flow', 'runbooks.items']))
+    importFile(t, file)
+    expect(r.deploys.get(f.ids.deployment).steps[0].secrets).toEqual([])
+    // Again, over the checkout that now exists: its steps stay as they are.
+    r.deploys.update(f.ids.deployment, { steps: [{ ...stepBody({ id: 'mine', name: 'mine' }), anchor: 'after_up', alsoOnRollback: false }] })
+    const again = planImport(t.db, file)
+    expect(again.needsSecret.find((n) => n.field === 'steps')?.reason).toContain('kept the local steps')
+    importFile(t, file)
+    expect(r.deploys.get(f.ids.deployment).steps.map((s) => s.id)).toEqual(['mine'])
+  })
+
+  it('a changed step shows as an update of the checkout, and a changed runbook of the runbook', async () => {
+    const { f, file } = await playbookSource()
+    const t = await makeTarget(f)
+    importFile(t, file)
+    const edited = copy(file)
+    edited.deployments[0].steps![1].script = 'ls -la'
+    edited.runbooks![0].description = 'changed'
+    const plan = planImport(t.db, edited)
+    expect(itemOf(plan, 'deployments', 'api')).toMatchObject({ action: 'update', fields: ['steps'] })
+    expect(itemOf(plan, 'runbooks', 'Reindex')).toMatchObject({ action: 'update' })
+    expect(plan.counts).toMatchObject({ update: 2, unchanged: 9 })
+  })
+
+  it('a flow that uses a skipped service is not imported, with a reason, and the rest of the import goes on', async () => {
+    const { f, file } = await playbookSource()
+    const t = await makeTarget(f)
+    const r = readers(t)
+    importFile(t, file)
+    const before = r.deploys.settings(f.staging.id).flow
+    // Here the same id lives in another environment, so the file's app service is skipped.
+    const edited = copy(file)
+    t.db.prepare('UPDATE services SET environment_id = ? WHERE id = ?').run(f.prod.id, f.ids.appService)
+    edited.environments.find((e) => e.id === f.staging.id)!.flow!.stages.push({ kind: 'services', serviceIds: [f.ids.appService] })
+    const plan = planImport(t.db, edited)
+    expect(itemOf(plan, 'environments', 'staging').reason).toBe('Flow not imported: it uses web, which was skipped')
+    importFile(t, edited)
+    expect(r.deploys.settings(f.staging.id).flow).toEqual(before)
+  })
+
+  it('a re-import of an unchanged runbook shows no update even when the stored targets are in another order', async () => {
+    const { f, file } = await playbookSource()
+    const second = f.services.create({ kind: 'service', environmentId: f.staging.id, name: 'worker', deploymentId: f.ids.deployment, composeService: 'worker' })
+    const runbooks = new RunbookStore({ db: f.db, audit: f.audit, vault: f.vault })
+    const id = file.runbooks![0].id
+    const [rb] = runbooks.list(f.staging.id)
+    runbooks.update(id, { ...rb, targetServiceIds: [second.id, f.ids.appService] })
+    const now = buildConfigExport(f.db, clock).file
+    const again = copy(now)
+    for (const order of [[second.id, f.ids.appService], [f.ids.appService, second.id]]) {
+      again.runbooks![0].targetServiceIds = order
+      expect(itemOf(planImport(f.db, again), 'runbooks', 'Reindex').action).toBe('unchanged')
+    }
+  })
+
+  it('a flow or runbook that points at a service of another environment is refused', async () => {
+    const { f, file } = await playbookSource()
+    const other = f.services.create({ kind: 'service', environmentId: f.prod.id, name: 'prod-web', deploymentId: null, composeService: 'web' })
+    const flowEdit = copy(file)
+    flowEdit.services.push({ ...(flowEdit.services.find((x) => x.id === f.ids.appService)!), id: other.id, environmentId: f.prod.id, name: 'prod-web', deploymentId: null } as ConfigFile['services'][number])
+    ;(flowEdit.environments.find((e) => e.id === f.staging.id)!.flow!.stages[1] as { serviceIds: string[] }).serviceIds = [other.id]
+    expect(parseConfigFile(JSON.stringify(flowEdit)).ok).toBe(false)
+    const rbEdit = copy(file)
+    rbEdit.services = flowEdit.services
+    rbEdit.runbooks![0].targetServiceIds = [other.id]
+    expect(parseConfigFile(JSON.stringify(rbEdit)).ok).toBe(false)
+    // Past the reader (a hand-built object), the stores refuse them.
+    const t = await makeTarget(f)
+    expect(() => planImport(t.db, flowEdit)).toThrow()
+    expect(() => planImport(t.db, rbEdit)).toThrow()
   })
 })
