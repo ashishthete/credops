@@ -195,12 +195,14 @@ export function PlaybookReview({
   const [discarded, setDiscarded] = useState(false)
   const plays = useMemo(() => (playbook === null ? [] : playbookSteps(playbook)), [playbook])
   // A new preview replaces the text being edited.
-  useEffect(() => {
-    setEditing((was) => {
-      if (was) setDiscarded(true)
-      return false
-    })
-  }, [playbook])
+  const [seen, setSeen] = useState(playbook)
+  if (seen !== playbook) {
+    setSeen(playbook)
+    if (editing) {
+      setEditing(false)
+      setDiscarded(true)
+    }
+  }
   if (playbook === null) return <p className="text-[12px] text-muted">Generating the playbook</p>
   return (
     <div className="flex flex-col gap-2">

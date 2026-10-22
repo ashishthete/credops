@@ -166,6 +166,14 @@ describe('an edited run', () => {
     expect(calls(invoke, 'release:start')[0].slice(1)).toEqual(['rel-op', { playbookSha256: EDIT_SHA, editedPlaybook: box.value }])
   })
 
+  it('a double click on Run edited sends one start', async () => {
+    const { invoke, user, dialog } = await toEdit(false)
+    const base = invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
+    invoke.mockImplementation((ch: string, ...args: unknown[]) => (ch === 'release:start' ? new Promise(() => {}) : base(ch, ...args)))
+    await user.dblClick(within(dialog).getByRole('button', { name: 'Run edited' }))
+    expect(calls(invoke, 'release:start')).toHaveLength(1)
+  })
+
   it('a protected environment needs the typed name first', async () => {
     const { invoke, user, dialog, box } = await toEdit(true)
     await user.click(within(dialog).getByRole('button', { name: 'Run edited' }))
