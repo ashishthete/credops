@@ -42,7 +42,7 @@ function fakeBroker(): { [K in keyof PromptApi]: ReturnType<typeof vi.fn> } {
 
 async function setup() {
   const f = makeVault()
-  await f.vault.setup('correct horse')
+  await f.vault.setup({ password: 'correct horse', touchId: true })
   const dir = mkdtempSync(join(tmpdir(), 'opsdeck-sessions-ipc-'))
   onTestFinished(() => rmSync(dir, { recursive: true, force: true }))
   const knownHosts = new KnownHostStore(f.db, f.vault, f.audit, { knownHostsPath: join(dir, 'known_hosts') })

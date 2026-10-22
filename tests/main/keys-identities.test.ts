@@ -68,7 +68,7 @@ async function setup() {
   const sshDir = tmp()
   const clipboard = fakeClipboard()
   const f = makeVault({ clipboard })
-  await f.vault.setup(PW)
+  await f.vault.setup({ password: PW, touchId: true })
   const keys = new KeyStore(f.db, f.vault, f.audit, { sshDir, clipboard, defaultComment: 'tester@box' })
   const ids = new IdentityStore(f.db, f.vault, keys, f.audit)
   return { ...f, sshDir, clipboard, keys, ids }

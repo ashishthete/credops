@@ -1,5 +1,6 @@
 import type { AuditLog } from '../audit/audit-log'
 import type { Db } from '../db/connection'
+import type { SessionCheck } from '../../shared/sso'
 import { HUB_API_VERSION, type HubMeta, type HubSession, type HubStatus, type HubUser } from '../../shared/hub'
 import { HubClient, HubError } from './client'
 import { OidcError, checkAuthority, discover, refreshTokens, signIn as oidcSignIn, type TokenSet } from './oidc'
@@ -18,6 +19,8 @@ export interface HubConnectionDeps {
   openBrowser: (url: string) => Promise<void>
   now: () => number
   emit: (status: HubStatus) => void
+  /** Asked with the Hub's id before connect() changes anything; throwing refuses the link. */
+  beforeLink?: (hubId: string) => void
 }
 
 interface LinkRow {
@@ -128,6 +131,7 @@ export class HubConnection {
   async connect(url: string): Promise<HubStatus> {
     const base = normalizeHubUrl(url)
     const meta = await this.fetchMeta(base)
+    this.d.beforeLink?.(meta.hubId)
     this.meta = meta
     const now = this.iso()
     const prev = this.row()
@@ -321,7 +325,7 @@ export class HubConnection {
       if (err instanceof HubError && (err.status === 401 || err.status === 400 || err.status === 403)) return this.signedOut()
       // Unreachable or failing is not rejected: keep the session and say so, so callers back off instead of signing out.
       if (err instanceof HubError && (err.code === 'network' || err.code === 'timeout' || err.code === 'unavailable')) throw err
-      if (err instanceof HubError && err.status !== undefined && err.status >= 500) throw new HubError('unavailable', 'The Hub is unavailable', err.status)
+      if (err instanceof HubError && err.status !== undefined && (err.status >= 500 || err.status === 429)) throw new HubError('unavailable', 'The Hub is unavailable', err.status)
       if (err instanceof OidcError && (err.code === 'network' || err.code === 'timeout')) throw new HubError('network', "Can't reach the Hub")
       return false
     }
@@ -338,6 +342,44 @@ export class HubConnection {
     this.user = user
     this.publish()
     return user
+  }
+
+  /**
+   * Silent session check for the SSO gate. Never opens a browser. Only network or availability errors (including
+   * a 5xx or 429) give `offline`, and they keep the session; a 401 or 403 never does.
+   */
+  async checkSession(): Promise<SessionCheck> {
+    if (!this.row() || !this.load()) return { kind: 'expired' }
+    const offline = (err: unknown): boolean =>
+      err instanceof HubError &&
+      (err.code === 'network' || err.code === 'timeout' || err.code === 'unavailable' || (err.status !== undefined && (err.status >= 500 || err.status === 429)))
+    try {
+      return { kind: 'ok', user: await this.me() }
+    } catch (err) {
+      if (offline(err)) return { kind: 'offline' }
+      if (!(err instanceof HubError)) throw err
+      if (err.status === 403) {
+        this.signedOut()
+        return { kind: 'disabled' }
+      }
+      if (err.status !== 401) throw err
+    }
+    // A 401: the client already renewed once for an expired session; a session still held was rejected outright.
+    if (this.load()) {
+      try {
+        if (!(await this.renew())) return { kind: 'expired' }
+        return { kind: 'ok', user: await this.me() }
+      } catch (err) {
+        if (offline(err)) return { kind: 'offline' }
+        if (err instanceof HubError && err.status === 403) {
+          this.signedOut()
+          return { kind: 'disabled' }
+        }
+        if (err instanceof HubError && err.status === 401) return { kind: 'expired' }
+        throw err
+      }
+    }
+    return { kind: 'expired' }
   }
 
   /**

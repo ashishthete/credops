@@ -85,6 +85,104 @@ describe('registerHandlers', () => {
   })
 })
 
+describe('sign-in and factor contract', () => {
+  type Fn = (e: IpcMainInvokeEvent, ...a: unknown[]) => unknown
+  const SSO_CHANNELS = [
+    'vault:setup',
+    'vault:unlockPin',
+    'vault:setPin',
+    'vault:clearPin',
+    'vault:setPassword',
+    'vault:removePassword',
+    'auth:check',
+    'auth:signIn',
+    'auth:changeAccount',
+    'auth:disconnect',
+    'auth:signOut',
+  ] as const
+  const PIN = '204816'
+  const setup = (over: Parameters<typeof stubHandlers>[0]) => {
+    const registered = new Map<string, Fn>()
+    registerHandlers({ handle: (c: string, fn: Fn) => void registered.set(c, fn) }, stubHandlers(over), () => true, {
+      validators: VALIDATORS,
+    })
+    return (c: string) => registered.get(c)!
+  }
+  const ev = frame('file:///ok')
+
+  it('lists every channel, each validated', () => {
+    for (const c of SSO_CHANNELS) {
+      expect(CHANNELS).toContain(c)
+      expect(typeof VALIDATORS[c]).toBe('function')
+    }
+  })
+
+  it('rejects an over-long PIN before the vault sees it; the 6-12 digit rule is the vault’s', async () => {
+    const spy = vi.fn(async () => ({ ok: true as const }))
+    const fn = setup({ 'vault:unlockPin': spy })('vault:unlockPin')
+    await expect(fn(ev, '1'.repeat(65))).rejects.toThrow(/invalid arguments/)
+    await expect(fn(ev, '')).rejects.toThrow(/invalid arguments/)
+    await expect(fn(ev, 204816)).rejects.toThrow(/invalid arguments/)
+    expect(spy).not.toHaveBeenCalled()
+    // Preflight F31: a pasted 13 digits reaches the vault, so its message is the one the user sees.
+    await fn(ev, '1'.repeat(13))
+    expect(spy).toHaveBeenCalledWith('1'.repeat(13))
+  })
+
+  it('checks setup options and reverify proofs', () => {
+    expect(VALIDATORS['vault:setup']([{ pin: PIN, touchId: true }])).toEqual([{ pin: PIN, touchId: true }])
+    expect(VALIDATORS['vault:setup']([{ password: 'correct horse' }])).toEqual([{ password: 'correct horse' }])
+    expect(() => VALIDATORS['vault:setup'](['correct horse'])).toThrow(/invalid arguments/)
+    expect(() => VALIDATORS['vault:setup']([{ touchId: 'yes' }])).toThrow(/invalid arguments/)
+    expect(() => VALIDATORS['vault:setup']([{ pin: PIN, extra: 1 }])).toThrow(/invalid arguments/)
+    const ok = [{ method: 'pin', pin: PIN }, { method: 'password', password: 'pw' }, { method: 'touchId' }]
+    for (const proof of ok) expect(VALIDATORS['auth:changeAccount']([proof])).toEqual([proof])
+    for (const bad of [{ method: 'pin' }, { method: 'face' }, { method: 'touchId', pin: PIN }, { method: 'password', pin: PIN }, 'pin']) {
+      expect(() => VALIDATORS['auth:disconnect']([bad])).toThrow(/invalid arguments/)
+    }
+    expect(VALIDATORS['vault:setQuickUnlock'](['off'])).toEqual(['off', undefined])
+    expect(VALIDATORS['vault:setPin']([PIN, { method: 'touchId' }])).toEqual([PIN, { method: 'touchId' }])
+    expect(() => VALIDATORS['vault:setPin']([PIN])).toThrow(/invalid arguments/)
+  })
+
+  it('redacts a PIN, password or proof that reaches a thrown error', async () => {
+    const leak = (...args: unknown[]) => {
+      throw new Error(`failed with ${JSON.stringify(args)}`)
+    }
+    const get = setup({
+      'vault:unlockPin': leak,
+      'vault:setPin': leak,
+      'vault:setPassword': leak,
+      'vault:removePassword': leak,
+      'vault:setup': leak,
+      'auth:changeAccount': leak,
+      'auth:disconnect': leak,
+      'vault:setQuickUnlock': leak,
+      'vault:changePassword': leak,
+      'vault:unlock': leak,
+    })
+    const calls: [string, unknown[], string[]][] = [
+      ['vault:unlockPin', [PIN], [PIN]],
+      ['vault:setPin', ['482913', { method: 'pin', pin: PIN }], ['482913', PIN]],
+      ['vault:setPassword', ['new horse battery', { method: 'password', password: 'old horse battery' }], ['new horse battery', 'old horse battery']],
+      ['vault:removePassword', ['old horse battery'], ['old horse battery']],
+      ['vault:setup', [{ password: 'new horse battery', pin: PIN }], ['new horse battery', PIN]],
+      ['auth:changeAccount', [{ method: 'pin', pin: PIN }], [PIN]],
+      ['auth:disconnect', [{ method: 'password', password: 'old horse battery' }], ['old horse battery']],
+      ['vault:setQuickUnlock', ['touchId', { method: 'pin', pin: PIN }], [PIN]],
+      ['vault:changePassword', ['old horse battery', 'new horse battery'], ['old horse battery', 'new horse battery']],
+      ['vault:unlock', ['old horse battery'], ['old horse battery']],
+    ]
+    for (const [channel, args, secrets] of calls) {
+      const err = await (get(channel)(ev, ...args) as Promise<unknown>).catch((e: Error) => e)
+      expect(err).toBeInstanceOf(Error)
+      const msg = (err as Error).message
+      expect(msg).toContain('‹redacted›')
+      for (const s of secrets) expect(msg).not.toContain(s)
+    }
+  })
+})
+
 describe('ops contract', () => {
   const OPS_CHANNELS = [
     'snippets:list',

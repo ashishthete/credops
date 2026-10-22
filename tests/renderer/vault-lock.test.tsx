@@ -10,7 +10,7 @@ import { vaultStatusStore } from '../../src/renderer/src/vault/status'
 import { passwordStrength } from '../../src/renderer/src/vault/strength'
 import { cancelUnlock, ensureUnlocked, withUnlock } from '../../src/renderer/src/vault/unlock'
 import { closeVaultSettings, openVaultSettings, VaultSettingsDialog } from '../../src/renderer/src/vault/VaultSettingsDialog'
-import type { UnlockResult, VaultStatus } from '../../src/shared/vault'
+import type { SetupOptions, UnlockResult, VaultStatus } from '../../src/shared/vault'
 import { emitBridgeEvent, mockBridge, vaultStatus } from './helpers'
 
 const WRONG: UnlockResult = { ok: false, reason: 'wrong-password', retryAfterMs: 0 }
@@ -41,7 +41,14 @@ function fakeVault(start: Partial<VaultStatus> = {}, results: Record<string, unk
       return res
     }
     if (channel === 'vault:setup') {
-      Object.assign(state, { setUp: true, unlocked: true })
+      const opts = args[0] as SetupOptions
+      Object.assign(state, {
+        setUp: true,
+        unlocked: true,
+        quickUnlock: opts.touchId ? 'touchId' : 'off',
+        hasPassword: opts.password !== undefined,
+        pin: { enabled: opts.pin !== undefined, attemptsLeft: 5 },
+      })
       return { ...state }
     }
     return (fallback as (c: string, ...a: unknown[]) => Promise<unknown>)(channel, ...args)
@@ -99,9 +106,11 @@ afterEach(() => {
 })
 
 describe('setup', () => {
-  it('setup validates and submits', async () => {
+  it('without the Keychain, setup validates and submits a master password', async () => {
     const user = userEvent.setup()
-    const { invoke } = fakeVault({ setUp: false })
+    const { invoke, state } = fakeVault({ setUp: false, quickUnlockAvailable: { touchId: false, login: false } })
+    // As on the gate, which has the status before it shows the card.
+    vaultStatusStore.set({ ...state })
     render(<SetupCard />)
     const create = screen.getByRole('button', { name: 'Create master password' })
     const pw = screen.getByLabelText('Master password')
@@ -122,7 +131,7 @@ describe('setup', () => {
     await user.type(confirm, 'correct horse')
     await waitFor(() => expect(screen.queryByText("Passwords don't match")).not.toBeInTheDocument())
     await user.click(create)
-    expect(invoke).toHaveBeenCalledWith('vault:setup', 'correct horse')
+    expect(invoke).toHaveBeenCalledWith('vault:setup', { password: 'correct horse' })
     // The fields are emptied once the password is handed off.
     await waitFor(() => expect(pw).toHaveValue(''))
     expect(confirm).toHaveValue('')
@@ -134,24 +143,29 @@ describe('setup', () => {
     expect(passwordStrength('c0rrect-Horse-battery-staple')).toBe(4)
   })
 
-  it('first run shows only the setup gate, then offers Touch ID', async () => {
+  it('first run shows only the setup gate, then sets up Touch ID', async () => {
     const user = userEvent.setup()
-    const { invoke } = fakeVault(
-      { setUp: false },
-      { 'vault:setQuickUnlock': [vaultStatus({ unlocked: true, quickUnlock: 'touchId' })] },
-    )
+    const { invoke } = fakeVault({ setUp: false })
     renderApp()
-    await gate('Protect your vaults')
+    // With T8's gate order, a fresh install starts on the Hub step; skip it for local-only setup.
+    const skipHub = await waitFor(() => {
+      const skip = screen.queryByRole('button', { name: 'Use OpsDeck without a Hub' })
+      expect(skip ?? screen.queryByRole('switch', { name: 'Touch ID' })).toBeInTheDocument()
+      return skip
+    })
+    if (skipHub) await user.click(skipHub)
+    expect(await screen.findByRole('switch', { name: 'Touch ID' })).toHaveAttribute('aria-checked', 'true')
     expect(shellNav()).not.toBeInTheDocument()
-    await user.type(screen.getByLabelText('Master password'), 'correct horse')
-    await user.type(screen.getByLabelText('Confirm password'), 'correct horse')
-    await user.click(screen.getByRole('button', { name: 'Create master password' }))
+    await user.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(invoke).toHaveBeenCalledWith('vault:setup', { touchId: true, pin: undefined, password: undefined })
     await gate('Your vaults are ready')
-    // Still gated until the user picks: nothing behind it has mounted.
+    // Still gated until the user moves on: nothing behind it has mounted.
     expect(shellNav()).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Enable Touch ID' }))
-    expect(invoke).toHaveBeenCalledWith('vault:setQuickUnlock', 'touchId')
+    // Touch ID came with setup, so it is not offered again.
+    expect(screen.queryByRole('button', { name: 'Enable Touch ID' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Continue' }))
     expect(await screen.findByRole('navigation')).toBeInTheDocument()
+    expect(invoke).not.toHaveBeenCalledWith('vault:setQuickUnlock', expect.anything())
   })
 })
 
@@ -447,14 +461,19 @@ describe('settings', () => {
     const user = userEvent.setup()
     const { invoke } = fakeVault(
       { unlocked: true },
-      { 'vault:setQuickUnlock': [vaultStatus({ unlocked: true, quickUnlock: 'touchId' })] },
+      { 'vault:setQuickUnlock': [{ ok: true, status: vaultStatus({ unlocked: true, quickUnlock: 'touchId' }) }] },
     )
     render(<VaultSettingsDialog />)
     act(() => openVaultSettings())
     const quick = await screen.findByLabelText('Quick unlock')
     await waitFor(() => expect(quick).toBeEnabled())
     await user.selectOptions(quick, 'Touch ID')
-    expect(invoke).toHaveBeenCalledWith('vault:setQuickUnlock', 'touchId')
+    // Turning a way in on needs a proof.
+    expect(invoke).not.toHaveBeenCalledWith('vault:setQuickUnlock', 'touchId')
+    const proof = await screen.findByRole('dialog', { name: 'Turn on Touch ID' })
+    await user.type(within(proof).getByLabelText('Master password'), 'correct horse')
+    await user.click(within(proof).getByRole('button', { name: 'Turn on Touch ID' }))
+    expect(invoke).toHaveBeenCalledWith('vault:setQuickUnlock', 'touchId', { method: 'password', password: 'correct horse' })
     await waitFor(() => expect(quick).toHaveValue('touchId'))
   })
 

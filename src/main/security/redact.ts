@@ -4,22 +4,13 @@ export const SENSITIVE_KEY = /pass(word|phrase)?|secret|token|api[_-]?key|privat
 // An unterminated block is redacted through the end of the string.
 const PEM_BLOCK = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g
 const MIN_SECRET_LENGTH = 4
-// Shorter secrets (a PIN, a short word) also occur inside unrelated numbers and words, so they
-// are masked only as whole tokens. A 4–7 char secret fused to letters or digits ("pin1234x")
-// is left as is on purpose: masking it would also mask every number that happens to contain it.
-const MIN_ANYWHERE_LENGTH = 8
-const WORD_CHAR = /[\p{L}\p{N}]/u
 
-const isBoundary = (s: string, at: number): boolean => at < 0 || at >= s.length || !WORD_CHAR.test(s[at]!)
-
-/** Replaces each occurrence of `secret` in `s`; short ones only with a non-alphanumeric char or the edge on both sides. */
+/** Replaces every occurrence of `secret` in `s`, even fused to other characters (a PIN inside "pin123456x"). */
 function maskOne(s: string, secret: string, counter?: { n: number }): string {
-  const anywhere = secret.length >= MIN_ANYWHERE_LENGTH
   let out = ''
   let from = 0
   for (let at = s.indexOf(secret); at !== -1; at = s.indexOf(secret, at + 1)) {
     if (at < from) continue
-    if (!anywhere && !(isBoundary(s, at - 1) && isBoundary(s, at + secret.length))) continue
     out += s.slice(from, at) + REDACTED
     from = at + secret.length
     if (counter) counter.n++

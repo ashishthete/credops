@@ -75,7 +75,7 @@ describe('validate', () => {
     const V = VALIDATORS
     expect(V['vault:unlock'](['pw'])).toEqual(['pw'])
     expect(() => V['vault:unlock']([''])).toThrow(InvalidArgs)
-    expect(() => V['vault:setup'](['x'.repeat(MAX_MASTER_PASSWORD + 1)])).toThrow(/at most 1024/)
+    expect(() => V['vault:setup']([{ password: 'x'.repeat(MAX_MASTER_PASSWORD + 1) }])).toThrow(/at most 1024/)
     expect(() => V['vault:changePassword'](['a'])).toThrow(/\[1\] must be a string/)
     expect(V['vault:create']([{ name: '  Prod ', color: '#A0b1C2' }])).toEqual([{ name: 'Prod', color: '#A0b1C2' }])
     expect(() => V['vault:create']([{ name: 'Prod', color: 'red' }])).toThrow(/color has an invalid format/)
@@ -86,7 +86,7 @@ describe('validate', () => {
     expect(() => V['vault:delete'](['../etc'])).toThrow(/must be a uuid/)
     expect(V['vault:lock'](['extra'])).toEqual([])
     expect(V['vault:unlockQuick']([])).toEqual([])
-    expect(V['vault:setQuickUnlock'](['touchId'])).toEqual(['touchId'])
+    expect(V['vault:setQuickUnlock'](['touchId'])).toEqual(['touchId', undefined])
     expect(() => V['vault:setQuickUnlock'](['face'])).toThrow(/not an allowed value/)
     expect(V['vault:setAutoLock']([null])).toEqual([null])
     expect(V['vault:setAutoLock']([60])).toEqual([60])

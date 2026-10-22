@@ -82,6 +82,11 @@ describe('HubPage', () => {
     const invoke = await renderHub({ 'hub:status': { linked: false }, 'hub:connect': linked({ signedIn: false, user: null }) })
     await user.type(screen.getByLabelText('Hub URL'), 'https://hub.corp.example')
     await user.click(screen.getByRole('button', { name: 'Connect' }))
+    // Connecting binds the vaults to the account: say so first.
+    const ask = await screen.findByRole('dialog', { name: 'Connect to this Hub?' })
+    expect(within(ask).getByText('From now on, OpsDeck opens only after you sign in with this Microsoft account.')).toBeTruthy()
+    expect(calls(invoke, 'hub:connect')).toHaveLength(0)
+    await user.click(within(ask).getByRole('button', { name: 'Connect' }))
     expect(calls(invoke, 'hub:connect')[0]).toEqual(['hub:connect', 'https://hub.corp.example'])
     expect(await screen.findByText('Corp Hub')).toBeTruthy()
     await user.click(screen.getByRole('button', { name: 'Sign in with Microsoft' }))

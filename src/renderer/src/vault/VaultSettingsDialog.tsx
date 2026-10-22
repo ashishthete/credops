@@ -1,19 +1,24 @@
-import { useRef, useState, useSyncExternalStore, type FormEvent } from 'react'
-import {
-  AUTO_LOCK_CHOICES,
-  MAX_MASTER_PASSWORD,
-  MIN_MASTER_PASSWORD,
-  type QuickUnlockMode,
-  type VaultStatus,
-} from '../../../shared/vault'
+import { useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react'
+import { AUTO_LOCK_CHOICES, MAX_MASTER_PASSWORD, MIN_MASTER_PASSWORD, type QuickUnlockMode, type VaultStatus } from '../../../shared/vault'
 import { api } from '../lib/api'
 import { Button } from '../ui/Button'
+import { ConfirmDialog } from '../ui/common'
 import { Dialog } from '../ui/Dialog'
 import { SecretField, SelectField } from '../ui/Field'
 import { toast } from '../ui/Toaster'
+import { isSignedInViaHub, signOutAccount, signOutRequest } from './account'
 import { StrengthMeter } from './SetupCard'
 import { useVaultStatus, vaultStatusStore } from './status'
 import { passwordStrength, type Strength } from './strength'
+import {
+  AddPasswordDialog,
+  ChangeAccountDialog,
+  PIN_ONLY_WARNING,
+  RemovePasswordDialog,
+  SetPinDialog,
+  TouchIdDialog,
+} from './UnlockMethodDialogs'
+import { factorGuard } from './factorGuard'
 import { withUnlock } from './unlock'
 import { useSecondsLeft } from './UnlockCard'
 
@@ -50,33 +55,65 @@ function autoLockLabel(m: number | null): string {
   return `After ${m} minute${m === 1 ? '' : 's'}`
 }
 
+const NEED_PIN = 'Add a PIN first'
+const NEED_TOUCH_ID = 'Add Touch ID first'
+const NEED_TOUCH_ID_OR_PIN = 'Add Touch ID or a PIN first'
+
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
 function fail(title: string, err: unknown) {
   toast({ title, description: errorText(err), tone: 'error' })
 }
 
-/** Quick unlock, auto-lock and change-password. Opened from the palette or the sidebar. */
+/** Unlock methods, auto-lock and the Microsoft account. Opened from the palette or the sidebar. */
 export function VaultSettingsDialog() {
   const isOpen = useSyncExternalStore(openStore.subscribe, openStore.get)
   const status = useVaultStatus()
   const [shake, setShake] = useState(0)
   return (
-    <Dialog
-      open={isOpen}
-      onClose={closeVaultSettings}
-      title="Vault settings"
-      description="How your vaults unlock, when they lock again, and your master password."
-      shake={shake}
-      width={460}
-    >
-      <SettingsBody status={status} onWrong={() => setShake((n) => n + 1)} />
-    </Dialog>
+    <>
+      <Dialog
+        open={isOpen}
+        onClose={closeVaultSettings}
+        title="Vault settings"
+        description="How your vaults unlock, when they lock again, and your account."
+        shake={shake}
+        width={460}
+      >
+        <SettingsBody status={status} onWrong={() => setShake((n) => n + 1)} />
+      </Dialog>
+      <SignOutConfirm />
+    </>
+  )
+}
+
+type Panel = 'touchId' | 'pin' | 'password' | 'removePassword' | 'account'
+
+/** Sign out asks first, from Settings and from the palette alike. */
+function SignOutConfirm() {
+  const asking = useSyncExternalStore(signOutRequest.store.subscribe, signOutRequest.store.get)
+  return (
+    <ConfirmDialog
+      request={
+        asking
+          ? {
+              title: 'Sign out and lock your vaults?',
+              description: "Your vaults stay on this Mac; you'll sign in with Microsoft next time.",
+              confirmLabel: 'Sign out',
+              gentle: { cancelLabel: 'Cancel' },
+              run: signOutAccount,
+            }
+          : null
+      }
+      onClose={signOutRequest.close}
+    />
   )
 }
 
 function SettingsBody({ status, onWrong }: { status: VaultStatus | null; onWrong: () => void }) {
   const [saving, setSaving] = useState(false)
+  const [panel, setPanel] = useState<Panel | null>(null)
+  const close = () => setPanel(null)
   const modes = status
     ? (Object.keys(MODE_LABELS) as QuickUnlockMode[]).filter(
         // 'login' opens without any prompt, which would defeat the app's auth gate: never offered,
@@ -84,13 +121,19 @@ function SettingsBody({ status, onWrong }: { status: VaultStatus | null; onWrong
         (m) => m === 'off' || m === status.quickUnlock || (m === 'touchId' && status.quickUnlockAvailable.touchId),
       )
     : []
+  // Mirrors main's keepsAWayIn: Touch ID or a PIN must stay, and a master password never counts as
+  // one. Main still refuses anything that slips past.
+  const touchId = status?.quickUnlock === 'touchId'
+  const { canRemovePin, canTurnOffTouchId, canRemovePassword } = factorGuard(status)
 
   const setQuick = async (mode: QuickUnlockMode) => {
+    // Turning a way in on needs a proof; turning it off does not.
+    if (mode === 'touchId') return setPanel('touchId')
     setSaving(true)
     try {
       const next = await withUnlock(() => api.invoke('vault:setQuickUnlock', mode))
       if (next) {
-        vaultStatusStore.set(next)
+        vaultStatusStore.set(next.status)
         toast({ title: mode === 'off' ? 'Quick unlock turned off' : `${MODE_LABELS[mode]} enabled`, tone: 'success' })
       }
     } catch (err) {
@@ -108,37 +151,126 @@ function SettingsBody({ status, onWrong }: { status: VaultStatus | null; onWrong
     }
   }
 
+  const clearPin = async () => {
+    try {
+      const next = await withUnlock(() => api.invoke('vault:clearPin'))
+      if (!next) return
+      vaultStatusStore.set(next)
+      toast({ title: 'PIN removed', tone: 'success' })
+    } catch (err) {
+      fail("Couldn't remove the PIN", err)
+    }
+  }
+
+  const pinOnly = !!status?.pin.enabled && !status.hasPassword && status.quickUnlock !== 'touchId'
   return (
     <div className="flex flex-col gap-5">
-      <div className="grid grid-cols-2 gap-3">
-        <SelectField
-          label="Quick unlock"
-          disabled={!status || saving}
-          value={status?.quickUnlock ?? 'off'}
-          onChange={(e) => void setQuick(e.target.value as QuickUnlockMode)}
-        >
-          {modes.map((m) => (
-            <option key={m} value={m}>
-              {MODE_LABELS[m]}
-            </option>
-          ))}
-        </SelectField>
-        <SelectField
-          label="Auto-lock"
-          disabled={!status}
-          value={String(status?.autoLockMinutes ?? 'never')}
-          onChange={(e) => void setAutoLock(e.target.value === 'never' ? null : Number(e.target.value))}
-        >
-          {AUTO_LOCK_CHOICES.map((m) => (
-            <option key={String(m)} value={String(m ?? 'never')}>
-              {autoLockLabel(m)}
-            </option>
-          ))}
-        </SelectField>
-      </div>
-      {status && <p className="-mt-2 text-[12px] leading-4 text-muted">{MODE_HINTS[status.quickUnlock]}</p>}
-      <div className="h-px bg-line" />
-      <ChangePasswordForm onWrong={onWrong} />
+      <section aria-label="Unlock methods" className="flex flex-col gap-3">
+        <h3 className="text-[13px] font-semibold text-fg">Unlock methods</h3>
+        <div className="grid grid-cols-2 gap-3">
+          <div title={touchId && !canTurnOffTouchId ? NEED_PIN : undefined}>
+            <SelectField
+              label="Quick unlock"
+              disabled={!status || saving}
+              value={status?.quickUnlock ?? 'off'}
+              onChange={(e) => void setQuick(e.target.value as QuickUnlockMode)}
+            >
+              {modes.map((m) => (
+                <option key={m} value={m} disabled={m === 'off' && touchId && !canTurnOffTouchId}>
+                  {MODE_LABELS[m]}
+                </option>
+              ))}
+            </SelectField>
+          </div>
+          <SelectField
+            label="Auto-lock"
+            disabled={!status}
+            value={String(status?.autoLockMinutes ?? 'never')}
+            onChange={(e) => void setAutoLock(e.target.value === 'never' ? null : Number(e.target.value))}
+          >
+            {AUTO_LOCK_CHOICES.map((m) => (
+              <option key={String(m)} value={String(m ?? 'never')}>
+                {autoLockLabel(m)}
+              </option>
+            ))}
+          </SelectField>
+        </div>
+        {status && <p className="-mt-1 text-[12px] leading-4 text-muted">{MODE_HINTS[status.quickUnlock]}</p>}
+        {status && (
+          <>
+            <MethodRow label="PIN" detail={status.pin.enabled ? 'On' : 'Off'}>
+              <Button variant="ghost" size="sm" onClick={() => setPanel('pin')}>
+                {status.pin.enabled ? 'Change PIN' : 'Set PIN'}
+              </Button>
+              {status.pin.enabled && (
+                <span title={canRemovePin ? undefined : NEED_TOUCH_ID}>
+                  <Button variant="ghost" size="sm" disabled={!canRemovePin} onClick={() => void clearPin()}>
+                    Remove PIN
+                  </Button>
+                </span>
+              )}
+            </MethodRow>
+            {pinOnly && <p className="-mt-1 text-[12px] leading-4 text-warn">{PIN_ONLY_WARNING}</p>}
+            <MethodRow label="Master password" detail={status.hasPassword ? 'On' : 'Off'}>
+              {status.hasPassword ? (
+                <span title={canRemovePassword ? undefined : NEED_TOUCH_ID_OR_PIN}>
+                  <Button variant="ghost" size="sm" disabled={!canRemovePassword} onClick={() => setPanel('removePassword')}>
+                    Remove master password
+                  </Button>
+                </span>
+              ) : (
+                <Button variant="ghost" size="sm" onClick={() => setPanel('password')}>
+                  Add master password
+                </Button>
+              )}
+            </MethodRow>
+          </>
+        )}
+      </section>
+      {status?.hasPassword !== false && (
+        <>
+          <div className="h-px bg-line" />
+          <ChangePasswordForm onWrong={onWrong} />
+        </>
+      )}
+      {status?.sso.required && (
+        <>
+          <div className="h-px bg-line" />
+          <section aria-label="Account" className="flex flex-col gap-3">
+            <h3 className="text-[13px] font-semibold text-fg">Account</h3>
+            <p className="text-[13px] text-muted">
+              {status.sso.upn ? `Signed in as ${status.sso.upn}` : 'Not signed in'}
+              {status.sso.hubName ? ` · ${status.sso.hubName}` : ''}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setPanel('account')}>
+                Change Microsoft account
+              </Button>
+              {isSignedInViaHub(status) && (
+                <Button variant="ghost" size="sm" onClick={signOutRequest.ask}>
+                  Sign out
+                </Button>
+              )}
+            </div>
+          </section>
+        </>
+      )}
+      <TouchIdDialog open={panel === 'touchId'} status={status} onClose={close} />
+      <SetPinDialog open={panel === 'pin'} status={status} onClose={close} />
+      <AddPasswordDialog open={panel === 'password'} status={status} onClose={close} />
+      <RemovePasswordDialog open={panel === 'removePassword'} status={status} onClose={close} />
+      <ChangeAccountDialog open={panel === 'account'} status={status} onClose={close} />
+    </div>
+  )
+}
+
+function MethodRow({ label, detail, children }: { label: string; detail: string; children: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <p className="text-[13px] text-fg">
+        {label} <span className="text-muted">· {detail}</span>
+      </p>
+      <div className="flex items-center gap-1">{children}</div>
     </div>
   )
 }

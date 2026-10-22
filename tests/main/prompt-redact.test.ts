@@ -108,10 +108,10 @@ describe('redactPrompt', () => {
     expect(redactPrompt('PORT=8080 API_KEY=abc', ctx()).text).toBe('PORT=8080 API_KEY=‹redacted›')
   })
 
-  it('short known secrets only at word boundaries', () => {
+  it('known secrets are masked anywhere, even fused to other characters', () => {
     const { text, counts } = redactPrompt('pin 4321 and 943210 and x4321y', ctx({ knownSecrets: ['4321'] }))
-    expect(text).toBe('pin ‹redacted› and 943210 and x4321y')
-    expect(counts).toEqual({ secret: 1 })
+    expect(text).toBe('pin ‹redacted› and 9‹redacted›0 and x‹redacted›y')
+    expect(counts).toEqual({ secret: 3 })
   })
 
   it('usernames in paths and user@host', () => {

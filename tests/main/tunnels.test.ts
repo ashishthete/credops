@@ -955,7 +955,7 @@ describe('vault reset', () => {
     await t.waitFor(() => expect(srv.connections() + unknown.connections()).toBe(0))
 
     // Setup is a first unlock again: nothing paused comes back.
-    await t.vault.setup('a new password')
+    await t.vault.setup({ password: 'a new password', touchId: true })
     expect(t.manager.status().map((r) => r.state)).toEqual(['stopped', 'stopped'])
   })
 
@@ -1036,7 +1036,7 @@ describe('vault reset', () => {
     t.vault.lock('manual')
     await t.vault.reset('RESET')
     expect(t.manager.runtime(auto.id).state).toBe('stopped')
-    await t.vault.setup('a new password')
+    await t.vault.setup({ password: 'a new password', touchId: true })
     await t.waitState(auto.id, 'up')
   })
 })

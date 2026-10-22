@@ -25,7 +25,7 @@ const hashed = (token: string, salt = Buffer.from('0123456789abcdefghij')): stri
 
 async function setup(file?: string) {
   const f = makeVault()
-  await f.vault.setup('correct horse')
+  await f.vault.setup({ password: 'correct horse', touchId: true })
   const dir = mkdtempSync(join(tmpdir(), 'opsdeck-kh-'))
   onTestFinished(() => rmSync(dir, { recursive: true, force: true }))
   const path = join(dir, 'known_hosts')

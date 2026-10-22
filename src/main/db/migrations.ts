@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { AuditLog } from '../audit/audit-log'
+import { ssoMigration } from './sso-migration'
 import { REGIONS_REPORT_KEY, hasRepoCredentials, stripRepoCredentials, type RegionsUpgradeReport } from '../../shared/inventory'
 
 export type Db = DatabaseSync
@@ -412,6 +413,7 @@ CREATE TABLE runbooks(
   UNIQUE(environment_id, name));
 `,
   },
+  ssoMigration,
 ]
 
 /** One audit event summarising migration 12's report, by id and count only; none when there is no report. */

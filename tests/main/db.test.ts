@@ -96,7 +96,6 @@ describe('vault schema', () => {
 })
 
 describe('migration versions', () => {
-  // Version 12 is the regions branch's and merges from there, so this branch alone skips it.
   it('are strictly increasing and unique, with no gaps', () => {
     const versions = migrations.map((m) => m.version)
     expect(versions).toEqual([...new Set(versions)].sort((a, b) => a - b))
@@ -116,7 +115,7 @@ describe('migration 13 playbook_ops', () => {
     db.exec(
       "INSERT INTO releases(id,environment_id,kind,status,version_bump,options,service_ids,triggered_by,created_at) VALUES ('r','e','release','ready','none','{}','[]','a','t')",
     )
-    expect(migrate(db)).toEqual({ from: 11, to: 13 })
+    expect(migrate(db, upTo(13))).toEqual({ from: 11, to: 13 })
     expect(db.prepare("SELECT parallel_prepare AS p, prepare_cap AS c, release_flow AS f FROM environments WHERE id='e'").get()).toEqual({ p: 1, c: 3, f: null })
     expect(db.prepare("SELECT operation AS o, playbook_source AS s, playbook_generated AS g FROM releases WHERE id='r'").get()).toEqual({ o: null, s: null, g: null })
     expect(() => db.exec("UPDATE environments SET prepare_cap = 9 WHERE id='e'")).toThrow(/CHECK constraint failed/)

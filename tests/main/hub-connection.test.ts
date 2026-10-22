@@ -327,6 +327,25 @@ describe('hub connection', () => {
     }
   })
 
+  it('a beforeLink refusal leaves the link and its session as they were', async () => {
+    let refuse = false
+    const seen: string[] = []
+    const conn = make({
+      beforeLink: (id) => {
+        seen.push(id)
+        if (refuse) throw new Error('Disconnect from the vault settings first')
+      },
+    })
+    const linked = await conn.connect(hubUrl)
+    await conn.signIn()
+    expect(seen).toEqual([linked.linked ? linked.hubId : ''])
+    const links = actions().filter((a) => a === 'hub.link').length
+    refuse = true
+    await expect(conn.connect(hubUrl)).rejects.toThrow('Disconnect from the vault settings first')
+    expect(conn.status()).toMatchObject({ linked: true, signedIn: true })
+    expect(actions().filter((a) => a === 'hub.link')).toHaveLength(links)
+  })
+
   it('new Entra and refresh tokens are redactable before they are exchanged or stored', async () => {
     const seen: { access: string[]; refresh: string[] } = { access: [], refresh: [] }
     const missing: string[] = []
@@ -431,6 +450,94 @@ describe('hub connection', () => {
     conn.cancelSignIn()
     await expect(p).rejects.toThrow(/cancel/i)
     expect(conn.status()).toMatchObject({ signingIn: false, signedIn: false })
+  })
+})
+
+describe('checkSession', () => {
+  const json = (status: number, body: object): Response => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+  const signedIn = async (over: Partial<ConstructorParameters<typeof HubConnection>[0]> = {}): Promise<HubConnection> => {
+    await make().connect(hubUrl)
+    await make().signIn()
+    return make(over)
+  }
+
+  it('ok after sign-in', async () => {
+    const conn = make()
+    await conn.connect(hubUrl)
+    await conn.signIn()
+    const r = await conn.checkSession()
+    expect(r).toMatchObject({ kind: 'ok', user: { oid: ADMIN.oid } })
+  })
+
+  it('expired with no session', async () => {
+    const conn = make()
+    expect(await conn.checkSession()).toEqual({ kind: 'expired' })
+    await conn.connect(hubUrl)
+    expect(await conn.checkSession()).toEqual({ kind: 'expired' })
+  })
+
+  it('renews an expired Hub session silently', async () => {
+    const conn = await signedIn()
+    expireHubSessions()
+    const before = opened.length
+    expect(await conn.checkSession()).toMatchObject({ kind: 'ok', user: { oid: ADMIN.oid } })
+    expect(opened).toHaveLength(before)
+  })
+
+  it('expired when the refresh is rejected', async () => {
+    await signedIn()
+    expireHubSessions()
+    const refused: typeof fetch = async (input, init) =>
+      String(input).includes('/token') ? json(400, { error: 'invalid_grant' }) : fetch(input, init)
+    const conn = make({ fetch: refused })
+    expect(await conn.checkSession()).toEqual({ kind: 'expired' })
+    expect(conn.status()).toMatchObject({ signedIn: false })
+  })
+
+  it('disabled when the Hub says 403', async () => {
+    hub.entra.setUser(BOB)
+    await make().connect(hubUrl)
+    await make().signIn()
+    const conn = make()
+    hub.db.prepare('UPDATE users SET disabled = 1 WHERE oid = ?').run(BOB.oid)
+    expect(await conn.checkSession()).toEqual({ kind: 'disabled' })
+    expect(conn.status()).toMatchObject({ signedIn: false })
+  })
+
+  it('offline when the Hub is down, keeping the session', async () => {
+    const conn = await signedIn()
+    await hub.close()
+    expect(await conn.checkSession()).toEqual({ kind: 'offline' })
+    expect(conn.status()).toMatchObject({ signedIn: true })
+    hub = await testHub()
+  })
+
+  it('offline on 502 and 429 from me, keeping the session', async () => {
+    for (const status of [502, 429]) {
+      const conn = await signedIn({ fetch: async () => json(status, { error: 'internal' }) })
+      expect(await conn.checkSession()).toEqual({ kind: 'offline' })
+      expect(conn.status()).toMatchObject({ signedIn: true })
+    }
+  })
+
+  it('offline when the renew POST /session gets a 429, keeping the session', async () => {
+    await signedIn()
+    expireHubSessions()
+    const limited: typeof fetch = async (input, init) =>
+      String(input).endsWith('/api/v1/session') && init?.method === 'POST' ? json(429, { error: 'internal' }) : fetch(input, init)
+    const conn = make({ fetch: limited })
+    expect(await conn.checkSession()).toEqual({ kind: 'offline' })
+    expect(conn.status()).toMatchObject({ signedIn: true })
+  })
+
+  it('offline when the renew POST /session gets a 502, keeping the session', async () => {
+    await signedIn()
+    expireHubSessions()
+    const bad: typeof fetch = async (input, init) =>
+      String(input).endsWith('/api/v1/session') && init?.method === 'POST' ? json(502, { error: 'internal' }) : fetch(input, init)
+    const conn = make({ fetch: bad })
+    expect(await conn.checkSession()).toEqual({ kind: 'offline' })
+    expect(conn.status()).toMatchObject({ signedIn: true })
   })
 })
 

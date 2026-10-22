@@ -27,7 +27,7 @@ describe('inventory schema', () => {
 
   it('fk fallbacks', async () => {
     const f = makeVault()
-    await f.vault.setup('correct horse')
+    await f.vault.setup({ password: 'correct horse', touchId: true })
     withParents(f.db)
     const keys = new KeyStore(f.db, f.vault, f.audit, { sshDir: '/nonexistent-opsdeck-test', clipboard: { writeText: () => undefined, readText: () => '' }, defaultComment: 'tester@box' })
     const ids = new IdentityStore(f.db, f.vault, keys, f.audit)

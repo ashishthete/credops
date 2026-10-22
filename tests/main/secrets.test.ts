@@ -36,7 +36,7 @@ async function settle(): Promise<void> {
 async function setup(opts: Parameters<typeof makeVault>[0] = {}) {
   const clipboard = fakeClipboard()
   const f = makeVault({ clipboard, ...opts })
-  await f.vault.setup(PW)
+  await f.vault.setup({ password: PW, touchId: true })
   const secrets = new SecretStore(f.db, f.vault, f.audit, { clipboard })
   return { ...f, clipboard, secrets }
 }

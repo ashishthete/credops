@@ -58,7 +58,7 @@ describe('AutoLock', () => {
 
   it('setAutoLock persists', async () => {
     const f = makeVault()
-    await f.vault.setup('correct horse')
+    await f.vault.setup({ password: 'correct horse', touchId: true })
     expect(f.vault.autoLockMinutes()).toBe(15)
     expect(f.vault.setAutoLock(60).autoLockMinutes).toBe(60)
     expect(f.vault.autoLockMinutes()).toBe(60)

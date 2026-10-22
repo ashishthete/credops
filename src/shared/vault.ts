@@ -1,10 +1,23 @@
 // Imported by the renderer: keep this file to plain constants and types (no node or electron imports).
+import type { SsoState } from './sso'
 export const DEFAULT_VAULT_ID = '00000000-0000-4000-8000-000000000001'
 export const VAULT_LOCKED = 'vault locked'
+/** Thrown by reverify when its miss wiped the PIN; a coded error, so no caller can read it as success. */
+export const PIN_WIPED = 'pin wiped'
+/** A reverify that did not prove the user, for a change that needs one. */
+export const VERIFICATION_FAILED = 'verification failed'
 /** Typed by the user to confirm a forgotten-password reset, which erases every vault secret. */
 export const VAULT_RESET_CONFIRM = 'RESET'
 export const MIN_MASTER_PASSWORD = 8
 export const MAX_MASTER_PASSWORD = 1024
+export const MIN_PIN = 6
+export const MAX_PIN = 12
+/**
+ * Cap on a PIN field and the IPC validator: well over MAX_PIN (preflight F31), so a pasted 13 digits
+ * reaches the length check ('PIN must be 6-12 digits') instead of being cut into a real attempt.
+ */
+export const PIN_INPUT_MAX = 64
+export const PIN_ATTEMPTS = 5
 export const MAX_SECRET_VALUE = 65536
 export const MAX_SECRET_NAME = 120
 export const MAX_VAULT_NAME = 64
@@ -21,7 +34,13 @@ export type SecretKind = (typeof SECRET_KINDS)[number]
 export const QUICK_UNLOCK_MODES = ['off', 'touchId', 'login'] as const
 export type QuickUnlockMode = (typeof QUICK_UNLOCK_MODES)[number]
 export const AUTO_LOCK_CHOICES = [1, 5, 15, 60, null] as const // minutes; null = never
-export type LockReason = 'manual' | 'idle' | 'screen' | 'suspend' | 'quit'
+export type LockReason = 'manual' | 'idle' | 'screen' | 'suspend' | 'quit' | 'signin'
+export type UnlockMethod = 'touchId' | 'pin' | 'password'
+export interface SetupOptions {
+  password?: string
+  pin?: string
+  touchId?: boolean
+}
 
 export interface VaultStatus {
   setUp: boolean
@@ -32,12 +51,25 @@ export interface VaultStatus {
   retryAfterMs: number
   /** Vaults whose wrapped key failed to open at the last unlock; empty while locked. */
   corruptVaultIds: string[]
+  hasPassword: boolean
+  pin: { enabled: boolean; attemptsLeft: number }
+  lastMethod: UnlockMethod | null
+  /** Set up, but nothing stored can open the vaults any more: only a reset gets back in. */
+  resetRequired: boolean
+  /** Touch ID is on, but its Keychain cache failed to read at the last Touch ID unlock: offer to re-enable it. */
+  touchIdNeedsReenable: boolean
+  sso: SsoState
 }
+/**
+ * A change that needed a reverify. A miss that wiped the PIN is a result rather than an error, so
+ * the renderer can match it (Electron rewraps error messages); `status` may already be locked.
+ */
+export type ProvenResult = { ok: true; status: VaultStatus } | { ok: false; reason: 'pin-wiped'; status: VaultStatus }
 export type UnlockResult =
   | { ok: true }
   | {
       ok: false
-      reason: 'wrong-password' | 'throttled' | 'unavailable' | 'cancelled'
+      reason: 'wrong-password' | 'throttled' | 'unavailable' | 'cancelled' | 'signin-required' | 'wrong-pin' | 'pin-wiped'
       retryAfterMs: number
     }
 

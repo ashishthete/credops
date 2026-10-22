@@ -1,14 +1,16 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { Fingerprint } from 'lucide-react'
-import { useEffect, useId, useState, type ReactNode } from 'react'
-import type { VaultStatus } from '../../../shared/vault'
+import { Fingerprint, X } from 'lucide-react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { type VaultStatus } from '../../../shared/vault'
 import { api } from '../lib/api'
 import { Button } from '../ui/Button'
 import { closeCommandPalette } from '../ui/commands'
 import { fast, spring, useMotionSafe, useShake } from '../ui/motion'
 import { toast } from '../ui/Toaster'
+import { ProofForm, proofMethods } from './ReverifyDialog'
 import { ResetVaultsDialog } from './ResetVaultsDialog'
 import { SetupCard } from './SetupCard'
+import { SignInCard, signInCopy } from './SignInCard'
 import {
   peekLockReason,
   refreshVaultStatus,
@@ -26,10 +28,14 @@ const CELEBRATE_MS = 360
 /** How long the splash waits on a failing vault:status before offering Retry. */
 const SPLASH_ERROR_MS = 3000
 
-/** 'ready': the post-setup step; 'celebrate': the open padlock after an unlock. Both keep the gate up. */
-type Hold = 'none' | 'ready' | 'celebrate'
+/** Remembers a dismissed "Connect your team's Hub" line on the gate. */
+const HUB_NUDGE_KEY = 'opsdeck.gate.hubNudgeDismissed'
 
-const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err))
+/**
+ * 'ready': the post-setup step; 'celebrate': the open padlock after an unlock; 'reenable': the offer
+ * to turn a broken Touch ID back on, after an unlock. All keep the gate up.
+ */
+type Hold = 'none' | 'ready' | 'celebrate' | 'reenable'
 
 function announceCorrupt(status: VaultStatus | null) {
   const n = status?.corruptVaultIds.length ?? 0
@@ -51,6 +57,12 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const motionSafe = useMotionSafe()
   const [hold, setHold] = useState<Hold>('none')
   const lock = useLockTransitions(status, () => setHold('none'))
+  // Whether this install has made its Hub choice: "Use OpsDeck without a Hub" was picked this
+  // session, or the vaults were already set up without one (so a reset keeps them local-only).
+  const [localOnly, setLocalOnly] = useState(false)
+  if (status?.setUp && !status.sso.required && !localOnly) setLocalOnly(true)
+  // Asked once per session: "Not now" means not again until the next launch.
+  const reenableAsked = useRef(false)
 
   useEffect(() => {
     if (hold !== 'celebrate') return
@@ -68,6 +80,10 @@ export function AuthGate({ children }: { children: ReactNode }) {
     resolveUnlock()
     toast({ title: 'Vaults unlocked', tone: 'success' })
     announceCorrupt(fresh)
+    if (fresh?.touchIdNeedsReenable && !reenableAsked.current) {
+      reenableAsked.current = true
+      setHold('reenable')
+    }
   }
 
   const open = !!status?.setUp && status.unlocked && hold === 'none'
@@ -91,6 +107,8 @@ export function AuthGate({ children }: { children: ReactNode }) {
             hold={hold}
             session={lock.session}
             autoQuick={!lock.byUser}
+            localOnly={localOnly}
+            onWithoutHub={() => setLocalOnly(true)}
             onSetUp={() => {
               setHold('ready')
               resolveUnlock()
@@ -109,14 +127,17 @@ interface GateScreenProps {
   hold: Hold
   session: number
   autoQuick: boolean
+  localOnly: boolean
+  onWithoutHub: () => void
   onSetUp: () => void
   onUnlocked: () => void
   onContinue: () => void
 }
 
-function GateScreen({ status, hold, session, autoQuick, onSetUp, onUnlocked, onContinue }: GateScreenProps) {
+function GateScreen({ status, hold, session, autoQuick, localOnly, onWithoutHub, onSetUp, onUnlocked, onContinue }: GateScreenProps) {
   const motionSafe = useMotionSafe()
   const statusError = useSplashError(status)
+  const checking = useSignInCheck(status)
   const titleId = useId()
   const [shake, setShake] = useState(0)
   const shakeScope = useShake(shake)
@@ -134,27 +155,48 @@ function GateScreen({ status, hold, session, autoQuick, onSetUp, onUnlocked, onC
     // First status fetch in flight: just the closed padlock.
   } else if (hold === 'ready') {
     title = 'Your vaults are ready'
-    description = 'Your master password is set and every vault is unlocked.'
-    body = <ReadyStep status={status} onContinue={onContinue} />
+    description = 'Every vault is set up and unlocked.'
+    body = <ReadyStep onContinue={onContinue} />
+  } else if (hold === 'reenable') {
+    title = 'Turn Touch ID on again'
+    description = "Touch ID couldn't open your vaults this time. Confirm it's you to turn it back on."
+    body = <ReenableStep status={status} onWrong={() => setShake((n) => n + 1)} onContinue={onContinue} />
+  } else if (hold === 'none' && checking) {
+    // The verdict is unknown: no unlock attempt (Touch ID included) until it is in.
+    body = (
+      <p role="status" className="text-[13px] leading-5 text-muted">
+        Checking your Microsoft sign-in…
+      </p>
+    )
+  } else if (hold === 'none' && needsSignIn(status, localOnly)) {
+    ;({ title, description } = signInCopy(status))
+    body = (
+      <SignInCard
+        status={status}
+        onSignedIn={() => undefined}
+        onReset={() => setResetOpen(true)}
+        onWithoutHub={onWithoutHub}
+      />
+    )
   } else if (!status.setUp) {
     title = 'Protect your vaults'
-    description = "One master password opens every vault. It can't be recovered, so keep it somewhere safe."
+    description = 'Choose how you unlock OpsDeck'
     body = <SetupCard onDone={onSetUp} />
   } else {
     title = 'Unlock vaults'
-    description =
-      status.quickUnlock === 'touchId' && status.quickUnlockAvailable.touchId
-        ? 'Use Touch ID or your master password to open OpsDeck.'
-        : 'Enter your master password to open OpsDeck.'
+    description = unlockDescription(status)
     body = (
-      <UnlockCard
-        key={session}
-        status={status}
-        autoQuick={autoQuick}
-        onUnlocked={onUnlocked}
-        onWrong={() => setShake((n) => n + 1)}
-        onForgot={() => setResetOpen(true)}
-      />
+      <>
+        <UnlockCard
+          key={session}
+          status={status}
+          autoQuick={autoQuick}
+          onUnlocked={onUnlocked}
+          onWrong={() => setShake((n) => n + 1)}
+          onForgot={() => setResetOpen(true)}
+        />
+        {!status.sso.required && <HubNudge />}
+      </>
     )
   }
 
@@ -175,8 +217,8 @@ function GateScreen({ status, hold, session, autoQuick, onSetUp, onUnlocked, onC
         <div ref={shakeScope} className="w-full max-w-[400px]">
           <motion.section
             aria-labelledby={title ? titleId : undefined}
-            aria-label={title ? undefined : 'Opening OpsDeck'}
-            aria-busy={!status || undefined}
+            aria-label={title ? undefined : checking ? 'Checking your Microsoft sign-in' : 'Opening OpsDeck'}
+            aria-busy={!status || checking || undefined}
             className="rounded-[14px] border border-line bg-surface p-6 shadow-pop"
             initial={motionSafe ? { opacity: 0, y: 12, scale: 0.98 } : { opacity: 0 }}
             animate={motionSafe ? { opacity: 1, y: 0, scale: 1 } : { opacity: 1 }}
@@ -231,24 +273,85 @@ function RetryButton() {
   )
 }
 
-/** After setup: offer Touch ID (the passkey path) once, then into the app. */
-function ReadyStep({ status, onContinue }: { status: VaultStatus; onContinue: () => void }) {
-  const [busy, setBusy] = useState(false)
-  const offerTouchId = status.quickUnlockAvailable.touchId && status.quickUnlock === 'off'
+/** After setup: a confirmation. Touch ID is chosen on the setup card itself now. */
+function ReadyStep({ onContinue }: { onContinue: () => void }) {
+  return (
+    <Button autoFocus onClick={onContinue} className="w-full">
+      Continue
+    </Button>
+  )
+}
 
-  const enableTouchId = async () => {
-    setBusy(true)
-    try {
-      vaultStatusStore.set(await api.invoke('vault:setQuickUnlock', 'touchId'))
-      toast({ title: 'Touch ID enabled', tone: 'success' })
-      onContinue()
-    } catch (err) {
-      toast({ title: "Couldn't enable Touch ID", description: errorText(err), tone: 'error' })
-      setBusy(false)
-    }
+/** Sign-in comes first while it is required and not passed, or on a fresh install that has not chosen a Hub yet. */
+function needsSignIn(status: VaultStatus, localOnly: boolean): boolean {
+  const sso = status.sso
+  if (sso.required) return sso.verdict !== 'verified' && sso.verdict !== 'grace'
+  return !status.setUp && !localOnly
+}
+
+function unlockDescription(status: VaultStatus): string {
+  const sso = status.sso
+  if (sso.required && sso.verdict === 'grace' && sso.lastVerifiedAt) {
+    const hours = Math.max(1, Math.floor((Date.now() - Date.parse(sso.lastVerifiedAt)) / 3_600_000))
+    return `Working offline · sign-in checked ${hours} h ago`
   }
+  if (sso.required && sso.upn) return `Signed in as ${sso.upn}`
+  return status.quickUnlock === 'touchId' && status.quickUnlockAvailable.touchId
+    ? 'Use Touch ID or your master password to open OpsDeck.'
+    : 'Enter your master password to open OpsDeck.'
+}
 
-  if (!offerTouchId) {
+/**
+ * Forces one `auth:check` when the gate first sees a locked vault that needs sign-in (spec: every
+ * launch checks; stricter than the 1 h skip, preflight F30), and again after a reset, whose old
+ * verdict main keeps until the next check. True while that check, or main's own, is in flight.
+ */
+function useSignInCheck(status: VaultStatus | null): boolean {
+  const [inflight, setInflight] = useState(false)
+  const seen = useRef(false)
+  const wasSetUp = useRef<boolean | null>(null)
+  const checkedFor = useRef<VaultStatus | null>(null)
+  const mounted = useRef(true)
+  useEffect(
+    () => () => {
+      mounted.current = false
+    },
+    [],
+  )
+  // Only the first status (a launch or a lock) or a reset: a Hub linked from this gate has no session to check.
+  const due =
+    !!status &&
+    !status.unlocked &&
+    status.sso.required &&
+    (!seen.current || (wasSetUp.current === true && !status.setUp))
+  useEffect(() => {
+    if (!status) return
+    seen.current = true
+    wasSetUp.current = status.setUp
+    if (!due || checkedFor.current === status) return
+    checkedFor.current = status
+    setInflight(true)
+    api
+      .invoke('auth:check')
+      .then((fresh) => vaultStatusStore.set(fresh))
+      .catch(() => refreshVaultStatus().catch(() => undefined))
+      .finally(() => {
+        if (mounted.current) setInflight(false)
+      })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `due` is derived from `status`
+  }, [status])
+  // `due` covers the render before the effect runs, so the sign-in card never flashes first.
+  return due || inflight || (!!status && status.sso.required && status.sso.checking && !status.unlocked)
+}
+
+/**
+ * Touch ID is on but its Keychain copy could not be read (status.touchIdNeedsReenable): offer to
+ * write it again. Turning a factor on needs a reverify proof (the T7 contract); Touch ID itself
+ * cannot prove its own re-enable, so only the password and the PIN are offered.
+ */
+function ReenableStep({ status, onWrong, onContinue }: { status: VaultStatus; onWrong: () => void; onContinue: () => void }) {
+  const methods = proofMethods(status).filter((m) => m !== 'touchId')
+  if (!methods.length) {
     return (
       <Button autoFocus onClick={onContinue} className="w-full">
         Continue
@@ -256,19 +359,52 @@ function ReadyStep({ status, onContinue }: { status: VaultStatus; onContinue: ()
     )
   }
   return (
-    <div className="flex flex-col gap-2">
-      <Button
-        autoFocus
-        loading={busy}
-        icon={<Fingerprint aria-hidden className="size-4" />}
-        onClick={() => void enableTouchId()}
-        className="w-full"
+    <ProofForm
+      status={status}
+      methods={methods}
+      wide
+      icon={<Fingerprint aria-hidden className="size-4" />}
+      submitLabel="Turn on Touch ID"
+      cancelLabel="Not now"
+      onProof={(proof) => api.invoke('vault:setQuickUnlock', 'touchId', proof)}
+      onProven={() => toast({ title: 'Touch ID is on again', tone: 'success' })}
+      onClose={onContinue}
+      onWrong={onWrong}
+    />
+  )
+}
+
+function readNudgeDismissed(): boolean {
+  try {
+    return localStorage.getItem(HUB_NUDGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+/** For installs without a Hub (spec §4, preflight F22): a dismissible pointer to Settings → Hub. */
+function HubNudge() {
+  const [dismissed, setDismissed] = useState(readNudgeDismissed)
+  if (dismissed) return null
+  const dismiss = () => {
+    setDismissed(true)
+    try {
+      localStorage.setItem(HUB_NUDGE_KEY, '1')
+    } catch {
+      // Not remembered: it shows again next launch.
+    }
+  }
+  return (
+    <div className="mt-4 flex items-center gap-2 border-t border-line pt-3 text-[12px] text-muted">
+      <p className="flex-1">Connect your team's Hub to sign in with Microsoft</p>
+      <button
+        type="button"
+        aria-label="Dismiss"
+        onClick={dismiss}
+        className="grid size-6 place-items-center rounded transition-colors duration-150 hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
       >
-        Enable Touch ID
-      </Button>
-      <Button variant="ghost" disabled={busy} onClick={onContinue} className="w-full">
-        Not now
-      </Button>
+        <X aria-hidden className="size-3.5" />
+      </button>
     </div>
   )
 }

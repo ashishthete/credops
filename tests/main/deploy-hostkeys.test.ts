@@ -53,7 +53,7 @@ function resolved(port: number, identity: ResolvedHost['identity'] = { source: '
 
 async function fixture(resolve: PrepareDeps['resolve'], identities: PrepareDeps['identities'] = { resolve: vi.fn() as never }) {
   const f = makeVault()
-  await f.vault.setup('correct horse')
+  await f.vault.setup({ password: 'correct horse', touchId: true })
   const dir = mkdtempSync(join(tmpdir(), 'od-kh-'))
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
   const knownHosts = new KnownHostStore(f.db, f.vault, f.audit, { knownHostsPath: join(dir, 'known_hosts') })

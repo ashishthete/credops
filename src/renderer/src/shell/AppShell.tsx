@@ -39,6 +39,8 @@ import { fast, useMotionSafe } from '../ui/motion'
 import { useShortcut } from '../ui/shortcuts'
 import { SECTIONS, sectionShortcut } from './sections'
 import { Sidebar } from './Sidebar'
+import { useAccountCommands } from '../vault/account'
+import { SignInBanner } from '../vault/SignInBanner'
 
 /** Sidebar plus routed pages. Needs a router above it (HashRouter in the app, MemoryRouter in tests). */
 export function AppShell() {
@@ -52,6 +54,7 @@ export function AppShell() {
   useHubCommands()
   useSettingsCommands()
   useDeployCommands()
+  useAccountCommands()
   // The shell mounts only while unlocked, so every unlock reloads (F22).
   useEffect(() => {
     void loadInventory()
@@ -100,41 +103,44 @@ export function AppShell() {
   return (
     <div className="flex h-screen overflow-hidden bg-canvas text-fg">
       <Sidebar />
-      <main className="relative min-w-0 flex-1 overflow-hidden">
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-x-0 top-0 h-64 bg-[radial-gradient(60%_100%_at_30%_0%,color-mix(in_oklab,var(--accent)_7%,transparent),transparent)]"
-        />
-        {/* Enter-only transition: the next page never waits on the previous one to leave. */}
-        <motion.div
-          key={location.pathname}
-          className="relative h-full"
-          initial={motionSafe ? { opacity: 0, y: 6 } : { opacity: 0 }}
-          animate={motionSafe ? { opacity: 1, y: 0 } : { opacity: 1 }}
-          transition={fast}
-        >
-          <Routes location={location}>
-            <Route path="/" element={<Navigate to={SECTIONS[0].path} replace />} />
-            <Route path="/deployments" element={<DeploymentsPage />} />
-            <Route path="/deployments/release/:id" element={<ReleasePage />} />
-            <Route path="/deployments/release/:id/logs" element={<PlaybookLogsPage />} />
-            <Route path="/products" element={<ProductsPage />} />
-            {/* The deck below draws this page; it stays mounted so terminals survive navigation. */}
-            <Route path="/terminals" element={null} />
-            <Route path="/hosts" element={<HostsPage />} />
-            <Route path="/environments" element={<Navigate to="/products" replace />} />
-            <Route path="/vaults" element={<VaultsPage />} />
-            <Route path="/tunnels" element={<TunnelsPage />} />
-            <Route path="/map" element={<MapPage />} />
-            <Route path="/ops" element={<Navigate to="/ops/run" replace />} />
-            <Route path="/ops/:tab" element={<OpsPage />} />
-            <Route path="/hub" element={<HubPage />} />
-            <Route path="/audit" element={<AuditPage />} />
-            <Route path={SETTINGS_PATH} element={<SettingsPage />} />
-            <Route path="*" element={<Navigate to={SECTIONS[0].path} replace />} />
-          </Routes>
-        </motion.div>
-        <TerminalDeck visible={location.pathname === '/terminals'} />
+      <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
+        <SignInBanner />
+        <div className="relative min-h-0 flex-1">
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 top-0 h-64 bg-[radial-gradient(60%_100%_at_30%_0%,color-mix(in_oklab,var(--accent)_7%,transparent),transparent)]"
+          />
+          {/* Enter-only transition: the next page never waits on the previous one to leave. */}
+          <motion.div
+            key={location.pathname}
+            className="relative h-full"
+            initial={motionSafe ? { opacity: 0, y: 6 } : { opacity: 0 }}
+            animate={motionSafe ? { opacity: 1, y: 0 } : { opacity: 1 }}
+            transition={fast}
+          >
+            <Routes location={location}>
+              <Route path="/" element={<Navigate to={SECTIONS[0].path} replace />} />
+              <Route path="/deployments" element={<DeploymentsPage />} />
+              <Route path="/deployments/release/:id" element={<ReleasePage />} />
+              <Route path="/deployments/release/:id/logs" element={<PlaybookLogsPage />} />
+              <Route path="/products" element={<ProductsPage />} />
+              {/* The deck below draws this page; it stays mounted so terminals survive navigation. */}
+              <Route path="/terminals" element={null} />
+              <Route path="/hosts" element={<HostsPage />} />
+              <Route path="/environments" element={<Navigate to="/products" replace />} />
+              <Route path="/vaults" element={<VaultsPage />} />
+              <Route path="/tunnels" element={<TunnelsPage />} />
+              <Route path="/map" element={<MapPage />} />
+              <Route path="/ops" element={<Navigate to="/ops/run" replace />} />
+              <Route path="/ops/:tab" element={<OpsPage />} />
+              <Route path="/hub" element={<HubPage />} />
+              <Route path="/audit" element={<AuditPage />} />
+              <Route path={SETTINGS_PATH} element={<SettingsPage />} />
+              <Route path="*" element={<Navigate to={SECTIONS[0].path} replace />} />
+            </Routes>
+          </motion.div>
+          <TerminalDeck visible={location.pathname === '/terminals'} />
+        </div>
       </main>
       <PromptHost />
       <InsertHost />
