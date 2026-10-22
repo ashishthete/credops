@@ -598,6 +598,17 @@ describe('skipped services', () => {
       await waitFor(() => expect(calls(m.invoke, 'release:start').map((c) => c.slice(1))).toEqual([[REL, { redeploy: false, playbookSha256: EDIT_SHA, editedPlaybook: box.value, forceServiceIds: ['s1'] }]]))
     })
 
+    it('a double click on Run edited sends one start', async () => {
+      const m = await reviewable()
+      validating(m.invoke, () => ({ ok: true, canonical: 'x', sha256: EDIT_SHA }))
+      await toEditor(m)
+      await waitFor(() => expect(within(m.dialog).getByRole('button', { name: 'Run edited' })).toBeEnabled())
+      const base = m.invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
+      m.invoke.mockImplementation((ch: string, ...args: unknown[]) => (ch === 'release:start' ? new Promise(() => {}) : base(ch, ...args)))
+      await m.user.dblClick(within(m.dialog).getByRole('button', { name: 'Run edited' }))
+      expect(calls(m.invoke, 'release:start')).toHaveLength(1)
+    })
+
     it('a protected environment still needs the typed name for an edited start', async () => {
       const prod = environment({ id: 'e1', name: 'staging', protected: true, hosts: [{ hostId: 'h1', role: 'app' }, { hostId: 'h2', role: 'app' }] })
       const m = await reviewable({ env: prod })

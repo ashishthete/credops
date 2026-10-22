@@ -33,6 +33,7 @@ function PlaybookEditor({
   initial,
   releaseId,
   forceServiceIds,
+  busy,
   onChange,
   onPreviewAgain,
   onRun,
@@ -41,6 +42,7 @@ function PlaybookEditor({
   initial: string
   releaseId: string
   forceServiceIds?: string[]
+  busy: boolean
   onChange?: (editing: boolean) => void
   onPreviewAgain?: () => void
   onRun: (text: string, sha256: string) => void
@@ -50,6 +52,7 @@ function PlaybookEditor({
   // Nothing is runnable until the text has been checked: the unchanged preview is run with Deploy.
   const [checked, setChecked] = useState<Checked | null>(null)
   const latest = useRef(initial)
+  const gutter = useRef<HTMLPreElement>(null)
   const force = forceServiceIds?.join(',')
   useEffect(() => {
     onChange?.(true)
@@ -62,6 +65,8 @@ function PlaybookEditor({
   }
   useEffect(() => {
     if (checked === null) return
+    // An answer for other forced services is no answer for these.
+    setChecked({ state: 'checking' })
     const timer = setTimeout(() => {
       void (async () => {
         try {
@@ -82,7 +87,7 @@ function PlaybookEditor({
   return (
     <div className="flex min-w-0 flex-1 flex-col gap-2">
       <div className="flex min-h-0 overflow-hidden rounded-lg bg-canvas/70 font-mono text-[11.5px] leading-[18px]">
-        <pre aria-hidden className="max-h-[50vh] shrink-0 overflow-hidden py-3 pr-2 pl-3 text-right text-muted select-none">
+        <pre ref={gutter} data-testid="line-numbers" aria-hidden className="max-h-[50vh] shrink-0 overflow-hidden py-3 pr-2 pl-3 text-right text-muted select-none">
           {lines.map((_, i) => (
             <span key={i} className={`block ${bad.has(i + 1) ? 'font-semibold text-err' : ''}`}>
               {i + 1}
@@ -95,6 +100,9 @@ function PlaybookEditor({
           spellCheck={false}
           wrap="off"
           onChange={(e) => edit(e.target.value)}
+          onScroll={(e) => {
+            if (gutter.current) gutter.current.scrollTop = e.currentTarget.scrollTop
+          }}
           className="max-h-[50vh] min-h-[40vh] min-w-0 flex-1 resize-none overflow-auto bg-transparent py-3 pr-3 whitespace-pre text-fg/90 outline-none"
         />
       </div>
@@ -120,7 +128,7 @@ function PlaybookEditor({
       )}
       {checked?.state === 'checking' && <p className="text-[12px] text-muted">Checking</p>}
       <div className="flex items-center gap-2">
-        <Button size="sm" disabled={checked?.state !== 'ok'} onClick={() => checked?.state === 'ok' && onRun(text, checked.sha256)}>
+        <Button size="sm" disabled={busy || checked?.state !== 'ok'} onClick={() => checked?.state === 'ok' && onRun(text, checked.sha256)}>
           Run edited
         </Button>
         <Button size="sm" variant="ghost" onClick={onCancel}>
@@ -147,6 +155,7 @@ export function PlaybookReview({
   onRunEdited,
   onEditingChange,
   onPreviewAgain,
+  busy = false,
 }: {
   playbook: string | null
   /** With a release flow: the inventory the hash covers too (host vars and the version, no secret values). */
@@ -163,18 +172,29 @@ export function PlaybookReview({
   onEditingChange?: (editing: boolean) => void
   /** Offered when main no longer holds the preview the edit is checked against. */
   onPreviewAgain?: () => void
+  /** A start is in flight: Run edited waits. */
+  busy?: boolean
 }) {
   const [editing, setEditing] = useState(false)
+  const [discarded, setDiscarded] = useState(false)
   const plays = useMemo(() => (playbook === null ? [] : playbookSteps(playbook)), [playbook])
   // A new preview replaces the text being edited.
-  useEffect(() => setEditing(false), [playbook])
+  useEffect(() => {
+    setEditing((was) => {
+      if (was) setDiscarded(true)
+      return false
+    })
+  }, [playbook])
   if (playbook === null) return <p className="text-[12px] text-muted">Generating the playbook</p>
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-3">
         <p className="flex-1 text-[12.5px] text-fg/90">This is exactly what will run. Deploy runs it unchanged.</p>
         {editable && releaseId && onRunEdited && !editing && (
-          <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>
+          <Button size="sm" variant="ghost" onClick={() => {
+              setDiscarded(false)
+              setEditing(true)
+            }}>
             Edit
           </Button>
         )}
@@ -184,6 +204,11 @@ export function PlaybookReview({
           </Button>
         )}
       </div>
+      {discarded && !editing && (
+        <p role="status" className="text-[12px] text-muted">
+          The playbook changed, so your edit was discarded. Edit the new one to try again.
+        </p>
+      )}
       <div className="flex min-h-0 gap-3">
         <ol aria-label="Playbook steps" className="flex w-48 shrink-0 flex-col gap-2 overflow-y-auto text-[12px]">
           {plays.map((play, i) => (
@@ -211,6 +236,7 @@ export function PlaybookReview({
             initial={playbook}
             releaseId={releaseId}
             forceServiceIds={forceServiceIds}
+            busy={busy}
             onChange={onEditingChange}
             onPreviewAgain={onPreviewAgain}
             onRun={onRunEdited}

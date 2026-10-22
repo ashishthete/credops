@@ -1,8 +1,8 @@
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { lineDiff } from '../../src/renderer/src/deploy/line-diff'
+import { diffTooLarge, lineDiff } from '../../src/renderer/src/deploy/line-diff'
 import { resetDeploy } from '../../src/renderer/src/deploy/store'
 import { PlaybookReview } from '../../src/renderer/src/pages/deployments/release/PlaybookReview'
 import { PlaybookLogsPage } from '../../src/renderer/src/pages/deployments/PlaybookLogsPage'
@@ -38,6 +38,18 @@ describe('lineDiff', () => {
       { op: '+', text: 'b' },
       { op: ' ', text: 'c' },
     ])
+  })
+
+  it('treats an empty text and a lone newline alike, and a final newline as no extra line', () => {
+    expect(lineDiff('', '\n')).toEqual([])
+    expect(lineDiff('a\n', 'a')).toEqual([{ op: ' ', text: 'a' }])
+  })
+
+  it('says a diff is too large past the cell cap, and not just below it', () => {
+    const lines = (n: number, tag: string) => Array.from({ length: n }, (_, i) => `${tag}${i}`).join('\n')
+    expect(diffTooLarge(lines(2001, 'a'), lines(2001, 'b'))).toBe(true)
+    expect(diffTooLarge(lines(1999, 'a'), lines(1999, 'b'))).toBe(false)
+    expect(diffTooLarge('', lines(5000, 'b'))).toBe(false)
   })
 
   it('shows a changed line as - then +', () => {
@@ -89,6 +101,41 @@ describe('editing a playbook under review', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Run edited' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: 'Run edited' }))
     expect(onRunEdited).toHaveBeenCalledWith(expect.stringContaining('"release"'), SHA)
+  })
+
+  it('keeps the line numbers scrolled with the text', async () => {
+    const user = userEvent.setup()
+    mockBridge({ 'release:validateEdit': { ok: true, canonical: PLAYBOOK, sha256: SHA } })
+    review()
+    await user.click(screen.getByRole('button', { name: 'Edit' }))
+    const box = screen.getByRole('textbox', { name: 'Edit playbook' })
+    box.scrollTop = 240
+    fireEvent.scroll(box)
+    expect(screen.getByTestId('line-numbers').scrollTop).toBe(240)
+  })
+
+  it('turns Run edited off at once when the forced services change', async () => {
+    const user = userEvent.setup()
+    const invoke = mockBridge({ 'release:validateEdit': { ok: true, canonical: PLAYBOOK, sha256: SHA } })
+    const props = { playbook: PLAYBOOK, autoRollback: false, onSave: () => {}, editable: true, releaseId: 'r1', onRunEdited: vi.fn() }
+    const { rerender } = render(<PlaybookReview {...props} forceServiceIds={['s1']} />)
+    await user.click(screen.getByRole('button', { name: 'Edit' }))
+    await typeInto(user, ' ')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Run edited' })).toBeEnabled())
+    invoke.mockImplementation(() => new Promise(() => {}))
+    rerender(<PlaybookReview {...props} forceServiceIds={['s2']} />)
+    expect(screen.getByRole('button', { name: 'Run edited' })).toBeDisabled()
+  })
+
+  it('says so when a new preview replaces the text being edited', async () => {
+    const user = userEvent.setup()
+    mockBridge()
+    const props = { autoRollback: false, onSave: () => {}, editable: true, releaseId: 'r1', onRunEdited: vi.fn() }
+    const { rerender } = render(<PlaybookReview {...props} playbook={PLAYBOOK} />)
+    await user.click(screen.getByRole('button', { name: 'Edit' }))
+    rerender(<PlaybookReview {...props} playbook={PLAYBOOK + ' '} />)
+    expect(screen.queryByRole('textbox', { name: 'Edit playbook' })).toBeNull()
+    expect(screen.getByRole('status')).toHaveTextContent(/your edit was discarded/)
   })
 
   it('offers to preview again when main says the preview is gone', async () => {
@@ -155,6 +202,15 @@ describe('an edited release', () => {
     expect(within(region).getAllByTestId('diff-line--').length).toBeGreaterThan(0)
     await user.click(screen.getByRole('button', { name: 'Hide diff' }))
     expect(within(region).queryByTestId('diff-line-+')).toBeNull()
+  })
+
+  it('says a diff is too large instead of showing every line changed', async () => {
+    const user = userEvent.setup()
+    const lines = (n: number, tag: string) => Array.from({ length: n }, (_, i) => `${tag}${i}`).join('\n')
+    await open(`/deployments/release/${REL}/logs`, edited({ playbook: lines(2001, 'b'), playbookGenerated: lines(2001, 'a') }))
+    await user.click(screen.getByRole('button', { name: 'Show diff' }))
+    expect(screen.getByText(/Too large to diff line by line/)).toBeInTheDocument()
+    expect(screen.queryByTestId('diff-line-+')).toBeNull()
   })
 
   it('has no diff toggle for a generated playbook', async () => {

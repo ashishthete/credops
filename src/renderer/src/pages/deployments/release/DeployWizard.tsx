@@ -489,6 +489,7 @@ export function DeployWizard({
                 forceServiceIds={force.size ? [...force] : undefined}
                 onRunEdited={(text, sha256) => void start({ text, sha256 })}
                 onEditingChange={setEditing}
+                busy={starting}
                 onPreviewAgain={() => void review()}
               />
               {saved && <p className="text-[12px] text-muted">Saved to {saved}</p>}

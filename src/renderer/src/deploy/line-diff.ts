@@ -8,18 +8,33 @@ const MAX_CELLS = 4_000_000
  * small edit to a large playbook costs little. An empty text has no lines.
  */
 export function lineDiff(a: string, b: string): DiffLine[] {
-  const x = a === '' ? [] : a.split('\n')
-  const y = b === '' ? [] : b.split('\n')
-  let head = 0
-  while (head < x.length && head < y.length && x[head] === y[head]) head++
-  let tail = 0
-  while (tail < x.length - head && tail < y.length - head && x[x.length - 1 - tail] === y[y.length - 1 - tail]) tail++
-  const xs = x.slice(head, x.length - tail)
-  const ys = y.slice(head, y.length - tail)
+  const { x, y, head, tail, xs, ys } = split(a, b)
   const out: DiffLine[] = x.slice(0, head).map((text) => ({ op: ' ', text }))
   out.push(...middle(xs, ys))
   out.push(...x.slice(x.length - tail).map((text): DiffLine => ({ op: ' ', text })))
   return out
+}
+
+/** A text's lines; one final newline ends the last line rather than starting another, so '' and '\n' are both empty. */
+const linesOf = (t: string): string[] => {
+  const body = t.endsWith('\n') ? t.slice(0, -1) : t
+  return t === '' || t === '\n' ? [] : body.split('\n')
+}
+
+function split(a: string, b: string) {
+  const x = linesOf(a)
+  const y = linesOf(b)
+  let head = 0
+  while (head < x.length && head < y.length && x[head] === y[head]) head++
+  let tail = 0
+  while (tail < x.length - head && tail < y.length - head && x[x.length - 1 - tail] === y[y.length - 1 - tail]) tail++
+  return { x, y, head, tail, xs: x.slice(head, x.length - tail), ys: y.slice(head, y.length - tail) }
+}
+
+/** True when the lines between the shared start and end are too many to compare: `lineDiff` then shows them all removed, then all added. */
+export function diffTooLarge(a: string, b: string): boolean {
+  const { xs, ys } = split(a, b)
+  return xs.length > 0 && ys.length > 0 && (xs.length + 1) * (ys.length + 1) > MAX_CELLS
 }
 
 function middle(xs: string[], ys: string[]): DiffLine[] {

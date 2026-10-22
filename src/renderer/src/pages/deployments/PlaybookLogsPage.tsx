@@ -3,7 +3,7 @@ import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from
 import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { PLAYBOOK_NOT_STORED_MESSAGE, type ReleaseStatus } from '../../../../shared/deploy'
 import { isHelperTask, playbookSteps } from '../../../../shared/playbook-steps'
-import { lineDiff } from '../../deploy/line-diff'
+import { diffTooLarge, lineDiff } from '../../deploy/line-diff'
 import type { LogFilter } from '../../deploy/log-buffer'
 import { releaseStore, retainRelease, startReleaseSync, useCancelling, usePipeline } from '../../deploy/releases'
 import { taskRows, type TaskRow } from '../../deploy/task-rows'
@@ -118,7 +118,8 @@ function PlaybookPane({ releaseId, read, lines, mark, pick }: { releaseId: strin
   const { text, loaded, hidden, error, retry, generated } = read
   const [saved, setSaved] = useState<string | null>(null)
   const [diff, setDiff] = useState(false)
-  const changes = useMemo(() => (diff && text !== null && generated !== null ? lineDiff(generated, text) : null), [diff, text, generated])
+  const tooLarge = useMemo(() => diff && text !== null && generated !== null && diffTooLarge(generated, text), [diff, text, generated])
+  const changes = useMemo(() => (diff && !tooLarge && text !== null && generated !== null ? lineDiff(generated, text) : null), [diff, tooLarge, text, generated])
   const save = async () => {
     const out = await attempt("Couldn't save the playbook", () => api.invoke('release:savePlaybook', releaseId))
     if (out) setSaved(out.path)
@@ -143,7 +144,11 @@ function PlaybookPane({ releaseId, read, lines, mark, pick }: { releaseId: strin
           Saved to {saved}
         </p>
       )}
-      {changes ? (
+      {tooLarge ? (
+        <p role="status" className="text-[12.5px] text-muted">
+          Too large to diff line by line. Save the playbook to compare it.
+        </p>
+      ) : changes ? (
         <pre aria-label="Changes from the generated playbook" tabIndex={0} className="min-h-0 flex-1 overflow-auto rounded-lg bg-canvas/70 py-3 font-mono text-[11.5px] leading-[18px] whitespace-pre text-fg/85">
           {changes.map((c, i) => (
             <span key={i} data-testid={c.op === ' ' ? undefined : `diff-line-${c.op}`} className={`block px-3 ${c.op === '+' ? 'bg-ok/15 text-fg' : c.op === '-' ? 'bg-err/15 text-fg' : ''}`}>

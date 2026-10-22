@@ -229,6 +229,7 @@ export function RunRunbookDialog({ runbook, onClose }: { runbook: Runbook; onClo
               releaseId={releaseId ?? undefined}
               onRunEdited={(text, sha256) => run({ text, sha256 })}
               onEditingChange={setEditing}
+              busy={busy}
               onPreviewAgain={() => void previewAgain()}
             />
             {saved && <p className="text-[12px] text-muted">Saved to {saved}</p>}
