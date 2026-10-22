@@ -146,6 +146,11 @@ export interface DeployPlan {
   operation?: PlanOperation | null
   /** Unlock only: the builds a parallel prepare launched, whose recorded process groups are stopped before the lock goes. */
   killBuilds?: { runId: string; repoPath: string }[]
+  /**
+   * A validated edit of the generated playbook (Task 10b), written in its place; secret references only, like the
+   * generated text. The inventory and every other run file are still generated from the plan.
+   */
+  playbookText?: string
 }
 
 // ---- The runner boundary (Phase 10's HubRunner implements the same interface) ----

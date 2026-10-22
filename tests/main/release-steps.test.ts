@@ -303,6 +303,24 @@ describe('skip unchanged', () => {
     expect(r.svc.detail(id).runs[0].wholeCheckout).toBe(true)
   })
 
+  it('an edit validated with forced services starts with them (Task 10b fix round 1)', async () => {
+    const { r, worker, id } = await shop({ skip: true })
+    const p = await r.svc.previewPlaybook(id, undefined, [worker.id])
+    const plays = JSON.parse(p.playbook) as { tasks: unknown[] }[]
+    plays[0].tasks.push({ name: 'extra', 'ansible.builtin.shell': 'echo extra-step', timeout: 30, tags: ['extra'] })
+    const text = JSON.stringify(plays, null, 2)
+    const res = await r.svc.validateEdit(id, text, undefined, [worker.id])
+    if (!res.ok) throw new Error(JSON.stringify(res.errors))
+    // Without the forced services the same text is checked against another playbook (it still has the origin check).
+    const unforced = await r.svc.validateEdit(id, text)
+    expect(unforced.ok && unforced.sha256).not.toBe(res.sha256)
+    await r.svc.start(id, { editedPlaybook: res.canonical, playbookSha256: res.sha256, forceServiceIds: [worker.id] })
+    await r.svc.whenIdle()
+    expect(r.runner.call('release').playbookText).toBe(res.canonical)
+    expect(r.svc.detail(id).playbookSource).toBe('edited')
+    expect(r.runner.call('release').deployments[0].services).toBeNull()
+  })
+
   it('an unknown count is never skipped, nor is a service without skipUnchanged', async () => {
     for (const o of [{ skip: true, worker: E }, { skip: false }]) {
       const { r, worker, id } = await shop(o)

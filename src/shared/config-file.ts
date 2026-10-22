@@ -52,7 +52,30 @@ import {
   type OsIcon,
   type ProductIcon,
 } from './inventory'
+import { LOG_TAIL_MAX, VARIABLE_NAME } from './ops'
+import {
+  BUILTINS,
+  MAX_PARAMS,
+  MAX_RUNBOOKS,
+  MAX_RUNBOOK_DESCRIPTION,
+  MAX_RUNBOOK_NAME,
+  MAX_UNTIL_HOURS,
+  type BuiltinKind,
+  type RunbookParam,
+} from './runbooks'
 import { MAX_SERVICES, type DbEngine } from './services'
+import {
+  ENV_NAME as STEP_ENV_NAME,
+  MAX_FLOW_STAGES,
+  MAX_STEPS_PER_CHECKOUT,
+  MAX_STEP_SCRIPT,
+  MAX_WHEN_PATHS,
+  STEP_ANCHORS,
+  WHEN_PATH,
+  type Step,
+  type StepBody,
+  type StepWhen,
+} from './steps'
 import { BIND_ADDRESS, MAX_BIND_ADDRESS, MAX_TUNNELS, type TunnelType } from './tunnels'
 import { IDENTITY_AUTHS, MAX_LABEL, MAX_SECRET_NAME, MAX_USERNAME, MAX_VAULT_NAME, VAULT_COLOR, type IdentityAuth } from './vault'
 
@@ -68,6 +91,31 @@ export interface VaultRef {
 export interface ItemRef {
   vaultName: string
   itemName: string
+}
+
+/** A step's secret: `secret` is a `secretRefs` key, never a secret id or value. */
+export interface ConfigStepSecret {
+  envName: string
+  secret: string
+}
+export type ConfigStepBody = Omit<StepBody, 'secrets'> & { secrets: ConfigStepSecret[] }
+export type ConfigStep = Omit<Step, 'secrets'> & { secrets: ConfigStepSecret[] }
+export type ConfigFlowStage = { kind: 'services'; serviceIds: string[] } | { kind: 'step'; serviceId: string; step: ConfigStepBody }
+export interface ConfigFlow {
+  stages: ConfigFlowStage[]
+  onFailure: 'stop-all' | 'continue-other-hosts'
+}
+export type ConfigRunbookItem = { type: 'step'; step: ConfigStepBody } | { type: 'builtin'; builtin: BuiltinKind; tail?: number; untilHours?: number }
+export interface ConfigRunbook {
+  id: string
+  environmentId: string
+  name: string
+  description: string
+  targetServiceIds: string[]
+  items: ConfigRunbookItem[]
+  params: RunbookParam[]
+  lock: boolean
+  notify: boolean
 }
 
 export interface ConfigProduct {
@@ -111,6 +159,11 @@ export interface ConfigEnvironment {
   versioned: boolean
   autoRollback: boolean
   domain: string | null
+  /** Absent in files from before playbook ops: a new environment gets 4 true and 3, an existing one keeps its own. */
+  parallelPrepare?: boolean
+  prepareCap?: number
+  /** Written only when the environment has a flow. */
+  flow?: ConfigFlow
   productIds: string[]
   hosts: { hostId: string; role: HostRole }[]
 }
@@ -146,6 +199,8 @@ export interface ConfigDeployment {
   backupDir: string | null
   preHook: string | null
   postHook: string | null
+  /** Written only when the checkout has saved steps; without them the hooks stand in (effectiveSteps). */
+  steps?: ConfigStep[]
   buildTimeoutSec: number
   composeTimeoutSec: number
   useSudo: UseSudo
@@ -167,6 +222,7 @@ export interface ConfigAppService {
   composeService: string
   url: string | null
   urlCheckFrom: HealthFrom
+  skipUnchanged?: boolean
 }
 export interface ConfigDbService {
   id: string
@@ -197,6 +253,8 @@ export interface ConfigFile {
   tunnels: ConfigTunnel[]
   deployments: ConfigDeployment[]
   services: ConfigService[]
+  /** Written only when there are runbooks. */
+  runbooks?: ConfigRunbook[]
 }
 
 export interface ConfigCounts {
@@ -207,6 +265,7 @@ export interface ConfigCounts {
   tunnels: number
   deployments: number
   services: number
+  runbooks: number
 }
 
 export const countConfig = (file: ConfigFile): ConfigCounts => ({
@@ -217,6 +276,7 @@ export const countConfig = (file: ConfigFile): ConfigCounts => ({
   tunnels: file.tunnels.length,
   deployments: file.deployments.length,
   services: file.services.length,
+  runbooks: file.runbooks?.length ?? 0,
 })
 
 export const SECRET_REF_KEY = /^ref-[1-9][0-9]{0,5}$/
@@ -292,6 +352,10 @@ const array =
     return out.includes(BAD as never) ? BAD : (out as T[])
   }
 
+type Optional<T> = Check<T> & { optional: true }
+/** A key that may be missing; when present it is checked like any other. */
+const optional = <T>(check: Check<T>): Optional<T> => Object.assign((value: unknown, path: string, errs: string[]) => check(value, path, errs), { optional: true as const })
+
 type Shape = Record<string, Check<unknown>>
 type Infer<S extends Shape> = { [K in keyof S]: Exclude<ReturnType<S[K]>, typeof BAD> }
 
@@ -306,6 +370,7 @@ const object =
     const out: Record<string, unknown> = {}
     for (const [key, check] of Object.entries(shape)) {
       if (!Object.hasOwn(input, key)) {
+        if ((check as Partial<Optional<unknown>>).optional) continue
         ok = fail(errs, `${path}.${key}`, 'is required') !== BAD
         continue
       }
@@ -372,6 +437,72 @@ const envTemplate: Check<string | null> = nullable((value, path, errs) => {
   return BAD
 })
 
+/** One of several object shapes, picked by the value of `field`. */
+const tagged =
+  <T>(field: string, shapes: Record<string, Check<T>>): Check<T> =>
+  (value, path, errs) => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return fail(errs, path, 'must be an object')
+    const kind = (value as Record<string, unknown>)[field]
+    if (typeof kind !== 'string' || !Object.hasOwn(shapes, kind)) return fail(errs, `${path}.${field}`, 'is not an allowed value')
+    return shapes[kind](value, path, errs)
+  }
+
+// Steps, flows and runbooks. Shapes, enums and bounds only: the stores' own validators (validateStep, validateRunbook)
+// run again on every row at import, because the content rules need the local secrets and services.
+const stepWhen = tagged<StepWhen>('kind', {
+  always: object({ kind: oneOf(['always'] as const) }) as Check<StepWhen>,
+  changed: object({ kind: oneOf(['changed'] as const) }) as Check<StepWhen>,
+  paths: object({ kind: oneOf(['paths'] as const), paths: array(str({ min: 1, max: 200, pattern: WHEN_PATH }), MAX_WHEN_PATHS) }) as Check<StepWhen>,
+})
+const stepBodyFields = {
+  id: str({ min: 1, max: 32 }),
+  name: str({ min: 1, max: MAX_NAME }),
+  run: oneOf(['shell', 'compose-exec'] as const),
+  service: nullable(str({ min: 1, max: MAX_COMPOSE_NAME })),
+  script: str({ min: 1, max: MAX_STEP_SCRIPT }),
+  cwd: nullable(str({ max: MAX_REPO_PATH })),
+  sudo: oneOf(['docker', 'yes', 'no'] as const),
+  timeoutSec: int(...STEP_TIMEOUT_RANGE),
+  onFailure: oneOf(['stop', 'continue'] as const),
+  when: stepWhen,
+  // `secret` is a `secretRefs` key (checked against the file later).
+  secrets: array(object({ envName: str({ max: 64, pattern: STEP_ENV_NAME }), secret: str({ max: 16, pattern: SECRET_REF_KEY }) }), 10),
+}
+const stepBody = object(stepBodyFields) as Check<ConfigStepBody>
+const configStep = object({ ...stepBodyFields, anchor: oneOf(STEP_ANCHORS), alsoOnRollback: bool }) as Check<ConfigStep>
+const flowStage = tagged<ConfigFlowStage>('kind', {
+  services: object({ kind: oneOf(['services'] as const), serviceIds: array(uuid, MAX_SERVICES) }) as Check<ConfigFlowStage>,
+  step: object({ kind: oneOf(['step'] as const), serviceId: uuid, step: stepBody }) as Check<ConfigFlowStage>,
+})
+const flow = object({ stages: array(flowStage, MAX_FLOW_STAGES), onFailure: oneOf(['stop-all', 'continue-other-hosts'] as const) }) as Check<ConfigFlow>
+const runbookItem = tagged<ConfigRunbookItem>('type', {
+  step: object({ type: oneOf(['step'] as const), step: stepBody }) as Check<ConfigRunbookItem>,
+  builtin: object({
+    type: oneOf(['builtin'] as const),
+    builtin: oneOf(BUILTINS),
+    tail: optional(int(1, LOG_TAIL_MAX)),
+    untilHours: optional(int(1, MAX_UNTIL_HOURS)),
+  }) as Check<ConfigRunbookItem>,
+})
+const runbookParam = object({
+  name: str({ max: 64, pattern: VARIABLE_NAME }),
+  label: str({ min: 1, max: 64 }),
+  type: oneOf(['text', 'choice'] as const),
+  pattern: oneOf(['identifier', 'number', 'path', 'free'] as const),
+  choices: array(str({ min: 1, max: 100 }), 50),
+}) as Check<RunbookParam>
+const runbook = object({
+  id,
+  environmentId: uuid,
+  name: str({ min: 1, max: MAX_RUNBOOK_NAME }),
+  description: str({ max: MAX_RUNBOOK_DESCRIPTION }),
+  targetServiceIds: array(uuid, MAX_SERVICES),
+  items: array(runbookItem, MAX_STEPS_PER_CHECKOUT),
+  params: array(runbookParam, MAX_PARAMS),
+  lock: bool,
+  notify: bool,
+}) as Check<ConfigRunbook>
+
 const product = object({
   id,
   name: text(MAX_NAME),
@@ -419,6 +550,9 @@ const environment = object({
   versioned: bool,
   autoRollback: bool,
   domain: nullable(str({ max: MAX_URL, ok: (s) => parseEnvDomain(s).ok, rule: 'must be a domain or http(s) URL' })),
+  parallelPrepare: optional(bool),
+  prepareCap: optional(int(1, 8)),
+  flow: optional(flow),
   productIds: array(uuid, MAX_LINKS),
   hosts: array(object({ hostId: uuid, role: oneOf(HOST_ROLES) }), MAX_LINKS),
 }) as Check<ConfigEnvironment>
@@ -463,6 +597,7 @@ const deployment = object(
     backupDir: nullable(str({ max: MAX_REPO_PATH, pattern: BACKUP_DIR })),
     preHook: nullable(str({ max: MAX_HOOK })),
     postHook: nullable(str({ max: MAX_HOOK })),
+    steps: optional(array(configStep, MAX_STEPS_PER_CHECKOUT)),
     buildTimeoutSec: int(...STEP_TIMEOUT_RANGE),
     composeTimeoutSec: int(...STEP_TIMEOUT_RANGE),
     useSudo: oneOf(['auto', 'yes', 'no'] as const),
@@ -493,6 +628,7 @@ const appService = object({
   composeService: str({ min: 1, max: MAX_COMPOSE_NAME, pattern: COMPOSE_SERVICE }),
   url: nullable(httpUrl(MAX_URL)),
   urlCheckFrom: oneOf(['mac', 'host'] as const),
+  skipUnchanged: optional(bool),
 }) as Check<ConfigAppService>
 const dbService = object({
   ...serviceCommon,
@@ -526,6 +662,7 @@ const fileShape = object({
   tunnels: array(tunnel, MAX_TUNNELS),
   deployments: array(deployment, MAX_DEPLOYMENTS),
   services: array(service, MAX_SERVICES),
+  runbooks: optional(array(runbook, MAX_RUNBOOKS)),
 }) as Check<ConfigFile>
 
 /** Duplicate ids and references to ids (or secret refs) that the file doesn't define. */
@@ -544,10 +681,25 @@ function checkReferences(file: ConfigFile, errs: string[]): void {
   const envs = ids(file.environments, 'environments')
   const tunnels = ids(file.tunnels, 'tunnels')
   const deployments = ids(file.deployments, 'deployments')
-  ids(file.services, 'services')
+  const services = ids(file.services, 'services')
+  const runbooks = file.runbooks ?? []
+  ids(runbooks, 'runbooks')
   const refs = new Set(Object.keys(file.secretRefs))
   const ref = (set: Set<string>, what: string, value: string | null, path: string): void => {
     if (value !== null && !set.has(value)) fail(errs, path, `is not ${what} in this file`)
+  }
+  const appServices = new Map<string, Set<string>>()
+  for (const s of file.services) if (s.kind === 'service') appServices.set(s.environmentId, (appServices.get(s.environmentId) ?? new Set()).add(s.id))
+  const appServicesOf = (envId: string): Set<string> => appServices.get(envId) ?? new Set()
+  const runbookNames = new Set<string>()
+  const checkFlowReferences = (e: ConfigEnvironment, p: string): void => {
+    e.flow?.stages.forEach((st, j) => {
+      if (st.kind === 'services') st.serviceIds.forEach((sid, k) => ref(appServicesOf(e.id), 'an app service of its environment', sid, `${p}.flow.stages[${j}].serviceIds[${k}]`))
+      else {
+        ref(appServicesOf(e.id), 'an app service of its environment', st.serviceId, `${p}.flow.stages[${j}].serviceId`)
+        st.step.secrets.forEach((sec, k) => ref(refs, 'a secret ref', sec.secret, `${p}.flow.stages[${j}].step.secrets[${k}].secret`))
+      }
+    })
   }
 
   file.hosts.forEach((h, i) => {
@@ -562,6 +714,7 @@ function checkReferences(file: ConfigFile, errs: string[]): void {
     ref(hosts, 'a host', e.defaultJumpHostId, `${p}.defaultJumpHostId`)
     e.productIds.forEach((pid, j) => ref(products, 'a product', pid, `${p}.productIds[${j}]`))
     e.hosts.forEach((m, j) => ref(hosts, 'a host', m.hostId, `${p}.hosts[${j}].hostId`))
+    checkFlowReferences(e, p)
   })
   file.tunnels.forEach((t, i) => {
     ref(hosts, 'a host', t.hostId, `$.tunnels[${i}].hostId`)
@@ -572,9 +725,21 @@ function checkReferences(file: ConfigFile, errs: string[]): void {
     ref(envs, 'an environment', d.environmentId, `${p}.environmentId`)
     ref(hosts, 'a host', d.hostId, `${p}.hostId`)
     ref(refs, 'a secret ref', d.becomeSecret, `${p}.becomeSecret`)
+    d.steps?.forEach((st, j) => st.secrets.forEach((sec, k) => ref(refs, 'a secret ref', sec.secret, `${p}.steps[${j}].secrets[${k}].secret`)))
     if (d.envTemplate !== null && [...d.envTemplate.matchAll(TEMPLATE_SECRET_REF)].some((m) => !refs.has(m[1]))) {
       fail(errs, `${p}.envTemplate`, 'refers to a secret ref not in this file')
     }
+  })
+  runbooks.forEach((r, i) => {
+    const p = `$.runbooks[${i}]`
+    ref(envs, 'an environment', r.environmentId, `${p}.environmentId`)
+    r.targetServiceIds.forEach((sid, j) => ref(appServicesOf(r.environmentId), 'an app service of its environment', sid, `${p}.targetServiceIds[${j}]`))
+    r.items.forEach((it, j) => {
+      if (it.type === 'step') it.step.secrets.forEach((sec, k) => ref(refs, 'a secret ref', sec.secret, `${p}.items[${j}].step.secrets[${k}].secret`))
+    })
+    const key = `${r.environmentId}\u0000${r.name.trim().toLowerCase()}`
+    if (runbookNames.has(key)) fail(errs, `${p}.name`, 'is a duplicate name in its environment')
+    runbookNames.add(key)
   })
   file.services.forEach((s, i) => {
     const p = `$.services[${i}]`

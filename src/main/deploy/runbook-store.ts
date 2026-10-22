@@ -62,38 +62,46 @@ export class RunbookStore {
 
   create(input: RunbookInput, _actor?: Actor): Runbook {
     this.vault.assertUnlocked()
-    const v = this.validate(input)
-    const id = this.ids()
-    inTransaction(this.db, () => {
-      const n = (this.db.prepare('SELECT COUNT(*) AS n FROM runbooks').get() as { n: number }).n
-      if (n >= MAX_RUNBOOKS) throw new DeployError('VALIDATION', `too many runbooks (${MAX_RUNBOOKS})`)
-      this.assertUniqueName(v.environmentId, v.name, null)
-      const ts = this.now().toISOString()
-      this.db
-        .prepare('INSERT INTO runbooks(id, environment_id, name, description, definition, created_at, updated_at) VALUES (?,?,?,?,?,?,?)')
-        .run(id, v.environmentId, v.name, v.description, definitionOf(v), ts, ts)
-    })
+    const id = inTransaction(this.db, () => this.insertInTx(input))
     const r = this.get(id)
     this.audit.append({ action: 'runbook.create', outcome: 'success', targetType: 'runbook', targetId: id, targetLabel: r.name, details: counts(r) })
     this.onChanged?.(r.environmentId)
     return r
   }
 
+  /** create() without the transaction, the unlock check, the audit or `onChanged`, so config import can batch it. */
+  insertInTx(input: RunbookInput, id: string = this.ids()): string {
+    const v = this.validate(input)
+    const n = (this.db.prepare('SELECT COUNT(*) AS n FROM runbooks').get() as { n: number }).n
+    if (n >= MAX_RUNBOOKS) throw new DeployError('VALIDATION', `too many runbooks (${MAX_RUNBOOKS})`)
+    this.assertUniqueName(v.environmentId, v.name, null)
+    const ts = this.now().toISOString()
+    this.db
+      .prepare('INSERT INTO runbooks(id, environment_id, name, description, definition, created_at, updated_at) VALUES (?,?,?,?,?,?,?)')
+      .run(id, v.environmentId, v.name, v.description, definitionOf(v), ts, ts)
+    return id
+  }
+
   /** The environment never changes. */
   update(id: string, input: RunbookInput, _actor?: Actor): Runbook {
     this.vault.assertUnlocked()
-    const before = this.get(id)
-    const v = this.validate({ ...input, environmentId: before.environmentId })
-    inTransaction(this.db, () => {
-      this.assertUniqueName(before.environmentId, v.name, id)
-      this.db
-        .prepare('UPDATE runbooks SET name = ?, description = ?, definition = ?, updated_at = ? WHERE id = ?')
-        .run(v.name, v.description, definitionOf(v), this.now().toISOString(), id)
-    })
+    inTransaction(this.db, () => this.updateInTx(id, input))
     const r = this.get(id)
     this.audit.append({ action: 'runbook.update', outcome: 'success', targetType: 'runbook', targetId: id, targetLabel: r.name, details: counts(r) })
     this.onChanged?.(r.environmentId)
     return r
+  }
+
+  /** update() without the transaction, the unlock check, the audit or `onChanged`; whether anything changed (always true unless `skipIfSame`). */
+  updateInTx(id: string, input: RunbookInput, skipIfSame = false): boolean {
+    const before = this.get(id)
+    const v = this.validate({ ...input, environmentId: before.environmentId })
+    this.assertUniqueName(before.environmentId, v.name, id)
+    if (skipIfSame && before.name === v.name && before.description === v.description && definitionOf(sortedTargets(v)) === definitionOf(sortedTargets(before))) return false
+    this.db
+      .prepare('UPDATE runbooks SET name = ?, description = ?, definition = ?, updated_at = ? WHERE id = ?')
+      .run(v.name, v.description, definitionOf(v), this.now().toISOString(), id)
+    return true
   }
 
   delete(id: string, _actor?: Actor): void {
@@ -120,6 +128,8 @@ export class RunbookStore {
     if (dup && dup.id !== selfId) throw new DeployError('VALIDATION', 'a runbook with that name already exists in this environment')
   }
 }
+
+const sortedTargets = <T extends { targetServiceIds: string[] }>(r: T): T => ({ ...r, targetServiceIds: [...r.targetServiceIds].sort() })
 
 const definitionOf = (v: RunbookInput): string =>
   JSON.stringify({ targetServiceIds: v.targetServiceIds, items: v.items, params: v.params, lock: v.lock, notify: v.notify } satisfies Definition)

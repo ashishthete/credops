@@ -155,6 +155,32 @@ describe('ReleaseService.validateEdit', () => {
     expect((await r.svc.validateEdit(id, p.playbook)).ok).toBe(true)
   })
 
+  it('refuses without a preview by this person, with the message start gives (Task 10b fix round 1)', async () => {
+    const r = await rig()
+    const id = await ready(r)
+    const generated = (await r.svc.previewPlaybook(id, { actor: { osUser: 'other', machine: 'box' } })).playbook
+    for (const ctx of [undefined, { actor: { osUser: 'tester', machine: 'elsewhere' } }]) {
+      const err = await Promise.resolve(r.svc.validateEdit(id, generated, ctx)).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(DeployError)
+      expect((err as DeployError).code).toBe('INVALID_STATE')
+      expect((err as Error).message).toBe(REVIEW_EXPIRED_MESSAGE)
+    }
+  })
+
+  it('refuses once the preview is too old to start from, rather than generating at the current time', async () => {
+    let now = NOW
+    const r = await rig({ now: () => new Date(now) })
+    const id = await ready(r)
+    const p = await r.svc.previewPlaybook(id)
+    now += PREVIEW_TTL_MS
+    expect((await r.svc.validateEdit(id, p.playbook)).ok).toBe(true)
+    now += 1
+    await expect(r.svc.validateEdit(id, p.playbook)).rejects.toThrow(REVIEW_EXPIRED_MESSAGE)
+    // A fresh preview makes it checkable again.
+    await r.svc.previewPlaybook(id)
+    expect((await r.svc.validateEdit(id, p.playbook)).ok).toBe(false)
+  })
+
   it('rejects a secret reference without writing anything', async () => {
     const r = await rig()
     const id = await ready(r)
@@ -176,6 +202,6 @@ describe('ReleaseService.validateEdit', () => {
     const err = await r.svc.validateEdit(id, p.playbook).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(DeployError)
     expect((err as DeployError).code).toBe('DENIED')
-    expect((err as Error).message).not.toContain('lock')
+    expect((err as Error).message).toBe('not allowed here')
   })
 })

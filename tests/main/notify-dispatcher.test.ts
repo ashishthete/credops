@@ -289,6 +289,7 @@ describe('NotificationDispatcher', () => {
     // One line: the runbook, the environment, the outcome and how many services; never a host or a checkout.
     expect(t.sink.facts[0]).toMatchObject({
       title: 'Operation Restart api on staging',
+      runbook: 'Restart api',
       summary: 'Restart api on staging succeeded · 2 services',
       deployment: null,
       hosts: [],

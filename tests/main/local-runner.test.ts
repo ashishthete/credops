@@ -45,6 +45,23 @@ async function until(cond: () => boolean): Promise<void> {
 }
 
 describe('LocalRunner', () => {
+  it('writes an edited playbook text in place of the generated one, and generates the rest', async () => {
+    const t = setup()
+    let book = ''
+    let inventory = ''
+    t.ansible.onSpawn = () => {
+      for (const [f, text] of t.fs.files) {
+        if (f.endsWith('/playbook.yml')) book = text
+        if (f.endsWith('/inventory')) inventory = text
+      }
+    }
+    t.ansible.stdout = fixtureLines('release-ok.jsonl')
+    const edited = '[\n  {\n    "name": "edited"\n  }\n]'
+    await t.runner.start({ ...planFixture(), playbookText: edited }, SECRETS).done
+    expect(book).toBe(edited)
+    expect(inventory).toContain('od-1')
+  })
+
   it('writes the run files, spawns with paths-only argv and a built env', async () => {
     const t = setup()
     let seen: string[] = []

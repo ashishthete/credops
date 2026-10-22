@@ -3,6 +3,8 @@ import {
   TEMPLATE_SECRET_REF,
   type ConfigCounts,
   type ConfigFile,
+  type ConfigFlow,
+  type ConfigStepBody,
   type ImportAction,
   type ImportItem,
   type ImportNeedsSecret,
@@ -16,11 +18,16 @@ import type { AuditLog } from '../audit/audit-log'
 import type { Db } from '../db/connection'
 import { inTransaction } from '../db/tx'
 import { DeployError } from '../deploy/access'
-import { DeployStore, dbSecretRefs } from '../deploy/deploy-store'
+import { DeployStore, dbSecretRefs, stepSecretIds } from '../deploy/deploy-store'
+import { RunbookStore } from '../deploy/runbook-store'
 import { ServiceStore } from '../deploy/service-store'
+import { asRunbookSaveInput } from '../ipc/validators'
 import { EnvironmentStore } from '../inventory/environment-store'
 import { HostStore } from '../inventory/host-store'
 import { ProductStore } from '../inventory/product-store'
+import type { ReleaseFlow } from '../../shared/deploy'
+import type { RunbookInput, RunbookItem } from '../../shared/runbooks'
+import type { Step, StepBody, StepSecret } from '../../shared/steps'
 import { TunnelStore } from '../tunnels/tunnel-store'
 import { IdentityStore } from '../vault/identity-store'
 import type { KeyStore } from '../vault/key-store'
@@ -52,6 +59,7 @@ function stores(db: Db) {
     tunnels: new TunnelStore({ db, audit: NO_AUDIT, vault: NO_VAULT }),
     deploys: new DeployStore({ db, audit: NO_AUDIT, vault: NO_VAULT, secrets: dbSecretRefs(db) }),
     services: new ServiceStore({ db, audit: NO_AUDIT, vault: NO_VAULT }),
+    runbooks: new RunbookStore({ db, audit: NO_AUDIT, vault: NO_VAULT }),
   }
 }
 
@@ -100,6 +108,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
     environments: new Map<string, string | null>(),
     tunnels: new Map<string, string | null>(),
     deployments: new Map<string, string | null>(),
+    services: new Map<string, string | null>(),
   }
   /** `undefined` when the file's reference is to a skipped object (keep what is here), else the local id or null. */
   const ref = (m: Map<string, string | null>, fileId: string | null): string | null | undefined =>
@@ -131,6 +140,21 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
     if (found.length === 1) return { id: found[0] }
     return found.length > 1 ? { reason: ambiguous(found.length) } : {}
   }
+
+  /**
+   * A step's secrets as local ids. A secret that isn't here, or isn't in the vaults the step may use, is left out and
+   * its `<step>.<ENV_NAME>` is added to `lost`; the stores check the rest.
+   */
+  const stepSecrets = (secrets: { envName: string; secret: string }[], allowed: ReadonlySet<string>, stepId: string, lost: string[]): StepSecret[] => {
+    const out: StepSecret[] = []
+    for (const sec of secrets) {
+      const found = secret(sec.secret)
+      if ('id' in found && allowed.has(found.id)) out.push({ envName: sec.envName, secretId: found.id })
+      else lost.push(`${stepId}.${sec.envName}`)
+    }
+    return out
+  }
+  const stepBody = (st: ConfigStepBody, allowed: ReadonlySet<string>, lost: string[]): StepBody => ({ ...st, secrets: stepSecrets(st.secrets, allowed, st.id, lost) })
 
   // Which existing environments change, for the typed confirmation of the protected ones.
   const envsBefore = new Map(
@@ -316,6 +340,21 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
   }
   for (const h of hostRows) done('hosts', h.local, h.x.label, h.added, h.fields)
 
+  // Parts that name services or secrets of other rows are written after those exist (see "checkouts' steps" below).
+  const flows: { x: ConfigFile['environments'][number]; local: string; added: boolean; item: number }[] = []
+  const stepRows: { x: ConfigFile['deployments'][number]; local: string; environmentId: string; added: boolean; item: number }[] = []
+  /** Adds fields found after an item was recorded: an unchanged item becomes an update. */
+  const amend = (index: number, fields: string[]): void => {
+    const it = items[index]
+    if (fields.length === 0 || it.action === 'add') return
+    if (it.action === 'unchanged') {
+      counts.unchanged--
+      counts.update++
+      it.action = 'update'
+    }
+    it.fields = [...new Set([...(it.fields ?? []), ...fields])]
+  }
+
   // ---- environments and their links ----
   for (const x of file.environments) {
     setAt(`Environment ${x.name}`)
@@ -362,7 +401,8 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
       fields.push(...(next?.fields ?? []))
       if (s.envs.addProductsInTx(local, productIds).length > 0) fields.push('productIds')
     }
-    fields.push(...s.deploys.updateSettingsInTx(local, { versioned: x.versioned, autoRollback: x.autoRollback }))
+    // Absent in an older file: a new environment gets the column defaults, an existing one keeps its own.
+    fields.push(...s.deploys.updateSettingsInTx(local, { versioned: x.versioned, autoRollback: x.autoRollback, parallelPrepare: x.parallelPrepare, prepareCap: x.prepareCap }))
     let hostsChanged = false
     for (const m of x.hosts) {
       const hostId = map.hosts.get(m.hostId)
@@ -372,6 +412,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
     map.environments.set(x.id, local)
     if (added || fields.length > 0) touch(local)
     done('environments', local, x.name, added, fields)
+    if (x.flow !== undefined) flows.push({ x, local, added, item: items.length - 1 })
   }
 
   // ---- tunnels ----
@@ -507,6 +548,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
       map.deployments.set(x.id, x.id)
       touch(environmentId)
       done('deployments', x.id, x.name, true, [])
+      if (x.steps !== undefined) stepRows.push({ x, local: x.id, environmentId, added: true, item: items.length - 1 })
       continue
     }
     const fields = s.deploys
@@ -515,6 +557,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
     map.deployments.set(x.id, before.id)
     if (fields.length > 0) touch(environmentId)
     done('deployments', before.id, x.name, false, fields)
+    if (x.steps !== undefined) stepRows.push({ x, local: before.id, environmentId, added: false, item: items.length - 1 })
   }
 
   // ---- services ----
@@ -522,29 +565,41 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
     setAt(`Service ${x.name}`)
     const environmentId = map.environments.get(x.environmentId) ?? null
     if (environmentId === null) {
+      map.services.set(x.id, null)
       item('services', x.id, x.name, 'skip', { reason: 'its environment is skipped' })
       continue
     }
     const byId = db.prepare('SELECT environment_id, kind FROM services WHERE id = ?').get(x.id) as { environment_id: string; kind: string } | undefined
     if (byId && byId.environment_id !== environmentId) {
+      map.services.set(x.id, null)
       item('services', x.id, x.name, 'skip', { reason: "can't move to another environment" })
       continue
     }
     const local = byId ? x.id : (ids('SELECT id FROM services WHERE environment_id = ? AND name = ? COLLATE NOCASE', environmentId, x.name)[0] ?? null)
     const before = local === null ? null : s.services.get(local)
     if (before && before.kind !== x.kind) {
+      map.services.set(x.id, null)
       item('services', before.id, x.name, 'skip', { reason: 'is a different kind here' })
       continue
     }
     if (x.kind === 'service') {
       const deploymentId = ref(map.deployments, x.deploymentId)
-      const f = { name: x.name, description: x.description, composeService: x.composeService, url: x.url, urlCheckFrom: x.urlCheckFrom }
+      const f = {
+        name: x.name,
+        description: x.description,
+        composeService: x.composeService,
+        url: x.url,
+        urlCheckFrom: x.urlCheckFrom,
+        skipUnchanged: x.skipUnchanged,
+      }
       if (before === null) {
         s.services.insertInTx({ ...f, kind: 'service', environmentId, deploymentId: deploymentId ?? null }, x.position, x.id)
+        map.services.set(x.id, x.id)
         touch(environmentId)
         done('services', x.id, x.name, true, [])
         continue
       }
+      map.services.set(x.id, before.id)
       const fields = s.services.updateInTx(before.id, { ...f, deploymentId })
       if (s.services.setPositionInTx(before.id, x.position)) fields.push('position')
       if (fields.length > 0) touch(environmentId)
@@ -556,17 +611,112 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void): Plan
     const f = { name: x.name, description: x.description, dbEngine: x.dbEngine, dbAddress: x.dbAddress, dbPort: x.dbPort, viaHostId, localPort: x.localPort }
     if (before === null) {
       s.services.insertInTx({ ...f, kind: 'db', environmentId }, x.position, x.id)
+      map.services.set(x.id, x.id)
       if (tunnelId) s.services.setTunnelInTx(x.id, tunnelId, x.localPort)
       touch(environmentId)
       done('services', x.id, x.name, true, [])
       continue
     }
+    map.services.set(x.id, before.id)
     const fields = s.services.updateInTx(before.id, f)
     if (s.services.setPositionInTx(before.id, x.position)) fields.push('position')
     const keepTunnel = tunnelId === undefined && before.kind === 'db' ? before.tunnelId : (tunnelId ?? null)
     if (s.services.setTunnelInTx(before.id, keepTunnel, x.localPort)) fields.push('tunnelId')
     if (fields.length > 0) touch(environmentId)
     done('services', before.id, x.name, false, fields)
+  }
+
+  // ---- checkouts' steps ----
+  // After the services: a compose-exec step names a service of its checkout, and a step's secrets come from its vaults.
+  for (const r of stepRows) {
+    setAt(`Checkout ${r.x.name}`)
+    const allowed = stepSecretIds(db, r.environmentId, r.local)
+    const lost: string[] = []
+    const steps = r.x.steps!.map((st): Step => ({ ...st, secrets: stepSecrets(st.secrets, allowed, st.id, lost) }))
+    if (lost.length > 0) {
+      need('deployments', r.x.name, 'steps', lost.join(', ') + (r.added ? '' : '; kept the local steps'))
+      if (!r.added) continue
+    }
+    const fields = s.deploys.updateInTx(r.local, { steps })
+    if (fields.length > 0) touch(r.environmentId)
+    amend(r.item, fields)
+  }
+
+  // ---- release flows ----
+  const fileServiceName = new Map(file.services.map((x) => [x.id, x.name]))
+  const serviceCheckout = db.prepare('SELECT deployment_id FROM services WHERE id = ?')
+  for (const r of flows) {
+    setAt(`Environment ${r.x.name}`)
+    const flow = r.x.flow as ConfigFlow
+    const fileIds = flow.stages.flatMap((st) => (st.kind === 'services' ? st.serviceIds : [st.serviceId]))
+    const skipped = fileIds.find((id) => !map.services.get(id))
+    if (skipped !== undefined) {
+      items[r.item].reason = `Flow not imported: it uses ${fileServiceName.get(skipped) ?? 'a service'}, which was skipped`
+      continue
+    }
+    const lost: string[] = []
+    const local: ReleaseFlow = {
+      onFailure: flow.onFailure,
+      stages: flow.stages.map((st) => {
+        if (st.kind === 'services') return { kind: 'services' as const, serviceIds: st.serviceIds.map((id) => map.services.get(id)!) }
+        const serviceId = map.services.get(st.serviceId)!
+        // The same scope checkFlow applies: the secrets of the service's own checkout.
+        const checkout = (serviceCheckout.get(serviceId) as { deployment_id: string | null } | undefined)?.deployment_id ?? null
+        return { kind: 'step' as const, serviceId, step: stepBody(st.step, stepSecretIds(db, r.local, checkout), lost) }
+      }),
+    }
+    if (lost.length > 0) {
+      need('environments', r.x.name, 'flow', lost.join(', ') + (r.added ? '' : '; kept the local flow'))
+      if (!r.added) continue
+    }
+    const fields = s.deploys.updateSettingsInTx(r.local, { flow: local })
+    if (fields.length > 0) touch(r.local)
+    amend(r.item, fields)
+  }
+
+  // ---- runbooks ----
+  for (const x of file.runbooks ?? []) {
+    setAt(`Runbook ${x.name}`)
+    const environmentId = map.environments.get(x.environmentId) ?? null
+    if (environmentId === null) {
+      item('runbooks', x.id, x.name, 'skip', { reason: 'its environment is skipped' })
+      continue
+    }
+    const byId = db.prepare('SELECT environment_id FROM runbooks WHERE id = ?').get(x.id) as { environment_id: string } | undefined
+    if (byId && byId.environment_id !== environmentId) {
+      item('runbooks', x.id, x.name, 'skip', { reason: "can't move to another environment" })
+      continue
+    }
+    const local = byId ? x.id : (ids('SELECT id FROM runbooks WHERE environment_id = ? AND name = ? COLLATE NOCASE', environmentId, x.name)[0] ?? null)
+    const targets = x.targetServiceIds.map((t) => map.services.get(t) ?? null)
+    if (targets.includes(null)) {
+      item('runbooks', local ?? x.id, x.name, 'skip', { reason: 'a service it runs on is skipped' })
+      continue
+    }
+    const allowed = stepSecretIds(db, environmentId)
+    const lost: string[] = []
+    const runbookItems = x.items.map((it): RunbookItem => (it.type === 'step' ? { type: 'step', step: stepBody(it.step, allowed, lost) } : it))
+    if (lost.length > 0) {
+      need('runbooks', x.name, 'items', lost.join(', ') + (local === null ? '' : '; kept the local runbook'))
+      if (local !== null) {
+        done('runbooks', local, x.name, false, [])
+        continue
+      }
+    }
+    // The IPC shape check first (the same one a runbook saved in the app passes), then the store's content rules.
+    const input = asRunbookSaveInput(
+      { environmentId, name: x.name, description: x.description, targetServiceIds: targets, items: runbookItems, params: x.params, lock: x.lock, notify: x.notify },
+      'runbook',
+    ) as RunbookInput
+    if (local === null) {
+      s.runbooks.insertInTx(input, x.id)
+      touch(environmentId)
+      done('runbooks', x.id, x.name, true, [])
+      continue
+    }
+    const changed = s.runbooks.updateInTx(local, input, true)
+    if (changed) touch(environmentId)
+    done('runbooks', local, x.name, false, changed ? ['runbook'] : [])
   }
 
   const protectedEnvironments = [...touched]

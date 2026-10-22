@@ -91,6 +91,16 @@ describe('MacNotifier', () => {
     expect(mac.shown[1]).toMatchObject({ title: 'prod · db tunnel succeeded', body: '', silent: true })
   })
 
+  it('an operation alert is titled by its runbook; the body is the environment and outcome, one line', async () => {
+    const { notifier, mac } = await setup()
+    const op = { deployment: null, title: 'Operation Restart api on prod', runbook: 'Restart api', version: null, durationSec: null, summary: 'Restart api on prod failed · 2 services' }
+    notifier.show(facts(op), '#/deployments/release/o1')
+    expect(mac.shown[0]).toMatchObject({ title: 'Restart api', body: 'prod · failed', silent: false })
+    notifier.show(facts({ ...op, status: 'succeeded' }), '#/deployments/release/o1')
+    expect(mac.shown[1]).toMatchObject({ title: 'Restart api', body: 'prod · succeeded', silent: true })
+    expect(mac.shown.every((n) => !n.body.includes('\n'))).toBe(true)
+  })
+
   it('macos no-op when unsupported or disabled', async () => {
     const off = fakeNotification(false)
     new MacNotifier({ Notification: off.Ctor, onClick: () => {}, enabled: () => true }).show(facts(), '#/')

@@ -1,5 +1,6 @@
 import type {
   BreakLockConfirm,
+  PlaybookEditResult,
   PlaybookPreview,
   PreflightRequest,
   ReleaseConfirm,
@@ -13,6 +14,7 @@ import { DeployError } from '../../shared/deploy-error'
 import type { OperationRequest } from '../../shared/runbooks'
 import type { AuditLog } from '../audit/audit-log'
 import type { ReleaseRunMeta } from '../deploy/finalize'
+import type { CallCtx } from '../deploy/release-service'
 import { HubError, type HubClient } from './client'
 
 type Maybe<T> = T | Promise<T>
@@ -25,8 +27,10 @@ export interface ReleaseApi {
   preflight(req: PreflightRequest): Maybe<{ releaseId: string }>
   /** A runbook operation's preflight: a `ready` row that `start` runs. */
   preflightOperation(req: OperationRequest): Maybe<{ releaseId: string }>
-  /** `ctx` is the local service's (the router never sends one); `forceServiceIds` deploys those skippable services anyway. */
-  previewPlaybook(releaseId: string, ctx?: undefined, forceServiceIds?: string[]): Maybe<PlaybookPreview>
+  /** `forceServiceIds` as `start` will carry them, so the preview is of the playbook that start generates. */
+  previewPlaybook(releaseId: string, ctx?: CallCtx, forceServiceIds?: string[]): Maybe<PlaybookPreview>
+  /** Checks an edit of the previewed playbook; static, writes nothing. */
+  validateEdit(releaseId: string, text: string, ctx?: CallCtx, forceServiceIds?: string[]): Maybe<PlaybookEditResult>
   start(releaseId: string, confirm?: ReleaseConfirm): Maybe<void>
   cancel(releaseId: string): Maybe<void>
   rollback(releaseId: string, confirm?: ReleaseConfirm): Maybe<{ releaseId: string }>
@@ -42,6 +46,8 @@ export interface ReleaseApi {
   hasActive(): boolean
   onEvent(fn: (batch: RunEvent[]) => void): () => void
 }
+
+export const HUB_EDIT_MESSAGE = 'Playbook edits run on local environments only'
 
 type Op = 'preflight' | 'start' | 'cancel' | 'rollback' | 'break-lock' | 'discard' | 'retry-version'
 
@@ -84,7 +90,13 @@ export class HubRunner implements ReleaseApi {
     return this.d.client().get<PlaybookPreview>(`/api/v1/releases/${releaseId}/playbook${q === '' ? '' : `?${q}`}`)
   }
 
+  /** The Hub runs its own generated playbook: an edit is refused before anything is sent. */
+  validateEdit(_releaseId: string, _text: string): Promise<PlaybookEditResult> {
+    return Promise.reject(new DeployError('INVALID_STATE', HUB_EDIT_MESSAGE))
+  }
+
   async start(releaseId: string, confirm: ReleaseConfirm = {}): Promise<void> {
+    if (confirm.editedPlaybook !== undefined) throw new DeployError('INVALID_STATE', HUB_EDIT_MESSAGE)
     await this.audited('start', releaseId, await this.nameOf(releaseId), () => this.d.client().post<void>(`/api/v1/releases/${releaseId}/start`, confirm))
   }
 
@@ -256,8 +268,11 @@ export class RoutingReleases implements ReleaseApi {
   async preflightOperation(req: OperationRequest): Promise<{ releaseId: string }> {
     return this.d.isHubEnv(req.environmentId) ? this.d.hub.preflightOperation(req) : this.d.local.preflightOperation(req)
   }
-  previewPlaybook(releaseId: string, _ctx?: undefined, forceServiceIds?: string[]): Maybe<PlaybookPreview> {
-    return this.pick(releaseId).previewPlaybook(releaseId, undefined, forceServiceIds)
+  previewPlaybook(releaseId: string, ctx?: CallCtx, forceServiceIds?: string[]): Maybe<PlaybookPreview> {
+    return this.pick(releaseId).previewPlaybook(releaseId, ctx, forceServiceIds)
+  }
+  validateEdit(releaseId: string, text: string, ctx?: CallCtx, forceServiceIds?: string[]): Maybe<PlaybookEditResult> {
+    return this.pick(releaseId).validateEdit(releaseId, text, ctx, forceServiceIds)
   }
   start(releaseId: string, confirm?: ReleaseConfirm): Maybe<void> {
     return this.pick(releaseId).start(releaseId, confirm)
