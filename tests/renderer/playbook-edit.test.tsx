@@ -114,6 +114,19 @@ describe('editing a playbook under review', () => {
     expect(screen.getByTestId('line-numbers').scrollTop).toBe(240)
   })
 
+  it('pads the line numbers by the height of the text box scrollbar', async () => {
+    const user = userEvent.setup()
+    mockBridge({ 'release:validateEdit': { ok: true, canonical: PLAYBOOK, sha256: SHA } })
+    review()
+    await user.click(screen.getByRole('button', { name: 'Edit' }))
+    const box = screen.getByRole('textbox', { name: 'Edit playbook' })
+    // jsdom has no layout: say the horizontal scrollbar takes 15px of the box's height.
+    Object.defineProperty(box, 'offsetHeight', { configurable: true, value: 300 })
+    Object.defineProperty(box, 'clientHeight', { configurable: true, value: 285 })
+    await user.type(box, ' ')
+    expect(screen.getByTestId('line-numbers').style.paddingBottom).toBe('calc(15px + 0.75rem)')
+  })
+
   it('turns Run edited off at once when the forced services change', async () => {
     const user = userEvent.setup()
     const invoke = mockBridge({ 'release:validateEdit': { ok: true, canonical: PLAYBOOK, sha256: SHA } })

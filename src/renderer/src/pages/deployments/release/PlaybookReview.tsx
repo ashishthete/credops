@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { PlaybookEditError } from '../../../../../shared/deploy'
 import { isHelperTask, playbookSteps, stepLabels, type PlaybookStep } from '../../../../../shared/playbook-steps'
 import { api } from '../../../lib/api'
@@ -53,6 +53,12 @@ function PlaybookEditor({
   const [checked, setChecked] = useState<Checked | null>(null)
   const latest = useRef(initial)
   const gutter = useRef<HTMLPreElement>(null)
+  const box = useRef<HTMLTextAreaElement>(null)
+  // A horizontal scrollbar takes height off the text box; the gutter has none, so it needs that much extra room at the bottom to scroll as far.
+  const [bar, setBar] = useState(0)
+  useLayoutEffect(() => {
+    if (box.current) setBar(box.current.offsetHeight - box.current.clientHeight)
+  }, [text])
   const force = forceServiceIds?.join(',')
   useEffect(() => {
     onChange?.(true)
@@ -87,7 +93,13 @@ function PlaybookEditor({
   return (
     <div className="flex min-w-0 flex-1 flex-col gap-2">
       <div className="flex min-h-0 overflow-hidden rounded-lg bg-canvas/70 font-mono text-[11.5px] leading-[18px]">
-        <pre ref={gutter} data-testid="line-numbers" aria-hidden className="max-h-[50vh] shrink-0 overflow-hidden py-3 pr-2 pl-3 text-right text-muted select-none">
+        <pre
+          ref={gutter}
+          data-testid="line-numbers"
+          aria-hidden
+          style={{ paddingBottom: `calc(0.75rem + ${bar}px)` }}
+          className="max-h-[50vh] shrink-0 overflow-hidden pt-3 pr-2 pl-3 text-right text-muted select-none"
+        >
           {lines.map((_, i) => (
             <span key={i} className={`block ${bad.has(i + 1) ? 'font-semibold text-err' : ''}`}>
               {i + 1}
@@ -95,6 +107,7 @@ function PlaybookEditor({
           ))}
         </pre>
         <textarea
+          ref={box}
           aria-label="Edit playbook"
           value={text}
           spellCheck={false}
