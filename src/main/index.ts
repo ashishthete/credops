@@ -23,7 +23,7 @@ import { openDatabase, type Db } from './db/connection'
 import { createAppHandlers } from './ipc/handlers/app'
 import { createAuditHandlers } from './ipc/handlers/audit'
 import { createConfigHandlers } from './ipc/handlers/config'
-import { CONFIG_FILE_NAME } from '../shared/config-file'
+import { configFileName } from '../shared/config-file'
 import { createIdentityHandlers } from './ipc/handlers/identities'
 import { createDeployHandlers } from './ipc/handlers/deploy'
 import { createServiceHandlers } from './ipc/handlers/services'
@@ -717,8 +717,8 @@ if (!app.requestSingleInstanceLock()) {
             vault: service,
             audit: log,
             now: () => new Date(),
-            saveDialog: async () => {
-              const opts: Electron.SaveDialogOptions = { defaultPath: CONFIG_FILE_NAME, filters: [{ name: 'JSON', extensions: ['json'] }] }
+            saveDialog: async (segment) => {
+              const opts: Electron.SaveDialogOptions = { defaultPath: configFileName(segment), filters: [{ name: 'JSON', extensions: ['json'] }] }
               const res = mainWindow
                 ? await dialog.showSaveDialog(mainWindow, opts)
                 : await dialog.showSaveDialog(opts)

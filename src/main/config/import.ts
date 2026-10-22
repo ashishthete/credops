@@ -4,6 +4,7 @@ import {
   type ConfigCounts,
   type ConfigFile,
   type ConfigFlow,
+  type ConfigSegment,
   type ConfigStepBody,
   type ImportAction,
   type ImportItem,
@@ -29,6 +30,7 @@ import type { ReleaseFlow } from '../../shared/deploy'
 import type { RunbookInput, RunbookItem } from '../../shared/runbooks'
 import type { Step, StepBody, StepSecret } from '../../shared/steps'
 import { RegionStore } from '../inventory/region-store'
+import { selectSegment } from './segment'
 import { TunnelStore } from '../tunnels/tunnel-store'
 import { IdentityStore } from '../vault/identity-store'
 import type { KeyStore } from '../vault/key-store'
@@ -38,6 +40,9 @@ export type { ImportAction, ImportItem, ImportPreview, ImportResult } from '../.
 
 export const CHANGED_MESSAGE = 'The config changed since the preview; open the file again'
 export const REGION_MESSAGE = 'Choose a region for the imported hosts'
+/** A page import's notes on the objects its page items need. */
+export const DEPENDENCY_KEPT = 'already here, not changed'
+export const DEPENDENCY_ADDED = 'added as a dependency'
 
 type Counts = Record<ImportAction, number>
 type Kind = keyof ConfigCounts
@@ -75,11 +80,15 @@ const lineKey = (line: string, i: number): string => /^\s*(?:export\s+)?([A-Za-z
  * Writes the file into the DB through the stores and reports what each object did. It always writes: planImport
  * runs it inside a transaction it rolls back, applyImport inside the one it commits, so both see the same result.
  * Matching is by id, then by name within the parent; nothing missing from the file is deleted, unlinked or changed.
+ * With `segment`, only the page's part of the file is written: its own kinds as above, and of the objects they
+ * need only the ones not here yet.
  */
-function run(db: Db, file: ConfigFile, regionId?: string): Plan {
+function run(db: Db, file: ConfigFile, regionId?: string, segment?: ConfigSegment): Plan {
+  const part = segment === undefined ? null : selectSegment(file, segment)
   let at = ''
   try {
-    return runEach(db, file, (where) => (at = where), regionId)
+    const plan = runEach(db, part?.file ?? file, (where) => (at = where), regionId, part?.own)
+    return part === null ? plan : { ...plan, ignored: part.ignored }
   } catch (e) {
     // A row the stores refuse: say which one, keeping the error's own type and code.
     if (e instanceof Error && at) e.message = `${at}: ${e.message}`
@@ -87,8 +96,11 @@ function run(db: Db, file: ConfigFile, regionId?: string): Plan {
   }
 }
 
-/** `regionId`: where a version 1 file's new hosts go. Without it a stand-in region takes them, which only a dry run may keep. */
-function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regionId?: string): Plan {
+/**
+ * `regionId`: where a version 1 file's new hosts go. Without it a stand-in region takes them, which only a dry run may keep.
+ * `own`: a page import's kinds. An object of another kind is a dependency: added when missing, never changed.
+ */
+function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regionId?: string, own?: ReadonlySet<Kind>): Plan {
   const s = stores(db)
   const items: ImportItem[] = []
   const needsSecret: ImportNeedsSecret[] = []
@@ -108,6 +120,15 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
   const done = (kind: Kind, id: string, name: string, added: boolean, fields: string[], notes?: string[]) =>
     item(kind, id, name, added ? 'add' : fields.length > 0 ? 'update' : 'unchanged', { fields, notes })
   const need = (kind: Kind, name: string, field: string, reason?: string) => needsSecret.push({ kind, name, field, ...(reason ? { reason } : {}) })
+  const isDependency = (kind: Kind): boolean => own !== undefined && !own.has(kind)
+  /** A dependency already here: used as it is. */
+  const kept = (kind: Kind, local: string, name: string): void => item(kind, local, name, 'unchanged', { notes: [DEPENDENCY_KEPT] })
+  const addedNotes = (kind: Kind, notes: string[] = []): string[] => (isDependency(kind) ? [DEPENDENCY_ADDED, ...notes] : notes)
+  // The existing environments kept as dependencies: their hosts aren't changed either.
+  const keptEnvs = new Set<string>()
+  const inEnv = (environmentId: string, hostId: string): boolean =>
+    db.prepare('SELECT 1 FROM environment_hosts WHERE environment_id = ? AND host_id = ?').get(environmentId, hostId) !== undefined
+  const NOT_IN_ENV = "its host isn't in that environment here"
 
   const ids = (sql: string, ...params: (string | null)[]): string[] => (db.prepare(sql).all(...params) as { id: string }[]).map((r) => r.id)
   const exists = (table: string, id: string): boolean => db.prepare(`SELECT 1 FROM ${table} WHERE id = ?`).get(id) !== undefined
@@ -220,11 +241,15 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
     if (local === null) {
       s.regions.insertInTx({ code: x.code, provider: x.provider, displayName: x.displayName }, x.id)
       map.regions.set(x.id, x.id)
-      done('regions', x.id, x.code, true, [])
+      done('regions', x.id, x.code, true, [], addedNotes('regions'))
+      continue
+    }
+    map.regions.set(x.id, local)
+    if (isDependency('regions')) {
+      kept('regions', local, x.code)
       continue
     }
     const next = s.regions.updateInTx(local, { code: x.code, provider: x.provider, displayName: x.displayName })
-    map.regions.set(x.id, local)
     done('regions', local, x.code, false, next?.fields ?? [])
   }
   let needsRegion = false
@@ -250,6 +275,11 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
         continue
       }
       local = found[0] ?? null
+    }
+    if (local !== null && isDependency('identities')) {
+      map.identities.set(x.id, local)
+      kept('identities', local, x.label)
+      continue
     }
     if (local !== null) {
       // An existing identity keeps its own auth, key and password: only what the file can say for sure changes.
@@ -283,7 +313,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
     }
     s.identities.insertInTx({ vaultId: vid, label: x.label, username: x.username, auth: x.auth, sshKeyId }, x.id)
     map.identities.set(x.id, x.id)
-    done('identities', x.id, x.label, true, [])
+    done('identities', x.id, x.label, true, [], addedNotes('identities'))
   }
 
   // ---- products ----
@@ -293,7 +323,12 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
     if (local === null) {
       s.products.insertInTx({ name: x.name, color: x.color, icon: x.icon, description: x.description, repoUrl: x.repoUrl }, x.id)
       map.products.set(x.id, x.id)
-      done('products', x.id, x.name, true, [])
+      done('products', x.id, x.name, true, [], addedNotes('products'))
+      continue
+    }
+    if (isDependency('products')) {
+      map.products.set(x.id, local)
+      kept('products', local, x.name)
       continue
     }
     // The file has the URL without its credentials: the local one with them is the same URL.
@@ -307,10 +342,15 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
   }
 
   // ---- hosts: written without jump hosts first, so a jump host later in the file exists when it is set ----
-  const hostRows: { x: ConfigFile['hosts'][number]; local: string; added: boolean; fields: string[]; notes: string[] }[] = []
+  const hostRows: { x: ConfigFile['hosts'][number]; local: string; added: boolean; fields: string[]; notes: string[]; kept?: true }[] = []
   for (const x of file.hosts) {
     setAt(`Host ${x.label}`)
     const local = exists('hosts', x.id) ? x.id : (ids('SELECT id FROM hosts WHERE label = ?', x.label)[0] ?? null)
+    if (local !== null && isDependency('hosts')) {
+      map.hosts.set(x.id, local)
+      hostRows.push({ x, local, added: false, fields: [], notes: [], kept: true })
+      continue
+    }
     const identityId = ref(map.identities, x.identityId)
     if (identityId === undefined) need('hosts', x.label, 'identityId')
     const vaultIdsHere = vaults('hosts', x.label, x.vaults)
@@ -346,7 +386,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
         x.id,
       )
       map.hosts.set(x.id, x.id)
-      hostRows.push({ x, local: x.id, added: true, fields: [], notes: [] })
+      hostRows.push({ x, local: x.id, added: true, fields: [], notes: addedNotes('hosts') })
       continue
     }
     // An existing host stays in its own region: moving it is the user's call.
@@ -370,6 +410,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
     hostRows.push({ x, local, added: false, fields, notes })
   }
   for (const h of hostRows) {
+    if (h.kept) continue
     setAt(`Host ${h.x.label}`)
     const jumpHostId = ref(map.hosts, h.x.jumpHostId) ?? null
     if (h.added && jumpHostId === null) continue
@@ -379,7 +420,10 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
       guardHost(h.local)
     }
   }
-  for (const h of hostRows) done('hosts', h.local, h.x.label, h.added, h.fields, h.notes)
+  for (const h of hostRows) {
+    if (h.kept) kept('hosts', h.local, h.x.label)
+    else done('hosts', h.local, h.x.label, h.added, h.fields, h.notes)
+  }
 
   // Parts that name services or secrets of other rows are written after those exist (see "checkouts' steps" below).
   const flows: { x: ConfigFile['environments'][number]; local: string; added: boolean; item: number }[] = []
@@ -423,6 +467,12 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
     const productId = x.productId === null ? unassignedProduct() : map.products.get(x.productId)!
     let local: string | null = exists('environments', x.id) ? x.id : null
     if (local === null) local = ids('SELECT id FROM environments WHERE product_id = ? AND name = ? COLLATE NOCASE', productId, x.name)[0] ?? null
+    if (local !== null && isDependency('environments')) {
+      map.environments.set(x.id, local)
+      keptEnvs.add(local)
+      kept('environments', local, x.name)
+      continue
+    }
     const defaultIdentityId = ref(map.identities, x.defaultIdentityId)
     if (defaultIdentityId === undefined) need('environments', x.name, 'defaultIdentityId')
     const defaultJumpHostId = ref(map.hosts, x.defaultJumpHostId) ?? null
@@ -471,7 +521,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
     if (hostsChanged && !added) fields.push('hosts')
     map.environments.set(x.id, local)
     if (added || fields.length > 0) touch(local)
-    done('environments', local, x.name, added, fields, notes)
+    done('environments', local, x.name, added, fields, added ? addedNotes('environments', notes) : notes)
     if (x.flow !== undefined) flows.push({ x, local, added, item: items.length - 1 })
   }
 
@@ -491,6 +541,17 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
       }
       local = found[0] ?? null
     }
+    if (local !== null && isDependency('tunnels')) {
+      map.tunnels.set(x.id, local)
+      kept('tunnels', local, x.label)
+      continue
+    }
+    // A tunnel's host must be in its environment, and a kept environment doesn't get it.
+    if (environmentId && keptEnvs.has(environmentId) && !inEnv(environmentId, hostId)) {
+      map.tunnels.set(x.id, null)
+      item('tunnels', local ?? x.id, x.label, 'skip', { reason: NOT_IN_ENV })
+      continue
+    }
     const f = {
       label: x.label,
       hostId,
@@ -507,7 +568,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
       )
       map.tunnels.set(x.id, x.id)
       touch(environmentId)
-      done('tunnels', x.id, x.label, true, [])
+      done('tunnels', x.id, x.label, true, [], addedNotes('tunnels'))
       continue
     }
     const before = s.tunnels.get(local).environmentId
@@ -534,6 +595,14 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
     const byId = db.prepare('SELECT environment_id, host_id FROM deployments WHERE id = ?').get(x.id) as
       | { environment_id: string; host_id: string }
       | undefined
+    if (isDependency('deployments')) {
+      const here = byId ? x.id : ids('SELECT id FROM deployments WHERE environment_id = ? AND name = ? COLLATE NOCASE', environmentId, x.name)[0]
+      if (here !== undefined) {
+        map.deployments.set(x.id, here)
+        kept('deployments', here, x.name)
+        continue
+      }
+    }
     if (byId && (byId.environment_id !== environmentId || byId.host_id !== hostId)) {
       map.deployments.set(x.id, null)
       item('deployments', x.id, x.name, 'skip', { reason: "can't move to another environment or host" })
@@ -600,6 +669,12 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
       useSudo: x.useSudo,
       managedEnv: x.managedEnv,
     }
+    // A new checkout puts its host in its environment, and a kept environment doesn't get it.
+    if (before === null && keptEnvs.has(environmentId) && !inEnv(environmentId, hostId)) {
+      map.deployments.set(x.id, null)
+      item('deployments', x.id, x.name, 'skip', { reason: NOT_IN_ENV })
+      continue
+    }
     if (before === null) {
       s.deploys.insertInTx(
         { ...f, environmentId, hostId, becomeSecretId: becomeSecretId ?? null, envTemplate: envTemplate ?? null, vaultIds: vaultIdsHere },
@@ -607,7 +682,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
       )
       map.deployments.set(x.id, x.id)
       touch(environmentId)
-      done('deployments', x.id, x.name, true, [])
+      done('deployments', x.id, x.name, true, [], addedNotes('deployments'))
       if (x.steps !== undefined) stepRows.push({ x, local: x.id, environmentId, added: true, item: items.length - 1 })
       continue
     }
@@ -796,17 +871,17 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
 }
 
 /** What importing `file` would do, without changing anything: the writes run in a transaction that is rolled back. */
-export function planImport(db: Db, file: ConfigFile): Omit<ImportPreview, 'token'> {
-  const { environmentIds: _, ...plan } = dryRun(db, file)
+export function planImport(db: Db, file: ConfigFile, segment?: ConfigSegment): Omit<ImportPreview, 'token'> {
+  const { environmentIds: _, ...plan } = dryRun(db, file, segment)
   return plan
 }
 
-function dryRun(db: Db, file: ConfigFile): Plan {
+function dryRun(db: Db, file: ConfigFile, segment?: ConfigSegment): Plan {
   if (db.isTransaction) throw new Error('nested transactions are not supported')
   // BEGIN IMMEDIATE: nothing else can write between the plan's reads and its writes.
   db.exec('BEGIN IMMEDIATE')
   try {
-    return run(db, file)
+    return run(db, file, undefined, segment)
   } finally {
     // SQLite may already have rolled back after an I/O or full-disk error: don't hide that error behind a second one.
     if (db.isTransaction) db.exec('ROLLBACK')
@@ -824,16 +899,17 @@ export interface ImportDeps {
  * Applies `file` all or nothing: the plan is recomputed inside the transaction and must match the preview's counts,
  * every existing protected environment it changes must be named in `typedNames`, and a version 1 file that adds
  * hosts needs `regionId`. One `config.import` audit with
- * counts only, after COMMIT, then `onChanged` with the environments it changed. Running tunnels aren't restarted.
+ * counts only (and a page import's segment), after COMMIT, then `onChanged` with the environments it changed.
+ * Running tunnels aren't restarted.
  */
 export function applyImport(
   deps: ImportDeps,
   file: ConfigFile,
-  opts: { typedNames: string[]; expected: ImportPreview['counts']; regionId?: string },
+  opts: { typedNames: string[]; expected: ImportPreview['counts']; regionId?: string; segment?: ConfigSegment },
 ): ImportResult {
   deps.vault.assertUnlocked()
   const plan = inTransaction(deps.db, () => {
-    const p = run(deps.db, file, opts.regionId)
+    const p = run(deps.db, file, opts.regionId, opts.segment)
     if (p.needsRegion && opts.regionId === undefined) throw new Error(REGION_MESSAGE)
     if (IMPORT_ACTIONS.some((a) => p.counts[a] !== opts.expected[a])) throw new Error(CHANGED_MESSAGE)
     const missing = p.protectedEnvironments.find((name) => !opts.typedNames.includes(name))
@@ -846,7 +922,7 @@ export function applyImport(
     targetType: 'config',
     targetLabel: 'config',
     // `unresolved`, not `needsSecret`: the audit redacts any detail whose key names a secret.
-    details: { counts: plan.counts, unresolved: plan.needsSecret.length },
+    details: { counts: plan.counts, unresolved: plan.needsSecret.length, ...(opts.segment ? { segment: opts.segment } : {}) },
   })
   deps.onChanged?.(plan.environmentIds)
   return { counts: plan.counts, needsSecret: plan.needsSecret }

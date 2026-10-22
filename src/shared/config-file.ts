@@ -85,6 +85,8 @@ export const CONFIG_FORMAT = 'opsdeck-config'
 export const CONFIG_VERSION = 2
 export const CONFIG_MAX_BYTES = 5 * 1024 * 1024
 export const CONFIG_FILE_NAME = 'opsdeck-config.json'
+/** The save dialog's default name: `opsdeck-hosts.json` for a page's part. */
+export const configFileName = (segment?: ConfigSegment): string => (segment ? `opsdeck-${segment}.json` : CONFIG_FILE_NAME)
 
 export interface VaultRef {
   vaultName: string
@@ -297,6 +299,22 @@ export const countConfig = (file: ConfigFile): ConfigCounts => ({
   services: file.services.length,
   runbooks: file.runbooks?.length ?? 0,
 })
+
+/**
+ * The pages that import and export their own part of the config. A segment file is a normal config file: the page's
+ * own kinds, plus what they refer to (added on import only when missing here).
+ */
+export const CONFIG_SEGMENTS = ['hosts', 'products', 'tunnels', 'deployments'] as const
+export type ConfigSegment = (typeof CONFIG_SEGMENTS)[number]
+/** The kinds each page lists or edits. */
+export const SEGMENT_KINDS: Record<ConfigSegment, readonly (keyof ConfigCounts)[]> = {
+  // RegionsDialog edits regions; the login dialog creates identities.
+  hosts: ['regions', 'identities', 'hosts'],
+  // The environment view edits services, the release flow and runbooks.
+  products: ['products', 'environments', 'services', 'runbooks'],
+  tunnels: ['tunnels'],
+  deployments: ['deployments'],
+}
 
 export const SECRET_REF_KEY = /^ref-[1-9][0-9]{0,5}$/
 /** `${secret:<ref>}` anywhere in an env template; group 1 is the ref. */
@@ -894,6 +912,8 @@ export interface ImportPreview {
   protectedEnvironments: string[]
   /** A version 1 file adds hosts: the apply needs the region to put them in. */
   needsRegion: boolean
+  /** A page import only: how many objects in the file are neither the page's kinds nor needed by them. */
+  ignored?: number
 }
 
 export interface ImportResult {

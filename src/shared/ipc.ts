@@ -1,7 +1,7 @@
 import type { OperationRequest, Runbook, RunbookSaveInput } from './runbooks'
 import type { ExplainSubject, Explanation, ReleaseNotesRequest, ReleaseNotesResult } from './ai'
 import type { AuditEvent, AuditFilter, ChainVerification } from './audit'
-import type { ConfigCounts, ImportPreview, ImportResult } from './config-file'
+import type { ConfigCounts, ConfigSegment, ImportPreview, ImportResult } from './config-file'
 import type { ReverifyProof } from './sso'
 import type {
   AccessTarget,
@@ -369,13 +369,16 @@ export interface IpcContract {
   'containers:unfollow': { args: [followId: string]; result: void }
   /** Asks where to save with a dialog in main: the renderer never sends a path. */
   /** `omitted`: how many secret values were left out of the file. */
-  'config:export': { args: []; result: { path: string; counts: ConfigCounts; omitted: number } | null }
+  /** `segment`: a page's objects and what they need, in place of the whole config. */
+  'config:export': { args: [segment?: ConfigSegment]; result: { path: string; counts: ConfigCounts; omitted: number } | null }
   /** Asks which file with a dialog in main and previews it; the file stays in main under the token. */
-  'config:importOpen': { args: []; result: ImportPreview | { errors: string[] } | null }
+  /** `segment`: import only a page's objects, adding the missing ones they need. */
+  'config:importOpen': { args: [segment?: ConfigSegment]; result: ImportPreview | { errors: string[] } | null }
   /** `typedNames`: the protected environments the user typed to confirm. */
   /** `regionId`: where a version 1 file's new hosts go (the preview's `needsRegion`). */
-  'config:importApply': { args: [token: string, opts: { typedNames: string[]; regionId?: string }]; result: ImportResult }
-  'config:importDiscard': { args: [token: string]; result: void }
+  /** `segment`: the one the preview was opened with. */
+  'config:importApply': { args: [token: string, opts: { typedNames: string[]; regionId?: string }, segment?: ConfigSegment]; result: ImportResult }
+  'config:importDiscard': { args: [token: string, segment?: ConfigSegment]; result: void }
 }
 
 export type Channel = keyof IpcContract

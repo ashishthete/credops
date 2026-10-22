@@ -1,4 +1,5 @@
 import { AUDIT_ACTIONS, type AuditFilter } from '../../shared/audit'
+import { CONFIG_SEGMENTS } from '../../shared/config-file'
 import {
   BUILTINS,
   MAX_PARAMS,
@@ -762,6 +763,8 @@ const runCommand = v.tagged('kind', {
 // The typed environment name; compared exactly, so not trimmed.
 const confirmName = v.optional(v.str({ max: MAX_NAME, pattern: NO_NUL }))
 const importToken = v.str({ pattern: /^[0-9a-f]{32}$/ })
+/** A page's part of the config; absent for the whole config. */
+const configSegment = v.optional(v.oneOf(CONFIG_SEGMENTS))
 /** One per protected environment a preview can list. */
 const MAX_TYPED_NAMES = 1000
 
@@ -1015,11 +1018,12 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'containers:logs': args(v.uuid(), nullableId, containerRef, logTail),
   'containers:follow': args(v.uuid(), nullableId, containerRef, logTail),
   'containers:unfollow': args(v.uuid()),
-  'config:export': args(),
-  'config:importOpen': args(),
+  'config:export': args(configSegment),
+  'config:importOpen': args(configSegment),
   'config:importApply': args(
     importToken,
     v.object({ typedNames: v.array(v.str({ max: MAX_NAME, pattern: NO_NUL }), MAX_TYPED_NAMES), regionId: v.optional(v.uuid()) }),
+    configSegment,
   ),
-  'config:importDiscard': args(importToken),
+  'config:importDiscard': args(importToken, configSegment),
 }
