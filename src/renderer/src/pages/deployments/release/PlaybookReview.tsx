@@ -150,6 +150,7 @@ export function PlaybookReview({
   customLabels = {},
   inventory,
   editable = false,
+  editNote,
   releaseId,
   forceServiceIds,
   onRunEdited,
@@ -165,6 +166,8 @@ export function PlaybookReview({
   customLabels?: Record<string, Record<string, string>>
   /** Offers Edit: the text is checked by `release:validateEdit` for `releaseId`, with the same forced services as the preview. */
   editable?: boolean
+  /** Shown in place of Edit when the playbook can't be edited, saying why. */
+  editNote?: string
   releaseId?: string
   forceServiceIds?: string[]
   /** The edited text as typed (masked, as shown) and the hash main gave for it; the caller starts the release with both. */
@@ -198,6 +201,7 @@ export function PlaybookReview({
             Edit
           </Button>
         )}
+        {!editable && editNote && <span className="max-w-64 text-[12px] text-muted">{editNote}</span>}
         {!editing && (
           <Button size="sm" variant="ghost" onClick={onSave}>
             Save as .yml…

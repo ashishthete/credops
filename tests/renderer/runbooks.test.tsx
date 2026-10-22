@@ -7,7 +7,7 @@ import { loadDeploy, resetDeploy } from '../../src/renderer/src/deploy/store'
 import { inventoryStore, loadInventory } from '../../src/renderer/src/inventory/store'
 import { RunbookDialog } from '../../src/renderer/src/pages/products/RunbookDialog'
 import { RunbooksSection } from '../../src/renderer/src/pages/products/RunbooksSection'
-import type { Runbook } from '../../src/shared/runbooks'
+import { LOCK_FREE_EDIT_MESSAGE, type Runbook } from '../../src/shared/runbooks'
 import { releaseDetail } from './fixtures/release-events'
 import { appService, deploymentMeta, environment, host, mockBridge } from './helpers'
 
@@ -119,8 +119,31 @@ describe('runbooks section', () => {
 
 describe('an edited run', () => {
   const EDIT_SHA = 'e'.repeat(64)
+  const toReview = async (lock: boolean) => {
+    const m = await mount({ runbooks: [{ ...TAIL, params: [], lock }] })
+    await m.user.click(screen.getByRole('button', { name: 'Run Tail the api' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Run Tail the api' })
+    await m.user.click(within(dialog).getByRole('button', { name: 'Review' }))
+    await flush()
+    await within(dialog).findByRole('button', { name: 'Run' })
+    return dialog
+  }
+
+  it('a lock-free runbook offers no Edit and says why', async () => {
+    const dialog = await toReview(false)
+    expect(within(dialog).getByText(LOCK_FREE_EDIT_MESSAGE)).toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: 'Edit' })).toBeNull()
+    expect(within(dialog).getByRole('button', { name: 'Run' })).toBeEnabled()
+  })
+
+  it('a locking runbook offers Edit and no note', async () => {
+    const dialog = await toReview(true)
+    expect(within(dialog).getByRole('button', { name: 'Edit' })).toBeInTheDocument()
+    expect(within(dialog).queryByText(LOCK_FREE_EDIT_MESSAGE)).toBeNull()
+  })
+
   async function toEdit(protectedEnv: boolean) {
-    const m = await mount({ protectedEnv, runbooks: [{ ...TAIL, params: [] }] })
+    const m = await mount({ protectedEnv, runbooks: [{ ...TAIL, params: [], lock: true }] })
     const base = m.invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
     m.invoke.mockImplementation(async (ch: string, ...args: unknown[]) => (ch === 'release:validateEdit' ? { ok: true, canonical: 'x', sha256: EDIT_SHA } : base(ch, ...args)))
     await m.user.click(screen.getByRole('button', { name: 'Run Tail the api' }))
@@ -155,7 +178,7 @@ describe('an edited run', () => {
   })
 
   it('a refused validation shows the refusal and starts nothing', async () => {
-    const m = await mount({ runbooks: [{ ...TAIL, params: [] }] })
+    const m = await mount({ runbooks: [{ ...TAIL, params: [], lock: true }] })
     const base = m.invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
     m.invoke.mockImplementation(async (ch: string, ...args: unknown[]) => (ch === 'release:validateEdit' ? Promise.reject(new Error('Editing is turned off on this Hub')) : base(ch, ...args)))
     await m.user.click(screen.getByRole('button', { name: 'Run Tail the api' }))

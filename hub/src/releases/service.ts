@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Actor, PlaybookEditResult, PlaybookPreview, PreflightRequest, ReleaseConfirm, ReleaseDetail, ReleaseListFilter, ReleaseStatus, ReleaseSummary, RunEvent } from '../../../src/shared/deploy'
-import type { OperationRequest } from '../../../src/shared/runbooks'
+import { LOCK_FREE_EDIT_MESSAGE, type OperationRequest } from '../../../src/shared/runbooks'
 import { READY_RELEASE_TTL_MS, type HubAction, type HubDecision, type HubEnvManifest, type HubEnvLock, type HubGroup, type HubLiveMessage, type HubUser } from '../../../src/shared/hub'
 import { startPrivateAgent, type ChildLike } from '../../../src/main/deploy/agent'
 import { DeployError } from '../../../src/main/deploy/access'
@@ -364,6 +364,12 @@ export class HubReleases {
     this.allow(user, 'playbook.edit', environmentId, [], attempted, releaseId)
   }
 
+  /** An edit is a custom step, which needs the host lock: a lock-free runbook's run can't be edited, by anyone. */
+  private assertEditable(releaseId: string): void {
+    const operation = this.store.get(releaseId).operation
+    if (operation && !operation.lock) throw new HubHttpError(409, 'conflict', LOCK_FREE_EDIT_MESSAGE)
+  }
+
   private selectedDeployments(req: Pick<PreflightRequest, 'environmentId' | 'serviceIds' | 'checkoutIds'>): string[] {
     const m = this.d.registry.exists(req.environmentId) ? this.d.registry.get(req.environmentId) : null
     const byId = new Map<string, HubEnvManifest['services'][number]>((m?.services ?? []).map((s) => [s.id, s]))
@@ -428,6 +434,7 @@ export class HubReleases {
     const { environmentId } = this.known(releaseId)
     this.reachable(user, releaseId, environmentId, 'playbook.edit')
     this.editGuard(user, environmentId, 'playbook.edit', releaseId)
+    this.assertEditable(releaseId)
     const forced = this.forcedOf(releaseId, forceServiceIds)
     try {
       return await this.service.validateEdit(releaseId, text, { actor: this.actorOf(user) }, forced)
@@ -461,18 +468,17 @@ export class HubReleases {
     const operation = this.store.get(releaseId).operation
     const action = this.startAction(releaseId)
     this.allow(user, action, environmentId, this.deploymentsOf(releaseId), action, releaseId)
-    if (confirm.editedPlaybook !== undefined) this.editGuard(user, environmentId, 'playbook.edit', releaseId)
+    if (confirm.editedPlaybook !== undefined) {
+      this.editGuard(user, environmentId, 'playbook.edit', releaseId)
+      this.assertEditable(releaseId)
+    }
     const forced = this.forcedOf(releaseId, confirm.forceServiceIds)
     this.confirm(user, environmentId, confirm.typedName, 'release.start', releaseId)
-    // A read-only runbook takes no environment lock at preflight. Run edited it can do anything, so it takes the lock
-    // now, as a retry does; the lock goes when the run ends.
-    const takesLock = !!operation && !operation.lock && confirm.editedPlaybook !== undefined
-    if (takesLock) this.d.locks.acquireRelease(environmentId, releaseId, { oid: user.oid, name: user.name })
-    else if (!operation || operation.lock) this.holdsLock(environmentId, releaseId)
+    // A lock-free runbook took no environment lock at preflight, and can't be edited (above), so it needs none.
+    if (!operation || operation.lock) this.holdsLock(environmentId, releaseId)
     try {
       await this.service.start(releaseId, forced === undefined ? confirm : { ...confirm, forceServiceIds: forced }, { actor: this.actorOf(user) })
     } catch (err) {
-      if (takesLock) this.d.locks.releaseFor(releaseId)
       this.fail(err)
     }
   }

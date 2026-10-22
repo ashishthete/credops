@@ -4,6 +4,7 @@ import { maskDetail, maskPlaybook } from '../../src/main/deploy/mask'
 import { EDIT_RULE } from '../../src/main/deploy/playbook-validate'
 import type { DeployPlan } from '../../src/main/deploy/runner'
 import { EDIT_INVALID_MESSAGE, PLAYBOOK_CHANGED_MESSAGE, ROLLBACK_GENERATED_NOTE } from '../../src/shared/deploy'
+import { LOCK_FREE_EDIT_MESSAGE } from '../../src/shared/runbooks'
 import { A, B, dep, opReady, ready, rig, runbook, tracked, type Rig } from './release-rig'
 
 /** Task 10b: a reviewed playbook, edited once, runs in place of the generated one. */
@@ -150,52 +151,57 @@ describe('ReleaseService edited runs', () => {
     expect(audits(r, 'playbook.edited').map((x) => x.details)).toEqual([{ lineDelta: e.text.split('\n').length - e.generated.split('\n').length }])
   })
 
-  it('an edited lock-free operation holds its environment like a release; run as generated it still runs beside one', async () => {
+  it('refuses to check or start an edit of a lock-free runbook, before anything runs; a locking one stays editable', async () => {
     const r = await rig()
     const d = dep(r, 'api')
     const ids = tracked(r, d).map((x) => x.id)
-    const logs = () => runbook(r, ids, { name: `Logs ${Math.random()}`, items: [{ type: 'builtin', builtin: 'logs', tail: 20 }], lock: false })
-    const gate = () => {
-      let open!: () => void
-      return { p: new Promise<void>((res) => (open = res)), open: () => open() }
-    }
-    const busy = async (p: Promise<void>) => {
+    const logs = (lock: boolean) => runbook(r, ids, { name: `Logs ${lock}`, items: [{ type: 'builtin', builtin: 'logs', tail: 20 }], lock })
+    const refused = async (p: Promise<unknown>) => {
       const err = await p.catch((x: unknown) => x)
       expect(err).toBeInstanceOf(DeployError)
-      expect((err as DeployError).code).toBe('BUSY')
+      expect((err as DeployError).code).toBe('VALIDATION')
+      expect((err as DeployError).message).toBe(LOCK_FREE_EDIT_MESSAGE)
     }
-    const [rel, rel2] = [await ready(r, [d]), await ready(r, [d])]
-    const [editedOp, plainOp, editedOp2] = [await opReady(r, logs()), await opReady(r, logs()), await opReady(r, logs())]
-    expect(r.svc.detail(editedOp).operation).toMatchObject({ readOnly: true, lock: false })
-    const [e, e2] = [await edited(r, editedOp), await edited(r, editedOp2)]
+    const id = await opReady(r, logs(false))
+    expect(r.svc.detail(id).operation).toMatchObject({ readOnly: true, lock: false })
+    const p = await r.svc.previewPlaybook(id)
+    await refused(r.svc.validateEdit(id, p.playbook))
+    // A start that never called validateEdit, with a hash made up or taken from the preview.
+    await refused(r.svc.start(id, { editedPlaybook: `${p.playbook}\n`, playbookSha256: p.sha256 }))
+    await refused(r.svc.start(id, { editedPlaybook: p.playbook, playbookSha256: 'f'.repeat(64) }))
+    expect(r.svc.detail(id).status).toBe('ready')
+    expect(r.runner.kinds).not.toContain('operation')
+    expect(audits(r, 'playbook.edited')).toEqual([])
+    // Run as generated it still runs.
+    await r.svc.start(id, { playbookSha256: p.sha256 })
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).status).toBe('succeeded')
 
-    // A release is running: the edited one is refused by the capacity rule, the unedited one runs beside it.
-    const g = gate()
+    // The same read-only runbook with locking on can be edited.
+    const locked = await opReady(r, logs(true))
+    const e = await edited(r, locked)
+    await r.svc.start(locked, { editedPlaybook: e.text, playbookSha256: e.sha256 })
+    await r.svc.whenIdle()
+    expect(r.svc.detail(locked).playbookSource).toBe('edited')
+  })
+
+  it('a lock-free read-only operation still runs beside a release', async () => {
+    const r = await rig()
+    const d = dep(r, 'api')
+    const ids = tracked(r, d).map((x) => x.id)
+    const rel = await ready(r, [d])
+    const op = await opReady(r, runbook(r, ids, { name: 'Logs', items: [{ type: 'builtin', builtin: 'logs', tail: 20 }], lock: false }))
+    let open!: () => void
+    const gate = new Promise<void>((res) => (open = res))
     r.runner.on.release = async () => {
-      await g.p
+      await gate
     }
     await r.svc.start(rel, {})
-    await busy(r.svc.start(editedOp, { editedPlaybook: e.text, playbookSha256: e.sha256 }))
-    await r.svc.start(plainOp, {})
-    g.open()
+    await r.svc.start(op, {})
+    open()
     await r.svc.whenIdle()
-    expect(r.svc.detail(plainOp).status).toBe('succeeded')
-    expect(r.svc.detail(editedOp).status).toBe('ready')
-
-    // An edited one is running: it holds the environment, so a release is refused until it ends.
-    const g2 = gate()
-    r.runner.on.operation = async () => {
-      await g2.p
-    }
-    await r.svc.start(editedOp2, { editedPlaybook: e2.text, playbookSha256: e2.sha256 })
-    await busy(r.svc.start(rel2, {}))
-    g2.open()
-    await r.svc.whenIdle()
-    expect(r.svc.detail(editedOp2).status).toBe('succeeded')
-    expect(r.svc.detail(editedOp2).playbookSource).toBe('edited')
-    await r.svc.start(rel2, {})
-    await r.svc.whenIdle()
-    expect(r.svc.detail(rel2).status).toBe('succeeded')
+    expect(r.svc.detail(op).status).toBe('succeeded')
+    expect(r.svc.detail(rel).status).toBe('succeeded')
   })
 
   describe('masked secrets', () => {

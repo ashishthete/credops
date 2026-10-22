@@ -66,6 +66,9 @@ export interface OperationRequest {
   params: Record<string, string>
 }
 
+/** An edit is a custom step, and a custom step needs the host lock: a lock-free runbook's playbook can't be edited. */
+export const LOCK_FREE_EDIT_MESSAGE = "This runbook doesn't lock its hosts, so it can't be edited. Turn on locking for the runbook to edit it."
+
 export const MAX_PARAMS = 10
 export const MAX_RUNBOOKS = 100
 export const MAX_RUNBOOK_NAME = 64

@@ -4,6 +4,7 @@ import { migrate } from '../../src/main/db/migrations'
 import { ReleaseStore } from '../../src/main/deploy/release-store'
 import type { HubEnvManifest, HubUser } from '../../src/shared/hub'
 import { HUB_AUDIT_ACTIONS } from '../../src/shared/hub'
+import { LOCK_FREE_EDIT_MESSAGE } from '../../src/shared/runbooks'
 import { HUB_MIGRATIONS } from '../src/db'
 import { decide } from '../src/access/policy'
 import { HubDeployAccess, hubAudit } from '../src/releases/adapters'
@@ -470,55 +471,51 @@ describe('the Hub calls the release service itself: no 503 seam', () => {
     expect(r.hub.audit.list({ actions: ['access.denied'] }).length).toBeGreaterThan(0)
   })
 
-  it('an edited lock-free runbook takes the environment lock; run as generated it takes none', async () => {
+  it('an edit of a lock-free runbook is refused to an admin with edits on, at validate-edit and at start; a locking one stays editable', async () => {
     r = await rig({ allowPlaybookEdits: true })
+    const RB_LOCKED = 'b5555555-5555-4555-8555-555555555555'
     const m = envManifest()
-    m.runbooks = [statusBook]
+    m.runbooks = [statusBook, { ...statusBook, id: RB_LOCKED, name: 'status locked', lock: true }]
     expect((await r.call(r.admin, 'PUT', `/api/v1/admin/environments/${ENV_ID}`, m)).statusCode).toBe(200)
     const lockOf = () => (r!.hub.db.prepare('SELECT release_id FROM env_locks WHERE environment_id = ?').get(ENV_ID) as { release_id: string } | undefined)?.release_id
-    const op = async () => {
-      const pf = await r!.call(r!.admin, 'POST', '/api/v1/releases/preflight-operation', { environmentId: ENV_ID, runbookId: RB, serviceIds: [SVC_WEB], params: {} })
+    const op = async (runbookId: string) => {
+      const pf = await r!.call(r!.admin, 'POST', '/api/v1/releases/preflight-operation', { environmentId: ENV_ID, runbookId, serviceIds: [SVC_WEB], params: {} })
       expect(pf.statusCode, pf.body).toBe(201)
       await r!.hub.app.releases.whenIdle()
       return pf.json().releaseId as string
     }
-    const [editedOp, plainOp] = [await op(), await op()]
-    expect(lockOf()).toBeUndefined()
-    const pv = (await r.call(r.admin, 'GET', `/api/v1/releases/${editedOp}/playbook`)).json() as { playbook: string }
-    const plays = JSON.parse(pv.playbook) as Record<string, unknown[]>[]
-    plays[0].tasks.push({ name: 'extra', 'ansible.builtin.shell': 'echo extra-step', timeout: 30, tags: ['extra'] })
-    const ve = (await r.call(r.admin, 'POST', `/api/v1/releases/${editedOp}/validate-edit`, { text: JSON.stringify(plays, null, 2) })).json()
-    expect(ve.ok, JSON.stringify(ve)).toBe(true)
-    const edit = { editedPlaybook: ve.canonical as string, playbookSha256: ve.sha256 as string }
-
-    // A release holds the lock: the edited run is refused, the generated one runs beside it.
-    const pf = await r.call(r.bob, 'POST', '/api/v1/releases/preflight', { environmentId: ENV_ID, serviceIds: [SVC_WEB], bump: 'none', options: OPTIONS })
-    expect(pf.statusCode, pf.body).toBe(201)
-    const held = pf.json().releaseId as string
-    await r.hub.app.releases.whenIdle()
-    expect(lockOf()).toBe(held)
-    expect((await r.call(r.admin, 'POST', `/api/v1/releases/${editedOp}/start`, edit)).statusCode).toBe(409)
-    expect(lockOf()).toBe(held)
-    expect((await r.call(r.admin, 'POST', `/api/v1/releases/${plainOp}/start`, {})).statusCode).toBe(204)
-    await r.hub.app.releases.whenIdle()
-    expect((await r.call(r.admin, 'GET', `/api/v1/releases/${plainOp}`)).json().status).toBe('succeeded')
-    expect(lockOf()).toBe(held)
-    expect((await r.call(r.bob, 'POST', `/api/v1/releases/${held}/discard`, {})).statusCode).toBeLessThan(300)
-    expect(lockOf()).toBeUndefined()
-
-    // The edited run holds the lock while it runs, so a release preflight is refused, and lets it go at the end.
-    let open!: () => void
-    const gate = new Promise<void>((res) => (open = res))
-    r.fr.on.operation = async () => {
-      await gate
+    const withExtra = (playbook: string) => {
+      const plays = JSON.parse(playbook) as Record<string, unknown[]>[]
+      plays[0].tasks.push({ name: 'extra', 'ansible.builtin.shell': 'echo extra-step', timeout: 30, tags: ['extra'] })
+      return JSON.stringify(plays, null, 2)
     }
-    const st = await r.call(r.admin, 'POST', `/api/v1/releases/${editedOp}/start`, edit)
-    expect(st.statusCode, st.body).toBe(204)
-    expect(lockOf()).toBe(editedOp)
-    expect((await r.call(r.bob, 'POST', '/api/v1/releases/preflight', { environmentId: ENV_ID, serviceIds: [SVC_WEB], bump: 'none', options: OPTIONS })).statusCode).toBe(409)
-    open()
+
+    const free = await op(RB)
+    const pv = (await r.call(r.admin, 'GET', `/api/v1/releases/${free}/playbook`)).json() as { playbook: string; sha256: string }
+    const ve = await r.call(r.admin, 'POST', `/api/v1/releases/${free}/validate-edit`, { text: withExtra(pv.playbook) })
+    expect(ve.statusCode).toBe(409)
+    expect(ve.json()).toMatchObject({ error: 'conflict', message: LOCK_FREE_EDIT_MESSAGE })
+    // A start that skipped validate-edit is refused the same way, before any lock is taken or anything runs.
+    const st = await r.call(r.admin, 'POST', `/api/v1/releases/${free}/start`, { editedPlaybook: withExtra(pv.playbook), playbookSha256: pv.sha256 })
+    expect(st.statusCode).toBe(409)
+    expect(st.json()).toMatchObject({ error: 'conflict', message: LOCK_FREE_EDIT_MESSAGE })
+    expect(lockOf()).toBeUndefined()
+    expect(r.fr.kinds).not.toContain('operation')
+    // Run as generated it runs, and takes no lock.
+    expect((await r.call(r.admin, 'POST', `/api/v1/releases/${free}/start`, { playbookSha256: pv.sha256 })).statusCode).toBe(204)
     await r.hub.app.releases.whenIdle()
-    const done = (await r.call(r.admin, 'GET', `/api/v1/releases/${editedOp}`)).json()
+    expect((await r.call(r.admin, 'GET', `/api/v1/releases/${free}`)).json().status).toBe('succeeded')
+    expect(lockOf()).toBeUndefined()
+
+    const locked = await op(RB_LOCKED)
+    expect(lockOf()).toBe(locked)
+    const lpv = (await r.call(r.admin, 'GET', `/api/v1/releases/${locked}/playbook`)).json() as { playbook: string }
+    const lve = (await r.call(r.admin, 'POST', `/api/v1/releases/${locked}/validate-edit`, { text: withExtra(lpv.playbook) })).json()
+    expect(lve.ok, JSON.stringify(lve)).toBe(true)
+    const lst = await r.call(r.admin, 'POST', `/api/v1/releases/${locked}/start`, { editedPlaybook: lve.canonical, playbookSha256: lve.sha256 })
+    expect(lst.statusCode, lst.body).toBe(204)
+    await r.hub.app.releases.whenIdle()
+    const done = (await r.call(r.admin, 'GET', `/api/v1/releases/${locked}`)).json()
     expect(done.status).toBe('succeeded')
     expect(done.playbookSource).toBe('edited')
     expect(lockOf()).toBeUndefined()

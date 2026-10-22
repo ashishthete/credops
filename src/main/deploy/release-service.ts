@@ -43,7 +43,7 @@ import type { AuditAction, AuditInput } from '../../shared/audit'
 import { CONFIRM_MESSAGE } from '../../shared/ops'
 import { listNames, type ServiceMeta } from '../../shared/services'
 import { effectiveSteps, stepLabel, type Step, type StepBody } from '../../shared/steps'
-import { ONCE_BUILTINS, isReadOnlyRunbook, validateParamValues, type OperationMeta, type OperationRequest, type Runbook } from '../../shared/runbooks'
+import { LOCK_FREE_EDIT_MESSAGE, ONCE_BUILTINS, isReadOnlyRunbook, validateParamValues, type OperationMeta, type OperationRequest, type Runbook } from '../../shared/runbooks'
 import { ProtectError, confirmNeeded, protectionFor } from '../ops/protect'
 import type { ResolvedHost } from '../../shared/inventory'
 import type { Db } from '../db/connection'
@@ -526,6 +526,7 @@ export class ReleaseService {
     const actor = ctx?.actor ?? this.d.actor
     this.d.vault.assertUnlocked()
     const rel = this.d.releases.detail(releaseId)
+    if (rel.operation && !rel.operation.lock) throw new DeployError('VALIDATION', LOCK_FREE_EDIT_MESSAGE)
     this.assertStartable(rel)
     const env = this.inv.environment(rel.environmentId)
     // The same check as the preview: the errors say whether generated text matches, so they are not for everyone.
@@ -583,6 +584,8 @@ export class ReleaseService {
     const actor = ctx?.actor ?? this.d.actor
     this.d.vault.assertUnlocked()
     const rel = this.d.releases.detail(releaseId)
+    // Refused before anything else, so a start that skipped validateEdit is refused too.
+    if (rel.operation && !rel.operation.lock && confirm.editedPlaybook !== undefined) throw new DeployError('VALIDATION', LOCK_FREE_EDIT_MESSAGE)
     this.assertStartable(rel)
     if (this.live.has(releaseId)) throw new DeployError('INVALID_STATE', 'This release is busy')
     const env = this.inv.environment(rel.environmentId)
@@ -791,8 +794,8 @@ export class ReleaseService {
       ...this.rowCounts(releaseId),
     })
     this.assertOpCurrent(rel)
-    // An edited playbook can do anything, so it holds the environment like a release even when its runbook is lock-free.
-    const lockFree = !op.lock && op.readOnly && confirm.editedPlaybook === undefined
+    // start() refuses an edit of a lock-free runbook, so a lock-free run is always the generated playbook.
+    const lockFree = !op.lock && op.readOnly
     this.assertCapacity(env, lockFree)
     const reviewed = confirm.playbookSha256 !== undefined ? this.previews.get(reviewKey(releaseId, actor)) : undefined
     if (reviewed !== undefined && this.d.now().getTime() - reviewed.at > PREVIEW_TTL_MS) throw new DeployError('INVALID_STATE', REVIEW_EXPIRED_MESSAGE)
@@ -1380,7 +1383,8 @@ export class ReleaseService {
       finishedAt: d.finishedAt,
       actor: ctx?.actor ?? this.live.get(releaseId)?.actor ?? this.d.actor,
       urls,
-      operation: d.operation,
+      // Name and services only: param values are masked like secrets, so they stay out of notification code.
+      operation: d.operation && { name: d.operation.name, targetServiceIds: d.operation.targetServiceIds },
     }
   }
 
@@ -1877,7 +1881,7 @@ export class ReleaseService {
   }
 
   /**
-   * One run per environment, MAX_ACTIVE_RELEASES in all. A lock-free read-only operation run unedited (`lockFree`) holds
+   * One run per environment, MAX_ACTIVE_RELEASES in all. A lock-free read-only operation (`lockFree`, never edited) holds
    * no host lock, so it neither waits for nor blocks the one run of its environment; it still counts toward the total.
    */
   private assertCapacity(env: { id: string; name: string }, lockFree = false): void {

@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { validateParamValues, type Runbook } from '../../../../shared/runbooks'
+import { LOCK_FREE_EDIT_MESSAGE, validateParamValues, type Runbook } from '../../../../shared/runbooks'
 import type { AppServiceMeta } from '../../../../shared/services'
 import type { PlaybookPreview } from '../../../../shared/deploy'
 import { closeRelease } from '../../deploy/releases'
@@ -225,7 +225,8 @@ export function RunRunbookDialog({ runbook, onClose }: { runbook: Runbook; onClo
               inventory={reviewed?.inventory}
               autoRollback={false}
               onSave={() => void save()}
-              editable
+              editable={runbook.lock}
+              editNote={runbook.lock ? undefined : LOCK_FREE_EDIT_MESSAGE}
               releaseId={releaseId ?? undefined}
               onRunEdited={(text, sha256) => run({ text, sha256 })}
               onEditingChange={setEditing}
