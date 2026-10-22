@@ -14,6 +14,7 @@ import { fast, spring, useMotionSafe } from '../../ui/motion'
 import { Composer } from './run/Composer'
 import { confirmFor, launch } from './run/launch'
 import { RunView } from './run/RunView'
+import { ResizablePanel } from '../../ui/ResizablePanel'
 
 /** The Run tab: targets, a command and options on the left; the selected run on the right. */
 export function RunTab() {
@@ -38,10 +39,10 @@ export function RunTab() {
 
   return (
     <div className="flex min-h-0 flex-1">
-      <aside className="flex w-[340px] shrink-0 flex-col overflow-y-auto border-r border-line">
+      <ResizablePanel panel="ops-run" defaultWidth={340} className="flex flex-col overflow-y-auto border-r border-line">
         <Composer onConfirm={setConfirm} />
         <RecentRuns runs={runs} selectedId={selectedId} />
-      </aside>
+      </ResizablePanel>
       <section aria-label="Run" className="flex min-w-0 flex-1 flex-col overflow-y-auto">
         {selected ? (
           <RunView key={selected.id} run={selected} onAgain={req ? () => again(req) : undefined} />

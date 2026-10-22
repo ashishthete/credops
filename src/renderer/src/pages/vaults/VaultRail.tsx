@@ -10,6 +10,7 @@ import { fast, spring, useMotionSafe } from '../../ui/motion'
 import { Skeleton } from '../../ui/Skeleton'
 import { toast } from '../../ui/Toaster'
 import { attempt, ColorPicker, plural, RowMenu, VAULT_COLORS, type ConfirmRequest } from '../../ui/common'
+import { ResizablePanel } from '../../ui/ResizablePanel'
 
 interface VaultRailProps {
   vaults: VaultMeta[] | null
@@ -56,7 +57,7 @@ export function VaultRail({ vaults, currentId, corruptIds, onSelect, onNew, onRe
     })
 
   return (
-    <nav aria-label="Vaults" className="flex w-[236px] shrink-0 flex-col border-r border-line bg-surface/40">
+    <ResizablePanel panel="vaults" as="nav" defaultWidth={236} label="Vaults" className="flex flex-col border-r border-line bg-surface/40">
       <div className="app-drag flex h-16 shrink-0 items-end px-5 pb-3">
         <h1 className="text-[19px] font-semibold tracking-tight text-fg">Vaults</h1>
       </div>
@@ -140,7 +141,7 @@ export function VaultRail({ vaults, currentId, corruptIds, onSelect, onNew, onRe
           New vault
         </button>
       </div>
-    </nav>
+    </ResizablePanel>
   )
 }
 

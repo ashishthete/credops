@@ -25,6 +25,7 @@ import { ProductDialog } from './ProductDialog'
 import { PaneHeader, ProductView } from './ProductView'
 import { RegionsUpgradeBanner } from './RegionsUpgradeBanner'
 import { useConfigTransfer } from '../settings/ConfigTransfer'
+import { ResizablePanel } from '../../ui/ResizablePanel'
 
 /** Every node of the fully expanded tree: the expandable ones, and all keys. */
 function everyNode(data: InventoryData): { expandable: Set<NodeKey>; all: Set<NodeKey> } {
@@ -317,7 +318,7 @@ export function ProductsPage() {
   return (
     <div className="flex h-full">
       {/* An aside, not a nav: the shell's sidebar is the app's one navigation landmark. */}
-      <aside aria-label="Inventory" className="flex w-[272px] shrink-0 flex-col border-r border-line bg-surface/40">
+      <ResizablePanel panel="products" defaultWidth={272} label="Inventory" className="flex flex-col border-r border-line bg-surface/40">
         <div className="app-drag flex h-16 shrink-0 items-end justify-between px-5 pb-3">
           <h1 className="text-[19px] font-semibold tracking-tight text-fg">Products</h1>
           {data && data.products.length > 0 && <Badge tone="info">{data.products.length}</Badge>}
@@ -353,7 +354,7 @@ export function ProductsPage() {
           <RailButton icon={Upload} label="Import products…" disabled={transfer.busy} onClick={() => void transfer.openImport()} />
           <RailButton icon={Download} label="Export products…" disabled={transfer.busy} onClick={() => void transfer.exportConfig()} />
         </div>
-      </aside>
+      </ResizablePanel>
 
       <section aria-label="Details" className="flex min-w-0 flex-1 flex-col">
         {data && (

@@ -22,6 +22,7 @@ import { openKnownHosts } from '../terminals/KnownHostsDialog'
 import { HostView } from './HostView'
 import { ImportDialog } from './ImportDialog'
 import { RegionsDialog } from './RegionsDialog'
+import { ResizablePanel } from '../../ui/ResizablePanel'
 
 const ROLE_ICON: Record<HostRole, LucideIcon> = { bastion: ShieldHalf, app: Server, db: Database, other: CircleDashed }
 
@@ -165,7 +166,7 @@ export function HostsPage() {
       </div>
     ) : (
       <div className="flex h-full">
-        <aside aria-label="Host list" className="flex w-[340px] shrink-0 flex-col border-r border-line bg-surface/40">
+        <ResizablePanel panel="hosts" defaultWidth={340} label="Host list" className="flex flex-col border-r border-line bg-surface/40">
           <PageTitle count={data ? hosts.length : undefined} />
           <div className="flex flex-col gap-2 px-3 pb-2">
             <label className="relative block">
@@ -228,7 +229,7 @@ export function HostsPage() {
             <RailButton icon={Upload} label="Import hosts…" disabled={transfer.busy} onClick={() => void transfer.openImport()} />
             <RailButton icon={Download} label="Export hosts…" disabled={transfer.busy} onClick={() => void transfer.exportConfig()} />
           </div>
-        </aside>
+        </ResizablePanel>
 
         <section aria-label="Details" className="flex min-w-0 flex-1 flex-col">
           {!data ? (

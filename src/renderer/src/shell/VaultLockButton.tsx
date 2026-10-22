@@ -11,7 +11,7 @@ import { openVaultSettings } from '../vault/VaultSettingsDialog'
  * Sidebar lock button plus the vault palette commands and ⌘L. The shell only mounts behind the
  * auth gate, so the vaults are always set up and unlocked while this exists.
  */
-export function VaultLockButton() {
+export function VaultLockButton({ collapsed = false }: { collapsed?: boolean }) {
   useEffect(() => {
     const off = [
       registerCommand({
@@ -36,27 +36,32 @@ export function VaultLockButton() {
   useShortcut('mod+l', () => void lockVaults())
 
   return (
-    <div className="flex items-center gap-1 px-3 pb-2" style={{ '--tone': toneColor.success } as CSSProperties}>
+    <div className={`flex gap-1 pb-2 ${collapsed ? 'flex-col items-center px-2' : 'items-center px-3'}`} style={{ '--tone': toneColor.success } as CSSProperties}>
       <button
         type="button"
         onClick={() => void lockVaults()}
-        title="Vaults are unlocked"
-        className="group flex h-8 min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2.5 text-[13px] font-medium text-muted transition-colors select-none hover:bg-white/[0.035] hover:text-fg"
+        title={collapsed ? 'Lock vaults' : 'Vaults are unlocked'}
+        aria-label={collapsed ? 'Lock vaults' : undefined}
+        className={`group flex h-8 items-center rounded-lg text-[13px] ${collapsed ? 'w-full justify-center' : 'min-w-0 flex-1 gap-2.5 px-2.5'} font-medium text-muted transition-colors select-none hover:bg-white/[0.035] hover:text-fg`}
       >
         <span className="tone-soft grid size-5 place-items-center rounded-md transition-colors duration-200">
           <Padlock open className="size-3.5" />
         </span>
-        <span className="flex-1 truncate text-left">Lock vaults</span>
-        <span aria-hidden className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-          {formatShortcut('mod+l').map((k) => (
-            <kbd
-              key={k}
-              className="grid h-[18px] min-w-[18px] place-items-center rounded-[4px] border border-line bg-surface-2 px-1 text-[10.5px] leading-none text-muted"
-            >
-              {k}
-            </kbd>
-          ))}
-        </span>
+        {!collapsed && (
+          <>
+            <span className="flex-1 truncate text-left">Lock vaults</span>
+            <span aria-hidden className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+              {formatShortcut('mod+l').map((k) => (
+                <kbd
+                  key={k}
+                  className="grid h-[18px] min-w-[18px] place-items-center rounded-[4px] border border-line bg-surface-2 px-1 text-[10.5px] leading-none text-muted"
+                >
+                  {k}
+                </kbd>
+              ))}
+            </span>
+          </>
+        )}
       </button>
       <button
         type="button"

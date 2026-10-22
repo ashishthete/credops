@@ -4,6 +4,8 @@ import {
   Cable,
   KeyRound,
   Network,
+  PanelLeftClose,
+  PanelLeftOpen,
   Rocket,
   ScrollText,
   Search,
@@ -14,7 +16,7 @@ import {
   Wrench,
   type LucideIcon,
 } from 'lucide-react'
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router'
 import type { AppInfo } from '../../../shared/ipc'
 import { releaseStore } from '../deploy/releases'
@@ -27,6 +29,7 @@ import { plural } from '../ui/common'
 import { exitFast, spring, useMotionSafe } from '../ui/motion'
 import { formatShortcut, useShortcut } from '../ui/shortcuts'
 import { Skeleton } from '../ui/Skeleton'
+import { readStored, writeStored } from '../ui/storage'
 import { SECTIONS, sectionShortcut, type SectionId } from './sections'
 import { VaultLockButton } from './VaultLockButton'
 
@@ -42,9 +45,39 @@ export const SECTION_ICONS: Record<SectionId, LucideIcon> = {
   audit: ScrollText,
 }
 
+const COLLAPSED_KEY = 'opsdeck.sidebar-collapsed'
+const TOGGLE_SHORTCUT = 'mod+\\'
+
+/** Collapsed state, remembered across restarts; expanded when nothing (or nothing readable) is stored. */
+function useSidebarCollapsed() {
+  const [collapsed, setCollapsed] = useState(() => readStored(COLLAPSED_KEY) === '1')
+  const toggle = useCallback(() => {
+    setCollapsed((c) => {
+      writeStored(COLLAPSED_KEY, c ? '0' : '1')
+      return !c
+    })
+  }, [])
+  return [collapsed, toggle] as const
+}
+
 export function Sidebar() {
   const motionSafe = useMotionSafe()
   const [info, setInfo] = useState<AppInfo | null>(null)
+  const [collapsed, toggleCollapsed] = useSidebarCollapsed()
+
+  useEffect(
+    () =>
+      registerCommand({
+        id: 'sidebar.toggle',
+        title: 'Toggle sidebar',
+        section: 'View',
+        keywords: ['collapse', 'expand', 'hide', 'show', 'navigation'],
+        shortcut: TOGGLE_SHORTCUT,
+        run: toggleCollapsed,
+      }),
+    [toggleCollapsed],
+  )
+  useShortcut(TOGGLE_SHORTCUT, toggleCollapsed)
 
   useEffect(() => {
     let live = true
@@ -60,30 +93,59 @@ export function Sidebar() {
   }, [])
 
   return (
-    <aside className="flex w-[232px] shrink-0 flex-col border-r border-line bg-surface">
+    <aside
+      data-collapsed={collapsed || undefined}
+      className={`flex shrink-0 flex-col overflow-x-hidden border-r border-line bg-surface transition-[width] duration-150 ease-out motion-reduce:transition-none ${
+        collapsed ? 'w-14' : 'w-[232px]'
+      }`}
+    >
       {/* Clears the macOS traffic lights and doubles as the window drag handle. */}
-      <div className="app-drag flex h-[52px] shrink-0 items-end px-4 pb-1">
-        <div className="flex items-center gap-2 pl-1">
-          <span className="grid size-6 place-items-center rounded-md bg-accent/15 text-accent shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--accent)_35%,transparent)]">
-            <Rocket aria-hidden className="size-3.5" strokeWidth={2.2} />
-          </span>
-          <span className="text-[14px] font-semibold tracking-tight text-fg">OpsDeck</span>
-        </div>
-      </div>
-
-      <div className="px-3 pt-4 pb-2">
+      <div className={`app-drag flex h-[52px] shrink-0 items-end pb-1 ${collapsed ? 'justify-center px-2' : 'justify-between px-4'}`}>
+        {!collapsed && (
+          <div className="flex items-center gap-2 pl-1">
+            <span className="grid size-6 place-items-center rounded-md bg-accent/15 text-accent shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--accent)_35%,transparent)]">
+              <Rocket aria-hidden className="size-3.5" strokeWidth={2.2} />
+            </span>
+            <span className="text-[14px] font-semibold tracking-tight text-fg">OpsDeck</span>
+          </div>
+        )}
         <button
           type="button"
-          onClick={openCommandPalette}
-          className="group flex h-8 w-full items-center gap-2 rounded-lg border border-line bg-canvas/50 px-2.5 text-[12.5px] text-muted transition-colors hover:border-muted/30 hover:text-fg"
+          onClick={toggleCollapsed}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          aria-expanded={!collapsed}
+          title={`${collapsed ? 'Expand' : 'Collapse'} sidebar (${formatShortcut(TOGGLE_SHORTCUT).join('')})`}
+          className="grid size-7 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-white/[0.06] hover:text-fg"
         >
-          <Search aria-hidden className="size-3.5" />
-          <span className="flex-1 text-left">Search…</span>
-          <Keys combo="mod+k" />
+          {collapsed ? <PanelLeftOpen aria-hidden className="size-4" /> : <PanelLeftClose aria-hidden className="size-4" />}
         </button>
       </div>
 
-      <nav aria-label="Sections" className="flex flex-col gap-0.5 px-3 py-2">
+      <div className={`${collapsed ? 'px-2' : 'px-3'} pt-4 pb-2`}>
+        {collapsed ? (
+          <button
+            type="button"
+            onClick={openCommandPalette}
+            aria-label="Search"
+            title="Search"
+            className="grid size-10 place-items-center rounded-lg border border-line bg-canvas/50 text-muted transition-colors hover:border-muted/30 hover:text-fg"
+          >
+            <Search aria-hidden className="size-4" />
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={openCommandPalette}
+            className="group flex h-8 w-full items-center gap-2 rounded-lg border border-line bg-canvas/50 px-2.5 text-[12.5px] text-muted transition-colors hover:border-muted/30 hover:text-fg"
+          >
+            <Search aria-hidden className="size-3.5" />
+            <span className="flex-1 text-left">Search…</span>
+            <Keys combo="mod+k" />
+          </button>
+        )}
+      </div>
+
+      <nav aria-label="Sections" className={`flex flex-col gap-0.5 py-2 ${collapsed ? 'px-2' : 'px-3'}`}>
         {SECTIONS.map((s, i) => {
           const Icon = SECTION_ICONS[s.id]
           const shortcut = sectionShortcut(i)
@@ -91,8 +153,12 @@ export function Sidebar() {
             <NavLink
               key={s.id}
               to={s.path}
+              aria-label={collapsed ? s.label : undefined}
+              title={collapsed ? s.label : undefined}
               className={({ isActive }) =>
-                `group relative flex h-8 items-center gap-2.5 rounded-lg px-2.5 text-[13px] font-medium transition-colors select-none ${
+                `group relative flex h-8 items-center rounded-lg text-[13px] font-medium transition-colors select-none ${
+                  collapsed ? 'justify-center' : 'gap-2.5 px-2.5'
+                } ${
                   isActive ? 'text-fg' : 'text-muted hover:bg-white/[0.035] hover:text-fg'
                 }`
               }
@@ -114,11 +180,11 @@ export function Sidebar() {
                     className={`relative size-4 transition-colors ${isActive ? 'text-accent' : ''}`}
                     strokeWidth={2}
                   />
-                  <span className="relative flex-1">{s.label}</span>
-                  {s.id === 'tunnels' && <TunnelBadge />}
-                  {s.id === 'ops' && <RunBadge />}
-                  {s.id === 'deployments' && <DeployBadge />}
-                  {shortcut && (
+                  {!collapsed && <span className="relative flex-1">{s.label}</span>}
+                  {s.id === 'tunnels' && <TunnelBadge collapsed={collapsed} />}
+                  {s.id === 'ops' && <RunBadge collapsed={collapsed} />}
+                  {s.id === 'deployments' && <DeployBadge collapsed={collapsed} />}
+                  {shortcut && !collapsed && (
                     <Keys
                       combo={shortcut}
                       className="relative opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
@@ -132,35 +198,42 @@ export function Sidebar() {
       </nav>
 
       <div className="mt-auto">
-        <OpenSessions />
-        <SettingsButton />
-        <VaultLockButton />
+        <OpenSessions collapsed={collapsed} />
+        <SettingsButton collapsed={collapsed} />
+        <VaultLockButton collapsed={collapsed} />
       </div>
 
-      <div className="border-t border-line p-3">
-        <div className="flex items-center gap-2.5 rounded-lg px-1.5 py-1">
+      <div className={`border-t border-line ${collapsed ? 'p-2' : 'p-3'}`}>
+        <div className={`flex items-center rounded-lg py-1 ${collapsed ? 'justify-center' : 'gap-2.5 px-1.5'}`}>
           {info ? (
             <>
               <span
-                aria-hidden
+                role={collapsed ? 'img' : undefined}
+                aria-hidden={collapsed ? undefined : true}
+                aria-label={collapsed ? `${info.actor.osUser}@${info.actor.machine}` : undefined}
+                title={collapsed ? `${info.actor.osUser}@${info.actor.machine} · v${info.version}` : undefined}
                 className="grid size-7 shrink-0 place-items-center rounded-full bg-linear-to-br from-accent/40 to-ok/30 text-[11px] font-semibold text-fg uppercase"
               >
                 {info.actor.osUser.slice(0, 2)}
               </span>
-              <div className="min-w-0">
-                <p className="truncate text-[12.5px] font-medium text-fg" title="Recorded as the actor on every audit event">
-                  {`${info.actor.osUser}@${info.actor.machine}`}
-                </p>
-                <p className="text-[11px] text-muted">v{info.version}</p>
-              </div>
+              {!collapsed && (
+                <div className="min-w-0">
+                  <p className="truncate text-[12.5px] font-medium text-fg" title="Recorded as the actor on every audit event">
+                    {`${info.actor.osUser}@${info.actor.machine}`}
+                  </p>
+                  <p className="text-[11px] text-muted">v{info.version}</p>
+                </div>
+              )}
             </>
           ) : (
             <>
               <Skeleton className="size-7 rounded-full" />
-              <div className="flex flex-col gap-1.5">
-                <Skeleton className="h-3 w-24" />
-                <Skeleton className="h-2.5 w-10" />
-              </div>
+              {!collapsed && (
+                <div className="flex flex-col gap-1.5">
+                  <Skeleton className="h-3 w-24" />
+                  <Skeleton className="h-2.5 w-10" />
+                </div>
+              )}
             </>
           )}
         </div>
@@ -172,7 +245,7 @@ export function Sidebar() {
 const SETTINGS_SHORTCUT = 'mod+,'
 
 /** The Settings link above the lock button, plus its palette command and ⌘,. */
-function SettingsButton() {
+function SettingsButton({ collapsed }: { collapsed: boolean }) {
   const navigate = useNavigate()
   useEffect(
     () =>
@@ -189,11 +262,15 @@ function SettingsButton() {
   useShortcut(SETTINGS_SHORTCUT, () => void navigate('/settings'))
 
   return (
-    <div className="px-3 pb-0.5">
+    <div className={`pb-0.5 ${collapsed ? 'px-2' : 'px-3'}`}>
       <NavLink
         to="/settings"
+        aria-label={collapsed ? 'Settings' : undefined}
+        title={collapsed ? 'Settings' : undefined}
         className={({ isActive }) =>
-          `group flex h-8 items-center gap-2.5 rounded-lg px-2.5 text-[13px] font-medium transition-colors select-none ${
+          `group flex h-8 items-center rounded-lg text-[13px] font-medium transition-colors select-none ${
+            collapsed ? 'justify-center' : 'gap-2.5 px-2.5'
+          } ${
             isActive ? 'bg-accent/12 text-fg' : 'text-muted hover:bg-white/[0.035] hover:text-fg'
           }`
         }
@@ -203,8 +280,12 @@ function SettingsButton() {
             <span className="grid size-5 place-items-center">
               <Settings aria-hidden className={`size-4 ${isActive ? 'text-accent' : ''}`} strokeWidth={2} />
             </span>
-            <span className="flex-1">Settings</span>
-            <Keys combo={SETTINGS_SHORTCUT} className="opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+            {!collapsed && (
+              <>
+                <span className="flex-1">Settings</span>
+                <Keys combo={SETTINGS_SHORTCUT} className="opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+              </>
+            )}
           </>
         )}
       </NavLink>
@@ -218,7 +299,7 @@ const liveCount = () => sessionStore.get().sessions.filter((s) => s.state === 'c
 const useLiveCount = () => useSyncExternalStore(sessionStore.subscribe, liveCount)
 
 /** Back to the open terminals, while any session is open. */
-function OpenSessions() {
+function OpenSessions({ collapsed }: { collapsed: boolean }) {
   const motionSafe = useMotionSafe()
   const navigate = useNavigate()
   const active = useLocation().pathname === '/terminals'
@@ -233,20 +314,23 @@ function OpenSessions() {
           animate={motionSafe ? { height: 'auto', opacity: 1 } : undefined}
           exit={motionSafe ? { height: 0, opacity: 0, transition: exitFast } : { opacity: 0, transition: { duration: 0 } }}
           transition={spring}
-          className="overflow-hidden px-3"
+          className={`overflow-hidden ${collapsed ? 'px-2' : 'px-3'}`}
         >
           <button
             type="button"
             onClick={() => navigate('/terminals')}
             aria-current={active ? 'page' : undefined}
             aria-label={count > 0 ? `Open sessions, ${count} live` : 'Open sessions'}
-            className={`relative mb-1 flex h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-[13px] font-medium transition-colors select-none ${
+            title={collapsed ? 'Open sessions' : undefined}
+            className={`relative mb-1 flex h-8 w-full items-center rounded-lg text-[13px] font-medium transition-colors select-none ${
+              collapsed ? 'justify-center' : 'gap-2.5 px-2.5'
+            } ${
               active ? 'bg-accent/12 text-fg shadow-[inset_2px_0_0_0_var(--accent)]' : 'text-muted hover:bg-white/[0.035] hover:text-fg'
             }`}
           >
             <SquareTerminal aria-hidden className={`size-4 ${active ? 'text-accent' : ''}`} strokeWidth={2} />
-            <span className="flex-1 text-left">Open sessions</span>
-            {count > 0 && <LiveCount count={count} />}
+            {!collapsed && <span className="flex-1 text-left">Open sessions</span>}
+            {count > 0 && (collapsed ? <BadgeDot tone="bg-ok" label={`${count} live`} /> : <LiveCount count={count} />)}
           </button>
         </motion.div>
       )}
@@ -294,13 +378,14 @@ function summarizeTunnels(): TunnelSummary {
 }
 
 /** Tunnels that are up, with a red dot when one failed or an amber one while any is (re)connecting. */
-function TunnelBadge() {
+function TunnelBadge({ collapsed }: { collapsed: boolean }) {
   const { up, failed, busy } = useSyncExternalStore(tunnelStore.subscribe, summarizeTunnels)
   if (!up && !failed && !busy) return null
   const parts = [`${plural(up, 'tunnel')} up`]
   if (failed) parts.push(`${failed} failed`)
   if (busy) parts.push(`${busy} reconnecting`)
   const dot = failed ? 'bg-err' : busy ? 'bg-warn' : ''
+  if (collapsed) return <BadgeDot tone={dot || 'bg-ok'} label={parts.join(', ')} />
   return (
     <span
       data-badge
@@ -314,9 +399,10 @@ function TunnelBadge() {
 }
 
 /** Runs in progress; it gives way to the shortcut keys on hover. */
-function RunBadge() {
+function RunBadge({ collapsed }: { collapsed: boolean }) {
   const count = useSyncExternalStore(runStore.subscribe, runningCount)
   if (!count) return null
+  if (collapsed) return <BadgeDot tone="bg-accent" label={`${plural(count, 'run')} running`} />
   return (
     <span
       data-badge
@@ -328,9 +414,10 @@ function RunBadge() {
   )
 }
 
-function DeployBadge() {
+function DeployBadge({ collapsed }: { collapsed: boolean }) {
   const count = useSyncExternalStore(releaseStore.subscribe, () => releaseStore.get().active.length)
   if (!count) return null
+  if (collapsed) return <BadgeDot tone="bg-accent" label={`${plural(count, 'release')} running`} />
   return (
     <span
       data-badge
@@ -340,6 +427,11 @@ function DeployBadge() {
       {count}
     </span>
   )
+}
+
+/** The collapsed rail's badge: a dot on the corner of the icon. */
+function BadgeDot({ tone, label }: { tone: string; label: string }) {
+  return <span data-badge aria-label={label} className={`absolute top-1 right-2 size-2 rounded-full ring-2 ring-surface ${tone}`} />
 }
 
 function Keys({ combo, className = '' }: { combo: string; className?: string }) {
