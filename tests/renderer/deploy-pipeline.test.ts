@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { etaMs, initialPipeline, reducePipeline, type PipelineState } from '../../src/renderer/src/deploy/pipeline'
-import { events, healthFailure, OK_RUN, releaseDetail } from './fixtures/release-events'
+import { etaMs, initialPipeline, originMoved, reducePipeline, type PipelineState } from '../../src/renderer/src/deploy/pipeline'
+import { taskRows } from '../../src/renderer/src/deploy/task-rows'
+import { ORIGIN_MOVED_MESSAGE } from '../../src/shared/deploy'
+import { playbookSteps } from '../../src/shared/playbook-steps'
+import { events, flowDetail, flowPlaybookOf, healthFailure, OK_RUN, releaseDetail } from './fixtures/release-events'
 
 const chipsOf = (s: PipelineState, runId: string) => s.lanes.flatMap((l) => l.runs).find((r) => r.runId === runId)!.chips
 const states = (s: PipelineState, runId: string) => Object.fromEntries(chipsOf(s, runId).map((c) => [c.kind, c.state]))
@@ -119,5 +122,60 @@ describe('pipeline reducer', () => {
     expect(again.release.find((c) => c.stepId === 'release:version')).toMatchObject({ state: 'pending', error: null, durationMs: null, startedAt: null })
     // The steps of the first run keep what they did
     expect(again.lanes[0]!.runs[0]!.chips.every((c) => c.state === 'ok')).toBe(true)
+  })
+})
+
+describe('a release flow', () => {
+  // stage 0 runs r1's up on app1 and r3's up and health on app2 in one play; stage 1 is r1's migrate; stage 2 the rest
+  const STAGES: Record<string, string[]>[] = [{ r1: ['up'], r3: ['up', 'health'] }, { r1: ['c_21'] }, { r1: ['health'], r2: ['up', 'health'] }]
+
+  it('a two-host stage play gives one lane per host, each with its own blocks gathered across the plays in order', () => {
+    const detail = flowDetail()
+    const plays = playbookSteps(flowPlaybookOf(detail, STAGES))
+    expect(plays.map((p) => [p.name, p.hosts])).toEqual([
+      ['release prepare', ['od-1', 'od-2']],
+      ['release stage 0', ['od-1', 'od-2']],
+      ['release stage 1', ['od-1']],
+      ['release stage 2', ['od-1']],
+      ['release tag', ['od-1', 'od-2']],
+    ])
+    const { hosts } = taskRows(initialPipeline(detail), plays)
+    expect(hosts.map((h) => h.hostLabel)).toEqual(['app1', 'app2'])
+    const [app1, app2] = hosts
+    // each lane's lock only, never the other host's, and no gate or marker
+    expect(app1.before.map((r) => r.name)).toEqual(['lock od-1'])
+    expect(app2.before.map((r) => r.name)).toEqual(['lock od-2'])
+    const names = (h: (typeof hosts)[number]) => Object.fromEntries(h.runs.map((r) => [r.runId, r.rows.map((x) => x.name)]))
+    expect(names(app1)).toEqual({
+      r1: ['record core', 'fetch core', 'checkout core', 'build core', 'up core', 'c_21 core', 'health core', 'tag core'],
+      r2: ['record web', 'fetch web', 'checkout web', 'build web', 'up web', 'health web', 'tag web'],
+    })
+    expect(names(app2)).toEqual({ r3: ['record site', 'fetch site', 'checkout site', 'build site', 'up site', 'health site', 'tag site'] })
+    expect(app1.runs[0].rows.find((r) => r.name === 'c_21 core')?.label).toBe('migrate')
+    expect(app1.runs.map((r) => r.title)).toEqual(['core', 'web'])
+  })
+
+  it('a custom step that warns keeps its label and carries the message', () => {
+    const s = reducePipeline(
+      initialPipeline(flowDetail()),
+      events([
+        { type: 'step.started', stepId: 'r1:c_21', kind: 'custom', name: 'migrate', hostId: 'h1', deploymentRunId: 'r1' },
+        { type: 'step.done', stepId: 'r1:c_21', state: 'warn', durationMs: 10, message: 'migration took long' },
+      ]),
+    )
+    const c = s.lanes[0].runs[0].chips.find((x) => x.stepId === 'r1:c_21')!
+    expect(c).toMatchObject({ label: 'migrate', state: 'warn', error: 'migration took long' })
+  })
+
+  it('originMoved: a step that failed because origin moved since the preview', () => {
+    const base = initialPipeline(releaseDetail())
+    const failed = (error: string) =>
+      reducePipeline(base, events([
+        { type: 'step.started', stepId: 'r1:fetch', kind: 'fetch', name: 'fetch', hostId: 'h1', deploymentRunId: 'r1' },
+        { type: 'step.failed', stepId: 'r1:fetch', error, durationMs: 5 },
+      ]))
+    expect(originMoved(base)).toBe(false)
+    expect(originMoved(failed('could not reach origin'))).toBe(false)
+    expect(originMoved(failed(`fetch failed: ${ORIGIN_MOVED_MESSAGE}\nlast lines`))).toBe(true)
   })
 })

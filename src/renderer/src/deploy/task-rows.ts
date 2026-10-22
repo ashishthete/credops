@@ -1,5 +1,5 @@
 import type { StepKind } from '../../../shared/deploy'
-import { isHelperTask, stepLabels, type PlaybookPlay, type PlaybookStep } from '../../../shared/playbook-steps'
+import { hostTasks, isHelperTask, runBlock, stepLabels, type PlaybookPlay, type PlaybookStep } from '../../../shared/playbook-steps'
 import { runServices, type ChipState, type PipelineState, type TaskResult } from './pipeline'
 
 export type RowState = ChipState['state'] | 'changed'
@@ -84,16 +84,15 @@ export function taskRows(s: Pick<PipelineState, 'lanes' | 'release' | 'tasks'>, 
   }
   for (const c of s.release) chips.set(c.stepId, c)
 
+  // A lane's tasks come from every play it is in: one play per host, or with a flow one per phase, several hosts each.
   const hosts = s.lanes.map((lane) => {
-    const play = plays.find(
-      (p) => p.steps.some((st) => st.stepId === `host:${lane.hostId}:lock`) || p.deployments.some((d) => lane.runs.some((r) => r.runId === d.runId)),
-    )
+    const own = hostTasks(plays, lane.hostId)
     return {
       hostId: lane.hostId,
       hostLabel: lane.hostLabel,
-      before: play ? specs(play.steps) : lane.lock ? [fromChip(lane.lock)] : [],
+      before: own.length > 0 ? specs(own) : lane.lock ? [fromChip(lane.lock)] : [],
       runs: lane.runs.map((run) => {
-        const dep = play?.deployments.find((d) => d.runId === run.runId)
+        const dep = runBlock(plays, run.runId)
         const custom = Object.fromEntries(run.chips.filter((c) => c.kind === 'custom').map((c) => [c.stepId.slice(c.stepId.indexOf(':') + 1), c.label]))
         const listed = dep ? specs(dep.steps, custom) : []
         const rest = run.chips.filter((c) => !listed.some((x) => x.stepId === c.stepId)).map(fromChip)

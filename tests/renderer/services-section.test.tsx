@@ -279,6 +279,7 @@ describe('services section', () => {
       composeService: 'billing-svc',
       url: null,
       urlCheckFrom: 'host',
+      skipUnchanged: false,
     })
   })
 

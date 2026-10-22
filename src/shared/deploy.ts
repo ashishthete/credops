@@ -144,6 +144,11 @@ export interface ReleaseFlow {
   onFailure: 'stop-all' | 'continue-other-hosts'
 }
 
+/** The services a flow's step stages are bound to: they always deploy, so preflight and start never skip them. */
+export function stepBound(flow: ReleaseFlow | null): Set<string> {
+  return new Set((flow?.stages ?? []).flatMap((st) => (st.kind === 'step' ? [st.serviceId] : [])))
+}
+
 export interface EnvDeploySettings {
   environmentId: string
   versioned: boolean
@@ -606,6 +611,8 @@ export interface PlaybookPreview {
   sha256: string
   /** The services this start leaves out as unchanged since their last deploy (`skippable` and not forced). */
   skippedServiceIds?: string[]
+  /** With a release flow: the inventory, whose host vars (`od`, the version among them) the hash covers too. */
+  inventory?: string
 }
 /** Start and its preview refuse a release whose every service would be skipped as unchanged. */
 export const NOTHING_SELECTED_MESSAGE = 'Every selected service has no changes; select one to deploy it anyway'

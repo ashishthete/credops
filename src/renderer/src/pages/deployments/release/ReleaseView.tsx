@@ -12,7 +12,7 @@ import { attempt, ConfirmDialog, type ConfirmRequest } from '../../../ui/common'
 import { AnsibleSteps } from './AnsibleSteps'
 import { Celebrate } from './Celebrate'
 import { Pipeline } from './Pipeline'
-import { canRollback, duration, STATUS_TONE, STATUS_WORD, useRollback } from './ReleaseHistory'
+import { canRollback, duration, OperationBadge, STATUS_TONE, STATUS_WORD, useRollback } from './ReleaseHistory'
 import { clock, useNow } from './StepChip'
 
 const CANCEL_MESSAGE = 'Cancel the release? Running steps are stopped and the lock is released.'
@@ -183,7 +183,7 @@ export function ReleaseView({ releaseId }: { releaseId: string }) {
   const versionOnly = state.result?.status === 'failed' && failed.length > 0 && failed.every(({ chip }) => chip.stepId === 'release:version')
   const hostLabel = (id: string) => state.lanes.find((l) => l.hostId === id)?.hostLabel ?? id
   const deployments = [...new Set(state.lanes.flatMap((l) => l.runs.map((r) => r.name)))].join(', ')
-  const version = state.version.to ? (state.version.from ? `${state.version.from} → ${state.version.to}` : state.version.to) : null
+  const version = !summary.operation && state.version.to ? (state.version.from ? `${state.version.from} → ${state.version.to}` : state.version.to) : null
 
   const cancel = () =>
     setConfirm({
@@ -217,6 +217,13 @@ export function ReleaseView({ releaseId }: { releaseId: string }) {
     <div className="flex min-h-0 flex-col gap-3">
       <header aria-label="Release summary" className="relative flex flex-wrap items-center gap-2">
         <span className="text-[13px] font-semibold text-fg">{summary.environmentName}</span>
+        {summary.operation && (
+          <>
+            <span className="text-[12.5px] font-medium text-fg">{summary.operation.name}</span>
+            <OperationBadge />
+          </>
+        )}
+        {summary.playbookSource === 'edited' && <Badge tone="warn">Edited playbook</Badge>}
         {deployments && <span className="text-[12.5px] text-fg/85">{deployments}</span>}
         {version && <span className="font-mono text-[12.5px] text-fg/85 tabular-nums">{version}</span>}
         <Badge tone={STATUS_TONE[state.status]} dot>

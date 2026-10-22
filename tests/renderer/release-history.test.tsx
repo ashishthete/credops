@@ -191,6 +191,53 @@ describe('release history', () => {
     expect(calls(invoke, 'release:rollback')).toEqual([['release:rollback', 'rel-2', { typedName: 'staging' }]])
   })
 
+  it('operations get a badge and a filter that limits the list to them', async () => {
+    const op = summary({
+      id: 'rel-op',
+      version: null,
+      serviceIds: ['s1'],
+      serviceCount: 1,
+      createdAt: '2026-10-19T13:00:00.000Z',
+      operation: { runbookId: 'rb1', name: 'Tail the api', params: {}, readOnly: true, lock: false, targetServiceIds: ['s1'] },
+    })
+    const { user } = await mount({ pages: [[op, R3, R2]] })
+    expect(within(row('rel-op')).getByText('Operation')).toBeInTheDocument()
+    expect(within(row('rel-op')).getByText('Tail the api')).toBeInTheDocument()
+    expect(within(row('rel-3')).queryByText('Operation')).not.toBeInTheDocument()
+    // An operation is never rolled back.
+    expect(within(row('rel-op')).queryByRole('button', { name: 'Rollback' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('checkbox', { name: 'Operations only' }))
+    expect(within(screen.getByRole('list', { name: 'Release history' })).getAllByRole('listitem')).toHaveLength(1)
+    expect(row('rel-3')).toBeNull()
+  })
+
+  it('an operation release has no Rollback, version or notes in its view', async () => {
+    const detail = releaseDetail({
+      status: 'succeeded',
+      startedAt: '2026-10-19T10:00:00.000Z',
+      finishedAt: '2026-10-19T10:01:00.000Z',
+      operation: { runbookId: 'rb1', name: 'Tail the api', params: {}, readOnly: true, lock: false, targetServiceIds: ['s1'] },
+    })
+    const stored = events(OK_RUN)
+    const invoke = mockBridge({ 'release:get': detail })
+    const base = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'release:events') return stored.filter((e) => e.seq > (args[1] as number))
+      return base(channel)
+    })
+    render(
+      <MemoryRouter>
+        <ReleaseView releaseId={REL} />
+      </MemoryRouter>,
+    )
+    await flush()
+    await flush()
+    expect(screen.getByText('Operation')).toBeInTheDocument()
+    expect(screen.getByText('Tail the api')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Rollback' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/v1\.5\.0/)).not.toBeInTheDocument()
+  })
+
   it('cancel confirm then cancelling state', async () => {
     const stored = events(OK_RUN.slice(0, 10))
     const invoke = mockBridge({ 'release:get': releaseDetail({ status: 'running', startedAt: '2026-10-19T10:00:00.000Z' }), 'release:cancel': null })

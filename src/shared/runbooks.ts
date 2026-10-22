@@ -43,6 +43,18 @@ export interface Runbook {
   updatedAt: string
 }
 export type RunbookInput = Omit<Runbook, 'id' | 'createdAt' | 'updatedAt'>
+/** Only what `runbook:save` accepts: the stored row's id and timestamps are refused by the strict validator. */
+export const runbookInput = (r: Runbook): RunbookInput => ({
+  environmentId: r.environmentId,
+  name: r.name,
+  description: r.description,
+  targetServiceIds: r.targetServiceIds,
+  items: r.items,
+  params: r.params,
+  lock: r.lock,
+  notify: r.notify,
+})
+
 /** `runbook:save`: an id updates that runbook, none creates one. */
 export type RunbookSaveInput = RunbookInput & { id?: string }
 

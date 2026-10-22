@@ -1,5 +1,6 @@
 import {
   STEP_LABEL,
+  ORIGIN_MOVED_MESSAGE,
   type DeploymentRunStatus,
   type ReleaseDetail,
   type ReleaseStatus,
@@ -294,4 +295,9 @@ export function etaMs(s: PipelineState, history: Partial<Record<StepKind, number
   }
   const total = lanes + s.release.reduce((x, c) => x + left(c), 0)
   return known ? total : null
+}
+
+/** A step failed because origin moved since the playbook was previewed: preview again before deploying. */
+export function originMoved(s: Pick<PipelineState, 'lanes'>): boolean {
+  return s.lanes.some((l) => l.runs.some((r) => r.chips.some((c) => c.state === 'failed' && c.error?.includes(ORIGIN_MOVED_MESSAGE))))
 }

@@ -54,7 +54,7 @@ export function duration(r: ReleaseSummary, now = Date.now()): string | null {
  * services. `history` is newest first. Main checks the same rule again.
  */
 export function canRollback(r: ReleaseSummary, history: ReleaseSummary[]): boolean {
-  if (r.kind !== 'release' || (r.status !== 'succeeded' && r.status !== 'failed') || !r.serviceIds.length) return false
+  if (r.operation || r.kind !== 'release' || (r.status !== 'succeeded' && r.status !== 'failed') || !r.serviceIds.length) return false
   return r.serviceIds.every((id) => history.find((x) => x.startedAt !== null && x.serviceIds.includes(id))?.id === r.id)
 }
 
@@ -104,22 +104,33 @@ export function useRollback(): { request: ConfirmRequest | null; begin: (r: Rele
   return { request, begin, close: () => setRequest(null) }
 }
 
+/** Marks a runbook run, which has no version and is never rolled back. */
+export function OperationBadge() {
+  return <Badge tone="info">Operation</Badge>
+}
+
 const EMPTY: ReleaseSummary[] = []
 
 /** The environment's releases, newest first, paged from `release:list`. */
 export function ReleaseHistory({ environmentId }: { environmentId: string }) {
   const navigate = useNavigate()
   const page = useSyncExternalStore(releaseStore.subscribe, () => releaseStore.get().history[environmentId])
-  const releases = page?.releases ?? EMPTY
+  const all = page?.releases ?? EMPTY
+  const [operationsOnly, setOperationsOnly] = useState(false)
+  const releases = operationsOnly ? all.filter((r) => r.operation) : all
   const rollback = useRollback()
 
   useEffect(() => startReleaseSync(), [])
   useEffect(() => void loadHistory(environmentId), [environmentId])
 
-  if (page && !page.loading && !releases.length) return <p className="text-[12.5px] text-muted">No releases yet</p>
+  if (page && !page.loading && !all.length) return <p className="text-[12.5px] text-muted">No releases yet</p>
 
   return (
     <div className="flex flex-col gap-2">
+      <label className="flex items-center gap-2 text-[12px] text-muted">
+        <input type="checkbox" checked={operationsOnly} onChange={(e) => setOperationsOnly(e.target.checked)} className="size-3.5 rounded accent-(--accent)" />
+        Operations only
+      </label>
       <ul aria-label="Release history" className="flex flex-col divide-y divide-line rounded-lg border border-line">
         {releases.map((r) => {
           const took = duration(r)
@@ -130,8 +141,8 @@ export function ReleaseHistory({ environmentId }: { environmentId: string }) {
                 onClick={() => navigate(`/deployments/release/${r.id}`)}
                 className="flex min-w-0 flex-1 items-center gap-3 text-left"
               >
-                <span className="font-mono text-[12.5px] font-medium text-fg tabular-nums">{r.version ?? r.id.slice(0, 8)}</span>
-                <span className="text-[12px] text-muted">{kindWord(r)}</span>
+                <span className="font-mono text-[12.5px] font-medium text-fg tabular-nums">{r.operation ? r.operation.name : (r.version ?? r.id.slice(0, 8))}</span>
+                {r.operation ? <OperationBadge /> : <span className="text-[12px] text-muted">{kindWord(r)}</span>}
                 <Badge tone={STATUS_TONE[r.status]} dot>
                   {STATUS_WORD[r.status]}
                 </Badge>
@@ -139,7 +150,7 @@ export function ReleaseHistory({ environmentId }: { environmentId: string }) {
                 {took && <span className="font-mono text-[11.5px] text-muted tabular-nums">{took}</span>}
                 <span className="ml-auto text-[12px] text-muted">{plural(r.serviceCount, 'service')}</span>
               </button>
-              {canRollback(r, releases) && (
+              {canRollback(r, all) && (
                 <Button size="sm" variant="ghost" onClick={() => void rollback.begin(r)}>
                   Rollback
                 </Button>
@@ -148,6 +159,7 @@ export function ReleaseHistory({ environmentId }: { environmentId: string }) {
           )
         })}
       </ul>
+      {operationsOnly && !releases.length && <p className="text-[12.5px] text-muted">No operations in the loaded releases</p>}
       {page?.more && (
         <Button size="sm" variant="ghost" loading={page.loading} onClick={() => void loadHistory(environmentId, true)}>
           Load more

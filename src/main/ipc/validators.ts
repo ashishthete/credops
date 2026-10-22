@@ -383,7 +383,7 @@ export const asReleaseConfirm: Check<ReleaseConfirm> = v.object({
   redeploy: v.optional(v.bool()),
   playbookSha256: v.optional(v.str({ pattern: PLAYBOOK_SHA256 })),
   editedPlaybook: v.optional(v.str({ max: MAX_EDITED_PLAYBOOK })),
-  forceServiceIds: v.optional(v.array(v.uuid(), MAX_SERVICES)),
+  forceServiceIds: v.optional(v.array(v.uuid(), MAX_SERVICES, { min: 1 })),
 }) as Check<ReleaseConfirm>
 export const asBreakLockConfirm: Check<BreakLockConfirm> = v.object({ typedLabel: v.str({ max: MAX_NAME }) }) as Check<BreakLockConfirm>
 export const asReleaseListFilter: Check<ReleaseListFilter> = v.object({
@@ -896,7 +896,7 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'service:tunnelSync': args(v.uuid()),
   'release:preflight': args(asPreflightRequest),
   'release:preflightOperation': args(asOperationRequest),
-  'deploy:previewPlaybook': args(v.uuid(), v.optional(v.array(v.uuid(), MAX_SERVICES))),
+  'deploy:previewPlaybook': args(v.uuid(), v.optional(v.array(v.uuid(), MAX_SERVICES, { min: 1 }))),
   'deploy:savePlaybook': args(v.uuid(), v.str({ pattern: PLAYBOOK_SHA256 })),
   'release:savePlaybook': args(v.uuid()),
   'release:validateEdit': args(v.uuid(), v.str({ max: MAX_EDITED_PLAYBOOK }), v.optional(v.array(v.uuid(), MAX_SERVICES))),

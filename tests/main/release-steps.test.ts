@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { DeployError } from '../../src/main/deploy/access'
 import { NOTHING_SELECTED_MESSAGE, PLAYBOOK_CHANGED_MESSAGE, STEP_SECRET_UNUSED_MESSAGE } from '../../src/main/deploy/release-service'
-import { REDEPLOY_CONFIRM_MESSAGE } from '../../src/shared/deploy'
+import { REDEPLOY_CONFIRM_MESSAGE, stepBound } from '../../src/shared/deploy'
 import { stepList } from '../../src/main/deploy/generate'
 import type { DeployPlan } from '../../src/main/deploy/runner'
 import type { CommitInfo, DeploymentMeta } from '../../src/shared/deploy'
@@ -101,6 +101,8 @@ describe('release custom steps', () => {
     const b = await r.svc.previewPlaybook(id)
     expect(b.sha256).toBe(a.sha256)
     expect(a.skippedServiceIds).toEqual([])
+    // without a flow the host vars are play vars, in the playbook text: no inventory to show
+    expect(a.inventory).toBeUndefined()
     r.runner.on.release = (_p, _s, emit) => {
       emit({ type: 'step.started', stepId: `${run.id}:c_0`, kind: 'custom', name: 'pre-hook', hostId: null, deploymentRunId: run.id })
       emit({ type: 'step.done', stepId: `${run.id}:c_0`, state: 'ok', durationMs: 3 })
@@ -535,6 +537,19 @@ describe('release flow', () => {
     }
   }
 
+  it('preflight never calls a service a flow step stage is bound to skippable, as start never skips it', async () => {
+    const { r, web, worker, id } = await shopFlow((web, worker) => ({
+      onFailure: 'stop-all',
+      stages: [
+        { kind: 'services', serviceIds: [web.id] },
+        { kind: 'step', serviceId: worker.id, step: { ...migrateBody, id: 'migrate' } },
+      ],
+    }))
+    expect(stepBound(r.f.deploys.settings(r.svc.detail(id).environmentId).flow)).toEqual(new Set([worker.id]))
+    expect(r.svc.detail(id).preflight?.serviceCommits[worker.id]).toMatchObject({ known: true, count: 0, skippable: false })
+    expect(r.svc.detail(id).preflight?.serviceCommits[web.id]?.skippable).not.toBe(true)
+  })
+
   it('a when:always step bound to an unchanged service still runs: that service is never skipped', async () => {
     for (const after of [false, true]) {
       // after: the flow is set once preflight already called the service skippable
@@ -589,6 +604,9 @@ describe('release flow', () => {
     // the version lives in the inventory's od, not the playbook text
     expect(b.playbook).toBe(a.playbook)
     expect(b.sha256).not.toBe(a.sha256)
+    // the preview shows the inventory it hashes, so the reviewer sees the version
+    expect(b.inventory).toContain('v9.9.9')
+    expect(a.inventory).not.toContain('v9.9.9')
     expect((await fail(r.svc.start(id, { playbookSha256: a.sha256, redeploy: true }))).message).toBe(PLAYBOOK_CHANGED_MESSAGE)
     await r.svc.start(id, { playbookSha256: b.sha256, redeploy: true })
     await r.svc.whenIdle()

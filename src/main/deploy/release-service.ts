@@ -22,6 +22,7 @@ import {
   PREPARE_FETCH_FAILED_MESSAGE,
   REVIEW_EXPIRED_MESSAGE,
   REVIEW_TTL_MS,
+  stepBound,
   type PlaybookEditResult,
   type PlaybookPreview,
   type PreflightCheck,
@@ -29,7 +30,6 @@ import {
   type PreflightRequest,
   type ReleaseConfirm,
   type ReleaseDetail,
-  type ReleaseFlow,
   type ReleaseListFilter,
   type ReleaseStatus,
   type ReleaseSummary,
@@ -513,7 +513,7 @@ export class ReleaseService {
     const { playbook, inventory } = rel.operation ? this.opPlan(rel, env, actor, startedAt) : this.releasePlan(rel, env, actor, startedAt, skips)
     for (const [k, p] of this.previews) if (now.getTime() - p.at > PREVIEW_KEEP_MS) this.previews.delete(k)
     this.previews.set(reviewKey(releaseId, actor), { releaseId, startedAt, at: now.getTime() })
-    return { playbook, sha256: reviewHash(playbook, skips, inventory), skippedServiceIds: skips.skipped.map((x) => x.id) }
+    return { playbook, sha256: reviewHash(playbook, skips, inventory), skippedServiceIds: skips.skipped.map((x) => x.id), ...(inventory !== null && { inventory }) }
   }
 
   /**
@@ -2365,11 +2365,6 @@ function withNote(notes: string | null, note: string): string {
 function reviewHash(playbook: string, skips: Skips, inventory: string | null): string {
   const text = inventory === null ? playbook : `${playbook}\0${inventory}`
   return skips.skipped.length === 0 ? sha256(text) : sha256(`${text}\0${JSON.stringify(skips.skipped.map((x) => [x.id, x.since]))}`)
-}
-
-/** The services a flow's step stages are bound to. */
-function stepBound(flow: ReleaseFlow | null): Set<string> {
-  return new Set((flow?.stages ?? []).flatMap((st) => (st.kind === 'step' ? [st.serviceId] : [])))
 }
 
 /** A review belongs to one person: the Hub user when there is one, else the OS user on the machine. */
