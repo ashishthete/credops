@@ -93,6 +93,8 @@ export function DeployWizard({
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   // The playbook under review; Deploy sends its hash, and main refuses the start if what would run differs.
   const [reviewed, setReviewed] = useState<PlaybookPreview | null>(null)
+  // The person is editing the playbook: Deploy would run the unedited one, so it waits.
+  const [editing, setEditing] = useState(false)
   const [saved, setSaved] = useState<string | null>(null)
   const pre = usePreflight(releaseId)
   const report = pre?.report ?? null
@@ -233,9 +235,10 @@ export function DeployWizard({
     setStep('pick')
   }
 
-  const start = async () => {
+  // `edit`: the person's edited text with the hash main gave it, run in place of the generated playbook.
+  const start = async (edit?: { text: string; sha256: string }) => {
     if (!releaseId || !env || !reviewed) return
-    const { sha256 } = reviewed
+    const sha256 = edit?.sha256 ?? reviewed.sha256
     const forced = force
     const begin = async (typedName?: string) => {
       setStarting(true)
@@ -248,6 +251,7 @@ export function DeployWizard({
             ...(typedName !== undefined ? { typedName } : {}),
             redeploy,
             playbookSha256: sha256,
+            ...(edit ? { editedPlaybook: edit.text } : {}),
             ...(forced.size ? { forceServiceIds: [...forced] } : {}),
           }),
         (message) => {
@@ -365,7 +369,7 @@ export function DeployWizard({
         >
           Back
         </Button>
-        <Button disabled={!reviewed} loading={starting} onClick={() => void start()}>
+        <Button disabled={!reviewed || editing} loading={starting} onClick={() => void start()}>
           Deploy
         </Button>
       </>
@@ -480,6 +484,12 @@ export function DeployWizard({
                 autoRollback={settings?.autoRollback ?? false}
                 customLabels={customLabels}
                 onSave={() => void save()}
+                editable
+                releaseId={releaseId ?? undefined}
+                forceServiceIds={force.size ? [...force] : undefined}
+                onRunEdited={(text, sha256) => void start({ text, sha256 })}
+                onEditingChange={setEditing}
+                onPreviewAgain={() => void review()}
               />
               {saved && <p className="text-[12px] text-muted">Saved to {saved}</p>}
             </>

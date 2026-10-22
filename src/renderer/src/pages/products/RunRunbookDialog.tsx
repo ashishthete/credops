@@ -28,6 +28,7 @@ export function RunRunbookDialog({ runbook, onClose }: { runbook: Runbook; onClo
   const [releaseId, setReleaseId] = useState<string | null>(null)
   const [reviewed, setReviewed] = useState<PlaybookPreview | null>(null)
   const [saved, setSaved] = useState<string | null>(null)
+  const [editing, setEditing] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
@@ -77,7 +78,8 @@ export function RunRunbookDialog({ runbook, onClose }: { runbook: Runbook; onClo
     setStep('review')
   }
 
-  const start = async (typedName?: string) => {
+  // `edit`: the person's edited text with the hash main gave it, run in place of the generated playbook.
+  const start = async (typedName?: string, edit?: { text: string; sha256: string }) => {
     if (!releaseId || !reviewed) return
     setBusy(true)
     setError(null)
@@ -85,7 +87,7 @@ export function RunRunbookDialog({ runbook, onClose }: { runbook: Runbook; onClo
     let changed = false
     const ok = await attempt(
       "Couldn't start the run",
-      () => api.invoke('release:start', id, { ...(typedName !== undefined ? { typedName } : {}), playbookSha256: reviewed.sha256 }),
+      () => api.invoke('release:start', id, { ...(typedName !== undefined ? { typedName } : {}), playbookSha256: edit?.sha256 ?? reviewed.sha256, ...(edit ? { editedPlaybook: edit.text } : {}) }),
       (message) => {
         changed = message.includes(PLAYBOOK_CHANGED_MESSAGE)
         setError(message)
@@ -106,16 +108,16 @@ export function RunRunbookDialog({ runbook, onClose }: { runbook: Runbook; onClo
     setStep('started')
   }
 
-  const run = () => {
+  const run = (edit?: { text: string; sha256: string }) => {
     // An environment this window can't look up is treated as protected: the typed name is the safe default.
-    if (env && !env.protected) return void start()
+    if (env && !env.protected) return void start(undefined, edit)
     const name = env?.name ?? runbook.environmentId
     setConfirm({
       title: `Run ${runbook.name} in ${name}?`,
       description: env ? `${name} is protected.` : `${name} could not be checked, so it is treated as protected.`,
       confirmLabel: 'Run',
       typeToConfirm: name,
-      run: () => start(name),
+      run: () => start(name, edit),
     })
   }
 
@@ -123,6 +125,15 @@ export function RunRunbookDialog({ runbook, onClose }: { runbook: Runbook; onClo
     if (!releaseId || !reviewed) return
     const out = await attempt("Couldn't save the playbook", () => api.invoke('deploy:savePlaybook', releaseId, reviewed.sha256))
     if (out) setSaved(out.path)
+  }
+
+  // Main no longer holds the preview an edit is checked against: ask for a new one.
+  const previewAgain = async () => {
+    if (!releaseId) return
+    setError(null)
+    setReviewed(null)
+    const out = await attempt("Couldn't generate the playbook", () => api.invoke('deploy:previewPlaybook', releaseId), setError)
+    if (out) setReviewed(out)
   }
 
   const back = () => {
@@ -149,7 +160,7 @@ export function RunRunbookDialog({ runbook, onClose }: { runbook: Runbook; onClo
         <Button variant="ghost" onClick={back} disabled={busy}>
           Back
         </Button>
-        <Button onClick={run} disabled={!reviewed} loading={busy}>
+        <Button onClick={() => run()} disabled={!reviewed || editing} loading={busy}>
           Run
         </Button>
       </>
@@ -209,7 +220,17 @@ export function RunRunbookDialog({ runbook, onClose }: { runbook: Runbook; onClo
         )}
         {step === 'review' && (
           <>
-            <PlaybookReview playbook={reviewed?.playbook ?? null} inventory={reviewed?.inventory} autoRollback={false} onSave={() => void save()} />
+            <PlaybookReview
+              playbook={reviewed?.playbook ?? null}
+              inventory={reviewed?.inventory}
+              autoRollback={false}
+              onSave={() => void save()}
+              editable
+              releaseId={releaseId ?? undefined}
+              onRunEdited={(text, sha256) => run({ text, sha256 })}
+              onEditingChange={setEditing}
+              onPreviewAgain={() => void previewAgain()}
+            />
             {saved && <p className="text-[12px] text-muted">Saved to {saved}</p>}
           </>
         )}

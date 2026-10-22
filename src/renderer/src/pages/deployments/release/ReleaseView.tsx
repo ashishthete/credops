@@ -223,6 +223,7 @@ export function ReleaseView({ releaseId }: { releaseId: string }) {
             <OperationBadge />
           </>
         )}
+        {summary.playbookSource === 'edited' && <Badge tone="warn">Edited playbook</Badge>}
         {deployments && <span className="text-[12.5px] text-fg/85">{deployments}</span>}
         {version && <span className="font-mono text-[12.5px] text-fg/85 tabular-nums">{version}</span>}
         <Badge tone={STATUS_TONE[state.status]} dot>

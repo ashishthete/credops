@@ -3,6 +3,7 @@ import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from
 import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { PLAYBOOK_NOT_STORED_MESSAGE, type ReleaseStatus } from '../../../../shared/deploy'
 import { isHelperTask, playbookSteps } from '../../../../shared/playbook-steps'
+import { lineDiff } from '../../deploy/line-diff'
 import type { LogFilter } from '../../deploy/log-buffer'
 import { releaseStore, retainRelease, startReleaseSync, useCancelling, usePipeline } from '../../deploy/releases'
 import { taskRows, type TaskRow } from '../../deploy/task-rows'
@@ -25,6 +26,8 @@ interface StoredPlaybook {
   hidden: boolean
   /** Why the read failed; Retry reads it again. */
   error: string | null
+  /** The text as generated, when the release ran an edited one. */
+  generated: string | null
 }
 
 /**
@@ -32,7 +35,7 @@ interface StoredPlaybook {
  * status moves on while there is none yet (a release opened before it started has no playbook), or on Retry.
  */
 function useStoredPlaybook(releaseId: string, status: ReleaseStatus | undefined): StoredPlaybook & { retry: () => void } {
-  const [read, setRead] = useState<StoredPlaybook>({ text: null, loaded: false, hidden: false, error: null })
+  const [read, setRead] = useState<StoredPlaybook>({ text: null, loaded: false, hidden: false, error: null, generated: null })
   const [tries, setTries] = useState(0)
   const have = read.text !== null
   useEffect(() => {
@@ -41,9 +44,9 @@ function useStoredPlaybook(releaseId: string, status: ReleaseStatus | undefined)
     void (async () => {
       try {
         const detail = await api.invoke('release:get', releaseId)
-        if (live) setRead({ text: detail.playbook, loaded: true, hidden: detail.playbookHidden === true, error: null })
+        if (live) setRead({ text: detail.playbook, loaded: true, hidden: detail.playbookHidden === true, error: null, generated: detail.playbookSource === 'edited' ? detail.playbookGenerated : null })
       } catch (err) {
-        if (live) setRead({ text: null, loaded: true, hidden: false, error: errorText(err) })
+        if (live) setRead({ text: null, loaded: true, hidden: false, error: errorText(err), generated: null })
       }
     })()
     return () => {
@@ -112,8 +115,10 @@ const PlaybookLine = memo(function PlaybookLine({ text, last, marked: pick }: { 
 
 /** The stored playbook, read-only, with the picked task marked; or why there is none. */
 function PlaybookPane({ releaseId, read, lines, mark, pick }: { releaseId: string; read: ReturnType<typeof useStoredPlaybook>; lines: string[]; mark: number | null; pick: number }) {
-  const { text, loaded, hidden, error, retry } = read
+  const { text, loaded, hidden, error, retry, generated } = read
   const [saved, setSaved] = useState<string | null>(null)
+  const [diff, setDiff] = useState(false)
+  const changes = useMemo(() => (diff && text !== null && generated !== null ? lineDiff(generated, text) : null), [diff, text, generated])
   const save = async () => {
     const out = await attempt("Couldn't save the playbook", () => api.invoke('release:savePlaybook', releaseId))
     if (out) setSaved(out.path)
@@ -122,6 +127,11 @@ function PlaybookPane({ releaseId, read, lines, mark, pick }: { releaseId: strin
     <section role="region" aria-label="Playbook" className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
       <div className="flex items-center gap-2">
         <h2 className="flex-1 text-[12px] font-semibold tracking-wide text-muted uppercase">Playbook</h2>
+        {text !== null && generated !== null && (
+          <Button size="sm" variant="ghost" aria-pressed={diff} onClick={() => setDiff((d) => !d)}>
+            {diff ? 'Hide diff' : 'Show diff'}
+          </Button>
+        )}
         {text !== null && (
           <Button size="sm" variant="ghost" onClick={() => void save()}>
             Save as .yml…
@@ -133,7 +143,15 @@ function PlaybookPane({ releaseId, read, lines, mark, pick }: { releaseId: strin
           Saved to {saved}
         </p>
       )}
-      {text !== null ? (
+      {changes ? (
+        <pre aria-label="Changes from the generated playbook" tabIndex={0} className="min-h-0 flex-1 overflow-auto rounded-lg bg-canvas/70 py-3 font-mono text-[11.5px] leading-[18px] whitespace-pre text-fg/85">
+          {changes.map((c, i) => (
+            <span key={i} data-testid={c.op === ' ' ? undefined : `diff-line-${c.op}`} className={`block px-3 ${c.op === '+' ? 'bg-ok/15 text-fg' : c.op === '-' ? 'bg-err/15 text-fg' : ''}`}>
+              {`${c.op} ${c.text}\n`}
+            </span>
+          ))}
+        </pre>
+      ) : text !== null ? (
         <pre tabIndex={0} className="min-h-0 flex-1 overflow-auto rounded-lg bg-canvas/70 py-3 font-mono text-[11.5px] leading-[18px] whitespace-pre text-fg/85">
           {lines.map((line, i) => (
             <PlaybookLine key={i} text={line} last={i === lines.length - 1} marked={i === mark ? pick : 0} />
@@ -256,6 +274,7 @@ export function PlaybookLogsPage() {
         </Button>
         <h1 className="text-[19px] font-semibold tracking-tight text-fg">Playbook & logs</h1>
         {summary && <span className="text-[13px] font-semibold text-fg/85">{summary.environmentName}</span>}
+        {summary?.playbookSource === 'edited' && <Badge tone="warn">Edited playbook</Badge>}
         {state && (
           <Badge tone={STATUS_TONE[state.status]} dot>
             {STATUS_WORD[state.status]}
