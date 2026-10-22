@@ -71,6 +71,18 @@ describe('ReleaseStore', () => {
     expect(f.releases.events(r.id, 0, 99999)).toHaveLength(10)
   })
 
+  it('caps terminal lines on their own, so the console never crowds out the step logs', async () => {
+    const term = (line: string): RunEventBody => ({ type: 'log', stepId: null, hostId: null, stream: 'term', line })
+    const { f, r } = await release(3)
+    f.releases.appendEvents(r.id, [term('t0'), log('l0'), term('t1')])
+    f.releases.appendEvents(r.id, [term('t2'), term('t3'), log('l1')])
+    // a fresh store counts what is already stored
+    const again = new ReleaseStore({ db: f.db, maxEvents: 3, regions: true })
+    again.appendEvents(r.id, [term('t4'), log('l2')])
+    const all = f.releases.events(r.id, 0, 100).flatMap((e) => (e.type === 'log' ? [`${e.stream}:${e.line}`] : [e.type]))
+    expect(all).toEqual(['term:t0', 'out:l0', 'term:t1', 'term:… the terminal view stops here (3 lines); the step logs go on', 'out:l1', 'out:l2'])
+  })
+
   it('drops log events past the cap with one log.truncated', async () => {
     const { f, r } = await release(5)
     f.releases.appendEvents(r.id, Array.from({ length: 4 }, (_, i) => log(`l${i}`)))

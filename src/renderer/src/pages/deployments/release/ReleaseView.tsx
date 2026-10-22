@@ -10,11 +10,37 @@ import { Badge } from '../../../ui/Badge'
 import { Button } from '../../../ui/Button'
 import { attempt, ConfirmDialog, type ConfirmRequest } from '../../../ui/common'
 import { RegionChip } from '../../../ui/RegionChip'
+import { Segmented } from '../../../ui/Segmented'
+import { readStored, writeStored } from '../../../ui/storage'
+import { AnsibleTerminal } from './AnsibleTerminal'
 import { AnsibleSteps } from './AnsibleSteps'
 import { Celebrate } from './Celebrate'
 import { Pipeline } from './Pipeline'
 import { canRollback, duration, OperationBadge, STATUS_TONE, STATUS_WORD, useRollback } from './ReleaseHistory'
 import { clock, useNow } from './StepChip'
+
+type ViewMode = 'steps' | 'terminal'
+const VIEW_KEY = 'opsdeck.release.view'
+const VIEWS = [
+  { id: 'terminal', label: 'Terminal' },
+  { id: 'steps', label: 'Steps' },
+] as const
+
+/**
+ * Steps or ansible's own console; the console first. A choice made on the switch is remembered across releases;
+ * `show` (picking a step, opening a failure) changes only this view.
+ */
+function useViewMode(): { view: ViewMode; choose: (v: ViewMode) => void; show: (v: ViewMode) => void } {
+  const [view, show] = useState<ViewMode>(() => (readStored(VIEW_KEY) === 'steps' ? 'steps' : 'terminal'))
+  return {
+    view,
+    show,
+    choose: (v) => {
+      show(v)
+      writeStored(VIEW_KEY, v)
+    },
+  }
+}
 
 const CANCEL_MESSAGE = 'Cancel the release? Running steps are stopped and the lock is released.'
 /** Past releases whose step times feed the ETA. */
@@ -152,6 +178,7 @@ export function ReleaseView({ releaseId }: { releaseId: string }) {
   const cancelling = useCancelling(releaseId)
   const rollback = useRollback()
   const sawRunning = useRef(false)
+  const { view, choose: chooseView, show: showView } = useViewMode()
 
   useEffect(() => startReleaseSync(), [])
   useEffect(() => retainRelease(releaseId), [releaseId])
@@ -277,7 +304,10 @@ export function ReleaseView({ releaseId }: { releaseId: string }) {
         state={state}
         selected={selected}
         cancelling={cancelling && running}
-        onSelect={setSelected}
+        onSelect={(id) => {
+          setSelected(id)
+          if (id) showView('steps')
+        }}
       />
 
       {state.result?.error && !failed.length && (
@@ -286,14 +316,32 @@ export function ReleaseView({ releaseId }: { releaseId: string }) {
         </p>
       )}
 
-      <AnsibleSteps
-        releaseId={releaseId}
-        state={state}
-        plays={plays}
-        selected={selected}
-        cancelling={cancelling && running}
-        onShowLog={showLog}
-      />
+      <div className="flex items-center">
+        <Segmented label="Release view" size="sm" options={VIEWS} value={view} onChange={chooseView} controls="release-view-panel" />
+      </div>
+      {view === 'terminal' && failed.length > 0 && (
+        // the live region already announces the failure
+        <p data-testid="terminal-failure" className="flex flex-wrap items-center gap-x-2 text-[12.5px] text-err">
+          {failed.map(({ chip, host }) => `${chip.label} failed${host ? ` on ${hostLabel(host)}` : ''}`).join(', ')}.
+          <button type="button" onClick={() => showView('steps')} className="font-medium text-fg underline underline-offset-2">
+            Open in Steps
+          </button>
+        </p>
+      )}
+      <div id="release-view-panel" className="flex min-h-0 flex-col">
+        {view === 'terminal' ? (
+          <AnsibleTerminal releaseId={releaseId} className="h-[60vh]" />
+        ) : (
+          <AnsibleSteps
+            releaseId={releaseId}
+            state={state}
+            plays={plays}
+            selected={selected}
+            cancelling={cancelling && running}
+            onShowLog={showLog}
+          />
+        )}
+      </div>
 
       <p aria-live="polite" role="status" className="sr-only">
         {message}

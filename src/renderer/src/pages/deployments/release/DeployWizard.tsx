@@ -17,6 +17,7 @@ import { Segmented } from '../../../ui/Segmented'
 import { createStore } from '../../../ui/store'
 import { CommitList } from './CommitList'
 import { PlaybookReview } from './PlaybookReview'
+import { AnsibleTerminal } from './AnsibleTerminal'
 import { PreflightChecklist } from './PreflightChecklist'
 import { CheckoutNotice, DatabaseRows, ServicePicker, SkipRows } from './ServicePicker'
 import { ReleaseView } from './ReleaseView'
@@ -86,6 +87,7 @@ export function DeployWizard({
   const [notes, setNotes] = useState('')
   const [step, setStep] = useState<Step>('pick')
   const [releaseId, setReleaseId] = useState<string | null>(null)
+  const [showOutput, setShowOutput] = useState(false)
   const [redeploy, setRedeploy] = useState(false)
   // Skippable services the person chose to deploy anyway; sent as `forceServiceIds` to the preview and the start.
   const [force, setForce] = useState<Set<string>>(() => new Set())
@@ -443,6 +445,19 @@ export function DeployWizard({
                       : null,
                 }}
               />
+              {releaseId && (
+                <div className="flex flex-col gap-2">
+                  <button
+                    type="button"
+                    aria-expanded={showOutput}
+                    onClick={() => setShowOutput((v) => !v)}
+                    className="w-fit text-[12px] text-muted underline-offset-2 hover:text-fg hover:underline"
+                  >
+                    {showOutput ? 'Hide ansible output' : 'Show ansible output'}
+                  </button>
+                  {showOutput && <AnsibleTerminal releaseId={releaseId} className="h-64 shrink-0" />}
+                </div>
+              )}
               {picked.map((g) => (
                 <DatabaseRows key={`db:${g.checkout.id}`} checkoutId={g.checkout.id} report={report} />
               ))}

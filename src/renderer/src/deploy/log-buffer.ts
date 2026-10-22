@@ -87,7 +87,7 @@ export class LogBuffer {
   push(events: RunEvent[]): void {
     for (const e of events) {
       if (e.type === 'log.truncated') this.truncated += e.dropped
-      else if (e.type === 'log') this.add(e.line, e.stepId, e.hostId, e.stream, e.task)
+      else if (e.type === 'log' && e.stream !== 'term') this.add(e.line, e.stepId, e.hostId, e.stream, e.task)
     }
   }
 

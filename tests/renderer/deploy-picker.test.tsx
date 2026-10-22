@@ -297,6 +297,21 @@ describe('deploy wizard', () => {
     expect(within(dialog).getByRole('button', { name: 'Review playbook' })).toBeDisabled()
   })
 
+  it('Show ansible output opens the preflight\'s console, read-only, with what ansible printed', async () => {
+    const term = (line: string) => ({ type: 'log' as const, stepId: null, hostId: null, stream: 'term' as const, line })
+    const { user, dialog } = await mount({
+      preselect: ['s1'],
+      persisted: events([term('TASK [tools check]'), term('fatal: [app1]: FAILED! rc=127'), { type: 'preflight.done', report: report() }]),
+    })
+    await preflight(user, dialog)
+    expect(within(dialog).queryByTestId('ansible-terminal')).toBeNull()
+    const toggle = await within(dialog).findByRole('button', { name: 'Show ansible output' })
+    await user.click(toggle)
+    expect(within(dialog).getByTestId('ansible-terminal')).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Hide ansible output' })).toHaveAttribute('aria-expanded', 'true')
+    expect(within(dialog).queryByText('Waiting for ansible output')).toBeNull()
+  })
+
   it('commits are grouped by service and show +n more when unknown', async () => {
     const list = Array.from({ length: 12 }, (_, i) => commit(i + 1))
     const done = report({

@@ -470,8 +470,10 @@ export type RunEventBody =
   /**
    * `task` is the Ansible task the line came from (redacted, as in its `task.done`), set on a task's own output.
    * Streamed lines and lines from releases before it have none; they are only their step's.
+   * `term` lines are ansible's console view for the Terminal tab (no step, never in the step logs); releases from
+   * before it have none.
    */
-  | { type: 'log'; stepId: string | null; hostId: string | null; stream: 'out' | 'err' | 'ansible'; line: string; task?: string }
+  | { type: 'log'; stepId: string | null; hostId: string | null; stream: 'out' | 'err' | 'ansible' | 'term'; line: string; task?: string }
   | { type: 'log.truncated'; dropped: number }
   | { type: 'lock.busy'; hostId: string; holder: LockHolder; stale: boolean; text: string }
   | { type: 'rollback.started'; deploymentRunIds: string[] }

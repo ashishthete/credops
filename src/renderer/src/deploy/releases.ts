@@ -58,6 +58,9 @@ const open = new Set<string>()
 /** Views holding a release open through retainRelease. */
 const holds = new Map<string, number>()
 const buffers = new Map<string, LogBuffer>()
+/** Per open release, its terminal view: ansible's console lines (`term` logs), kept apart from the step logs. */
+const terms = new Map<string, string[]>()
+const termListeners = new Map<string, Set<(lines: string[], reset: boolean) => void>>()
 /** Per open release, bumped by each batch of log lines, so a view of the buffer re-renders. */
 const logVersions = createStore<Record<string, number>>({})
 /**
@@ -79,9 +82,25 @@ export function resetReleases(): void {
   open.clear()
   holds.clear()
   buffers.clear()
+  terms.clear()
+  termListeners.clear()
   logVersions.set({})
   cancels.set({})
   releaseStore.set(EMPTY)
+}
+
+/**
+ * The terminal view of an open release: `fn` gets every line so far at once, then each new batch; `reset` says the
+ * release was opened again and its lines start over.
+ */
+export function onTermLines(releaseId: string, fn: (lines: string[], reset: boolean) => void): () => void {
+  let set = termListeners.get(releaseId)
+  if (!set) termListeners.set(releaseId, (set = new Set()))
+  set.add(fn)
+  fn([...(terms.get(releaseId) ?? [])], true)
+  return () => {
+    set.delete(fn)
+  }
 }
 
 /** Log lines of an open release, in seq order, including those replayed when it opens. */
@@ -117,7 +136,15 @@ function ingest(id: string, batch: DeployRunEvent[]): void {
   if (next !== prev || pre !== s.preflight[id]) {
     releaseStore.set({ ...s, pipelines: { ...s.pipelines, [id]: next }, preflight: { ...s.preflight, [id]: pre } })
   }
-  const logs = applied.filter((e) => e.type === 'log' || e.type === 'log.truncated')
+  const term = applied.flatMap((e) => (e.type === 'log' && e.stream === 'term' ? [e.line] : []))
+  if (term.length) {
+    const lines = terms.get(id)
+    if (lines) {
+      lines.push(...term)
+      termListeners.get(id)?.forEach((fn) => fn(term, false))
+    }
+  }
+  const logs = applied.filter((e) => (e.type === 'log' && e.stream !== 'term') || e.type === 'log.truncated')
   if (logs.length) {
     const buffer = buffers.get(id)
     if (buffer) {
@@ -170,6 +197,8 @@ export async function openRelease(id: string): Promise<void> {
   fetching.delete(id)
   // Events replay from seq 1, so the log starts over too.
   buffers.set(id, new LogBuffer())
+  terms.set(id, [])
+  termListeners.get(id)?.forEach((fn) => fn([], true))
   const current = () => gen === generation && opens.get(id) === token
   try {
     const detail = await api.invoke('release:get', id)
@@ -209,6 +238,7 @@ export function closeRelease(id: string): void {
   open.delete(id)
   holds.delete(id)
   buffers.delete(id)
+  terms.delete(id)
   const { [id]: _v, ...versions } = logVersions.get()
   logVersions.set(versions)
   const s = releaseStore.get()

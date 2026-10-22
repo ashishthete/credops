@@ -11,6 +11,10 @@ import type { ReleaseDetail, RunEvent, RunEventBody } from '../../src/shared/dep
 import { events, healthFailure, OK_RUN, REL, releaseDetail } from './fixtures/release-events'
 import { emitBridgeEvent, mockBridge } from './helpers'
 
+// these tests read the Steps view; the release page opens on the Terminal by default
+beforeEach(() => localStorage.setItem('opsdeck.release.view', 'steps'))
+afterEach(() => localStorage.removeItem('opsdeck.release.view'))
+
 // framer-motion caches matchMedia, so reduced motion is driven through its hook directly.
 const reduced = vi.hoisted(() => ({ on: false }))
 vi.mock('framer-motion', async (importOriginal) => ({
@@ -227,5 +231,36 @@ describe('pipeline view', () => {
     await view(healthFailure(true).slice(0, -3))
     expect(screen.getByText('rolling back')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument()
+  })
+})
+
+describe('release view switch', () => {
+  beforeEach(() => localStorage.removeItem('opsdeck.release.view'))
+  const radio = (name: string) => screen.getByRole('radio', { name })
+
+  it('opens on ansible\'s console, and a choice on the switch is remembered', async () => {
+    await view(OK_RUN.slice(0, 6))
+    expect(radio('Terminal')).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('ansible-terminal')).toBeInTheDocument()
+    act(() => radio('Steps').click())
+    expect(screen.queryByTestId('ansible-terminal')).toBeNull()
+    expect(localStorage.getItem('opsdeck.release.view')).toBe('steps')
+  })
+
+  it('a failed release names the failure over the console and opens it in Steps, without changing the default', async () => {
+    await view(healthFailure(false))
+    const alert = screen.getByTestId('terminal-failure')
+    expect(alert).toHaveTextContent(/Health failed on app2/)
+    act(() => within(alert).getByRole('button', { name: 'Open in Steps' }).click())
+    expect(screen.getByRole('region', { name: 'Health on app2 failed' })).toBeInTheDocument()
+    expect(localStorage.getItem('opsdeck.release.view')).toBeNull()
+  })
+
+  it('picking a step in the pipeline shows it in Steps', async () => {
+    await view(OK_RUN.slice(0, 6))
+    const first = document.querySelector<HTMLElement>('[data-step]')!
+    act(() => first.click())
+    expect(radio('Steps')).toHaveAttribute('aria-checked', 'true')
+    expect(localStorage.getItem('opsdeck.release.view')).toBeNull()
   })
 })

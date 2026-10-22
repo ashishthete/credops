@@ -1,7 +1,8 @@
 import { act } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
-import { closeRelease, isCancelling, markCancelling, onLogEvents, openRelease, releaseStore, resetReleases, startReleaseSync } from '../../src/renderer/src/deploy/releases'
+import { closeRelease, isCancelling, markCancelling, onLogEvents, onTermLines, openRelease, releaseStore, resetReleases, startReleaseSync } from '../../src/renderer/src/deploy/releases'
 import { initialPipeline, reducePipeline } from '../../src/renderer/src/deploy/pipeline'
+import { LogBuffer } from '../../src/renderer/src/deploy/log-buffer'
 import type { ReleaseSummary, RunEvent } from '../../src/shared/deploy'
 import { events, healthFailure, OK_RUN, REL, releaseDetail } from './fixtures/release-events'
 import { emitBridgeEvent, mockBridge } from './helpers'
@@ -52,6 +53,36 @@ describe('release store', () => {
     // Live batches append after the rehydrated ones.
     closeRelease(REL)
     expect(releaseStore.get().pipelines[REL]).toBeUndefined()
+  })
+
+  it('keeps terminal lines apart from the step logs, replays them and starts over when reopened', async () => {
+    const term = (line: string) => ({ type: 'log' as const, stepId: null, hostId: null, stream: 'term' as const, line })
+    const all = events([...OK_RUN.slice(0, 3), term('TASK [lock]'), { type: 'log', stepId: null, hostId: 'h1', stream: 'out', line: 'step' }, term('ok: [web-1]'), ...OK_RUN.slice(3, 4)])
+    world(all.slice(0, 5))
+    const stop = startReleaseSync()
+    const logs: string[] = []
+    onLogEvents(REL, (batch) => logs.push(...batch.map((e) => (e.type === 'log' ? e.line : ''))))
+    const seen: [string[], boolean][] = []
+    const off = onTermLines(REL, (lines, reset) => seen.push([lines, reset]))
+    expect(seen).toEqual([[[], true]])
+    await act(() => openRelease(REL))
+    act(() => emitBridgeEvent('deploy:event', all.slice(5)))
+    expect(seen).toEqual([[[], true], [[], true], [['TASK [lock]'], false], [['ok: [web-1]'], false]])
+    expect(logs).toEqual(['step'])
+    // a late subscriber gets every line so far at once
+    const late: [string[], boolean][] = []
+    onTermLines(REL, (lines, reset) => late.push([lines, reset]))()
+    expect(late).toEqual([[['TASK [lock]', 'ok: [web-1]'], true]])
+    off()
+    stop()
+  })
+
+  it('the log buffer leaves terminal lines out', () => {
+    const b = new LogBuffer()
+    b.push([...events([{ type: 'log', stepId: 's', hostId: null, stream: 'term', line: 'TASK [x]' }, { type: 'log', stepId: 's', hostId: null, stream: 'out', line: 'kept' }])])
+    expect(b.count({})).toBe(1)
+    expect(JSON.stringify(b.slice(0, 10, {}))).toContain('kept')
+    expect(JSON.stringify(b.slice(0, 10, {}))).not.toContain('TASK [x]')
   })
 
   it('live batch appends', async () => {

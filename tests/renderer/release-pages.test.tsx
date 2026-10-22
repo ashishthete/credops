@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { initialPipeline, reducePipeline } from '../../src/renderer/src/deploy/pipeline'
 import { resetReleases } from '../../src/renderer/src/deploy/releases'
 import { allRows, taskRows } from '../../src/renderer/src/deploy/task-rows'
@@ -10,6 +10,10 @@ import type { ReleaseDetail, RunEvent, RunEventBody, TaskState } from '../../src
 import { playbookSteps } from '../../src/shared/playbook-steps'
 import { events, flowDetail, flowPlaybookOf, healthFailure, OK_RUN, playbookOf, REL, releaseDetail } from './fixtures/release-events'
 import { emitBridgeEvent, mockBridge } from './helpers'
+
+// these tests read the Steps view; the release page opens on the Terminal by default
+beforeEach(() => localStorage.setItem('opsdeck.release.view', 'steps'))
+afterEach(() => localStorage.removeItem('opsdeck.release.view'))
 
 const flush = () => act(async () => {})
 

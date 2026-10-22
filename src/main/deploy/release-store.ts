@@ -171,6 +171,8 @@ export class ReleaseStore {
   private readonly db: Db
   private readonly now: () => Date
   private readonly maxEvents: number
+  /** Per release, its stored log and terminal line counts; read from the table once. */
+  private readonly logCounts = new Map<string, { logs: number; term: number }>()
   private readonly withRegions: boolean
   /** Logs dropped since the last `log.truncated`, per release; flushed with the next non-log event. */
   private readonly dropped = new Map<string, number>()
@@ -425,7 +427,14 @@ export class ReleaseStore {
   appendEvents(releaseId: string, bodies: RunEventBody[]): RunEvent[] {
     this.row(releaseId)
     return this.transaction(() => {
-      let logs = (this.db.prepare("SELECT COUNT(*) AS n FROM run_events WHERE release_id = ? AND type = 'log'").get(releaseId) as { n: number }).n
+      // terminal lines have their own cap, so the console view never crowds out the step logs (counted once, then kept)
+      const counts =
+        this.logCounts.get(releaseId) ??
+        (this.db
+          .prepare("SELECT COALESCE(SUM(json_extract(payload, '$.stream') IS NOT 'term'), 0) AS logs, COALESCE(SUM(json_extract(payload, '$.stream') = 'term'), 0) AS term FROM run_events WHERE release_id = ? AND type = 'log'")
+          .get(releaseId) as { logs: number; term: number })
+      let logs = counts.logs
+      let term = counts.term
       let seq = (this.db.prepare('SELECT COALESCE(MAX(seq), 0) AS s FROM run_events WHERE release_id = ?').get(releaseId) as { s: number }).s
       let dropped = this.dropped.get(releaseId) ?? 0
       const out: RunEvent[] = []
@@ -436,7 +445,13 @@ export class ReleaseStore {
         out.push(ev)
       }
       for (const body of bodies) {
-        if (body.type === 'log') {
+        if (body.type === 'log' && body.stream === 'term') {
+          if (term >= this.maxEvents) continue
+          if (++term === this.maxEvents) {
+            put({ ...body, line: `… the terminal view stops here (${this.maxEvents} lines); the step logs go on` })
+            continue
+          }
+        } else if (body.type === 'log') {
           if (logs >= this.maxEvents) {
             dropped++
             continue
@@ -450,6 +465,7 @@ export class ReleaseStore {
       }
       if (dropped > 0) this.dropped.set(releaseId, dropped)
       else this.dropped.delete(releaseId)
+      this.logCounts.set(releaseId, { logs, term })
       return out
     })
   }

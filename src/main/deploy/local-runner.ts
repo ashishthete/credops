@@ -13,6 +13,7 @@ import type { PreparedHosts } from './hostkeys'
 import type { startTap } from './log-tap'
 import type { DeployPlan, DeployRunner, RunHandle, RunOutcome, RunSecrets } from './runner'
 import { toolingError } from './tooling'
+import { AnsibleTerm, type TermLine } from './term'
 import { uuidv7 } from './uuidv7'
 
 /* Orchestration only: every piece it calls lives in generate / events / agent / hostkeys / log-tap. */
@@ -239,6 +240,10 @@ export class LocalRunner implements DeployRunner {
       await write('ansible.cfg', generateAnsibleCfg(effective, rundir))
 
       const translator = new EventTranslator({ plan: effective, secrets: () => raw, now })
+      const term = new AnsibleTerm(effective)
+      const termOut = (ls: TermLine[]): void => {
+        for (const t of ls) send({ type: 'log', stepId: null, hostId: t.hostId, stream: 'term', line: cut(red(t.text)) })
+      }
 
       // 5. live log taps
       if (prepared) {
@@ -254,6 +259,7 @@ export class LocalRunner implements DeployRunner {
                 const s = parseStreamLine(line)
                 // a custom step's own status markers settle the step; they are not log text
                 if (s && /^c_\d{1,3}$/.test(s.kind) && ['OD-STEP', 'OD-SKIP'].includes(parseMarker(s.text)?.mark ?? '')) return
+                termOut(term.tap(line, h.hostId))
                 const dep = s ? plan.deployments.find((d) => d.runId === s.runId) : undefined
                 send({
                   type: 'log',
@@ -271,7 +277,7 @@ export class LocalRunner implements DeployRunner {
 
       // 6. ansible
       if (effective.deployments.length > 0 && !state.cancelRequested) {
-        const exit = await this.runAnsible(ansible, rundir, tools, secrets, effective, translator, send, red, state)
+        const exit = await this.runAnsible(ansible, rundir, tools, secrets, effective, { translator, term, termOut }, send, red, state)
         outcome.exitCode = exit.code
         outcome.signal = exit.signal
         outcome.cancelled = state.cancelRequested
@@ -307,7 +313,7 @@ export class LocalRunner implements DeployRunner {
     tools: Tooling,
     secrets: RunSecrets,
     plan: DeployPlan,
-    translator: EventTranslator,
+    view: { translator: EventTranslator; term: AnsibleTerm; termOut: (ls: TermLine[]) => void },
     send: (b: RunEventBody) => void,
     red: (s: string) => string,
     state: RunState,
@@ -334,11 +340,14 @@ export class LocalRunner implements DeployRunner {
         return reject(err)
       }
       state.child = child
+      const { translator, term, termOut } = view
       const out = lineSplitter((l) => {
         for (const b of translator.feed(l)) send(b)
+        termOut(term.stdout(l))
       })
       const err = lineSplitter((l) => {
         if (l.trim() === '') return
+        termOut(term.stderr(l))
         send({ type: 'log', stepId: null, hostId: null, stream: 'ansible', line: cut(red(l)) })
       })
       child.stdout.on('data', (c) => out.push(c))

@@ -18,6 +18,7 @@ export class FakeTerminal {
   write: Mock<(...args: any[]) => any> = vi.fn()
   dispose: Mock<(...args: any[]) => any> = vi.fn()
   focus: Mock<(...args: any[]) => any> = vi.fn()
+  reset: Mock<(...args: any[]) => any> = vi.fn()
   getSelection: Mock<(...args: any[]) => any> = vi.fn(() => '')
   dataListeners: ((d: string) => void)[] = []
   selectionListeners: (() => void)[] = []

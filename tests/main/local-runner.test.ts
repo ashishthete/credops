@@ -105,7 +105,13 @@ describe('LocalRunner', () => {
     expect(started[0]).toBe('host:host-od-1:lock')
     expect(started).toContain(`${R2}:checkout`)
     expect(started.at(-1)).toBe('host:host-od-1:unlock')
-    expect(t.events.at(-1)).toMatchObject({ type: 'step.done', stepId: 'host:host-od-1:unlock', state: 'ok' })
+    expect(t.events.filter((e) => !(e.type === 'log' && e.stream === 'term')).at(-1)).toMatchObject({ type: 'step.done', stepId: 'host:host-od-1:unlock', state: 'ok' })
+    // ansible's console view comes along as term lines, ending with the recap
+    const term = t.events.flatMap((e) => (e.type === 'log' && e.stream === 'term' ? [e] : []))
+    expect(term.every((e) => e.stepId === null)).toBe(true)
+    expect(term.some((e) => e.line.startsWith('TASK ['))).toBe(true)
+    expect(term.some((e) => /^(ok|changed): \[/.test(e.line))).toBe(true)
+    expect(term.some((e) => e.line === 'PLAY RECAP')).toBe(true)
   })
 
   it('no secret reaches disk, argv, events or audit', async () => {
@@ -228,8 +234,10 @@ describe('LocalRunner', () => {
     expect(tap.releaseId).toBe(planFixture().releaseId)
     tap.onLine(`${R2}:build\tStep 3/9 : RUN make with sekret-AAA-1`)
     tap.onLine('something unframed')
-    const logs = t.events.filter((e): e is Extract<RunEventBody, { type: 'log' }> => e.type === 'log')
+    const logs = t.events.filter((e): e is Extract<RunEventBody, { type: 'log' }> => e.type === 'log' && e.stream !== 'term')
     expect(logs).toHaveLength(2)
+    const term = t.events.flatMap((e) => (e.type === 'log' && e.stream === 'term' ? [e.line] : []))
+    expect(term).toEqual(['label od-1 | Step 3/9 : RUN make with ‹redacted›', 'label od-1 | something unframed'])
     expect(logs[0]).toMatchObject({ stepId: `${R2}:build`, stream: 'out', hostId: 'host-od-1' })
     expect(logs[0].line).not.toContain('sekret-AAA-1')
     expect(logs[1]).toMatchObject({ stepId: null })
@@ -269,7 +277,9 @@ describe('LocalRunner', () => {
     t.tap.taps[0].onLine(`${R2}:c_0\tOD-SKIP`)
     t.tap.taps[0].onLine(`${R2}:c_0\tOD-STEP rc=3`)
     t.tap.taps[0].onLine(`${R2}:c_0\tmigrating`)
-    expect(t.events.filter((e) => e.type === 'log').map((e) => (e as { line: string }).line)).toEqual(['migrating'])
+    const lines = (stream: (s: string) => boolean) => t.events.flatMap((e) => (e.type === 'log' && stream(e.stream) ? [e.line] : []))
+    expect(lines((s) => s !== 'term')).toEqual(['migrating'])
+    expect(lines((s) => s === 'term')).toEqual(['label od-1 | migrating'])
     t.runner.cancel(h.runId)
     await h.done
   })
