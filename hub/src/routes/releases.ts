@@ -79,13 +79,25 @@ export function registerReleases(app: FastifyInstance, deps: { releases: HubRele
     async (req, reply) => reply.code(201).send(await releases.preflightOperation(req.user, req.body)),
   )
 
-  app.post<{ Params: { id: string }; Body: { text: string } }>(
+  app.post<{ Params: { id: string }; Body: { text: string; forceServiceIds?: string[] } }>(
     '/api/v1/releases/:id/validate-edit',
     {
       onRequest,
-      schema: { params: idParams, body: { type: 'object', required: ['text'], additionalProperties: false, properties: { text: { type: 'string', maxLength: 500_000 } } } },
+      schema: {
+        params: idParams,
+        body: {
+          type: 'object',
+          required: ['text'],
+          additionalProperties: false,
+          properties: {
+            text: { type: 'string', maxLength: 500_000 },
+            // The same services the preview forced: the hash binds them.
+            forceServiceIds: { type: 'array', maxItems: 500, items: { type: 'string', pattern: UUID } },
+          },
+        },
+      },
     },
-    async (req) => releases.validateEdit(req.user, req.params.id, req.body.text),
+    async (req) => releases.validateEdit(req.user, req.params.id, req.body.text, req.body.forceServiceIds),
   )
 
   app.post<{ Params: { id: string }; Body: ReleaseConfirm | null }>(

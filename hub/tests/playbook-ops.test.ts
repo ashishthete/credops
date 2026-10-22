@@ -159,14 +159,12 @@ describe('validate-edit and edited start', () => {
   it('403 with the setting off, 403 for a maintainer with it on, 200 for an admin with it on', async () => {
     r = await rig()
     ;(r.hub.app.releases as any).service.validateEdit = async () => ok
-    ;(r.hub.app.releases as any).service.preflightOperation = async () => ({ releaseId: 'x' })
     const id = await seed(r)
     const url = `/api/v1/releases/${id}/validate-edit`
     expect((await r.call(r.admin, 'POST', url, { text: 'a' })).statusCode).toBe(403)
     await r.hub.close()
     r = await rig({ allowPlaybookEdits: true })
     ;(r.hub.app.releases as any).service.validateEdit = async () => ok
-    ;(r.hub.app.releases as any).service.preflightOperation = async () => ({ releaseId: 'x' })
     const id2 = await seed(r)
     const url2 = `/api/v1/releases/${id2}/validate-edit`
     expect((await r.call(r.bob, 'POST', url2, { text: 'a' })).statusCode).toBe(403)
@@ -293,7 +291,6 @@ describe('operations: preflight and start', () => {
     const svc = await setup()
     let called = false
     svc.preflightOperation = async () => ((called = true), { releaseId: 'x' })
-    svc.validateEdit = async () => ({ ok: true })
     const res = await r!.call(r!.carol, 'POST', URL_PF, body(RB_LOCK))
     expect(res.statusCode).toBe(403)
     expect(called).toBe(false)
@@ -303,14 +300,12 @@ describe('operations: preflight and start', () => {
   it('404s for a runbook of another environment', async () => {
     const svc = await setup()
     svc.preflightOperation = async () => ({ releaseId: 'x' })
-    svc.validateEdit = async () => ({ ok: true })
     expect((await r!.call(r!.admin, 'POST', URL_PF, body(RB_OTHER))).statusCode).toBe(404)
     expect(lockOf()).toBeUndefined()
   })
 
   it('takes the lock for a locking runbook, binds it to the release, and frees it when the service fails', async () => {
     const svc = await setup()
-    svc.validateEdit = async () => ({ ok: true })
     const rel = seedOp(true)
     svc.preflightOperation = async () => ({ releaseId: rel })
     const ok = await r!.call(r!.admin, 'POST', URL_PF, body(RB_LOCK))
@@ -328,7 +323,6 @@ describe('operations: preflight and start', () => {
 
   it('takes no lock for a runbook that does not lock, and start does not need one', async () => {
     const svc = await setup()
-    svc.validateEdit = async () => ({ ok: true })
     const rel = seedOp(false)
     svc.preflightOperation = async () => {
       expect(lockOf()).toBeUndefined()
@@ -367,5 +361,65 @@ describe('operations: preflight and start', () => {
     expect(res.statusCode).toBe(403)
     expect(started).toBe(false)
     expect(r!.hub.audit.list({ actions: ['access.denied'] }).length).toBeGreaterThan(0)
+  })
+})
+
+describe('the Hub calls the release service itself: no 503 seam', () => {
+  const RB = 'b4444444-4444-4444-8444-444444444444'
+  const statusBook = { id: RB, name: 'status', description: '', targetServiceIds: [SVC_WEB], items: [{ type: 'builtin' as const, builtin: 'status' as const }], params: [], lock: false, notify: false }
+
+  it('a runbook runs end to end through the real service: preflight, preview, start with the reviewed hash', async () => {
+    r = await rig()
+    const m = envManifest()
+    m.runbooks = [statusBook]
+    expect((await r.call(r.admin, 'PUT', `/api/v1/admin/environments/${ENV_ID}`, m)).statusCode).toBe(200)
+    const pf = await r.call(r.bob, 'POST', '/api/v1/releases/preflight-operation', { environmentId: ENV_ID, runbookId: RB, serviceIds: [SVC_WEB], params: {} })
+    expect(pf.statusCode, pf.body).toBe(201)
+    const id = pf.json().releaseId as string
+    await r.hub.app.releases.whenIdle()
+    const pv = await r.call(r.bob, 'GET', `/api/v1/releases/${id}/playbook`)
+    expect(pv.statusCode, pv.body).toBe(200)
+    const st = await r.call(r.bob, 'POST', `/api/v1/releases/${id}/start`, { playbookSha256: pv.json().sha256 })
+    expect(st.statusCode, st.body).toBe(204)
+    await r.hub.app.releases.whenIdle()
+    const d = (await r.call(r.bob, 'GET', `/api/v1/releases/${id}`)).json()
+    expect(d.operation).toMatchObject({ runbookId: RB, name: 'status' })
+    expect(d.status).toBe('succeeded')
+    expect(r.fr.calls.at(-1)!.plan.releaseId).toBe(id)
+  })
+
+  it("validate-edit runs the real validator; its hash is the preview's and the start's, with the same forced services", async () => {
+    r = await rig({ allowPlaybookEdits: true })
+    const pf = await r.call(r.admin, 'POST', '/api/v1/releases/preflight', { environmentId: ENV_ID, serviceIds: [SVC_WEB], bump: 'none', options: OPTIONS })
+    expect(pf.statusCode, pf.body).toBe(201)
+    const id = pf.json().releaseId as string
+    await r.hub.app.releases.whenIdle()
+    const pv = await r.call(r.admin, 'GET', `/api/v1/releases/${id}/playbook?forceServiceIds=${SVC_WEB}`)
+    expect(pv.statusCode, pv.body).toBe(200)
+    const { playbook, sha256 } = pv.json() as { playbook: string; sha256: string }
+    const url = `/api/v1/releases/${id}/validate-edit`
+    const same = await r.call(r.admin, 'POST', url, { text: playbook, forceServiceIds: [SVC_WEB] })
+    expect(same.statusCode, same.body).toBe(200)
+    expect(same.json()).toEqual({ ok: true, canonical: playbook, sha256 })
+    // Generated content may not change: the validator answers with the line at fault.
+    const bad = await r.call(r.admin, 'POST', url, { text: playbook.replace('"hosts"', '"hostz"') })
+    expect(bad.statusCode, bad.body).toBe(200)
+    expect(bad.json().ok).toBe(false)
+    expect((await r.call(r.admin, 'POST', url, { text: playbook, forceServiceIds: ['not-an-id'] })).statusCode).toBe(400)
+    const st = await r.call(r.admin, 'POST', `/api/v1/releases/${id}/start`, { editedPlaybook: playbook, playbookSha256: sha256, forceServiceIds: [SVC_WEB] })
+    expect(st.statusCode, st.body).toBe(204)
+    await r.hub.app.releases.whenIdle()
+    expect(r.fr.call('release').releaseId).toBe(id)
+  })
+
+  it('an edited start bound to a stale hash is refused by the service', async () => {
+    r = await rig({ allowPlaybookEdits: true })
+    const pf = await r.call(r.admin, 'POST', '/api/v1/releases/preflight', { environmentId: ENV_ID, serviceIds: [SVC_WEB], bump: 'none', options: OPTIONS })
+    const id = pf.json().releaseId as string
+    await r.hub.app.releases.whenIdle()
+    const { playbook } = (await r.call(r.admin, 'GET', `/api/v1/releases/${id}/playbook`)).json() as { playbook: string }
+    const st = await r.call(r.admin, 'POST', `/api/v1/releases/${id}/start`, { editedPlaybook: playbook, playbookSha256: 'f'.repeat(64) })
+    expect(st.statusCode).toBe(409)
+    expect(r.fr.kinds).not.toContain('release')
   })
 })

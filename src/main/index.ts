@@ -379,6 +379,7 @@ if (!app.requestSingleInstanceLock()) {
         envs: envStore,
         deploys,
         services,
+        runbooks,
         knownHosts,
         secrets: secrets!,
         resolve: (hostId, environmentId) => resolve(hostId, environmentId),

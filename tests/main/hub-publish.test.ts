@@ -339,6 +339,21 @@ describe('HubPublisher by Hub capabilities', () => {
     expect((put.mock.calls[0][1] as HubEnvManifest).schema).toBe(2)
   })
 
+  it('publishes the runbooks it is given to a schema 2 Hub', async () => {
+    const get = vi.fn(async (_p: string) => ({ capabilities: { manifestSchema: 2, playbookEdits: false } }))
+    const s = await setup()
+    s.trust('203.0.113.9', 2222)
+    s.trust('10.0.0.7', 22)
+    const dep = s.f.deploys.list(s.f.prod.id)[0]
+    const svc = s.f.services.create({ kind: 'service', environmentId: s.f.prod.id, name: 'web', deploymentId: dep.id })
+    const runbooks = new RunbookStore({ db: s.f.db, audit: s.f.audit, vault: s.f.vault })
+    runbooks.create({ environmentId: s.f.prod.id, name: 'Restart', description: '', targetServiceIds: [svc.id], items: [{ type: 'builtin', builtin: 'restart' }], params: [], lock: true, notify: false }, { osUser: 'a', machine: 'm' })
+    const put = vi.fn(async (_p: string, _b: unknown) => ({ manifestHash: 'h', missingSecrets: [] }))
+    const pub = new HubPublisher({ ...s.deps, runbooks, audit: s.f.audit, vault: s.f.vault, client: () => ({ put: put as never, del: vi.fn(), get: get as never }), hubId: () => 'hub-1' })
+    await pub.publish(s.f.prod.id)
+    expect((put.mock.calls[0][1] as HubEnvManifest).runbooks?.map((r) => r.name)).toEqual(['Restart'])
+  })
+
   it('counts a Hub with no capabilities as schema 1 and refuses a custom step before sending', async () => {
     const { f, pub, put } = await publisher(async () => ({ hubId: 'x' }))
     await expect(pub.publish(f.prod.id)).rejects.toThrow(HUB_TOO_OLD_MESSAGE)

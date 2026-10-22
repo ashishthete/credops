@@ -60,12 +60,6 @@ export interface HubReleasesDeps {
 
 export type { OperationRequest }
 
-/** The ReleaseService methods the operation and edit routes call; they arrive with the operations and playbook-edit work on the service. */
-interface OpsApi {
-  preflightOperation(req: OperationRequest, ctx?: { actor: Actor }): Promise<{ releaseId: string }>
-  validateEdit(releaseId: string, text: string, ctx?: { actor: Actor }): PlaybookEditResult | Promise<PlaybookEditResult>
-}
-
 export const runRootOf = (config: HubConfig): string => config.runRoot ?? join(config.dataDir, 'runs')
 
 /** Phase 8's LocalRunner on the Hub: no agent, no prompts, no trust-on-first-use; hosts and keys come from the registry. */
@@ -347,14 +341,6 @@ export class HubReleases {
     throw err
   }
 
-  private ops(): OpsApi {
-    const s = this.service as unknown as Partial<OpsApi>
-    if (typeof s.preflightOperation !== 'function' || typeof s.validateEdit !== 'function') {
-      throw new HubHttpError(503, 'unavailable', 'This Hub build cannot run operations or validate playbook edits')
-    }
-    return s as OpsApi
-  }
-
   /** Only a service of this release can be forced, and never more of them than it has. Shared by preview and start. */
   private forcedOf(releaseId: string, ids: string[] | undefined): string[] | undefined {
     if (ids === undefined) return undefined
@@ -407,7 +393,6 @@ export class HubReleases {
   async preflightOperation(user: HubUser, req: OperationRequest): Promise<{ releaseId: string }> {
     this.allow(user, 'ops.run', req.environmentId, this.selectedDeployments(req), 'ops.preflight', null)
     if (this.d.registry.nameOf(req.environmentId) === null) throw new HubHttpError(404, 'not_found', 'That environment is not published to this Hub')
-    const ops = this.ops()
     let runbook
     try {
       runbook = hubRunbooks(this.d.db, this.d.registry).get(req.runbookId)
@@ -417,7 +402,7 @@ export class HubReleases {
     if (runbook.environmentId !== req.environmentId) throw new HubHttpError(404, 'not_found', 'That runbook was not found')
     if (!runbook.lock) {
       try {
-        return await ops.preflightOperation(req, { actor: this.actorOf(user) })
+        return await this.service.preflightOperation(req, { actor: this.actorOf(user) })
       } catch (err) {
         return this.fail(err, 'bad_request')
       }
@@ -426,7 +411,7 @@ export class HubReleases {
     this.d.locks.acquireRelease(req.environmentId, provisional, { oid: user.oid, name: user.name })
     let res: { releaseId: string }
     try {
-      res = await ops.preflightOperation(req, { actor: this.actorOf(user) })
+      res = await this.service.preflightOperation(req, { actor: this.actorOf(user) })
     } catch (err) {
       this.d.locks.releaseFor(provisional)
       return this.fail(err, 'bad_request')
@@ -435,14 +420,17 @@ export class HubReleases {
     return res
   }
 
-  /** Checks an edited playbook without storing it. Only an admin on a Hub that allows edits. */
-  async validateEdit(user: HubUser, releaseId: string, text: string): Promise<PlaybookEditResult> {
+  /**
+   * Checks an edited playbook without storing it. Only an admin on a Hub that allows edits. The forced services
+   * are checked as the preview and start check them, so the hash matches the one a start with them computes.
+   */
+  async validateEdit(user: HubUser, releaseId: string, text: string, forceServiceIds?: string[]): Promise<PlaybookEditResult> {
     const { environmentId } = this.known(releaseId)
     this.reachable(user, releaseId, environmentId, 'playbook.edit')
     this.editGuard(user, environmentId, 'playbook.edit', releaseId)
-    const ops = this.ops()
+    const forced = this.forcedOf(releaseId, forceServiceIds)
     try {
-      return await ops.validateEdit(releaseId, text, { actor: this.actorOf(user) })
+      return await this.service.validateEdit(releaseId, text, { actor: this.actorOf(user) }, forced)
     } catch (err) {
       return this.fail(err, 'bad_request')
     }
