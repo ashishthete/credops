@@ -58,6 +58,8 @@ export class SsoGate implements SignInGate {
   private result: SsoVerdict | null = null
   // A verification while linked but not yet bound, written to the binding on bind().
   private pending: { at: number; oid: string; hubId: string } | null = null
+  /** The latest `now` seen while unbound: the in-memory stand-in for `high_water_at`. */
+  private seenAt: number | null = null
   private inflight: Promise<SsoVerdict> | null = null
   private audited: SsoVerdict | null = null
   // Bumped by a sign-out or an interactive sign-in, so a check already in flight can't settle over it.
@@ -88,9 +90,13 @@ export class SsoGate implements SignInGate {
     return b ? ms(b.last_verified_at) : (this.pending?.at ?? null)
   }
 
-  /** The clock was not turned back: neither below the high-water mark nor before the last verification. */
+  /**
+   * The clock was not turned back: neither below the high-water mark nor before the last verification. Unbound there
+   * is no stored mark, so the largest time seen in memory stands in, and going backwards counts as no time passing.
+   */
   private clockOk(now: number, lv: number, b = this.binding()): boolean {
-    const hw = b ? ms(b.high_water_at) : null
+    const hw = b ? ms(b.high_water_at) : this.seenAt
+    this.seenAt = Math.max(this.seenAt ?? now, now)
     return lv <= now + CLOCK_BACK_TOLERANCE_MS && (hw === null || now >= hw - CLOCK_BACK_TOLERANCE_MS)
   }
 
@@ -234,6 +240,8 @@ export class SsoGate implements SignInGate {
     const now = this.d.now()
     if (!b) {
       this.pending = { at: now, oid: user.oid, hubId: s.hubId }
+      // A verification against the Hub is a fresh baseline for the clock too.
+      this.seenAt = now
       return 'verified'
     }
     if (b.user_oid !== user.oid || b.hub_id !== s.hubId) {

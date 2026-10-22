@@ -598,6 +598,30 @@ describe('SsoGate', () => {
       expect(g.verdict()).toBe('needs-signin')
     })
 
+    it('a clock turned back before binding does not extend the verified window', async () => {
+      hub.link()
+      const g = gate()
+      hub.checks.push({ kind: 'ok', user: ALICE })
+      await g.check()
+      now.t = T0 + 50 * MIN
+      expect(g.verdict()).toBe('verified')
+      now.t = T0 + 20 * MIN
+      expect(g.verdict()).toBe('needs-signin')
+      hub.checks.push({ kind: 'offline' })
+      expect(await g.check()).toBe('needs-signin')
+    })
+
+    it('a small clock step within the tolerance keeps the unbound verification', async () => {
+      hub.link()
+      const g = gate()
+      hub.checks.push({ kind: 'ok', user: ALICE })
+      await g.check()
+      now.t = T0 + 30 * MIN
+      expect(g.verdict()).toBe('verified')
+      now.t = T0 + 30 * MIN - CLOCK_BACK_TOLERANCE_MS + 1000
+      expect(g.verdict()).toBe('verified')
+    })
+
     it('a verification for another user is not carried into the binding', async () => {
       hub.link()
       const g = gate()
