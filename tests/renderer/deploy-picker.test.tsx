@@ -572,6 +572,58 @@ describe('skipped services', () => {
     expect(calls(invoke, 'deploy:previewPlaybook').map((c) => c.slice(1))).toEqual([[REL, ['s1']]])
   })
 
+  describe('an edited playbook', () => {
+    const EDIT_SHA = 'e'.repeat(64)
+    const validating = (invoke: ReturnType<typeof mockBridge>, answer: (text: string) => unknown) => {
+      const base = invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
+      invoke.mockImplementation(async (ch: string, ...args: unknown[]) => (ch === 'release:validateEdit' ? answer(args[1] as string) : base(ch, ...args)))
+    }
+    const toEditor = async (m: Awaited<ReturnType<typeof reviewable>>) => {
+      await m.user.click(within(within(m.dialog).getByRole('listitem', { name: 'api' })).getByRole('button', { name: 'Deploy anyway' }))
+      await m.user.click(within(m.dialog).getByRole('button', { name: 'Review playbook' }))
+      await m.user.click(await within(m.dialog).findByRole('button', { name: 'Edit' }))
+      const box = within(m.dialog).getByRole('textbox', { name: 'Edit playbook' })
+      await m.user.type(box, ' ')
+      return box as HTMLTextAreaElement
+    }
+
+    it('validates with the forced services and starts with the edited text, its sha and the same forced services', async () => {
+      const m = await reviewable()
+      validating(m.invoke, () => ({ ok: true, canonical: 'x', sha256: EDIT_SHA }))
+      const box = await toEditor(m)
+      await waitFor(() => expect(within(m.dialog).getByRole('button', { name: 'Run edited' })).toBeEnabled())
+      expect(within(m.dialog).getByRole('button', { name: 'Deploy' })).toBeDisabled()
+      await m.user.click(within(m.dialog).getByRole('button', { name: 'Run edited' }))
+      expect(calls(m.invoke, 'release:validateEdit').map((c) => c.slice(1))).toEqual([[REL, box.value, ['s1']]])
+      await waitFor(() => expect(calls(m.invoke, 'release:start').map((c) => c.slice(1))).toEqual([[REL, { redeploy: false, playbookSha256: EDIT_SHA, editedPlaybook: box.value, forceServiceIds: ['s1'] }]]))
+    })
+
+    it('a protected environment still needs the typed name for an edited start', async () => {
+      const prod = environment({ id: 'e1', name: 'staging', protected: true, hosts: [{ hostId: 'h1', role: 'app' }, { hostId: 'h2', role: 'app' }] })
+      const m = await reviewable({ env: prod })
+      validating(m.invoke, () => ({ ok: true, canonical: 'x', sha256: EDIT_SHA }))
+      const box = await toEditor(m)
+      await waitFor(() => expect(within(m.dialog).getByRole('button', { name: 'Run edited' })).toBeEnabled())
+      await m.user.click(within(m.dialog).getByRole('button', { name: 'Run edited' }))
+      expect(calls(m.invoke, 'release:start')).toEqual([])
+      const confirm = await screen.findByRole('dialog', { name: 'Deploy to staging?' })
+      await m.user.type(within(confirm).getByLabelText('Type staging to confirm'), 'staging')
+      await m.user.click(within(confirm).getByRole('button', { name: 'Deploy' }))
+      await waitFor(() => expect(calls(m.invoke, 'release:start').map((c) => c.slice(1))).toEqual([[REL, { typedName: 'staging', redeploy: false, playbookSha256: EDIT_SHA, editedPlaybook: box.value, forceServiceIds: ['s1'] }]]))
+    })
+
+    it('a rejected validation shows its message, offers a new preview, and starts nothing', async () => {
+      const m = await reviewable()
+      validating(m.invoke, () => Promise.reject(new Error('Your preview is gone, preview again')))
+      await toEditor(m)
+      expect(await within(m.dialog).findByText(/Your preview is gone/)).toBeInTheDocument()
+      expect(within(m.dialog).getByRole('button', { name: 'Run edited' })).toBeDisabled()
+      await m.user.click(within(m.dialog).getByRole('button', { name: 'Preview again' }))
+      expect(calls(m.invoke, 'deploy:previewPlaybook')).toHaveLength(2)
+      expect(calls(m.invoke, 'release:start')).toEqual([])
+    })
+  })
+
   it('when every selected service is skipped, Review waits until one is deployed anyway', async () => {
     const all = report({ serviceCommits: { s1: skip }, commitsTotal: 1 })
     const m = await mount({ preselect: ['s1'], persisted: events([{ type: 'preflight.done', report: all }]) })

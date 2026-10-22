@@ -117,6 +117,59 @@ describe('runbooks section', () => {
   })
 })
 
+describe('an edited run', () => {
+  const EDIT_SHA = 'e'.repeat(64)
+  async function toEdit(protectedEnv: boolean) {
+    const m = await mount({ protectedEnv, runbooks: [{ ...TAIL, params: [] }] })
+    const base = m.invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
+    m.invoke.mockImplementation(async (ch: string, ...args: unknown[]) => (ch === 'release:validateEdit' ? { ok: true, canonical: 'x', sha256: EDIT_SHA } : base(ch, ...args)))
+    await m.user.click(screen.getByRole('button', { name: 'Run Tail the api' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Run Tail the api' })
+    await m.user.click(within(dialog).getByRole('button', { name: 'Review' }))
+    await flush()
+    await m.user.click(await within(dialog).findByRole('button', { name: 'Edit' }))
+    const box = within(dialog).getByRole('textbox', { name: 'Edit playbook' }) as HTMLTextAreaElement
+    await m.user.type(box, ' ')
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Run edited' })).toBeEnabled())
+    expect(within(dialog).getByRole('button', { name: 'Run' })).toBeDisabled()
+    return { ...m, dialog, box }
+  }
+
+  it('starts with the edited text and the sha validateEdit gave', async () => {
+    const { invoke, user, dialog, box } = await toEdit(false)
+    await user.click(within(dialog).getByRole('button', { name: 'Run edited' }))
+    await waitFor(() => expect(calls(invoke, 'release:start')).toHaveLength(1))
+    expect(calls(invoke, 'release:validateEdit')[0].slice(1)).toEqual(['rel-op', box.value])
+    expect(calls(invoke, 'release:start')[0].slice(1)).toEqual(['rel-op', { playbookSha256: EDIT_SHA, editedPlaybook: box.value }])
+  })
+
+  it('a protected environment needs the typed name first', async () => {
+    const { invoke, user, dialog, box } = await toEdit(true)
+    await user.click(within(dialog).getByRole('button', { name: 'Run edited' }))
+    const confirm = await screen.findByRole('dialog', { name: 'Run Tail the api in staging?' })
+    expect(calls(invoke, 'release:start')).toHaveLength(0)
+    await user.type(within(confirm).getByLabelText('Type staging to confirm'), 'staging')
+    await user.click(within(confirm).getByRole('button', { name: 'Run' }))
+    await waitFor(() => expect(calls(invoke, 'release:start')).toHaveLength(1))
+    expect(calls(invoke, 'release:start')[0].slice(1)).toEqual(['rel-op', { typedName: 'staging', playbookSha256: EDIT_SHA, editedPlaybook: box.value }])
+  })
+
+  it('a refused validation shows the refusal and starts nothing', async () => {
+    const m = await mount({ runbooks: [{ ...TAIL, params: [] }] })
+    const base = m.invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
+    m.invoke.mockImplementation(async (ch: string, ...args: unknown[]) => (ch === 'release:validateEdit' ? Promise.reject(new Error('Editing is turned off on this Hub')) : base(ch, ...args)))
+    await m.user.click(screen.getByRole('button', { name: 'Run Tail the api' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Run Tail the api' })
+    await m.user.click(within(dialog).getByRole('button', { name: 'Review' }))
+    await flush()
+    await m.user.click(await within(dialog).findByRole('button', { name: 'Edit' }))
+    await m.user.type(within(dialog).getByRole('textbox', { name: 'Edit playbook' }), ' ')
+    expect(await within(dialog).findByText('Editing is turned off on this Hub')).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Run edited' })).toBeDisabled()
+    expect(calls(m.invoke, 'release:start')).toHaveLength(0)
+  })
+})
+
 describe('run dialog lifecycle', () => {
   const discards = (invoke: ReturnType<typeof mockBridge>) => calls(invoke, 'release:discard').map((c) => c[1])
   const toReview = async (user: ReturnType<typeof userEvent.setup>) => {
