@@ -52,18 +52,15 @@ describe('inventory tree', () => {
     expect(moveFocus(rows, 'p:p1', 'End').focus).toBe('u/h:orph')
   })
 
-  it('host rows carry a region only when their environment spans several', () => {
-    const one = buildTree({ ...data(), regions: [REGION] }, all)
-    expect(one.filter((r) => r.region)).toEqual([])
+  it('every host row carries its region, loose hosts too', () => {
     const us = { ...REGION, id: 'region-2', code: 'us-east-1', displayName: 'US East' }
     const d = data()
     const split = buildTree({ ...d, regions: [REGION, us], hosts: d.hosts.map((h) => (h.id === 'bast' ? { ...h, regionId: us.id } : h)) }, all)
     expect(split.filter((r) => r.region).map((r) => [r.label, r.region!.code])).toEqual([
       ['bastion', 'us-east-1'],
       ['web-1', 'test-1'],
+      ['orphan', 'test-1'],
     ])
-    // The loose host isn't in an environment, so it never shows one.
-    expect(split.find((r) => r.label === 'orphan')!.region).toBeUndefined()
   })
 
   it('each environment shows once, under its product', () => {

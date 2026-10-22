@@ -505,7 +505,7 @@ describe('products page', () => {
 
     await waitFor(() => expect(screen.getAllByRole('treeitem', { name: 'web-1' })).toHaveLength(2))
     const [inProd, inStaging] = screen.getAllByRole('treeitem', { name: 'web-1' })
-    expect(inStaging).toHaveAccessibleDescription('Host web-1. Role App. Also in Acme · prod')
+    expect(inStaging).toHaveAccessibleDescription('Host web-1. Role App. Region test-1. Also in Acme · prod')
     fireEvent.mouseEnter(inProd)
     expect(inStaging).toHaveAttribute('data-shared-highlight', 'true')
     expect(inStaging).toHaveAttribute('data-pulse', 'true')
@@ -700,14 +700,14 @@ describe('products page', () => {
       return w
     }
 
-    it('an environment in one region shows that region and no per-host chips', async () => {
+    it('an environment in one region shows that region once, and the tree marks each host', async () => {
       const user = userEvent.setup()
       renderPage()
       await user.click(await screen.findByRole('treeitem', { name: 'prod' }))
       const main = screen.getByRole('region', { name: 'Details' })
       expect(within(main).getAllByText('test-1')).toHaveLength(1)
       expect(within(main).queryByText('Regions:')).not.toBeInTheDocument()
-      expect(within(item('web-1')).queryByText('test-1')).not.toBeInTheDocument()
+      expect(within(item('web-1')).getByText('test-1')).toBeInTheDocument()
     })
 
     it('an environment over several regions lists them and marks each host', async () => {
@@ -893,8 +893,8 @@ describe('products page', () => {
     renderPage(sharedWorld())
     await screen.findByRole('treeitem', { name: 'staging' })
     const [inProd, inStaging] = screen.getAllByRole('treeitem', { name: 'web-1' })
-    expect(inProd).toHaveAccessibleDescription('Host web-1. Role App. Also in Acme · staging')
-    expect(inStaging).toHaveAccessibleDescription('Host web-1. Role App. Also in Acme · prod')
+    expect(inProd).toHaveAccessibleDescription('Host web-1. Role App. Region test-1. Also in Acme · staging')
+    expect(inStaging).toHaveAccessibleDescription('Host web-1. Role App. Region test-1. Also in Acme · prod')
     expect(within(inProd).getByTitle('Also in Acme · staging')).toBeInTheDocument()
   })
 
@@ -964,7 +964,7 @@ describe('products page', () => {
       const roleOf = (name: string, nth = 0) => within(item(name, nth)).getByTitle(/^Role: /).textContent
       expect(roleOf('uat2-db')).toBe('db')
       expect(roleOf('jump-1')).toBe('bastion')
-      expect(item('uat2-db')).toHaveAccessibleDescription('Host uat2-db. Role Database')
+      expect(item('uat2-db')).toHaveAccessibleDescription('Host uat2-db. Role Database. Region test-1')
     })
 
     it('C: a host running several environments says where else', async () => {
@@ -973,9 +973,9 @@ describe('products page', () => {
       const rows = screen.getAllByRole('treeitem', { name: 'alpha' }).filter((el) => el.getAttribute('aria-level') === '3')
       expect(rows).toHaveLength(3)
       const descs = rows.map((r) => r.getAttribute('aria-describedby') && document.getElementById(r.getAttribute('aria-describedby')!)?.textContent)
-      expect(descs).toContain('Host alpha. Role App. Also in Enterprize · UAT, Essentials · alpha')
-      expect(descs).toContain('Host alpha. Role Database. Also in Enterprize · Stage, Essentials · alpha')
-      expect(descs).toContain('Host alpha. Role App. Also in Enterprize · Stage, Enterprize · UAT')
+      expect(descs).toContain('Host alpha. Role App. Region test-1. Also in Enterprize · UAT, Essentials · alpha')
+      expect(descs).toContain('Host alpha. Role Database. Region test-1. Also in Enterprize · Stage, Essentials · alpha')
+      expect(descs).toContain('Host alpha. Role App. Region test-1. Also in Enterprize · Stage, Enterprize · UAT')
     })
 
     it('D: roles belong to the membership', async () => {

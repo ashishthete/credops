@@ -9,7 +9,7 @@ import { DeploymentsPage } from '../../src/renderer/src/pages/deployments/Deploy
 import { rowLabel } from '../../src/renderer/src/pages/deployments/EnvList'
 import { Toaster, clearToasts } from '../../src/renderer/src/ui/Toaster'
 import type { EnvLastRelease, ReleaseStatus } from '../../src/shared/deploy'
-import { appService, deploymentMeta, emitBridgeEvent, envSettings, environment, host, mockBridge, product, toolingOk } from './helpers'
+import { appService, deploymentMeta, emitBridgeEvent, envSettings, environment, host, mockBridge, product, REGION, toolingOk } from './helpers'
 
 const STAMP = '2026-10-16T09:00:00.000Z'
 const PRODUCTS = ['Shop', 'Billing', 'Search']
@@ -193,6 +193,18 @@ describe('deployments environment list', () => {
     await user.selectOptions(screen.getByRole('combobox', { name: 'Product' }), 'p2')
     expect(screen.queryByRole('group', { name: 'Shop' })).not.toBeInTheDocument()
     expect(within(screen.getByRole('group', { name: 'Search' })).getAllByRole('listitem')).toHaveLength(4)
+  })
+
+  it("a row shows its environment's regions, and search finds environments by region", async () => {
+    const us = { ...REGION, id: 'region-2', code: 'us-east-1', displayName: 'US East' }
+    world({ 'region:list': [REGION, us], 'host:list': hosts.map((h) => (h.id === 'h10' ? { ...h, regionId: us.id } : h)) })
+    const user = await open()
+    const billing = await screen.findByRole('group', { name: 'Billing' })
+    const row = (id: string) => within(billing).getAllByRole('listitem').find((li) => li.getAttribute('data-env') === id)!
+    expect(within(row('p1-dev')).getByText('us-east-1')).toHaveAttribute('title', 'US East')
+    expect(within(row('p1-qa')).getByText('test-1')).toBeInTheDocument()
+    await user.type(screen.getByRole('searchbox', { name: 'Search environments' }), 'us east')
+    expect(screen.getAllByRole('listitem').map((li) => li.getAttribute('data-env'))).toEqual(['p1-dev'])
   })
 
   it('Deploy opens the wizard for that environment with all of its services ticked', async () => {
@@ -393,7 +405,7 @@ describe('deployments environment list', () => {
   })
 
   it('a Hub environment with no events reads last release unknown; a local one no releases yet', () => {
-    const row = { id: 'e', name: 'prod-eu', protected: false, productName: 'Team', hosts: [], units: 1 }
+    const row = { id: 'e', name: 'prod-eu', protected: false, productName: 'Team', hosts: [], regions: [], units: 1 }
     expect(rowLabel({ ...row, hub: true })).toBe('prod-eu, last release unknown')
     expect(rowLabel({ ...row, hub: false })).toBe('prod-eu, no releases yet')
   })
