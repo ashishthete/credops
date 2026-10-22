@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { generatePlaybook } from '../../src/main/deploy/generate'
 import { planFixture, stepFixture } from './deploy-helpers'
 import { EDIT_RULE, validateEditedPlaybook } from '../../src/main/deploy/playbook-validate'
+import { maskPlaybook } from '../../src/main/deploy/mask'
 
 type Obj = Record<string, any>
 const DIR = join(__dirname, 'fixtures/playbook-golden')
@@ -202,7 +203,7 @@ describe('validateEditedPlaybook', () => {
 
   it('accepts a user task between lock and the deployment blocks, and one inside a deployment block', () => {
     expect(edit((p) => { p[0].tasks.splice(2, 0, { ...NEW }) }).ok).toBe(true)
-    expect(edit((p) => { block(p).rescue.push({ ...NEW }) }).ok).toBe(true)
+    expect(edit((p) => { block(p).block.push({ ...NEW }) }).ok).toBe(true)
   })
 
   it('accepts a generated changed_when on an edited block task', () => {
@@ -326,12 +327,95 @@ describe('validateEditedPlaybook', () => {
         delete block(p).rescue
         block(p).rescue = [{ name: 'swallow', 'ansible.builtin.debug': { msg: 'x' } }]
       })
-      expect(r.ok).toBe(true)
+      expect(failing(r)).toEqual([EDIT_RULE.rescueChanged('deployment dep1')])
       const r2 = editFlow((p) => {
         const w = p[0].tasks.find((t: Obj) => t.always)
         delete w.rescue
       })
       expect(failing(r2)).toContain(EDIT_RULE.protectedMoved('build cleanup dep1'))
+    })
+  })
+
+  describe('rescue and always tasks (Task 10b)', () => {
+    const rescued = (fn: (rescue: Obj[]) => void) => failing(edit((p) => fn(block(p).rescue)))
+    it.each<[string, (rescue: Obj[]) => void]>([
+      ['mark failed removed', (r) => void r.shift()],
+      ['fail removed', (r) => void r.pop()],
+      ['mark failed changed', (r) => void (r[0]['ansible.builtin.set_fact'] = { od_failed: false })],
+      ['fail changed', (r) => void (r[1]['ansible.builtin.fail'] = { msg: 'other' })],
+      ['reordered', (r) => void r.reverse()],
+      ['a task added', (r) => void r.push({ ...NEW })],
+    ])('rejects a generated rescue with %s', (_, fn) => {
+      expect(rescued(fn)).toContain(EDIT_RULE.rescueChanged('deployment dep1'))
+    })
+
+    it('rejects a removed rescue and a removed deployment block', () => {
+      expect(failing(edit((p) => void delete block(p).rescue))).toContain(EDIT_RULE.rescueChanged('deployment dep1'))
+      expect(failing(edit((p) => void p[0].tasks.splice(p[0].tasks.indexOf(block(p)), 1)))).toContain(EDIT_RULE.rescueChanged('deployment dep1'))
+    })
+
+    it('rejects a rescue moved with a block whose own keys changed', () => {
+      expect(failing(edit((p) => void (block(p).when = 'true')))).toContain(EDIT_RULE.rescueChanged('deployment dep1'))
+    })
+
+    it('rejects a removed or changed build cleanup always', () => {
+      const always = (fn: (w: Obj) => void) => failing(editFlow((p) => fn(p[0].tasks.find((t: Obj) => t.always))))
+      expect(always((w) => void w.always.push({ ...NEW }))).toContain(EDIT_RULE.rescueChanged(String(JSON.parse(flowText())[0].tasks.find((t: Obj) => t.always).name)))
+      expect(always((w) => void (w.always = [])).length).toBeGreaterThan(0)
+    })
+
+    it('still accepts a task added inside the block of a deployment', () => {
+      expect(edit((p) => void block(p).block.splice(1, 0, { ...NEW })).ok).toBe(true)
+    })
+  })
+
+  describe('masked secrets (Task 10b)', () => {
+    /** "git ls-remote origin" stands for a secret: it is masked in every record task, as the preview shows it. */
+    const SECRET = 'git ls-remote origin'
+    const masked = (): string => maskPlaybook(gen(), [SECRET])
+    const editMasked = (fn: (plays: Obj[]) => void) => {
+      const plays = JSON.parse(masked()) as Obj[]
+      fn(plays)
+      return validateEditedPlaybook(JSON.stringify(plays, null, 2), gen(), masked())
+    }
+
+    it('the fixture masks the record tasks', () => {
+      expect(masked()).not.toContain(SECRET)
+      expect(masked()).toContain('‹redacted›')
+    })
+
+    it('an unrelated edit runs with the raw values back in the canonical text', () => {
+      const r = editMasked((p) => void block(p).block.push({ ...NEW }))
+      expect(r.ok).toBe(true)
+      if (!r.ok) return
+      expect(r.canonical).toContain(SECRET)
+      expect(r.canonical).not.toContain('‹redacted›')
+      const raw = edit((p) => void block(p).block.push({ ...NEW }))
+      expect(raw.ok && raw.canonical).toBe(r.canonical)
+      expect(maskPlaybook(r.canonical, [SECRET])).not.toContain(SECRET)
+    })
+
+    it('the unchanged masked preview validates to the generated text', () => {
+      const r = validateEditedPlaybook(masked(), gen(), masked())
+      expect(r.ok && r.canonical).toBe(gen())
+    })
+
+    it('rejects a changed masked task', () => {
+      const r = editMasked((p) => void (block(p).block[0].name = 'record it'))
+      expect(failing(r)).toContain(EDIT_RULE.masked)
+    })
+
+    it('rejects a masked task moved out of its place or copied', () => {
+      expect(failing(editMasked((p) => void block(p).block.push(block(p).block.shift())))).toEqual([])
+      expect(failing(editMasked((p) => void p[0].tasks.splice(2, 0, block(p).block[0])))).toContain(EDIT_RULE.masked)
+      expect(failing(editMasked((p) => void block(p).block.push({ ...block(p).block[0] })))).toContain(EDIT_RULE.masked)
+    })
+
+    it('rejects the marker in a new task, typed or base64-encoded', () => {
+      expect(failing(editMasked((p) => void block(p).block.push({ ...NEW, 'ansible.builtin.shell': 'echo ‹redacted›' })))).toContain(EDIT_RULE.masked)
+      expect(failing(edit((p) => void block(p).block.push({ ...NEW, 'ansible.builtin.shell': 'echo ‹redacted›' })))).toContain(EDIT_RULE.masked)
+      const b64 = Buffer.from('token=‹redacted›').toString('base64')
+      expect(failing(edit((p) => void block(p).block.push({ ...NEW, vars: { x_b64: b64 } })))).toContain(EDIT_RULE.masked)
     })
   })
 

@@ -419,6 +419,7 @@ if (!app.requestSingleInstanceLock()) {
         resolve,
         identities,
         secrets,
+        knownSecrets,
         emit: (batch) => pushEvent(mainWindow, 'deploy:event', batch),
         emitState: (summary) => pushEvent(mainWindow, 'release:state', maskSummary(summary, knownSecrets())),
         actor,

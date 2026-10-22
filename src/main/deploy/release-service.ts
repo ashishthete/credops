@@ -61,7 +61,7 @@ import { generatePlaybook, stepList } from './generate'
 import { operationSteps } from './generate-ops'
 import type { RunbookStore } from './runbook-store'
 import { generateInventory } from './ssh-files'
-import { withBase64Forms } from './mask'
+import { maskPlaybook, withBase64Forms } from './mask'
 import { ToolingError } from './tooling'
 import { validateEditedPlaybook } from './playbook-validate'
 
@@ -116,6 +116,11 @@ export interface ReleaseServiceDeps {
   identities?: unknown
   /** `environmentId` lets the Hub resolve a secret within one environment; the local store ignores it. */
   secrets: { value(id: string, environmentId?: string): string }
+  /**
+   * The secret values a playbook leaving main is masked with (as `deploy:previewPlaybook` masks it). An edit is made
+   * on that masked text, so it is checked against it and its masked tasks are swapped back for the raw ones.
+   */
+  knownSecrets?: () => readonly string[]
   /** Defaults to the app database. */
   inventory?: ReleaseInventory
   /** The runbooks an operation runs; without it `preflightOperation` refuses. */
@@ -529,7 +534,7 @@ export class ReleaseService {
     const startedAt = reviewed?.startedAt ?? this.d.now().toISOString()
     const skips = rel.operation ? NO_SKIPS : this.skips(rel, forceServiceIds)
     const { playbook, inventory } = rel.operation ? this.opPlan(rel, env, actor, startedAt) : this.releasePlan(rel, env, actor, startedAt, skips)
-    const res = validateEditedPlaybook(text, playbook)
+    const res = validateEditedPlaybook(text, playbook, this.masked(playbook))
     // Hashed as the preview is: an unedited text has the preview's hash, and the skips and inventory stay bound.
     return res.ok ? { ok: true, canonical: res.canonical, sha256: reviewHash(res.canonical, skips, inventory) } : res
   }
@@ -540,7 +545,7 @@ export class ReleaseService {
    */
   private editOf(confirm: ReleaseConfirm, generated: string, skips: Skips, inventory: string | null): { text: string; lineDelta: number } | null {
     if (confirm.editedPlaybook === undefined) return null
-    const res = validateEditedPlaybook(confirm.editedPlaybook, generated)
+    const res = validateEditedPlaybook(confirm.editedPlaybook, generated, this.masked(generated))
     if (!res.ok) {
       const [first] = res.errors
       throw new DeployError('VALIDATION', first ? `${EDIT_INVALID_MESSAGE} (line ${first.line}: ${first.message})` : EDIT_INVALID_MESSAGE)
@@ -550,6 +555,11 @@ export class ReleaseService {
     }
     if (res.canonical === generated) return null
     return { text: res.canonical, lineDelta: lineCount(res.canonical) - lineCount(generated) }
+  }
+
+  /** The generated playbook as the preview showed it. */
+  private masked(generated: string): string {
+    return maskPlaybook(generated, this.d.knownSecrets?.() ?? [])
   }
 
   /** The row fields a started playbook stores: the edited text with the generated one beside it, or the generated one. */

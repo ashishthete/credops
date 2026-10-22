@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { DeployError } from '../../src/main/deploy/access'
-import { maskDetail } from '../../src/main/deploy/mask'
+import { maskDetail, maskPlaybook } from '../../src/main/deploy/mask'
+import { EDIT_RULE } from '../../src/main/deploy/playbook-validate'
 import type { DeployPlan } from '../../src/main/deploy/runner'
 import { EDIT_INVALID_MESSAGE, PLAYBOOK_CHANGED_MESSAGE, ROLLBACK_GENERATED_NOTE } from '../../src/shared/deploy'
 import { A, B, dep, opReady, ready, rig, runbook, tracked, type Rig } from './release-rig'
@@ -147,5 +148,65 @@ describe('ReleaseService edited runs', () => {
     expect(done.playbookSource).toBe('edited')
     expect(done.playbookGenerated).toBe(e.generated)
     expect(audits(r, 'playbook.edited').map((x) => x.details)).toEqual([{ lineDelta: e.text.split('\n').length - e.generated.split('\n').length }])
+  })
+
+  describe('masked secrets', () => {
+    /** The repo path stands for a secret value that the generated playbook holds; the preview shows it masked. */
+    const HIDDEN = '/srv/api'
+    const masked = async (r: Rig, id: string) => maskPlaybook((await r.svc.previewPlaybook(id)).playbook, [HIDDEN])
+    const withTask = (text: string, task: Record<string, unknown>, at: (plays: Record<string, any>[]) => unknown[] = (p) => p[0].tasks) => {
+      const plays = JSON.parse(text) as Record<string, any>[]
+      at(plays).push(task)
+      return JSON.stringify(plays, null, 2)
+    }
+    const inBlock = (p: Record<string, any>[]) => p[0].tasks.find((t: Record<string, any>) => t.block).block as unknown[]
+
+    it('an unrelated edit runs with the raw value and is shown masked', async () => {
+      const r = await rig({ knownSecrets: () => [HIDDEN] })
+      const id = await ready(r)
+      const shown = await masked(r, id)
+      expect(shown).not.toContain(HIDDEN)
+      const text = withTask(shown, EXTRA, inBlock)
+      const res = await r.svc.validateEdit(id, text)
+      if (!res.ok) throw new Error(JSON.stringify(res.errors))
+      expect(res.canonical).toContain(HIDDEN)
+      expect(res.canonical).not.toContain('‹redacted›')
+      // The renderer sends back what it was shown: the masked canonical text.
+      await r.svc.start(id, { editedPlaybook: maskPlaybook(res.canonical, [HIDDEN]), playbookSha256: res.sha256 })
+      await r.svc.whenIdle()
+      expect(r.runner.call('release').playbookText).toBe(res.canonical)
+      const d = r.svc.detail(id)
+      expect(d.playbook).toBe(res.canonical)
+      expect(d.playbookSource).toBe('edited')
+      const m = maskDetail(d, [HIDDEN])
+      expect(m.playbook).not.toContain(HIDDEN)
+      expect(m.playbookGenerated).not.toContain(HIDDEN)
+    })
+
+    it('rejects an edit that changes a masked task, at validate and at start', async () => {
+      const r = await rig({ knownSecrets: () => [HIDDEN] })
+      const id = await ready(r)
+      const shown = await masked(r, id)
+      const plays = JSON.parse(shown) as Record<string, any>[]
+      const target = JSON.stringify(plays).includes('‹redacted›') ? plays[0].tasks.find((t: Record<string, any>) => JSON.stringify(t).includes('‹redacted›')) : null
+      expect(target).toBeTruthy()
+      target.name = `${target.name} changed`
+      const text = JSON.stringify(plays, null, 2)
+      const res = await r.svc.validateEdit(id, text)
+      expect(res.ok).toBe(false)
+      if (!res.ok) expect(res.errors.map((e) => e.message)).toContain(EDIT_RULE.masked)
+      const p = await r.svc.previewPlaybook(id)
+      await expect(r.svc.start(id, { editedPlaybook: text, playbookSha256: p.sha256 })).rejects.toThrow(EDIT_INVALID_MESSAGE)
+      expect(r.runner.kinds).toEqual(['preflight'])
+    })
+
+    it('rejects the marker in a new task', async () => {
+      const r = await rig({ knownSecrets: () => [HIDDEN] })
+      const id = await ready(r)
+      const text = withTask(await masked(r, id), { ...EXTRA, 'ansible.builtin.shell': 'echo ‹redacted›' }, inBlock)
+      const res = await r.svc.validateEdit(id, text)
+      expect(res.ok).toBe(false)
+      if (!res.ok) expect(res.errors.map((e) => e.message)).toEqual([EDIT_RULE.masked])
+    })
   })
 })

@@ -1,4 +1,5 @@
 import { STEP_TIMEOUT_RANGE, type PlaybookEditError } from '../../shared/deploy'
+import { REDACTED } from '../security/redact'
 
 /**
  * Static validation of a hand-edited playbook (Task 10). Nothing here runs ansible or a shell: the text is
@@ -51,6 +52,8 @@ export const EDIT_RULE = {
   intField: (k: string): string => `${k} must be a whole number`,
   blockShape: 'block, rescue and always must be lists of tasks and cannot be combined with a module',
   vars: 'Task vars must be simple names and cannot use a generated name',
+  masked: `A task with a hidden value (${REDACTED}) must stay exactly as shown, in its place; a hidden value cannot be typed, moved or copied`,
+  rescueChanged: (n: string): string => `The rescue and always tasks of "${n}" are generated and must stay exactly as generated, in their place`,
   tooMany: 'The playbook has too many tasks',
   tooDeep: 'The playbook is nested too deeply',
   tooManyErrors: 'More problems were found; fix these first',
@@ -294,7 +297,7 @@ type Place = string
 const blockId = (b: Obj): string => stable({ ...b, block: 'block' in b, rescue: 'rescue' in b, always: 'always' in b })
 const inner = (place: Place, id: string, n: number, list: string): Place => `${place}>${list}:${id}#${n}`
 
-function placesOf(tasks: unknown, place: Place, out: Map<string, Set<Place>>, lists: Map<Place, string[]>): void {
+function placesOf(tasks: unknown, place: Place, out: Map<string, Set<Place>>, lists: Map<Place, string[]>, sections?: Map<Place, string>): void {
   if (!Array.isArray(tasks)) return
   lists.set(place, tasks.map(stable))
   const seen = new Map<string, number>()
@@ -309,9 +312,53 @@ function placesOf(tasks: unknown, place: Place, out: Map<string, Set<Place>>, li
     const id = blockId(t)
     const n = seen.get(id) ?? 0
     seen.set(id, n + 1)
-    for (const l of LISTS) placesOf(t[l], inner(place, id, n, l), out, lists)
+    for (const l of LISTS) {
+      const at = inner(place, id, n, l)
+      if (l !== 'block' && Array.isArray(t[l])) sections?.set(at, String(t.name).slice(0, 60))
+      placesOf(t[l], at, out, lists, sections)
+    }
   }
 }
+
+/** A masking marker: `‹redacted›`, an unreadable hook or lock data, or base64 text that decodes to one. */
+const MARKER = /‹(?:redacted|hook, \d+ bytes|lock data, \d+ bytes)›/
+const B64 = /^[A-Za-z0-9+/]{8,}={0,2}$/
+function hasMarker(v: unknown, depth = 0): boolean {
+  if (typeof v === 'string') {
+    if (MARKER.test(v)) return true
+    return v.length % 4 === 0 && B64.test(v) && Buffer.from(v, 'base64').toString('utf8').includes(REDACTED)
+  }
+  if (depth > 12) return false
+  if (Array.isArray(v)) return v.some((x) => hasMarker(x, depth + 1))
+  if (isObj(v)) return Object.entries(v).some(([k, x]) => hasMarker(k) || hasMarker(x, depth + 1))
+  return false
+}
+
+/**
+ * Pairs each generated task that masking changed with its masked form, by place: `place\nstable(masked)` to the
+ * raw tasks there, in generated order. Places follow the masked text, which is what the person edited.
+ */
+function pairMasked(raw: unknown, masked: unknown, place: Place, out: Map<string, Obj[]>): void {
+  if (!Array.isArray(raw) || !Array.isArray(masked)) return
+  const seen = new Map<string, number>()
+  raw.forEach((r, i) => {
+    const m = masked[i]
+    if (!isObj(r) || !isObj(m)) return
+    if (stable(r) !== stable(m)) {
+      const k = `${place}\n${stable(m)}`
+      out.set(k, [...(out.get(k) ?? []), r])
+    }
+    if (!isBlockTask(m)) return
+    const id = blockId(m)
+    const n = seen.get(id) ?? 0
+    seen.set(id, n + 1)
+    // A block's own keys (its vars, its when) come back raw even when its lists were edited.
+    if (stable(ownOf(r)) !== stable(ownOf(m))) out.set(`${place}\nown:${id}#${n}`, [ownOf(r)])
+    for (const l of LISTS) pairMasked(r[l], m[l], inner(place, id, n, l), out)
+  })
+}
+
+const ownOf = (t: Obj): Obj => Object.fromEntries(Object.entries(t).filter(([k]) => !(LISTS as readonly string[]).includes(k)))
 
 // ---------------------------------------------------------------- validator
 
@@ -324,6 +371,10 @@ class Checker {
   private readonly genPlaces = new Map<string, Set<Place>>()
   /** Each generated task list, by place, as stable texts in generated order. */
   private readonly genLists = new Map<Place, string[]>()
+  /** The generated rescue and always lists, by place, with the name of their block. */
+  private readonly genSections = new Map<Place, string>()
+  /** Each edited task list, by place, with its path. */
+  private readonly editLists = new Map<Place, { keys: string[]; path: string }>()
 
   constructor(
     private readonly text: string,
@@ -332,7 +383,7 @@ class Checker {
   ) {
     const all: Obj[] = []
     for (const p of gen) collect(p.tasks, all)
-    gen.forEach((p, i) => placesOf(p.tasks, `p${i}`, this.genPlaces, this.genLists))
+    gen.forEach((p, i) => placesOf(p.tasks, `p${i}`, this.genPlaces, this.genLists, this.genSections))
     for (const t of all) {
       this.genTasks.add(stable(t))
       if (isObj(t.vars)) this.genVars.add(stable(t.vars))
@@ -358,6 +409,57 @@ class Checker {
       if (!Array.isArray(play.tasks)) return this.err(`${base}/tasks`, EDIT_RULE.topLevel)
       this.list(play.tasks, `${base}/tasks`, 0, `p${i}`)
       this.pinned(play.tasks, this.gen[i].tasks as Obj[], `${base}/tasks`)
+    })
+    this.sections()
+  }
+
+  /** A generated rescue or always list (mark failed, fail, build cleanup) stays exactly as generated, in its place. */
+  private sections(): void {
+    for (const [place, name] of this.genSections) {
+      const got = this.editLists.get(place)
+      if (got && stable(got.keys) === stable(this.genLists.get(place))) continue
+      this.err(got?.path ?? `/${place.slice(1, place.indexOf('>'))}/tasks`, EDIT_RULE.rescueChanged(name))
+    }
+  }
+
+  /**
+   * The edit with each masked generated task, unchanged and in its generated place, swapped back for the raw
+   * task (and the masked play fields for the raw ones). Any other masking marker is refused.
+   */
+  unmask(v: unknown, masked: Obj[]): unknown {
+    if (!Array.isArray(v) || v.length !== this.gen.length || !v.every(isObj) || masked.length !== this.gen.length) return v
+    const swaps = new Map<string, Obj[]>()
+    this.gen.forEach((p, i) => pairMasked(p.tasks, masked[i].tasks, `p${i}`, swaps))
+    return v.map((play, i) => {
+      const out: Obj = { ...play }
+      for (const k of PLAY_OWNED) {
+        if (k in play && stable(play[k]) === stable(masked[i][k])) out[k] = this.gen[i][k]
+        else if (hasMarker(play[k])) this.err(`/${i}/${k}`, EDIT_RULE.masked)
+      }
+      out.tasks = this.unmaskList(play.tasks, `/${i}/tasks`, `p${i}`, swaps, 0)
+      return out
+    })
+  }
+
+  private unmaskList(v: unknown, path: string, place: Place, swaps: Map<string, Obj[]>, depth: number): unknown {
+    if (!Array.isArray(v) || depth > MAX_DEPTH) return v
+    const seen = new Map<string, number>()
+    return v.map((t, i) => {
+      if (!isObj(t)) return t
+      const raw = swaps.get(`${place}\n${stable(t)}`)
+      if (raw?.length) return raw.shift()
+      if (!isBlockTask(t)) {
+        if (hasMarker(t)) this.err(`${path}/${i}`, EDIT_RULE.masked)
+        return t
+      }
+      const id = blockId(t)
+      const n = seen.get(id) ?? 0
+      seen.set(id, n + 1)
+      const own = swaps.get(`${place}\nown:${id}#${n}`)?.[0]
+      if (!own && hasMarker(ownOf(t))) this.err(`${path}/${i}`, EDIT_RULE.masked)
+      const out: Obj = { ...t, ...own }
+      for (const l of LISTS) if (l in t) out[l] = this.unmaskList(t[l], `${path}/${i}/${l}`, inner(place, id, n, l), swaps, depth + 1)
+      return out
     })
   }
 
@@ -413,6 +515,7 @@ class Checker {
   private list(v: unknown, path: string, depth: number, place: Place): void {
     if (!Array.isArray(v)) return this.err(path, EDIT_RULE.blockShape)
     if (depth > MAX_DEPTH) return this.err(path, EDIT_RULE.tooDeep)
+    this.editLists.set(place, { keys: v.map(stable), path })
     const seen = new Map<string, number>()
     v.forEach((t, i) => {
       let n = 0
@@ -447,6 +550,7 @@ class Checker {
     // Byte-identical to a generated task (key order aside): nothing further to check but where it sits.
     if (this.genTasks.has(stable(t))) {
       if ((isProtected(t) || isBlockTask(t)) && !this.genPlaces.get(stable(t))?.has(place)) this.err(path, EDIT_RULE.protectedMoved(String(t.name).slice(0, 60)))
+      this.record(t, path, place, n)
       return
     }
 
@@ -492,6 +596,25 @@ class Checker {
     }
     if ('tags' in t) this.tagList(t.tags, `${path}/tags`)
     if ('vars' in t && !this.genVars.has(stable(t.vars))) this.taskVars(t.vars, `${path}/vars`)
+  }
+
+  /** The lists of an unchanged generated block, as they sit in the edit. */
+  private record(t: Obj, path: string, place: Place, n: number): void {
+    if (!isBlockTask(t)) return
+    const id = blockId(t)
+    for (const l of LISTS) {
+      const v = t[l]
+      if (!Array.isArray(v)) continue
+      const at = inner(place, id, n, l)
+      this.editLists.set(at, { keys: v.map(stable), path: `${path}/${l}` })
+      const seen = new Map<string, number>()
+      v.forEach((x, i) => {
+        if (!isObj(x) || !isBlockTask(x)) return
+        const k = seen.get(blockId(x)) ?? 0
+        seen.set(blockId(x), k + 1)
+        this.record(x, `${path}/${l}/${i}`, at, k)
+      })
+    }
   }
 
   private tagList(v: unknown, path: string): void {
@@ -601,8 +724,12 @@ class Checker {
 /**
  * Validates `text` against the rules above; `generated` is the playbook the generator makes for the same
  * release (the edit is always a change to it). The canonical text is what is stored, hashed and run.
+ *
+ * `masked` is `generated` as the person saw it (secrets masked): a masked task they left alone, where it was
+ * generated, comes back as the raw generated task, so the canonical text holds the real values. Without it the
+ * generated text is taken as shown.
  */
-export function validateEditedPlaybook(text: string, generated: string): EditResult {
+export function validateEditedPlaybook(text: string, generated: string, masked = generated): EditResult {
   if (Buffer.byteLength(text, 'utf8') > MAX_BYTES) return { ok: false, errors: [{ line: 1, message: EDIT_RULE.tooLarge }] }
   if (text.charCodeAt(0) === 0xfeff) return { ok: false, errors: [{ line: 1, message: EDIT_RULE.bom }] }
   let scanned: Scanned
@@ -614,7 +741,9 @@ export function validateEditedPlaybook(text: string, generated: string): EditRes
   }
   const gen = JSON.parse(generated) as Obj[]
   const c = new Checker(text, scanned.at, gen)
-  c.plays(scanned.value)
+  const value = c.unmask(scanned.value, JSON.parse(masked) as Obj[])
   if (c.errors.length > 0) return { ok: false, errors: c.errors }
-  return { ok: true, canonical: JSON.stringify(scanned.value, null, 2) }
+  c.plays(value)
+  if (c.errors.length > 0) return { ok: false, errors: c.errors }
+  return { ok: true, canonical: JSON.stringify(value, null, 2) }
 }
