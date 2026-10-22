@@ -15,6 +15,7 @@ export function registerMeta(app: FastifyInstance, deps: HubDeps): void {
       scopes: ['openid', 'profile', 'offline_access', `api://${config.entra.clientId}/access_as_user`],
       redirectUri: config.entra.redirectUri,
     },
+    capabilities: { manifestSchema: 2, playbookEdits: config.allowPlaybookEdits === true },
   }
   app.get('/api/v1/meta', async () => meta)
   app.get('/healthz', async () => ({ ok: true }))

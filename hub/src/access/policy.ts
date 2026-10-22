@@ -1,6 +1,6 @@
 import type { AccessTarget, HubAction, HubDecision, HubGrant, HubGroup, HubUser } from '../../../src/shared/hub'
 
-const ADMIN_ONLY: readonly HubAction[] = ['admin', 'deploy.edit', 'lock.break']
+const ADMIN_ONLY: readonly HubAction[] = ['admin', 'deploy.edit', 'lock.break', 'playbook.edit']
 
 interface Candidate {
   group: HubGroup

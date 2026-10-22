@@ -1,6 +1,7 @@
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { FakeEntra } from './fake-entra'
+import type { HubEnvManifest } from '../../src/shared/hub'
 
 /** The slice of hub/tests/helpers.ts these tests use. Loaded dynamically: the hub is a separate TS project. */
 export interface TestHub {
@@ -39,4 +40,10 @@ export async function hubManifest(): Promise<{
 }> {
   const file = join(dirname(fileURLToPath(import.meta.url)), '../../hub/tests/manifest.ts')
   return (await import(/* @vite-ignore */ file)) as never
+}
+
+/** The Hub's own manifest reader, so a desktop manifest is checked by the code that will receive it. */
+export async function hubReadManifest(): Promise<(input: unknown) => HubEnvManifest> {
+  const file = join(dirname(fileURLToPath(import.meta.url)), '../../hub/src/registry.ts')
+  return ((await import(/* @vite-ignore */ file)) as { readManifest(input: unknown): HubEnvManifest }).readManifest
 }
