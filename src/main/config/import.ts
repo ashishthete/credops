@@ -764,10 +764,17 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
       }
     }
     // The IPC shape check first (the same one a runbook saved in the app passes), then the store's content rules.
-    const input = asRunbookSaveInput(
-      { environmentId, name: x.name, description: x.description, targetServiceIds: targets, items: runbookItems, params: x.params, lock: x.lock, notify: x.notify },
-      'runbook',
-    ) as RunbookInput
+    // A hand-edited file can fail it: skip that runbook, like any other object kind, rather than abort the import.
+    let input: RunbookInput
+    try {
+      input = asRunbookSaveInput(
+        { environmentId, name: x.name, description: x.description, targetServiceIds: targets, items: runbookItems, params: x.params, lock: x.lock, notify: x.notify },
+        'runbook',
+      ) as RunbookInput
+    } catch (e) {
+      item('runbooks', local ?? x.id, x.name, 'skip', { reason: `runbook ${x.name} is malformed: ${e instanceof Error ? e.message : String(e)}` })
+      continue
+    }
     if (local === null) {
       s.runbooks.insertInTx(input, x.id)
       touch(environmentId)

@@ -918,6 +918,22 @@ describe('config import of playbook ops settings', () => {
     }
   })
 
+  it('skips a malformed runbook with a reason and imports the rest', async () => {
+    const { f, file } = await playbookSource()
+    const edited = copy(file)
+    const bad = { ...copy(edited.runbooks![0]), id: '0190a1b2-c3d4-7e5f-8a6b-bbbbbbbbbbbb', name: 'Broken' }
+    // Past the reader (a hand-built object): a param pattern the app's own save refuses.
+    ;(bad.params[0] as { pattern: string }).pattern = 'bogus'
+    edited.runbooks!.push(bad)
+    const t = await makeTarget(f)
+    const plan = planImport(t.db, edited)
+    expect(itemOf(plan, 'runbooks', 'Broken')).toMatchObject({ action: 'skip', reason: expect.stringContaining('Broken') })
+    expect(itemOf(plan, 'runbooks', 'Reindex').action).toBe('add')
+    importFile(t, edited)
+    const names = new RunbookStore({ db: t.db, audit: t.audit, vault: t.vault }).list(f.staging.id).map((r) => r.name)
+    expect(names).toEqual(['Reindex'])
+  })
+
   it('a flow or runbook that points at a service of another environment is refused', async () => {
     const { f, file } = await playbookSource()
     const other = f.services.create({ kind: 'service', environmentId: f.prod.id, name: 'prod-web', deploymentId: null, composeService: 'web' })
