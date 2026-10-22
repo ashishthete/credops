@@ -82,6 +82,8 @@ export class EventTranslator {
   private readonly failedRuns = new Set<string>()
   private readonly pf = new Map<string, string[]>()
   private readonly pfCut = new Set<string>()
+  /** Per preflight run key, the error of each check task that failed outright (no stdout to parse). */
+  private readonly pfErr = new Map<string, Map<string, string>>()
   private readonly rescuedBy = new Map<string, number>()
   private readonly unknownPrevious = new Set<string>()
   /** When each task (by name) last started, for its task.done duration. */
@@ -175,6 +177,10 @@ export class EventTranslator {
   /** Runs whose preflight commits output the plugin cut at its cap. */
   preflightCut(): string[] {
     return [...this.pfCut]
+  }
+  /** Per run key, check name to the (redacted) error of a preflight task that failed outright. */
+  preflightErrors(): Record<string, Record<string, string>> {
+    return Object.fromEntries([...this.pfErr].map(([k, v]) => [k, Object.fromEntries(v)]))
   }
   /** Hosts that had rescued failures (a rollback step failing is rescued so the run continues), with the count. */
   rescued(): Record<string, number> {
@@ -417,7 +423,8 @@ export class EventTranslator {
       return out
     }
     if (t.kind === 'preflight') {
-      this.collectPreflight(t.run, e)
+      const error = this.collectPreflight(t.run, e)
+      if (error !== null) out.push(this.ansibleLog(`${hostLabel}: ${e.task ?? 'preflight'} failed: ${error}`))
       return out
     }
     if (!r) return out
@@ -664,8 +671,9 @@ export class EventTranslator {
   }
 
   // ---- preflight
-  private collectPreflight(run: string, e: ResultEvent): void {
-    if (e.no_log) return
+  /** Keeps a preflight task's stdout for parsePreflight; returns the error of a task that failed outright, if any. */
+  private collectPreflight(run: string, e: ResultEvent): string | null {
+    if (e.no_log) return null
     // only the commit list reads the cut flag, so a cut in another check (the deps config can be large)
     // must not mark it; a task whose check can't be read counts as possibly the commits one
     const check = /^preflight (\S+)/.exec(e.task ?? '')?.[1]
@@ -675,6 +683,12 @@ export class EventTranslator {
       list.push(e.stdout)
       this.pf.set(run, list)
     }
+    if (e.event !== 'failed' || e.ignored === true) return null
+    const error = this.line(failureText(e))
+    const errs = this.pfErr.get(run) ?? new Map<string, string>()
+    if (!errs.has(check ?? '')) errs.set(check ?? '', error)
+    this.pfErr.set(run, errs)
+    return error
   }
 
   private reachCheck(host: PlanHost | undefined, error: string): PreflightCheck {
@@ -765,17 +779,37 @@ function decodeServices(b64: string | undefined): string[] | null {
   return names.length && names.every((n) => COMPOSE_SERVICE.test(n)) ? names : null
 }
 
+const FAILURE_MAX = 300
+
+/**
+ * One line for a task that failed outright: ansible's message, and for a module failure (no python, a crash)
+ * the last line of stderr, which says why.
+ */
+function failureText(e: ResultEvent): string {
+  const first = (s: string | undefined) => (s ?? '').split('\n').map((l) => l.trim()).find(Boolean) ?? ''
+  const last = (s: string | undefined) => (s ?? '').split('\n').map((l) => l.trim()).filter(Boolean).at(-1) ?? ''
+  const msg = first(typeof e.msg === 'string' ? e.msg : undefined)
+  const why = msg.startsWith('MODULE FAILURE') || !msg ? last(e.stderr) : ''
+  const text = [msg, why].filter(Boolean).join(': ') || 'the task failed without a message'
+  return text.length > FAILURE_MAX ? `${text.slice(0, FAILURE_MAX - 1)}…` : text
+}
+
 export interface ParsePreflightOptions {
   now: number
   /** Run keys whose output the callback plugin cut (EventTranslator.preflightCut()). */
   cut?: string[]
   secrets?: string[]
+  /** Errors of check tasks that failed outright (EventTranslator.preflightErrors()), named instead of "no result". */
+  errors?: Record<string, Record<string, string>>
 }
 
 /**
  * Builds the preflight report from the OD-PF lines of each run's stdout. A check whose lines are missing is
  * never reported as clean: a missing repo blocks, and anything else that printed nothing blocks as "no result".
  */
+/** A check whose task is named differently: the branch check is printed by the fetch task. */
+const TASK_OF: Record<string, string> = { branch: 'fetch' }
+
 export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, string>, o: ParsePreflightOptions): RunnerPreflight {
   const checks: PreflightCheck[] = []
   const commits: PreflightReport['commits'] = {}
@@ -802,7 +836,10 @@ export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, str
     const add = (id: string, level: PreflightCheck['level'], message: string): void => {
       checks.push({ id, deploymentId: d.deploymentId, hostId: d.hostId, label: `${d.name}`, level, message: red(message) })
     }
-    const noResult = (id: string, what: string): void => add(id, 'block', `${what} gave no result on ${hl}`)
+    const noResult = (id: string, what: string): void => {
+      const error = o.errors?.[d.runId]?.[TASK_OF[id] ?? id]
+      add(id, 'block', error ? `${what} failed on ${hl}: ${error}` : `${what} gave no result on ${hl}`)
+    }
 
     // tools
     const tools = get('tools')
@@ -949,7 +986,8 @@ export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, str
     }
     if (lines.length === 0) {
       locks[h.hostId] = null
-      add('block', `the lock check gave no result on ${h.label}`)
+      const error = o.errors?.[`host:${h.hostId}`]?.lock
+      add('block', error ? `The lock check failed on ${h.label}: ${error}` : `the lock check gave no result on ${h.label}`)
     } else if (held.length === 0) {
       locks[h.hostId] = null
       add('ok', `${h.label} is not locked`)

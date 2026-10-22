@@ -320,6 +320,36 @@ describe('preflight parsing', () => {
     expect(msg(r, 'lock', null).find((m) => m.startsWith('block'))).toContain('bob@srv9 is deploying v1.2.3')
   })
 
+  it('a preflight task that failed outright names its error instead of "no result"', () => {
+    const p = planFixture({ kind: 'preflight' })
+    p.deployments = [p.deployments[2]]
+    p.hosts = [p.hosts[1]]
+    const tr = new EventTranslator({ plan: p, secrets: () => ['hunter2'], now: clock().now })
+    const fail = (task: string, run: string, extra: Record<string, unknown>) => {
+      const tags = ['od_step=preflight', `od_run=${run}`]
+      tr.feed(JSON.stringify({ event: 'task_start', name: task, tags }))
+      return tr.feed(JSON.stringify({ event: 'failed', host: 'od-2', task, tags, ...extra }))
+    }
+    const logged = [
+      ...fail('preflight tools dep3', R3, { msg: 'MODULE FAILURE\nSee stdout/stderr for the exact error', stderr: '/bin/sh: 1: /usr/bin/python3: not found\n' }),
+      ...fail('preflight docker dep3', R3, { msg: 'The shell action failed to execute in the expected time frame (30) and was terminated' }),
+      ...fail('preflight lock od-2', 'host:host-od-2', { msg: 'Incorrect sudo password hunter2' }),
+      ...fail('preflight repo dep3', R3, { msg: 'secret', no_log: true }),
+    ]
+    const r = parsePreflight(p, tr.preflightOutput(), { now: NOW, errors: tr.preflightErrors(), secrets: ['hunter2'] })
+    const m = (id: string) => r.checks.filter((c) => c.id === id).map((c) => `${c.level}: ${c.message}`)
+    expect(m('tools')).toEqual(['block: The tools check failed on label od-2: MODULE FAILURE: /bin/sh: 1: /usr/bin/python3: not found'])
+    expect(m('docker')).toEqual(['block: The docker check failed on label od-2: The shell action failed to execute in the expected time frame (30) and was terminated'])
+    expect(m('lock')).toEqual(['block: The lock check failed on label od-2: Incorrect sudo password ‹redacted›'])
+    // a no_log failure keeps its text hidden: still "no result"
+    expect(m('repo')).toEqual(['block: The repository check gave no result on label od-2'])
+    // the failures reach the run log too, redacted, so the reason is visible there as well
+    const lines = logged.filter((b) => b.type === 'log').map((b) => (b as { line: string }).line)
+    expect(lines).toContain('label od-2: preflight tools dep3 failed: MODULE FAILURE: /bin/sh: 1: /usr/bin/python3: not found')
+    expect(lines.join('\n')).not.toContain('hunter2')
+    expect(lines.join('\n')).not.toContain('secret')
+  })
+
   it('zero commits gives commitsTotal 0 and firstDeploy false', () => {
     const p = planFixture({ kind: 'preflight' })
     p.deployments = [p.deployments[2]]

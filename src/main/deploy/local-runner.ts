@@ -296,7 +296,7 @@ export class LocalRunner implements DeployRunner {
   }
 
   private report(plan: DeployPlan, translator: EventTranslator, extra: PreflightCheck[], known: string[], now: () => number): NonNullable<RunOutcome['preflight']> {
-    const r = parsePreflight(plan, translator.preflightOutput(), { now: now(), cut: translator.preflightCut(), secrets: known })
+    const r = parsePreflight(plan, translator.preflightOutput(), { now: now(), cut: translator.preflightCut(), errors: translator.preflightErrors(), secrets: known })
     const checks = [...extra, ...r.checks]
     return { ...r, checks, blocked: checks.some((c) => c.level === 'block') }
   }
