@@ -1,11 +1,13 @@
 import { Check, Cloud, Lock, Plus, Rocket, Search, X } from 'lucide-react'
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { DeploymentMeta, EnvLastRelease } from '../../../../shared/deploy'
-import type { HubCatalogEnv } from '../../../../shared/hub'
+import type { HubCatalogEnv, HubRegionRef } from '../../../../shared/hub'
 import type { ServiceMeta } from '../../../../shared/services'
+import { regionsOfEnvironment } from '../../inventory/regions'
 import type { InventoryData } from '../../inventory/store'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
+import { RegionChip } from '../../ui/RegionChip'
 import { plural, useMenuPopover } from '../../ui/common'
 import { relativeTime } from '../../ui/time'
 
@@ -25,6 +27,8 @@ export interface EnvRow {
   hub: boolean
   productName: string
   hosts: { label: string; address?: string }[]
+  /** Where its hosts run, by code. */
+  regions: HubRegionRef[]
   /** What Deploy ticks: each service, and each checkout with none. */
   units: number
   last?: EnvLastRelease
@@ -95,6 +99,7 @@ export function envGroups(
       const h = hostById.get(m.hostId)
       return h ? [{ label: h.label, address: h.address }] : []
     }),
+    regions: regionsOfEnvironment(data, e.id, deployments, services),
     units: units(e.id),
     last: latest[e.id],
   })
@@ -128,6 +133,7 @@ export function envGroups(
       hub: true,
       productName: g.name,
       hosts: c.hosts.map((h) => ({ label: h.label })),
+      regions: teamRegions(c),
       units: units(c.environment.id),
       last: latest[c.environment.id],
     })
@@ -135,11 +141,17 @@ export function envGroups(
   return [...products, ...teamOnly, rest].filter((g) => g.rows.length)
 }
 
-/** Keeps the rows matching `query` (environment, product or host) in `productId` ('' for all), running and failed first. */
+/** A team environment's regions, from its manifest's hosts (none from an older desktop), by code. */
+function teamRegions(c: HubCatalogEnv): HubRegionRef[] {
+  const byCode = new Map(c.hosts.flatMap((h) => (h.region ? [[h.region.code, h.region] as const] : [])))
+  return [...byCode.values()].sort((a, b) => a.code.localeCompare(b.code))
+}
+
+/** Keeps the rows matching `query` (environment, product, host or region) in `productId` ('' for all), running and failed first. */
 export function filterGroups(groups: EnvGroup[], query: string, productId: string): EnvGroup[] {
   const q = query.trim().toLowerCase()
   const hit = (g: EnvGroup, r: EnvRow) =>
-    !q || [r.name, g.name, ...r.hosts.flatMap((h) => [h.label, h.address ?? ''])].some((s) => s.toLowerCase().includes(q))
+    !q || [r.name, g.name, ...r.hosts.flatMap((h) => [h.label, h.address ?? '']), ...r.regions.flatMap((x) => [x.code, x.displayName])].some((s) => s.toLowerCase().includes(q))
   return groups.flatMap((g) => {
     if (productId && g.id !== productId) return []
     const rows = g.rows
@@ -298,6 +310,9 @@ function EnvListRow({ row, onOpen, onDeploy, onAddService }: { row: EnvRow; onOp
           <span className="flex min-w-0 items-center gap-1.5">
             <span className="truncate text-[13px] font-medium text-fg">{row.name}</span>
             {row.protected && <Lock role="img" aria-label="Protected" className="size-3 shrink-0 text-warn" />}
+            {row.regions.map((r) => (
+              <RegionChip key={r.code} region={r} className="shrink-0" />
+            ))}
           </span>
           <span className="truncate text-[11.5px] text-muted">
             {row.units ? `${hosts} · ${plural(row.units, 'service')}` : 'No services yet'}

@@ -1,5 +1,5 @@
 import type { EnvironmentMeta, HostMeta, HostRole, RegionRef } from '../../../shared/inventory'
-import { regionOfHost, regionsOfEnvironment } from './regions'
+import { regionOfHost } from './regions'
 import type { InventoryData } from './store'
 
 /** 'p:<id>', 'p:<id>/e:<id>', 'p:<id>/e:<id>/h:<id>', 'u', 'u/h:<id>' */
@@ -19,7 +19,7 @@ export interface TreeRow {
   sharedCount: number
   /** Hosts only: "Product · Environment" for every other membership, sorted. */
   alsoIn?: string[]
-  /** Hosts only: the host's region, set when its environment spans more than one. */
+  /** Hosts only: the host's region. */
   region?: RegionRef
   expandable: boolean
   expanded: boolean
@@ -83,14 +83,12 @@ export function buildTree(data: InventoryData, expanded: ReadonlySet<NodeKey>): 
 
   const addHosts = (envKey: NodeKey, envId: string, depth: 2) => {
     const hosts = hostsOf(envId)
-    // Region chips only where they tell hosts apart: an environment spanning more than one region.
-    const multiRegion = regionsOfEnvironment(data, envId).length > 1
     for (const { host, role } of hosts) {
       const alsoIn = placementsOf(host).filter((p) => p.key !== envKey).map((p) => p.label).sort(byName)
       push({
         key: `${envKey}/h:${host.id}`, kind: 'host', id: host.id, depth, parentKey: envKey, label: host.label,
         color: envById.get(envId)?.color ?? UNASSIGNED_COLOR, role, sharedCount: hostAppearances(host) - 1, alsoIn,
-        region: multiRegion ? regionRef(host.id) : undefined, childCount: 0,
+        region: regionRef(host.id), childCount: 0,
       })
     }
     if (hosts.length === 0) {
@@ -125,7 +123,7 @@ export function buildTree(data: InventoryData, expanded: ReadonlySet<NodeKey>): 
     })
     if (open) {
       for (const h of looseHosts) {
-        push({ key: `u/h:${h.id}`, kind: 'host', id: h.id, depth: 1, parentKey: 'u', label: h.label, color: UNASSIGNED_COLOR, sharedCount: 0, childCount: 0 })
+        push({ key: `u/h:${h.id}`, kind: 'host', id: h.id, depth: 1, parentKey: 'u', label: h.label, color: UNASSIGNED_COLOR, region: regionRef(h.id), sharedCount: 0, childCount: 0 })
       }
     }
   }
