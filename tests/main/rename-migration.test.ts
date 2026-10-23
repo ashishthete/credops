@@ -29,8 +29,14 @@ function fake(opts: { files?: string[]; oldKey?: string | null; newKey?: boolean
       calls.push(`remove ${p}`)
       for (const f of [...files]) if (f === p || f.startsWith(`${p}/`)) files.delete(f)
     },
+    list: (dir) => [...files].filter((f) => f.startsWith(`${dir}/`)),
+    now: () => 123,
     keychain: {
       has: (i) => keys.has(i.service),
+      remove: (i) => {
+        calls.push(`delete ${i.service}`)
+        keys.delete(i.service)
+      },
       read: (i) => {
         if (opts.readFails) throw new Error('denied')
         return keys.get(i.service) ?? null
@@ -50,7 +56,7 @@ describe('migrateFromOpsDeck', () => {
     const f = fake()
     expect(migrateFromOpsDeck({ oldDir: OLD, newDir: NEW }, f.d)).toBe('migrated')
     expect(f.keys.get('CredOps Safe Storage')).toBe(KEY)
-    expect(f.calls[0]).toBe('add CredOps Safe Storage CredOps Key')
+    expect(f.calls.indexOf('add CredOps Safe Storage CredOps Key')).toBeLessThan(f.calls.findIndex((c) => c.startsWith('copy')))
     expect([...f.files].filter((p) => p.startsWith(NEW)).sort()).toEqual([NEW, `${NEW}/Local Storage`, `${NEW}/credops.db`, `${NEW}/credops.db-wal`])
   })
 
@@ -62,18 +68,34 @@ describe('migrateFromOpsDeck', () => {
     expect(f.calls.some((c) => c.startsWith(`remove ${OLD}`))).toBe(false)
   })
 
-  it('does nothing once CredOps has its folder, or when there was no OpsDeck', () => {
-    const done = fake({ files: [OLD, NEW] })
+  it('does nothing once CredOps has its database, or when there was no OpsDeck', () => {
+    const done = fake({ files: [OLD, `${OLD}/opsdeck.db`, NEW, `${NEW}/credops.db`] })
     expect(migrateFromOpsDeck({ oldDir: OLD, newDir: NEW }, done.d)).toBe('none')
     const fresh = fake({ files: [] })
     expect(migrateFromOpsDeck({ oldDir: OLD, newDir: NEW }, fresh.d)).toBe('none')
     expect([...done.calls, ...fresh.calls]).toEqual([])
   })
 
-  it('leaves an existing CredOps key alone', () => {
+  it('replaces a key Electron made before the data moved', () => {
     const f = fake({ newKey: true })
     migrateFromOpsDeck({ oldDir: OLD, newDir: NEW }, f.d)
-    expect(f.keys.get('CredOps Safe Storage')).toBe('existing')
+    expect(f.calls).toContain('delete CredOps Safe Storage')
+    expect(f.keys.get('CredOps Safe Storage')).toBe(KEY)
+  })
+
+  it('moves aside a folder Electron filled before the data moved', () => {
+    const f = fake({ files: [OLD, `${OLD}/opsdeck.db`, NEW, `${NEW}/Local State`] })
+    expect(migrateFromOpsDeck({ oldDir: OLD, newDir: NEW }, f.d)).toBe('migrated')
+    expect(f.files.has(`${NEW}.unused-123/Local State`)).toBe(true)
+    expect(f.files.has(`${NEW}/credops.db`)).toBe(true)
+    expect(f.files.has(`${NEW}/Local State`)).toBe(false)
+  })
+
+  it('removes the folder Electron made when it is still empty', () => {
+    const f = fake({ files: [OLD, `${OLD}/opsdeck.db`, NEW] })
+    migrateFromOpsDeck({ oldDir: OLD, newDir: NEW }, f.d)
+    expect(f.calls).toContain(`remove ${NEW}`)
+    expect(f.files.has(`${NEW}/credops.db`)).toBe(true)
   })
 
   it('still moves the data when OpsDeck never made a key', () => {
@@ -85,7 +107,8 @@ describe('migrateFromOpsDeck', () => {
   it.each([
     ['the key cannot be read', { readFails: true }, "couldn't read"],
     ['the key cannot be saved', { addFails: true }, "couldn't save"],
-    ['the save reports success but no item exists', { addSilentlyFails: true }, "couldn't save"],
+    ['the save reports success but the key does not read back', { addSilentlyFails: true }, "couldn't save"],
+    ['the save reports success but an old key stays', { addSilentlyFails: true, newKey: true }, "couldn't save"],
     ['the key has an unexpected shape', { oldKey: 'a" -A "b' }, 'expected format'],
   ])('moves no data when %s', (_why, opts, message) => {
     const f = fake(opts)
