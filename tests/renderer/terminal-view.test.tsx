@@ -123,6 +123,17 @@ describe('TerminalView', () => {
     expect(key({ key: 'a' })).toBe(true)
   })
 
+  it('no ⌘ combo reaches the shell on macOS, so ⌘⇧ arrows and ⌘⌫ never type escape codes', async () => {
+    await mount()
+    const { keyHandler } = fake.terms[0]
+    const key = (init: KeyboardEventInit) => keyHandler(new KeyboardEvent('keydown', init))
+    expect(key({ key: 'ArrowRight', code: 'ArrowRight', metaKey: true, shiftKey: true })).toBe(false)
+    expect(key({ key: 'Backspace', code: 'Backspace', metaKey: true })).toBe(false)
+    expect(key({ key: 'Delete', code: 'Delete', metaKey: true, shiftKey: true })).toBe(false)
+    expect(key({ key: 'v', metaKey: true })).toBe(false) // the paste event still reaches xterm
+    expect(key({ key: 'ArrowRight', code: 'ArrowRight', altKey: true })).toBe(true)
+  })
+
   it('mod+f opens search in the visible view even when a hidden view mounted first', async () => {
     mockBridge({ 'session:attach': { meta: {}, buffer: '', end: 0 } })
     const view = render(

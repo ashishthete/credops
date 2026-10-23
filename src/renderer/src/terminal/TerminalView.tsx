@@ -20,8 +20,13 @@ function* chunks(data: string): Generator<string> {
   }
 }
 
-/** Combos the app owns: xterm lets these through to the window shortcut handler. */
+/**
+ * Combos the app owns: xterm lets these through to the window shortcut handler. On macOS that is
+ * every ⌘ combo, as in Terminal and iTerm: xterm would otherwise type ⌘⇧→ as `\x1b[1;10C` into the
+ * shell. Copy and paste still work, through the browser's copy and paste events.
+ */
 function isAppCombo(e: KeyboardEvent): boolean {
+  if (isMac() && e.metaKey) return true
   const modPressed = isMac() ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
   if (!modPressed || e.altKey) return false
   if (e.shiftKey) return e.code === 'BracketRight' || e.code === 'BracketLeft'

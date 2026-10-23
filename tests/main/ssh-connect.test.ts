@@ -1,5 +1,6 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
+import * as net from 'node:net'
 import type { Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -163,6 +164,14 @@ describe('connectChain', () => {
     const s = await server()
     const { client } = await connect([hop('target', s.port)], deps())
     expect(await shellOutput(client, 'READY')).toContain('READY')
+  })
+
+  it('sends keystrokes at once, without Nagle batching, like OpenSSH', async () => {
+    const s = await server()
+    const noDelay = vi.spyOn(net.Socket.prototype, 'setNoDelay')
+    onTestFinished(() => noDelay.mockRestore())
+    await connect([hop('target', s.port)], deps())
+    expect(noDelay).toHaveBeenCalledWith(true)
   })
 
   it('connects through a jump host', async () => {

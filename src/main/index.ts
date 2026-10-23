@@ -14,6 +14,7 @@ import {
   Notification,
   powerMonitor,
   safeStorage,
+  screen,
   session,
   shell,
   systemPreferences,
@@ -21,6 +22,7 @@ import {
 import { AuditLog } from './audit/audit-log'
 import { openDatabase, type Db } from './db/connection'
 import { DB_FILE, migrateFromOpsDeck, systemMigrationDeps } from './rename-migration'
+import { initialWindowState, loadWindowState, saveWindowState, WINDOW_STATE_FILE } from './window-state'
 import { createAppHandlers } from './ipc/handlers/app'
 import { createAuditHandlers } from './ipc/handlers/audit'
 import { createConfigHandlers } from './ipc/handlers/config'
@@ -170,10 +172,28 @@ let stopAutoLock: (() => void) | null = null
 let stopSsoWatch: (() => void) | null = null
 
 function createWindow(): void {
-  const win = new BrowserWindow(windowOptions(join(__dirname, '../preload/index.js'), app.isPackaged))
+  const stateFile = join(app.getPath('userData'), WINDOW_STATE_FILE)
+  const opening = initialWindowState(
+    loadWindowState(stateFile),
+    screen.getAllDisplays().map((d) => d.workArea),
+    screen.getPrimaryDisplay().workArea,
+  )
+  const win = new BrowserWindow({ ...windowOptions(join(__dirname, '../preload/index.js'), app.isPackaged), ...opening.bounds })
   mainWindow = win
 
-  win.on('ready-to-show', () => win.show())
+  win.on('ready-to-show', () => {
+    if (opening.maximized) win.maximize()
+    win.show()
+    if (opening.fullScreen) win.setFullScreen(true)
+  })
+  // Size, place and full screen come back on the next launch. Losing them is harmless.
+  win.on('close', () => {
+    try {
+      saveWindowState(stateFile, { bounds: win.getNormalBounds(), maximized: win.isMaximized(), fullScreen: win.isFullScreen() })
+    } catch {
+      /* best effort */
+    }
+  })
   win.on('closed', () => {
     mainWindow = null
   })

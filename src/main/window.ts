@@ -1,6 +1,7 @@
 import type { BrowserWindowConstructorOptions, MenuItemConstructorOptions } from 'electron'
 import type { EventContract, EventName } from '../shared/ipc'
 import type { LockReason } from '../shared/vault'
+import { MIN_HEIGHT, MIN_WIDTH } from './window-state'
 
 /** DevTools would let anyone at the keyboard read decrypted vault state, so packaged builds have none. */
 export function windowOptions(preloadPath: string, isPackaged: boolean): BrowserWindowConstructorOptions {
@@ -8,8 +9,8 @@ export function windowOptions(preloadPath: string, isPackaged: boolean): Browser
     title: 'CredOps',
     width: 1280,
     height: 820,
-    minWidth: 960,
-    minHeight: 640,
+    minWidth: MIN_WIDTH,
+    minHeight: MIN_HEIGHT,
     show: false,
     backgroundColor: '#0b0d12',
     titleBarStyle: 'hiddenInset',
@@ -41,10 +42,9 @@ export function appMenuTemplate(isPackaged: boolean, platform: NodeJS.Platform):
     label: 'Edit',
     submenu: [{ role: 'undo' }, { role: 'redo' }, sep, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }],
   }
-  const view: MenuItemConstructorOptions[] = isPackaged
-    ? []
-    : [{ label: 'View', submenu: [{ role: 'reload' }, { role: 'forceReload' }, { role: 'toggleDevTools' }] }]
-  return [app, edit, ...view, { role: 'windowMenu' }]
+  const devItems: MenuItemConstructorOptions[] = isPackaged ? [] : [{ role: 'reload' }, { role: 'forceReload' }, { role: 'toggleDevTools' }, sep]
+  const view: MenuItemConstructorOptions = { label: 'View', submenu: [...devItems, { role: 'togglefullscreen' }] }
+  return [app, edit, view, { role: 'windowMenu' }]
 }
 
 const withoutHash = (u: URL): string => {

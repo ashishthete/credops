@@ -218,6 +218,10 @@ async function dialHop(
     client.once('ready', () => {
       if (settled) return
       done()
+      // Like OpenSSH for interactive use: each keystroke goes out at once instead of waiting on
+      // Nagle for the last packet's ACK, a full round trip on a far host. A jump hop's tunnelled
+      // channel has no socket option; its bastion's TCP socket carries the setting.
+      client.setNoDelay(true)
       resolve(client)
     })
 

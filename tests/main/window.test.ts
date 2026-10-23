@@ -43,6 +43,14 @@ describe('appMenuTemplate', () => {
     expect(r).not.toContain('forceReload')
   })
 
+  it('every build can enter full screen from the View menu', () => {
+    for (const packaged of [true, false]) {
+      const t = appMenuTemplate(packaged, 'darwin')
+      expect(t.map((m) => m.label ?? m.role)).toEqual(['appMenu', 'Edit', 'View', 'windowMenu'])
+      expect(roles(t)).toContain('togglefullscreen')
+    }
+  })
+
   it('development adds a View menu with reload and DevTools', () => {
     const t = appMenuTemplate(false, 'darwin')
     expect(t.map((m) => m.label ?? m.role)).toEqual(['appMenu', 'Edit', 'View', 'windowMenu'])
