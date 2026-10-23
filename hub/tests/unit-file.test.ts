@@ -26,12 +26,12 @@ function parse(text: string): Map<string, string[]> {
 }
 
 describe('systemd unit', () => {
-  const unit = parse(readFileSync(resolve(here, '../deploy/opsdeck-hub.service'), 'utf8'))
+  const unit = parse(readFileSync(resolve(here, '../deploy/credops-hub.service'), 'utf8'))
   const one = (k: string) => unit.get(k)?.[0]
 
   it('runs the built CLI as an unprivileged user', () => {
-    expect(one('Service.User')).toBe('opsdeck-hub')
-    expect(one('Service.ExecStart')).toMatch(/opsdeck-hub\.mjs serve --config \S+$/)
+    expect(one('Service.User')).toBe('credops-hub')
+    expect(one('Service.ExecStart')).toMatch(/credops-hub\.mjs serve --config \S+$/)
   })
 
   it('is hardened and writes only its data dir', () => {
@@ -39,10 +39,10 @@ describe('systemd unit', () => {
     expect(one('Service.ProtectSystem')).toBe('strict')
     expect(one('Service.ProtectHome')).toBe('true')
     expect(one('Service.PrivateTmp')).toBe('true')
-    expect(one('Service.ReadWritePaths')).toBe('/var/lib/opsdeck-hub')
+    expect(one('Service.ReadWritePaths')).toBe('/var/lib/credops-hub')
   })
 
   it('hands the master key over as a credential', () => {
-    expect(one('Service.LoadCredential')).toBe('master-key:/etc/opsdeck-hub/master.key')
+    expect(one('Service.LoadCredential')).toBe('master-key:/etc/credops-hub/master.key')
   })
 })

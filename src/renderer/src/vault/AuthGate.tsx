@@ -57,7 +57,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const motionSafe = useMotionSafe()
   const [hold, setHold] = useState<Hold>('none')
   const lock = useLockTransitions(status, () => setHold('none'))
-  // Whether this install has made its Hub choice: "Use OpsDeck without a Hub" was picked this
+  // Whether this install has made its Hub choice: "Use CredOps without a Hub" was picked this
   // session, or the vaults were already set up without one (so a reset keeps them local-only).
   const [localOnly, setLocalOnly] = useState(false)
   if (status?.setUp && !status.sso.required && !localOnly) setLocalOnly(true)
@@ -180,7 +180,7 @@ function GateScreen({ status, hold, session, autoQuick, localOnly, onWithoutHub,
     )
   } else if (!status.setUp) {
     title = 'Protect your vaults'
-    description = 'Choose how you unlock OpsDeck'
+    description = 'Choose how you unlock CredOps'
     body = <SetupCard onDone={onSetUp} />
   } else {
     title = 'Unlock vaults'
@@ -217,7 +217,7 @@ function GateScreen({ status, hold, session, autoQuick, localOnly, onWithoutHub,
         <div ref={shakeScope} className="w-full max-w-[400px]">
           <motion.section
             aria-labelledby={title ? titleId : undefined}
-            aria-label={title ? undefined : checking ? 'Checking your Microsoft sign-in' : 'Opening OpsDeck'}
+            aria-label={title ? undefined : checking ? 'Checking your Microsoft sign-in' : 'Opening CredOps'}
             aria-busy={!status || checking || undefined}
             className="rounded-[14px] border border-line bg-surface p-6 shadow-pop"
             initial={motionSafe ? { opacity: 0, y: 12, scale: 0.98 } : { opacity: 0 }}
@@ -297,8 +297,8 @@ function unlockDescription(status: VaultStatus): string {
   }
   if (sso.required && sso.upn) return `Signed in as ${sso.upn}`
   return status.quickUnlock === 'touchId' && status.quickUnlockAvailable.touchId
-    ? 'Use Touch ID or your master password to open OpsDeck.'
-    : 'Enter your master password to open OpsDeck.'
+    ? 'Use Touch ID or your master password to open CredOps.'
+    : 'Enter your master password to open CredOps.'
 }
 
 /**

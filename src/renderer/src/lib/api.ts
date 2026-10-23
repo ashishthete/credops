@@ -1,4 +1,4 @@
-import type { OpsDeckBridge } from '../../../shared/ipc'
+import type { CredOpsBridge } from '../../../shared/ipc'
 
 const REMOTE_PREFIX = /^Error invoking remote method '[^']+': (?:Error: )?/
 
@@ -8,13 +8,13 @@ export function cleanIpcErrorMessage(message: string): string {
 }
 
 // Resolved per call, so the bridge can be swapped (tests install a fresh mock per case).
-export const api: OpsDeckBridge = {
+export const api: CredOpsBridge = {
   invoke: async (channel, ...args) => {
     try {
-      return await window.opsdeck.invoke(channel, ...args)
+      return await window.credops.invoke(channel, ...args)
     } catch (err) {
       throw new Error(cleanIpcErrorMessage(err instanceof Error ? err.message : String(err)))
     }
   },
-  on: (event, listener) => window.opsdeck.on(event, listener),
+  on: (event, listener) => window.credops.on(event, listener),
 }

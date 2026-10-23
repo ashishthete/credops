@@ -71,7 +71,7 @@ export function ImportDialog({ open, onClose, onImported }: ImportDialogProps) {
     setPreviewError(null)
     withUnlock(() => api.invoke('sshconfig:preview')).then(
       // undefined means the unlock was cancelled; Retry asks again.
-      (p) => gen === generation.current && (p ? setPreview(p) : setPreviewError('OpsDeck is locked. Unlock it to read the file.')),
+      (p) => gen === generation.current && (p ? setPreview(p) : setPreviewError('CredOps is locked. Unlock it to read the file.')),
       (err: unknown) => gen === generation.current && setPreviewError(errorText(err)),
     )
   }, [])

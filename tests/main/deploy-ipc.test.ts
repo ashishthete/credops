@@ -260,7 +260,7 @@ describe('playbook review handlers', () => {
     const KEY = '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----'
     // as a Hub release's detail arrives: nothing on the way redacted it
     const stored = JSON.stringify([{ hosts: 'od-1', tasks: [{ name: `curl https://x.example/?t=${SECRET}` }, { name: 'key', copy: { content: KEY } }] }], null, 2)
-    const dir = await mkdtemp(join(tmpdir(), 'opsdeck-save-'))
+    const dir = await mkdtemp(join(tmpdir(), 'credops-save-'))
     try {
       const path = join(dir, 'release.yml')
       const detail = vi.fn(async () => ({ id: ID, playbook: stored }))
@@ -305,7 +305,7 @@ describe('playbook review handlers', () => {
     // JSON escapes both characters, so the raw form is not in the text at all
     expect(stored).not.toContain(SECRET)
     expect(stored).toContain('p@ss\\"w\\\\rd-9x')
-    const dir = await mkdtemp(join(tmpdir(), 'opsdeck-save-'))
+    const dir = await mkdtemp(join(tmpdir(), 'credops-save-'))
     try {
       const path = join(dir, 'release.yml')
       const handlers = createDeployHandlers({
@@ -342,7 +342,7 @@ describe('playbook review handlers', () => {
     // Encoding the secret on its own does not find it inside the hook
     expect(encoded).not.toContain(Buffer.from(SECRET).toString('base64'))
     const stored = JSON.stringify([{ hosts: 'od-1', tasks: [{ name: 'pre-hook', vars: { d: { pre_hook: encoded } } }] }], null, 2)
-    const dir = await mkdtemp(join(tmpdir(), 'opsdeck-save-'))
+    const dir = await mkdtemp(join(tmpdir(), 'credops-save-'))
     try {
       const path = join(dir, 'release.yml')
       const handlers = createDeployHandlers({

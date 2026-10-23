@@ -13,14 +13,14 @@ const clock = () => new Date('2026-10-20T10:00:00.000Z')
 const sortedById = <T extends { id: string }>(xs: T[]): boolean => xs.every((x, i) => i === 0 || xs[i - 1].id < x.id)
 /** The fixture's own product, not the one every fixture shares. */
 const shop = (file: ConfigFile) => file.products.find((p) => p.name === 'Shop')!
-const tmpPath = () => join(mkdtempSync(join(tmpdir(), 'opsdeck-config-')), 'opsdeck-config.json')
+const tmpPath = () => join(mkdtempSync(join(tmpdir(), 'credops-config-')), 'credops-config.json')
 const exportDeps = (f: ConfigFixture, now = clock) => ({ db: f.db, vault: f.vault, audit: f.audit, now })
 
 describe('config export', () => {
   it('exports every config kind with stable ids and sorted arrays', async () => {
     const f = await makeConfigFixture()
     const { file, counts } = buildConfigExport(f.db, clock)
-    expect(file.format).toBe('opsdeck-config')
+    expect(file.format).toBe('credops-config')
     expect(file.version).toBe(2)
     expect(file.exportedAt).toBe('2026-10-20T10:00:00.000Z')
     expect(Object.keys(file)).toEqual(['format', 'version', 'exportedAt', 'secretRefs', 'regions', 'products', 'identities', 'hosts', 'environments', 'tunnels', 'deployments', 'services'])
@@ -332,7 +332,7 @@ describe('config export', () => {
     expect(e).toMatchObject({ outcome: 'success', targetType: 'config', targetLabel: 'config', targetId: null })
     expect(e.details).toEqual({ counts: res!.counts, omitted: 0 })
     const json = JSON.stringify(e)
-    for (const leak of [path, 'opsdeck-config', f.host.id, f.ids.bastion, 'app1', 'bastion', '10.0.0.7', 'staging', 'Shop', 'Team']) {
+    for (const leak of [path, 'credops-config', f.host.id, f.ids.bastion, 'app1', 'bastion', '10.0.0.7', 'staging', 'Shop', 'Team']) {
       expect(json).not.toContain(leak)
     }
   })
@@ -358,8 +358,8 @@ describe('config export', () => {
 
   it('a failed write is audited as a failure without the path or the reason text', async () => {
     const f = await makeConfigFixture()
-    const dir = mkdtempSync(join(tmpdir(), 'opsdeck-config-'))
-    const path = join(dir, 'missing-dir', 'opsdeck-config.json')
+    const dir = mkdtempSync(join(tmpdir(), 'credops-config-'))
+    const path = join(dir, 'missing-dir', 'credops-config.json')
     await expect(exportConfig(exportDeps(f), path)).rejects.toThrow("Couldn't write the config file")
     const [e] = f.audit.list({ actions: ['config.export'] })
     expect(e.outcome).toBe('failure')
@@ -368,20 +368,20 @@ describe('config export', () => {
 
   it('the write is atomic: a failed rename leaves the target and no temp file behind', async () => {
     const f = await makeConfigFixture()
-    const dir = mkdtempSync(join(tmpdir(), 'opsdeck-config-'))
+    const dir = mkdtempSync(join(tmpdir(), 'credops-config-'))
     // A non-empty directory at the target path: the temp file is written, the rename over it fails.
-    const path = join(dir, 'opsdeck-config.json')
+    const path = join(dir, 'credops-config.json')
     mkdirSync(path)
     writeFileSync(join(path, 'keep'), 'x')
     await expect(exportConfig(exportDeps(f), path)).rejects.toThrow("Couldn't write the config file")
-    expect(readdirSync(dir)).toEqual(['opsdeck-config.json'])
+    expect(readdirSync(dir)).toEqual(['credops-config.json'])
     expect(readdirSync(path)).toEqual(['keep'])
 
     // Success leaves only the target, and an old file is replaced whole.
     const ok = join(dir, 'out.json')
     writeFileSync(ok, 'old contents that are longer than nothing', { mode: 0o644 })
     await exportConfig(exportDeps(f), ok)
-    expect(readdirSync(dir).sort()).toEqual(['opsdeck-config.json', 'out.json'])
+    expect(readdirSync(dir).sort()).toEqual(['credops-config.json', 'out.json'])
     expect(parseConfigFile(readFileSync(ok, 'utf8')).ok).toBe(true)
   })
 

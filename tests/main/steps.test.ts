@@ -126,7 +126,7 @@ describe('validateStep', () => {
   })
 
   it('denies the listed env names', () => {
-    for (const n of ['LD_PRELOAD', 'BASH_ENV', 'PATH', 'IFS', 'ENV', 'PS4', 'SHELLOPTS', 'GIT_DIR', 'DOCKER_HOST', 'COMPOSE_FILE', 'OPSDECK_X', 'SUDO_ASKPASS', 'OD_X', 'BASHOPTS', 'PROMPT_COMMAND', 'HOME', 'CDPATH', 'GLOBIGNORE', 'LD_LIBRARY_PATH', 'DYLD_INSERT_LIBRARIES']) {
+    for (const n of ['LD_PRELOAD', 'BASH_ENV', 'PATH', 'IFS', 'ENV', 'PS4', 'SHELLOPTS', 'GIT_DIR', 'DOCKER_HOST', 'COMPOSE_FILE', 'CREDOPS_X', 'SUDO_ASKPASS', 'OD_X', 'BASHOPTS', 'PROMPT_COMMAND', 'HOME', 'CDPATH', 'GLOBIGNORE', 'LD_LIBRARY_PATH', 'DYLD_INSERT_LIBRARIES']) {
       expect(deniedEnvName(n), n).toBe(true)
     }
     for (const n of ['API_TOKEN', 'PATHS', 'ENVIRONMENT', 'MY_LD_X', 'HOMEPAGE', 'MY_DYLD']) expect(deniedEnvName(n), n).toBe(false)

@@ -9,7 +9,7 @@ const KEY_BYTES = 32
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/
 const SENTINEL_PLAIN = 'opsdeck-hub-key-check'
 const SENTINEL_AAD = 'hub-keycheck:v1'
-export const MASTER_KEY_ENV = 'OPSDECK_HUB_MASTER_KEY'
+export const MASTER_KEY_ENV = 'CREDOPS_HUB_MASTER_KEY'
 
 function decode(text: string): Buffer {
   const trimmed = text.trim()

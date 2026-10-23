@@ -50,7 +50,7 @@ export function checkoutNotice(g: PickerGroup, composeServices: string[] | null,
   else {
     const tracked = new Set([...g.services.map((s) => s.composeService), ...databases])
     const untracked = [...new Set(composeServices)].filter((c) => !tracked.has(c))
-    if (untracked.length) lines.push(`Compose services OpsDeck doesn't track (${listNames(untracked)}) are not restarted.`)
+    if (untracked.length) lines.push(`Compose services CredOps doesn't track (${listNames(untracked)}) are not restarted.`)
   }
   if (g.checkout.managedEnv) lines.push('The managed .env is rewritten for the whole checkout.')
   return lines

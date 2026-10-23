@@ -161,7 +161,7 @@ describe('first launch', () => {
     await user.click(within(ms).getByRole('button', { name: 'Use a different Hub' }))
     expect(invoke).toHaveBeenCalledWith('hub:unlink')
     const hub = await gate("Connect to your team's Hub")
-    await user.click(within(hub).getByRole('button', { name: 'Use OpsDeck without a Hub' }))
+    await user.click(within(hub).getByRole('button', { name: 'Use CredOps without a Hub' }))
     expect(await gate('Protect your vaults')).toBeInTheDocument()
   })
 
@@ -174,11 +174,11 @@ describe('first launch', () => {
 
   it('shows a refused Hub address under the field', async () => {
     const user = userEvent.setup()
-    fakeVault({ setUp: false }, { 'hub:connect': [() => Promise.reject(new Error('That is not an OpsDeck Hub'))] })
+    fakeVault({ setUp: false }, { 'hub:connect': [() => Promise.reject(new Error('That is not a CredOps Hub'))] })
     renderApp()
     const card = await gate("Connect to your team's Hub")
     await user.type(within(card).getByLabelText('Hub URL'), 'https://nope.example.com{Enter}')
-    expect(await within(card).findByText('That is not an OpsDeck Hub')).toBeInTheDocument()
+    expect(await within(card).findByText('That is not a CredOps Hub')).toBeInTheDocument()
     expect(screen.getByRole('region', { name: "Connect to your team's Hub" })).toBeInTheDocument()
   })
 
@@ -187,9 +187,9 @@ describe('first launch', () => {
     const { invoke } = fakeVault({ setUp: false })
     renderApp()
     const card = await gate("Connect to your team's Hub")
-    await user.click(within(card).getByRole('button', { name: 'Use OpsDeck without a Hub' }))
+    await user.click(within(card).getByRole('button', { name: 'Use CredOps without a Hub' }))
     const setup = await gate('Protect your vaults')
-    expect(within(setup).getByText('Choose how you unlock OpsDeck')).toBeInTheDocument()
+    expect(within(setup).getByText('Choose how you unlock CredOps')).toBeInTheDocument()
     expect(invoke).not.toHaveBeenCalledWith('hub:connect', expect.anything())
   })
 })

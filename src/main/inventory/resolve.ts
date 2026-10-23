@@ -19,7 +19,7 @@ import type { SshConfigMatch, SshConfigTarget } from './ssh-config'
 
 export interface ResolveOptions {
   localUser: string
-  /** ~/.ssh/config lookup; its User names a host that has no OpsDeck identity. */
+  /** ~/.ssh/config lookup; its User names a host that has no CredOps identity. */
   sshConfig?: (target: SshConfigTarget) => SshConfigMatch | null
 }
 

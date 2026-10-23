@@ -16,7 +16,7 @@ const hasSshKeygen = spawnSync('ssh-keygen', ['-?']).error === undefined
 
 const dirs: string[] = []
 function tmp(): string {
-  const d = mkdtempSync(join(tmpdir(), 'opsdeck-openssh-'))
+  const d = mkdtempSync(join(tmpdir(), 'credops-openssh-'))
   dirs.push(d)
   return d
 }

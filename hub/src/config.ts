@@ -67,7 +67,7 @@ export function loadConfig(file: string): HubConfig {
   }
 
   const root = obj(raw, '$')
-  const name = root.name === undefined ? 'OpsDeck Hub' : str(root.name, 'name')
+  const name = root.name === undefined ? 'CredOps Hub' : str(root.name, 'name')
 
   const listenIn = root.listen === undefined ? {} : obj(root.listen, 'listen')
   const host = listenIn.host === undefined ? '127.0.0.1' : str(listenIn.host, 'listen.host')
@@ -115,7 +115,7 @@ export function loadConfig(file: string): HubConfig {
     if (!dir) bad('masterKeyFile', 'uses ${CREDENTIALS_DIRECTORY}, which is only set under systemd LoadCredential=')
     masterKeyFile = masterKeyFile.replaceAll('${CREDENTIALS_DIRECTORY}', () => dir as string)
   }
-  if (root.masterKey !== undefined) bad('masterKey', 'is not allowed here; use masterKeyFile or OPSDECK_HUB_MASTER_KEY')
+  if (root.masterKey !== undefined) bad('masterKey', 'is not allowed here; use masterKeyFile or CREDOPS_HUB_MASTER_KEY')
 
   const ansibleBin = root.ansibleBin === undefined ? undefined : str(root.ansibleBin, 'ansibleBin')
   if (ansibleBin !== undefined && !ansibleBin.startsWith('/')) bad('ansibleBin', 'must be an absolute path')

@@ -58,7 +58,7 @@ const desktops: Desktop[] = []
 let feeds: LiveFeed[] = []
 
 function desktop(): Desktop {
-  const dir = mkdtempSync(join(tmpdir(), 'opsdeck-hube2e-'))
+  const dir = mkdtempSync(join(tmpdir(), 'credops-hube2e-'))
   const db = openDatabase(join(dir, 'opsdeck.db'))
   const audit = new AuditLog(db)
   const conn = new HubConnection({ db, audit, keychain: fakeKeychain, fetch, openBrowser: fakeBrowser, now: () => Date.now(), emit: () => undefined })

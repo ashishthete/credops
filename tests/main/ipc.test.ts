@@ -267,7 +267,7 @@ describe('audit handlers', () => {
   beforeEach(() => {
     db = openDatabase(':memory:')
     log = new AuditLog(db, { actor })
-    dir = mkdtempSync(join(tmpdir(), 'opsdeck-ipc-'))
+    dir = mkdtempSync(join(tmpdir(), 'credops-ipc-'))
   })
 
   it('exports csv, paging past 1000 rows, and audits it', async () => {

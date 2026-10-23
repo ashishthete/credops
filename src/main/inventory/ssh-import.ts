@@ -301,7 +301,7 @@ export class SshImporter {
       if (id !== null) plan = { hostId: id, label: target }
     }
     if (!plan) {
-      c.warnings.push(`ProxyJump ${c.proxyJump} isn't a host in this config or OpsDeck; set the jump host by hand`)
+      c.warnings.push(`ProxyJump ${c.proxyJump} isn't a host in this config or CredOps; set the jump host by hand`)
       return null
     }
     if (m![1] !== undefined || m![3] !== undefined) {

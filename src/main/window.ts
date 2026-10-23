@@ -5,7 +5,7 @@ import type { LockReason } from '../shared/vault'
 /** DevTools would let anyone at the keyboard read decrypted vault state, so packaged builds have none. */
 export function windowOptions(preloadPath: string, isPackaged: boolean): BrowserWindowConstructorOptions {
   return {
-    title: 'OpsDeck',
+    title: 'CredOps',
     width: 1280,
     height: 820,
     minWidth: 960,

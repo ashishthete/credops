@@ -1,12 +1,12 @@
 {
-  "name": "opsdeck-hub",
+  "name": "credops-hub",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "engines": { "node": ">=24" },
-  "bin": { "opsdeck-hub": "dist/opsdeck-hub.mjs" },
+  "bin": { "credops-hub": "dist/credops-hub.mjs" },
   "scripts": {
-    "start": "node dist/opsdeck-hub.mjs serve --config hub.config.json"
+    "start": "node dist/credops-hub.mjs serve --config hub.config.json"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.131.0",

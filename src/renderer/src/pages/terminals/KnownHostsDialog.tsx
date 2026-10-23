@@ -62,7 +62,7 @@ export function KnownHostsDialog() {
         open={open}
         onClose={() => closeKnownHosts()}
         title="Known hosts"
-        description="Hosts you chose to trust in OpsDeck."
+        description="Hosts you chose to trust in CredOps."
         width={680}
         footer={
           <Button variant="ghost" onClick={() => closeKnownHosts()}>

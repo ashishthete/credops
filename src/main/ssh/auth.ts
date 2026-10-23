@@ -167,7 +167,7 @@ async function keyChain(
   try {
     const match = target ? deps.sshConfig?.(target) : null
     configured = match?.identityFiles ?? []
-    for (const raw of match?.skipped ?? []) notes.push(`${raw} uses a token OpsDeck doesn't expand, so it was skipped`)
+    for (const raw of match?.skipped ?? []) notes.push(`${raw} uses a token CredOps doesn't expand, so it was skipped`)
   } catch {
     // An unreadable config only drops its IdentityFiles.
   }

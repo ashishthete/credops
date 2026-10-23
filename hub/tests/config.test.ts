@@ -18,8 +18,8 @@ describe('loadConfig', () => {
     const file = write({ ...base(), masterKeyFile: '${CREDENTIALS_DIRECTORY}/master-key' })
     const prev = process.env.CREDENTIALS_DIRECTORY
     try {
-      process.env.CREDENTIALS_DIRECTORY = '/run/credentials/opsdeck-hub.service'
-      expect(loadConfig(file).masterKeyFile).toBe('/run/credentials/opsdeck-hub.service/master-key')
+      process.env.CREDENTIALS_DIRECTORY = '/run/credentials/credops-hub.service'
+      expect(loadConfig(file).masterKeyFile).toBe('/run/credentials/credops-hub.service/master-key')
       delete process.env.CREDENTIALS_DIRECTORY
       expect(() => loadConfig(file)).toThrow(/masterKeyFile.*CREDENTIALS_DIRECTORY/)
     } finally {

@@ -437,7 +437,7 @@ interface CardProps {
   readOnly?: boolean
 }
 
-const DRAG_TYPE = 'application/x-opsdeck-deployment'
+const DRAG_TYPE = 'application/x-credops-deployment'
 
 function DeploymentCard({ deployment: d, index, first, last, onMove, onEdit, onDelete, readOnly }: CardProps) {
   const motionSafe = useMotionSafe()

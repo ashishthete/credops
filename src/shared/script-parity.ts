@@ -33,7 +33,7 @@ export interface ScriptCheck {
   level: ScriptCheckLevel
   title: string
   script: string
-  opsdeck: string
+  credops: string
   fix?: ScriptFix
 }
 
@@ -69,7 +69,7 @@ export function checkAgainstScript(env: ScriptEnv, deployments: ScriptDeployment
     level: short.length ? 'risk' : 'ok',
     title: 'Build and start time limits',
     script: 'Runs docker compose up --build with no time limit.',
-    opsdeck: short.length
+    credops: short.length
       ? `Stops and rolls back when a build or start takes longer than its limit: ${short
           .map((d) => `${d.name} build ${d.buildTimeoutSec} s, up ${d.composeTimeoutSec} s`)
           .join('; ')}.`
@@ -91,7 +91,7 @@ export function checkAgainstScript(env: ScriptEnv, deployments: ScriptDeployment
     level: notSudo.length ? 'differs' : 'ok',
     title: 'Docker runs with sudo',
     script: "Always runs sudo docker, so builds and pulls use root's Docker login.",
-    opsdeck: notSudo.length
+    credops: notSudo.length
       ? `${notSudo.map((d) => `${d.name} sudo ${d.useSudo}`).join('; ')}. Docker may run as the SSH user, with that user's Docker login.`
       : 'Every deployment runs docker with sudo.',
     ...(notSudo.length > 0 && { fix: { deployments: byId(notSudo, () => ({ useSudo: 'yes' as const })) } }),
@@ -104,7 +104,7 @@ export function checkAgainstScript(env: ScriptEnv, deployments: ScriptDeployment
     level: versionRisk ? 'risk' : 'ok',
     title: 'Version tags',
     script: 'Bumps the version and creates a version tag on prod only.',
-    opsdeck: env.versioned
+    credops: env.versioned
       ? versionRisk
         ? `Versioned releases are on, so every release to ${env.name} creates and pushes a version tag.${env.protected ? ' This environment is protected: change it yourself.' : ''}`
         : 'Versioned releases are on for prod; the script also tags prod only.'
@@ -119,7 +119,7 @@ export function checkAgainstScript(env: ScriptEnv, deployments: ScriptDeployment
     level: explicit.length ? 'differs' : 'ok',
     title: 'Compose files',
     script: 'Runs docker compose with no -f, so Compose also reads docker-compose.override.yml and COMPOSE_FILE from .env.',
-    opsdeck: explicit.length
+    credops: explicit.length
       ? `${explicit.map((d) => `${d.name} uses -f ${d.composeFile}`).join('; ')}, which skips override files and COMPOSE_FILE.`
       : 'Every deployment lets Compose find its own files.',
     ...(explicit.length > 0 && { fix: { deployments: byId(explicit, () => ({ composeFile: COMPOSE_AUTO })) } }),
@@ -134,7 +134,7 @@ export function checkAgainstScript(env: ScriptEnv, deployments: ScriptDeployment
     level: started === !prod ? 'ok' : 'differs',
     title: 'QA workflow',
     script: prod ? 'The script never starts QA on prod.' : 'Starts the QA workflow with environment set to the --env value (alpha or uat).',
-    opsdeck: !env.qa
+    credops: !env.qa
       ? 'No QA workflow is set for this environment.'
       : `${started ? 'Starts' : 'Has'} ${env.qa.repo} ${env.qa.workflow} on ${env.qa.ref} with environment set to "${env.name}", the environment name exactly${started ? '' : ', but it is not started after a deploy'}.`,
     ...(started !== !prod && { fix: { open: 'notifications' as const } }),
@@ -149,23 +149,23 @@ export function checkAgainstScript(env: ScriptEnv, deployments: ScriptDeployment
     level: waitDiffers ? 'differs' : 'ok',
     title: 'QA result wait',
     script: `Waits up to ${SCRIPT_QA_WAIT_MIN} minutes for the QA result.`,
-    opsdeck: !started
+    credops: !started
       ? 'Not applicable: QA is not started.'
       : prod
         ? 'Not applicable: the script never starts QA on prod.'
         : waits
           ? `Waits up to ${wait} minutes for the QA result, in the background.`
-          : 'OpsDeck does not wait for the QA result.',
+          : 'CredOps does not wait for the QA result.',
     ...(waitDiffers && { fix: { open: 'notifications' as const } }),
   })
 
-  // Row 32: OpsDeck is deliberately stricter, so there is nothing to fix.
+  // Row 32: CredOps is deliberately stricter, so there is nothing to fix.
   checks.push({
     id: 'strict-build',
     level: 'differs',
     title: 'Failed builds',
     script: 'The script ignored failed builds.',
-    opsdeck: 'OpsDeck stops and rolls back.',
+    credops: 'CredOps stops and rolls back.',
   })
 
   // Row 37.
@@ -174,7 +174,7 @@ export function checkAgainstScript(env: ScriptEnv, deployments: ScriptDeployment
     level: 'ok',
     title: 'Rollback',
     script: 'Checks out the previous commit and starts it again.',
-    opsdeck: 'OpsDeck also moves deploy tags back.',
+    credops: 'CredOps also moves deploy tags back.',
   })
 
   return checks

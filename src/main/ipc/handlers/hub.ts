@@ -39,7 +39,7 @@ export function assertMayChangeHubLink(vault: LinkVault): void {
 export function hubLinkGuard(vault: LinkVault, gate: () => { assertMayLink(hubId: string): void } | null) {
   return (hubId: string): void => {
     const g = gate()
-    if (!g) throw new Error('OpsDeck is still starting')
+    if (!g) throw new Error('CredOps is still starting')
     assertMayChangeHubLink(vault)
     g.assertMayLink(hubId)
   }

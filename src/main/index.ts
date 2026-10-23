@@ -20,6 +20,7 @@ import {
 } from 'electron'
 import { AuditLog } from './audit/audit-log'
 import { openDatabase, type Db } from './db/connection'
+import { DB_FILE, migrateFromOpsDeck, systemMigrationDeps } from './rename-migration'
 import { createAppHandlers } from './ipc/handlers/app'
 import { createAuditHandlers } from './ipc/handlers/audit'
 import { createConfigHandlers } from './ipc/handlers/config'
@@ -109,10 +110,23 @@ import { appMenuTemplate, devRendererUrl, dropOnRendererReset, forwardVaultLocks
 // Keep dev data apart from the packaged app's (same name, same userData otherwise).
 // Must run before anything touches userData, including the single-instance lock.
 if (!app.isPackaged) app.setPath('userData', `${app.getPath('userData')}-dev`)
+// First CredOps launch: carry the OpsDeck data folder and Keychain key over (never deleting them).
+try {
+  migrateFromOpsDeck(
+    { oldDir: join(app.getPath('appData'), app.isPackaged ? 'opsdeck' : 'opsdeck-dev'), newDir: app.getPath('userData') },
+    systemMigrationDeps(process.execPath),
+  )
+} catch (err) {
+  dialog.showErrorBox(
+    "CredOps couldn't move your OpsDeck data",
+    `${(err as Error).message}. Your OpsDeck data is untouched. Quit OpsDeck if it is open, then open CredOps again.`,
+  )
+  app.exit(1)
+}
 // A dev run is the stock Electron binary, so it would call itself "Electron" in the app menu,
 // About and Quit. Named after userData is pinned, so the data folder stays where it was.
-app.setName('OpsDeck')
-app.setAboutPanelOptions({ applicationName: 'OpsDeck', applicationVersion: app.getVersion() })
+app.setName('CredOps')
+app.setAboutPanelOptions({ applicationName: 'CredOps', applicationVersion: app.getVersion() })
 
 const devServerUrl = devRendererUrl(app.isPackaged, process.env)
 
@@ -196,7 +210,7 @@ if (!app.requestSingleInstanceLock()) {
       Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(app.isPackaged, process.platform)))
       // Packaged builds take build/icon.icns; a dev run shows the same icon in the Dock.
       if (!app.isPackaged && process.platform === 'darwin') app.dock?.setIcon(join(app.getAppPath(), 'resources', 'icon.png'))
-      db = openDatabase(join(app.getPath('userData'), 'opsdeck.db'))
+      db = openDatabase(join(app.getPath('userData'), DB_FILE))
       // Decrypted values are known only while unlocked; the vault drops them on lock. Each store
       // registers its own with the vault; asking the stores first makes each decrypt its values once
       // after an unlock.
@@ -638,7 +652,7 @@ if (!app.requestSingleInstanceLock()) {
           })),
           ...createAuditHandlers(log, {
             saveDialog: async () => {
-              const opts = { defaultPath: `opsdeck-audit-${new Date().toISOString().slice(0, 10)}.csv` }
+              const opts = { defaultPath: `credops-audit-${new Date().toISOString().slice(0, 10)}.csv` }
               const res = mainWindow
                 ? await dialog.showSaveDialog(mainWindow, opts)
                 : await dialog.showSaveDialog(opts)
@@ -676,7 +690,7 @@ if (!app.requestSingleInstanceLock()) {
             published: (environmentId) => hubEnvLink.get(environmentId) !== undefined,
             playbookFile: {
               saveDialog: async (releaseId) => {
-                const opts: Electron.SaveDialogOptions = { defaultPath: `opsdeck-playbook-${releaseId.slice(0, 8)}.yml`, filters: [{ name: 'YAML', extensions: ['yml', 'yaml'] }] }
+                const opts: Electron.SaveDialogOptions = { defaultPath: `credops-playbook-${releaseId.slice(0, 8)}.yml`, filters: [{ name: 'YAML', extensions: ['yml', 'yaml'] }] }
                 const res = mainWindow
                   ? await dialog.showSaveDialog(mainWindow, opts)
                   : await dialog.showSaveDialog(opts)
@@ -745,7 +759,7 @@ if (!app.requestSingleInstanceLock()) {
     .catch((err) => {
       console.error('Startup failed:', err)
       const message = redact(err instanceof Error ? err.message : String(err))
-      dialog.showErrorBox('OpsDeck could not start', message)
+      dialog.showErrorBox('CredOps could not start', message)
       app.quit()
     })
 

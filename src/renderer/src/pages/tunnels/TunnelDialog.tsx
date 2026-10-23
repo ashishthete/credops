@@ -389,7 +389,7 @@ export function TunnelDialog({ request, onClose }: TunnelDialogProps) {
         </AnimatePresence>
 
         <div className="flex flex-col gap-2 pt-0.5">
-          <SwitchRow label="Start on launch" hint="When OpsDeck opens" checked={form.autoStart} onChange={(autoStart) => set({ autoStart })} />
+          <SwitchRow label="Start on launch" hint="When CredOps opens" checked={form.autoStart} onChange={(autoStart) => set({ autoStart })} />
           <SwitchRow
             label="Reconnect automatically"
             hint="Retries with backoff when the link drops"

@@ -44,9 +44,15 @@ describe('parseConfigFile', () => {
     expect(parseConfigFile(serializeConfig(file))).toEqual({ ok: true, file })
   })
 
+  it('reads a file exported before the rename, as OpsDeck', async () => {
+    const file = await exported()
+    const old = serializeConfig({ ...file, format: 'opsdeck-config' as typeof file.format })
+    expect(parseConfigFile(old)).toEqual({ ok: true, file })
+  })
+
   it('accepts an empty config', () => {
     const empty: ConfigFile = {
-      format: 'opsdeck-config',
+      format: 'credops-config',
       version: 2,
       exportedAt: '2026-10-20T10:00:00.000Z',
       secretRefs: {},
@@ -64,14 +70,14 @@ describe('parseConfigFile', () => {
 
   it('refuses an unknown format', async () => {
     const file = await exported()
-    expect(errorsOf(edit(file, (r) => (r.format = 'termius-export')))).toEqual(["This isn't an OpsDeck config file"])
-    expect(errorsOf('[]')).toEqual(["This isn't an OpsDeck config file"])
-    expect(errorsOf('null')).toEqual(["This isn't an OpsDeck config file"])
+    expect(errorsOf(edit(file, (r) => (r.format = 'termius-export')))).toEqual(["This isn't a CredOps config file"])
+    expect(errorsOf('[]')).toEqual(["This isn't a CredOps config file"])
+    expect(errorsOf('null')).toEqual(["This isn't a CredOps config file"])
   })
 
-  it('refuses version 3 with "This file is from a newer OpsDeck"', async () => {
+  it('refuses version 3 with "This file is from a newer CredOps"', async () => {
     const file = await exported()
-    expect(errorsOf(edit(file, (r) => (r.version = 3)))).toEqual(['This file is from a newer OpsDeck'])
+    expect(errorsOf(edit(file, (r) => (r.version = 3)))).toEqual(['This file is from a newer CredOps'])
     expect(errorsOf(edit(file, (r) => (r.version = '2')))).toEqual(['$.version is not a supported version'])
   })
 
@@ -177,7 +183,7 @@ describe('parseConfigFile', () => {
   })
 
   it('refuses invalid JSON without echoing the text', () => {
-    const text = '{"format": "opsdeck-config", "hosts": [{"address": "top-secret-host"'
+    const text = '{"format": "credops-config", "hosts": [{"address": "top-secret-host"'
     expect(errorsOf(text)).toEqual(["The file isn't valid JSON"])
     expect(errorsOf('hunter2')).toEqual(["The file isn't valid JSON"])
   })

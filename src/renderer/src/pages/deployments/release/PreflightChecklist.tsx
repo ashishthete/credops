@@ -97,7 +97,7 @@ function Fix({ check, report, fixes }: { check: PreflightCheck; report: Prefligh
   return null
 }
 
-/** A command to run yourself; OpsDeck only shows it. */
+/** A command to run yourself; CredOps only shows it. */
 function Command({ text }: { text: string }) {
   return (
     <div className="ml-5.5 flex items-center gap-2 rounded-md bg-white/[0.04] px-2 py-1">

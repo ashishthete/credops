@@ -35,7 +35,7 @@ interface LinkRow {
   refresh_enc: Buffer | null
 }
 
-const NO_KEYCHAIN = "Keychain unavailable: OpsDeck can't store a Hub sign-in safely"
+const NO_KEYCHAIN = "Keychain unavailable: CredOps can't store a Hub sign-in safely"
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]'])
 
 /** https, or http to a loopback host (dev); no credentials, query or fragment. Returns the normalised base URL. */

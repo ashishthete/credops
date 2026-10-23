@@ -1036,7 +1036,7 @@ describe('callback plugin source', () => {
     for (const ev of ['task_start', 'play_start', 'no_hosts', 'rescued', 'stats', 'warning', '"ok"', '"failed"', '"skipped"', '"unreachable"']) expect(CALLBACK_PLUGIN_SOURCE).toContain(ev)
     expect(CALLBACK_PLUGIN_SOURCE).toContain('def v2_playbook_on_no_hosts_matched(self):')
     expect(CALLBACK_PLUGIN_SOURCE).toContain('def v2_playbook_on_no_hosts_remaining(self):')
-    expect(CALLBACK_PLUGIN_SOURCE).toContain('CALLBACK_NAME = "opsdeck_jsonl"')
+    expect(CALLBACK_PLUGIN_SOURCE).toContain('CALLBACK_NAME = "credops_jsonl"')
     expect(CALLBACK_PLUGIN_SOURCE).toContain('65536')
     expect(CALLBACK_PLUGIN_SOURCE).toContain('flush()')
     // output is only read when the task is not no_log
@@ -1135,7 +1135,7 @@ describe('parallel prepare builds', () => {
   it('the gate is a helper: its failure is a log line, no step', () => {
     const { tr } = setup()
     tr.feed(JSON.stringify({ event: 'task_start', name: 'od gate', tags: [] }))
-    const out = tr.feed(JSON.stringify({ event: 'failed', host: 'od-2', task: 'od gate', msg: 'OpsDeck prepare stopped: a checkout did not prepare' }))
+    const out = tr.feed(JSON.stringify({ event: 'failed', host: 'od-2', task: 'od gate', msg: 'CredOps prepare stopped: a checkout did not prepare' }))
     expect(out.filter((e) => e.type !== 'log')).toEqual([])
   })
 })

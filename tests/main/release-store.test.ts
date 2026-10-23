@@ -257,7 +257,7 @@ describe('ReleaseStore', () => {
     f.releases.updateRun(dr.id, { status: 'running' })
     const ids = f.releases.failInterrupted()
     expect(ids.sort()).toEqual([run.id, rb.id].sort())
-    expect(f.releases.get(run.id)).toMatchObject({ status: 'failed', error: 'interrupted: OpsDeck quit during the run' })
+    expect(f.releases.get(run.id)).toMatchObject({ status: 'failed', error: 'interrupted: CredOps quit during the run' })
     expect(f.releases.get(run.id).finishedAt).not.toBeNull()
     expect(f.releases.detail(run.id).runs[0].status).toBe('failed')
     expect(f.releases.get(r.id).status).toBe('ready')
@@ -317,7 +317,7 @@ describe('ReleaseStore', () => {
       versionBump: 'none', redeploy: false, rollbackOf: null, options: DEFAULT_RELEASE_OPTIONS, triggeredBy: 'u@m', serviceIds: [],
     })
     expect(f.releases.failInterrupted()).toEqual([pre.id])
-    expect(f.releases.get(pre.id)).toMatchObject({ status: 'failed', error: 'interrupted: OpsDeck quit during the run' })
+    expect(f.releases.get(pre.id)).toMatchObject({ status: 'failed', error: 'interrupted: CredOps quit during the run' })
     expect(f.releases.get(r.id).status).toBe('ready')
   })
 

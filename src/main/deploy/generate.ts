@@ -347,7 +347,7 @@ export const nm = (kind: string, d: PlanDeployment): string => `${kind} ${saniti
 const REMOTE_TAG = [
   'if o=$(git ls-remote origin "refs/tags/$T" "refs/tags/$T^{}" 2>/dev/null); then ok=1; c=$(echo "$o" | awk \'END {print $1}\'); else ok=0; c=""; fi',
 ].join('\n')
-const GIT_ID = 'GIT_COMMITTER_NAME=OpsDeck GIT_COMMITTER_EMAIL=opsdeck@localhost'
+const GIT_ID = 'GIT_COMMITTER_NAME=CredOps GIT_COMMITTER_EMAIL=credops@localhost'
 
 /** The deployed commit is read from origin (peeled), so a stale local tag or a fetch cannot change it. */
 const taskRecord = (d: PlanDeployment): Task =>
@@ -605,7 +605,7 @@ const PUSH_TAG = 'git push -f origin "refs/tags/$T"'
 // reported through OD-TAG so the translator can warn without the playbook rescuing.
 const TAG_FAILED = '|| echo "OD-TAG failed rc=$?"'
 const taskTag = (d: PlanDeployment): Task =>
-  sh(nm('tag', d), 'tag', runOf(d), ['T={{ d.tag | quote }}', `{ ${GIT_ID} git tag -fa "$T" -m "OpsDeck deploy" HEAD && ${PUSH_TAG}; } ${TAG_FAILED}`].join('\n'), {
+  sh(nm('tag', d), 'tag', runOf(d), ['T={{ d.tag | quote }}', `{ ${GIT_ID} git tag -fa "$T" -m "CredOps deploy" HEAD && ${PUSH_TAG}; } ${TAG_FAILED}`].join('\n'), {
     timeout: T_SHORT,
     chdir: IN_REPO,
     failedWhen: false,
@@ -621,7 +621,7 @@ const taskRbCheckout = (d: PlanDeployment): Task =>
   })
 const taskRbEnv = (d: PlanDeployment): Task => envTask('rb_env', d)
 const taskRbTag = (d: PlanDeployment): Task =>
-  sh(nm('rb_tag', d), 'rb_tag', runOf(d), ['T={{ d.tag | quote }}', 'P={{ d.prev | quote }}', `{ ${GIT_ID} git tag -fa "$T" -m "OpsDeck rollback" "$P" && ${PUSH_TAG}; } ${TAG_FAILED}`].join('\n'), {
+  sh(nm('rb_tag', d), 'rb_tag', runOf(d), ['T={{ d.tag | quote }}', 'P={{ d.prev | quote }}', `{ ${GIT_ID} git tag -fa "$T" -m "CredOps rollback" "$P" && ${PUSH_TAG}; } ${TAG_FAILED}`].join('\n'), {
     timeout: T_SHORT,
     chdir: IN_REPO,
     failedWhen: false,
@@ -849,7 +849,7 @@ export function block(d: PlanDeployment, kind: DeployPlan['kind'], tasks: Task[]
 
 export const rescueRelease = (d: PlanDeployment): Task[] => [
   { name: `mark failed ${sanitizeIdent(d.name)}`, 'ansible.builtin.set_fact': { od_failed: true } },
-  { name: `fail ${sanitizeIdent(d.name)}`, 'ansible.builtin.fail': { msg: `OpsDeck step failed for ${sanitizeIdent(d.runId)}` } },
+  { name: `fail ${sanitizeIdent(d.name)}`, 'ansible.builtin.fail': { msg: `CredOps step failed for ${sanitizeIdent(d.runId)}` } },
 ]
 const rescueRollback = (d: PlanDeployment): Task[] => [
   { name: `rollback failed ${sanitizeIdent(d.name)}`, 'ansible.builtin.set_fact': { rollback_failed: true } },
@@ -934,7 +934,7 @@ export function generatePlaybook(plan: DeployPlan): string {
 // ---------------------------------------------------------------- release flow
 
 const onHost = (h: PlanHost): string => `inventory_hostname == '${h.alias}'`
-const FLOW_STOPPED = 'OpsDeck flow stopped: a host did not finish an earlier stage'
+const FLOW_STOPPED = 'CredOps flow stopped: a host did not finish an earlier stage'
 
 function checkFlow(plan: DeployPlan, flow: PlanFlow): void {
   need(plan.kind === 'release', 'flow outside a release')
@@ -1088,7 +1088,7 @@ function flowPlays(plan: DeployPlan, flow: PlanFlow): Play[] {
 
 // ---------------------------------------------------------------- parallel prepare
 
-const PREPARE_STOPPED = 'OpsDeck prepare stopped: a checkout did not prepare'
+const PREPARE_STOPPED = 'CredOps prepare stopped: a checkout did not prepare'
 
 /**
  * Per host, waves of at most `cap` checkouts, in plan order; a wave holds every host's next group. Checkouts that
@@ -1118,7 +1118,7 @@ export function prepareSchedule(deps: readonly PlanDeployment[], cap: number): s
  */
 function taskBuildLaunch(d: PlanDeployment, n: number): Task {
   const pid = '.git/opsdeck-build-{{ d.run }}.pid'
-  const warn = `echo "OpsDeck warning: cancel can't stop this build: its process group could not be recorded in ${pid}"`
+  const warn = `echo "CredOps warning: cancel can't stop this build: its process group could not be recorded in ${pid}"`
   const cmd = [
     // the process group: from ps, else /proc (BusyBox ps has no -o pgid), else the shell's own pid
     "g=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')",

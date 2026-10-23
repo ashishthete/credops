@@ -145,7 +145,7 @@ describe('picker helpers', () => {
     expect(checkoutNotice(groups[2], ['site', 'site-worker', 'cron', 'redis', 'db'], ['db'])).toEqual([
       'Updates code for site to release. Only site is rebuilt and restarted.',
       'site-worker and cron keep running their current images; they will pick up the new code the next time they are deployed or restarted.',
-      "Compose services OpsDeck doesn't track (redis) are not restarted.",
+      "Compose services CredOps doesn't track (redis) are not restarted.",
       'The managed .env is rewritten for the whole checkout.',
     ])
     expect(checkoutNotice(groups[2], ['site', 'site-worker', 'cron'])).not.toContainEqual(expect.stringContaining('track'))
@@ -198,7 +198,7 @@ describe('deploy wizard', () => {
     expect(within(group(dialog, 'site')).getByText('Other compose services in this checkout are not restarted.')).toBeInTheDocument()
     await preflight(user, dialog)
     const notice = await within(dialog).findByRole('list', { name: 'What happens to site' })
-    await waitFor(() => expect(within(notice).getByText("Compose services OpsDeck doesn't track (redis) are not restarted.")).toBeInTheDocument())
+    await waitFor(() => expect(within(notice).getByText("Compose services CredOps doesn't track (redis) are not restarted.")).toBeInTheDocument())
     expect(within(notice).queryByText('Other compose services in this checkout are not restarted.')).not.toBeInTheDocument()
     expect(within(dialog).getByText('db (database, skipped)')).toBeInTheDocument()
   })
@@ -214,7 +214,7 @@ describe('deploy wizard', () => {
     await within(dialog).findByText('postgres (database, skipped)')
     expect(within(dialog).queryByRole('checkbox', { name: /postgres/ })).not.toBeInTheDocument()
     const notice = within(dialog).getByRole('list', { name: 'What happens to site' })
-    await waitFor(() => expect(within(notice).getByText("Compose services OpsDeck doesn't track (redis) are not restarted.")).toBeInTheDocument())
+    await waitFor(() => expect(within(notice).getByText("Compose services CredOps doesn't track (redis) are not restarted.")).toBeInTheDocument())
     expect(notice.textContent).not.toContain('postgres')
   })
 
@@ -226,7 +226,7 @@ describe('deploy wizard', () => {
     const { user, dialog } = await mount({ preselect: ['s3'], persisted: events([{ type: 'preflight.done', report: done }]) })
     await preflight(user, dialog)
     const notice = await within(dialog).findByRole('list', { name: 'What happens to site' })
-    await waitFor(() => expect(within(notice).getByText("Compose services OpsDeck doesn't track (postgres) are not restarted.")).toBeInTheDocument())
+    await waitFor(() => expect(within(notice).getByText("Compose services CredOps doesn't track (postgres) are not restarted.")).toBeInTheDocument())
     expect(within(dialog).queryByRole('list', { name: 'Databases' })).not.toBeInTheDocument()
     expect(within(dialog).queryByText(/\(database, skipped\)/)).not.toBeInTheDocument()
   })

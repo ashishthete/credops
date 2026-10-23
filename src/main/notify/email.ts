@@ -87,7 +87,7 @@ export function buildReleaseEmail(facts: NotificationFacts, notes: string | null
   return redact(
     {
       personalizations: [personalization],
-      from: { email: a.from, name: 'OpsDeck' },
+      from: { email: a.from, name: 'CredOps' },
       subject: releaseSubject(facts),
       content: [
         { type: 'text/plain', value: text },

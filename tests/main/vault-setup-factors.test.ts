@@ -58,7 +58,7 @@ describe('setup factors', () => {
       pin: { enabled: false },
     })
     expect(f.quick.touchId.prompt).toHaveBeenCalledTimes(1)
-    expect(f.quick.touchId.prompt).toHaveBeenCalledWith('unlock your OpsDeck vaults')
+    expect(f.quick.touchId.prompt).toHaveBeenCalledWith('unlock your CredOps vaults')
     const sealed = f.vault.seal(DEFAULT_VAULT_ID, 'a', 'v')
     f.vault.lock('manual')
     expect(await f.vault.unlockQuick()).toEqual({ ok: true })

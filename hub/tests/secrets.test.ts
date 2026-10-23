@@ -51,7 +51,7 @@ async function publishSecond(admin: string): Promise<void> {
 }
 const putSecret = (token: string, id: string, body: object) => call(token, 'PUT', `/api/v1/admin/secrets/${id}`, body)
 const tmp = (): string => {
-  const d = mkdtempSync(join(tmpdir(), 'opsdeck-mk-'))
+  const d = mkdtempSync(join(tmpdir(), 'credops-mk-'))
   cleanup.push(() => rmSync(d, { recursive: true, force: true }))
   return d
 }
@@ -196,7 +196,7 @@ describe('shared secrets', () => {
     const first = await call(admin, 'POST', `/api/v1/admin/environments/${ENV_ID}/deploy-key`)
     expect(first.statusCode).toBe(200)
     expect(Object.keys(first.json()).sort()).toEqual(['fingerprint', 'publicKey'])
-    expect(first.json().publicKey).toMatch(/^ssh-ed25519 \S+ opsdeck-hub:prod$/)
+    expect(first.json().publicKey).toMatch(/^ssh-ed25519 \S+ credops-hub:prod$/)
     expect(first.json().fingerprint).toMatch(/^SHA256:/)
     const row = hub.db.prepare('SELECT * FROM env_deploy_keys').get() as Record<string, string>
     expect(JSON.stringify(row)).not.toContain('BEGIN OPENSSH PRIVATE KEY')
@@ -401,22 +401,22 @@ describe('master key', () => {
 
   it('fails closed on a missing, short or malformed key without echoing it', () => {
     const dir = tmp()
-    expect(() => loadMasterKey({ env: {} })).toThrow('no master key: set masterKeyFile or OPSDECK_HUB_MASTER_KEY')
+    expect(() => loadMasterKey({ env: {} })).toThrow('no master key: set masterKeyFile or CREDOPS_HUB_MASTER_KEY')
     expect(() => loadMasterKey({ file: join(dir, 'absent'), env: {} })).toThrow(/masterKeyFile could not be read/)
     const short = randomBytes(16).toString('base64')
-    expect(() => loadMasterKey({ env: { OPSDECK_HUB_MASTER_KEY: short } })).toThrow('master key must be 32 bytes (base64)')
+    expect(() => loadMasterKey({ env: { CREDOPS_HUB_MASTER_KEY: short } })).toThrow('master key must be 32 bytes (base64)')
     try {
-      loadMasterKey({ env: { OPSDECK_HUB_MASTER_KEY: short } })
+      loadMasterKey({ env: { CREDOPS_HUB_MASTER_KEY: short } })
     } catch (e) {
       expect((e as Error).message).not.toContain(short)
     }
-    expect(() => loadMasterKey({ env: { OPSDECK_HUB_MASTER_KEY: '!!!not base64!!!' } })).toThrow('master key must be 32 bytes (base64)')
+    expect(() => loadMasterKey({ env: { CREDOPS_HUB_MASTER_KEY: '!!!not base64!!!' } })).toThrow('master key must be 32 bytes (base64)')
     const good = randomBytes(32)
-    expect(loadMasterKey({ env: { OPSDECK_HUB_MASTER_KEY: good.toString('base64') } }).equals(good)).toBe(true)
+    expect(loadMasterKey({ env: { CREDOPS_HUB_MASTER_KEY: good.toString('base64') } }).equals(good)).toBe(true)
     // The file wins over the env var; a bad file is never papered over by the env var.
     const file = join(dir, 'k')
     writeFileSync(file, 'short', { mode: 0o600 })
-    expect(() => loadMasterKey({ file, env: { OPSDECK_HUB_MASTER_KEY: good.toString('base64') } })).toThrow('master key must be 32 bytes (base64)')
+    expect(() => loadMasterKey({ file, env: { CREDOPS_HUB_MASTER_KEY: good.toString('base64') } })).toThrow('master key must be 32 bytes (base64)')
   })
 
   it('createMasterKeyFile writes 0600 and never overwrites', () => {

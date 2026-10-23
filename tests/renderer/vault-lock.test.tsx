@@ -149,7 +149,7 @@ describe('setup', () => {
     renderApp()
     // With T8's gate order, a fresh install starts on the Hub step; skip it for local-only setup.
     const skipHub = await waitFor(() => {
-      const skip = screen.queryByRole('button', { name: 'Use OpsDeck without a Hub' })
+      const skip = screen.queryByRole('button', { name: 'Use CredOps without a Hub' })
       expect(skip ?? screen.queryByRole('switch', { name: 'Touch ID' })).toBeInTheDocument()
       return skip
     })

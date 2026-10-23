@@ -413,7 +413,7 @@ export interface SshConfigMatch {
 }
 
 /**
- * The ~/.ssh/config settings for a host OpsDeck knows by label and address: the blocks for a Host
+ * The ~/.ssh/config settings for a host CredOps knows by label and address: the blocks for a Host
  * alias equal to the label, else for an alias whose HostName is the address, else for the address
  * itself; failing all three, `Host *` and top-level lines for the label. Null when nothing applies.
  */

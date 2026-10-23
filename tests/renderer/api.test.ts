@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { api, cleanIpcErrorMessage } from '../../src/renderer/src/lib/api'
 
 function bridgeRejecting(err: unknown): void {
-  ;(window as unknown as { opsdeck: unknown }).opsdeck = { invoke: vi.fn(async () => Promise.reject(err)) }
+  ;(window as unknown as { credops: unknown }).credops = { invoke: vi.fn(async () => Promise.reject(err)) }
 }
 
 describe('cleanIpcErrorMessage', () => {
@@ -25,7 +25,7 @@ describe('api.invoke', () => {
   })
 
   it('passes results through', async () => {
-    ;(window as unknown as { opsdeck: unknown }).opsdeck = { invoke: vi.fn(async () => ({ ok: true, count: 1 })) }
+    ;(window as unknown as { credops: unknown }).credops = { invoke: vi.fn(async () => ({ ok: true, count: 1 })) }
     await expect(api.invoke('audit:verify')).resolves.toEqual({ ok: true, count: 1 })
   })
 })

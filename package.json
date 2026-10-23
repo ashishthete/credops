@@ -1,8 +1,8 @@
 {
-  "name": "opsdeck",
+  "name": "credops",
   "version": "0.1.0",
   "private": true,
-  "description": "OpsDeck - SSH, tunnels and Ansible deployments",
+  "description": "CredOps - SSH, tunnels and Ansible deployments",
   "main": "./out/main/index.js",
   "scripts": {
     "postinstall": "node scripts/fix-node-pty-perms.mjs",
@@ -46,7 +46,7 @@
     "vite": "^8.3.4",
     "vitest": "^5.0.4"
   },
-  "author": "OpsDeck",
+  "author": "CredOps",
   "dependencies": {
     "@anthropic-ai/sdk": "0.131.0",
     "node-pty": "^1.1.0",

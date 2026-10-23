@@ -122,7 +122,7 @@ describe('notify:test', () => {
     expect(fetch).toHaveBeenCalledTimes(1)
     const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toBe(HOOK)
-    expect(String(init.body)).toContain('Test from OpsDeck')
+    expect(String(init.body)).toContain('Test from CredOps')
     const [ev] = f.audit.list({ actions: ['notify.test'] })
     expect(ev).toMatchObject({ outcome: 'success', targetType: 'environment', targetId: env.id, details: { channel: 'teams' } })
     expect(auditRows(f.db)).not.toContain('SECRETPATH')
@@ -145,13 +145,13 @@ describe('notify:test', () => {
     integrations.update(env.id, { emailTo: ['qa@acme.example'] })
     await handlers['notify:test']({ channel: 'email', environmentId: env.id })
     const body = JSON.parse(String((fetch.mock.calls[0] as unknown as [string, RequestInit])[1].body))
-    expect(body.subject).toBe('Test from OpsDeck')
+    expect(body.subject).toBe('Test from CredOps')
   })
 
   it('test macOS alert shows and fails when off', async () => {
     const { handlers, mac, settings } = await setup()
     await handlers['notify:test']({ channel: 'macos' })
-    expect(mac.shown[0]!.title).toBe('Test from OpsDeck')
+    expect(mac.shown[0]!.title).toBe('Test from CredOps')
     settings.update({ macos: false })
     await expect(handlers['notify:test']({ channel: 'macos' })).rejects.toThrow('macOS notifications are turned off')
   })

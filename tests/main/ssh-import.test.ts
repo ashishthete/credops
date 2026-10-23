@@ -330,7 +330,7 @@ describe('SshImporter.import', () => {
 
   it('falls back to agent auth when an IdentityFile escapes ~/.ssh through a symlink', async () => {
     const f = await withConfig('Host web-1\n  HostName 10.0.0.5\n  User deploy\n  IdentityFile ~/.ssh/escape\n')
-    const outside = mkdtempSync(join(tmpdir(), 'opsdeck-outside-'))
+    const outside = mkdtempSync(join(tmpdir(), 'credops-outside-'))
     onTestFinished(() => rmSync(outside, { recursive: true, force: true }))
     writeFileSync(join(outside, 'key'), generateEd25519('x').privateKey, { mode: 0o600 })
     symlinkSync(join(outside, 'key'), join(f.sshDir, 'escape'))

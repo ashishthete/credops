@@ -55,7 +55,7 @@ function writeConfig(name: string, over: Record<string, unknown> = {}, keyFile?:
 }
 
 beforeAll(async () => {
-  tmp = mkdtempSync(join(tmpdir(), 'opsdeck-hub-build-'))
+  tmp = mkdtempSync(join(tmpdir(), 'credops-hub-build-'))
   entra = await startFakeEntra({ tenantId: TENANT, clientId: CLIENT })
   binDir = join(tmp, 'bin')
   mkdirSync(binDir)
@@ -68,7 +68,7 @@ beforeAll(async () => {
   const out = join(tmp, 'dist')
   const r = spawnSync(vite, [...hubBuildArgs(), '--outDir', out, '--emptyOutDir'], { cwd: repoRoot, encoding: 'utf8', timeout: 120_000 })
   expect(r.status, r.stdout + r.stderr).toBe(0)
-  bundle = join(out, 'opsdeck-hub.mjs')
+  bundle = join(out, 'credops-hub.mjs')
 }, 150_000)
 
 afterAll(async () => {

@@ -46,7 +46,7 @@ export function childEnv(base: Record<string, string | undefined>, allow: readon
 
 const SOCKET_WAIT_MS = 3000
 const STOP_WAIT_MS = 2000
-const ASKPASS = '#!/bin/sh\nprintf \'%s\\n\' "$OPSDECK_ASKPASS"\n'
+const ASKPASS = '#!/bin/sh\nprintf \'%s\\n\' "$CREDOPS_ASKPASS"\n'
 
 /** ssh-add's stderr with the passphrase and any long key-like run removed. */
 function scrub(text: string, secrets: string[]): string {
@@ -110,8 +110,8 @@ export async function startPrivateAgent(opts: AgentOptions): Promise<PrivateAgen
     pid: child.pid,
     async add({ privateKey, passphrase }) {
       const env = childEnv(
-        { SSH_AUTH_SOCK: sock, SSH_ASKPASS: askpass, SSH_ASKPASS_REQUIRE: 'force', DISPLAY: 'none', ...(passphrase ? { OPSDECK_ASKPASS: passphrase } : {}) },
-        ['SSH_AUTH_SOCK', 'SSH_ASKPASS', 'SSH_ASKPASS_REQUIRE', 'DISPLAY', 'OPSDECK_ASKPASS'],
+        { SSH_AUTH_SOCK: sock, SSH_ASKPASS: askpass, SSH_ASKPASS_REQUIRE: 'force', DISPLAY: 'none', ...(passphrase ? { CREDOPS_ASKPASS: passphrase } : {}) },
+        ['SSH_AUTH_SOCK', 'SSH_ASKPASS', 'SSH_ASKPASS_REQUIRE', 'DISPLAY', 'CREDOPS_ASKPASS'],
       )
       const add = spawn(tools.sshAdd, ['-t', String(ttlSec), '-'], { env })
       let err = ''

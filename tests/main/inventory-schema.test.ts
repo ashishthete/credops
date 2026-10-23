@@ -29,7 +29,7 @@ describe('inventory schema', () => {
     const f = makeVault()
     await f.vault.setup({ password: 'correct horse', touchId: true })
     withParents(f.db)
-    const keys = new KeyStore(f.db, f.vault, f.audit, { sshDir: '/nonexistent-opsdeck-test', clipboard: { writeText: () => undefined, readText: () => '' }, defaultComment: 'tester@box' })
+    const keys = new KeyStore(f.db, f.vault, f.audit, { sshDir: '/nonexistent-credops-test', clipboard: { writeText: () => undefined, readText: () => '' }, defaultComment: 'tester@box' })
     const ids = new IdentityStore(f.db, f.vault, keys, f.audit)
     const ops = f.vault.createVault({ name: 'Ops', color: '#112233' })
     const identity = ids.create({ vaultId: ops.id, label: 'deploy', username: 'deploy', auth: 'agent' })

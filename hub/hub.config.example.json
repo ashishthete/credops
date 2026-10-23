@@ -1,5 +1,5 @@
 {
-  "name": "OpsDeck Hub",
+  "name": "CredOps Hub",
   "listen": { "host": "127.0.0.1", "port": 8787 },
   "tls": null,
   "publicUrl": "http://127.0.0.1:8787",

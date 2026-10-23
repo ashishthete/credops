@@ -39,7 +39,7 @@ describe('quick unlock', () => {
     f.vault.lock('manual')
     expect(await f.vault.unlockQuick()).toEqual({ ok: true })
     expect(f.quick.touchId.prompt).toHaveBeenCalledTimes(1)
-    expect(f.quick.touchId.prompt).toHaveBeenCalledWith('unlock your OpsDeck vaults')
+    expect(f.quick.touchId.prompt).toHaveBeenCalledWith('unlock your CredOps vaults')
     expect(f.vault.isUnlocked()).toBe(true)
     // The installed keys work: a sealed value round-trips.
     expect(f.vault.open(DEFAULT_VAULT_ID, 'a', f.vault.seal(DEFAULT_VAULT_ID, 'a', 'v'))).toBe('v')

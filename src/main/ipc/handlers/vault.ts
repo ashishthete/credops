@@ -31,7 +31,7 @@ type VaultChannel =
 export async function withProof(
   vault: Pick<VaultService, 'reverify' | 'status'>,
   proof: ReverifyProof | undefined,
-  /** Named in the Touch ID prompt ("OpsDeck is trying to …"), so the user sees what they approve. */
+  /** Named in the Touch ID prompt ("CredOps is trying to …"), so the user sees what they approve. */
   action: string,
   change: () => unknown,
 ): Promise<ProvenResult> {

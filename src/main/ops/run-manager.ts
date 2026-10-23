@@ -155,7 +155,7 @@ export class RunManager {
 
   /** Validates, resolves the targets, checks the confirmation, audits `run.start` and starts the queue. Returns with every host queued. */
   start(req: RunRequest): RunSummary {
-    if (this.closed) throw new Error('OpsDeck is quitting')
+    if (this.closed) throw new Error('CredOps is quitting')
     if (this.deps.isLocked()) {
       this.deps.audit.append({ action: 'run.start', outcome: 'denied', ...this.lockedTarget(req.target), details: { reason: 'locked' } })
       throw new Error(VAULT_LOCKED)

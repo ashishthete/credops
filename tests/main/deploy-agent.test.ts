@@ -92,18 +92,18 @@ describe('private agent', () => {
       SSH_ASKPASS: join(dir, 'askpass'),
       SSH_ASKPASS_REQUIRE: 'force',
       DISPLAY: 'none',
-      OPSDECK_ASKPASS: 'pass-phrase-123',
+      CREDOPS_ASKPASS: 'pass-phrase-123',
     })
     // the passphrase is in the ssh-add env only
     expect(JSON.stringify(a)).not.toContain('pass-phrase-123')
     await agent.stop()
   })
 
-  it('an unencrypted key sets no OPSDECK_ASKPASS', async () => {
+  it('an unencrypted key sets no CREDOPS_ASKPASS', async () => {
     const { spawn, calls } = fakeSpawn()
     const agent = await startPrivateAgent({ dir: tmp(), tools, spawn, ttlSec: 60, env: { PATH: '/bin' } })
     await agent.add({ privateKey: KEY })
-    expect(calls[1].env).not.toHaveProperty('OPSDECK_ASKPASS')
+    expect(calls[1].env).not.toHaveProperty('CREDOPS_ASKPASS')
     await agent.stop()
   })
 
@@ -115,7 +115,7 @@ describe('private agent', () => {
     const path = join(dir, 'askpass')
     const text = readFileSync(path, 'utf8')
     expect(text).not.toContain('pass-phrase-123')
-    expect(text).toContain('$OPSDECK_ASKPASS')
+    expect(text).toContain('$CREDOPS_ASKPASS')
     expect(statSync(path).mode & 0o777).toBe(0o700)
     await agent.stop()
   })

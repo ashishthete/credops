@@ -125,7 +125,7 @@ interface SetupOpts {
 
 async function setup(opts: SetupOpts = {}) {
   const f = await makeInventory()
-  const dir = mkdtempSync(join(tmpdir(), 'opsdeck-tunnels-'))
+  const dir = mkdtempSync(join(tmpdir(), 'credops-tunnels-'))
   onTestFinished(() => rmSync(dir, { recursive: true, force: true }))
   const knownHosts = new KnownHostStore(f.db, f.vault, f.audit, { knownHostsPath: join(dir, 'known_hosts') })
   const store = new TunnelStore({ db: f.db, audit: f.audit, vault: f.vault })

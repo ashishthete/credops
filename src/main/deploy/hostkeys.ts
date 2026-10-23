@@ -8,7 +8,7 @@ import { hostToken, type KnownHostStore } from '../ssh/known-hosts'
 import { verifyWithStore, type PromptBroker } from '../ssh/prompts'
 import type { DeployPlan } from './runner'
 
-/* Before a release starts: dial every host chain with OpsDeck's own SSH stack so host keys are trusted and the
+/* Before a release starts: dial every host chain with CredOps's own SSH stack so host keys are trusted and the
    keys ssh will need are known. Nothing here touches ~/.ssh/known_hosts or writes to ~/.ssh. */
 
 export interface KnownHostEntry {

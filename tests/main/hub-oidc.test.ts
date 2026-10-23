@@ -98,7 +98,7 @@ describe('oidc sign-in', () => {
     expect(ok.status).toBe(200)
     expect(ok.headers.get('cache-control')).toBe('no-store')
     expect(ok.headers.get('content-type')).toContain('text/html')
-    expect(await ok.text()).toContain('Signed in to OpsDeck. You can close this tab.')
+    expect(await ok.text()).toContain('Signed in to CredOps. You can close this tab.')
     await expect(lb.code).resolves.toBe('abc')
     expect(await portOpen(port)).toBe(false)
 

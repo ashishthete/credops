@@ -121,7 +121,7 @@ describe('getJson', () => {
 
   it('refuses a body over maxBytes and an unreadable one', async () => {
     const big = await caught(getJson('https://api.github.com/x', { ...opts(seq(res(200, `{"a":"${'x'.repeat(5000)}"}`))), service: 'github' }))
-    expect(big).toMatchObject({ code: 'http', message: 'GitHub returned a response OpsDeck could not read' })
+    expect(big).toMatchObject({ code: 'http', message: 'GitHub returned a response CredOps could not read' })
     const bad = await caught(getJson('https://api.github.com/x', { ...opts(seq(res(200, 'nope'))), service: 'github' }))
     expect(bad.code).toBe('http')
     expect(await getJson('https://api.github.com/x', { ...opts(seq(res(200, '{"a":1}'))), service: 'github', maxBytes: 10 })).toEqual({ a: 1 })

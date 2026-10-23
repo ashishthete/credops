@@ -129,7 +129,7 @@
           {
             "name": "rb_tag dep1",
             "ansible.builtin.shell": {
-              "cmd": "T={{ d.tag | quote }}\nP={{ d.prev | quote }}\n{ GIT_COMMITTER_NAME=OpsDeck GIT_COMMITTER_EMAIL=opsdeck@localhost git tag -fa \"$T\" -m \"OpsDeck rollback\" \"$P\" && git push -f origin \"refs/tags/$T\"; } || echo \"OD-TAG failed rc=$?\"",
+              "cmd": "T={{ d.tag | quote }}\nP={{ d.prev | quote }}\n{ GIT_COMMITTER_NAME=CredOps GIT_COMMITTER_EMAIL=credops@localhost git tag -fa \"$T\" -m \"CredOps rollback\" \"$P\" && git push -f origin \"refs/tags/$T\"; } || echo \"OD-TAG failed rc=$?\"",
               "executable": "/bin/bash",
               "chdir": "{{ d.repo }}"
             },
@@ -222,7 +222,7 @@
           {
             "name": "rb_tag dep2",
             "ansible.builtin.shell": {
-              "cmd": "T={{ d.tag | quote }}\nP={{ d.prev | quote }}\n{ GIT_COMMITTER_NAME=OpsDeck GIT_COMMITTER_EMAIL=opsdeck@localhost git tag -fa \"$T\" -m \"OpsDeck rollback\" \"$P\" && git push -f origin \"refs/tags/$T\"; } || echo \"OD-TAG failed rc=$?\"",
+              "cmd": "T={{ d.tag | quote }}\nP={{ d.prev | quote }}\n{ GIT_COMMITTER_NAME=CredOps GIT_COMMITTER_EMAIL=credops@localhost git tag -fa \"$T\" -m \"CredOps rollback\" \"$P\" && git push -f origin \"refs/tags/$T\"; } || echo \"OD-TAG failed rc=$?\"",
               "executable": "/bin/bash",
               "chdir": "{{ d.repo }}"
             },
@@ -354,7 +354,7 @@
           {
             "name": "rb_tag dep3",
             "ansible.builtin.shell": {
-              "cmd": "T={{ d.tag | quote }}\nP={{ d.prev | quote }}\n{ GIT_COMMITTER_NAME=OpsDeck GIT_COMMITTER_EMAIL=opsdeck@localhost git tag -fa \"$T\" -m \"OpsDeck rollback\" \"$P\" && git push -f origin \"refs/tags/$T\"; } || echo \"OD-TAG failed rc=$?\"",
+              "cmd": "T={{ d.tag | quote }}\nP={{ d.prev | quote }}\n{ GIT_COMMITTER_NAME=CredOps GIT_COMMITTER_EMAIL=credops@localhost git tag -fa \"$T\" -m \"CredOps rollback\" \"$P\" && git push -f origin \"refs/tags/$T\"; } || echo \"OD-TAG failed rc=$?\"",
               "executable": "/bin/bash",
               "chdir": "{{ d.repo }}"
             },

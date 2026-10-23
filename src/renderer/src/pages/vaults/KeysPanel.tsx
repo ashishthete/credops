@@ -42,7 +42,7 @@ export function KeysPanel({ keys, stagger, onChanged, onDeleted, confirm }: Keys
                   title: `Delete ${k.label}?`,
                   description:
                     k.source === 'file'
-                      ? 'OpsDeck forgets this key. The file in ~/.ssh is left alone.'
+                      ? 'CredOps forgets this key. The file in ~/.ssh is left alone.'
                       : 'The private key is removed from this vault for good.',
                   confirmLabel: 'Delete key',
                   run: async () => {

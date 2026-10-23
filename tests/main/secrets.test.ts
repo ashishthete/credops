@@ -367,7 +367,7 @@ describe('SecretStore', () => {
 
   it('no plaintext on disk', async () => {
     vi.useRealTimers()
-    const dir = mkdtempSync(join(tmpdir(), 'opsdeck-secrets-'))
+    const dir = mkdtempSync(join(tmpdir(), 'credops-secrets-'))
     try {
       const db = openDatabase(join(dir, 'opsdeck.db'))
       const f = await setup({ db })

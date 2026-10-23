@@ -51,7 +51,7 @@ async function world() {
   const f = await makeDeployFixture()
   // app1 is shared with protected prod in the fixture; staging starts unprotected.
   f.db.prepare('DELETE FROM environment_hosts WHERE environment_id = ?').run(f.prod.id)
-  const home = mkdtempSync(join(tmpdir(), 'opsdeck-e2e-home-'))
+  const home = mkdtempSync(join(tmpdir(), 'credops-e2e-home-'))
   const ansible = new FakeAnsible()
   const fs = memFs()
   const spawned: Spawned[] = []
@@ -339,7 +339,7 @@ describe('services deploy end to end', () => {
     expect(JSON.stringify(w.results)).not.toContain(SECRET)
 
     // 12. Config export holds no secrets or release state, and round-trips.
-    const out = join(w.home, 'opsdeck-config.json')
+    const out = join(w.home, 'credops-config.json')
     const configIpc = createConfigHandlers({ db: f.db, vault: f.vault, audit: f.audit, now: () => new Date(NOW), saveDialog: async () => out, openDialog: async () => undefined })
     const exported = await configIpc['config:export']()
     expect(exported).toMatchObject({ path: out })
@@ -351,7 +351,7 @@ describe('services deploy end to end', () => {
 
     const t = await makeInventory()
     new SecretStore(t.db, t.vault, t.audit, { clipboard }).create({ vaultId: DEFAULT_VAULT_ID, name: 'envsecret', kind: 'env', value: 'other-env' })
-    const out2 = join(t.home, 'opsdeck-config.json')
+    const out2 = join(t.home, 'credops-config.json')
     const target = createConfigHandlers({ db: t.db, vault: t.vault, audit: t.audit, now: () => new Date(NOW + 60_000), saveDialog: async () => out2, openDialog: async () => out })
     const preview = await target['config:importOpen']()
     if (!preview || 'errors' in preview) throw new Error(`import preview failed: ${JSON.stringify(preview)}`)

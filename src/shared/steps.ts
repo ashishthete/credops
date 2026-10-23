@@ -37,7 +37,7 @@ export const POST_HOOK_STEP_ID = 'post-hook'
 
 export const ENV_NAME = /^[A-Z][A-Z0-9_]{0,63}$/
 // Case-sensitive: ENV_NAME is uppercase only. Names the shell, the loader or the generator's own environment read.
-const DENIED_ENV = /^(?:LD_|DYLD_|BASH_|GIT_|DOCKER_|COMPOSE_|OPSDECK_|SUDO_|OD_)|^(?:PATH|IFS|ENV|PS4|SHELLOPTS|BASHOPTS|PROMPT_COMMAND|HOME|CDPATH|GLOBIGNORE)$/
+const DENIED_ENV = /^(?:LD_|DYLD_|BASH_|GIT_|DOCKER_|COMPOSE_|CREDOPS_|SUDO_|OD_)|^(?:PATH|IFS|ENV|PS4|SHELLOPTS|BASHOPTS|PROMPT_COMMAND|HOME|CDPATH|GLOBIGNORE)$/
 export function deniedEnvName(name: string): boolean {
   return DENIED_ENV.test(name)
 }

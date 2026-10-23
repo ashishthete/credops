@@ -106,9 +106,9 @@ describe('createVaultHandlers', () => {
     await f.vault.setup({ pin: PIN, touchId: true })
     const h = createVaultHandlers(f.vault)
     expect(await h['vault:setPassword'](PW, { method: 'touchId' })).toMatchObject({ ok: true })
-    expect(quick.touchId.prompt).toHaveBeenLastCalledWith('set a master password in OpsDeck')
+    expect(quick.touchId.prompt).toHaveBeenLastCalledWith('set a master password in CredOps')
     expect(await h['vault:setPin']('482913', { method: 'touchId' })).toMatchObject({ ok: true })
-    expect(quick.touchId.prompt).toHaveBeenLastCalledWith('set a PIN in OpsDeck')
+    expect(quick.touchId.prompt).toHaveBeenLastCalledWith('set a PIN in CredOps')
   })
 
   it('never enables Touch ID without a proof', async () => {

@@ -139,7 +139,7 @@ export function ScriptCompare({
                     {c.title} <span className="sr-only">{LEVEL[c.level]}</span>
                   </p>
                   <p className="text-muted">Script: {c.script}</p>
-                  <p className="text-fg/90">OpsDeck: {c.opsdeck}</p>
+                  <p className="text-fg/90">CredOps: {c.credops}</p>
                 </div>
                 {c.fix?.open === 'notifications' && (
                   <Button size="sm" variant="ghost" className="shrink-0 self-start" onClick={() => navigate(`/products?${new URLSearchParams({ node: environmentKey(environment) })}`)}>

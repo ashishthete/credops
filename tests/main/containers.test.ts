@@ -443,7 +443,7 @@ describe('ContainerService', () => {
     t.containers.closeAll()
     await t.waitFor(() => expect(t.sh.running()).toBe(0))
     expect(t.ends(id)).toHaveLength(1)
-    await expect(t.containers.list(t.ids['app-1']!, null)).rejects.toThrow(/^OpsDeck is quitting$/)
+    await expect(t.containers.list(t.ids['app-1']!, null)).rejects.toThrow(/^CredOps is quitting$/)
   })
 })
 

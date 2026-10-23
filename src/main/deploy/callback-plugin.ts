@@ -1,5 +1,5 @@
 /**
- * Source of `opsdeck_jsonl.py`, written to `<rundir>/callback_plugins/` at run time. It is the stdout callback:
+ * Source of `credops_jsonl.py`, written to `<rundir>/callback_plugins/` at run time. It is the stdout callback:
  * every line on stdout is one JSON object, flushed after each write (events.ts reads them).
  *
  *   {event: 'play_start', name}
@@ -18,11 +18,11 @@ export const CALLBACK_PLUGIN_SOURCE = `from __future__ import absolute_import, d
 __metaclass__ = type
 
 DOCUMENTATION = """
-    name: opsdeck_jsonl
+    name: credops_jsonl
     type: stdout
-    short_description: OpsDeck JSON-lines events
+    short_description: CredOps JSON-lines events
     description:
-      - Writes one JSON object per line for OpsDeck. Output of no_log tasks is never written.
+      - Writes one JSON object per line for CredOps. Output of no_log tasks is never written.
 """
 
 import json
@@ -51,7 +51,7 @@ def _cap(value):
 class CallbackModule(CallbackBase):
     CALLBACK_VERSION = 2.0
     CALLBACK_TYPE = "stdout"
-    CALLBACK_NAME = "opsdeck_jsonl"
+    CALLBACK_NAME = "credops_jsonl"
 
     def __init__(self):
         super(CallbackModule, self).__init__()

@@ -46,7 +46,7 @@ async function server(opts: Partial<ServerOpts> = {}, sh: ShellHost = shell()): 
 async function setup(deps: Partial<ExecLinksDeps> = {}) {
   const f = await makeInventory()
   onTestFinished(() => rmSync(f.home, { recursive: true, force: true }))
-  const dir = mkdtempSync(join(tmpdir(), 'opsdeck-exec-links-'))
+  const dir = mkdtempSync(join(tmpdir(), 'credops-exec-links-'))
   onTestFinished(() => rmSync(dir, { recursive: true, force: true }))
   const knownHosts = new KnownHostStore(f.db, f.vault, f.audit, { knownHostsPath: join(dir, 'known_hosts') })
   const mt = manualTimers()

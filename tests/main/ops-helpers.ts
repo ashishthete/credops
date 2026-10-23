@@ -64,13 +64,13 @@ exit "$code"
 
 /**
  * An `onExec` that runs each received command with the local `/bin/sh -c`, so tests see real shell
- * parsing of what OpsDeck sends while staying on localhost. The env is built from scratch (nothing
+ * parsing of what CredOps sends while staying on localhost. The env is built from scratch (nothing
  * from `process.env`): the channel's env, then `PATH` = the tmp `bin` plus /usr/bin:/bin, `HOME` = the
  * tmp dir and `LANG=C`, which the channel can't override. A channel `signal` reaches the child; a
  * channel close kills it.
  */
 export function shellExec(): ShellHost {
-  const dir = mkdtempSync(join(tmpdir(), 'opsdeck-exec-'))
+  const dir = mkdtempSync(join(tmpdir(), 'credops-exec-'))
   const bin = join(dir, 'bin')
   const fixtures = join(dir, 'docker')
   const dockerLog = join(dir, 'docker.log')
@@ -143,7 +143,7 @@ export const PROD_HOSTS = [
 export async function makeRunSetup(deps: Partial<RunManagerDeps> = {}) {
   const f = await makeInventory()
   onTestFinished(() => rmSync(f.home, { recursive: true, force: true }))
-  const dir = mkdtempSync(join(tmpdir(), 'opsdeck-runs-'))
+  const dir = mkdtempSync(join(tmpdir(), 'credops-runs-'))
   onTestFinished(() => rmSync(dir, { recursive: true, force: true }))
   const sh = shellExec()
   onTestFinished(() => sh.close())

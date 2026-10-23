@@ -2,7 +2,7 @@ import { parseStreamLine } from './events'
 import type { DeployPlan } from './runner'
 
 /**
- * Ansible's own console view, rebuilt from the opsdeck_jsonl events: `TASK [..]`, `ok: [host]`, each task's
+ * Ansible's own console view, rebuilt from the credops_jsonl events: `TASK [..]`, `ok: [host]`, each task's
  * output and the recap. The lines are plain text (no escape codes); the terminal view colours them by their
  * prefix. Callers redact and cut every line before it leaves main, as for any other log line.
  */
@@ -110,7 +110,7 @@ export class AnsibleTerm {
     for (const l of body.slice(0, TERM_RESULT_LINES)) out.push({ hostId, text: `${INDENT}${l}` })
     if (body.length > TERM_RESULT_LINES) out.push({ hostId, text: `${INDENT}… ${body.length - TERM_RESULT_LINES} more lines` })
     const cut = Array.isArray(e.truncated) ? e.truncated.map(String) : []
-    if (cut.length) out.push({ hostId, text: `${INDENT}(${cut.join(', ')} cut by OpsDeck)` })
+    if (cut.length) out.push({ hostId, text: `${INDENT}(${cut.join(', ')} cut by CredOps)` })
     return out
   }
 

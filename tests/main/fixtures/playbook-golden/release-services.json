@@ -200,7 +200,7 @@
           {
             "name": "tag dep1",
             "ansible.builtin.shell": {
-              "cmd": "T={{ d.tag | quote }}\n{ GIT_COMMITTER_NAME=OpsDeck GIT_COMMITTER_EMAIL=opsdeck@localhost git tag -fa \"$T\" -m \"OpsDeck deploy\" HEAD && git push -f origin \"refs/tags/$T\"; } || echo \"OD-TAG failed rc=$?\"",
+              "cmd": "T={{ d.tag | quote }}\n{ GIT_COMMITTER_NAME=CredOps GIT_COMMITTER_EMAIL=credops@localhost git tag -fa \"$T\" -m \"CredOps deploy\" HEAD && git push -f origin \"refs/tags/$T\"; } || echo \"OD-TAG failed rc=$?\"",
               "executable": "/bin/bash",
               "chdir": "{{ d.repo }}"
             },
@@ -223,7 +223,7 @@
           {
             "name": "fail dep1",
             "ansible.builtin.fail": {
-              "msg": "OpsDeck step failed for 0190a1b2-c3d4-7e5f-8a6b-000000000001"
+              "msg": "CredOps step failed for 0190a1b2-c3d4-7e5f-8a6b-000000000001"
             }
           }
         ]
@@ -343,7 +343,7 @@
           {
             "name": "tag dep2",
             "ansible.builtin.shell": {
-              "cmd": "T={{ d.tag | quote }}\n{ GIT_COMMITTER_NAME=OpsDeck GIT_COMMITTER_EMAIL=opsdeck@localhost git tag -fa \"$T\" -m \"OpsDeck deploy\" HEAD && git push -f origin \"refs/tags/$T\"; } || echo \"OD-TAG failed rc=$?\"",
+              "cmd": "T={{ d.tag | quote }}\n{ GIT_COMMITTER_NAME=CredOps GIT_COMMITTER_EMAIL=credops@localhost git tag -fa \"$T\" -m \"CredOps deploy\" HEAD && git push -f origin \"refs/tags/$T\"; } || echo \"OD-TAG failed rc=$?\"",
               "executable": "/bin/bash",
               "chdir": "{{ d.repo }}"
             },
@@ -366,7 +366,7 @@
           {
             "name": "fail dep2",
             "ansible.builtin.fail": {
-              "msg": "OpsDeck step failed for 0190a1b2-c3d4-7e5f-8a6b-000000000002"
+              "msg": "CredOps step failed for 0190a1b2-c3d4-7e5f-8a6b-000000000002"
             }
           }
         ]
@@ -511,7 +511,7 @@
           {
             "name": "tag dep3",
             "ansible.builtin.shell": {
-              "cmd": "T={{ d.tag | quote }}\n{ GIT_COMMITTER_NAME=OpsDeck GIT_COMMITTER_EMAIL=opsdeck@localhost git tag -fa \"$T\" -m \"OpsDeck deploy\" HEAD && git push -f origin \"refs/tags/$T\"; } || echo \"OD-TAG failed rc=$?\"",
+              "cmd": "T={{ d.tag | quote }}\n{ GIT_COMMITTER_NAME=CredOps GIT_COMMITTER_EMAIL=credops@localhost git tag -fa \"$T\" -m \"CredOps deploy\" HEAD && git push -f origin \"refs/tags/$T\"; } || echo \"OD-TAG failed rc=$?\"",
               "executable": "/bin/bash",
               "chdir": "{{ d.repo }}"
             },
@@ -534,7 +534,7 @@
           {
             "name": "fail dep3",
             "ansible.builtin.fail": {
-              "msg": "OpsDeck step failed for 0190a1b2-c3d4-7e5f-8a6b-000000000003"
+              "msg": "CredOps step failed for 0190a1b2-c3d4-7e5f-8a6b-000000000003"
             }
           }
         ]

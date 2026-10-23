@@ -61,7 +61,7 @@ describe('detectTools', () => {
     const f = fake(ALL('/usr/bin'), 'ansible-playbook [core 2.12.10]\n')
     const t = await detectTools({ env: { PATH: '/usr/bin' }, home: HOME, ...f })
     expect(t.ansiblePlaybook).toBeNull()
-    expect(t.problems).toContain('Ansible 2.12 is too old; OpsDeck needs ansible-core 2.14 or newer.')
+    expect(t.problems).toContain('Ansible 2.12 is too old; CredOps needs ansible-core 2.14 or newer.')
     expect(toolingError(t)?.code).toBe('ansible-old')
   })
 
@@ -70,7 +70,7 @@ describe('detectTools', () => {
     const t = await detectTools({ env: { PATH: '/usr/bin' }, home: HOME, ...f })
     expect(t.ansiblePlaybook?.version).toBe('2.14.0')
     expect(t.sshAgent).toBeNull()
-    expect(t.problems).toEqual(['ssh-agent was not found; OpsDeck needs the OpenSSH client tools.', 'ssh-add was not found; OpsDeck needs the OpenSSH client tools.'])
+    expect(t.problems).toEqual(['ssh-agent was not found; CredOps needs the OpenSSH client tools.', 'ssh-add was not found; CredOps needs the OpenSSH client tools.'])
     expect(toolingError(t)).toBeNull()
   })
 

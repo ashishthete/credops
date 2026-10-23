@@ -11,7 +11,7 @@ import { DEFAULT_VAULT_ID, type IdentityMeta, type VaultMeta, type VaultStatus }
 export const appInfo: AppInfo = {
   version: '0.1.0',
   platform: 'darwin',
-  userDataPath: '/tmp/opsdeck',
+  userDataPath: '/tmp/credops',
   actor: { osUser: 'tester', machine: 'mac' },
 }
 
@@ -124,7 +124,7 @@ export function host(over: Partial<HostMeta> & { id: string; label: string }): H
   }
 }
 
-/** Installs window.opsdeck with per-channel results; returns the invoke mock. */
+/** Installs window.credops with per-channel results; returns the invoke mock. */
 export function mockBridge(results: Record<string, unknown> = {}) {
   const invoke = vi.fn(async (channel: string) => {
     if (channel in results) return results[channel]
@@ -150,7 +150,7 @@ export function mockBridge(results: Record<string, unknown> = {}) {
       set.delete(listener)
     }
   }
-  ;(window as unknown as { opsdeck: unknown }).opsdeck = { invoke, on }
+  ;(window as unknown as { credops: unknown }).credops = { invoke, on }
   return invoke
 }
 

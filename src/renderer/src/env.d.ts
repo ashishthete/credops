@@ -1,8 +1,8 @@
-import type { OpsDeckBridge } from '../../shared/ipc'
+import type { CredOpsBridge } from '../../shared/ipc'
 
 declare global {
   interface Window {
-    opsdeck: OpsDeckBridge
+    credops: CredOpsBridge
   }
 }
 

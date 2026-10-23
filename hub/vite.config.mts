@@ -20,14 +20,14 @@ export default defineConfig({
     ssr: resolve(here, 'src/cli.ts'),
     outDir: resolve(here, 'dist'),
     target: 'node24',
-    rollupOptions: { external, output: { entryFileNames: 'opsdeck-hub.mjs', format: 'es', banner: '#!/usr/bin/env node' } },
+    rollupOptions: { external, output: { entryFileNames: 'credops-hub.mjs', format: 'es', banner: '#!/usr/bin/env node' } },
   },
   plugins: [
     {
       name: 'executable-bin',
       apply: 'build',
       writeBundle(opts) {
-        if (opts.dir) chmodSync(resolve(opts.dir, 'opsdeck-hub.mjs'), 0o755)
+        if (opts.dir) chmodSync(resolve(opts.dir, 'credops-hub.mjs'), 0o755)
       },
     },
   ],

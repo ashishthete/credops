@@ -17,7 +17,7 @@ const UUID = '11111111-1111-4111-8111-111111111111'
 
 async function setup(opts: { locked?: boolean } = {}) {
   const f = await makeDeployFixture()
-  const dir = mkdtempSync(join(tmpdir(), 'opsdeck-hsec-'))
+  const dir = mkdtempSync(join(tmpdir(), 'credops-hsec-'))
   onTestFinished(() => rmSync(dir, { recursive: true, force: true }))
   const knownHosts = new KnownHostStore(f.db, f.vault, f.audit, { knownHostsPath: join(dir, 'known_hosts') })
   const clipboard = { async writeText(): Promise<void> {}, async readText(): Promise<string> { return '' } }

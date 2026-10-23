@@ -19,7 +19,7 @@ export class DeployKeys {
 
   /** Creates the key, or replaces it (rotation). */
   create(environmentId: string, environmentName: string): { publicKey: string; fingerprint: string } {
-    const key = generateEd25519(`opsdeck-hub:${environmentName}`)
+    const key = generateEd25519(`credops-hub:${environmentName}`)
     this.db
       .prepare(
         `INSERT INTO env_deploy_keys(environment_id, public_key, fingerprint, private_enc, key_id, created_at) VALUES (?,?,?,?,?,?)

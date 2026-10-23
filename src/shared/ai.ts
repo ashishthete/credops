@@ -98,7 +98,7 @@ export const EXPLANATION_SCHEMA = {
 
 export type ParsedExplanation = Omit<Explanation, 'requestId' | 'model' | 'redactions' | 'sentContext' | 'target'>
 
-const bad = (): AiFailure => new AiFailure('bad-output', 'Claude returned an answer OpsDeck could not read')
+const bad = (): AiFailure => new AiFailure('bad-output', 'Claude returned an answer CredOps could not read')
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x)
 const cap = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 

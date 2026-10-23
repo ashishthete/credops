@@ -30,7 +30,7 @@ export function signInCopy(status: VaultStatus): { title: string; description: s
     case 'hub':
       return {
         title: "Connect to your team's Hub",
-        description: 'OpsDeck opens with your Microsoft account once it knows your Hub. Ask your admin for its address.',
+        description: 'CredOps opens with your Microsoft account once it knows your Hub. Ask your admin for its address.',
       }
     case 'mismatch':
       return { title: 'Sign in with Microsoft', description: `These vaults belong to ${(sso.required && sso.upn) || 'another account'}` }
@@ -41,7 +41,7 @@ export function signInCopy(status: VaultStatus): { title: string; description: s
         title: 'Sign in with Microsoft',
         description: status.setUp
           ? 'Your Microsoft sign-in has expired'
-          : `Sign in to ${(sso.required && sso.hubName) || 'your Hub'} to set up OpsDeck.`,
+          : `Sign in to ${(sso.required && sso.hubName) || 'your Hub'} to set up CredOps.`,
       }
   }
 }
@@ -63,7 +63,7 @@ export function SignInCard({
   onSignedIn: () => void
   /** Opens the gate's ResetVaultsDialog (preflight F27). */
   onReset: () => void
-  /** "Use OpsDeck without a Hub": the gate goes straight to setup for this session. */
+  /** "Use CredOps without a Hub": the gate goes straight to setup for this session. */
   onWithoutHub: () => void
 }) {
   const view = signInView(status)
@@ -108,7 +108,7 @@ function HubStep({ onWithoutHub }: { onWithoutHub: () => void }) {
         Continue
       </Button>
       <button type="button" onClick={onWithoutHub} disabled={busy} className={`-mt-1 ${linkClass}`}>
-        Use OpsDeck without a Hub
+        Use CredOps without a Hub
       </button>
     </form>
   )

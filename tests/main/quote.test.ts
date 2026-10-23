@@ -14,7 +14,7 @@ let tmp = ''
 let markers = 0
 
 beforeAll(() => {
-  tmp = mkdtempSync(join(tmpdir(), 'opsdeck-quote-'))
+  tmp = mkdtempSync(join(tmpdir(), 'credops-quote-'))
 })
 
 afterAll(() => {
@@ -158,7 +158,7 @@ describe('parseTemplate', () => {
 
   it('rejects a placeholder inside single or double quotes', () => {
     for (const script of [`echo '{{a}}'`, 'echo "x{{a}}"', "echo $'{{a}}'", 'echo \\{{a}}', 'echo "\\{{a}}"']) {
-      expect(message(() => parseTemplate(script))).toBe('{{a}} is inside quotes; remove them, OpsDeck quotes values itself')
+      expect(message(() => parseTemplate(script))).toBe('{{a}} is inside quotes; remove them, CredOps quotes values itself')
     }
   })
 

@@ -567,7 +567,7 @@ const v1Shape = (file: ConfigFile) => ({
 })
 
 const writeTmp = (text: string): string => {
-  const path = join(mkdtempSync(join(tmpdir(), 'opsdeck-import-')), 'opsdeck-config.json')
+  const path = join(mkdtempSync(join(tmpdir(), 'credops-import-')), 'credops-config.json')
   writeFileSync(path, text)
   return path
 }
@@ -651,9 +651,9 @@ describe('config import over IPC', () => {
     const f = await makeConfigFixture()
     const file = buildConfigExport(f.db, clock).file
     const wrong = handlers(f, async () => writeTmp(JSON.stringify({ ...file, format: 'something-else' })))
-    expect(await wrong['config:importOpen']()).toEqual({ errors: ["This isn't an OpsDeck config file"] })
+    expect(await wrong['config:importOpen']()).toEqual({ errors: ["This isn't a CredOps config file"] })
     const newer = handlers(f, async () => writeTmp(JSON.stringify({ ...file, version: 3 })))
-    expect(await newer['config:importOpen']()).toEqual({ errors: ['This file is from a newer OpsDeck'] })
+    expect(await newer['config:importOpen']()).toEqual({ errors: ['This file is from a newer CredOps'] })
     const notJson = handlers(f, async () => writeTmp('{ not json'))
     expect(await notJson['config:importOpen']()).toEqual({ errors: ["The file isn't valid JSON"] })
   })

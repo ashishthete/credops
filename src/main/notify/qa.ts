@@ -27,7 +27,7 @@ export interface QaDispatchOptions {
 }
 
 export interface QaResult {
-  /** GitHub's conclusion (`success`, `failure`, `cancelled`, …); null when OpsDeck stopped waiting. */
+  /** GitHub's conclusion (`success`, `failure`, `cancelled`, …); null when CredOps stopped waiting. */
   conclusion: string | null
   htmlUrl: string | null
 }

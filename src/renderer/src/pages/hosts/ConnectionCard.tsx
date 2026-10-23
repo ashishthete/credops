@@ -121,7 +121,7 @@ export function ConnectionCard({ hostId, environmentId, onContextChange }: Conne
   return (
     <section aria-label="Connection" aria-busy={state.kind === 'loading' || stale || undefined} className="overflow-hidden rounded-xl border border-line bg-surface/60">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line/70 px-4 py-2.5">
-        <h3 className="text-[12.5px] font-semibold text-fg/90">How OpsDeck connects</h3>
+        <h3 className="text-[12.5px] font-semibold text-fg/90">How CredOps connects</h3>
         <LayoutGroup id={`ctx-${hostId}`}>
           <div role="radiogroup" aria-label="Context" className="flex flex-wrap gap-0.5 rounded-lg bg-canvas/60 p-0.5">
             <Segment checked={!ctx} onSelect={() => setContext(null)} label="Outside any environment" />

@@ -1,4 +1,4 @@
-# OpsDeck Hub runbook
+# CredOps Hub runbook
 
 The Hub is one Node process (Fastify and SQLite) that holds the team's shared deploy secrets, environment
 locks, release history and live status, and runs Ansible for releases. People sign in with Microsoft Entra
@@ -10,9 +10,9 @@ This is a runbook: follow it top to bottom on a fresh VM.
 
 In the Entra admin center, for the tenant your team signs in with:
 
-1. **App registrations > New registration.** Name it "OpsDeck Hub". Supported account types: single tenant.
+1. **App registrations > New registration.** Name it "CredOps Hub". Supported account types: single tenant.
 2. Under **Authentication > Add a platform > Mobile and desktop applications**, add the redirect URI
-   `http://127.0.0.1/callback` (OpsDeck signs in through a loopback port, so any port is accepted). Leave
+   `http://127.0.0.1/callback` (CredOps signs in through a loopback port, so any port is accepted). Leave
    "Allow public client flows" on. No client secret is created or needed.
 3. Under **Expose an API**, set the Application ID URI to `api://<client id>` and add a scope named
    `access_as_user` (admins and users can consent).
@@ -31,10 +31,10 @@ No API permissions beyond `openid`, `profile`, `offline_access` and your own `ac
 - Create the service user and directories:
 
 ```sh
-sudo useradd --system --home /var/lib/opsdeck-hub --shell /usr/sbin/nologin opsdeck-hub
-sudo install -d -o opsdeck-hub -g opsdeck-hub -m 700 /var/lib/opsdeck-hub
-sudo install -d -m 755 /etc/opsdeck-hub /opt/opsdeck-hub
-sudo install -d -o opsdeck-hub -g opsdeck-hub -m 700 /var/backups/opsdeck-hub
+sudo useradd --system --home /var/lib/credops-hub --shell /usr/sbin/nologin credops-hub
+sudo install -d -o credops-hub -g credops-hub -m 700 /var/lib/credops-hub
+sudo install -d -m 755 /etc/credops-hub /opt/credops-hub
+sudo install -d -o credops-hub -g credops-hub -m 700 /var/backups/credops-hub
 ```
 
 ## 3. Build and install
@@ -42,19 +42,19 @@ sudo install -d -o opsdeck-hub -g opsdeck-hub -m 700 /var/backups/opsdeck-hub
 On a build machine with the repository checked out:
 
 ```sh
-pnpm hub:build             # from the repo root; writes hub/dist/opsdeck-hub.mjs
+pnpm hub:build             # from the repo root; writes hub/dist/credops-hub.mjs
 ```
 
-Copy `hub/dist/opsdeck-hub.mjs` to `/opt/opsdeck-hub/dist/`, copy `hub/package.json` to `/opt/opsdeck-hub/`,
+Copy `hub/dist/credops-hub.mjs` to `/opt/credops-hub/dist/`, copy `hub/package.json` to `/opt/credops-hub/`,
 and install its two dependencies there (`fastify`, `jose`) with your package manager. Copy
-`hub/deploy/opsdeck-hub.service` to `/etc/systemd/system/`.
+`hub/deploy/credops-hub.service` to `/etc/systemd/system/`.
 
 ## 4. The master key
 
 The master key seals every secret in `hub.db`. Create it once:
 
 ```sh
-sudo node /opt/opsdeck-hub/dist/opsdeck-hub.mjs gen-master-key --out /etc/opsdeck-hub/master.key
+sudo node /opt/credops-hub/dist/credops-hub.mjs gen-master-key --out /etc/credops-hub/master.key
 ```
 
 It writes 32 random bytes as base64 with mode 0600 and refuses to overwrite an existing file. It never
@@ -66,14 +66,14 @@ a leaked `hub.db` exposes every secret, which is why the two are kept apart.
 
 ## 5. Configure
 
-Write `/etc/opsdeck-hub/hub.config.json` (see `hub/hub.config.example.json`):
+Write `/etc/credops-hub/hub.config.json` (see `hub/hub.config.example.json`):
 
 ```json
 {
   "name": "Acme Hub",
   "listen": { "host": "127.0.0.1", "port": 8787 },
   "publicUrl": "https://hub.example.com",
-  "dataDir": "/var/lib/opsdeck-hub",
+  "dataDir": "/var/lib/credops-hub",
   "entra": {
     "tenantId": "<directory id>",
     "clientId": "<application id>",
@@ -85,17 +85,17 @@ Write `/etc/opsdeck-hub/hub.config.json` (see `hub/hub.config.example.json`):
 ```
 
 The Hub listens on loopback and Caddy terminates TLS. `${CREDENTIALS_DIRECTORY}` is filled in from
-systemd's `LoadCredential=` (the unit hands over `/etc/opsdeck-hub/master.key`). systemd leaves that copy
+systemd's `LoadCredential=` (the unit hands over `/etc/credops-hub/master.key`). systemd leaves that copy
 owned by root with the Hub user's access granted by ACL, so for a file inside `$CREDENTIALS_DIRECTORY` the Hub
 accepts owner root or the Hub user, no write bits and no "other" bits, instead of the strict 0600 check. This
-path is **unverified on a live systemd**: run `systemctl start opsdeck-hub` on Linux and confirm it boots
+path is **unverified on a live systemd**: run `systemctl start credops-hub` on Linux and confirm it boots
 before relying on it.
 
 Check it. Run this as root with a copy of the config whose `masterKeyFile` is the literal
-`/etc/opsdeck-hub/master.key`, because `${CREDENTIALS_DIRECTORY}` only exists under systemd:
+`/etc/credops-hub/master.key`, because `${CREDENTIALS_DIRECTORY}` only exists under systemd:
 
 ```sh
-sudo node /opt/opsdeck-hub/dist/opsdeck-hub.mjs check-config --config /tmp/hub.check.json
+sudo node /opt/credops-hub/dist/credops-hub.mjs check-config --config /tmp/hub.check.json
 ```
 
 It prints a checklist: config, master key, `dataDir` permissions, `ansible-playbook`, `ssh-agent`,
@@ -120,20 +120,20 @@ every 15 seconds, so idle proxies keep the stream open.
 
 ```sh
 sudo systemctl daemon-reload
-sudo systemctl enable --now opsdeck-hub
-sudo systemctl status opsdeck-hub
+sudo systemctl enable --now credops-hub
+sudo systemctl status credops-hub
 ```
 
 The first person to sign in whose object id (or UPN) matches `firstAdmin` becomes an admin. Prefer
 `firstAdmin.oid`: a UPN can be renamed or reassigned, an object id cannot. A matching person is promoted
 again only when the Hub has no enabled admin, so remove or change `firstAdmin` afterwards if you do not
-want that recovery path. In OpsDeck, open **Hub** in the sidebar, enter the Hub URL and sign in. The Hub
+want that recovery path. In CredOps, open **Hub** in the sidebar, enter the Hub URL and sign in. The Hub
 section then shows the tabs Overview, People, Groups, Environments, Secrets and Audit. Create groups, add
 people, and grant groups access to environments.
 
 ## 8. Publish an environment and install deploy keys
 
-1. In OpsDeck, open **Hub**, then the **Environments** tab, and choose **Publish to Hub** on the
+1. In CredOps, open **Hub**, then the **Environments** tab, and choose **Publish to Hub** on the
    environment. This sends the environment, its hosts
    and deployments (no secrets) and lists the secrets it needs.
 2. In the **Secrets** tab, set each required secret once. Everyone with access to the
@@ -147,10 +147,10 @@ people, and grant groups access to environments.
 Back up the database with SQLite's online backup, never by copying the file while the Hub runs:
 
 ```sh
-sudo -u opsdeck-hub sqlite3 /var/lib/opsdeck-hub/hub.db ".backup '/var/backups/opsdeck-hub/hub-$(date +%F).db'"
+sudo -u credops-hub sqlite3 /var/lib/credops-hub/hub.db ".backup '/var/backups/credops-hub/hub-$(date +%F).db'"
 ```
 
-Restore: stop the service, put the backup at `/var/lib/opsdeck-hub/hub.db` (owner `opsdeck-hub`, mode
+Restore: stop the service, put the backup at `/var/lib/credops-hub/hub.db` (owner `credops-hub`, mode
 0600), delete any `hub.db-wal` and `hub.db-shm`, and start the service. The Hub refuses to start if the
 master key is not the one that sealed the database, so restore the key from its own backup first when
 rebuilding a VM.
@@ -158,8 +158,8 @@ rebuilding a VM.
 ## 10. Upgrades
 
 1. Build the new version and take a database backup (section 9).
-2. Replace `/opt/opsdeck-hub/dist/opsdeck-hub.mjs` (and reinstall dependencies if `package.json` changed).
-3. Run `check-config`, then `sudo systemctl restart opsdeck-hub`.
+2. Replace `/opt/credops-hub/dist/credops-hub.mjs` (and reinstall dependencies if `package.json` changed).
+3. Run `check-config`, then `sudo systemctl restart credops-hub`.
 
 Database migrations run at start and only ever add; running releases end at a restart, and their locks
 are released. Manual freezes survive restarts. To roll back, restore the pre-upgrade backup together with

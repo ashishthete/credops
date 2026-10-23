@@ -115,7 +115,7 @@ export function pkce(): { verifier: string; challenge: string } {
 }
 
 const PAGE = (msg: string): string =>
-  `<!doctype html><html><head><meta charset="utf-8"><title>OpsDeck</title></head><body><p>${msg}</p></body></html>`
+  `<!doctype html><html><head><meta charset="utf-8"><title>CredOps</title></head><body><p>${msg}</p></body></html>`
 
 export async function startLoopback(opts: {
   path: string
@@ -171,7 +171,7 @@ export async function startLoopback(opts: {
       reply(res, 400, 'Sign-in failed. You can close this tab.')
       return finish(new OidcError('exchange', 'The sign-in response had no authorization code'))
     }
-    reply(res, 200, 'Signed in to OpsDeck. You can close this tab.')
+    reply(res, 200, 'Signed in to CredOps. You can close this tab.')
     finish({ code: c })
   })
 

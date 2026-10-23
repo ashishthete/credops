@@ -32,7 +32,7 @@ export function ConnectCard() {
     // Connecting binds the vaults to the signed-in account, so say so first.
     setConfirm({
       title: 'Connect to this Hub?',
-      description: 'From now on, OpsDeck opens only after you sign in with this Microsoft account.',
+      description: 'From now on, CredOps opens only after you sign in with this Microsoft account.',
       confirmLabel: 'Connect',
       gentle: { cancelLabel: 'Cancel' },
       run: async () => {
@@ -46,7 +46,7 @@ export function ConnectCard() {
       <>
         <form onSubmit={submit} className="flex max-w-xl flex-col gap-3">
           <p className="text-[13px] leading-5 text-muted">
-            Connect to your team's Hub to sign in with Microsoft and share deployments. Everything else in OpsDeck keeps working
+            Connect to your team's Hub to sign in with Microsoft and share deployments. Everything else in CredOps keeps working
             without it.
           </p>
           <TextField
@@ -79,7 +79,7 @@ export function ConnectCard() {
           ? setReverify(true)
           : setConfirm({
               title: `Disconnect from ${status.hubName}?`,
-              description: 'You will be signed out and OpsDeck will stop using this Hub. You can connect again later.',
+              description: 'You will be signed out and CredOps will stop using this Hub. You can connect again later.',
               confirmLabel: 'Disconnect',
               run: async () => {
                 await unlinkHub()
@@ -164,7 +164,7 @@ export function ConnectCard() {
         open={reverify}
         status={vault}
         title={`Disconnect from ${status.hubName}?`}
-        description="OpsDeck will stop using this Hub and open without a Microsoft sign-in. Confirm it is you first."
+        description="CredOps will stop using this Hub and open without a Microsoft sign-in. Confirm it is you first."
         submitLabel="Disconnect"
         onProof={(proof) => api.invoke('auth:disconnect', proof)}
         onProven={() => {

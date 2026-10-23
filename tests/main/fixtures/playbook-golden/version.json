@@ -74,7 +74,7 @@
           {
             "name": "version dep1",
             "ansible.builtin.shell": {
-              "cmd": "V={{ od.version | quote }}\nE={{ od.env | quote }}\nh=$(git rev-parse HEAD 2>/dev/null)\nif [ -n \"$h\" ] && [ \"$(git rev-parse -q --verify \"refs/tags/$V^{commit}\" 2>/dev/null)\" = \"$h\" ]; then\n  echo \"$V is already on HEAD in this repository; skipping the tag and push\"\nelse\n  GIT_COMMITTER_NAME=OpsDeck GIT_COMMITTER_EMAIL=opsdeck@localhost git tag -a \"$V\" -m \"$E release $V\" && git push origin \"$V\"\nfi",
+              "cmd": "V={{ od.version | quote }}\nE={{ od.env | quote }}\nh=$(git rev-parse HEAD 2>/dev/null)\nif [ -n \"$h\" ] && [ \"$(git rev-parse -q --verify \"refs/tags/$V^{commit}\" 2>/dev/null)\" = \"$h\" ]; then\n  echo \"$V is already on HEAD in this repository; skipping the tag and push\"\nelse\n  GIT_COMMITTER_NAME=CredOps GIT_COMMITTER_EMAIL=credops@localhost git tag -a \"$V\" -m \"$E release $V\" && git push origin \"$V\"\nfi",
               "executable": "/bin/bash",
               "chdir": "{{ d.repo }}"
             },
@@ -116,7 +116,7 @@
           {
             "name": "version dep2",
             "ansible.builtin.shell": {
-              "cmd": "V={{ od.version | quote }}\nE={{ od.env | quote }}\nh=$(git rev-parse HEAD 2>/dev/null)\nif [ -n \"$h\" ] && [ \"$(git rev-parse -q --verify \"refs/tags/$V^{commit}\" 2>/dev/null)\" = \"$h\" ]; then\n  echo \"$V is already on HEAD in this repository; skipping the tag and push\"\nelse\n  GIT_COMMITTER_NAME=OpsDeck GIT_COMMITTER_EMAIL=opsdeck@localhost git tag -a \"$V\" -m \"$E release $V\" && git push origin \"$V\"\nfi",
+              "cmd": "V={{ od.version | quote }}\nE={{ od.env | quote }}\nh=$(git rev-parse HEAD 2>/dev/null)\nif [ -n \"$h\" ] && [ \"$(git rev-parse -q --verify \"refs/tags/$V^{commit}\" 2>/dev/null)\" = \"$h\" ]; then\n  echo \"$V is already on HEAD in this repository; skipping the tag and push\"\nelse\n  GIT_COMMITTER_NAME=CredOps GIT_COMMITTER_EMAIL=credops@localhost git tag -a \"$V\" -m \"$E release $V\" && git push origin \"$V\"\nfi",
               "executable": "/bin/bash",
               "chdir": "{{ d.repo }}"
             },
@@ -199,7 +199,7 @@
           {
             "name": "version dep3",
             "ansible.builtin.shell": {
-              "cmd": "V={{ od.version | quote }}\nE={{ od.env | quote }}\nh=$(git rev-parse HEAD 2>/dev/null)\nif [ -n \"$h\" ] && [ \"$(git rev-parse -q --verify \"refs/tags/$V^{commit}\" 2>/dev/null)\" = \"$h\" ]; then\n  echo \"$V is already on HEAD in this repository; skipping the tag and push\"\nelse\n  GIT_COMMITTER_NAME=OpsDeck GIT_COMMITTER_EMAIL=opsdeck@localhost git tag -a \"$V\" -m \"$E release $V\" && git push origin \"$V\"\nfi",
+              "cmd": "V={{ od.version | quote }}\nE={{ od.env | quote }}\nh=$(git rev-parse HEAD 2>/dev/null)\nif [ -n \"$h\" ] && [ \"$(git rev-parse -q --verify \"refs/tags/$V^{commit}\" 2>/dev/null)\" = \"$h\" ]; then\n  echo \"$V is already on HEAD in this repository; skipping the tag and push\"\nelse\n  GIT_COMMITTER_NAME=CredOps GIT_COMMITTER_EMAIL=credops@localhost git tag -a \"$V\" -m \"$E release $V\" && git push origin \"$V\"\nfi",
               "executable": "/bin/bash",
               "chdir": "{{ d.repo }}"
             },

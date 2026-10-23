@@ -150,7 +150,7 @@ export function generateAnsibleCfg(plan: DeployPlan, rundir: string): string {
   const forks = Math.max(1, Math.min(plan.hosts.length, 10))
   return [
     '[defaults]',
-    'stdout_callback = opsdeck_jsonl',
+    'stdout_callback = credops_jsonl',
     `callback_plugins = ${rundir}/callback_plugins`,
     'host_key_checking = True',
     'retry_files_enabled = False',

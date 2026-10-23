@@ -231,7 +231,7 @@ export class LocalRunner implements DeployRunner {
 
       // 2. the run files (the ssh_config needs the agent socket and known_hosts needs the prepared keys)
       const write = (name: string, text: string): Promise<void> => o.fs.writeFile(join(rundir, name), text)
-      await write('callback_plugins/opsdeck_jsonl.py', CALLBACK_PLUGIN_SOURCE)
+      await write('callback_plugins/credops_jsonl.py', CALLBACK_PLUGIN_SOURCE)
       // An edited playbook runs as validated, whole: a play whose host is unreachable matches no inventory host and is skipped.
       await write('playbook.yml', plan.playbookText ?? generatePlaybook(effective))
       await write('inventory', generateInventory(effective))

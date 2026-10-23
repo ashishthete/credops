@@ -28,7 +28,7 @@ it('a failing status shows Retry on the splash', async () => {
     </AuthGate>,
   )
   await flush()
-  expect(screen.getByRole('region', { name: 'Opening OpsDeck' })).toBeInTheDocument()
+  expect(screen.getByRole('region', { name: 'Opening CredOps' })).toBeInTheDocument()
   await act(async () => {
     await vi.advanceTimersByTimeAsync(2900)
   })

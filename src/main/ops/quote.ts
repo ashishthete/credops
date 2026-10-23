@@ -3,7 +3,7 @@
  *
  * An SSH exec request carries one string that the host's login shell parses. Quoting is POSIX
  * (sh — bash/POSIX, bash, zsh, dash); fish and csh/tcsh read quotes differently and are not supported.
- * OpsDeck builds a command in exactly two ways:
+ * CredOps builds a command in exactly two ways:
  * - argv: `shJoin(argv)`, each element one word on the remote side whatever it contains;
  * - template: the snippet's script is trusted text written by the user, and only variable values are
  *   untrusted. Each value is substituted as one `shQuote`d word, and only where the shell reads that
@@ -80,7 +80,7 @@ interface Frame {
   declaration: boolean
 }
 
-const QUOTED = (name: string) => `{{${name}}} is inside quotes; remove them, OpsDeck quotes values itself`
+const QUOTED = (name: string) => `{{${name}}} is inside quotes; remove them, CredOps quotes values itself`
 const IN_BACKTICKS = (name: string) => `{{${name}}} is inside backticks; use $( ) instead`
 const IN_ARITH = (name: string) => `{{${name}}} can't be used in arithmetic or [[ ]]; pass it through a variable and validate it`
 const IN_PARAM = (name: string) => `{{${name}}} can't be used inside \${ }; assign it to a variable first`

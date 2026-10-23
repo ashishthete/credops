@@ -1,4 +1,4 @@
-/* OpsDeck design tokens. Raw values live on :root; @theme maps them to Tailwind utilities
+/* CredOps design tokens. Raw values live on :root; @theme maps them to Tailwind utilities
    (bg-surface, text-muted, border-line, rounded-ui, font-mono, ...). */
 :root {
   --bg: #0b0d12;

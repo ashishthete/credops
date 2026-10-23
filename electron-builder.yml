@@ -1,5 +1,5 @@
-appId: dev.opsdeck.app
-productName: OpsDeck
+appId: dev.credops.app
+productName: CredOps
 asar: true
 afterPack: scripts/after-pack.cjs
 npmRebuild: false

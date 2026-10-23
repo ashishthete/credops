@@ -18,14 +18,14 @@ const facts = (over: Partial<NotificationFacts> = {}): NotificationFacts => ({
   at: '2026-10-19T10:00:00.000Z',
   ...over,
 })
-const addr = { from: 'opsdeck@acme.example', to: ['qa@acme.example', 'pm@acme.example'], cc: ['lead@acme.example', 'QA@acme.example'] }
+const addr = { from: 'credops@acme.example', to: ['qa@acme.example', 'pm@acme.example'], cc: ['lead@acme.example', 'QA@acme.example'] }
 const KEY = 'SG.abcdefghijklmnop1234.qrstuvwxyz0123456789'
 
 describe('buildReleaseEmail', () => {
   it('builds subject, recipients and both bodies', () => {
     const body = buildReleaseEmail(facts(), '## Changes\n- Adds **retries**', addr)
     expect(body.subject).toBe('[shop] uat released 1.4.0')
-    expect(body.from).toEqual({ email: 'opsdeck@acme.example', name: 'OpsDeck' })
+    expect(body.from).toEqual({ email: 'credops@acme.example', name: 'CredOps' })
     // cc never repeats a to address (SendGrid rejects duplicates).
     expect(body.personalizations).toEqual([{ to: [{ email: 'qa@acme.example' }, { email: 'pm@acme.example' }], cc: [{ email: 'lead@acme.example' }] }])
     const [text, html] = body.content

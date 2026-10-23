@@ -1,5 +1,5 @@
 import type { IpcRendererEvent } from 'electron'
-import { CHANNELS, EVENTS, type Channel, type EventName, type OpsDeckBridge } from '../shared/ipc'
+import { CHANNELS, EVENTS, type Channel, type EventName, type CredOpsBridge } from '../shared/ipc'
 
 /** The slice of ipcRenderer the bridge uses, so it can be tested without Electron. */
 export interface BridgeIpc {
@@ -11,12 +11,12 @@ export interface BridgeIpc {
 const knownChannels: readonly string[] = CHANNELS
 const knownEvents: readonly string[] = EVENTS
 
-export function createBridge(ipc: BridgeIpc): OpsDeckBridge {
+export function createBridge(ipc: BridgeIpc): CredOpsBridge {
   return {
     invoke: ((channel: Channel, ...args: unknown[]) => {
       if (!knownChannels.includes(channel)) return Promise.reject(new Error(`unknown channel: ${String(channel)}`))
       return ipc.invoke(channel, ...args)
-    }) as OpsDeckBridge['invoke'],
+    }) as CredOpsBridge['invoke'],
     on: ((event: EventName, listener: (payload: unknown) => void) => {
       if (!knownEvents.includes(event)) throw new Error(`unknown event: ${String(event)}`)
       // Only the payload crosses over; the IpcRendererEvent (and its sender) stays here.
@@ -25,6 +25,6 @@ export function createBridge(ipc: BridgeIpc): OpsDeckBridge {
       return () => {
         ipc.removeListener(event, wrapped)
       }
-    }) as OpsDeckBridge['on'],
+    }) as CredOpsBridge['on'],
   }
 }

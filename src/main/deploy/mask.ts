@@ -9,7 +9,7 @@ import { redact } from '../security/redact'
  * Only the human-text fields listed here are masked: command output, errors, messages, notes, commit subjects and
  * the playbook. Ids, timestamps, states, numbers and keys are never touched, since a short secret (a 4-digit PIN,
  * a hex fragment) can also occur in a uuid or a date. Names and labels the person configured (environment, host,
- * deployment, check label, commit author) and the lock file text OpsDeck writes are not free text and stay as they
+ * deployment, check label, commit author) and the lock file text CredOps writes are not free text and stay as they
  * are. `tests/main/release-mask.test.ts` pins this list, so a new text field is added here on purpose.
  */
 type Mask = (s: string) => string
@@ -45,7 +45,7 @@ function textMask(secrets: readonly string[]): Mask {
   return (s) => redact(s, forms)
 }
 
-/** The playbook vars that carry text as base64: the hooks, and OpsDeck's own `*_b64` values (the lock file text). */
+/** The playbook vars that carry text as base64: the hooks, and CredOps's own `*_b64` values (the lock file text). */
 const B64_VAR = /("(pre_hook|post_hook|[A-Za-z0-9_]*_b64)"\s*:\s*)"((?:[^"\\]|\\.)*)"/g
 const utf8 = new TextDecoder('utf-8', { fatal: true })
 

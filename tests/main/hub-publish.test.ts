@@ -26,7 +26,7 @@ function pubKey(): { type: string; b64: string } {
 
 async function setup() {
   const f: DeployFixture = await makeDeployFixture()
-  const dir = mkdtempSync(join(tmpdir(), 'opsdeck-pub-'))
+  const dir = mkdtempSync(join(tmpdir(), 'credops-pub-'))
   onTestFinished(() => rmSync(dir, { recursive: true, force: true }))
   const knownHosts = new KnownHostStore(f.db, f.vault, f.audit, { knownHostsPath: join(dir, 'known_hosts') })
   const bastion = f.hosts.create({ regionId: REGION, label: 'bastion', address: '203.0.113.9', port: 2222 })
@@ -91,7 +91,7 @@ describe('buildManifest', () => {
   it('refuses a hop with no pinned key', async () => {
     const { f, deps, trust } = await setup()
     trust('10.0.0.7', 22)
-    await expect(buildManifest(f.prod.id, deps)).rejects.toThrow('Connect to bastion once from OpsDeck so its host key is pinned, then publish')
+    await expect(buildManifest(f.prod.id, deps)).rejects.toThrow('Connect to bastion once from CredOps so its host key is pinned, then publish')
   })
 
   it('refuses a host with a password identity', async () => {

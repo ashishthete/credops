@@ -10,7 +10,7 @@ import type { SettingsStore } from '../../settings/settings-store'
 import type { NotifyLogFilter, NotifyTestTarget } from '../../../shared/settings'
 import type { Handlers } from '../../../shared/ipc'
 
-export const TEST_TITLE = 'Test from OpsDeck'
+export const TEST_TITLE = 'Test from CredOps'
 
 export interface NotifyHandlerDeps {
   db: Db
@@ -53,7 +53,7 @@ export function createNotifyHandlers(d: NotifyHandlerDeps): Pick<Handlers, 'noti
         if (target.channel === 'macos') {
           if (!d.settings.get().macos) throw new Error('macOS notifications are turned off')
           if (!mac.supported()) throw new Error('macOS notifications are not supported here')
-          mac.raw(TEST_TITLE, 'Notifications from OpsDeck will look like this.', true, '#/settings')
+          mac.raw(TEST_TITLE, 'Notifications from CredOps will look like this.', true, '#/settings')
         } else {
           const name = d.integrations.environmentName(target.environmentId)
           targetFields = { targetType: 'environment', targetId: target.environmentId, targetLabel: name }

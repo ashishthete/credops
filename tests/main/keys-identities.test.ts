@@ -32,7 +32,7 @@ const isRoot = process.getuid?.() === 0
 
 const dirs: string[] = []
 function tmp(): string {
-  const d = mkdtempSync(join(tmpdir(), 'opsdeck-keys-'))
+  const d = mkdtempSync(join(tmpdir(), 'credops-keys-'))
   dirs.push(d)
   return d
 }

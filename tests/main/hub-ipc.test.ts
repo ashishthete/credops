@@ -169,7 +169,7 @@ describe('hub handlers', () => {
     const gate = { assertMayLink: vi.fn() }
     let ready: typeof gate | null = null
     const guard = hubLinkGuard(vault, () => ready)
-    expect(() => guard('hub-1')).toThrow('OpsDeck is still starting')
+    expect(() => guard('hub-1')).toThrow('CredOps is still starting')
     ready = gate
     guard('hub-1')
     expect(vault.assertUnlocked).not.toHaveBeenCalled()

@@ -46,7 +46,7 @@ async function find(name: string, dirs: string[], exists: DetectOptions['exists'
   return null
 }
 
-const OLD = (v: string): string => `Ansible ${v} is too old; OpsDeck needs ansible-core 2.14 or newer.`
+const OLD = (v: string): string => `Ansible ${v} is too old; CredOps needs ansible-core 2.14 or newer.`
 
 /** Detects the tools once per 60 s (cache; `now` is injectable). */
 export async function detectTools(o: DetectOptions): Promise<Tooling> {
@@ -83,9 +83,9 @@ export async function detectTools(o: DetectOptions): Promise<Tooling> {
       problems.push(`Couldn't run ${ansible}. Check that the Ansible installation works.`)
     }
   }
-  if (!sshAgent) problems.push('ssh-agent was not found; OpsDeck needs the OpenSSH client tools.')
-  if (!sshAdd) problems.push('ssh-add was not found; OpsDeck needs the OpenSSH client tools.')
-  if (!ssh) problems.push('ssh was not found; OpsDeck needs the OpenSSH client tools.')
+  if (!sshAgent) problems.push('ssh-agent was not found; CredOps needs the OpenSSH client tools.')
+  if (!sshAdd) problems.push('ssh-add was not found; CredOps needs the OpenSSH client tools.')
+  if (!ssh) problems.push('ssh was not found; CredOps needs the OpenSSH client tools.')
   const value: Tooling = { ansiblePlaybook, ansibleStatus, sshAgent, sshAdd, ssh, problems }
   cache = { at: now, value }
   return value

@@ -47,7 +47,7 @@ function fail(o: HttpOptions, code: IntegrationErrorCode, status?: number): Inte
     : code === 'network' ? `${n.name} could not be reached`
     : code === 'timeout' ? `${n.name} timed out`
     : code === 'auth' ? `${n.auth} (HTTP ${status})`
-    : status === undefined ? `${n.short} returned a response OpsDeck could not read`
+    : status === undefined ? `${n.short} returned a response CredOps could not read`
     : `${n.failed} (HTTP ${status})`
   return new IntegrationError(o.service, code, text, o.knownSecrets, status)
 }

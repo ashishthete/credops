@@ -17,5 +17,5 @@
 {"event": "task_start", "name": "mark failed dep2", "tags": []}
 {"event": "ok", "host": "od-1", "task": "mark failed dep2", "tags": [], "no_log": false, "rc": null, "truncated": []}
 {"event": "task_start", "name": "fail dep2", "tags": []}
-{"event": "failed", "host": "od-1", "task": "fail dep2", "tags": [], "no_log": false, "rc": null, "truncated": [], "ignored": false, "msg": "OpsDeck step failed for 0190a1b2-c3d4-7e5f-8a6b-000000000002"}
+{"event": "failed", "host": "od-1", "task": "fail dep2", "tags": [], "no_log": false, "rc": null, "truncated": [], "ignored": false, "msg": "CredOps step failed for 0190a1b2-c3d4-7e5f-8a6b-000000000002"}
 {"event": "stats", "hosts": {"od-1": {"ok": 8, "failures": 1, "unreachable": 0, "changed": 0, "skipped": 0, "rescued": 0, "ignored": 0}}}

@@ -369,7 +369,7 @@ export function AuditPage() {
                 action={{ label: 'Clear filters', run: () => setFilters(NO_FILTERS) }}
               />
             ) : (
-              <EmptyState icon={ScrollText} title="No events yet" text="Everything OpsDeck does on your behalf lands here." />
+              <EmptyState icon={ScrollText} title="No events yet" text="Everything CredOps does on your behalf lands here." />
             ))}
         </div>
         {hasMore && rows && rows.length > 0 && (

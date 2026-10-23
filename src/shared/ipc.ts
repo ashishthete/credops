@@ -328,7 +328,7 @@ export interface IpcContract {
   'settings:status': { args: []; result: IntegrationStatus }
   'integration:get': { args: [environmentId: string]; result: EnvironmentIntegrations }
   'integration:update': { args: [environmentId: string, patch: EnvironmentIntegrationsPatch]; result: EnvironmentIntegrations }
-  // Sends a "Test from OpsDeck" card, email or alert; audited as notify.test. Errors never hold a URL or key.
+  // Sends a "Test from CredOps" card, email or alert; audited as notify.test. Errors never hold a URL or key.
   'notify:test': { args: [target: NotifyTestTarget]; result: void }
   'notify:log': { args: [filter: NotifyLogFilter]; result: NotificationRecord[] }
   'qa:dispatch': { args: [environmentId: string]; result: QaDispatch }
@@ -654,7 +654,7 @@ export const EVENTS = [
 type MissingEvents = Exclude<EventName, (typeof EVENTS)[number]>
 export const eventsAreComplete: [MissingEvents] extends [never] ? true : never = true
 
-export interface OpsDeckBridge {
+export interface CredOpsBridge {
   invoke<K extends Channel>(channel: K, ...args: IpcContract[K]['args']): Promise<IpcContract[K]['result']>
   /** Subscribes to a main-process event from EVENTS; returns the unsubscribe. */
   on<K extends EventName>(event: K, listener: (payload: EventContract[K]) => void): () => void

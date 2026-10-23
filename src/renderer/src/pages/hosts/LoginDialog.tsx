@@ -17,7 +17,7 @@ type Method = 'keys' | 'vaultKey' | 'password'
 
 const METHODS: { id: Method; label: string; hint: string; icon: LucideIcon }[] = [
   { id: 'keys', label: 'Your SSH keys (default)', hint: 'ssh-agent, then the keys in ~/.ssh, like ssh does.', icon: Fingerprint },
-  { id: 'vaultKey', label: 'A key in a vault', hint: 'A key OpsDeck keeps, or one it links in ~/.ssh.', icon: KeyRound },
+  { id: 'vaultKey', label: 'A key in a vault', hint: 'A key CredOps keeps, or one it links in ~/.ssh.', icon: KeyRound },
   { id: 'password', label: 'Password', hint: 'Stored sealed in the vault.', icon: RectangleEllipsis },
 ]
 
@@ -154,7 +154,7 @@ export function LoginDialog({ open, host, current, inheritedFrom, onClose }: Log
         open={open && !sub}
         onClose={onClose}
         title="Change login"
-        description={`Who OpsDeck logs in as on ${host.label}, and how.`}
+        description={`Who CredOps logs in as on ${host.label}, and how.`}
         width={460}
         footer={
           <>

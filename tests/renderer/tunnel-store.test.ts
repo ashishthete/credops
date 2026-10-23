@@ -195,7 +195,7 @@ describe('tunnel store', () => {
   it('a reload prunes runtime and stats for tunnels no longer listed', async () => {
     await sync({ 'tunnel:list': [tunnelMeta({ id: 't1' }), tunnelMeta({ id: 't2' })], 'tunnel:status': [tunnelRuntime({ id: 't1' }), tunnelRuntime({ id: 't2' })] })
     act(() => emitBridgeEvent('tunnel:stats', [stats('t2', 1)]))
-    ;(window.opsdeck.invoke as ReturnType<typeof vi.fn>).mockImplementation(async (c: string) =>
+    ;(window.credops.invoke as ReturnType<typeof vi.fn>).mockImplementation(async (c: string) =>
       c === 'tunnel:list' ? [tunnelMeta({ id: 't1' })] : c === 'tunnel:status' ? [tunnelRuntime({ id: 't1' })] : null,
     )
     await act(() => loadTunnels())

@@ -10,9 +10,9 @@ import { openHubDb } from './db'
 import { createMasterKeyFile, loadMasterKey } from './secrets/keyring'
 
 const USAGE = `usage:
-  opsdeck-hub serve --config <file>
-  opsdeck-hub gen-master-key --out <file>
-  opsdeck-hub check-config --config <file>`
+  credops-hub serve --config <file>
+  credops-hub gen-master-key --out <file>
+  credops-hub check-config --config <file>`
 
 const TOOLS = ['ansible-playbook', 'ssh-agent', 'ssh-add'] as const
 

@@ -123,7 +123,7 @@ export async function buildManifest(environmentId: string, deps: ManifestDeps, o
     for (const s of stops) {
       if (s.identity.auth === 'password') throw new Error(passwordMessage(s.label))
       const pinned = await deps.knownHosts.pinned(s.address, s.port)
-      if (pinned.length === 0) throw new Error(`Connect to ${s.label} once from OpsDeck so its host key is pinned, then publish`)
+      if (pinned.length === 0) throw new Error(`Connect to ${s.label} once from CredOps so its host key is pinned, then publish`)
       for (const l of pinned) lines.add(l)
       hops.push({ hostId: s.hostId, label: s.label, address: s.address, port: s.port, username: s.identity.username })
     }

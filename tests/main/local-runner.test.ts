@@ -70,7 +70,7 @@ describe('LocalRunner', () => {
     const h = t.runner.start(planFixture(), SECRETS)
     expect(h.runId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
     await h.done
-    expect(seen).toEqual(['ansible.cfg', 'callback_plugins/opsdeck_jsonl.py', 'inventory', 'known_hosts', 'playbook.yml', 'ssh_config'])
+    expect(seen).toEqual(['ansible.cfg', 'callback_plugins/credops_jsonl.py', 'inventory', 'known_hosts', 'playbook.yml', 'ssh_config'])
     const [call] = t.ansible.calls
     const dir = call.cwd
     expect(dir).toMatch(/^\/tmp\/od-/)
@@ -316,7 +316,7 @@ describe('LocalRunner', () => {
     t.ansible.onSpawn = () => void (seen = [...t.fs.files.keys()].map((f) => f.replace(/^\/tmp\/od-t\d+\//, '')).sort())
     t.ansible.stdout = fixtureLines('release-ok.jsonl')
     await t.runner.start(planFixture({ prepare: { cap: 2 } }), SECRETS).done
-    expect(seen).toEqual(['ansible.cfg', 'callback_plugins/opsdeck_jsonl.py', 'inventory', 'known_hosts', 'playbook.yml', 'ssh_config'])
+    expect(seen).toEqual(['ansible.cfg', 'callback_plugins/credops_jsonl.py', 'inventory', 'known_hosts', 'playbook.yml', 'ssh_config'])
   })
 
   it.each(['rollback', 'unlock'] as const)('%s still runs on the reachable host and reports the unreachable one failed', async (kind) => {

@@ -37,7 +37,7 @@ beforeEach(async () => {
   await hub.app.listen({ host: '127.0.0.1', port: 0 })
   const addr = hub.app.server.address() as { port: number }
   hubUrl = `http://127.0.0.1:${addr.port}`
-  dir = mkdtempSync(join(tmpdir(), 'opsdeck-hubconn-'))
+  dir = mkdtempSync(join(tmpdir(), 'credops-hubconn-'))
   db = openDatabase(join(dir, 'opsdeck.db'))
   audit = new AuditLog(db)
   states = []
@@ -88,7 +88,7 @@ describe('hub connection', () => {
   it('refuses sign-in without keychain', async () => {
     const conn = make({ keychain: fakeKeychain(false) })
     await conn.connect(hubUrl)
-    await expect(conn.signIn()).rejects.toThrow("Keychain unavailable: OpsDeck can't store a Hub sign-in safely")
+    await expect(conn.signIn()).rejects.toThrow("Keychain unavailable: CredOps can't store a Hub sign-in safely")
     expect(opened).toEqual([])
     const row = db.prepare('SELECT session_enc, refresh_enc FROM hub_link').get()
     expect({ ...row }).toEqual({ session_enc: null, refresh_enc: null })

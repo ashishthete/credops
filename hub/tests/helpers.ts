@@ -30,7 +30,7 @@ export interface TestHub {
 
 export async function testHub(overrides: Partial<HubConfig> = {}, appDeps: Partial<HubDeps> = {}): Promise<TestHub> {
   const entra = await startFakeEntra({ tenantId: TENANT, clientId: CLIENT })
-  const dataDir = mkdtempSync(join(tmpdir(), 'opsdeck-hub-'))
+  const dataDir = mkdtempSync(join(tmpdir(), 'credops-hub-'))
   const config: HubConfig = {
     name: 'Test Hub',
     listen: { host: '127.0.0.1', port: 0 },

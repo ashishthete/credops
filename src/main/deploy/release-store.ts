@@ -86,7 +86,7 @@ export interface RunPatch {
   finishedAt?: string | null
 }
 
-export const INTERRUPTED_MESSAGE = 'interrupted: OpsDeck quit during the run'
+export const INTERRUPTED_MESSAGE = 'interrupted: CredOps quit during the run'
 const MAX_PAGE = 5000
 /** previousRelease follows at most this many rollbacks back. */
 const MAX_ROLLBACK_CHAIN = 1000

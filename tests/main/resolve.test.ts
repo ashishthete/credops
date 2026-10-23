@@ -272,7 +272,7 @@ describe('resolveHost with ~/.ssh/config', () => {
       source: 'global', username: 'tester', auth: 'default',
     })
 
-    // An OpsDeck identity always wins over the config.
+    // A CredOps identity always wins over the config.
     f.hosts.update(alpha.id, { identityId: deploy.id })
     expect(resolveHost(f.db, alpha.id, undefined, { localUser: 'tester', sshConfig }).identity).toMatchObject({ source: 'host', username: 'deploy' })
   })
@@ -289,7 +289,7 @@ describe('resolveHost with ~/.ssh/config', () => {
 
   it('reads a fixture config from a tmp home', async () => {
     const { f } = await setup()
-    const home = mkdtempSync(join(tmpdir(), 'opsdeck-resolve-'))
+    const home = mkdtempSync(join(tmpdir(), 'credops-resolve-'))
     onTestFinished(() => rmSync(home, { recursive: true, force: true }))
     mkdirSync(join(home, '.ssh'))
     writeFileSync(join(home, '.ssh', 'config'), 'Host alpha\n  HostName 203.0.113.23\n  User ubuntu\n')

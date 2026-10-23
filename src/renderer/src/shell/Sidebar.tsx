@@ -115,7 +115,7 @@ export function Sidebar() {
             <span className="grid size-6 place-items-center rounded-md bg-accent/15 text-accent shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--accent)_35%,transparent)]">
               <Rocket aria-hidden className="size-3.5" strokeWidth={2.2} />
             </span>
-            <span className="text-[14px] font-semibold tracking-tight text-fg">OpsDeck</span>
+            <span className="text-[14px] font-semibold tracking-tight text-fg">CredOps</span>
           </div>
         )}
         {!collapsed && toggleButton}

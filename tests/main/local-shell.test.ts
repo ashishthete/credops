@@ -36,8 +36,8 @@ function spawn(env: Record<string, string | undefined> = { PATH }) {
 describe('spawnLocalShell', () => {
   it('spawns a shell, runs a command, exits', async () => {
     const t = spawn()
-    t.pty.write('echo opsdeck-$((40+2))\r')
-    await t.waitFor('opsdeck-42')
+    t.pty.write('echo credops-$((40+2))\r')
+    await t.waitFor('credops-42')
     t.pty.write('exit\r')
     await vi.waitFor(() => expect(t.exited()).toBe(true), { timeout: 10_000 })
   })
@@ -164,7 +164,7 @@ describe('shell fallback and packaging', () => {
 
   it('after-pack chmods every spawn-helper under app.asar.unpacked', () => {
     const { fixSpawnHelpers } = createRequire(import.meta.url)('../../scripts/after-pack.cjs') as { fixSpawnHelpers(dir: string): string[] }
-    const dir = mkdtempSync(join(tmpdir(), 'opsdeck-afterpack-'))
+    const dir = mkdtempSync(join(tmpdir(), 'credops-afterpack-'))
     onTestFinished(() => rmSync(dir, { recursive: true, force: true }))
     const pre = join(dir, 'node_modules', 'node-pty', 'prebuilds')
     for (const arch of ['darwin-arm64', 'darwin-x64']) {

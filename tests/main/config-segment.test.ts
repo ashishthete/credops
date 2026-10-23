@@ -17,7 +17,7 @@ const clock = () => new Date('2026-10-20T10:00:00.000Z')
 const clipboard = { async writeText(): Promise<void> {}, async readText(): Promise<string> { return '' } }
 const exportDeps = (f: { db: Db; vault: ConfigFixture['vault']; audit: ConfigFixture['audit'] }) => ({ db: f.db, vault: f.vault, audit: f.audit, now: clock })
 const ids = (xs: { id: string }[]): string[] => xs.map((x) => x.id).sort()
-const tmpPath = () => join(mkdtempSync(join(tmpdir(), 'opsdeck-segment-')), 'opsdeck-config.json')
+const tmpPath = () => join(mkdtempSync(join(tmpdir(), 'credops-segment-')), 'credops-config.json')
 const tables = ['regions', 'products', 'identities', 'hosts', 'environments', 'environment_hosts', 'tunnels', 'deployments', 'services']
 const rows = (db: Db, table: string): string => JSON.stringify(db.prepare(`SELECT * FROM ${table} ORDER BY 1, 2`).all())
 
@@ -185,7 +185,7 @@ describe('config segment export', () => {
 
   it('a failed segment export is audited with its segment', async () => {
     const f = await makeConfigFixture()
-    const path = join(mkdtempSync(join(tmpdir(), 'opsdeck-segment-')), 'missing-dir', 'opsdeck-tunnels.json')
+    const path = join(mkdtempSync(join(tmpdir(), 'credops-segment-')), 'missing-dir', 'credops-tunnels.json')
     await expect(exportConfig(exportDeps(f), path, 'tunnels')).rejects.toThrow("Couldn't write the config file")
     await expect(exportConfig(exportDeps(f), path)).rejects.toThrow("Couldn't write the config file")
     const entries = f.audit.list({ actions: ['config.export'] })

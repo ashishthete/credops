@@ -42,7 +42,7 @@ const MAX_ERROR_CHARS = 200
 const MAX_ERR_KEPT = 4096
 /** A `docker ps` line longer than this is skipped unparsed. */
 const MAX_PS_LINE = 65_536
-const QUITTING = 'OpsDeck is quitting'
+const QUITTING = 'CredOps is quitting'
 const LOCKED: SessionError = { code: 'locked', message: 'The vault was locked; follow the logs again after unlocking' }
 const EXEC_SHELL = 'command -v bash >/dev/null 2>&1 && exec bash || exec sh'
 
@@ -193,7 +193,7 @@ function labelsOf(raw: unknown): Map<string, string> {
   return labels
 }
 
-/** One `docker ps` JSON object, or null when it isn't a container OpsDeck could act on. */
+/** One `docker ps` JSON object, or null when it isn't a container CredOps could act on. */
 function containerOf(o: unknown): ContainerMeta | null {
   if (o === null || typeof o !== 'object' || Array.isArray(o)) return null
   const r = o as Record<string, unknown>

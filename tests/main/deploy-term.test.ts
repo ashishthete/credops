@@ -43,7 +43,7 @@ describe('AnsibleTerm', () => {
     const long = Array.from({ length: TERM_RESULT_LINES + 5 }, (_, i) => `l${i}`).join('\n')
     const out = text(t, ev({ event: 'ok', host: 'od-1', stdout: long, truncated: ['stdout'] }))
     expect(out).toHaveLength(1 + TERM_RESULT_LINES + 2)
-    expect(out.slice(-2)).toEqual(['    … 5 more lines', '    (stdout cut by OpsDeck)'])
+    expect(out.slice(-2)).toEqual(['    … 5 more lines', '    (stdout cut by CredOps)'])
   })
 
   it('skips streamed lines in a task tail, and labels tap lines with the host', () => {

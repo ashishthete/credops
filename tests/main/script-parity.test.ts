@@ -41,8 +41,8 @@ describe('checkAgainstScript', () => {
     expect(level(env(), [dep({ id: 'a', composeTimeoutSec: 599 })], 'timeouts')).toBe('risk')
     const c = checkAgainstScript(env(), [dep({ id: 'a', buildTimeoutSec: 300, composeTimeoutSec: 120 }), dep({ id: 'b', composeTimeoutSec: 120 })])[0]
     expect(c.fix?.deployments).toEqual({ a: { buildTimeoutSec: 3600, composeTimeoutSec: 900 }, b: { composeTimeoutSec: 900 } })
-    expect(c.opsdeck).toContain('a')
-    expect(c.opsdeck).toContain('300 s')
+    expect(c.credops).toContain('a')
+    expect(c.credops).toContain('300 s')
   })
 
   it('sudo: differs unless every deployment is yes', () => {
@@ -75,21 +75,21 @@ describe('checkAgainstScript', () => {
   it('qa-env-name: ok when the workflow is set and starts on deploy, with the environment name it gets', () => {
     const c = check(env(), 'qa-env-name')
     expect(c.level).toBe('ok')
-    expect(c.opsdeck).toContain('"alpha"')
+    expect(c.credops).toContain('"alpha"')
     expect(c.fix).toBeUndefined()
   })
 
   it('qa-env-name: differs with the Notifications link when no workflow is set', () => {
     const c = check(env({ qa: null }), 'qa-env-name')
     expect(c).toMatchObject({ level: 'differs', fix: { open: 'notifications' } })
-    expect(c.opsdeck).toBe('No QA workflow is set for this environment.')
+    expect(c.credops).toBe('No QA workflow is set for this environment.')
   })
 
   it('qa-env-name: differs with the link when the workflow is set but does not start on deploy', () => {
     const c = check(env({ qaOnDeploy: false }), 'qa-env-name')
     expect(c).toMatchObject({ level: 'differs', fix: { open: 'notifications' } })
-    expect(c.opsdeck).not.toMatch(/^Starts/)
-    expect(c.opsdeck).toContain('not started after a deploy')
+    expect(c.credops).not.toMatch(/^Starts/)
+    expect(c.credops).toContain('not started after a deploy')
   })
 
   it('qa-env-name on prod: ok when nothing is started, differs when a workflow starts on deploy', () => {
@@ -112,28 +112,28 @@ describe('checkAgainstScript', () => {
     expect(c.fix?.env).toBeUndefined()
   })
 
-  it('qa-wait: differs with the link when OpsDeck does not wait', () => {
+  it('qa-wait: differs with the link when CredOps does not wait', () => {
     const c = check(env({ qaWait: false }), 'qa-wait')
-    expect(c).toMatchObject({ level: 'differs', opsdeck: 'OpsDeck does not wait for the QA result.', fix: { open: 'notifications' } })
+    expect(c).toMatchObject({ level: 'differs', credops: 'CredOps does not wait for the QA result.', fix: { open: 'notifications' } })
   })
 
   it('qa-wait: not applicable when QA is not started (no workflow or off on deploy) or on prod', () => {
     for (const e of [env({ qa: null }), env({ qaOnDeploy: false }), env({ name: 'prod', qaOnDeploy: false })]) {
       const c = check(e, 'qa-wait')
-      expect(c).toMatchObject({ level: 'ok', opsdeck: 'Not applicable: QA is not started.' })
+      expect(c).toMatchObject({ level: 'ok', credops: 'Not applicable: QA is not started.' })
       expect(c.fix).toBeUndefined()
     }
     // Prod with QA on: the difference is reported once, on the QA workflow row.
     for (const e of [env({ name: 'prod' }), env({ name: 'prod', qaWait: false })]) {
-      expect(check(e, 'qa-wait')).toMatchObject({ level: 'ok', opsdeck: 'Not applicable: the script never starts QA on prod.' })
+      expect(check(e, 'qa-wait')).toMatchObject({ level: 'ok', credops: 'Not applicable: the script never starts QA on prod.' })
     }
   })
 
   it('strict-build always differs with no fix; rollback is always ok', () => {
     const cs = checkAgainstScript(env(), [])
-    expect(cs.find((c) => c.id === 'strict-build')).toMatchObject({ level: 'differs', opsdeck: 'OpsDeck stops and rolls back.' })
+    expect(cs.find((c) => c.id === 'strict-build')).toMatchObject({ level: 'differs', credops: 'CredOps stops and rolls back.' })
     expect(cs.find((c) => c.id === 'strict-build')!.fix).toBeUndefined()
-    expect(cs.find((c) => c.id === 'rollback')).toMatchObject({ level: 'ok', opsdeck: 'OpsDeck also moves deploy tags back.' })
+    expect(cs.find((c) => c.id === 'rollback')).toMatchObject({ level: 'ok', credops: 'CredOps also moves deploy tags back.' })
   })
 
   it('never says parity', () => {
@@ -161,7 +161,7 @@ describe('scriptPreset', () => {
   })
 
   it('says prod versioning is on without claiming it matches the script', () => {
-    expect(checkAgainstScript(env({ name: 'prod', versioned: true }), []).find((c) => c.id === 'versioned')!.opsdeck).toBe(
+    expect(checkAgainstScript(env({ name: 'prod', versioned: true }), []).find((c) => c.id === 'versioned')!.credops).toBe(
       'Versioned releases are on for prod; the script also tags prod only.',
     )
   })

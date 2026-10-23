@@ -81,12 +81,14 @@ import {
 import { BIND_ADDRESS, MAX_BIND_ADDRESS, MAX_TUNNELS, type TunnelType } from './tunnels'
 import { IDENTITY_AUTHS, MAX_LABEL, MAX_SECRET_NAME, MAX_USERNAME, MAX_VAULT_NAME, VAULT_COLOR, type IdentityAuth } from './vault'
 
-export const CONFIG_FORMAT = 'opsdeck-config'
+export const CONFIG_FORMAT = 'credops-config'
+/** Files exported before the app was renamed from OpsDeck; read as CONFIG_FORMAT. */
+export const LEGACY_CONFIG_FORMAT = 'opsdeck-config'
 export const CONFIG_VERSION = 2
 export const CONFIG_MAX_BYTES = 5 * 1024 * 1024
-export const CONFIG_FILE_NAME = 'opsdeck-config.json'
-/** The save dialog's default name: `opsdeck-hosts.json` for a page's part. */
-export const configFileName = (segment?: ConfigSegment): string => (segment ? `opsdeck-${segment}.json` : CONFIG_FILE_NAME)
+export const CONFIG_FILE_NAME = 'credops-config.json'
+/** The save dialog's default name: `credops-hosts.json` for a page's part. */
+export const configFileName = (segment?: ConfigSegment): string => (segment ? `credops-${segment}.json` : CONFIG_FILE_NAME)
 
 export interface VaultRef {
   vaultName: string
@@ -855,11 +857,14 @@ export function parseConfigFile(text: string): { ok: true; file: ConfigFile } | 
     // JSON.parse messages quote the text around the error: never pass them on.
     return { ok: false, errors: ["The file isn't valid JSON"] }
   }
+  if (typeof raw === 'object' && raw !== null && (raw as { format?: unknown }).format === LEGACY_CONFIG_FORMAT) {
+    raw = { ...(raw as object), format: CONFIG_FORMAT }
+  }
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw) || (raw as { format?: unknown }).format !== CONFIG_FORMAT) {
-    return { ok: false, errors: ["This isn't an OpsDeck config file"] }
+    return { ok: false, errors: ["This isn't a CredOps config file"] }
   }
   const version = (raw as { version?: unknown }).version
-  if (typeof version === 'number' && version > CONFIG_VERSION) return { ok: false, errors: ['This file is from a newer OpsDeck'] }
+  if (typeof version === 'number' && version > CONFIG_VERSION) return { ok: false, errors: ['This file is from a newer CredOps'] }
 
   const errs: string[] = []
   let file: ConfigFile | typeof BAD

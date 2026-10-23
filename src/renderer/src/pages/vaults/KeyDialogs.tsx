@@ -327,7 +327,7 @@ export function LinkKeyDialog({ open, vaultId, onClose, onSaved }: NewKeyDialogP
       open={open}
       onClose={onClose}
       title="Link from ~/.ssh"
-      description="OpsDeck keeps the path and public key; the private key stays in its file."
+      description="CredOps keeps the path and public key; the private key stays in its file."
       width={520}
       footer={<Footer formId={formId} busy={busy} valid={valid} label="Link key" onClose={onClose} />}
     >

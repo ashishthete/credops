@@ -129,7 +129,7 @@ describe('createAuthHandlers', () => {
     const quick = fakeQuick()
     const r = await ready(quick)
     await r.h['auth:changeAccount']({ method: 'touchId' })
-    expect(quick.touchId.prompt).toHaveBeenLastCalledWith('change the Microsoft account in OpsDeck')
+    expect(quick.touchId.prompt).toHaveBeenLastCalledWith('change the Microsoft account in CredOps')
   })
 
   it("auth:signOut signs out, forgets the verification and locks with reason 'manual'", async () => {

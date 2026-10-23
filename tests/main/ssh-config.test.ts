@@ -389,7 +389,7 @@ describe('matchSshConfig', () => {
     expect(match('Host Box\n  HostName DB.example.COM\n  User deploy\n', 'other', 'db.Example.com')).toMatchObject({ user: 'deploy' })
   })
 
-  it('an IdentityFile with a token OpsDeck does not expand is reported, not kept', () => {
+  it('an IdentityFile with a token CredOps does not expand is reported, not kept', () => {
     const text = 'Host a\n  IdentityFile ~/.ssh/id_%h\n  IdentityFile %d/.ssh/ok\n'
     expect(match(text, 'a', 'a')).toEqual({ user: null, identityFiles: ['/home/t/.ssh/ok'], skipped: ['~/.ssh/id_%h'] })
   })
@@ -408,7 +408,7 @@ describe('readSshConfigMatch', () => {
   })
 
   it('reads ~/.ssh/config from the given home, read-only', () => {
-    home = mkdtempSync(join(tmpdir(), 'opsdeck-cfg-'))
+    home = mkdtempSync(join(tmpdir(), 'credops-cfg-'))
     mkdirSync(join(home, '.ssh'))
     const config = join(home, '.ssh', 'config')
     writeFileSync(config, 'Host alpha\n  User ubuntu\n')
@@ -418,7 +418,7 @@ describe('readSshConfigMatch', () => {
   })
 
   it('a missing or unreadable config falls back silently', () => {
-    home = mkdtempSync(join(tmpdir(), 'opsdeck-cfg-'))
+    home = mkdtempSync(join(tmpdir(), 'credops-cfg-'))
     const read = readSshConfigMatch({ configPath: join(home, '.ssh', 'config'), home, sshDir: join(home, '.ssh') })
     expect(read({ label: 'alpha', address: '1.2.3.4' })).toBeNull()
     mkdirSync(join(home, '.ssh', 'config'), { recursive: true })

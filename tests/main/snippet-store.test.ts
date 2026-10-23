@@ -62,7 +62,7 @@ describe('SnippetStore', () => {
   it('rejects a template error with its message and stores nothing', async () => {
     const { f, store, input, events } = await setup()
     expect(message(() => store.create(input({ script: "echo '{{name}}'" })))).toBe(
-      '{{name}} is inside quotes; remove them, OpsDeck quotes values itself',
+      '{{name}} is inside quotes; remove them, CredOps quotes values itself',
     )
     expect(message(() => store.create(input({ script: 'echo {{ nope' })))).toMatch(/\S/)
     expect(f.db.prepare('SELECT COUNT(*) AS n FROM snippets').get()).toEqual({ n: 0 })

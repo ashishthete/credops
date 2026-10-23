@@ -220,7 +220,7 @@ describe('run tab', () => {
     const { invoke } = await renderTab()
     invoke.mockImplementation(async (channel: string) => {
       if (channel === 'snippets:render')
-        throw new Error("Error invoking remote method 'snippets:render': Error: {{svc}} is inside quotes; remove them, OpsDeck quotes values itself")
+        throw new Error("Error invoking remote method 'snippets:render': Error: {{svc}} is inside quotes; remove them, CredOps quotes values itself")
       if (channel === 'snippets:list') return [snippet]
       return null
     })
@@ -230,7 +230,7 @@ describe('run tab', () => {
     expect(screen.getByRole('textbox', { name: 'unit' })).toHaveValue('')
     await tick(400)
     expect(calls(invoke, 'snippets:render').at(-1)).toEqual(['snippets:render', 's1', { svc: 'nginx' }])
-    expect(screen.getByText('{{svc}} is inside quotes; remove them, OpsDeck quotes values itself')).toBeInTheDocument()
+    expect(screen.getByText('{{svc}} is inside quotes; remove them, CredOps quotes values itself')).toBeInTheDocument()
     // Never a toast: the error is the snippet's, shown where it is edited.
     expect(toast).not.toHaveBeenCalled()
 

@@ -44,7 +44,7 @@ interface Seeded {
 
 /** A tmp-file DB with secrets, keys and identities in two vaults, and inventory that uses them. */
 async function seeded(): Promise<Seeded> {
-  const dir = mkdtempSync(join(tmpdir(), 'opsdeck-reset-'))
+  const dir = mkdtempSync(join(tmpdir(), 'credops-reset-'))
   dirs.push(dir)
   const f = await makeInventory({ db: openDatabase(join(dir, 'opsdeck.db')), quick: fakeQuick() })
   const secrets = new SecretStore(f.db, f.vault, f.audit, { clipboard: f.clipboard ?? { async writeText() {}, async readText() { return '' } } })

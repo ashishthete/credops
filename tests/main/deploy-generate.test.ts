@@ -543,7 +543,7 @@ describe('inventory, ssh_config, known_hosts, cfg', () => {
     expect(t).toBe(
       [
         '[defaults]',
-        'stdout_callback = opsdeck_jsonl',
+        'stdout_callback = credops_jsonl',
         `callback_plugins = ${rundir}/callback_plugins`,
         'host_key_checking = True',
         'retry_files_enabled = False',
@@ -657,9 +657,9 @@ describe('fix round 1', () => {
 
   it('tag and rb_tag are annotated, forced and pushed; OD-PREV and the range read origin', () => {
     const rel = flat(plays(planFixture())[0].tasks).find((t) => step(t) === 'tag')!
-    expect(cmdOf(rel)).toContain('git tag -fa "$T" -m "OpsDeck deploy" HEAD && git push -f origin "refs/tags/$T"')
+    expect(cmdOf(rel)).toContain('git tag -fa "$T" -m "CredOps deploy" HEAD && git push -f origin "refs/tags/$T"')
     const rb = flat(plays(planFixture({ kind: 'rollback' }))[0].tasks).find((t) => step(t) === 'rb_tag')!
-    expect(cmdOf(rb)).toContain('git tag -fa "$T" -m "OpsDeck rollback" "$P" && git push -f origin "refs/tags/$T"')
+    expect(cmdOf(rb)).toContain('git tag -fa "$T" -m "CredOps rollback" "$P" && git push -f origin "refs/tags/$T"')
     const rec = cmdOf(flat(plays(planFixture())[0].tasks).find((t) => step(t) === 'record')!)
     expect(rec).toContain('git ls-remote origin "refs/tags/$T" "refs/tags/$T^{}"')
     const pf = every(plays(planFixture({ kind: 'preflight' }))[0].tasks).map(({ t }) => cmdOf(t)).join('\n')
@@ -1258,7 +1258,7 @@ describe('release flow stages', () => {
     const clause = (a: string, k: number) => `(hostvars['${a}'].od_stage | default(-1)) != ${k} or (hostvars['${a}'].od_failed | default(false))`
     expect(ps[1].tasks[0]).toEqual({
       name: 'flow gate 1',
-      'ansible.builtin.fail': { msg: 'OpsDeck flow stopped: a host did not finish an earlier stage' },
+      'ansible.builtin.fail': { msg: 'CredOps flow stopped: a host did not finish an earlier stage' },
       when: `${clause('od-1', 0)} or ${clause('od-2', 0)}`,
     })
     // od-2 sat stages 0 and 1 out: it is still held to the prepare play
@@ -1431,7 +1431,7 @@ describe('parallel prepare', () => {
     const clause = (a: string) => `not (hostvars['${a}'].od_prepared | default(false)) or (hostvars['${a}'].od_prep_failed | default(false))`
     expect(ps[0].tasks.slice(-2)).toEqual([
       { name: 'od prepared', 'ansible.builtin.set_fact': { od_prepared: true } },
-      { name: 'od gate', 'ansible.builtin.fail': { msg: 'OpsDeck prepare stopped: a checkout did not prepare' }, when: `${clause('od-1')} or ${clause('od-2')}` },
+      { name: 'od gate', 'ansible.builtin.fail': { msg: 'CredOps prepare stopped: a checkout did not prepare' }, when: `${clause('od-1')} or ${clause('od-2')}` },
     ])
     // a prepare failure marks the host and lets the other checkouts go on
     for (const b of ps[0].tasks.filter((t) => t.block)) expect(b.rescue).toEqual([{ name: `mark prepare failed ${String(b.name).slice(11)}`, 'ansible.builtin.set_fact': { od_prep_failed: true } }])
@@ -1517,7 +1517,7 @@ describe('parallel prepare', () => {
     const write = lines.findIndex((l) => l.includes(`printf '%s' "$g" > .git/opsdeck-build-{{ d.run }}.pid 2>/dev/null; then W=; fi`))
     expect(write).toBeGreaterThan(self)
     expect(lines.indexOf('W=1')).toBeLessThan(write)
-    const warn = lines.findIndex((l) => l.startsWith('if [ -n "$W" ]; then echo "OpsDeck warning: cancel can\'t stop this build'))
+    const warn = lines.findIndex((l) => l.startsWith('if [ -n "$W" ]; then echo "CredOps warning: cancel can\'t stop this build'))
     // inside the streamed body, so it lands in the build step's log, before compose runs
     const stream = lines.findIndex((l) => l.startsWith('P="{{ d.run }}:build"'))
     expect(warn).toBeGreaterThan(stream)

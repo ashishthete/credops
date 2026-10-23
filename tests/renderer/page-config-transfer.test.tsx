@@ -62,12 +62,12 @@ describe('page config import and export', () => {
   })
 
   it('Export tunnels… exports the segment and toasts the file name only', async () => {
-    const invoke = mockBridge({ 'config:export': { path: '/Users/me/Desktop/opsdeck-tunnels.json', counts, omitted: 1 } })
+    const invoke = mockBridge({ 'config:export': { path: '/Users/me/Desktop/credops-tunnels.json', counts, omitted: 1 } })
     const user = renderMenu()
     await user.click(screen.getByRole('button', { name: 'Import or export tunnels' }))
     await user.click(screen.getByRole('menuitem', { name: 'Export tunnels…' }))
     expect(invoke).toHaveBeenCalledWith('config:export', 'tunnels')
-    expect(await screen.findByText('Exported 8 items to opsdeck-tunnels.json')).toBeInTheDocument()
+    expect(await screen.findByText('Exported 8 items to credops-tunnels.json')).toBeInTheDocument()
     expect(screen.getByText('1 secret value was left out')).toBeInTheDocument()
     expect(screen.queryByText(/Desktop/)).not.toBeInTheDocument()
   })

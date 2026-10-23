@@ -38,8 +38,8 @@ export interface QuickUnlockDeps {
 }
 
 const MAX_UNLOCK_DELAY_MS = 300_000
-const TOUCH_ID_REASON = 'unlock your OpsDeck vaults'
-const REVERIFY_REASON = 'confirm it is you in OpsDeck'
+const TOUCH_ID_REASON = 'unlock your CredOps vaults'
+const REVERIFY_REASON = 'confirm it is you in CredOps'
 const KEK_BYTES = 32
 /** AAD of the KEK sealed under the master password's key (`vault_state.password_wrap`). */
 const PW_AAD = 'pw:kek'
@@ -480,7 +480,7 @@ export class VaultService {
       if (proof.method === 'touchId') {
         if (!this.touchIdHoldsKek()) return false
         try {
-          await this.quick!.touchId.prompt(action ? `${action} in OpsDeck` : REVERIFY_REASON)
+          await this.quick!.touchId.prompt(action ? `${action} in CredOps` : REVERIFY_REASON)
         } catch {
           return false
         }

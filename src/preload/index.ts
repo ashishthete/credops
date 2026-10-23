@@ -1,4 +1,4 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { createBridge } from './bridge'
 
-contextBridge.exposeInMainWorld('opsdeck', createBridge(ipcRenderer))
+contextBridge.exposeInMainWorld('credops', createBridge(ipcRenderer))
