@@ -84,6 +84,13 @@ export class EventTranslator {
   private readonly pfCut = new Set<string>()
   /** Per preflight run key, the error of each check task that failed outright (no stdout to parse). */
   private readonly pfErr = new Map<string, Map<string, string>>()
+  /** Per preflight run key, the checks whose task ansible skipped. */
+  private readonly pfSkip = new Map<string, Set<string>>()
+  /** The play ansible last started, and the first "no hosts" stop it reported. */
+  private play = ''
+  private noHosts: string | null = null
+  /** Host names ansible reported results for that the plan has no alias for (each is logged once). */
+  private readonly strangers = new Set<string>()
   private readonly rescuedBy = new Map<string, number>()
   private readonly unknownPrevious = new Set<string>()
   /** When each task (by name) last started, for its task.done duration. */
@@ -178,6 +185,14 @@ export class EventTranslator {
   preflightCut(): string[] {
     return [...this.pfCut]
   }
+  /** Per run key, the preflight checks whose task ansible skipped. */
+  preflightSkipped(): Record<string, string[]> {
+    return Object.fromEntries([...this.pfSkip].map(([k, v]) => [k, [...v]]))
+  }
+  /** Why ansible ran no tasks on some host: the first play that matched no hosts or ran out of them. */
+  noHostsReason(): string | null {
+    return this.noHosts
+  }
   /** Per run key, check name to the (redacted) error of a preflight task that failed outright. */
   preflightErrors(): Record<string, Record<string, string>> {
     return Object.fromEntries([...this.pfErr].map(([k, v]) => [k, Object.fromEntries(v)]))
@@ -238,6 +253,15 @@ export class EventTranslator {
       }
       case 'warning':
         return typeof e.msg === 'string' ? [this.ansibleLog(e.msg)] : []
+      case 'play_start':
+        this.play = this.line(String(e.name ?? ''))
+        return []
+      case 'no_hosts': {
+        const play = this.play ? `the play ${this.play}` : 'a play'
+        const text = e.why === 'matched' ? `ansible matched no hosts for ${play}` : `ansible stopped ${play}: no hosts are left to run on`
+        this.noHosts ??= text
+        return [this.ansibleLog(text)]
+      }
       default:
         return []
     }
@@ -370,12 +394,13 @@ export class EventTranslator {
   /** A task's result: what it means for its step, then the task's own row (helper and untagged tasks have none). */
   private result(e: ResultEvent): RunEventBody[] {
     const t = this.tagsOf(e.tags)
-    if (t && this.foreign(e, t.run)) return []
+    const stray = this.stray(e)
+    if (t && this.foreign(e, t.run)) return stray
     // a result from a host is the point by which the tap has had a task round trip to deliver a held step's marker
     // (a result with no host, or from an alias the plan does not have, is no host's round trip: it flushes nothing)
     const hostId = e.host ? this.hostByAlias.get(e.host)?.hostId : undefined
     const before = hostId === undefined ? [] : this.flush(hostId)
-    const out = [...before, ...this.stepResult(e)]
+    const out = [...stray, ...before, ...this.stepResult(e)]
     const r = t ? this.ref(t.kind) : null
     const name = e.task ?? ''
     if (!t || !r || this.internal(name)) return out
@@ -396,6 +421,13 @@ export class EventTranslator {
       durationMs: began === undefined ? 0 : this.o.now() - began,
     })
     return out
+  }
+
+  /** A result from a host the plan has no alias for is dropped, but said once, so a misnamed host is never silent. */
+  private stray(e: ResultEvent): RunEventBody[] {
+    if (e.host === undefined || this.hostByAlias.has(e.host) || this.strangers.has(e.host)) return []
+    this.strangers.add(e.host)
+    return [this.ansibleLog(`ansible reported a result for ${e.host}, a host this run does not have (task ${e.task ?? 'unnamed'}); its results are ignored`)]
   }
 
   private stepResult(e: ResultEvent): RunEventBody[] {
@@ -678,6 +710,12 @@ export class EventTranslator {
     // must not mark it; a task whose check can't be read counts as possibly the commits one
     const check = /^preflight (\S+)/.exec(e.task ?? '')?.[1]
     if (e.truncated?.includes('stdout') && (check === undefined || check === 'commits')) this.pfCut.add(run)
+    if (e.event === 'skipped') {
+      const skipped = this.pfSkip.get(run) ?? new Set<string>()
+      skipped.add(check ?? '')
+      this.pfSkip.set(run, skipped)
+      return null
+    }
     if (typeof e.stdout === 'string' && e.stdout) {
       const list = this.pf.get(run) ?? []
       list.push(e.stdout)
@@ -804,6 +842,10 @@ export interface ParsePreflightOptions {
   secrets?: string[]
   /** Errors of check tasks that failed outright (EventTranslator.preflightErrors()), named instead of "no result". */
   errors?: Record<string, Record<string, string>>
+  /** Checks whose task ansible skipped (EventTranslator.preflightSkipped()), named instead of "no result". */
+  skipped?: Record<string, string[]>
+  /** Why ansible may have run nothing (no hosts matched, its exit code): added to every "no result". */
+  reason?: string | null
 }
 
 /**
@@ -822,6 +864,7 @@ export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, str
   const red = (s: string): string => redact(s, o.secrets ?? [])
   const cutRuns = new Set(o.cut ?? [])
   const hostById = new Map(plan.hosts.map((h) => [h.hostId, h]))
+  const because = o.reason ? ` (${o.reason})` : ''
 
   const linesOf = (run: string): { check: string; fields: Record<string, string> }[] =>
     (stdoutByRun[run] ?? '')
@@ -840,8 +883,11 @@ export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, str
       checks.push({ id, deploymentId: d.deploymentId, hostId: d.hostId, label: `${d.name}`, level, message: red(message) })
     }
     const noResult = (id: string, what: string): void => {
-      const error = o.errors?.[d.runId]?.[TASK_OF[id] ?? id]
-      add(id, 'block', error ? `${what} failed on ${hl}: ${error}` : `${what} gave no result on ${hl}`)
+      const task = TASK_OF[id] ?? id
+      const error = o.errors?.[d.runId]?.[task]
+      if (error) add(id, 'block', `${what} failed on ${hl}: ${error}`)
+      else if (o.skipped?.[d.runId]?.includes(task)) add(id, 'block', `${what} was skipped on ${hl}`)
+      else add(id, 'block', `${what} gave no result on ${hl}${because}`)
     }
 
     // tools
@@ -990,7 +1036,9 @@ export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, str
     if (lines.length === 0) {
       locks[h.hostId] = null
       const error = o.errors?.[`host:${h.hostId}`]?.lock
-      add('block', error ? `The lock check failed on ${h.label}: ${error}` : `the lock check gave no result on ${h.label}`)
+      if (error) add('block', `The lock check failed on ${h.label}: ${error}`)
+      else if (o.skipped?.[`host:${h.hostId}`]?.includes('lock')) add('block', `The lock check was skipped on ${h.label}`)
+      else add('block', `the lock check gave no result on ${h.label}${because}`)
     } else if (held.length === 0) {
       locks[h.hostId] = null
       add('ok', `${h.label} is not locked`)

@@ -284,6 +284,20 @@ describe('LocalRunner', () => {
     await h.done
   })
 
+  it('a preflight whose checks never ran says why: no hosts matched, else ansible\'s exit code', async () => {
+    const msgs = (out: Awaited<ReturnType<LocalRunner['start']>['done']>) => (out.preflight?.checks ?? []).map((c) => c.message)
+    const t = setup()
+    t.ansible.exit = { code: 4, signal: null }
+    const out = await t.runner.start(planFixture({ kind: 'preflight' }), SECRETS).done
+    expect(msgs(out)).toContain('The tools check gave no result on label od-1 (ansible-playbook exited with code 4)')
+    const u = setup()
+    u.ansible.exit = { code: 4, signal: null }
+    u.ansible.stdout = [JSON.stringify({ event: 'play_start', name: 'preflight od-1' }), JSON.stringify({ event: 'no_hosts', why: 'matched' })]
+    const out2 = await u.runner.start(planFixture({ kind: 'preflight' }), SECRETS).done
+    expect(msgs(out2)).toContain('The tools check gave no result on label od-1 (ansible matched no hosts for the play preflight od-1)')
+    expect(u.events.flatMap((e) => (e.type === 'log' && e.stream === 'term' ? [e.line] : []))).toEqual(['PLAY [preflight od-1]', 'skipping: no hosts matched'])
+  })
+
   const down = (hostId: string) => ({ hostId, id: 'reachable', level: 'block' as const, message: 'Cannot reach host' }) as never
 
   it('a release is refused when one host fails prepare', async () => {

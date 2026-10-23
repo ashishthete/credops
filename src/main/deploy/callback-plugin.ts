@@ -2,6 +2,8 @@
  * Source of `opsdeck_jsonl.py`, written to `<rundir>/callback_plugins/` at run time. It is the stdout callback:
  * every line on stdout is one JSON object, flushed after each write (events.ts reads them).
  *
+ *   {event: 'play_start', name}
+ *   {event: 'no_hosts', why: 'matched'|'remaining'}   (a play matched no hosts / every host failed or dropped out)
  *   {event: 'task_start', name, tags}
  *   {event: 'ok'|'failed'|'skipped'|'unreachable', host, task, tags, rc, changed, attempts, stdout, stderr, msg, no_log, truncated, ignored}
  *   {event: 'rescued', host, count}      (from the stats; a rescued failure was already reported as 'failed')
@@ -71,6 +73,15 @@ class CallbackModule(CallbackBase):
 
     def _tags(self, task):
         return [str(t) for t in (task.tags or [])]
+
+    def v2_playbook_on_play_start(self, play):
+        self._emit({"event": "play_start", "name": play.get_name()})
+
+    def v2_playbook_on_no_hosts_matched(self):
+        self._emit({"event": "no_hosts", "why": "matched"})
+
+    def v2_playbook_on_no_hosts_remaining(self):
+        self._emit({"event": "no_hosts", "why": "remaining"})
 
     def v2_playbook_on_task_start(self, task, is_conditional):
         self._emit({"event": "task_start", "name": task.get_name(), "tags": self._tags(task)})

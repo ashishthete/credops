@@ -44,6 +44,10 @@ export class AnsibleTerm {
       return [{ hostId: null, text }]
     }
     switch (e.event) {
+      case 'play_start':
+        return [{ hostId: null, text: `PLAY [${str(e.name)}]` }]
+      case 'no_hosts':
+        return [{ hostId: null, text: e.why === 'matched' ? 'skipping: no hosts matched' : 'NO MORE HOSTS LEFT' }]
       case 'task_start':
         return [{ hostId: null, text: `TASK [${str(e.name)}]` }]
       case 'ok':

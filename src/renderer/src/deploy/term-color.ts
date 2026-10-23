@@ -6,14 +6,14 @@ const CONTROL = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g
 
 const paint = (code: string, text: string): string => `${code}${text}${C.reset}`
 
-/** One stored line as terminal text (with its own CRLF; a task or the recap starts after a blank line). */
+/** One stored line as terminal text (with its own CRLF; a play, a task or the recap starts after a blank line). */
 export function termText(raw: string): string {
   const line = raw.replace(CONTROL, '')
-  if (line.startsWith('TASK [') || line === 'PLAY RECAP') return `\r\n${paint(C.bold, line)}\r\n`
+  if (line.startsWith('PLAY [') || line.startsWith('TASK [') || line === 'PLAY RECAP') return `\r\n${paint(C.bold, line)}\r\n`
   if (line.startsWith('ok: [')) return `${paint(C.green, line)}\r\n`
   if (line.startsWith('changed: [')) return `${paint(C.yellow, line)}\r\n`
   if (line.startsWith('skipping: [')) return `${paint(C.cyan, line)}\r\n`
-  if (line.startsWith('fatal: [')) return `${paint(C.red, line)}\r\n`
+  if (line.startsWith('fatal: [') || line === 'skipping: no hosts matched' || line === 'NO MORE HOSTS LEFT') return `${paint(C.red, line)}\r\n`
   if (line.startsWith('[WARNING]')) return `${paint(C.magenta, line)}\r\n`
   if (line === '    --- stderr' || /^ {4}\(.*\)$/.test(line)) return `${paint(C.dim, line)}\r\n`
   const recap = / : ok=\d+ {2}changed=\d+ {2}unreachable=(\d+) {2}failed=(\d+)/.exec(line)

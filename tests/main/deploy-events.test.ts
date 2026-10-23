@@ -358,6 +358,33 @@ describe('preflight parsing', () => {
     expect(lines.join('\n')).not.toContain('secret')
   })
 
+  it('a skipped check, a play that matched no hosts and a host the plan lacks are named, not silent', () => {
+    const p = planFixture({ kind: 'preflight' })
+    p.deployments = [p.deployments[2]]
+    p.hosts = [p.hosts[1]]
+    const tr = new EventTranslator({ plan: p, secrets: () => [], now: clock().now })
+    const tags = ['od_step=preflight', `od_run=${R3}`]
+    const logs = (bs: ReturnType<EventTranslator['feed']>) => bs.filter((b) => b.type === 'log').map((b) => (b as { line: string }).line)
+    expect(tr.feed(JSON.stringify({ event: 'play_start', name: 'preflight od-2' }))).toEqual([])
+    expect(logs(tr.feed(JSON.stringify({ event: 'no_hosts', why: 'matched' })))).toEqual(['ansible matched no hosts for the play preflight od-2'])
+    expect(logs(tr.feed(JSON.stringify({ event: 'no_hosts', why: 'remaining' })))).toEqual(['ansible stopped the play preflight od-2: no hosts are left to run on'])
+    // the first stop is the reason the report gives
+    expect(tr.noHostsReason()).toBe('ansible matched no hosts for the play preflight od-2')
+    expect(tr.feed(JSON.stringify({ event: 'skipped', host: 'od-2', task: 'preflight tools dep3', tags, msg: 'Conditional result was False' }))).toEqual([])
+    const stray = logs(tr.feed(JSON.stringify({ event: 'ok', host: 'web-2.example', task: 'preflight docker dep3', tags, stdout: 'OD-PF docker mode=plain' })))
+    expect(stray).toEqual(['ansible reported a result for web-2.example, a host this run does not have (task preflight docker dep3); its results are ignored'])
+    // said once per host, and its output never counts for the plan's host
+    expect(logs(tr.feed(JSON.stringify({ event: 'ok', host: 'web-2.example', task: 'preflight repo dep3', tags, stdout: 'OD-PF repo exists=1' })))).toEqual([])
+    expect(tr.preflightOutput()).toEqual({})
+    expect(tr.preflightSkipped()).toEqual({ [R3]: ['tools'] })
+
+    const r = parsePreflight(p, tr.preflightOutput(), { now: NOW, skipped: tr.preflightSkipped(), reason: 'ansible-playbook exited with code 4' })
+    const m = (id: string) => r.checks.filter((c) => c.id === id).map((c) => `${c.level}: ${c.message}`)
+    expect(m('tools')).toEqual(['block: The tools check was skipped on label od-2'])
+    expect(m('docker')).toEqual(['block: The docker check gave no result on label od-2 (ansible-playbook exited with code 4)'])
+    expect(m('lock')).toEqual(['block: the lock check gave no result on label od-2 (ansible-playbook exited with code 4)'])
+  })
+
   it('zero commits gives commitsTotal 0 and firstDeploy false', () => {
     const p = planFixture({ kind: 'preflight' })
     p.deployments = [p.deployments[2]]
@@ -1006,7 +1033,9 @@ describe('callback plugin source', () => {
     if (py.error) return // no python3 on this machine
     expect(py.stderr).toBe('')
     expect(py.status).toBe(0)
-    for (const ev of ['task_start', 'rescued', 'stats', 'warning', '"ok"', '"failed"', '"skipped"', '"unreachable"']) expect(CALLBACK_PLUGIN_SOURCE).toContain(ev)
+    for (const ev of ['task_start', 'play_start', 'no_hosts', 'rescued', 'stats', 'warning', '"ok"', '"failed"', '"skipped"', '"unreachable"']) expect(CALLBACK_PLUGIN_SOURCE).toContain(ev)
+    expect(CALLBACK_PLUGIN_SOURCE).toContain('def v2_playbook_on_no_hosts_matched(self):')
+    expect(CALLBACK_PLUGIN_SOURCE).toContain('def v2_playbook_on_no_hosts_remaining(self):')
     expect(CALLBACK_PLUGIN_SOURCE).toContain('CALLBACK_NAME = "opsdeck_jsonl"')
     expect(CALLBACK_PLUGIN_SOURCE).toContain('65536')
     expect(CALLBACK_PLUGIN_SOURCE).toContain('flush()')

@@ -545,7 +545,6 @@ describe('inventory, ssh_config, known_hosts, cfg', () => {
         '[defaults]',
         'stdout_callback = opsdeck_jsonl',
         `callback_plugins = ${rundir}/callback_plugins`,
-        'callbacks_enabled =',
         'host_key_checking = True',
         'retry_files_enabled = False',
         'interpreter_python = auto_silent',

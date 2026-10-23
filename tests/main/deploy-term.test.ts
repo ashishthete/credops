@@ -30,6 +30,13 @@ describe('AnsibleTerm', () => {
     expect(text(t, ev({ event: 'skipped', host: 'other', msg: 'Conditional result was False' }))).toEqual(['skipping: [other]'])
   })
 
+  it('prints plays and the plays that ran on no host', () => {
+    const t = new AnsibleTerm(plan)
+    expect(text(t, ev({ event: 'play_start', name: 'preflight od-1' }))).toEqual(['PLAY [preflight od-1]'])
+    expect(text(t, ev({ event: 'no_hosts', why: 'matched' }))).toEqual(['skipping: no hosts matched'])
+    expect(text(t, ev({ event: 'no_hosts', why: 'remaining' }))).toEqual(['NO MORE HOSTS LEFT'])
+  })
+
   it('hides no_log output, notes cut output and caps a long result', () => {
     const t = new AnsibleTerm(plan)
     expect(text(t, ev({ event: 'ok', host: 'od-1', no_log: true, stdout: 'hidden' }))).toEqual(['ok: [web-1]', '    (output hidden: this task is no_log)'])

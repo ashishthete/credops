@@ -283,7 +283,7 @@ export class LocalRunner implements DeployRunner {
         outcome.cancelled = state.cancelRequested
         // 7. close what never finished
         for (const b of translator.finish(exit.code, exit.signal, state.cancelRequested)) send(b)
-        if (plan.kind === 'preflight') outcome.preflight = this.report(effective, translator, checks, known, now)
+        if (plan.kind === 'preflight') outcome.preflight = this.report(effective, translator, checks, known, now, translator.noHostsReason() ?? exitReason(exit))
       } else {
         outcome.cancelled = state.cancelRequested
         outcome.exitCode = state.cancelRequested ? null : outcome.failedDeploymentRunIds.length ? 1 : 0
@@ -301,8 +301,15 @@ export class LocalRunner implements DeployRunner {
     }
   }
 
-  private report(plan: DeployPlan, translator: EventTranslator, extra: PreflightCheck[], known: string[], now: () => number): NonNullable<RunOutcome['preflight']> {
-    const r = parsePreflight(plan, translator.preflightOutput(), { now: now(), cut: translator.preflightCut(), errors: translator.preflightErrors(), secrets: known })
+  private report(plan: DeployPlan, translator: EventTranslator, extra: PreflightCheck[], known: string[], now: () => number, reason: string | null = null): NonNullable<RunOutcome['preflight']> {
+    const r = parsePreflight(plan, translator.preflightOutput(), {
+      now: now(),
+      cut: translator.preflightCut(),
+      errors: translator.preflightErrors(),
+      skipped: translator.preflightSkipped(),
+      reason,
+      secrets: known,
+    })
     const checks = [...extra, ...r.checks]
     return { ...r, checks, blocked: checks.some((c) => c.level === 'block') }
   }
@@ -367,6 +374,12 @@ export class LocalRunner implements DeployRunner {
       if (state.cancelRequested) this.escalate(child)
     })
   }
+}
+
+/** ansible's exit, when it says something: a preflight's checks never fail the run, so 0 says nothing. */
+function exitReason(exit: { code: number | null; signal: string | null }): string | null {
+  if (exit.signal) return `ansible-playbook was stopped by ${exit.signal}`
+  return exit.code !== null && exit.code !== 0 ? `ansible-playbook exited with code ${exit.code}` : null
 }
 
 function swallow(fn: () => void): void {
