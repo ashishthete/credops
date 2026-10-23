@@ -17,7 +17,7 @@ import { Button } from '../../ui/Button'
 import { RowMenu } from '../../ui/common'
 import { fast, spring, staggerDelay, useMotionSafe } from '../../ui/motion'
 import { RegionChip } from '../../ui/RegionChip'
-import { GlowDot, PaneHeader, ROLE_LABEL, ROLE_ORDER } from './ProductView'
+import { GlowDot, PaneHeader, paneLabel, ROLE_LABEL, ROLE_ORDER } from './ProductView'
 import { DeployWizard } from '../deployments/release/DeployWizard'
 import { CopyServicesDialog } from './services/CopyServicesDialog'
 import { ServiceLogs } from './services/ServiceLogs'
@@ -102,12 +102,8 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
             <Button size="sm" icon={<Plus aria-hidden className="size-3.5" />} onClick={onNewHost}>
               New host
             </Button>
-            <Button size="sm" variant="ghost" icon={<Pencil aria-hidden className="size-3.5" />} onClick={onEdit}>
-              Edit
-            </Button>
-            <Button size="sm" variant="ghost" icon={<Network aria-hidden className="size-3.5" />} onClick={() => navigate(showEnvironmentOnMapPath(env.id))}>
-              Show on map
-            </Button>
+            <Button size="sm" variant="ghost" icon={<Pencil aria-hidden className="size-3.5" />} onClick={onEdit} {...paneLabel('Edit')} />
+            <Button size="sm" variant="ghost" icon={<Network aria-hidden className="size-3.5" />} onClick={() => navigate(showEnvironmentOnMapPath(env.id))} {...paneLabel('Show on map')} />
             <RowMenu label={`${env.name} options`} items={[{ label: 'Delete', icon: Trash2, run: onDelete, danger: true }]} />
           </>
         }

@@ -15,7 +15,7 @@ import { RegionChip } from '../../ui/RegionChip'
 import { Skeleton } from '../../ui/Skeleton'
 import { toast } from '../../ui/Toaster'
 import { useVaultStatus } from '../../vault/status'
-import { PaneHeader } from '../products/ProductView'
+import { PaneHeader, paneLabel } from '../products/ProductView'
 import { ConnectionCard } from './ConnectionCard'
 import { HostDialog, OS_META } from './HostDialog'
 import { HostTunnels } from './HostTunnels'
@@ -105,15 +105,10 @@ export function HostView({ hostId, environmentId, onDeleted }: HostViewProps) {
               variant="ghost"
               icon={<Boxes aria-hidden className="size-3.5" />}
               onClick={() => navigate(`/ops/containers?host=${encodeURIComponent(host.id)}${context ? `&env=${encodeURIComponent(context)}` : ''}`)}
-            >
-              Containers
-            </Button>
-            <Button size="sm" variant="ghost" icon={<Play aria-hidden className="size-3.5" />} onClick={() => navigate(`/ops/run?hosts=${encodeURIComponent(host.id)}${context ? `&env=${encodeURIComponent(context)}` : ''}`)}>
-              Run…
-            </Button>
-            <Button size="sm" variant="ghost" icon={<Pencil aria-hidden className="size-3.5" />} onClick={() => setEditing(true)}>
-              Edit
-            </Button>
+              {...paneLabel('Containers')}
+            />
+            <Button size="sm" variant="ghost" icon={<Play aria-hidden className="size-3.5" />} onClick={() => navigate(`/ops/run?hosts=${encodeURIComponent(host.id)}${context ? `&env=${encodeURIComponent(context)}` : ''}`)} {...paneLabel('Run…')} />
+            <Button size="sm" variant="ghost" icon={<Pencil aria-hidden className="size-3.5" />} onClick={() => setEditing(true)} {...paneLabel('Edit')} />
             <RowMenu
               label={`${host.label} options`}
               items={[

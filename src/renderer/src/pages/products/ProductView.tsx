@@ -19,16 +19,25 @@ export { ROLE_ORDER }
 /** The details pane's title row, in the Vaults page's shape. */
 export function PaneHeader({ lead, title, badges, actions }: { lead: ReactNode; title: string; badges?: ReactNode; actions?: ReactNode }) {
   return (
-    <header className="app-drag flex h-16 shrink-0 items-end justify-between gap-4 px-8 pb-3">
+    <header className="@container/pane app-drag flex h-16 shrink-0 items-end justify-between gap-4 px-8 pb-3">
       <div className="flex min-w-0 items-center gap-3">
         {lead}
-        <h2 className="truncate text-[19px] font-semibold tracking-tight text-fg">{title}</h2>
+        <h2 title={title} className="min-w-0 truncate text-[19px] font-semibold tracking-tight text-fg">
+          {title}
+        </h2>
         {badges}
       </div>
       {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
     </header>
   )
 }
+
+/**
+ * A secondary header button's label: on a narrow pane only the icon shows, so the title keeps its room.
+ * The button carries the label as its accessible name and tooltip.
+ */
+export const PaneLabel = ({ children }: { children: string }) => <span className="hidden @3xl/pane:inline">{children}</span>
+export const paneLabel = (label: string) => ({ 'aria-label': label, title: label, children: <PaneLabel>{label}</PaneLabel> })
 
 export const GlowDot = ({ color }: { color: string }) => (
   <span aria-hidden className="size-2.5 shrink-0 rounded-full" style={{ background: color, boxShadow: `0 0 12px ${color}` }} />
@@ -60,12 +69,8 @@ export function ProductView({ product, data, stagger, onOpen, onNewEnvironment, 
             <Button size="sm" icon={<Plus aria-hidden className="size-3.5" />} onClick={onNewEnvironment}>
               New environment
             </Button>
-            <Button size="sm" variant="ghost" icon={<Pencil aria-hidden className="size-3.5" />} onClick={onEdit}>
-              Edit
-            </Button>
-            <Button size="sm" variant="ghost" icon={<Network aria-hidden className="size-3.5" />} onClick={() => navigate(showProductOnMapPath(product.id))}>
-              Show on map
-            </Button>
+            <Button size="sm" variant="ghost" icon={<Pencil aria-hidden className="size-3.5" />} onClick={onEdit} {...paneLabel('Edit')} />
+            <Button size="sm" variant="ghost" icon={<Network aria-hidden className="size-3.5" />} onClick={() => navigate(showProductOnMapPath(product.id))} {...paneLabel('Show on map')} />
             <RowMenu label={`${product.name} options`} items={[{ label: 'Delete', icon: Trash2, run: onDelete, danger: true }]} />
           </>
         }

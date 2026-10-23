@@ -15,7 +15,7 @@ export function Badge({ tone = 'info', dot = false, children, className = '' }: 
   return (
     <span
       style={{ '--tone': toneColor[tone] } as CSSProperties}
-      className={`tone-soft inline-flex h-5 items-center gap-1.5 rounded-full px-2 text-[11.5px] leading-none font-medium ${className}`}
+      className={`tone-soft inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full px-2 text-[11.5px] leading-none font-medium whitespace-nowrap ${className}`}
     >
       {dot && (
         <span aria-hidden className="relative flex size-1.5">
