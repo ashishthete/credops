@@ -824,13 +824,15 @@ const FAILURE_MAX = 300
 
 /**
  * One line for a task that failed outright: ansible's message, and for a module failure (no python, a crash)
- * the last line of stderr, which says why.
+ * the last line of stderr (else of stdout, where a shell profile or sudo may have spoken), which says why.
  */
 function failureText(e: ResultEvent): string {
   const first = (s: string | undefined) => (s ?? '').split('\n').map((l) => l.trim()).find(Boolean) ?? ''
-  const last = (s: string | undefined) => (s ?? '').split('\n').map((l) => l.trim()).filter(Boolean).at(-1) ?? ''
+  // ssh's own goodbye says nothing about the failure.
+  const last = (s: string | undefined) =>
+    (s ?? '').split('\n').map((l) => l.trim()).filter((l) => l && !/^Shared connection to \S+ closed\.$/.test(l)).at(-1) ?? ''
   const msg = first(typeof e.msg === 'string' ? e.msg : undefined)
-  const why = msg.startsWith('MODULE FAILURE') || !msg ? last(e.stderr) : ''
+  const why = msg.startsWith('MODULE FAILURE') || !msg ? last(e.stderr) || last(e.stdout) : ''
   const text = [msg, why].filter(Boolean).join(': ') || 'the task failed without a message'
   return text.length > FAILURE_MAX ? `${text.slice(0, FAILURE_MAX - 1)}…` : text
 }

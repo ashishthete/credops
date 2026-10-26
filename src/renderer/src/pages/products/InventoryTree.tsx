@@ -338,10 +338,10 @@ const TreeItem = memo(function TreeItem({
       className={`group/row rounded-lg py-px outline-none select-none focus-visible:outline-none ${present ? '' : 'pointer-events-none'}`}
     >
       <div
-        className={`relative flex h-[30px] cursor-default items-center gap-2 rounded-lg pr-2 text-[13px] transition-[color,opacity] group-focus-visible/row:shadow-[0_0_0_2px_color-mix(in_oklab,var(--accent)_70%,transparent)] ${
+        className={`relative flex h-[30px] cursor-default items-center gap-1.5 rounded-lg pr-1.5 text-[13px] transition-[color,opacity] group-focus-visible/row:shadow-[0_0_0_2px_color-mix(in_oklab,var(--accent)_70%,transparent)] ${
           selected ? 'text-fg' : 'text-fg/75 hover:bg-white/[0.035] hover:text-fg'
         } ${dragging ? 'opacity-45' : ''}`}
-        style={{ paddingLeft: 6 + row.depth * 16 }}
+        style={{ paddingLeft: 6 + row.depth * 14 }}
       >
         {selected && (
           <motion.span
@@ -415,7 +415,7 @@ const TreeItem = memo(function TreeItem({
             <Link2 aria-hidden className="size-3" strokeWidth={2.4} />
           </span>
         )}
-        {row.region && <RegionChip region={row.region} className="relative" />}
+        {row.region && !row.regionOnParent && <RegionChip region={row.region} className="relative" />}
         {row.kind === 'host' && row.role && (
           <span
             title={`Role: ${ROLE_LABEL[row.role]}`}
@@ -443,7 +443,8 @@ const TreeItem = memo(function TreeItem({
               const box = e.currentTarget.getBoundingClientRect()
               onMenu(box.left, box.bottom + 2, box.top)
             }}
-            className="relative grid size-5 shrink-0 place-items-center rounded text-muted opacity-0 transition-[opacity,color,background-color] group-hover/row:opacity-100 group-focus-visible/row:opacity-100 hover:bg-white/[0.06] hover:text-fg focus-visible:opacity-100"
+            // Over the row's end, not beside it: a hidden button keeps no room from the label.
+            className="absolute top-1/2 right-1 grid size-5 -translate-y-1/2 place-items-center rounded bg-[color-mix(in_oklab,var(--surface)_40%,var(--bg))] text-muted opacity-0 shadow-[-8px_0_6px_-1px_color-mix(in_oklab,var(--surface)_40%,var(--bg))] transition-[opacity,color,background-color] group-hover/row:opacity-100 group-focus-visible/row:opacity-100 hover:bg-white/[0.06] hover:text-fg focus-visible:opacity-100"
           >
             <MoreHorizontal aria-hidden className="size-3.5" />
           </button>

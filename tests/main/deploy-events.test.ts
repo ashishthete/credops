@@ -332,6 +332,8 @@ describe('preflight parsing', () => {
     }
     const logged = [
       ...fail('preflight tools dep3', R3, { msg: 'MODULE FAILURE\nSee stdout/stderr for the exact error', stderr: '/bin/sh: 1: /usr/bin/python3: not found\n' }),
+      // what the remote printed instead of the module's JSON, with nothing on stderr
+      ...fail('preflight commits dep3', R3, { rc: 1, msg: 'MODULE FAILURE\nSee stdout/stderr for the exact error', stdout: 'Welcome to alpha\r\nsudo: a terminal is required\r\n', stderr: 'Shared connection to 10.0.0.2 closed.\r\n' }, 'ok'),
       ...fail('preflight docker dep3', R3, { msg: 'The shell action failed to execute in the expected time frame (30) and was terminated' }),
       ...fail('preflight lock od-2', 'host:host-od-2', { msg: 'Incorrect sudo password hunter2' }),
       ...fail('preflight repo dep3', R3, { msg: 'secret', no_log: true }),
@@ -352,6 +354,8 @@ describe('preflight parsing', () => {
     // the failures reach the run log too, redacted, so the reason is visible there as well
     const lines = logged.filter((b) => b.type === 'log').map((b) => (b as { line: string }).line)
     expect(lines).toContain('label od-2: preflight tools dep3 failed: MODULE FAILURE: /bin/sh: 1: /usr/bin/python3: not found')
+    // (the commits check itself is hidden behind the repo block)
+    expect(lines).toContain('label od-2: preflight commits dep3 failed: MODULE FAILURE: sudo: a terminal is required')
     expect(lines).toContain("label od-2: preflight clean dep3 failed: [Errno 2] No such file or directory: b'/bin/bash'")
     expect(lines.some((l) => l.includes('preflight disk'))).toBe(false)
     expect(lines.join('\n')).not.toContain('hunter2')
@@ -1041,6 +1045,8 @@ describe('callback plugin source', () => {
     expect(CALLBACK_PLUGIN_SOURCE).toContain('flush()')
     // output is only read when the task is not no_log
     expect(CALLBACK_PLUGIN_SOURCE.indexOf('if not no_log')).toBeLessThan(CALLBACK_PLUGIN_SOURCE.indexOf('res.get(key)'))
+    // a module failure's output lives in module_stdout / module_stderr
+    expect(CALLBACK_PLUGIN_SOURCE).toContain('res.get("module_" + key)')
   })
 })
 

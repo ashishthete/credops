@@ -19,8 +19,10 @@ export interface TreeRow {
   sharedCount: number
   /** Hosts only: "Product · Environment" for every other membership, sorted. */
   alsoIn?: string[]
-  /** Hosts only: the host's region. */
+  /** A host's region; an environment's when all its hosts share one. */
   region?: RegionRef
+  /** Hosts only: the region's chip sits on the environment row instead, since every host there shares it. */
+  regionOnParent?: true
   expandable: boolean
   expanded: boolean
   childCount: number
@@ -81,14 +83,22 @@ export function buildTree(data: InventoryData, expanded: ReadonlySet<NodeKey>): 
     return open
   }
 
+  /** The region every host of the environment is in; undefined when they differ, some have none, or there are none. */
+  const sharedRegion = (envId: string): RegionRef | undefined => {
+    const refs = hostsOf(envId).map(({ host }) => regionRef(host.id))
+    const first = refs[0]
+    return first && refs.every((r) => r?.id === first.id) ? first : undefined
+  }
+
   const addHosts = (envKey: NodeKey, envId: string, depth: 2) => {
     const hosts = hostsOf(envId)
+    const onParent = sharedRegion(envId) ? { regionOnParent: true as const } : {}
     for (const { host, role } of hosts) {
       const alsoIn = placementsOf(host).filter((p) => p.key !== envKey).map((p) => p.label).sort(byName)
       push({
         key: `${envKey}/h:${host.id}`, kind: 'host', id: host.id, depth, parentKey: envKey, label: host.label,
         color: envById.get(envId)?.color ?? UNASSIGNED_COLOR, role, sharedCount: hostAppearances(host) - 1, alsoIn,
-        region: regionRef(host.id), childCount: 0,
+        region: regionRef(host.id), ...onParent, childCount: 0,
       })
     }
     if (hosts.length === 0) {
@@ -102,7 +112,7 @@ export function buildTree(data: InventoryData, expanded: ReadonlySet<NodeKey>): 
     // An empty environment still opens, to show where hosts can be dropped.
     if (push({
       key, kind: 'environment', id: envId, depth: 1, parentKey, label: env.name, color: env.color,
-      protected: env.protected, sharedCount: 0, childCount: hostsOf(envId).length,
+      protected: env.protected, region: sharedRegion(envId), sharedCount: 0, childCount: hostsOf(envId).length,
     }, true)) addHosts(key, envId, 2)
   }
 
