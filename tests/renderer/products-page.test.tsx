@@ -271,7 +271,7 @@ describe('products page', () => {
   it('protected state is in the row description', async () => {
     renderPage()
     await screen.findByRole('treeitem', { name: 'Acme' })
-    expect(item('prod')).toHaveAccessibleDescription('Environment prod. Protected')
+    expect(item('prod')).toHaveAccessibleDescription('Environment prod. Protected. Region test-1')
     expect(item('analytics-db')).toHaveAccessibleDescription('Environment analytics-db. No hosts')
     expect(item('staging')).toHaveAccessibleDescription('Environment staging. No hosts')
   })
@@ -709,14 +709,17 @@ describe('products page', () => {
       return w
     }
 
-    it('an environment in one region shows that region once, and the tree marks each host', async () => {
+    it('an environment in one region shows that region once, on its tree row, not on each host', async () => {
       const user = userEvent.setup()
       renderPage()
       await user.click(await screen.findByRole('treeitem', { name: 'prod' }))
       const main = screen.getByRole('region', { name: 'Details' })
       expect(within(main).getAllByText('test-1')).toHaveLength(1)
       expect(within(main).queryByText('Regions:')).not.toBeInTheDocument()
-      expect(within(item('web-1')).getByText('test-1')).toBeInTheDocument()
+      expect(within(item('prod')).getByText('test-1')).toBeInTheDocument()
+      expect(within(item('web-1')).queryByText('test-1')).not.toBeInTheDocument()
+      // The host still says its region to a screen reader.
+      expect(item('web-1')).toHaveAccessibleDescription(/Region test-1/)
     })
 
     it('an environment over several regions lists them and marks each host', async () => {
@@ -730,6 +733,7 @@ describe('products page', () => {
       expect(within(main).getAllByText('us-east-1')).toHaveLength(2)
       expect(within(main).getAllByText('test-1')).toHaveLength(2)
       expect(within(item('app-us-1')).getByText('us-east-1')).toBeInTheDocument()
+      expect(within(item('prod')).queryByText(/test-1|us-east-1/)).not.toBeInTheDocument()
       expect(item('app-us-1')).toHaveAccessibleDescription(/Region us-east-1/)
     })
 
@@ -1001,7 +1005,7 @@ describe('products page', () => {
       const same = screen.getAllByRole('treeitem', { name: 'alpha' })
       const env = same.find((el) => el.getAttribute('aria-level') === '2')!
       const hostRow = same.find((el) => el.getAttribute('aria-level') === '3')!
-      expect(env).toHaveAccessibleDescription('Environment alpha')
+      expect(env).toHaveAccessibleDescription(/^Environment alpha(\. Region \S+)?$/)
       expect(hostRow).toHaveAccessibleDescription(/^Host alpha\. Role /)
       expect(within(env).getByTitle('Environment alpha')).toBeInTheDocument()
       expect(within(hostRow).getByTitle('Host alpha')).toBeInTheDocument()
