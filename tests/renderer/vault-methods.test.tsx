@@ -218,7 +218,7 @@ describe('setup', () => {
 })
 
 describe('method chooser', () => {
-  it('chooser shows only set-up methods and preselects lastMethod', async () => {
+  it('chooser shows only set-up methods and preselects lastMethod among Touch ID and the PIN', async () => {
     renderUnlock({ quickUnlock: 'touchId', hasPassword: false, pin: { enabled: true, attemptsLeft: 5 }, lastMethod: 'pin' })
     const methods = screen.getByRole('radiogroup', { name: 'Unlock method' })
     expect(within(methods).getAllByRole('radio').map((r) => r.textContent)).toEqual(['Touch ID', 'PIN'])
@@ -227,9 +227,17 @@ describe('method chooser', () => {
     expect(panel).toContainElement(screen.getByLabelText('PIN'))
     cleanup()
 
+    // The password, though used last, waits a tab away while Touch ID or the PIN is set up.
     renderUnlock({ ...ALL_METHODS, lastMethod: 'password' }, {}, false)
     expect(screen.getAllByRole('radio').map((r) => r.textContent)).toEqual(['Touch ID', 'PIN', 'Password'])
-    expect(screen.getByRole('radio', { name: 'Password' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: 'Touch ID' })).toHaveAttribute('aria-checked', 'true')
+    cleanup()
+
+    renderUnlock({ ...ALL_METHODS, ...NO_TOUCH_ID, lastMethod: 'password' }, {}, false)
+    expect(screen.getByRole('radio', { name: 'PIN' })).toHaveAttribute('aria-checked', 'true')
+    cleanup()
+
+    renderUnlock({ hasPassword: true, lastMethod: 'password' }, {}, false)
     expect(screen.getByLabelText('Master password')).toBeInTheDocument()
   })
 
@@ -306,7 +314,7 @@ describe('method chooser', () => {
 
   it.each([
     ['PIN', 'vault:unlockPin', { lastMethod: 'pin' }],
-    ['password', 'vault:unlock', { lastMethod: 'password' }],
+    ['password', 'vault:unlock', { lastMethod: 'password', quickUnlock: 'off', pin: { enabled: false, attemptsLeft: 5 } }],
     ['Touch ID', 'vault:unlockQuick', { lastMethod: 'touchId' }],
   ] as const)('signin-required on the %s tab goes back to sign-in, not counted as a try', async (_, channel, start) => {
     const user = userEvent.setup()

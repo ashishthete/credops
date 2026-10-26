@@ -101,8 +101,8 @@ const WIPED_COPY = {
 
 /**
  * The method chooser: a tab per method that is set up (Touch ID, PIN, master password), opening on
- * `lastMethod`. Touch ID is tried once on mount when its tab opens first, unless `autoQuick` is
- * false. Mount it fresh for every lock so that try happens again.
+ * Touch ID or the PIN when either is set up (`lastMethod` between them), else the password. Touch ID
+ * is tried once on mount when its tab opens first, unless `autoQuick` is false. Mount it fresh for every lock so that try happens again.
  */
 export function UnlockCard({
   status,
@@ -138,10 +138,13 @@ export function UnlockCard({
   const tabs = METHOD_TABS.filter((t) => has[t.id])
   const [picked, setPicked] = useState<UnlockMethod | null>(() => {
     // Open on a method that works now: Touch ID only while available, unless it is all there is.
+    // Touch ID or the PIN comes first when set up (the last of them used, else Touch ID); the
+    // master password is the fallback, a tab away.
     const usable = tabs.filter((t) => t.id !== 'touchId' || touchIdAvailable)
+    const quick = usable.filter((t) => t.id !== 'password')
     const last = status?.lastMethod
-    if (last && usable.some((t) => t.id === last)) return last
-    return (usable[0] ?? tabs[0])?.id ?? null
+    if (last && quick.some((t) => t.id === last)) return last
+    return (quick[0] ?? usable[0] ?? tabs[0])?.id ?? null
   })
   // One automatic Touch ID try per mount, and only when its tab is the one the card opened on.
   const autoTouchId = useRef(autoQuick && picked === 'touchId' && touchIdAvailable)
