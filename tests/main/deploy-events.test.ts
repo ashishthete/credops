@@ -190,6 +190,22 @@ describe('EventTranslator', () => {
     expect(tr.rescued()).toEqual({ 'host-od-1': 1 })
   })
 
+  it("a rollback's failed health check fails the rollback; one URL ok does not settle it", () => {
+    const plan = planFixture({ kind: 'rollback' })
+    plan.deployments[0].urls = [{ url: 'https://a.example.com/h', from: 'mac' }, { url: 'https://b.example.com/h', from: 'host' }]
+    const tr = new EventTranslator({ plan, secrets: () => [], now: clock().now })
+    const tags = ['od_step=rb_health', `od_run=${R1}`]
+    const s0 = tr.feed(JSON.stringify({ event: 'task_start', name: 'rb_health dep1 0', tags }))
+    expect(of(s0, 'step.started')[0]).toMatchObject({ stepId: `${R1}:rb_health`, kind: 'rb_health', name: 'Rollback health dep1' })
+    const ok0 = tr.feed(JSON.stringify({ event: 'ok', host: 'od-1', task: 'rb_health dep1 0', tags }))
+    expect(of(ok0, 'step.done')).toEqual([])
+    tr.feed(JSON.stringify({ event: 'task_start', name: 'rb_health dep1 1', tags }))
+    const failed = tr.feed(JSON.stringify({ event: 'failed', host: 'od-1', task: 'rb_health dep1 1', tags, rc: 1, stdout: 'OD-HEALTH timeout last=503' }))
+    expect(of(failed, 'step.failed')[0]).toMatchObject({ stepId: `${R1}:rb_health` })
+    expect(of(failed, 'step.failed')[0].error).toContain('Rollback health dep1 failed')
+    expect(of(failed, 'deployment.updated')).toEqual([{ type: 'deployment.updated', deploymentRunId: R1, status: 'rollback_failed' }])
+  })
+
   it('a successful rollback ends rolled_back', () => {
     const tr = new EventTranslator({ plan: planFixture({ kind: 'rollback' }), secrets: () => [], now: clock().now })
     const tags = ['od_step=rb_tag', `od_run=${R1}`]

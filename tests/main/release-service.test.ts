@@ -169,6 +169,46 @@ describe('ReleaseService', () => {
     expect(d.runs.filter((x) => x.rolledBack).map((x) => x.id).sort()).toEqual([r1, r2].sort())
   })
 
+  it("a rollback whose health check fails ends the release failed, naming the rollback's failure", async () => {
+    const r = await rig()
+    const one = dep(r, 'one', { urls: [{ url: 'https://one.example/up', from: 'host' }] })
+    const id = await ready(r, [one])
+    r.runner.on.release = (plan) => {
+      const [r1] = runIds(plan)
+      return { exitCode: 2, failedDeploymentRunIds: [r1], reachedCheckout: [r1], commits: { [r1]: { previous: A } } }
+    }
+    r.runner.on.rollback = (plan, _s, emit) => {
+      const [r1] = runIds(plan)
+      emit({ type: 'step.started', stepId: `${r1}:rb_health`, kind: 'rb_health', name: 'Rollback health one', hostId: r.f.host.id, deploymentRunId: r1 })
+      emit({ type: 'step.failed', stepId: `${r1}:rb_health`, error: 'Rollback health one failed with exit code 1: OD-HEALTH timeout last=503', durationMs: 1 })
+      emit({ type: 'deployment.updated', deploymentRunId: r1, status: 'rollback_failed' })
+      // the rollback block rescues its failure, so ansible exits 0
+      return { exitCode: 0 }
+    }
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    const d = r.svc.detail(id)
+    expect(d.status).toBe('failed')
+    expect(d.error).toContain('the rollback also failed: Rollback health one failed')
+    expect(r.svc.events(id, 0).find((e) => e.type === 'rollback.done')).toMatchObject({ ok: false })
+  })
+
+  it("a manual rollback lists its health check among the run's steps", async () => {
+    const r = await rig()
+    r.f.deploys.updateSettings(r.f.staging.id, { autoRollback: false })
+    const one = dep(r, 'one', { urls: [{ url: 'https://one.example/up', from: 'mac' }] })
+    const two = dep(r, 'two')
+    r.runner.on.release = (plan) => ({ commits: Object.fromEntries(runIds(plan).map((x) => [x, { previous: C }])) })
+    const id = await ready(r, [one, two])
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    const { releaseId } = await r.svc.rollback(id, {})
+    await r.svc.whenIdle()
+    const kinds = Object.fromEntries(r.svc.detail(releaseId).runs.map((run) => [run.deploymentName, run.steps.map((s) => s.kind)]))
+    expect(kinds.one).toEqual(['rb_checkout', 'rb_build', 'rb_up', 'rb_health', 'rb_tag'])
+    expect(kinds.two).toEqual(['rb_checkout', 'rb_build', 'rb_up', 'rb_tag'])
+  })
+
   it('a first deploy is left out of the rollback plan', async () => {
     const r = await rig()
     const id = await ready(r, [dep(r, 'one'), dep(r, 'two')])

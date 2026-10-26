@@ -168,7 +168,7 @@ function stepVars(p: PlanStep, base: string | null): Record<string, unknown> {
 
 /** The order a release or rollback runs: built-in steps, with each anchor's custom steps at its place. */
 const RELEASE_SLOTS = ['record', 'backup', 'before_fetch', 'fetch', 'checkout', 'after_checkout', 'env', 'before_build', 'build', 'after_build', 'up', 'after_up', 'health', 'after_health', 'tag', 'after_tag'] as const
-const ROLLBACK_SLOTS = ['before_fetch', 'rb_checkout', 'after_checkout', 'rb_env', 'before_build', 'rb_build', 'after_build', 'rb_up', 'after_up', 'after_health', 'rb_tag', 'after_tag'] as const
+const ROLLBACK_SLOTS = ['before_fetch', 'rb_checkout', 'after_checkout', 'rb_env', 'before_build', 'rb_build', 'after_build', 'rb_up', 'after_up', 'rb_health', 'after_health', 'rb_tag', 'after_tag'] as const
 type Builtin = Exclude<(typeof RELEASE_SLOTS)[number] | (typeof ROLLBACK_SLOTS)[number], StepAnchor>
 const isAnchor = (x: string): x is StepAnchor => (STEP_ANCHORS as readonly string[]).includes(x)
 
@@ -186,7 +186,7 @@ type Slot<S> = { builtin: Builtin } | { step: S }
 /** The one ordering both the playbook and the step list follow. A rollback runs only `alsoOnRollback` steps. */
 function sequence<S extends StepListDeployment['steps'][number]>(kind: 'release' | 'rollback', d: Omit<StepListDeployment, 'steps'>, steps: readonly S[]): Slot<S>[] {
   const run = kind === 'rollback' ? steps.filter((s) => s.alsoOnRollback === true) : steps
-  const has = (b: Builtin): boolean => (b === 'backup' ? d.backup !== null : b === 'env' || b === 'rb_env' ? d.envSecretKey !== null : b === 'health' ? d.urls.length > 0 : true)
+  const has = (b: Builtin): boolean => (b === 'backup' ? d.backup !== null : b === 'env' || b === 'rb_env' ? d.envSecretKey !== null : b === 'health' || b === 'rb_health' ? d.urls.length > 0 : true)
   const out: Slot<S>[] = []
   for (const slot of kind === 'release' ? RELEASE_SLOTS : ROLLBACK_SLOTS) {
     if (isAnchor(slot)) for (const s of run) if (s.anchor === slot) out.push({ step: s })
@@ -567,14 +567,14 @@ function composeTask(kind: 'build' | 'up' | 'rb_build' | 'rb_up', d: PlanDeploym
 const taskBuild = (d: PlanDeployment): Task => composeTask('build', d)
 const taskUp = (d: PlanDeployment): Task => composeTask('up', d)
 
-/** One task per URL. */
-function taskHealth(d: PlanDeployment, i: number): Task {
+/** One task per URL. A rollback checks the same URLs, status and timeout as its release, reported as `rb_health`. */
+function taskHealth(d: PlanDeployment, i: number, kind: 'health' | 'rb_health' = 'health'): Task {
   const u = d.urls[i]
   const timeout = clampSec(d.healthTimeoutSec, 'health timeout')
   const ref = `d.urls[${i}].url`
   if (u.from === 'mac') {
     return {
-      name: `${nm('health', d)} ${i}`,
+      name: `${nm(kind, d)} ${i}`,
       'ansible.builtin.uri': { url: `{{ ${ref} }}`, method: 'GET', status_code: [d.healthStatus], timeout: 10 },
       delegate_to: 'localhost',
       connection: 'local',
@@ -583,7 +583,7 @@ function taskHealth(d: PlanDeployment, i: number): Task {
       retries: Math.max(1, Math.ceil(timeout / 2)),
       delay: 2,
       until: `r.status == ${d.healthStatus}`,
-      tags: tagsOf('health', runOf(d)),
+      tags: tagsOf(kind, runOf(d)),
       when: WHEN,
     }
   }
@@ -597,7 +597,7 @@ function taskHealth(d: PlanDeployment, i: number): Task {
     '  sleep 2',
     'done',
   ].join('\n')
-  return sh(`${nm('health', d)} ${i}`, 'health', runOf(d), cmd, { timeout: timeout + 30, chdir: IN_REPO, guarded: true })
+  return sh(`${nm(kind, d)} ${i}`, kind, runOf(d), cmd, { timeout: timeout + 30, chdir: IN_REPO, guarded: true })
 }
 
 const PUSH_TAG = 'git push -f origin "refs/tags/$T"'
@@ -869,6 +869,7 @@ const BUILTIN: Record<Builtin, (d: PlanDeployment) => Task[]> = {
   rb_env: (d) => [taskRbEnv(d)],
   rb_build: (d) => [composeTask('rb_build', d)],
   rb_up: (d) => [composeTask('rb_up', d)],
+  rb_health: (d) => d.urls.map((_, i) => taskHealth(d, i, 'rb_health')),
   rb_tag: (d) => [taskRbTag(d)],
 }
 

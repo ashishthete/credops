@@ -363,8 +363,8 @@ describe('other kinds', () => {
     const p = plays(plan)[0]
     expect(steps(p)).toEqual([
       'lock', 'lock',
-      'rb_checkout', 'rb_build', 'rb_up', 'rb_tag',
-      'rb_checkout', 'rb_env', 'rb_build', 'rb_up', 'rb_tag',
+      'rb_checkout', 'rb_build', 'rb_up', 'rb_health', 'rb_tag',
+      'rb_checkout', 'rb_env', 'rb_build', 'rb_up', 'rb_health', 'rb_tag',
     ])
     const blocks = p.tasks.filter((t) => t.block)
     expect(blocks.map((b) => (b.vars as { d: { name: string } }).d.name)).toEqual(['dep2', 'dep1'])
@@ -374,6 +374,35 @@ describe('other kinds', () => {
     }
     const checkout = cmdOf(flat(p.tasks).find((t) => step(t) === 'rb_checkout')!)
     expect(checkout).toContain('{{ d.prev | quote }}')
+  })
+
+  it('rollback checks health the way a release does, from the host or the mac', () => {
+    const plan = planFixture({ kind: 'rollback' })
+    const release = plays(planFixture())[0]
+    const p = plays(plan)[0]
+    const rb = flat(p.tasks).filter((t) => step(t) === 'rb_health')
+    const rel = flat(release.tasks).filter((t) => step(t) === 'health')
+    expect(rb).toHaveLength(rel.length)
+    rb.forEach((t, i) => {
+      const { name, tags, ...rest } = t
+      const { name: relName, tags: relTags, ...relRest } = rel[i]
+      // the same URL, status, timeout and source; only the step it reports as differs
+      expect(rest).toEqual(relRest)
+      expect(tags).toEqual(relTags!.map((x) => x.replace('od_step=health', 'od_step=rb_health')))
+      expect(name).toBe((relName as string).replace(/^health /, 'rb_health '))
+    })
+    expect(rb[0].delegate_to).toBe('localhost')
+    expect(cmdOf(rb[1])).toContain("curl -sS -o /dev/null -w '%{http_code}' --max-time 10")
+    // after the rollback's up, before its tag; a checkout with no URLs has no check
+    const order = steps(p)
+    expect(order.indexOf('rb_health')).toBe(order.indexOf('rb_up') + 1)
+    expect(steps(plays(plan)[1])).not.toContain('rb_health')
+    for (const d of plan.deployments) {
+      expect(stepList('rollback', plan.deployments).get(d.runId)!.some((s) => s.kind === 'rb_health')).toBe(d.urls.length > 0)
+    }
+    // the health vars a rollback block carries are the ones the check reads
+    const vars = (p.tasks.find((t) => t.block)!.vars as { d: Record<string, unknown> }).d
+    expect(vars).toMatchObject({ health_status: plan.deployments[0].healthStatus, health_timeout: plan.deployments[0].healthTimeoutSec })
   })
 
   it('preflight never acquires the lock and every check is read-only and tolerant', () => {
@@ -964,7 +993,7 @@ describe('custom steps', () => {
   it('a rollback runs only the steps marked alsoOnRollback, at their anchors', () => {
     const steps = ANCHORS.map((a, i) => stepFixture(i, a, {}, { alsoOnRollback: i % 2 === 0 }))
     const plan = withSteps(steps, { kind: 'rollback' })
-    expect(flat(dep1(plan).block!).map(step)).toEqual(['c_0', 'rb_checkout', 'rb_env', 'c_2', 'rb_build', 'rb_up', 'c_4', 'rb_tag', 'c_6'])
+    expect(flat(dep1(plan).block!).map(step)).toEqual(['c_0', 'rb_checkout', 'rb_env', 'c_2', 'rb_build', 'rb_up', 'c_4', 'rb_health', 'rb_tag', 'c_6'])
     expect(Object.keys(dep1(plan).vars.d.steps)).toEqual(['c_0', 'c_2', 'c_4', 'c_6'])
     expect(stepList('rollback', plan.deployments).get(plan.deployments[0].runId)!.map((s) => s.key)).toEqual(flat(dep1(plan).block!).map(step))
     // preflight and version run no step, so they carry none

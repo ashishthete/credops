@@ -321,6 +321,7 @@ export type StepKind =
   | 'rb_env'
   | 'rb_build'
   | 'rb_up'
+  | 'rb_health'
   | 'rb_tag'
   | 'version'
   | 'finalize_notes'
@@ -347,6 +348,7 @@ export const STEP_LABEL: Record<StepKind, string> = {
   rb_env: 'Rollback .env',
   rb_build: 'Rollback build',
   rb_up: 'Rollback up',
+  rb_health: 'Rollback health',
   rb_tag: 'Rollback tag',
   version: 'Version tag',
   finalize_notes: 'Release notes',

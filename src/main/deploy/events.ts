@@ -333,7 +333,7 @@ export class EventTranslator {
     const dep = this.depByRun.get(run)
     const label = kind === 'custom' || kind === 'op' ? this.labelOf(run, r.key) : STEP_LABEL[kind]
     if (dep) {
-      const expected = kind === 'health' ? Math.max(1, dep.urls.length) : kind === 'up' ? (this.ups.get(run) ?? 1) : 1
+      const expected = kind === 'health' || kind === 'rb_health' ? Math.max(1, dep.urls.length) : kind === 'up' ? (this.ups.get(run) ?? 1) : 1
       return { ...r, stepId: `${run}:${r.key}`, hostId: dep.hostId, deploymentRunId: run, name: kind === 'custom' ? label : `${label} ${dep.name}`, expected }
     }
     if (run.startsWith('host:')) {
