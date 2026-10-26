@@ -317,6 +317,7 @@ export type StepKind =
   | 'health'
   | 'post_hook'
   | 'tag'
+  | 'restore'
   | 'rb_checkout'
   | 'rb_env'
   | 'rb_build'
@@ -344,6 +345,7 @@ export const STEP_LABEL: Record<StepKind, string> = {
   health: 'Health',
   post_hook: 'Post-hook',
   tag: 'Tag',
+  restore: 'Restore checkout',
   rb_checkout: 'Rollback checkout',
   rb_env: 'Rollback .env',
   rb_build: 'Rollback build',
@@ -632,17 +634,38 @@ export const STEP_SECRET_UNUSED_MESSAGE = 'This step uses a secret the environme
 export const PLAYBOOK_SHA256 = /^[0-9a-f]{64}$/
 /** A release from before playbooks were stored (or one that never started). */
 export const PLAYBOOK_NOT_STORED_MESSAGE = 'Playbook not stored for this release'
-/** A parallel prepare that failed at or after its checkout, before any service went up. */
-export const PREPARE_FAILED_MESSAGE = (svc: string): string =>
-  `Build failed for ${svc}: no service was restarted; servers are left at the new commit with the new .env; running containers are unchanged.`
+/**
+ * What a failed prepare's restore step did with its checkout: put it back on the previous commit, found none (a first
+ * deploy), failed, or never ran (the checkout is left where it is).
+ */
+export type PrepareCheckout = 'restored' | 'first' | 'failed' | 'left'
+/** Checkouts other than the failed one still at the new commit; `env` when one of them wrote its managed .env. Null: none. */
+export type PrepareOthers = { env: boolean } | null
+const othersLeft = (o: PrepareOthers): string => (o ? `; other checkouts are left at the new commit${o.env ? ' with the new .env' : ''}` : '')
+/**
+ * A parallel prepare that failed at or after its checkout, before any service went up. `env`: the failed checkout has
+ * a managed .env and this release wrote it; with no managed .env none is mentioned.
+ */
+export const PREPARE_FAILED_MESSAGE = (svc: string, o: { checkout: PrepareCheckout; env: boolean; others: PrepareOthers }): string => {
+  const envNew = o.env ? ' with the new .env' : ''
+  const own: Record<PrepareCheckout, string> = {
+    restored: `the checkout is back on the previous commit${o.env ? ' with the previous .env' : ''}`,
+    first: `this was its first deploy, so the checkout is left at the new commit${envNew}`,
+    failed: `putting the checkout back on the previous commit failed, so it is still on the new commit${envNew}`,
+    left: `the checkout is left at the new commit${envNew}`,
+  }
+  return `Build failed for ${svc}: no service was restarted; ${own[o.checkout]}${othersLeft(o.others)}; running containers are unchanged.`
+}
 /**
  * A parallel prepare that failed before its checkout (the fetch, a step before it), before any service went up. When
- * other checkouts did check out, they are said to be at the new commit.
+ * other checkouts did check out (and were not put back), they are said to be at the new commit.
  */
-export const PREPARE_FETCH_FAILED_MESSAGE = (svc: string, othersCheckedOut: boolean): string =>
-  othersCheckedOut
-    ? `Fetch failed for ${svc}: no service was restarted; ${svc} is unchanged and still on the old commit; other checkouts are left at the new commit with the new .env; running containers are unchanged.`
+export const PREPARE_FETCH_FAILED_MESSAGE = (svc: string, others: PrepareOthers): string =>
+  others
+    ? `Fetch failed for ${svc}: no service was restarted; ${svc} is unchanged and still on the old commit${othersLeft(others)}; running containers are unchanged.`
     : `Fetch failed for ${svc}: no service was restarted; servers are unchanged and still on the old commit.`
+/** A prepare restore's note when the checkout had no previous commit to go back to. */
+export const RESTORE_FIRST_NOTE = 'First deploy: there is no previous commit to go back to'
 /** A release with skipped services fails before any change when origin's head is not the one its preflight saw. */
 export const ORIGIN_MOVED_MESSAGE = 'origin moved since preview, preview again'
 export const PLAYBOOK_CHANGED_MESSAGE = 'The playbook changed since you reviewed it. Review it again.'

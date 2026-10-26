@@ -12,6 +12,8 @@ export const MARK = {
   HEALTH: 'OD-HEALTH',
   ENV: 'OD-ENV',
   TAG: 'OD-TAG',
+  /** A failed prepare's restore: `ok <sha>`, `first` (no previous commit) or `failed rc=<n>`. */
+  RESTORE: 'OD-RESTORE',
   PF: 'OD-PF',
   /** A custom step set to continue failed: `OD-STEP rc=<n>` (shows as warn). */
   STEP: 'OD-STEP',

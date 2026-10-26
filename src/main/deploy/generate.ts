@@ -1168,8 +1168,30 @@ function taskBuildCleanup(d: PlanDeployment, n: number): Task {
   return t
 }
 
-/** A prepare failure marks the host and lets the play go on: the gate at its end stops every host. */
-const rescuePrepare = (d: PlanDeployment): Task[] => [{ name: `mark prepare failed ${sanitizeIdent(d.name)}`, 'ansible.builtin.set_fact': { od_prep_failed: true } }]
+/**
+ * After a failed prepare whose checkout ran (`od_co_<n>`, registered by it): the checkout back on the previous commit,
+ * the deploy tag (what the record step read from origin, local since the fetch), with rb_checkout's detached checkout;
+ * then, with a managed .env, the previous one when this release wrote it (rb_env's check). A first deploy has no tag
+ * and is left as it is. It reports through OD-RESTORE and never fails the host: under any_errors_fatal a failure would
+ * stop every other host's restore.
+ */
+function taskPrepRestore(d: PlanDeployment, n: number): Task {
+  const cmd = [
+    'T={{ d.tag | quote }}',
+    'P=$(git rev-parse -q --verify "refs/tags/$T^{commit}" 2>/dev/null)',
+    'if [ -z "$P" ]; then echo "OD-RESTORE first"; exit 0; fi',
+    'git checkout -q --detach "$P" || { echo "OD-RESTORE failed rc=$?"; exit 0; }',
+    ...(d.envSecretKey !== null ? [RB_ENV_CMD] : []),
+    'echo "OD-RESTORE ok $(git rev-parse HEAD)"',
+  ].join('\n')
+  return { ...sh(nm('restore', d), 'restore', runOf(d), cmd, { timeout: T_SHORT, chdir: IN_REPO, failedWhen: false }), when: `od_co_${n} is defined and od_co_${n} is not skipped` }
+}
+
+/** A prepare failure marks the host, puts its checkout back and lets the play go on: the gate at its end stops every host. */
+const rescuePrepare = (d: PlanDeployment, n: number): Task[] => [
+  { name: `mark prepare failed ${sanitizeIdent(d.name)}`, 'ansible.builtin.set_fact': { od_prep_failed: true } },
+  taskPrepRestore(d, n),
+]
 
 /** Fails every host unless each one finished the prepare play without a failed checkout. Aliases only (ALIAS-checked). */
 function prepareGate(hosts: readonly PlanHost[]): Task {
@@ -1194,7 +1216,10 @@ function prepareTasks(prepare: { cap: number }, hosts: readonly PlanHost[], runs
   const byRun = new Map(runs.map((r, n) => [r.d.runId, { ...r, n }]))
   const tasks: Task[] = []
   for (const h of hosts) tasks.push({ ...taskPrep(h), when: onHost(h) }, { ...taskLock(h), when: onHost(h) })
-  const blk = (r: PrepRun, when: string, body: Task[]): Task => ({ name: `deployment ${sanitizeIdent(r.d.name)}`, when, vars: { d: r.vars }, block: body, rescue: rescuePrepare(r.d) })
+  const blk = (r: PrepRun & { n: number }, when: string, body: Task[]): Task => ({ name: `deployment ${sanitizeIdent(r.d.name)}`, when, vars: { d: r.vars }, block: body, rescue: rescuePrepare(r.d, r.n) })
+  // the checkout registers that it ran: a restore follows only a checkout that did
+  const before = (r: PrepRun & { n: number }): Task[] =>
+    r.slots.slice(0, at(r)).flatMap((x) => flowSlotTasks(r.d, x).map((t) => ('builtin' in x && x.builtin === 'checkout' ? { ...t, register: `od_co_${r.n}` } : t)))
   const at = (r: PrepRun): number => {
     const i = r.slots.findIndex((x) => 'builtin' in x && x.builtin === 'build')
     need(i >= 0, 'prepare build')
@@ -1202,7 +1227,7 @@ function prepareTasks(prepare: { cap: number }, hosts: readonly PlanHost[], runs
   }
   for (const wave of prepareSchedule(runs.map((r) => r.d), prepare.cap)) {
     const here = wave.map((id) => byRun.get(id) as PrepRun & { n: number })
-    for (const r of here) tasks.push(blk(r, onHost(r.host), [...r.slots.slice(0, at(r)).flatMap((x) => flowSlotTasks(r.d, x)), taskBuildLaunch(r.d, r.n)]))
+    for (const r of here) tasks.push(blk(r, onHost(r.host), [...before(r), taskBuildLaunch(r.d, r.n)]))
     for (const r of here) {
       const when = `${onHost(r.host)} and (od_bj_${r.n} | default({})).ansible_job_id is defined`
       tasks.push({ ...blk(r, when, [taskBuildPoll(r.d, r.n), ...r.slots.slice(at(r) + 1).flatMap((x) => flowSlotTasks(r.d, x))]), always: [taskBuildCleanup(r.d, r.n)] })

@@ -20,6 +20,8 @@ import {
   PREPARE_FAILED_MESSAGE,
   ROLLBACK_GENERATED_NOTE,
   PREPARE_FETCH_FAILED_MESSAGE,
+  type PrepareCheckout,
+  type PrepareOthers,
   REVIEW_EXPIRED_MESSAGE,
   REVIEW_TTL_MS,
   stepBound,
@@ -1485,9 +1487,17 @@ export class ReleaseService {
     const names = info.sel.services.map((x) => x.name)
     const svc = names.length > 0 ? names.join(', ') : info.dep.name
     const checkedOut = new Set([...(out?.reachedCheckout ?? []), ...live.checkedOut])
+    const stateOf = (i: Info, kind: StepKind) => this.stepsOf(i.run.id).find((s) => s.kind === kind)?.state
+    // a managed .env this release wrote
+    const wroteEnv = (i: Info): boolean => i.dep.managedEnv && stateOf(i, 'env') === 'ok'
+    // other checkouts that are still at the new commit: they checked out and no restore put them back
+    const left = infos.filter((i) => i !== info && checkedOut.has(i.run.id) && stateOf(i, 'restore') !== 'ok')
+    const others: PrepareOthers = left.length > 0 ? { env: left.some(wroteEnv) } : null
     // before its checkout the failed one's server is still on the old commit
-    if (!checkedOut.has(info.run.id)) return PREPARE_FETCH_FAILED_MESSAGE(svc, checkedOut.size > 0)
-    return PREPARE_FAILED_MESSAGE(svc)
+    if (!checkedOut.has(info.run.id)) return PREPARE_FETCH_FAILED_MESSAGE(svc, others)
+    const restore = stateOf(info, 'restore')
+    const checkout: PrepareCheckout = restore === 'ok' ? 'restored' : restore === 'warn' ? 'first' : restore === 'failed' ? 'failed' : 'left'
+    return PREPARE_FAILED_MESSAGE(svc, { checkout, env: wroteEnv(info), others })
   }
 
   /** The runs a rollback undoes: those that reached checkout, or with a parallel prepare only those that reached up. */
