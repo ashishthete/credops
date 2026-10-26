@@ -105,14 +105,16 @@ export function ContainersTab() {
     if (hostId) void loadContainers(hostId, environmentId)
   }, [hostId, environmentId])
   useEffect(refresh, [refresh])
-  // Every 10 s while visible; skipped when the window is hidden or the vault is locked.
+  // Every 10 s while visible; skipped when the window is hidden, the vault is locked,
+  // or a list is still on its way (a newer request would discard a slow host's answer).
   useEffect(() => {
     const id = setInterval(() => {
       if (document.visibilityState === 'hidden' || vaultStatusStore.get()?.unlocked === false) return
+      if (hostId && containerStore.get()[containerKey(hostId, environmentId)]?.loading) return
       refresh()
     }, REFRESH_MS)
     return () => clearInterval(id)
-  }, [refresh])
+  }, [refresh, hostId, environmentId])
 
   // Rows cascade in on the first list of a host only.
   const staggered = useRef<string | null>(null)

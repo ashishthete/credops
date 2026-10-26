@@ -360,4 +360,25 @@ describe('containers tab review fixes', () => {
     fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: 'pro' } })
     expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument()
   })
+
+  it('auto-refresh waits for a list slower than 10 s instead of superseding it', async () => {
+    // Only the interval is faked: an animation started under a faked clock stalls the next test's drawer.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      let answer = (_: ContainerList) => {}
+      const invoke = await renderTab({ 'containers:list': undefined })
+      const base = invoke.getMockImplementation()!
+      invoke.mockImplementation(async (channel: string) =>
+        channel === 'containers:list' ? new Promise((resolve) => (answer = resolve)) : base(channel),
+      )
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh containers' }))
+      const start = calls(invoke, 'containers:list').length
+      await act(async () => void (await vi.advanceTimersByTimeAsync(10_000)))
+      expect(calls(invoke, 'containers:list')).toHaveLength(start)
+      await act(async () => answer(containers))
+      expect(screen.getByText('web-1')).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
