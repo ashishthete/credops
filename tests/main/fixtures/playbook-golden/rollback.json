@@ -127,6 +127,29 @@
             "become": true
           },
           {
+            "name": "rb_health dep1 0",
+            "ansible.builtin.uri": {
+              "url": "{{ d.urls[0].url }}",
+              "method": "GET",
+              "status_code": [
+                200
+              ],
+              "timeout": 10
+            },
+            "delegate_to": "localhost",
+            "connection": "local",
+            "become": false,
+            "register": "r",
+            "retries": 30,
+            "delay": 2,
+            "until": "r.status == 200",
+            "tags": [
+              "od_step=rb_health",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000001"
+            ],
+            "when": "not (od_failed | default(false))"
+          },
+          {
             "name": "rb_tag dep1",
             "ansible.builtin.shell": {
               "cmd": "T={{ d.tag | quote }}\nP={{ d.prev | quote }}\n{ GIT_COMMITTER_NAME=CredOps GIT_COMMITTER_EMAIL=credops@localhost git tag -fa \"$T\" -m \"CredOps rollback\" \"$P\" && git push -f origin \"refs/tags/$T\"; } || echo \"OD-TAG failed rc=$?\"",
@@ -218,6 +241,20 @@
               "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"
             ],
             "become": true
+          },
+          {
+            "name": "rb_health dep2 0",
+            "ansible.builtin.shell": {
+              "cmd": "U={{ d.urls[0].url | quote }}\nend=$((SECONDS + {{ d.health_timeout }}))\nwhile :; do\n  code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 \"$U\" 2>/dev/null || true)\n  [ \"$code\" = \"{{ d.health_status }}\" ] && { echo \"OD-HEALTH ok $code\"; exit 0; }\n  [ \"$SECONDS\" -ge \"$end\" ] && { echo \"OD-HEALTH timeout last=${code:-none}\"; exit 1; }\n  sleep 2\ndone",
+              "executable": "/bin/bash",
+              "chdir": "{{ d.repo }}"
+            },
+            "timeout": 90,
+            "tags": [
+              "od_step=rb_health",
+              "od_run=0190a1b2-c3d4-7e5f-8a6b-000000000002"
+            ],
+            "when": "not (od_failed | default(false))"
           },
           {
             "name": "rb_tag dep2",

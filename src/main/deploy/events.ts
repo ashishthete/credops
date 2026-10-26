@@ -9,6 +9,7 @@ import {
   type DockerMode,
   type PreflightCheck,
   type PreflightReport,
+  RESTORE_FIRST_NOTE,
   type RunEventBody,
   STEP_LABEL,
   type StepKind,
@@ -101,6 +102,8 @@ export class EventTranslator {
   private sawFailure = false
   /** OD-TAG failures and custom step markers, by `${hostId}|${stepId}`. */
   private readonly tagNotes = new Map<string, string>()
+  /** A prepare restore's OD-RESTORE line (`ok <sha>`, `first`, `failed rc=<n>`), by step. */
+  private readonly restoreNotes = new Map<string, string>()
   private readonly stepNotes = new Map<string, StepNote>()
   /** `${run}:c_<n>` of the custom steps that have a `when`. */
   private readonly hasWhen = new Set<string>()
@@ -333,7 +336,7 @@ export class EventTranslator {
     const dep = this.depByRun.get(run)
     const label = kind === 'custom' || kind === 'op' ? this.labelOf(run, r.key) : STEP_LABEL[kind]
     if (dep) {
-      const expected = kind === 'health' ? Math.max(1, dep.urls.length) : kind === 'up' ? (this.ups.get(run) ?? 1) : 1
+      const expected = kind === 'health' || kind === 'rb_health' ? Math.max(1, dep.urls.length) : kind === 'up' ? (this.ups.get(run) ?? 1) : 1
       return { ...r, stepId: `${run}:${r.key}`, hostId: dep.hostId, deploymentRunId: run, name: kind === 'custom' ? label : `${label} ${dep.name}`, expected }
     }
     if (run.startsWith('host:')) {
@@ -484,6 +487,19 @@ export class EventTranslator {
         out.push({ type: 'step.done', stepId: d.stepId, state: 'warn', durationMs: this.o.now() - a.startedAt, message: text })
         this.onDone(a, out)
         return out
+      }
+    }
+    if (kind === 'restore' && a) {
+      // the restore never fails the host: a failed checkout arrives as OD-RESTORE failed, one that could not run as no marker
+      const said = this.restoreNotes.get(key) ?? ''
+      this.restoreNotes.delete(key)
+      if (said === 'first') {
+        this.settle(a, { state: 'ok', message: RESTORE_FIRST_NOTE }, out)
+        return out
+      }
+      if (!said.startsWith('ok')) {
+        const failedRc = Number(/rc=(\d+)/.exec(said)?.[1] ?? rc ?? 1)
+        return this.failStep(r, t.run, this.errorText(kind, d.name, failedRc, msg, lines.slice(-ERROR_CONTEXT_LINES), hidden), out, lines, failedRc)
       }
     }
     if (e.event === 'failed' && e.ignored !== true) {
@@ -668,6 +684,10 @@ export class EventTranslator {
     }
     if (mark === MARK.TAG && (d.key === 'tag' || d.key === 'rb_tag')) {
       this.tagNotes.set(this.akey(d), rest)
+      return true
+    }
+    if (mark === MARK.RESTORE && d.key === 'restore') {
+      this.restoreNotes.set(this.akey(d), rest.trim())
       return true
     }
     if (d.kind === 'custom' && (mark === MARK.STEP || mark === MARK.SKIP)) {

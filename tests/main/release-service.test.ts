@@ -8,7 +8,7 @@ import type { DeployPlan } from '../../src/main/deploy/runner'
 import { generatePlaybook } from '../../src/main/deploy/generate'
 import { ToolingError } from '../../src/main/deploy/tooling'
 import { CONFIRM_MESSAGE } from '../../src/shared/ops'
-import { BREAK_LOCK_CONFIRM_MESSAGE, DEFAULT_RELEASE_OPTIONS, PREPARE_FAILED_MESSAGE, PREPARE_FETCH_FAILED_MESSAGE, type CommitInfo, type DeploymentMeta, type PreflightCheck, type RunEvent } from '../../src/shared/deploy'
+import { BREAK_LOCK_CONFIRM_MESSAGE, DEFAULT_RELEASE_OPTIONS, PREPARE_FAILED_MESSAGE, PREPARE_FETCH_FAILED_MESSAGE, type CommitInfo, type DeploymentMeta, type PreflightCheck, type RunEvent, type StepKind } from '../../src/shared/deploy'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import type { AppServiceMeta } from '../../src/shared/services'
 import { A, B, C, NOW, SECRET, dep, opReady, ready, rig, runbook, tracked, type Rig } from './release-rig'
@@ -167,6 +167,46 @@ describe('ReleaseService', () => {
     expect(types).toContain('rollback.started')
     expect(types).toContain('rollback.done')
     expect(d.runs.filter((x) => x.rolledBack).map((x) => x.id).sort()).toEqual([r1, r2].sort())
+  })
+
+  it("a rollback whose health check fails ends the release failed, naming the rollback's failure", async () => {
+    const r = await rig()
+    const one = dep(r, 'one', { urls: [{ url: 'https://one.example/up', from: 'host' }] })
+    const id = await ready(r, [one])
+    r.runner.on.release = (plan) => {
+      const [r1] = runIds(plan)
+      return { exitCode: 2, failedDeploymentRunIds: [r1], reachedCheckout: [r1], commits: { [r1]: { previous: A } } }
+    }
+    r.runner.on.rollback = (plan, _s, emit) => {
+      const [r1] = runIds(plan)
+      emit({ type: 'step.started', stepId: `${r1}:rb_health`, kind: 'rb_health', name: 'Rollback health one', hostId: r.f.host.id, deploymentRunId: r1 })
+      emit({ type: 'step.failed', stepId: `${r1}:rb_health`, error: 'Rollback health one failed with exit code 1: OD-HEALTH timeout last=503', durationMs: 1 })
+      emit({ type: 'deployment.updated', deploymentRunId: r1, status: 'rollback_failed' })
+      // the rollback block rescues its failure, so ansible exits 0
+      return { exitCode: 0 }
+    }
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    const d = r.svc.detail(id)
+    expect(d.status).toBe('failed')
+    expect(d.error).toContain('the rollback also failed: Rollback health one failed')
+    expect(r.svc.events(id, 0).find((e) => e.type === 'rollback.done')).toMatchObject({ ok: false })
+  })
+
+  it("a manual rollback lists its health check among the run's steps", async () => {
+    const r = await rig()
+    r.f.deploys.updateSettings(r.f.staging.id, { autoRollback: false })
+    const one = dep(r, 'one', { urls: [{ url: 'https://one.example/up', from: 'mac' }] })
+    const two = dep(r, 'two')
+    r.runner.on.release = (plan) => ({ commits: Object.fromEntries(runIds(plan).map((x) => [x, { previous: C }])) })
+    const id = await ready(r, [one, two])
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    const { releaseId } = await r.svc.rollback(id, {})
+    await r.svc.whenIdle()
+    const kinds = Object.fromEntries(r.svc.detail(releaseId).runs.map((run) => [run.deploymentName, run.steps.map((s) => s.kind)]))
+    expect(kinds.one).toEqual(['rb_checkout', 'rb_build', 'rb_up', 'rb_health', 'rb_tag'])
+    expect(kinds.two).toEqual(['rb_checkout', 'rb_build', 'rb_up', 'rb_tag'])
   })
 
   it('a first deploy is left out of the rollback plan', async () => {
@@ -1638,10 +1678,69 @@ describe('parallel prepare', () => {
     expect(r.runner.kinds).toEqual(['preflight', 'release', 'unlock'])
     const d = r.svc.detail(id)
     expect(d.status).toBe('failed')
-    expect(d.error).toBe(PREPARE_FAILED_MESSAGE(tracked(r, deps[1]).map((s) => s.name).join(', ')))
+    const svc = tracked(r, deps[1]).map((s) => s.name).join(', ')
+    expect(d.error).toBe(PREPARE_FAILED_MESSAGE(svc, { checkout: 'left', env: false, others: { env: false } }))
+    expect(d.error).toBe(`Build failed for ${svc}: no service was restarted; the checkout is left at the new commit; other checkouts are left at the new commit; running containers are unchanged.`)
     // every launched build is stopped by the unlock
     const plan = r.runner.call('release')
     expect(r.runner.call('unlock').killBuilds).toEqual(plan.deployments.map((x) => ({ runId: x.runId, repoPath: x.repoPath })))
+  })
+
+  /** A prepare where `two`'s build fails after its checkout, and its restore step ends as given. */
+  const failedPrepare = async (o: { restore: 'ok' | 'first' | 'failed'; env?: boolean; alone?: boolean }) => {
+    const r = await rig()
+    on(r)
+    const envOpts = { managedEnv: true, vaultIds: [DEFAULT_VAULT_ID], envTemplate: `TOKEN=\${secret:${r.f.secretId}}` }
+    const deps = o.alone ? [dep(r, 'two', o.env ? envOpts : {})] : [dep(r, 'one'), dep(r, 'two', o.env ? envOpts : {})]
+    const id = await ready(r, deps)
+    r.runner.on.release = (plan, _s, emit) => {
+      const ids = runIds(plan)
+      const r2 = ids.at(-1)!
+      const host = r.f.host.id
+      const step = (key: string, kind: StepKind, end: 'ok' | 'warn' | 'failed', message?: string) => {
+        emit({ type: 'step.started', stepId: `${r2}:${key}`, kind, name: `${key} two`, hostId: host, deploymentRunId: r2 })
+        if (end === 'failed') emit({ type: 'step.failed', stepId: `${r2}:${key}`, error: message ?? `${key} failed`, durationMs: 1 })
+        else emit({ type: 'step.done', stepId: `${r2}:${key}`, state: end, durationMs: 1, ...(message ? { message } : {}) })
+      }
+      step('checkout', 'checkout', 'ok')
+      if (o.env) step('env', 'env', 'ok')
+      step('build', 'build', 'failed', 'compose build failed')
+      if (o.restore === 'ok') step('restore', 'restore', 'ok')
+      if (o.restore === 'first') step('restore', 'restore', 'warn', 'First deploy: there is no previous commit to go back to')
+      if (o.restore === 'failed') step('restore', 'restore', 'failed', 'Restore checkout two failed: error: pathspec')
+      return { exitCode: 2, failedDeploymentRunIds: [r2], reachedCheckout: ids, reachedUp: [], commits: {} }
+    }
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    return { error: r.svc.detail(id).error ?? '', svc: tracked(r, deps.at(-1)!).map((s) => s.name).join(', ') }
+  }
+
+  it('a build that fails in prepare puts its checkout back on the previous commit and says so', async () => {
+    const { error, svc } = await failedPrepare({ restore: 'ok' })
+    expect(error).toBe(`Build failed for ${svc}: no service was restarted; the checkout is back on the previous commit; other checkouts are left at the new commit; running containers are unchanged.`)
+    // no managed .env: none is mentioned
+    expect(error).not.toContain('.env')
+    const alone = await failedPrepare({ restore: 'ok', alone: true })
+    expect(alone.error).toBe(`Build failed for ${alone.svc}: no service was restarted; the checkout is back on the previous commit; running containers are unchanged.`)
+  })
+
+  it('with a managed .env the restore puts the previous .env back too', async () => {
+    const { error } = await failedPrepare({ restore: 'ok', env: true, alone: true })
+    expect(error).toContain('the checkout is back on the previous commit with the previous .env;')
+  })
+
+  it('a first deploy has no previous commit: its checkout is left and the message says why', async () => {
+    const { error, svc } = await failedPrepare({ restore: 'first', env: true, alone: true })
+    expect(error).toBe(
+      `Build failed for ${svc}: no service was restarted; this was its first deploy, so the checkout is left at the new commit with the new .env; running containers are unchanged.`,
+    )
+  })
+
+  it('a restore that fails says the checkout is still on the new commit', async () => {
+    const { error, svc } = await failedPrepare({ restore: 'failed', alone: true })
+    expect(error).toBe(
+      `Build failed for ${svc}: no service was restarted; putting the checkout back on the previous commit failed, so it is still on the new commit; running containers are unchanged.`,
+    )
   })
 
   it.each([
@@ -1664,8 +1763,10 @@ describe('parallel prepare', () => {
     const svc = tracked(r, deps[1]).map((s) => s.name).join(', ')
     const d = r.svc.detail(id)
     expect(d.status).toBe('failed')
-    expect(d.error).toBe(PREPARE_FETCH_FAILED_MESSAGE(svc, other))
+    expect(d.error).toBe(PREPARE_FETCH_FAILED_MESSAGE(svc, other ? { env: false } : null))
     expect(d.error).toContain('still on the old commit')
+    // no managed .env anywhere: none is mentioned
+    expect(d.error).not.toContain('.env')
     if (!other) expect(d.error).not.toContain('new commit')
     expect(r.runner.kinds).toEqual(['preflight', 'release', 'unlock'])
   })
@@ -1683,7 +1784,7 @@ describe('parallel prepare', () => {
     }
     await r.svc.start(id, {})
     await r.svc.whenIdle()
-    expect(r.svc.detail(id).error).toBe(PREPARE_FAILED_MESSAGE(tracked(r, deps[0]).map((s) => s.name).join(', ')))
+    expect(r.svc.detail(id).error).toBe(PREPARE_FAILED_MESSAGE(tracked(r, deps[0]).map((s) => s.name).join(', '), { checkout: 'left', env: false, others: null }))
   })
 
   it('with auto-rollback off, a failure after up ends failed with nothing rolled back', async () => {
