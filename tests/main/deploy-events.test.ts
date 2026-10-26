@@ -371,7 +371,7 @@ describe('preflight parsing', () => {
     const logged = [
       ...fail('preflight tools dep3', R3, { msg: 'MODULE FAILURE\nSee stdout/stderr for the exact error', stderr: '/bin/sh: 1: /usr/bin/python3: not found\n' }),
       // what the remote printed instead of the module's JSON, with nothing on stderr
-      ...fail('preflight commits dep3', R3, { rc: 1, msg: 'MODULE FAILURE\nSee stdout/stderr for the exact error', stdout: 'Welcome to alpha\r\nsudo: a terminal is required\r\n', stderr: 'Shared connection to 10.0.0.2 closed.\r\n' }, 'ok'),
+      ...fail('preflight commits dep3', R3, { rc: 1, msg: 'MODULE FAILURE: No start of json char found', stdout: 'Welcome to alpha\r\nsudo: a terminal is required\r\n', stderr: 'Shared connection to 10.0.0.2 closed.\r\n' }, 'ok'),
       ...fail('preflight docker dep3', R3, { msg: 'The shell action failed to execute in the expected time frame (30) and was terminated' }),
       ...fail('preflight lock od-2', 'host:host-od-2', { msg: 'Incorrect sudo password hunter2' }),
       ...fail('preflight repo dep3', R3, { msg: 'secret', no_log: true }),
