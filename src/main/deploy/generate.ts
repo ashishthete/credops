@@ -168,7 +168,7 @@ function stepVars(p: PlanStep, base: string | null): Record<string, unknown> {
 
 /** The order a release or rollback runs: built-in steps, with each anchor's custom steps at its place. */
 const RELEASE_SLOTS = ['record', 'backup', 'before_fetch', 'fetch', 'checkout', 'after_checkout', 'env', 'before_build', 'build', 'after_build', 'up', 'after_up', 'health', 'after_health', 'tag', 'after_tag'] as const
-const ROLLBACK_SLOTS = ['before_fetch', 'rb_checkout', 'after_checkout', 'rb_env', 'before_build', 'rb_build', 'after_build', 'rb_up', 'after_up', 'after_health', 'rb_tag', 'after_tag'] as const
+const ROLLBACK_SLOTS = ['before_fetch', 'rb_checkout', 'after_checkout', 'rb_env', 'before_build', 'rb_build', 'after_build', 'rb_up', 'after_up', 'rb_health', 'after_health', 'rb_tag', 'after_tag'] as const
 type Builtin = Exclude<(typeof RELEASE_SLOTS)[number] | (typeof ROLLBACK_SLOTS)[number], StepAnchor>
 const isAnchor = (x: string): x is StepAnchor => (STEP_ANCHORS as readonly string[]).includes(x)
 
@@ -186,7 +186,7 @@ type Slot<S> = { builtin: Builtin } | { step: S }
 /** The one ordering both the playbook and the step list follow. A rollback runs only `alsoOnRollback` steps. */
 function sequence<S extends StepListDeployment['steps'][number]>(kind: 'release' | 'rollback', d: Omit<StepListDeployment, 'steps'>, steps: readonly S[]): Slot<S>[] {
   const run = kind === 'rollback' ? steps.filter((s) => s.alsoOnRollback === true) : steps
-  const has = (b: Builtin): boolean => (b === 'backup' ? d.backup !== null : b === 'env' || b === 'rb_env' ? d.envSecretKey !== null : b === 'health' ? d.urls.length > 0 : true)
+  const has = (b: Builtin): boolean => (b === 'backup' ? d.backup !== null : b === 'env' || b === 'rb_env' ? d.envSecretKey !== null : b === 'health' || b === 'rb_health' ? d.urls.length > 0 : true)
   const out: Slot<S>[] = []
   for (const slot of kind === 'release' ? RELEASE_SLOTS : ROLLBACK_SLOTS) {
     if (isAnchor(slot)) for (const s of run) if (s.anchor === slot) out.push({ step: s })
@@ -567,14 +567,14 @@ function composeTask(kind: 'build' | 'up' | 'rb_build' | 'rb_up', d: PlanDeploym
 const taskBuild = (d: PlanDeployment): Task => composeTask('build', d)
 const taskUp = (d: PlanDeployment): Task => composeTask('up', d)
 
-/** One task per URL. */
-function taskHealth(d: PlanDeployment, i: number): Task {
+/** One task per URL. A rollback checks the same URLs, status and timeout as its release, reported as `rb_health`. */
+function taskHealth(d: PlanDeployment, i: number, kind: 'health' | 'rb_health' = 'health'): Task {
   const u = d.urls[i]
   const timeout = clampSec(d.healthTimeoutSec, 'health timeout')
   const ref = `d.urls[${i}].url`
   if (u.from === 'mac') {
     return {
-      name: `${nm('health', d)} ${i}`,
+      name: `${nm(kind, d)} ${i}`,
       'ansible.builtin.uri': { url: `{{ ${ref} }}`, method: 'GET', status_code: [d.healthStatus], timeout: 10 },
       delegate_to: 'localhost',
       connection: 'local',
@@ -583,7 +583,7 @@ function taskHealth(d: PlanDeployment, i: number): Task {
       retries: Math.max(1, Math.ceil(timeout / 2)),
       delay: 2,
       until: `r.status == ${d.healthStatus}`,
-      tags: tagsOf('health', runOf(d)),
+      tags: tagsOf(kind, runOf(d)),
       when: WHEN,
     }
   }
@@ -597,7 +597,7 @@ function taskHealth(d: PlanDeployment, i: number): Task {
     '  sleep 2',
     'done',
   ].join('\n')
-  return sh(`${nm('health', d)} ${i}`, 'health', runOf(d), cmd, { timeout: timeout + 30, chdir: IN_REPO, guarded: true })
+  return sh(`${nm(kind, d)} ${i}`, kind, runOf(d), cmd, { timeout: timeout + 30, chdir: IN_REPO, guarded: true })
 }
 
 const PUSH_TAG = 'git push -f origin "refs/tags/$T"'
@@ -869,6 +869,7 @@ const BUILTIN: Record<Builtin, (d: PlanDeployment) => Task[]> = {
   rb_env: (d) => [taskRbEnv(d)],
   rb_build: (d) => [composeTask('rb_build', d)],
   rb_up: (d) => [composeTask('rb_up', d)],
+  rb_health: (d) => d.urls.map((_, i) => taskHealth(d, i, 'rb_health')),
   rb_tag: (d) => [taskRbTag(d)],
 }
 
@@ -1167,8 +1168,30 @@ function taskBuildCleanup(d: PlanDeployment, n: number): Task {
   return t
 }
 
-/** A prepare failure marks the host and lets the play go on: the gate at its end stops every host. */
-const rescuePrepare = (d: PlanDeployment): Task[] => [{ name: `mark prepare failed ${sanitizeIdent(d.name)}`, 'ansible.builtin.set_fact': { od_prep_failed: true } }]
+/**
+ * After a failed prepare whose checkout ran (`od_co_<n>`, registered by it): the checkout back on the previous commit,
+ * the deploy tag (what the record step read from origin, local since the fetch), with rb_checkout's detached checkout;
+ * then, with a managed .env, the previous one when this release wrote it (rb_env's check). A first deploy has no tag
+ * and is left as it is. It reports through OD-RESTORE and never fails the host: under any_errors_fatal a failure would
+ * stop every other host's restore.
+ */
+function taskPrepRestore(d: PlanDeployment, n: number): Task {
+  const cmd = [
+    'T={{ d.tag | quote }}',
+    'P=$(git rev-parse -q --verify "refs/tags/$T^{commit}" 2>/dev/null)',
+    'if [ -z "$P" ]; then echo "OD-RESTORE first"; exit 0; fi',
+    'git checkout -q --detach "$P" || { echo "OD-RESTORE failed rc=$?"; exit 0; }',
+    ...(d.envSecretKey !== null ? [RB_ENV_CMD] : []),
+    'echo "OD-RESTORE ok $(git rev-parse HEAD)"',
+  ].join('\n')
+  return { ...sh(nm('restore', d), 'restore', runOf(d), cmd, { timeout: T_SHORT, chdir: IN_REPO, failedWhen: false }), when: `od_co_${n} is defined and od_co_${n} is not skipped` }
+}
+
+/** A prepare failure marks the host, puts its checkout back and lets the play go on: the gate at its end stops every host. */
+const rescuePrepare = (d: PlanDeployment, n: number): Task[] => [
+  { name: `mark prepare failed ${sanitizeIdent(d.name)}`, 'ansible.builtin.set_fact': { od_prep_failed: true } },
+  taskPrepRestore(d, n),
+]
 
 /** Fails every host unless each one finished the prepare play without a failed checkout. Aliases only (ALIAS-checked). */
 function prepareGate(hosts: readonly PlanHost[]): Task {
@@ -1193,7 +1216,10 @@ function prepareTasks(prepare: { cap: number }, hosts: readonly PlanHost[], runs
   const byRun = new Map(runs.map((r, n) => [r.d.runId, { ...r, n }]))
   const tasks: Task[] = []
   for (const h of hosts) tasks.push({ ...taskPrep(h), when: onHost(h) }, { ...taskLock(h), when: onHost(h) })
-  const blk = (r: PrepRun, when: string, body: Task[]): Task => ({ name: `deployment ${sanitizeIdent(r.d.name)}`, when, vars: { d: r.vars }, block: body, rescue: rescuePrepare(r.d) })
+  const blk = (r: PrepRun & { n: number }, when: string, body: Task[]): Task => ({ name: `deployment ${sanitizeIdent(r.d.name)}`, when, vars: { d: r.vars }, block: body, rescue: rescuePrepare(r.d, r.n) })
+  // the checkout registers that it ran: a restore follows only a checkout that did
+  const before = (r: PrepRun & { n: number }): Task[] =>
+    r.slots.slice(0, at(r)).flatMap((x) => flowSlotTasks(r.d, x).map((t) => ('builtin' in x && x.builtin === 'checkout' ? { ...t, register: `od_co_${r.n}` } : t)))
   const at = (r: PrepRun): number => {
     const i = r.slots.findIndex((x) => 'builtin' in x && x.builtin === 'build')
     need(i >= 0, 'prepare build')
@@ -1201,7 +1227,7 @@ function prepareTasks(prepare: { cap: number }, hosts: readonly PlanHost[], runs
   }
   for (const wave of prepareSchedule(runs.map((r) => r.d), prepare.cap)) {
     const here = wave.map((id) => byRun.get(id) as PrepRun & { n: number })
-    for (const r of here) tasks.push(blk(r, onHost(r.host), [...r.slots.slice(0, at(r)).flatMap((x) => flowSlotTasks(r.d, x)), taskBuildLaunch(r.d, r.n)]))
+    for (const r of here) tasks.push(blk(r, onHost(r.host), [...before(r), taskBuildLaunch(r.d, r.n)]))
     for (const r of here) {
       const when = `${onHost(r.host)} and (od_bj_${r.n} | default({})).ansible_job_id is defined`
       tasks.push({ ...blk(r, when, [taskBuildPoll(r.d, r.n), ...r.slots.slice(at(r) + 1).flatMap((x) => flowSlotTasks(r.d, x))]), always: [taskBuildCleanup(r.d, r.n)] })

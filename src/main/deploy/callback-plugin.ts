@@ -10,6 +10,7 @@
  *   {event: 'stats', hosts}
  *   {event: 'warning', msg}              (deprecation warnings are dropped)
  *
+ * stdout / stderr fall back to ansible's module_stdout / module_stderr (a module failure puts its output there).
  * stdout / stderr / msg are capped at 64 KiB each (`truncated` names what was cut) and are left out entirely
  * whenever no_log is set on the task or the result.
  */
@@ -103,7 +104,9 @@ class CallbackModule(CallbackBase):
         cut = []
         if not no_log:
             for key in ("stdout", "stderr", "msg"):
-                text, was_cut = _cap(res.get(key))
+                # A module that never printed its JSON (a crash, a shell profile or sudo speaking first)
+                # leaves what it said in module_stdout / module_stderr instead.
+                text, was_cut = _cap(res.get(key) or res.get("module_" + key) if key != "msg" else res.get(key))
                 if text:
                     obj[key] = text
                 if was_cut:

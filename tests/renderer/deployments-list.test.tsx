@@ -173,6 +173,26 @@ describe('deployments environment list', () => {
     expect(within(shop).getByRole('button', { name: /^shop-staging, last release failed/ })).toBeInTheDocument()
   })
 
+  it('a rolled-back release reads rolled back and shows the commit that is live, not the one rolled back', async () => {
+    world({ 'release:latest': [last('p0-dev', 'rolled_back')] })
+    await open()
+    const shop = await screen.findByRole('group', { name: 'Shop' })
+    const dev = within(shop).getByRole('listitem', { name: 'shop-dev' })
+    const btn = await within(dev).findByRole('button', { name: /^shop-dev, last release rolled back .*, aaaaaaa is running$/ })
+    expect(btn).toBeInTheDocument()
+    expect(dev).not.toHaveTextContent('aaaaaaa→bbbbbbb')
+    const commit = within(dev).getByText('aaaaaaa')
+    expect(commit).toHaveAttribute('title', 'bbbbbbb was rolled back; aaaaaaa is running')
+    expect(within(dev).getByText('bbbbbbb')).toHaveClass('line-through')
+    // It needs a look: it floats up with the failed ones.
+    expect(rowNames(shop)[0]).toBe('p0-dev')
+  })
+
+  it('a rolled-back first deploy has no live commit to show', () => {
+    const row = { id: 'e', name: 'qa', protected: false, productName: 'P', hosts: [], regions: [], units: 1, hub: false }
+    expect(rowLabel({ ...row, last: last('e', 'rolled_back', { previousCommit: null }) })).toMatch(/^qa, last release rolled back [^,]*$/)
+  })
+
   it('a release that starts moves its environment up live', async () => {
     world()
     await open()

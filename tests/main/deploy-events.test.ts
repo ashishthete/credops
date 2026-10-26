@@ -190,6 +190,44 @@ describe('EventTranslator', () => {
     expect(tr.rescued()).toEqual({ 'host-od-1': 1 })
   })
 
+  it("a rollback's failed health check fails the rollback; one URL ok does not settle it", () => {
+    const plan = planFixture({ kind: 'rollback' })
+    plan.deployments[0].urls = [{ url: 'https://a.example.com/h', from: 'mac' }, { url: 'https://b.example.com/h', from: 'host' }]
+    const tr = new EventTranslator({ plan, secrets: () => [], now: clock().now })
+    const tags = ['od_step=rb_health', `od_run=${R1}`]
+    const s0 = tr.feed(JSON.stringify({ event: 'task_start', name: 'rb_health dep1 0', tags }))
+    expect(of(s0, 'step.started')[0]).toMatchObject({ stepId: `${R1}:rb_health`, kind: 'rb_health', name: 'Rollback health dep1' })
+    const ok0 = tr.feed(JSON.stringify({ event: 'ok', host: 'od-1', task: 'rb_health dep1 0', tags }))
+    expect(of(ok0, 'step.done')).toEqual([])
+    tr.feed(JSON.stringify({ event: 'task_start', name: 'rb_health dep1 1', tags }))
+    const failed = tr.feed(JSON.stringify({ event: 'failed', host: 'od-1', task: 'rb_health dep1 1', tags, rc: 1, stdout: 'OD-HEALTH timeout last=503' }))
+    expect(of(failed, 'step.failed')[0]).toMatchObject({ stepId: `${R1}:rb_health` })
+    expect(of(failed, 'step.failed')[0].error).toContain('Rollback health dep1 failed')
+    expect(of(failed, 'deployment.updated')).toEqual([{ type: 'deployment.updated', deploymentRunId: R1, status: 'rollback_failed' }])
+  })
+
+  it('a prepare restore reports through OD-RESTORE: ok, first deploy (warn) or failed', () => {
+    const plan = planFixture({ prepare: { cap: 2 } })
+    const tags = ['od_step=restore', `od_run=${R1}`]
+    const run = (stdout: string) => {
+      const tr = new EventTranslator({ plan, secrets: () => [], now: clock().now })
+      const started = tr.feed(JSON.stringify({ event: 'task_start', name: 'restore dep1', tags }))
+      return { started, out: tr.feed(JSON.stringify({ event: 'ok', host: 'od-1', task: 'restore dep1', tags, rc: 0, stdout })) }
+    }
+    const ok = run(`OD-RESTORE ok ${'b'.repeat(40)}`)
+    expect(of(ok.started, 'step.started')[0]).toMatchObject({ stepId: `${R1}:restore`, kind: 'restore', name: 'Restore checkout dep1' })
+    expect(of(ok.out, 'step.done')).toEqual([{ type: 'step.done', stepId: `${R1}:restore`, state: 'ok', durationMs: 0 }])
+    // the marker is consumed, and a restore never sets the run's commits
+    expect(of(ok.out, 'log')).toEqual([])
+    expect(of(ok.out, 'deployment.updated')).toEqual([])
+    const first = run('OD-RESTORE first')
+    expect(of(first.out, 'step.done')[0]).toMatchObject({ state: 'warn', message: 'First deploy: there is no previous commit to go back to' })
+    const failed = run('OD-RESTORE failed rc=1')
+    expect(of(failed.out, 'step.done')).toEqual([])
+    expect(of(failed.out, 'step.failed')[0]).toMatchObject({ stepId: `${R1}:restore` })
+    expect(of(failed.out, 'step.failed')[0].error).toContain('Restore checkout dep1 failed with exit code 1')
+  })
+
   it('a successful rollback ends rolled_back', () => {
     const tr = new EventTranslator({ plan: planFixture({ kind: 'rollback' }), secrets: () => [], now: clock().now })
     const tags = ['od_step=rb_tag', `od_run=${R1}`]
@@ -332,6 +370,8 @@ describe('preflight parsing', () => {
     }
     const logged = [
       ...fail('preflight tools dep3', R3, { msg: 'MODULE FAILURE\nSee stdout/stderr for the exact error', stderr: '/bin/sh: 1: /usr/bin/python3: not found\n' }),
+      // what the remote printed instead of the module's JSON, with nothing on stderr
+      ...fail('preflight commits dep3', R3, { rc: 1, msg: 'MODULE FAILURE: No start of json char found', stdout: 'Welcome to alpha\r\nsudo: a terminal is required\r\n', stderr: 'Shared connection to 10.0.0.2 closed.\r\n' }, 'ok'),
       ...fail('preflight docker dep3', R3, { msg: 'The shell action failed to execute in the expected time frame (30) and was terminated' }),
       ...fail('preflight lock od-2', 'host:host-od-2', { msg: 'Incorrect sudo password hunter2' }),
       ...fail('preflight repo dep3', R3, { msg: 'secret', no_log: true }),
@@ -352,6 +392,8 @@ describe('preflight parsing', () => {
     // the failures reach the run log too, redacted, so the reason is visible there as well
     const lines = logged.filter((b) => b.type === 'log').map((b) => (b as { line: string }).line)
     expect(lines).toContain('label od-2: preflight tools dep3 failed: MODULE FAILURE: /bin/sh: 1: /usr/bin/python3: not found')
+    // (the commits check itself is hidden behind the repo block)
+    expect(lines).toContain('label od-2: preflight commits dep3 failed: MODULE FAILURE: sudo: a terminal is required')
     expect(lines).toContain("label od-2: preflight clean dep3 failed: [Errno 2] No such file or directory: b'/bin/bash'")
     expect(lines.some((l) => l.includes('preflight disk'))).toBe(false)
     expect(lines.join('\n')).not.toContain('hunter2')
@@ -828,6 +870,8 @@ describe('markers and the generator agree', () => {
     const plan = planFixture()
     plan.deployments[2] = { ...plan.deployments[2], steps: [stepFixture(0, 'after_up', { onFailure: 'continue', when: { kind: 'changed' } })] }
     for (const m of generatePlaybook(plan).matchAll(/OD-[A-Z]+(?:-[A-Z]+)*/g)) seen.add(m[0])
+    // a parallel prepare's restore reports OD-RESTORE
+    for (const m of generatePlaybook(planFixture({ prepare: { cap: 2 } })).matchAll(/OD-[A-Z]+(?:-[A-Z]+)*/g)) seen.add(m[0])
     for (const s of seen) expect(names.has(s as never), s).toBe(true)
     for (const n of names) expect(seen.has(n), n).toBe(true)
   })
@@ -1041,6 +1085,8 @@ describe('callback plugin source', () => {
     expect(CALLBACK_PLUGIN_SOURCE).toContain('flush()')
     // output is only read when the task is not no_log
     expect(CALLBACK_PLUGIN_SOURCE.indexOf('if not no_log')).toBeLessThan(CALLBACK_PLUGIN_SOURCE.indexOf('res.get(key)'))
+    // a module failure's output lives in module_stdout / module_stderr
+    expect(CALLBACK_PLUGIN_SOURCE).toContain('res.get("module_" + key)')
   })
 })
 

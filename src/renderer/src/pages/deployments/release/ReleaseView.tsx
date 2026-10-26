@@ -310,7 +310,8 @@ export function ReleaseView({ releaseId }: { releaseId: string }) {
         }}
       />
 
-      {state.result?.error && !failed.length && (
+      {/* The release's own line says what a failed step can't: what was put back, what was left. */}
+      {state.result?.error && !failed.some(({ chip }) => chip.error === state.result?.error) && (
         <p role="alert" className="text-[12.5px] text-err">
           {state.result.error}
         </p>

@@ -363,8 +363,8 @@ describe('other kinds', () => {
     const p = plays(plan)[0]
     expect(steps(p)).toEqual([
       'lock', 'lock',
-      'rb_checkout', 'rb_build', 'rb_up', 'rb_tag',
-      'rb_checkout', 'rb_env', 'rb_build', 'rb_up', 'rb_tag',
+      'rb_checkout', 'rb_build', 'rb_up', 'rb_health', 'rb_tag',
+      'rb_checkout', 'rb_env', 'rb_build', 'rb_up', 'rb_health', 'rb_tag',
     ])
     const blocks = p.tasks.filter((t) => t.block)
     expect(blocks.map((b) => (b.vars as { d: { name: string } }).d.name)).toEqual(['dep2', 'dep1'])
@@ -374,6 +374,35 @@ describe('other kinds', () => {
     }
     const checkout = cmdOf(flat(p.tasks).find((t) => step(t) === 'rb_checkout')!)
     expect(checkout).toContain('{{ d.prev | quote }}')
+  })
+
+  it('rollback checks health the way a release does, from the host or the mac', () => {
+    const plan = planFixture({ kind: 'rollback' })
+    const release = plays(planFixture())[0]
+    const p = plays(plan)[0]
+    const rb = flat(p.tasks).filter((t) => step(t) === 'rb_health')
+    const rel = flat(release.tasks).filter((t) => step(t) === 'health')
+    expect(rb).toHaveLength(rel.length)
+    rb.forEach((t, i) => {
+      const { name, tags, ...rest } = t
+      const { name: relName, tags: relTags, ...relRest } = rel[i]
+      // the same URL, status, timeout and source; only the step it reports as differs
+      expect(rest).toEqual(relRest)
+      expect(tags).toEqual(relTags!.map((x) => x.replace('od_step=health', 'od_step=rb_health')))
+      expect(name).toBe((relName as string).replace(/^health /, 'rb_health '))
+    })
+    expect(rb[0].delegate_to).toBe('localhost')
+    expect(cmdOf(rb[1])).toContain("curl -sS -o /dev/null -w '%{http_code}' --max-time 10")
+    // after the rollback's up, before its tag; a checkout with no URLs has no check
+    const order = steps(p)
+    expect(order.indexOf('rb_health')).toBe(order.indexOf('rb_up') + 1)
+    expect(steps(plays(plan)[1])).not.toContain('rb_health')
+    for (const d of plan.deployments) {
+      expect(stepList('rollback', plan.deployments).get(d.runId)!.some((s) => s.kind === 'rb_health')).toBe(d.urls.length > 0)
+    }
+    // the health vars a rollback block carries are the ones the check reads
+    const vars = (p.tasks.find((t) => t.block)!.vars as { d: Record<string, unknown> }).d
+    expect(vars).toMatchObject({ health_status: plan.deployments[0].healthStatus, health_timeout: plan.deployments[0].healthTimeoutSec })
   })
 
   it('preflight never acquires the lock and every check is read-only and tolerant', () => {
@@ -964,7 +993,7 @@ describe('custom steps', () => {
   it('a rollback runs only the steps marked alsoOnRollback, at their anchors', () => {
     const steps = ANCHORS.map((a, i) => stepFixture(i, a, {}, { alsoOnRollback: i % 2 === 0 }))
     const plan = withSteps(steps, { kind: 'rollback' })
-    expect(flat(dep1(plan).block!).map(step)).toEqual(['c_0', 'rb_checkout', 'rb_env', 'c_2', 'rb_build', 'rb_up', 'c_4', 'rb_tag', 'c_6'])
+    expect(flat(dep1(plan).block!).map(step)).toEqual(['c_0', 'rb_checkout', 'rb_env', 'c_2', 'rb_build', 'rb_up', 'c_4', 'rb_health', 'rb_tag', 'c_6'])
     expect(Object.keys(dep1(plan).vars.d.steps)).toEqual(['c_0', 'c_2', 'c_4', 'c_6'])
     expect(stepList('rollback', plan.deployments).get(plan.deployments[0].runId)!.map((s) => s.key)).toEqual(flat(dep1(plan).block!).map(step))
     // preflight and version run no step, so they carry none
@@ -1433,10 +1462,53 @@ describe('parallel prepare', () => {
       { name: 'od prepared', 'ansible.builtin.set_fact': { od_prepared: true } },
       { name: 'od gate', 'ansible.builtin.fail': { msg: 'CredOps prepare stopped: a checkout did not prepare' }, when: `${clause('od-1')} or ${clause('od-2')}` },
     ])
-    // a prepare failure marks the host and lets the other checkouts go on
-    for (const b of ps[0].tasks.filter((t) => t.block)) expect(b.rescue).toEqual([{ name: `mark prepare failed ${String(b.name).slice(11)}`, 'ansible.builtin.set_fact': { od_prep_failed: true } }])
+    // a prepare failure marks the host, puts its checkout back (prepare restore) and lets the other checkouts go on
+    for (const b of ps[0].tasks.filter((t) => t.block)) {
+      expect(b.rescue![0]).toEqual({ name: `mark prepare failed ${String(b.name).slice(11)}`, 'ansible.builtin.set_fact': { od_prep_failed: true } })
+      expect(b.rescue![1].name).toBe(`restore ${String(b.name).slice(11)}`)
+    }
     // the deploy plays keep the release rescue
     expect(ps[1].tasks[0].rescue![0]).toEqual({ name: 'mark failed dep1', 'ansible.builtin.set_fact': { od_failed: true } })
+  })
+
+  it('a failed prepare puts its checkout back on the previous commit, and its .env when it wrote one', () => {
+    const plan = prepPlan(2)
+    const ps = plays(plan)
+    const blocks = ps[0].tasks.filter((t) => t.block)
+    plan.deployments.forEach((d, n) => {
+      // the prepare play's checkout records that it ran; the restore runs only after it did
+      const checkout = flat(ps[0].tasks).find((t) => tagOf(t, 'od_step') === 'checkout' && tagOf(t, 'od_run') === d.runId)!
+      expect(checkout.register).toBe(`od_co_${n}`)
+      const mine = blocks.filter((b) => (b.vars as { d: { run: string } }).d.run === d.runId)
+      // the launch block and the poll block both rescue to the same restore
+      expect(mine).toHaveLength(2)
+      for (const b of mine) {
+        const restore = b.rescue![1]
+        expect(tagOf(restore, 'od_step')).toBe('restore')
+        expect(tagOf(restore, 'od_run')).toBe(d.runId)
+        expect(restore.when).toBe(`od_co_${n} is defined and od_co_${n} is not skipped`)
+        // it reports through OD-RESTORE and never fails the host: any_errors_fatal would stop the other hosts' restores
+        expect(restore.failed_when).toBe(false)
+        expect((restore['ansible.builtin.shell'] as { chdir: string }).chdir).toBe('{{ d.repo }}')
+        const c = cmdOf(restore)
+        // the deploy tag is the previous commit (the record step's OD-PREV); none is a first deploy, left as it is
+        expect(c).toContain('T={{ d.tag | quote }}')
+        expect(c).toContain('P=$(git rev-parse -q --verify "refs/tags/$T^{commit}" 2>/dev/null)')
+        expect(c).toContain('if [ -z "$P" ]; then echo "OD-RESTORE first"; exit 0; fi')
+        // the same detached checkout as rb_checkout
+        expect(c).toContain('git checkout -q --detach "$P" || { echo "OD-RESTORE failed rc=$?"; exit 0; }')
+        expect(c.trimEnd().split('\n').at(-1)).toBe('echo "OD-RESTORE ok $(git rev-parse HEAD)"')
+        // the .env only with a managed one, only when this release wrote it (rb_env's check), after the checkout is back
+        if (d.envSecretKey !== null) {
+          expect(c).toContain('if [ "$(cat .env.opsdeck-rel 2>/dev/null)" = {{ od.rel | quote }} ]; then')
+          expect(c.indexOf('.env.opsdeck-rel')).toBeGreaterThan(c.indexOf('git checkout -q --detach'))
+        } else expect(c).not.toContain('.env')
+      }
+    })
+    expect(plan.deployments[0].envSecretKey).not.toBeNull()
+    // the deploy plays' checkouts register nothing, and a release without a prepare has no restore
+    for (const p of ps.slice(1)) expect(every(p.tasks).some(({ t }) => (t.tags ?? []).includes('od_step=restore') || String(t.register ?? '').startsWith('od_co_'))).toBe(false)
+    expect(every(plays(planFixture()).flatMap((p) => p.tasks)).some(({ t }) => (t.tags ?? []).includes('od_step=restore'))).toBe(false)
   })
 
   it('with a flow, replaces the flow\'s prepare play and keeps its stages', () => {

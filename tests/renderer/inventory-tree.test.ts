@@ -61,6 +61,15 @@ describe('inventory tree', () => {
       ['web-1', 'test-1'],
       ['orphan', 'test-1'],
     ])
+    expect(split.find((r) => r.label === 'prod')!.region).toBeUndefined()
+    expect(split.some((r) => r.regionOnParent)).toBe(false)
+
+    // One region for the whole environment: its row carries the chip, its hosts point up to it.
+    const one = buildTree({ ...d, regions: [REGION] }, all)
+    expect(one.find((r) => r.label === 'prod')!.region?.code).toBe('test-1')
+    expect(one.filter((r) => r.regionOnParent).map((r) => r.label)).toEqual(['bastion', 'web-1'])
+    expect(one.find((r) => r.label === 'orphan')!.regionOnParent).toBeUndefined()
+    expect(one.find((r) => r.label === 'analytics-db')!.region).toBeUndefined()
   })
 
   it('each environment shows once, under its product', () => {

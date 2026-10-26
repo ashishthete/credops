@@ -256,6 +256,18 @@ describe('release view switch', () => {
     expect(localStorage.getItem('opsdeck.release.view')).toBeNull()
   })
 
+  it("shows the release's own error when it says more than the failed step, and not when it repeats it", async () => {
+    const restored = 'Build failed for backend: no service was restarted; the checkout is back on the previous commit'
+    const body = healthFailure(false)
+    body[body.length - 1] = { type: 'run.finished', status: 'failed', error: restored }
+    await view(body)
+    expect(screen.getByRole('alert')).toHaveTextContent(restored)
+    cleanup()
+    resetReleases()
+    await view(healthFailure(false))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
   it('picking a step in the pipeline shows it in Steps', async () => {
     await view(OK_RUN.slice(0, 6))
     const first = document.querySelector<HTMLElement>('[data-step]')!
