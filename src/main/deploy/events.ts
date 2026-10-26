@@ -842,6 +842,11 @@ function decodeServices(b64: string | undefined): string[] | null {
 
 const FAILURE_MAX = 300
 
+/** What a module written for Python 3.8+ (ansible-core 2.17 and newer) dies of on an older python, and what to do. */
+const OLD_PYTHON = /future feature annotations is not defined/
+export const OLD_PYTHON_HINT =
+  "the server's Python is older than 3.8, which this Ansible needs (ansible-core 2.17 and newer). Install ansible-core 2.16 on this Mac (pipx install 'ansible-core<2.17'), or Python 3.8 or newer on the server"
+
 /**
  * One line for a task that failed outright: ansible's message, and for a module failure (no python, a crash)
  * the last line of stderr (else of stdout, where a shell profile or sudo may have spoken), which says why.
@@ -855,6 +860,7 @@ function failureText(e: ResultEvent): string {
   const msg = first(typeof e.msg === 'string' ? e.msg : undefined)
   const moduleFailure = msg.startsWith('MODULE FAILURE')
   const why = moduleFailure || !msg ? last(e.stderr) || last(e.stdout) : ''
+  if (OLD_PYTHON.test(why)) return OLD_PYTHON_HINT
   const head = moduleFailure && why ? 'MODULE FAILURE' : msg
   const text = [head, why].filter(Boolean).join(': ') || 'the task failed without a message'
   return text.length > FAILURE_MAX ? `${text.slice(0, FAILURE_MAX - 1)}…` : text

@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { CALLBACK_PLUGIN_SOURCE } from '../../src/main/deploy/callback-plugin'
-import { EventTranslator, parseDeps, parsePreflight, parseStreamLine } from '../../src/main/deploy/events'
+import { EventTranslator, OLD_PYTHON_HINT, parseDeps, parsePreflight, parseStreamLine } from '../../src/main/deploy/events'
 import { generatePlaybook } from '../../src/main/deploy/generate'
 import { MARK, parseMarker, parsePfLine, parsePrev } from '../../src/main/deploy/markers'
 import type { DeployPlan } from '../../src/main/deploy/runner'
@@ -356,6 +356,23 @@ describe('preflight parsing', () => {
     expect(JSON.parse(l.raw)).toMatchObject({ user: 'bob' })
     expect(msg(r, 'lock', null).filter((m) => m.startsWith('block'))).toHaveLength(1)
     expect(msg(r, 'lock', null).find((m) => m.startsWith('block'))).toContain('bob@srv9 is deploying v1.2.3')
+  })
+
+  it('a module failure from a python too old for this ansible says so and how to fix it', () => {
+    const p = planFixture({ kind: 'preflight' })
+    p.deployments = [p.deployments[2]]
+    p.hosts = [p.hosts[1]]
+    const tr = new EventTranslator({ plan: p, secrets: () => [], now: clock().now })
+    const tags = ['od_step=preflight', `od_run=${R3}`]
+    tr.feed(JSON.stringify({ event: 'task_start', name: 'preflight tools dep3', tags }))
+    tr.feed(JSON.stringify({
+      event: 'failed', host: 'od-2', task: 'preflight tools dep3', tags,
+      msg: 'MODULE FAILURE\nSee stdout/stderr for the exact error',
+      stdout: 'Traceback (most recent call last):\n  File "<stdin>", line 107, in <module>\n  File "/tmp/ansible_x/AnsiballZ_command.py", line 3\nSyntaxError: future feature annotations is not defined\n',
+      stderr: 'Shared connection to 10.0.0.2 closed.\r\n',
+    }))
+    const r = parsePreflight(p, tr.preflightOutput(), { now: NOW, errors: tr.preflightErrors() })
+    expect(r.checks.filter((c) => c.id === 'tools').map((c) => c.message)).toEqual([`The tools check failed on label od-2: ${OLD_PYTHON_HINT}`])
   })
 
   it('a preflight task that failed outright names its error instead of "no result"', () => {
