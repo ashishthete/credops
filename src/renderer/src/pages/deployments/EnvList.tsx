@@ -1,4 +1,4 @@
-import { Check, Cloud, Lock, Plus, Rocket, Search, X } from 'lucide-react'
+import { Check, Cloud, Lock, Plus, Rocket, Search, Undo2, X } from 'lucide-react'
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { DeploymentMeta, EnvLastRelease } from '../../../../shared/deploy'
 import type { HubCatalogEnv, HubRegionRef } from '../../../../shared/hub'
@@ -16,7 +16,7 @@ export const TEAM_GROUP = 'Team (Hub)'
 /** Hosts named on a row before the rest are counted. */
 const HOSTS_SHOWN = 2
 
-type ReleaseState = 'running' | 'failed' | 'succeeded' | 'cancelled' | 'none'
+type ReleaseState = 'running' | 'failed' | 'rolled_back' | 'succeeded' | 'cancelled' | 'none'
 
 export interface EnvRow {
   id: string
@@ -43,18 +43,22 @@ export interface EnvGroup {
 function stateOf(last: EnvLastRelease | undefined): ReleaseState {
   if (!last) return 'none'
   if (last.status === 'running' || last.status === 'rolling_back') return 'running'
-  if (last.status === 'failed' || last.status === 'rolled_back') return 'failed'
+  if (last.status === 'failed') return 'failed'
+  // Its health failed and the previous commit was put back: that one is live, not the release's.
+  if (last.status === 'rolled_back') return 'rolled_back'
   if (last.status === 'cancelled') return 'cancelled'
   return 'succeeded'
 }
 
-const WORD: Record<Exclude<ReleaseState, 'none' | 'running'>, string> = { failed: 'failed', succeeded: 'succeeded', cancelled: 'was cancelled' }
-const DOT: Record<ReleaseState, string> = { running: 'bg-accent', failed: 'bg-err', succeeded: 'bg-ok', cancelled: 'bg-muted', none: 'bg-muted/40' }
-/** Running first, then failed; the rest keep the product's order. */
-const RANK: Record<ReleaseState, number> = { running: 0, failed: 1, succeeded: 2, cancelled: 2, none: 2 }
+const WORD: Record<Exclude<ReleaseState, 'none' | 'running'>, string> = { failed: 'failed', rolled_back: 'rolled back', succeeded: 'succeeded', cancelled: 'was cancelled' }
+const DOT: Record<ReleaseState, string> = { running: 'bg-accent', failed: 'bg-err', rolled_back: 'bg-warn', succeeded: 'bg-ok', cancelled: 'bg-muted', none: 'bg-muted/40' }
+/** Running first, then failed or rolled back; the rest keep the product's order. */
+const RANK: Record<ReleaseState, number> = { running: 0, failed: 1, rolled_back: 1, succeeded: 2, cancelled: 2, none: 2 }
 
 const when = (r: EnvLastRelease) => r.finishedAt ?? r.startedAt ?? r.createdAt
 const short = (sha: string | null) => sha?.slice(0, 7) ?? null
+/** After a rollback the previous commit is the one running; null otherwise, or on a first deploy. */
+const live = (r: EnvLastRelease) => (r.status === 'rolled_back' ? short(r.previousCommit ?? null) : null)
 
 /** The row's accessible name: the environment, its status and its last release. */
 export function rowLabel(row: EnvRow): string {
@@ -66,7 +70,7 @@ export function rowLabel(row: EnvRow): string {
       : 'no releases yet'
     : state === 'running'
       ? `running, started ${relativeTime(row.last.startedAt ?? row.last.createdAt)}`
-      : `last release ${WORD[state as keyof typeof WORD]} ${relativeTime(when(row.last))}${row.last.version ? `, ${row.last.version}` : ''}`
+      : `last release ${WORD[state as keyof typeof WORD]} ${relativeTime(when(row.last))}${row.last.version ? `, ${row.last.version}` : ''}${live(row.last) ? `, ${live(row.last)} is running` : ''}`
   return `${row.name}, ${last}${row.protected ? ', protected' : ''}`
 }
 
@@ -322,11 +326,27 @@ function EnvListRow({ row, onOpen, onDeploy, onAddService }: { row: EnvRow; onOp
           <span className="hidden shrink-0 items-center gap-2 text-[11.5px] text-muted tabular-nums sm:flex">
             {state === 'failed' ? (
               <X aria-hidden className="size-3 text-err" />
+            ) : state === 'rolled_back' ? (
+              <Undo2 aria-hidden className="size-3 text-warn" />
             ) : state === 'succeeded' ? (
               <Check aria-hidden className="size-3 text-ok" />
             ) : null}
             <span>{relativeTime(when(row.last))}</span>
-            {next && (
+            {state === 'rolled_back' ? (
+              // The live commit first; the rolled-back one struck through after it.
+              <span className="font-mono">
+                {prev && (
+                  <span className="text-fg/80" title={next ? `${next} was rolled back; ${prev} is running` : `${prev} is running`}>
+                    {prev}
+                  </span>
+                )}
+                {next && (
+                  <span className={`text-muted line-through ${prev ? 'ml-1.5' : ''}`} title={`${next} was rolled back`}>
+                    {next}
+                  </span>
+                )}
+              </span>
+            ) : next && (
               <span className="font-mono text-fg/80">
                 {prev ? `${prev}→` : ''}
                 {next}
