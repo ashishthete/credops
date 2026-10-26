@@ -1,16 +1,17 @@
-import { MAX_PIN, MIN_PIN } from '../../shared/vault'
+import { MAX_PIN, MAX_PIN_ATTEMPT, MIN_PIN, PIN_FORMAT_ERROR } from '../../shared/vault'
 import { deriveKek, type KdfParams } from './crypto'
 
 const PIN_FORMAT = new RegExp(`^\\d{${MIN_PIN},${MAX_PIN}}$`)
+const ATTEMPT_FORMAT = new RegExp(`^\\d{${MIN_PIN},${MAX_PIN_ATTEMPT}}$`)
 
-/** Digits only, MIN_PIN-MAX_PIN of them. The message never carries the PIN. */
+/** An attempt: digits only, MIN_PIN-MAX_PIN_ATTEMPT of them (older PINs run longer). The message never carries the PIN. */
 export function checkPinFormat(pin: string): void {
-  if (typeof pin !== 'string' || !PIN_FORMAT.test(pin)) throw new Error('PIN must be 6-12 digits')
+  if (typeof pin !== 'string' || !ATTEMPT_FORMAT.test(pin)) throw new Error(PIN_FORMAT_ERROR)
 }
 
-/** For a new PIN: the format, then no repeated digit and no straight run up or down (no wrap 9 to 0). */
+/** For a new PIN: MIN_PIN-MAX_PIN digits, no repeated digit and no straight run up or down (no wrap 9 to 0). */
 export function checkPin(pin: string): void {
-  checkPinFormat(pin)
+  if (typeof pin !== 'string' || !PIN_FORMAT.test(pin)) throw new Error(PIN_FORMAT_ERROR)
   const d = [...pin].map(Number)
   const steps = new Set(d.slice(1).map((x, i) => x - d[i]!))
   if (steps.size === 1 && [0, 1, -1].includes([...steps][0]!)) throw new Error('PIN is too easy to guess')

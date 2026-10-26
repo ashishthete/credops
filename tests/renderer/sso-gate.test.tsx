@@ -423,7 +423,7 @@ describe('Touch ID needs turning on again', () => {
     await user.paste('1234567890123')
     expect(field).toHaveValue('1234567890123')
     await user.click(within(card).getByRole('button', { name: 'Turn on Touch ID' }))
-    expect(await within(card).findByText('PIN must be 6-12 digits')).toBeInTheDocument()
+    expect(await within(card).findByText('PIN must be 4-8 digits')).toBeInTheDocument()
     expect(calls('vault:setQuickUnlock')).toHaveLength(0)
   })
 

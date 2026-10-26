@@ -414,6 +414,15 @@ CREATE TABLE runbooks(
 `,
   },
   ssoMigration,
+  {
+    // How many digits the PIN has, so unlock can go as soon as they are typed. NULL for a PIN set before
+    // this: the first PIN unlock records it.
+    version: 15,
+    name: 'pin_length',
+    up: `
+ALTER TABLE vault_state ADD COLUMN pin_length INTEGER;
+`,
+  },
 ]
 
 /** One audit event summarising migration 12's report, by id and count only; none when there is no report. */

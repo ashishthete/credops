@@ -210,7 +210,7 @@ describe('unlock methods', () => {
     await user.type(within(proof).getByLabelText('Confirm new password'), 'battery staple!')
     await user.type(within(proof).getByLabelText('PIN'), '123')
     await user.click(within(proof).getByRole('button', { name: 'Add password' }))
-    expect(await within(proof).findByText('PIN must be 6-12 digits')).toBeInTheDocument()
+    expect(await within(proof).findByText('PIN must be 4-8 digits')).toBeInTheDocument()
     expect(invoke).not.toHaveBeenCalledWith('vault:setPassword', expect.anything(), expect.anything())
   })
 

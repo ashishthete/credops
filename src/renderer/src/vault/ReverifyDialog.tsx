@@ -3,7 +3,9 @@ import type { ReverifyProof } from '../../../shared/sso'
 import {
   MAX_MASTER_PASSWORD,
   MAX_PIN,
+  MAX_PIN_ATTEMPT,
   MIN_PIN,
+  PIN_FORMAT_ERROR,
   PIN_INPUT_MAX,
   VERIFICATION_FAILED,
   type ProvenResult,
@@ -19,8 +21,11 @@ const errorText = (err: unknown) => (err instanceof Error ? err.message : String
 
 export type ProofMethod = 'password' | 'pin' | 'touchId'
 
+/** A new PIN. */
 export const PIN_SHAPE = new RegExp(`^\\d{${MIN_PIN},${MAX_PIN}}$`)
-export const PIN_LENGTH = `PIN must be ${MIN_PIN}-${MAX_PIN} digits`
+/** A PIN being proved: one set before the 4-8 rule can run to MAX_PIN_ATTEMPT digits. */
+const PIN_ATTEMPT_SHAPE = new RegExp(`^\\d{${MIN_PIN},${MAX_PIN_ATTEMPT}}$`)
+export const PIN_LENGTH = PIN_FORMAT_ERROR
 
 /** The ways this vault can re-prove the user, in the order they are offered. */
 export function proofMethods(status: VaultStatus): ProofMethod[] {
@@ -122,7 +127,7 @@ export function ProofForm({
       const input = inputRef.current
       if (!input || !input.value) return
       // A malformed PIN never goes to main, where it would cost one of the tries.
-      if (method === 'pin' && !PIN_SHAPE.test(input.value)) return setError(PIN_LENGTH)
+      if (method === 'pin' && !PIN_ATTEMPT_SHAPE.test(input.value)) return setError(PIN_LENGTH)
       proof = method === 'pin' ? { method, pin: input.value } : { method, password: input.value }
       input.value = ''
       setHasInput(false)

@@ -161,7 +161,7 @@ export const asFilter: Check<AuditFilter> = v.object({
 
 // Length rules (minimum, strength) are the service's: its messages are the ones the user sees.
 const asPassword = v.str({ min: 1, max: MAX_MASTER_PASSWORD })
-// PIN_INPUT_MAX: a pasted 13 digits gets the vault's 'PIN must be 6-12 digits'.
+// PIN_INPUT_MAX: a pasted 13 digits gets the vault's PIN_FORMAT_ERROR.
 const asPin = v.str({ min: 1, max: PIN_INPUT_MAX })
 export const asSetupOptions: Check<SetupOptions> = v.object({
   password: v.optional(asPassword),

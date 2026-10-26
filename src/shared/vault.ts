@@ -10,11 +10,15 @@ export const VERIFICATION_FAILED = 'verification failed'
 export const VAULT_RESET_CONFIRM = 'RESET'
 export const MIN_MASTER_PASSWORD = 8
 export const MAX_MASTER_PASSWORD = 1024
-export const MIN_PIN = 6
-export const MAX_PIN = 12
+/** A new PIN's length. */
+export const MIN_PIN = 4
+export const MAX_PIN = 8
+/** The longest PIN an attempt may carry: PINs set before the 4-8 rule were up to 12 digits. */
+export const MAX_PIN_ATTEMPT = 12
+export const PIN_FORMAT_ERROR = `PIN must be ${MIN_PIN}-${MAX_PIN} digits`
 /**
- * Cap on a PIN field and the IPC validator: well over MAX_PIN (preflight F31), so a pasted 13 digits
- * reaches the length check ('PIN must be 6-12 digits') instead of being cut into a real attempt.
+ * Cap on a PIN field and the IPC validator: well over MAX_PIN_ATTEMPT (preflight F31), so a pasted 13 digits
+ * reaches the length check (PIN_FORMAT_ERROR) instead of being cut into a real attempt.
  */
 export const PIN_INPUT_MAX = 64
 export const PIN_ATTEMPTS = 5
@@ -52,7 +56,8 @@ export interface VaultStatus {
   /** Vaults whose wrapped key failed to open at the last unlock; empty while locked. */
   corruptVaultIds: string[]
   hasPassword: boolean
-  pin: { enabled: boolean; attemptsLeft: number }
+  /** `length`: the PIN's digit count, so unlock goes once that many are typed; absent until known. */
+  pin: { enabled: boolean; attemptsLeft: number; length?: number }
   lastMethod: UnlockMethod | null
   /** Set up, but nothing stored can open the vaults any more: only a reset gets back in. */
   resetRequired: boolean

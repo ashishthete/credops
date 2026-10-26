@@ -1,7 +1,7 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { Fingerprint, Hash, KeyRound } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type CSSProperties, type FormEvent } from 'react'
-import { MAX_MASTER_PASSWORD, PIN_ATTEMPTS, type UnlockMethod, type VaultStatus } from '../../../shared/vault'
+import { MAX_MASTER_PASSWORD, MAX_PIN_ATTEMPT, PIN_ATTEMPTS, type UnlockMethod, type VaultStatus } from '../../../shared/vault'
 import { api } from '../lib/api'
 import { Button } from '../ui/Button'
 import { SecretField } from '../ui/Field'
@@ -219,6 +219,7 @@ export function UnlockCard({
         {tab === 'pin' && (
           <PinTab
             attemptsLeft={status?.pin.attemptsLeft ?? PIN_ATTEMPTS}
+            length={status?.pin.length}
             notice={noticeFor('pin')}
             onUnlocked={onUnlocked}
             onWrong={onWrong}
@@ -322,9 +323,10 @@ function TouchIdTab({
   )
 }
 
-/** The PIN, sent on Enter (main doesn't say how long it is). Misses count down to the wipe. */
+/** The PIN, sent once its known length is typed (else on Enter). Misses count down to the wipe. */
 function PinTab({
   attemptsLeft,
+  length,
   notice,
   onUnlocked,
   onWrong,
@@ -332,6 +334,7 @@ function PinTab({
   onWiped,
 }: {
   attemptsLeft: number
+  length?: number
   notice: string | null
   onUnlocked: () => void
   onWrong: () => void
@@ -376,6 +379,8 @@ function PinTab({
         ref={inputRef}
         autoFocus
         disabled={busy}
+        length={length}
+        max={MAX_PIN_ATTEMPT}
         onComplete={(pin) => void submit(pin)}
         error={error ?? undefined}
         hint={notice ?? undefined}

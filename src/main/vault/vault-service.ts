@@ -65,7 +65,7 @@ type Opened = { keys: Map<string, Buffer>; corrupt: string[] }
 /** The KEK sealed under a password key, with that key's scrypt params. Neither is secret alone. */
 type PasswordWrap = { params: KdfParams; sealed: string }
 /** The KEK sealed under the PIN key, its scrypt params, and the Keychain-encrypted pepper. */
-type PinWrap = PasswordWrap & { pepperBlob: string }
+type PinWrap = PasswordWrap & { pepperBlob: string; length: number }
 /** What the spec §3 rule counts; 'touchId' is only ever removed by setQuickUnlock('off'). */
 type Factor = 'password' | 'touchId' | 'pin'
 
@@ -96,6 +96,7 @@ interface StateRow {
   pin_salt: string | null
   pin_pepper_blob: string | null
   pin_failed: number
+  pin_length: number | null
   last_method: UnlockMethod | null
   password_wrap: string | null
   password_kdf: string | null
@@ -198,7 +199,7 @@ export class VaultService {
       retryAfterMs: this.retryAfterMs(s),
       corruptVaultIds: this.kek ? [...this.corrupt] : [],
       hasPassword: this.hasPassword(),
-      pin: { enabled: s.pin_wrap !== null, attemptsLeft: Math.max(0, PIN_ATTEMPTS - s.pin_failed) },
+      pin: { enabled: s.pin_wrap !== null, attemptsLeft: Math.max(0, PIN_ATTEMPTS - s.pin_failed), ...(s.pin_wrap !== null && s.pin_length !== null ? { length: s.pin_length } : {}) },
       lastMethod: s.last_method,
       resetRequired: this.isSetUp() && !this.hasPassword() && !s.pin_wrap && !s.quick_unlock_blob,
       touchIdNeedsReenable: this.touchIdUnreadable && s.quick_unlock === 'touchId',
@@ -739,7 +740,7 @@ export class VaultService {
         unbound = changed('DELETE FROM sso_binding') > 0
         this.db
           .prepare(
-            "UPDATE vault_state SET quick_unlock = 'off', quick_unlock_blob = NULL, failed_attempts = 0, last_failed_at = NULL, password_wrap = NULL, password_kdf = NULL, pin_wrap = NULL, pin_salt = NULL, pin_pepper_blob = NULL, pin_failed = 0, last_method = NULL WHERE id = 1",
+            "UPDATE vault_state SET quick_unlock = 'off', quick_unlock_blob = NULL, failed_attempts = 0, last_failed_at = NULL, password_wrap = NULL, password_kdf = NULL, pin_wrap = NULL, pin_salt = NULL, pin_pepper_blob = NULL, pin_failed = 0, pin_length = NULL, last_method = NULL WHERE id = 1",
           )
           .run()
         // In the same transaction: an erase is never left unaudited, nor an audit row unerased.
@@ -904,7 +905,7 @@ export class VaultService {
   private state(): StateRow {
     return this.db
       .prepare(
-        'SELECT failed_attempts, last_failed_at, quick_unlock, quick_unlock_blob, auto_lock_minutes, pin_wrap, pin_salt, pin_pepper_blob, pin_failed, last_method, password_wrap, password_kdf FROM vault_state WHERE id = 1',
+        'SELECT failed_attempts, last_failed_at, quick_unlock, quick_unlock_blob, auto_lock_minutes, pin_wrap, pin_salt, pin_pepper_blob, pin_failed, pin_length, last_method, password_wrap, password_kdf FROM vault_state WHERE id = 1',
       )
       .get() as unknown as StateRow
   }
@@ -1075,7 +1076,7 @@ export class VaultService {
       const pinKey = await derivePinKey(pin, pepper, params)
       try {
         if (epoch !== this.epoch) return null
-        return { params, sealed: seal(pinKey, kek, PIN_AAD), pepperBlob }
+        return { params, sealed: seal(pinKey, kek, PIN_AAD), pepperBlob, length: pin.length }
       } finally {
         pinKey.fill(0)
       }
@@ -1086,13 +1087,13 @@ export class VaultService {
 
   private writePinWrap(wrap: PinWrap): void {
     this.db
-      .prepare('UPDATE vault_state SET pin_wrap = ?, pin_salt = ?, pin_pepper_blob = ?, pin_failed = 0 WHERE id = 1')
-      .run(wrap.sealed, JSON.stringify(wrap.params), wrap.pepperBlob)
+      .prepare('UPDATE vault_state SET pin_wrap = ?, pin_salt = ?, pin_pepper_blob = ?, pin_failed = 0, pin_length = ? WHERE id = 1')
+      .run(wrap.sealed, JSON.stringify(wrap.params), wrap.pepperBlob, wrap.length)
   }
 
   private clearPinColumns(failed: number): void {
     this.db
-      .prepare('UPDATE vault_state SET pin_wrap = NULL, pin_salt = NULL, pin_pepper_blob = NULL, pin_failed = ? WHERE id = 1')
+      .prepare('UPDATE vault_state SET pin_wrap = NULL, pin_salt = NULL, pin_pepper_blob = NULL, pin_failed = ?, pin_length = NULL WHERE id = 1')
       .run(failed)
   }
 
@@ -1141,7 +1142,8 @@ export class VaultService {
       kek.fill(0)
       return UNAVAILABLE
     }
-    this.db.prepare('UPDATE vault_state SET pin_failed = 0 WHERE id = 1').run()
+    // A PIN set before pin_length existed has its length learned here.
+    this.db.prepare('UPDATE vault_state SET pin_failed = 0, pin_length = ? WHERE id = 1').run(pin.length)
     return { ok: true, kek, ...opened }
   }
 

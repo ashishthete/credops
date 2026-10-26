@@ -296,9 +296,15 @@ function unlockDescription(status: VaultStatus): string {
     return `Working offline · sign-in checked ${hours} h ago`
   }
   if (sso.required && sso.upn) return `Signed in as ${sso.upn}`
-  return status.quickUnlock === 'touchId' && status.quickUnlockAvailable.touchId
-    ? 'Use Touch ID or your master password to open CredOps.'
-    : 'Enter your master password to open CredOps.'
+  // Every way in that works now, so the line holds whichever tab is open.
+  const ways = [
+    status.quickUnlock === 'touchId' && status.quickUnlockAvailable.touchId && 'Touch ID',
+    status.pin.enabled && 'your PIN',
+    status.hasPassword && 'your master password',
+  ].filter((w): w is string => !!w)
+  if (ways.length === 0) return 'Enter your master password to open CredOps.'
+  if (ways.length === 1) return `${ways[0] === 'Touch ID' ? 'Use' : 'Enter'} ${ways[0]} to open CredOps.`
+  return `Use ${ways.slice(0, -1).join(', ')} or ${ways.at(-1)} to open CredOps.`
 }
 
 /**

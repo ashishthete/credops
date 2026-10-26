@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { deriveKek } from '../../src/main/vault/crypto'
-import { checkPin } from '../../src/main/vault/pin'
+import { checkPin, checkPinFormat } from '../../src/main/vault/pin'
 import { DEFAULT_VAULT_ID, PIN_ATTEMPTS, PIN_WIPED, VAULT_LOCKED, VAULT_RESET_CONFIRM } from '../../src/shared/vault'
 import { auditRows, fakeQuick, makeVault, type FakeQuick, type VaultFixture } from './vault-helpers'
 
@@ -24,13 +24,14 @@ interface PinRow {
   pin_salt: string | null
   pin_pepper_blob: string | null
   pin_failed: number
+  pin_length: number | null
   last_method: string | null
   failed_attempts: number
 }
 
 function row(f: VaultFixture): PinRow {
   return f.db
-    .prepare('SELECT pin_wrap, pin_salt, pin_pepper_blob, pin_failed, last_method, failed_attempts FROM vault_state WHERE id = 1')
+    .prepare('SELECT pin_wrap, pin_salt, pin_pepper_blob, pin_failed, pin_length, last_method, failed_attempts FROM vault_state WHERE id = 1')
     .get() as never
 }
 
@@ -56,15 +57,20 @@ async function miss(f: Fx, n: number): Promise<unknown[]> {
 }
 
 describe('checkPin', () => {
-  it('accepts 6-12 digits and refuses the rest', () => {
-    for (const ok of ['204816', '013579', '204816204816']) expect(() => checkPin(ok)).not.toThrow()
-    for (const bad of ['20481', '2048162048161', '12 34 56', '20481a', '', '２０４８１６']) {
-      expect(() => checkPin(bad)).toThrow('PIN must be 6-12 digits')
+  it('accepts 4-8 digits for a new PIN and refuses the rest', () => {
+    for (const ok of ['2048', '204816', '013579', '20481620']) expect(() => checkPin(ok)).not.toThrow()
+    for (const bad of ['204', '204816204', '204816204816', '12 34 56', '20481a', '', '２０４８１６']) {
+      expect(() => checkPin(bad)).toThrow('PIN must be 4-8 digits')
     }
   })
 
+  it('an attempt may carry up to 12 digits, for a PIN set before the 4-8 rule', () => {
+    for (const ok of ['2048', '20481620', '204816204816']) expect(() => checkPinFormat(ok)).not.toThrow()
+    for (const bad of ['204', '2048162048161', '20481a']) expect(() => checkPinFormat(bad)).toThrow('PIN must be 4-8 digits')
+  })
+
   it('refuses repeated digits and straight runs', () => {
-    for (const easy of ['111111', '000000000000', '123456', '987654', '012345678', '3456789']) {
+    for (const easy of ['1111', '00000000', '123456', '987654', '01234567', '3456789']) {
       expect(() => checkPin(easy)).toThrow('PIN is too easy to guess')
     }
     for (const ok of ['112233', '123457', '890123', '135791']) expect(() => checkPin(ok)).not.toThrow()
@@ -74,7 +80,7 @@ describe('checkPin', () => {
 describe('PIN unlock', () => {
   it('PIN unlock', async () => {
     const f = await ready()
-    expect(f.vault.status().pin).toEqual({ enabled: true, attemptsLeft: PIN_ATTEMPTS })
+    expect(f.vault.status().pin).toEqual({ enabled: true, attemptsLeft: PIN_ATTEMPTS, length: PIN.length })
     const sealed = f.vault.seal(DEFAULT_VAULT_ID, 'a', 'v')
     f.vault.lock('manual')
     expect(await f.vault.unlockPin(PIN)).toEqual({ ok: true })
@@ -96,8 +102,8 @@ describe('PIN unlock', () => {
   it('rejects non-digit and short PINs without counting', async () => {
     const f = await ready()
     f.vault.lock('manual')
-    for (const bad of ['12 34 56', '20481', 'abcdef', '2048162048161']) {
-      await expect(f.vault.unlockPin(bad)).rejects.toThrow('PIN must be 6-12 digits')
+    for (const bad of ['12 34 56', '204', 'abcdef', '2048162048161']) {
+      await expect(f.vault.unlockPin(bad)).rejects.toThrow('PIN must be 4-8 digits')
     }
     expect(row(f).pin_failed).toBe(0)
     expect(deriveKek).toHaveBeenCalledTimes(1) // setup only
@@ -134,6 +140,27 @@ describe('PIN unlock', () => {
     await miss(f, 3)
     const again = makeVault({ db: f.db, quick: f.quick })
     expect(again.vault.status().pin.attemptsLeft).toBe(2)
+  })
+
+  it("a PIN set before main kept its length gets it learned on the next PIN unlock", async () => {
+    const f = await ready()
+    f.db.prepare('UPDATE vault_state SET pin_length = NULL WHERE id = 1').run()
+    expect(f.vault.status().pin).toEqual({ enabled: true, attemptsLeft: PIN_ATTEMPTS })
+    f.vault.lock('manual')
+    await miss(f, 1)
+    expect(f.vault.status().pin.length).toBeUndefined()
+    expect(await f.vault.unlockPin(PIN)).toEqual({ ok: true })
+    expect(f.vault.status().pin.length).toBe(PIN.length)
+  })
+
+  it('a 4-digit PIN reports its length, and removing the PIN clears it', async () => {
+    const f = await ready({ password: PW, pin: '2580', touchId: true })
+    expect(f.vault.status().pin.length).toBe(4)
+    await f.vault.setPin('20481620')
+    expect(f.vault.status().pin.length).toBe(8)
+    f.vault.clearPin()
+    expect(f.vault.status().pin).toEqual({ enabled: false, attemptsLeft: PIN_ATTEMPTS })
+    expect(row(f).pin_length).toBeNull()
   })
 
   it('any successful unlock resets the PIN count', async () => {
@@ -190,7 +217,7 @@ describe('PIN unlock', () => {
     }
     expect(f.vault.isUnlocked()).toBe(false)
     expect((await f.vault.reset(VAULT_RESET_CONFIRM)).setUp).toBe(false)
-    expect(row(f)).toEqual({ pin_wrap: null, pin_salt: null, pin_pepper_blob: null, pin_failed: 0, last_method: null, failed_attempts: 0 })
+    expect(row(f)).toEqual({ pin_wrap: null, pin_salt: null, pin_pepper_blob: null, pin_failed: 0, pin_length: null, last_method: null, failed_attempts: 0 })
     expect(await f.vault.setup({ pin: PIN2 })).toMatchObject({ setUp: true, unlocked: true })
   })
 
@@ -305,7 +332,7 @@ describe('PIN unlock', () => {
       await p.catch((e: Error) => messages.push(e.message))
     }
     await capture(f.vault.setPin('111111'))
-    await capture(f.vault.setPin('20481'))
+    await capture(f.vault.setPin('204'))
     await f.vault.setPin(PIN2)
     await f.vault.reverify({ method: 'pin', pin: PIN })
     await f.vault.reverify({ method: 'pin', pin: PIN2 })
@@ -315,7 +342,7 @@ describe('PIN unlock', () => {
     await miss(f, PIN_ATTEMPTS)
     expect(messages.length).toBeGreaterThan(3)
     const rows = auditRows(f.db)
-    for (const secret of [PIN, PIN2, '111111', '20481', '12 34 56']) {
+    for (const secret of [PIN, PIN2, '111111', '204', '12 34 56']) {
       expect(rows).not.toContain(secret)
       for (const m of messages) expect(m).not.toContain(secret)
     }

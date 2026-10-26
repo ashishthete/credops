@@ -122,7 +122,7 @@ describe('setup', () => {
     renderSetup(NO_TOUCH_ID)
     await user.click(screen.getByLabelText('PIN'))
     await user.paste('1357924680135')
-    expect(screen.getByText('PIN must be 6-12 digits')).toBeInTheDocument()
+    expect(screen.getByText('PIN must be 4-8 digits')).toBeInTheDocument()
     expect(continueButton()).toBeDisabled()
   })
 
@@ -270,12 +270,31 @@ describe('method chooser', () => {
     expect(document.body.textContent).not.toContain('135792')
   })
 
+  it('a PIN of known length unlocks as its last digit is typed, with no Enter', async () => {
+    const user = userEvent.setup()
+    const { invoke, onUnlocked } = renderUnlock(
+      { ...ALL_METHODS, pin: { enabled: true, attemptsLeft: 5, length: 4 }, lastMethod: 'pin' },
+      { 'vault:unlockPin': [WRONG_PIN, { ok: true }] },
+    )
+    const pin = screen.getByLabelText('PIN')
+    await user.type(pin, '135')
+    expect(invoke).not.toHaveBeenCalledWith('vault:unlockPin', expect.anything())
+    await user.type(pin, '7')
+    expect(invoke).toHaveBeenCalledWith('vault:unlockPin', '1357')
+    expect(await screen.findByText('Wrong PIN')).toBeInTheDocument()
+    expect(pin).toHaveValue('')
+
+    await user.type(pin, '2468')
+    await waitFor(() => expect(onUnlocked).toHaveBeenCalledOnce())
+    expect(invoke).toHaveBeenCalledWith('vault:unlockPin', '2468')
+  })
+
   it('a pasted PIN over 12 digits is not sent', async () => {
     const user = userEvent.setup()
     const { invoke } = renderUnlock({ ...ALL_METHODS, lastMethod: 'pin' })
     await user.click(screen.getByLabelText('PIN'))
     await user.paste('1357924680135')
-    expect(screen.getByText('PIN must be 6-12 digits')).toBeInTheDocument()
+    expect(screen.getByText('PIN must be 4-8 digits')).toBeInTheDocument()
     await user.keyboard('{Enter}')
     expect(invoke).not.toHaveBeenCalledWith('vault:unlockPin', expect.anything())
   })
