@@ -102,7 +102,7 @@
           {
             "name": "preflight repo dep1",
             "ansible.builtin.shell": {
-              "cmd": "R={{ d.repo | quote }}\nif [ -d \"$R/.git\" ]; then echo \"OD-PF repo exists=1 git=1\"; elif [ -d \"$R\" ]; then echo \"OD-PF repo exists=1 git=0\"; else echo \"OD-PF repo exists=0 git=0\"; fi",
+              "cmd": "R={{ d.repo | quote }}\nif [ -d \"$R\" ]; then\n  G=\"$R\"; while [ ! -e \"$G/.git\" ] && [ \"$G\" != / ] && [ -n \"$G\" ]; do G=$(dirname \"$G\"); done\n  if [ -e \"$G/.git\" ]; then echo \"OD-PF repo exists=1 git=1\"; else echo \"OD-PF repo exists=1 git=0\"; fi\nelse echo \"OD-PF repo exists=0 git=0\"; fi",
               "executable": "/bin/bash"
             },
             "timeout": 60,
@@ -282,7 +282,7 @@
           {
             "name": "preflight repo dep2",
             "ansible.builtin.shell": {
-              "cmd": "R={{ d.repo | quote }}\nif [ -d \"$R/.git\" ]; then echo \"OD-PF repo exists=1 git=1\"; elif [ -d \"$R\" ]; then echo \"OD-PF repo exists=1 git=0\"; else echo \"OD-PF repo exists=0 git=0\"; fi",
+              "cmd": "R={{ d.repo | quote }}\nif [ -d \"$R\" ]; then\n  G=\"$R\"; while [ ! -e \"$G/.git\" ] && [ \"$G\" != / ] && [ -n \"$G\" ]; do G=$(dirname \"$G\"); done\n  if [ -e \"$G/.git\" ]; then echo \"OD-PF repo exists=1 git=1\"; else echo \"OD-PF repo exists=1 git=0\"; fi\nelse echo \"OD-PF repo exists=0 git=0\"; fi",
               "executable": "/bin/bash"
             },
             "timeout": 60,
@@ -491,7 +491,7 @@
           {
             "name": "preflight repo dep3",
             "ansible.builtin.shell": {
-              "cmd": "R={{ d.repo | quote }}\nif [ -d \"$R/.git\" ]; then echo \"OD-PF repo exists=1 git=1\"; elif [ -d \"$R\" ]; then echo \"OD-PF repo exists=1 git=0\"; else echo \"OD-PF repo exists=0 git=0\"; fi",
+              "cmd": "R={{ d.repo | quote }}\nif [ -d \"$R\" ]; then\n  G=\"$R\"; while [ ! -e \"$G/.git\" ] && [ \"$G\" != / ] && [ -n \"$G\" ]; do G=$(dirname \"$G\"); done\n  if [ -e \"$G/.git\" ]; then echo \"OD-PF repo exists=1 git=1\"; else echo \"OD-PF repo exists=1 git=0\"; fi\nelse echo \"OD-PF repo exists=0 git=0\"; fi",
               "executable": "/bin/bash"
             },
             "timeout": 60,

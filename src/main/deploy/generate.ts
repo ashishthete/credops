@@ -666,16 +666,25 @@ export function taskLock(h: PlanHost): Task {
 }
 
 /**
+ * `G` = the checkout that holds `from`: the nearest folder at or above it with a `.git` (a deployment can sit in a
+ * subfolder of a monorepo), else `/`.
+ */
+const gitRootOf = (from: string) => `G=${from}; while [ ! -e "$G/.git" ] && [ "$G" != / ] && [ -n "$G" ]; do G=$(dirname "$G"); done`
+
+/**
  * Stops the builds a parallel prepare launched on the host (each recorded its process group, `od.kill_pids`) and
- * removes their pid files, before any lock goes. A group is signalled (as the user, then with sudo) only while it is
+ * removes their pid files, before any lock goes. Each file is listed as `<repo>/.git/…` and looked up in the checkout
+ * that holds the repo, where the launch wrote it. A group is signalled (as the user, then with sudo) only while it is
  * still that build's: some member's argv names the run's pid file (the launch's own shell does), and it is not this
  * task's group. Anything else (no plain number above 1, a group gone or reused) only loses its stale pid file.
  */
 const KILL_BUILDS = [
   "me=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')",
   "for p in {{ od.kill_pids | map('quote') | join(' ') }}; do",
-  '  g=$(cat "$p" 2>/dev/null)',
   '  m="${p##*/}"',
+  `  ${gitRootOf('"${p%/.git/*}"')}`,
+  '  p="$G/.git/$m"',
+  '  g=$(cat "$p" 2>/dev/null)',
   '  ours=',
   '  case "$g" in \'\'|*[!0-9]*) ;; *) if [ "$g" -gt 1 ] && [ "$g" != "$me" ] && ps -eo pgid=,args= 2>/dev/null | awk -v g="$g" \'$1 == g\' | grep -qF -- "$m"; then ours=1; fi;; esac',
   '  if [ -n "$ours" ]; then',
@@ -752,7 +761,14 @@ function preflightTasks(plan: DeployPlan, d: PlanDeployment): Task[] {
   if (d.becomeSecretKey !== null && d.useSudo !== 'no')
     out.push(pf(d, 'docker-become', 'if docker info >/dev/null 2>&1; then echo "OD-PF docker become=ok"; else echo "OD-PF docker become=fail"; fi', { chdir: false, become: true }))
   out.push(
-    pf(d, 'repo', ['R={{ d.repo | quote }}', 'if [ -d "$R/.git" ]; then echo "OD-PF repo exists=1 git=1"; elif [ -d "$R" ]; then echo "OD-PF repo exists=1 git=0"; else echo "OD-PF repo exists=0 git=0"; fi'].join('\n'), { chdir: false }),
+    // A repo path may be a subfolder of its checkout (a monorepo): git works from there, so that is a git repository too.
+    pf(d, 'repo', [
+      'R={{ d.repo | quote }}',
+      'if [ -d "$R" ]; then',
+      `  ${gitRootOf('"$R"')}`,
+      '  if [ -e "$G/.git" ]; then echo "OD-PF repo exists=1 git=1"; else echo "OD-PF repo exists=1 git=0"; fi',
+      'else echo "OD-PF repo exists=0 git=0"; fi',
+    ].join('\n'), { chdir: false }),
     pf(d, 'clean', ['git update-index -q --refresh', 'if git diff-index --quiet HEAD --; then echo "OD-PF clean ok=1"; else echo "OD-PF clean ok=0 files=$(git status --porcelain --untracked-files=no 2>/dev/null | wc -l | tr -d \' \')"; fi'].join('\n')),
     pf(d, 'fetch', [
       'B={{ d.branch | quote }}',
@@ -1114,12 +1130,12 @@ export function prepareSchedule(deps: readonly PlanDeployment[], cap: number): s
 
 /**
  * The build, launched in the background (`async`, `poll: 0`) so a wave's builds run at once on every host. The
- * shell records its process group in the repo's `.git/opsdeck-build-<run>.pid` (removed when the build ends), so an
+ * shell records its process group in its checkout's `.git/opsdeck-build-<run>.pid` (removed when the build ends), so an
  * unlock after a cancel can stop it. A helper task: the build step is settled by its async_status poll.
  */
 function taskBuildLaunch(d: PlanDeployment, n: number): Task {
-  const pid = '.git/opsdeck-build-{{ d.run }}.pid'
-  const warn = `echo "CredOps warning: cancel can't stop this build: its process group could not be recorded in ${pid}"`
+  const pid = '"$G/.git/opsdeck-build-{{ d.run }}.pid"'
+  const warn = `echo "CredOps warning: cancel can't stop this build: its process group could not be recorded in $G/.git"`
   const cmd = [
     // the process group: from ps, else /proc (BusyBox ps has no -o pgid), else the shell's own pid
     "g=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')",
@@ -1127,6 +1143,7 @@ function taskBuildLaunch(d: PlanDeployment, n: number): Task {
     "case \"$g\" in ''|*[!0-9]*) g=$$;; esac",
     // a .git that is a file (a worktree, a submodule) cannot hold it: the build goes on, with a warning in its log
     'W=1',
+    gitRootOf('"$PWD"'),
     `if [ "$g" -gt 1 ] && printf '%s' "$g" > ${pid} 2>/dev/null; then W=; fi`,
     '(',
     streamed('build', [`if [ -n "$W" ]; then ${warn}; fi`, composeCommand(composeOf(d), ['build'], d.services ?? [])].join('\n')),

@@ -1,4 +1,7 @@
 import { spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { matchSshConfig } from '../../src/main/inventory/ssh-config'
 import { generateAnsibleCfg, generateInventory, generateKnownHosts, generatePlaybook, generateSshConfig, knownHostsToken, prepareSchedule, socketPathFits, stepList } from '../../src/main/deploy/generate'
@@ -712,6 +715,24 @@ describe('fix round 1', () => {
     }
   })
 
+  it('a repo path in a subfolder of its checkout (a monorepo) is a git repository', () => {
+    const t = every(plays(planFixture({ kind: 'preflight' }))[0].tasks).map(({ t }) => t).find((t) => String(t.name) === 'preflight repo dep1')!
+    const root = mkdtempSync(join(tmpdir(), 'od-pf-repo-'))
+    mkdirSync(join(root, 'mono/.git'), { recursive: true })
+    mkdirSync(join(root, 'mono/webapp/esg'), { recursive: true })
+    mkdirSync(join(root, 'plain'))
+    const run = (repo: string) =>
+      spawnSync('/bin/sh', [], { input: cmdOf(t).replace('{{ d.repo | quote }}', `'${join(root, repo)}'`), encoding: 'utf8' }).stdout.trim()
+    try {
+      expect(run('mono')).toBe('OD-PF repo exists=1 git=1')
+      expect(run('mono/webapp/esg')).toBe('OD-PF repo exists=1 git=1')
+      expect(run('plain')).toBe('OD-PF repo exists=1 git=0')
+      expect(run('missing')).toBe('OD-PF repo exists=0 git=0')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('the clean count is tracked files only', () => {
     const c = every(plays(planFixture({ kind: 'preflight' }))[0].tasks).map(({ t }) => cmdOf(t)).join('\n')
     expect(c).toContain('git status --porcelain --untracked-files=no')
@@ -1422,7 +1443,7 @@ describe('parallel prepare', () => {
     expect(launch.async).toBe(300)
     expect(launch.poll).toBe(0)
     expect(launch.register).toBe('od_bj_1')
-    expect(cmdOf(launch)).toContain('.git/opsdeck-build-{{ d.run }}.pid')
+    expect(cmdOf(launch)).toContain('"$G/.git/opsdeck-build-{{ d.run }}.pid"')
     const poll = leaf.find((t) => t.name === 'build dep2')!
     expect(poll['ansible.builtin.async_status']).toEqual({ jid: '{{ od_bj_1.ansible_job_id }}' })
     expect(tagOf(poll, 'od_step')).toBe('build')
@@ -1586,7 +1607,7 @@ describe('parallel prepare', () => {
     expect(ps).toBeGreaterThan(-1)
     expect(proc).toBeGreaterThan(ps)
     expect(self).toBeGreaterThan(proc)
-    const write = lines.findIndex((l) => l.includes(`printf '%s' "$g" > .git/opsdeck-build-{{ d.run }}.pid 2>/dev/null; then W=; fi`))
+    const write = lines.findIndex((l) => l.includes(`printf '%s' "$g" > "$G/.git/opsdeck-build-{{ d.run }}.pid" 2>/dev/null; then W=; fi`))
     expect(write).toBeGreaterThan(self)
     expect(lines.indexOf('W=1')).toBeLessThan(write)
     const warn = lines.findIndex((l) => l.startsWith('if [ -n "$W" ]; then echo "CredOps warning: cancel can\'t stop this build'))
