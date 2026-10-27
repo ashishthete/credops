@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -201,7 +202,7 @@ describe('log tap', () => {
     const tap = startTap(prepared.links.get(HOST_ID)!, '0190a1b2-c3d4-7e5f-8a6b-1234567890ab', (l) => lines.push(l), { host: 'web' })
     await vi.waitFor(() => expect(lines).toEqual(['first line', 'second line']))
     expect(s.execs()).toEqual([tapCommand('0190a1b2-c3d4-7e5f-8a6b-1234567890ab')])
-    expect(s.execs()[0]).toBe('mkdir -p ~/.opsdeck/runs/0190a1b2-c3d4-7e5f-8a6b-1234567890ab && touch ~/.opsdeck/runs/0190a1b2-c3d4-7e5f-8a6b-1234567890ab/stream.log && exec tail -n +1 -F ~/.opsdeck/runs/0190a1b2-c3d4-7e5f-8a6b-1234567890ab/stream.log')
+    expect(s.execs()[0]).toBe('umask 077; mkdir -p -m 700 ~/.opsdeck/runs/0190a1b2-c3d4-7e5f-8a6b-1234567890ab && touch ~/.opsdeck/runs/0190a1b2-c3d4-7e5f-8a6b-1234567890ab/stream.log && exec tail -n +1 -F ~/.opsdeck/runs/0190a1b2-c3d4-7e5f-8a6b-1234567890ab/stream.log')
     tap.stop()
   })
 
@@ -249,6 +250,20 @@ describe('log tap', () => {
     expect(lines[0]).toBe('a€')
     expect(lines[1].length).toBe(4096)
     expect(lines[1].endsWith(' …(cut)')).toBe(true)
+  })
+
+  it('the tap creates the run tree private to the user', () => {
+    const home = mkdtempSync(join(tmpdir(), 'od-tap-'))
+    cleanups.push(() => rmSync(home, { recursive: true, force: true }))
+    const id = '0190a1b2-c3d4-7e5f-8a6b-1234567890ab'
+    // Everything before the never-ending tail, under a permissive umask the login shell might have.
+    const setup = tapCommand(id).split(' && exec tail')[0]
+    execFileSync('/bin/sh', ['-c', `umask 022; ${setup}`], { env: { ...process.env, HOME: home } })
+    const mode = (p: string): number => statSync(join(home, p)).mode & 0o777
+    expect(mode('.opsdeck')).toBe(0o700)
+    expect(mode('.opsdeck/runs')).toBe(0o700)
+    expect(mode(`.opsdeck/runs/${id}`)).toBe(0o700)
+    expect(mode(`.opsdeck/runs/${id}/stream.log`)).toBe(0o600)
   })
 
   it('refuses an unsafe release id', () => {
