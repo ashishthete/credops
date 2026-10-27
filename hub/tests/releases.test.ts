@@ -607,3 +607,40 @@ describe('hub releases', () => {
     await expect(check('10.0.0.9', other)).rejects.toMatchObject({ code: 'host-key-revoked' })
   })
 })
+
+describe('deploy key masking with overlapping runs', () => {
+  it('keeps an environment key masked until the last of its concurrent runs ends', async () => {
+    const finish = new Map<string, () => void>()
+    const base = {
+      start: (plan: DeployPlan) => {
+        let resolve!: () => void
+        const done = new Promise<void>((r) => (resolve = r))
+        finish.set(plan.releaseId, resolve)
+        return { runId: randomUUID(), done }
+      },
+      cancel: () => undefined,
+      onEvent: () => () => undefined,
+    }
+    hub = await testHub({}, { runner: base as never })
+    const admin = (await hub.signIn(ADMIN)).token
+    expect((await call(admin, 'PUT', `/api/v1/admin/environments/${ENV_ID}`, manifestOne({}))).statusCode).toBe(200)
+    expect((await call(admin, 'POST', `/api/v1/admin/environments/${ENV_ID}/deploy-key`)).statusCode).toBe(200)
+    // Lock-free runbook runs can overlap in one environment; the wrapped runner is what the service starts them on.
+    const wrapped = (hub.app.releases.service as any).d.runner as { start: (p: unknown, s: unknown) => { done: Promise<unknown> } }
+    const plan = (releaseId: string) => ({ releaseId, environment: { id: ENV_ID } })
+    const secrets = { values: {}, known: [] }
+    const a = wrapped.start(plan('rel-a'), secrets)
+    const b = wrapped.start(plan('rel-b'), secrets)
+    const { privateKey: pem } = await hub.app.releases.identities.resolve(ENV_ID)
+    expect(hub.app.releases.runKnownSecrets()).toContain(pem)
+    finish.get('rel-a')!()
+    await a.done
+    await new Promise((r) => setImmediate(r))
+    // rel-b still runs with the same key: it must stay masked.
+    expect(hub.app.releases.runKnownSecrets()).toContain(pem)
+    finish.get('rel-b')!()
+    await b.done
+    await new Promise((r) => setImmediate(r))
+    expect(hub.app.releases.runKnownSecrets()).not.toContain(pem)
+  })
+})

@@ -130,6 +130,8 @@ export class HubReleases {
   private readonly store: ReleaseStore
   private readonly runSecrets = new Map<string, string[]>()
   private readonly pems = new Map<string, string>()
+  /** Runs alive per environment: lock-free runbooks can overlap, and a key stays masked until the last one ends. */
+  private readonly pemRuns = new Map<string, number>()
 
   constructor(private readonly d: HubReleasesDeps) {
     const access = new HubDeployAccess({ directory: d.directory })
@@ -147,11 +149,28 @@ export class HubReleases {
     // Remembers every secret value of a run while it lives, so the live stream and error bodies can mask them.
     const runner: DeployRunner = {
       start: (plan, secrets: RunSecrets) => {
+        const env = plan.environment.id
         this.runSecrets.set(plan.releaseId, [...secrets.known, ...Object.values(secrets.values)])
-        const handle = base.start(plan, secrets)
+        this.pemRuns.set(env, (this.pemRuns.get(env) ?? 0) + 1)
+        let settled = false
         const settle = (): void => {
+          if (settled) return
+          settled = true
           this.runSecrets.delete(plan.releaseId)
-          this.pems.delete(plan.environment.id)
+          const left = (this.pemRuns.get(env) ?? 1) - 1
+          if (left > 0) {
+            this.pemRuns.set(env, left)
+          } else {
+            this.pemRuns.delete(env)
+            this.pems.delete(env)
+          }
+        }
+        let handle: ReturnType<DeployRunner['start']>
+        try {
+          handle = base.start(plan, secrets)
+        } catch (err) {
+          settle()
+          throw err
         }
         void handle.done.then(settle, settle)
         return handle
