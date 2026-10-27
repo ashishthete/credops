@@ -42,4 +42,18 @@ describe('parseExplanation', () => {
     expect(out.commands).toHaveLength(8)
     expect(out.commands.map((c) => c.title)).toEqual(many.slice(0, 8).map((c) => c.title))
   })
+
+  it('drops commands holding control, bidi or zero-width characters and keeps tabs', () => {
+    const bad = [
+      '\u0001', '\u0008', '\n', '\r', '\u001b', '\u001f', '\u007f', '\u0080', '\u009b', '\u009f',
+      '​', '‍', '‎', '‏', '‪', '‮', '⁠', '⁤', '⁦', '⁩', '﻿',
+    ]
+    const commands = [
+      ...bad.map((ch, i) => ({ ...good.commands[0], title: `bad${i}`, command: `ls${ch} -la` })),
+      { ...good.commands[0], title: 'tab', command: 'printf "a\\tb"\t| cat' },
+      { ...good.commands[0], title: 'unicode', command: 'echo "héllo — 日本"' },
+    ]
+    const out = parseExplanation(JSON.stringify({ ...good, commands }))
+    expect(out.commands.map((c) => c.title)).toEqual(['tab', 'unicode'])
+  })
 })

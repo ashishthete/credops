@@ -102,7 +102,13 @@ const bad = (): AiFailure => new AiFailure('bad-output', 'Claude returned an ans
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x)
 const cap = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
-/** Parses Claude's structured answer. Throws `bad-output`; caps lengths; drops commands that are too long, hold a NUL or are malformed. */
+/**
+ * Characters a suggested command must not hold: C0 controls but tab (so also CR and LF), DEL, C1 controls, and the
+ * zero-width and bidi-control code points that make what runs differ from what the user reads.
+ */
+const UNSAFE_COMMAND_CHAR = /[\u0000-\u0008\u000A-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/
+
+/** Parses Claude's structured answer. Throws `bad-output`; caps lengths; drops commands that are too long, hold a control or invisible character, or are malformed. */
 export function parseExplanation(json: string): ParsedExplanation {
   let raw: unknown
   try {
@@ -122,7 +128,7 @@ export function parseExplanation(json: string): ParsedExplanation {
     if (!isObj(c)) continue
     const { title, command, where, risk } = c
     if (typeof title !== 'string' || typeof command !== 'string') continue
-    if (command.trim().length === 0 || command.length > MAX_COMMAND || command.includes('\u0000')) continue
+    if (command.trim().length === 0 || command.length > MAX_COMMAND || UNSAFE_COMMAND_CHAR.test(command)) continue
     if (where !== 'host' && where !== 'local') continue
     if (!COMMAND_RISKS.includes(risk as never)) continue
     kept.push({ title: cap(title, MAX_TITLE), command, where, risk: risk as CommandRisk })
