@@ -171,6 +171,46 @@ let quitAudited = false
 let stopAutoLock: (() => void) | null = null
 let stopSsoWatch: (() => void) | null = null
 
+/**
+ * A running release holds host locks, so quitting asks first and, on "Quit and cancel", cancels it
+ * and waits for the unlock before quitting. True while the quit must wait: no confirmation yet,
+ * or the question is already on screen (one prompt for a window close and Cmd+Q together).
+ */
+function holdQuitForRelease(parent: BrowserWindow | null): boolean {
+  if (quitConfirmed || !releaseService?.hasActive()) return false
+  if (quitPrompting) return true
+  quitPrompting = true
+  const svc = releaseService
+  const env = svc.activeEnvironments()[0]
+  const opts: Electron.MessageBoxOptions = { type: 'warning', buttons: ['Quit and cancel', 'Keep open'], defaultId: 1, cancelId: 1, message: `A release is running on ${env}. Quit and cancel it?` }
+  void (parent && !parent.isDestroyed() ? dialog.showMessageBox(parent, opts) : dialog.showMessageBox(opts))
+    .then(async ({ response }) => {
+      if (response !== 0) return
+      await Promise.race([svc.cancelAll(), new Promise((r) => setTimeout(r, RELEASE_QUIT_WAIT_MS))])
+      quitConfirmed = true
+      app.quit()
+    })
+    .catch((err: unknown) => console.error('Failed to cancel releases on quit:', err))
+    .finally(() => {
+      quitPrompting = false
+    })
+  return true
+}
+
+/** Startup has registered the IPC handlers, so a window can be (re)made. */
+let appStarted = false
+
+/** Brings the window forward, or makes a new one when there is none (Dock click, second launch). */
+function showMainWindow(): void {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.focus()
+    return
+  }
+  // IPC handlers are registered once at startup; createWindow only builds the window and its own listeners.
+  if (appStarted) createWindow()
+}
+
 function createWindow(): void {
   const stateFile = join(app.getPath('userData'), WINDOW_STATE_FILE)
   const opening = initialWindowState(
@@ -186,8 +226,13 @@ function createWindow(): void {
     win.show()
     if (opening.fullScreen) win.setFullScreen(true)
   })
-  // Size, place and full screen come back on the next launch. Losing them is harmless.
-  win.on('close', () => {
+  // Closing the window quits the app (window-all-closed), so a running release is asked about
+  // here, while the window is still there for "Keep open" to leave in place.
+  win.on('close', (event) => {
+    if (holdQuitForRelease(win)) {
+      event.preventDefault()
+      return
+    }
     try {
       saveWindowState(stateFile, { bounds: win.getNormalBounds(), maximized: win.isMaximized(), fullScreen: win.isFullScreen() })
     } catch {
@@ -216,11 +261,8 @@ function createWindow(): void {
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
-  app.on('second-instance', () => {
-    if (!mainWindow) return
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.focus()
-  })
+  app.on('second-instance', () => showMainWindow())
+  app.on('activate', () => showMainWindow())
 
   app
     .whenReady()
@@ -774,6 +816,7 @@ if (!app.requestSingleInstanceLock()) {
         (url) => isTrustedSender(url, { devServerUrl, rendererFile }),
         { validators: VALIDATORS, knownSecrets },
       )
+      appStarted = true
       createWindow()
     })
     .catch((err) => {
@@ -784,25 +827,9 @@ if (!app.requestSingleInstanceLock()) {
     })
 
   app.on('before-quit', (event) => {
-    // A running release holds host locks: ask first, then cancel and wait for the unlock before quitting.
-    if (releaseService?.hasActive() && !quitConfirmed) {
+    // Cmd+Q comes here before any window closes; the window's close handler asks the same question.
+    if (holdQuitForRelease(mainWindow)) {
       event.preventDefault()
-      if (quitPrompting) return
-      quitPrompting = true
-      const svc = releaseService
-      const env = svc.activeEnvironments()[0]
-      void dialog
-        .showMessageBox({ type: 'warning', buttons: ['Quit and cancel', 'Keep open'], defaultId: 1, cancelId: 1, message: `A release is running on ${env}. Quit and cancel it?` })
-        .then(async ({ response }) => {
-          if (response !== 0) return
-          await Promise.race([svc.cancelAll(), new Promise((r) => setTimeout(r, RELEASE_QUIT_WAIT_MS))])
-          quitConfirmed = true
-          app.quit()
-        })
-        .catch((err: unknown) => console.error('Failed to cancel releases on quit:', err))
-        .finally(() => {
-          quitPrompting = false
-        })
       return
     }
     if (!audit || quitAudited) return
