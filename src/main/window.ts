@@ -64,6 +64,15 @@ export function shouldAllowNavigation(current: string, target: string): boolean 
   }
 }
 
+/**
+ * The one web permission the app grants: writing text to the clipboard (`navigator.clipboard.writeText`,
+ * behind every Copy button), and only to the app's own page. Chromium checks it as
+ * 'clipboard-sanitized-write'; everything else (clipboard reads included) is denied.
+ */
+export function allowsPermission(permission: string, requestingUrl: string | undefined, trusted: (url: string) => boolean): boolean {
+  return permission === 'clipboard-sanitized-write' && requestingUrl !== undefined && requestingUrl !== '' && trusted(requestingUrl)
+}
+
 /** The dev server URL, honoured only for unpackaged (dev) runs. */
 export function devRendererUrl(
   isPackaged: boolean,

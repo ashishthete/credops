@@ -107,7 +107,7 @@ import { IdentityStore } from './vault/identity-store'
 import { KeyStore } from './vault/key-store'
 import { SecretStore } from './vault/secret-store'
 import { VaultService, type QuickUnlockDeps } from './vault/vault-service'
-import { appMenuTemplate, devRendererUrl, dropOnRendererReset, forwardVaultLocks, pushEvent, shouldAllowNavigation, windowOptions } from './window'
+import { allowsPermission, appMenuTemplate, devRendererUrl, dropOnRendererReset, forwardVaultLocks, pushEvent, shouldAllowNavigation, windowOptions } from './window'
 
 // Keep dev data apart from the packaged app's (same name, same userData otherwise).
 // Must run before anything touches userData, including the single-instance lock.
@@ -267,8 +267,14 @@ if (!app.requestSingleInstanceLock()) {
   app
     .whenReady()
     .then(() => {
-      session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
-      session.defaultSession.setPermissionCheckHandler(() => false)
+      // Clipboard writes from the app's own page only (the Copy buttons); every other permission is denied.
+      const trustedPage = (url: string): boolean => isTrustedSender(url, { devServerUrl, rendererFile: join(__dirname, '../renderer/index.html') })
+      session.defaultSession.setPermissionRequestHandler((wc, permission, callback, details) =>
+        callback(allowsPermission(permission, details.requestingUrl || wc.getURL(), trustedPage)),
+      )
+      session.defaultSession.setPermissionCheckHandler((wc, permission, _origin, details) =>
+        allowsPermission(permission, details.requestingUrl || wc?.getURL(), trustedPage),
+      )
       Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(app.isPackaged, process.platform)))
       // Packaged builds take build/icon.icns; a dev run shows the same icon in the Dock.
       if (!app.isPackaged && process.platform === 'darwin') app.dock?.setIcon(join(app.getAppPath(), 'resources', 'icon.png'))
