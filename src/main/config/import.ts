@@ -405,9 +405,13 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
     const envVars = Object.fromEntries(
       Object.entries(x.envVars).map(([k, v]) => {
         const hereValue = Object.hasOwn(localVars, k) ? localVars[k] : undefined
-        if (!SENSITIVE_KEY.test(k) && !EXPORT_SECRET_NAME.test(k) && !(hereValue !== undefined && URL_USERINFO_VALUE.test(hereValue))) return [k, v]
-        if (v !== '') need('hosts', x.label, 'envVars', `${k} left blank; set it in the host editor`)
-        return [k, hereValue ?? '']
+        if (SENSITIVE_KEY.test(k)) {
+          if (v !== '') need('hosts', x.label, 'envVars', `${k} left blank; set it in the host editor`)
+          return [k, hereValue ?? '']
+        }
+        // Blanked by the export's wider rule only: a blank keeps the local value, a written one imports as it is.
+        if (v === '' && hereValue !== undefined && (EXPORT_SECRET_NAME.test(k) || URL_USERINFO_VALUE.test(hereValue))) return [k, hereValue]
+        return [k, v]
       }),
     )
     if (local === null) {

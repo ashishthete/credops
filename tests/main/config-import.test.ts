@@ -182,6 +182,26 @@ describe('config import', () => {
     expect(f.services.get(f.ids.appService)).toMatchObject({ url: 'https://staging.example.com/?token=xyz' })
   })
 
+  it('a hand-written value for a key only the export rule blanks imports as it is', async () => {
+    const { f, file } = await sourceFile()
+    const edited = copy(file)
+    edited.hosts.find((h) => h.label === 'app1')!.envVars = { LANG: 'C.UTF-8', AUTH_MODE: 'oidc', SESSION_STORE: 'redis' }
+    const t = await makeTarget(f)
+    const plan = planImport(t.db, edited)
+    expect(plan.needsSecret).toEqual([])
+    importFile(t, edited)
+    const app1 = t.db.prepare('SELECT env_vars FROM hosts WHERE label = ?').get('app1') as { env_vars: string }
+    expect(JSON.parse(app1.env_vars)).toEqual({ LANG: 'C.UTF-8', AUTH_MODE: 'oidc', SESSION_STORE: 'redis' })
+
+    // On an existing host too: a written value replaces the local one, a blank keeps it.
+    f.hosts.update(f.host.id, { envVars: { AUTH_MODE: 'saml', SESSION_TIMEOUT: '30' } })
+    const again = copy(buildConfigExport(f.db, clock).file)
+    again.hosts.find((h) => h.label === 'app1')!.envVars = { AUTH_MODE: 'oidc', SESSION_TIMEOUT: '' }
+    expect(planImport(f.db, again).needsSecret).toEqual([])
+    importFile(f, again, ['prod'])
+    expect(JSON.parse(hostRow(f.db, f.host.id).env_vars as string)).toEqual({ AUTH_MODE: 'oidc', SESSION_TIMEOUT: '30' })
+  })
+
   it('a blanked secret template line the local template has no value for keeps the local template and says so', async () => {
     const f = await makeConfigFixture()
     const local = f.deploys.get(f.ids.deployment).envTemplate!
