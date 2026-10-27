@@ -1163,6 +1163,18 @@ export class ReleaseService {
 
   // ---- locks ----
 
+  /** True when the lock holder is a release this app is still driving, or whose row still says it runs. */
+  private holderActive(holderId: string): boolean {
+    if (!holderId) return false
+    if (this.live.has(holderId)) return true
+    try {
+      const st = this.d.releases.get(holderId).status
+      return st === 'running' || st === 'rolling_back'
+    } catch {
+      return false // another machine's release, or a row since removed
+    }
+  }
+
   async breakLock(releaseId: string, hostId: string, confirm: BreakLockConfirm, ctx?: CallCtx): Promise<void> {
     const actor = ctx?.actor ?? this.d.actor
     this.d.vault.assertUnlocked()
@@ -1178,6 +1190,10 @@ export class ReleaseService {
     if (!lock.stale) {
       const minutes = Math.max(0, Math.floor((this.d.now().getTime() - Date.parse(lock.holder.startedAt)) / 60000))
       throw new DeployError('INVALID_STATE', STALE_TEXT(minutes, `${lock.holder.user}@${lock.holder.machine}`))
+    }
+    // Age alone is not proof the holder died: the lock is never refreshed and a long build outlives LOCK_STALE_MS.
+    if (this.holderActive(lock.holder.releaseId)) {
+      throw new DeployError('INVALID_STATE', `The release holding this lock is still running here. Cancel it or wait for it to finish instead of breaking its lock.`)
     }
     if (confirm.typedLabel !== label) {
       this.auditRelease(actor, 'deploy.lock_break', 'denied', releaseId, env.name, rel.version ?? 'release', { reason: 'confirm', hostCount: 1 })

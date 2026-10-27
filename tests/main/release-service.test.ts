@@ -423,6 +423,33 @@ describe('ReleaseService', () => {
     expect(audits(r, 'deploy.lock_break').map((e) => e.outcome).sort()).toEqual(['denied', 'success'])
   })
 
+  it('break-lock refuses a stale-looking lock whose holder release is still running', async () => {
+    const r = await rig()
+    const g = gate()
+    r.runner.on.release = async () => {
+      await g.p
+    }
+    // A long build in prod holds the host's lock past LOCK_STALE_MS.
+    r.f.envs.putHost(r.f.prod.id, r.f.host.id, 'app')
+    const prodId = await ready(r, [dep(r, 'api-prod', { environmentId: r.f.prod.id, deployTag: 'deploy_prod' })], { envId: r.f.prod.id })
+    await r.svc.start(prodId, { typedName: 'prod' })
+    const holder = (releaseId: string) => ({ releaseId, user: 'ana', machine: 'mbp', environment: 'prod', version: null, startedAt: new Date(NOW - 300 * 60000).toISOString() })
+    r.runner.locks = { [r.f.host.id]: { holder: holder(prodId), stale: true, raw: 'raw-live' } }
+    const blocked = await ready(r)
+    const err = await r.svc.breakLock(blocked, r.f.host.id, { typedLabel: 'app1' }).catch((e: unknown) => e)
+    expect((err as DeployError).code).toBe('INVALID_STATE')
+    expect((err as DeployError).message).toMatch(/still running/)
+    expect(r.runner.kinds).not.toContain('break-lock')
+    g.open()
+    await r.svc.whenIdle()
+
+    // A row still marked running (nothing here drives it) is refused too.
+    r.f.releases.setStatus(prodId, 'rolling_back')
+    const again = await ready(r, [r.f.deploys.list(r.f.staging.id)[0]])
+    await expect(r.svc.breakLock(again, r.f.host.id, { typedLabel: 'app1' })).rejects.toThrow(/still running/)
+    expect(r.runner.kinds).not.toContain('break-lock')
+  })
+
   it('one active release per environment; MAX_ACTIVE_RELEASES', async () => {
     const r = await rig()
     const g = gate()
