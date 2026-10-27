@@ -217,6 +217,53 @@ describe('ReleaseService', () => {
     await expect(r.svc.rollback(releaseId, {})).rejects.toThrow('Only a release can be rolled back')
   })
 
+  it('a cancelled release rolls back the runs whose checkout started, and refuses when none did', async () => {
+    const r = await rig()
+    const deps = [dep(r, 'one'), dep(r, 'two')]
+    const g = gate()
+    r.runner.onCancel = g.open
+    const inCheckout = gate()
+    r.runner.on.release = async (plan, _s, emit) => {
+      const [r1, r2] = runIds(plan)
+      emit({ type: 'deployment.updated', deploymentRunId: r1, status: 'running', previousCommit: A })
+      emit({ type: 'step.started', stepId: `${r1}:checkout`, kind: 'checkout', name: 'Checkout one', hostId: r.f.host.id, deploymentRunId: r1 })
+      // two's commit is known, but its checkout never started.
+      emit({ type: 'deployment.updated', deploymentRunId: r2, status: 'running', previousCommit: B })
+      inCheckout.open()
+      await g.p
+      return { cancelled: true, exitCode: null }
+    }
+    const id = await ready(r, deps)
+    await r.svc.start(id, {})
+    await inCheckout.p
+    await r.svc.cancel(id)
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).status).toBe('cancelled')
+    const { releaseId } = await r.svc.rollback(id, {})
+    await r.svc.whenIdle()
+    const plan = r.runner.call('rollback')
+    expect(plan.deployments.map((d) => [d.name, d.previousCommit])).toEqual([['one', A]])
+    expect(r.svc.detail(releaseId)).toMatchObject({ kind: 'rollback', rollbackOf: id, status: 'succeeded' })
+
+    // Cancelled before any checkout: nothing moved, so nothing to roll back.
+    const g2 = gate()
+    r.runner.onCancel = g2.open
+    const started = gate()
+    r.runner.on.release = async (plan, _s, emit) => {
+      emit({ type: 'deployment.updated', deploymentRunId: runIds(plan)[0], status: 'running', previousCommit: A })
+      started.open()
+      await g2.p
+      return { cancelled: true, exitCode: null }
+    }
+    const early = await ready(r, deps)
+    await r.svc.start(early, {})
+    await started.p
+    await r.svc.cancel(early)
+    await r.svc.whenIdle()
+    expect(r.svc.detail(early).status).toBe('cancelled')
+    await expect(r.svc.rollback(early, {})).rejects.toThrow('Nothing to roll back: the release was cancelled before any checkout changed')
+  })
+
   it('unlock always runs', async () => {
     const scenarios: [string, (r: Rig) => Promise<void>][] = [
       ['success', async () => undefined],

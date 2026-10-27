@@ -149,6 +149,46 @@ describe('release history', () => {
     expect(within(row('rel-5')).queryByRole('button', { name: 'Rollback' })).not.toBeInTheDocument()
   })
 
+  it('a cancelled release offers rollback, and its confirm lists only the runs whose checkout started', async () => {
+    const cancelled = summary({ id: 'rel-7', version: 'v1.7.0', status: 'cancelled', serviceIds: ['s1', 's3'], serviceCount: 2, createdAt: '2026-10-19T13:00:00.000Z' })
+    const base = releaseDetail().runs[0]
+    const step = (kind: 'fetch' | 'checkout', state: 'ok' | 'running' | 'pending') => ({ stepId: `x:${kind}`, kind, state, startedAt: null, finishedAt: null })
+    const detail = releaseDetail({
+      id: 'rel-7',
+      version: 'v1.7.0',
+      status: 'cancelled',
+      serviceIds: ['s1', 's3'],
+      runs: [
+        {
+          ...base,
+          id: 'run-a',
+          releaseId: 'rel-7',
+          status: 'cancelled',
+          previousCommit: sha('a'),
+          deployedCommit: sha('c'),
+          steps: [step('fetch', 'ok'), step('checkout', 'running')],
+          services: [{ id: 's1', name: 'api', composeService: 'api', previousCommit: sha('a'), previousReleaseId: 'rel-2', deployedCommit: null }],
+        },
+        {
+          ...base,
+          id: 'run-b',
+          releaseId: 'rel-7',
+          position: 1,
+          hostLabel: 'app2',
+          status: 'skipped',
+          previousCommit: sha('d'),
+          steps: [step('fetch', 'pending'), step('checkout', 'pending')],
+          services: [{ id: 's3', name: 'site', composeService: 'site', previousCommit: sha('d'), previousReleaseId: null, deployedCommit: null }],
+        },
+      ],
+    })
+    const { user } = await mount({ pages: [[cancelled, R3, R2, R1]], detail })
+    await user.click(within(row('rel-7')).getByRole('button', { name: 'Rollback' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Roll back v1.7.0 in staging?' })
+    expect(within(dialog).getByText(/api on app1: c{7} → a{7}/)).toBeInTheDocument()
+    expect(within(dialog).queryByText(/site on app2/)).not.toBeInTheDocument()
+  })
+
   it('rollback confirm names siblings whose code moves back', async () => {
     const { invoke, user } = await mount()
     await user.click(within(row('rel-2')).getByRole('button', { name: 'Rollback' }))

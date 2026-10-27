@@ -5,6 +5,8 @@ import {
   MAX_ACTIVE_RELEASES,
   NOTHING_SELECTED_MESSAGE,
   REDEPLOY_CONFIRM_MESSAGE,
+  ROLLBACK_FROM,
+  rollbackRun,
   STEP_SECRET_UNUSED_MESSAGE,
   bumpVersion,
   parseEnvTemplate,
@@ -1050,15 +1052,23 @@ export class ReleaseService {
     await this.guard(actor, 'release.rollback', 'release.rollback', env, this.depIds(src), releaseId)
     if (src.operation !== null) throw new DeployError('INVALID_STATE', 'An operation deploys nothing, so it cannot be rolled back')
     if (src.kind !== 'release') throw new DeployError('INVALID_STATE', 'Only a release can be rolled back')
-    if (src.status !== 'succeeded' && src.status !== 'failed' && src.status !== 'rolled_back') throw new DeployError('INVALID_STATE', `This release is ${src.status}`)
-    // The runs the rollback rebuilds, last first: each checks out its run's previous commit.
+    if (!ROLLBACK_FROM.includes(src.status)) throw new DeployError('INVALID_STATE', `This release is ${src.status}`)
+    // The runs the rollback rebuilds, last first: each checks out its run's previous commit. A cancelled release's
+    // runs count once their checkout started (rollbackRun): the cancel skipped the auto-rollback.
     const eligible = src.runs
-      .filter((r) => (r.status === 'succeeded' || r.status === 'failed') && r.previousCommit !== null && SHA.test(r.previousCommit) && r.deploymentId !== null)
+      .filter((r) => rollbackRun(src.status, r) && r.previousCommit !== null && SHA.test(r.previousCommit) && r.deploymentId !== null)
       .reverse()
     this.assertStillCurrent(src, eligible)
     this.confirmProtected(actor, 'release.rollback', src, env, src.runs.map((r) => r.hostId).filter((h): h is string => h !== null), confirm.typedName)
     if (eligible.length === 0) {
-      throw new DeployError('INVALID_STATE', src.status === 'rolled_back' ? 'Nothing to roll back: this release was already rolled back' : 'Nothing to roll back: every deployment was a first deploy')
+      throw new DeployError(
+        'INVALID_STATE',
+        src.status === 'rolled_back'
+          ? 'Nothing to roll back: this release was already rolled back'
+          : src.status === 'cancelled' && !src.runs.some((r) => rollbackRun(src.status, r))
+            ? 'Nothing to roll back: the release was cancelled before any checkout changed'
+            : 'Nothing to roll back: every deployment was a first deploy',
+      )
     }
 
     this.assertCapacity(env)
