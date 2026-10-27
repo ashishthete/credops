@@ -264,6 +264,35 @@ describe('ReleaseService', () => {
     await expect(r.svc.rollback(early, {})).rejects.toThrow('Nothing to roll back: the release was cancelled before any checkout changed')
   })
 
+  it('a start that throws after its row went running ends the release failed, and the next start is not blocked', async () => {
+    const r = await rig()
+    const id = await ready(r)
+    const append = r.f.audit.append.bind(r.f.audit)
+    const spy = vi.spyOn(r.f.audit, 'append').mockImplementation((row) => {
+      if (row.action === 'release.start') throw new Error('audit disk full')
+      return append(row)
+    })
+    await expect(r.svc.start(id, {})).rejects.toThrow('audit disk full')
+    expect(r.svc.detail(id)).toMatchObject({ status: 'failed', error: 'audit disk full' })
+    expect(r.svc.hasActive()).toBe(false)
+    expect(r.runner.kinds).toEqual(['preflight'])
+    expect(r.svc.events(id, 0).find((e) => e.type === 'run.finished')).toMatchObject({ status: 'failed' })
+    spy.mockRestore()
+
+    // A failure before the row moved leaves it ready.
+    const next = await ready(r, [r.f.deploys.list(r.f.staging.id)[0]])
+    const before = vi.spyOn(r.f.audit, 'append').mockImplementation(() => {
+      throw new Error('never')
+    })
+    vi.spyOn(r.f.releases, 'setStatus').mockImplementationOnce(() => {
+      throw new Error('row write failed')
+    })
+    await expect(r.svc.start(next, {})).rejects.toThrow('row write failed')
+    before.mockRestore()
+    expect(r.svc.detail(next).status).toBe('ready')
+    expect(r.svc.hasActive()).toBe(false)
+  })
+
   it('unlock always runs', async () => {
     const scenarios: [string, (r: Rig) => Promise<void>][] = [
       ['success', async () => undefined],
