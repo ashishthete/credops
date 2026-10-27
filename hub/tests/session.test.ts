@@ -99,7 +99,7 @@ describe('sessions and users', () => {
     expect(res.body).not.toContain(bad)
     const ev = hub.audit.list({ actions: ['session.denied'] })
     expect(ev).toHaveLength(1)
-    expect(ev[0].details).toEqual({ reason: 'signature' })
+    expect(ev[0].details).toEqual({ reason: 'signature', ip: '127.0.0.1' })
     expect(JSON.stringify(ev)).not.toContain(bad)
     expect(hub.logs.join('')).not.toContain(bad)
   })
@@ -149,7 +149,7 @@ describe('bootstrap re-promotion', () => {
     hub = await testHub()
     const r = await hub.app.inject({ method: 'POST', url: '/api/v1/session' })
     expect(r.statusCode).toBe(401)
-    expect(hub.audit.list({ actions: ['session.denied'] })[0].details).toEqual({ reason: 'missing' })
+    expect(hub.audit.list({ actions: ['session.denied'] })[0].details).toEqual({ reason: 'missing', ip: '127.0.0.1' })
   })
 
   it('abandoned expired sessions are swept when a session is created', async () => {

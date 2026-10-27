@@ -5,7 +5,7 @@ import { Directory } from './access/directory'
 import type { EntraVerifier } from './auth/entra'
 import { SessionStore } from './auth/sessions'
 import type { HubAudit } from './audit'
-import type { HubConfig } from './config'
+import { DEFAULT_SESSION_RATE_LIMIT_PER_MINUTE, type HubConfig } from './config'
 import type { HubDb } from './db'
 import { installErrorHandler } from './errors'
 import { makeAuth } from './auth/plugin'
@@ -29,6 +29,7 @@ import { LiveBus } from './live/bus'
 import { registerLive } from './routes/live'
 import { registerMeta } from './routes/meta'
 import { registerSession } from './routes/session'
+import { Coalescer, RateLimiter } from './ratelimit'
 
 export interface HubDeps {
   config: HubConfig
@@ -84,7 +85,14 @@ export function buildApp(deps: HubDeps): FastifyInstance {
   let releases: HubReleases | null = null
   const releaseSecrets = (): string[] => releases?.knownSecrets() ?? []
   installErrorHandler(app, () => [...secrets.inflight, ...releaseSecrets()])
+  // req.ip is the socket address: the Hub does not set trustProxy, so a forwarded header cannot pick the bucket.
+  const signInWindow = { windowMs: 60_000, maxKeys: 10_000, now: deps.now }
+  const limiter = new RateLimiter(deps.config.sessionRateLimitPerMinute ?? DEFAULT_SESSION_RATE_LIMIT_PER_MINUTE, signInWindow)
+  const denials = new Coalescer(signInWindow, (ip, suppressed) =>
+    deps.audit.append({ action: 'session.denied', outcome: 'denied', actor: null, details: { reason: 'repeated', ip, suppressed } }),
+  )
   app.addHook('onClose', async () => {
+    denials.flush()
     deps.audit.append({ action: 'hub.stop', outcome: 'info', actor: null })
   })
   registerMeta(app, deps)
@@ -97,7 +105,7 @@ export function buildApp(deps: HubDeps): FastifyInstance {
   sessions.onRevoke((r) => ('oid' in r ? live.closeUser(r.oid) : live.closeSession(r.tokenHash)))
   directory.onAccessChange(() => live.publish({ type: 'access.changed' }))
   const auth = makeAuth({ sessions, directory, now: deps.now })
-  registerSession(app, { audit: deps.audit, verifier: deps.verifier, sessions, directory, now: deps.now }, auth)
+  registerSession(app, { audit: deps.audit, verifier: deps.verifier, sessions, directory, now: deps.now, limiter, denials }, auth)
   registerAdmin(app, { directory, audit: deps.audit, auth })
   registerAccess(app, { directory, auth })
   const locks = new EnvLocks(deps.db, { now: deps.now })
@@ -107,6 +115,8 @@ export function buildApp(deps: HubDeps): FastifyInstance {
     try {
       locks.sweepExpired()
       releases?.expireReady()
+      limiter.sweep()
+      denials.sweep()
     } catch (err) {
       // A timer must never take the Hub down. Only the error's name is logged.
       app.log.error({ errName: err instanceof Error ? err.name : 'Error' }, 'lock sweep failed')
