@@ -608,6 +608,29 @@ describe('hub releases', () => {
   })
 })
 
+describe('ended-release lock sweep', () => {
+  it('lets go a lock whose release ended but whose release-on-finish failed, and leaves a live release alone', async () => {
+    const { bob } = await setup({ protectedEnv: false })
+    const id = await ready(bob)
+    const locks = (hub.app.releases as any).d.locks as { releaseFor: (id: string) => void }
+    const real = locks.releaseFor.bind(locks)
+    // A ready release holds its lock: the sweep must not touch it.
+    expect(hub.app.releases.sweepEndedLocks()).toBe(0)
+    expect(lockRows()).toHaveLength(1)
+    const spy = vi.spyOn(locks, 'releaseFor').mockImplementationOnce(() => {
+      throw new Error('database is locked')
+    })
+    expect((await call(bob, 'POST', `/api/v1/releases/${id}/start`, {})).statusCode).toBe(204)
+    await hub.app.releases.whenIdle()
+    expect((await detail(bob, id)).status).toBe('succeeded')
+    expect(lockRows()).toEqual([expect.objectContaining({ release_id: id })])
+    spy.mockImplementation(real)
+    expect(hub.app.releases.sweepEndedLocks()).toBe(1)
+    expect(lockRows()).toEqual([])
+    expect(hub.app.releases.sweepEndedLocks()).toBe(0)
+  })
+})
+
 describe('deploy key masking with overlapping runs', () => {
   it('keeps an environment key masked until the last of its concurrent runs ends', async () => {
     const finish = new Map<string, () => void>()

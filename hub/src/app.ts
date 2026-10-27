@@ -117,6 +117,7 @@ export function buildApp(deps: HubDeps): FastifyInstance {
     try {
       locks.sweepExpired()
       releases?.expireReady()
+      releases?.sweepEndedLocks()
       limiter.sweep()
       denials.sweep()
     } catch (err) {
