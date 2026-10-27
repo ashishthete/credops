@@ -401,9 +401,25 @@ export interface LockHolder {
   startedAt: string
 }
 
-export function lockHolderText(h: LockHolder, _now: number): string {
-  return `${h.user}@${h.machine} is deploying ${h.version ?? 'release'} since ${h.startedAt}`
+/** How long ago a lock was taken, in the largest whole unit: "just now", "5 minutes ago", "3 hours ago", "2 days ago". */
+function ago(ms: number): string {
+  const n = (v: number, unit: string): string => `${v} ${unit}${v === 1 ? '' : 's'} ago`
+  const m = Math.floor(ms / 60_000)
+  if (m < 1) return 'just now'
+  if (m < 60) return n(m, 'minute')
+  const h = Math.floor(m / 60)
+  return h < 48 ? n(h, 'hour') : n(Math.floor(h / 24), 'day')
 }
+
+export function lockHolderText(h: LockHolder, now: number): string {
+  const at = Date.parse(h.startedAt)
+  const when = Number.isFinite(at) ? `, started ${ago(now - at)}` : ` since ${h.startedAt}`
+  return `${h.user}@${h.machine} is deploying ${h.version ?? 'release'}${when}`
+}
+/** Added to a lock's preflight block when it is older than LOCK_STALE_MS. */
+export const LOCK_STALE_NOTE = ' (older than 2 hours; it may be stale and can be broken)'
+/** Added instead when a release of this app that has finished left the lock: nothing holds it any more. */
+export const LOCK_FINISHED_NOTE = ' (left by a release that has finished; it can be broken)'
 
 // ---- Preflight ----
 export interface PreflightCheck {

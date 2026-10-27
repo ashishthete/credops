@@ -23,7 +23,9 @@ import {
   type PrepareCheckout,
   type PrepareOthers,
   type PrepareShared,
+  LOCK_FINISHED_NOTE,
   LOCK_LEFT_MESSAGE,
+  lockHolderText,
   REVIEW_EXPIRED_MESSAGE,
   REVIEW_TTL_MS,
   stepBound,
@@ -204,6 +206,8 @@ interface Info {
 }
 
 const SHA = /^[0-9a-f]{40}$/
+/** Releases that ran and ended: any deploy lock one of them left on a host is no longer held. */
+const FINISHED: ReadonlySet<ReleaseStatus> = new Set(['succeeded', 'failed', 'rolled_back', 'cancelled'])
 const EMPTY: RunSecrets = { values: {}, known: [] }
 export { NOTHING_SELECTED_MESSAGE, PLAYBOOK_CHANGED_MESSAGE, STEP_SECRET_UNUSED_MESSAGE }
 /** What a start skips: the unchanged services left out, and each run's selection after them (null: the whole run). */
@@ -471,8 +475,9 @@ export class ReleaseService {
       const checks: PreflightCheck[] = this.sharedRepoChecks(live.environmentId, infos)
       if (err !== null) checks.push(this.block('ansible', err))
       else checks.push({ id: 'ansible', deploymentId: null, hostId: '', label: 'ansible', level: 'ok', message: 'ansible-playbook is available' })
-      if (out?.preflight)
-        report = { releaseId: id, ...out.preflight, checks: [...checks, ...out.preflight.checks], serviceCommits: serviceCommits(infos, out.preflight.commits, this.d.services.list(live.environmentId), stepBound(this.d.deploys.settings(live.environmentId).flow)) }
+      const found = out?.preflight ? this.finishedLocks(out.preflight) : null
+      if (found)
+        report = { releaseId: id, ...found, checks: [...checks, ...found.checks], serviceCommits: serviceCommits(infos, found.commits, this.d.services.list(live.environmentId), stepBound(this.d.deploys.settings(live.environmentId).flow)) }
       else {
         if (err === null) checks.push(this.block('tools', 'Preflight did not finish; see the log'))
         report = { releaseId: id, checks, commits: {}, dockerModes: {}, composeServices: {}, serviceCommits: {}, locks: {}, commitsTotal: 0, blocked: true }
@@ -1169,6 +1174,28 @@ export class ReleaseService {
 
   // ---- locks ----
 
+  /**
+   * Marks breakable the locks a release of this app left once it finished (not running here, and ended): nothing
+   * holds them, so they need not wait out LOCK_STALE_MS. Their preflight block says so.
+   */
+  private finishedLocks<T extends Pick<PreflightReport, 'checks' | 'locks'>>(report: T): T {
+    let { checks, locks } = report
+    for (const [hostId, lock] of Object.entries(report.locks)) {
+      if (!lock || lock.stale || this.live.has(lock.holder.releaseId)) continue
+      let status: ReleaseStatus | null = null
+      try {
+        status = this.d.releases.get(lock.holder.releaseId).status
+      } catch {
+        // another machine's release, or a lock with no release id
+      }
+      if (status === null || !FINISHED.has(status)) continue
+      locks = { ...locks, [hostId]: { ...lock, stale: true } }
+      const message = `${lockHolderText(lock.holder, this.d.now().getTime())}${LOCK_FINISHED_NOTE}`
+      checks = checks.map((c) => (c.id === 'lock' && c.hostId === hostId && c.level === 'block' ? { ...c, message } : c))
+    }
+    return { ...report, checks, locks }
+  }
+
   async breakLock(releaseId: string, hostId: string, confirm: BreakLockConfirm, ctx?: CallCtx): Promise<void> {
     const actor = ctx?.actor ?? this.d.actor
     this.d.vault.assertUnlocked()
@@ -1200,11 +1227,11 @@ export class ReleaseService {
       try {
         const pre = this.plan('preflight', live, infos, { version: null, holder, docker: new Map() })
         const b = await this.exec(live, pre, holder.secrets ?? EMPTY)
-        const fresh = b.out?.preflight
+        const fresh = b.out?.preflight ? this.finishedLocks(b.out.preflight) : undefined
         if (!fresh) throw new DeployError('INVALID_STATE', this.reason(live, b.out, b.err, 'Re-checking the lock'))
         const report: PreflightReport = rel.preflight as PreflightReport
-        const mine = new Set(infos.map((i) => i.dep.id))
-        const kept = report.checks.filter((c) => !(c.id === 'lock' && c.deploymentId !== null && mine.has(c.deploymentId)))
+        // lock checks are the host's (deploymentId null in preflight's report): the fresh ones replace them
+        const kept = report.checks.filter((c) => !(c.id === 'lock' && c.hostId === hostId))
         const checks = [...kept, ...fresh.checks.filter((c) => c.id === 'lock')]
         const next: PreflightReport = { ...report, checks, locks: { ...report.locks, [hostId]: fresh.locks[hostId] ?? null }, blocked: checks.some((c) => c.level === 'block') }
         this.push(releaseId, { type: 'preflight.done', report: next })

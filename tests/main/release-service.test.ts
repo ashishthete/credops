@@ -8,7 +8,7 @@ import type { DeployPlan } from '../../src/main/deploy/runner'
 import { generatePlaybook } from '../../src/main/deploy/generate'
 import { ToolingError } from '../../src/main/deploy/tooling'
 import { CONFIRM_MESSAGE } from '../../src/shared/ops'
-import { BREAK_LOCK_CONFIRM_MESSAGE, DEFAULT_RELEASE_OPTIONS, LOCK_LEFT_MESSAGE, PREPARE_FAILED_MESSAGE, PREPARE_FETCH_FAILED_MESSAGE, type CommitInfo, type DeploymentMeta, type PreflightCheck, type RunEvent, type StepKind } from '../../src/shared/deploy'
+import { BREAK_LOCK_CONFIRM_MESSAGE, DEFAULT_RELEASE_OPTIONS, LOCK_FINISHED_NOTE, LOCK_LEFT_MESSAGE, PREPARE_FAILED_MESSAGE, PREPARE_FETCH_FAILED_MESSAGE, type CommitInfo, type DeploymentMeta, type PreflightCheck, type RunEvent, type StepKind } from '../../src/shared/deploy'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import type { AppServiceMeta } from '../../src/shared/services'
 import { A, B, C, NOW, SECRET, dep, opReady, ready, rig, runbook, tracked, type Rig } from './release-rig'
@@ -758,6 +758,36 @@ describe('ReleaseService', () => {
     await expect(r.svc.start(b, {})).rejects.toThrow('The version changed since preflight; run preflight again')
     expect(r.f.deploys.settings(r.f.staging.id).currentVersion).toBe('v2.0.0')
     expect(r.svc.detail(b).status).toBe('ready')
+  })
+
+  it("a lock a finished release of this app left can be broken at once, and preflight says so", async () => {
+    const r = await rig()
+    const done = await ready(r)
+    await r.svc.start(done, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(done).status).toBe('succeeded')
+    const holder = (releaseId: string) => ({ releaseId, user: 'ana', machine: 'mbp', environment: 'staging', version: null, startedAt: new Date(NOW - 12 * 60000).toISOString() })
+    const first = r.f.deploys.list(r.f.staging.id)[0]
+    r.runner.checks = [{ id: 'lock', deploymentId: null, hostId: r.f.host.id, label: 'app1', level: 'block', message: 'ana@mbp is deploying release, started 12 minutes ago' }]
+    r.runner.locks = { [r.f.host.id]: { holder: holder(done), stale: false, raw: 'raw-left' } }
+    const id = await ready(r, [first])
+    const d = r.svc.detail(id)
+    expect(d.preflight?.locks[r.f.host.id]?.stale).toBe(true)
+    expect(d.preflight?.checks.find((c) => c.id === 'lock')?.message).toBe(`ana@mbp is deploying release, started 12 minutes ago${LOCK_FINISHED_NOTE}`)
+    r.runner.locks = {}
+    r.runner.checks = []
+    await r.svc.breakLock(id, r.f.host.id, { typedLabel: 'app1' })
+    expect(r.runner.call('break-lock').lock.expectRaw).toEqual({ [r.f.host.id]: 'raw-left' })
+    expect(r.svc.detail(id).status).toBe('ready')
+
+    // a release this app does not know, or one it does not know as ended, still waits out the two hours
+    for (const other of ['someone-elses', id]) {
+      r.runner.checks = [{ id: 'lock', deploymentId: null, hostId: r.f.host.id, label: 'app1', level: 'block', message: 'locked' }]
+      r.runner.locks = { [r.f.host.id]: { holder: holder(other), stale: false, raw: 'raw' } }
+      const again = await ready(r, [first])
+      expect(r.svc.detail(again).preflight?.locks[r.f.host.id]?.stale).toBe(false)
+      await expect(r.svc.breakLock(again, r.f.host.id, { typedLabel: 'app1' })).rejects.toThrow('The lock is only 12 minutes old')
+    }
   })
 
   it('a release that is in flight rejects start, discard, break-lock, retry and rollback', async () => {

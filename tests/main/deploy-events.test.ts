@@ -120,10 +120,10 @@ describe('EventTranslator', () => {
     expect(busy).toHaveLength(1)
     expect(busy[0]).toMatchObject({ hostId: 'host-od-1', stale: true })
     expect(busy[0].holder).toMatchObject({ user: 'bob', machine: 'srv9', releaseId: '0190a1b2-c3d4-7e5f-8a6b-aaaaaaaaaaaa' })
-    expect(busy[0].text).toBe('bob@srv9 is deploying v1.2.3 since 2026-10-19T07:00:00.000Z')
+    expect(busy[0].text).toBe('bob@srv9 is deploying v1.2.3, started 3 hours ago')
     const f = of(events, 'step.failed')[0]
     expect(f.stepId).toBe('host:host-od-1:lock')
-    expect(f.error).toBe('label od-1 is locked: bob@srv9 is deploying v1.2.3 since 2026-10-19T07:00:00.000Z')
+    expect(f.error).toBe('label od-1 is locked: bob@srv9 is deploying v1.2.3, started 3 hours ago')
   })
 
   it('a fresh holder is not stale', () => {
@@ -132,7 +132,7 @@ describe('EventTranslator', () => {
     tr.feed(JSON.stringify({ event: 'task_start', name: 'lock od-1', tags }))
     const holder = JSON.stringify({ releaseId: 'r', user: 'u', machine: 'm', environment: 'e', version: null, startedAt: '2026-10-19T09:30:00.000Z' })
     const out = tr.feed(JSON.stringify({ event: 'failed', host: 'od-1', task: 'lock od-1', tags, rc: 42, stdout: `OD-LOCK ${holder}` }))
-    expect(of(out, 'lock.busy')[0]).toMatchObject({ stale: false, text: 'u@m is deploying release since 2026-10-19T09:30:00.000Z' })
+    expect(of(out, 'lock.busy')[0]).toMatchObject({ stale: false, text: 'u@m is deploying release, started 30 minutes ago' })
   })
 
   it('lock exit 2 and break-lock exit 43 are plain failures', () => {
