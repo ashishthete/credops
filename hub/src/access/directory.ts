@@ -124,9 +124,11 @@ export class Directory {
   upsertOnSignIn(id: HubIdentity & { tid: string }): { user: HubUser; created: boolean; bootstrapped: boolean; recovery: boolean; previousRole: HubRole | null } {
     const now = this.opts.now().toISOString()
     const fa = this.opts.firstAdmin
+    // An object id never changes hands; a UPN can be renamed or reassigned. With an oid configured, only it counts.
     const matchesFirstAdmin =
-      (fa.oid !== undefined && fa.oid.toLowerCase() === id.oid.toLowerCase()) ||
-      (fa.upn !== undefined && fa.upn.toLowerCase() === id.upn.toLowerCase())
+      fa.oid !== undefined
+        ? fa.oid.toLowerCase() === id.oid.toLowerCase()
+        : fa.upn !== undefined && fa.upn.toLowerCase() === id.upn.toLowerCase()
     this.db.exec('BEGIN IMMEDIATE')
     try {
       const existing = this.db.prepare('SELECT * FROM users WHERE oid = ?').get(id.oid) as unknown as UserRow | undefined

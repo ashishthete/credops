@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url'
 import { HubAudit } from './audit'
 import { EntraVerifier } from './auth/entra'
 import { buildApp } from './app'
-import { checkDataDir, loadConfig, type HubConfig } from './config'
+import { checkDataDir, firstAdminWarning, loadConfig, type HubConfig } from './config'
 import { openHubDb } from './db'
 import { createMasterKeyFile, loadMasterKey } from './secrets/keyring'
 
@@ -65,6 +65,8 @@ async function checkConfig(configFile: string, out: (line: string) => void): Pro
   try {
     config = loadConfig(configFile)
     line(true, 'config', 'valid')
+    const adminWarning = firstAdminWarning(config)
+    if (adminWarning) out(`warn  ${adminWarning}`)
   } catch (err) {
     line(false, 'config', err instanceof Error ? err.message : 'invalid')
     return 1

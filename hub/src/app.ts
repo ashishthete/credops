@@ -5,7 +5,7 @@ import { Directory } from './access/directory'
 import type { EntraVerifier } from './auth/entra'
 import { SessionStore } from './auth/sessions'
 import type { HubAudit } from './audit'
-import { DEFAULT_SESSION_RATE_LIMIT_PER_MINUTE, type HubConfig } from './config'
+import { DEFAULT_SESSION_RATE_LIMIT_PER_MINUTE, firstAdminWarning, type HubConfig } from './config'
 import type { HubDb } from './db'
 import { installErrorHandler } from './errors'
 import { makeAuth } from './auth/plugin'
@@ -97,6 +97,8 @@ export function buildApp(deps: HubDeps): FastifyInstance {
     denials.flush()
     deps.audit.append({ action: 'hub.stop', outcome: 'info', actor: null })
   })
+  const adminWarning = firstAdminWarning(deps.config)
+  if (adminWarning) app.log.warn(adminWarning)
   registerMeta(app, deps)
   const sessions = new SessionStore(deps.db, { now: deps.now, ttlHours: deps.config.sessionTtlHours })
   const directory = new Directory(deps.db, { firstAdmin: deps.config.firstAdmin, now: deps.now, ids: deps.ids, audit: deps.audit, sessions })

@@ -34,7 +34,7 @@ describe('loadConfig', () => {
     expect(c.sessionTtlHours).toBe(12)
     expect(c.entra.authority).toBe(`https://login.microsoftonline.com/${c.entra.tenantId}/v2.0`)
     expect(c.entra.jwksUri).toBe(`https://login.microsoftonline.com/${c.entra.tenantId}/discovery/v2.0/keys`)
-    expect(c.firstAdmin).toEqual({ upn: 'admin@example.com' })
+    expect(c.firstAdmin).toEqual({ oid: '00000000-0000-4000-8000-0000000000cc' })
   })
 
   it('rejects a non-guid tenant and names the path only', () => {
@@ -46,6 +46,14 @@ describe('loadConfig', () => {
     } catch (e) {
       expect((e as Error).message).not.toContain('super-secret-not-a-guid')
     }
+  })
+
+  it('requires firstAdmin.oid to be a GUID and still accepts upn alone', () => {
+    const cfg = base()
+    cfg.firstAdmin = { oid: 'admin@example.com' }
+    expect(() => loadConfig(write(cfg))).toThrow(/firstAdmin\.oid/)
+    cfg.firstAdmin = { upn: 'admin@example.com' }
+    expect(loadConfig(write(cfg)).firstAdmin).toEqual({ upn: 'admin@example.com' })
   })
 
   it('requires firstAdmin to have a field', () => {

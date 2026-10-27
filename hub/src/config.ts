@@ -33,6 +33,12 @@ export interface HubConfig {
 
 export const DEFAULT_SESSION_RATE_LIMIT_PER_MINUTE = 20
 
+/** Startup advice when the first admin is matched by UPN alone, which can be renamed or reassigned to someone else. */
+export function firstAdminWarning(c: Pick<HubConfig, 'firstAdmin'>): string | null {
+  if (c.firstAdmin.oid !== undefined || c.firstAdmin.upn === undefined) return null
+  return 'firstAdmin is matched by upn only; a UPN can be renamed or reassigned. Set firstAdmin.oid (the Entra object id) instead.'
+}
+
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 function fail(path: string, file: string, rule: string): never {
@@ -111,6 +117,7 @@ export function loadConfig(file: string): HubConfig {
   const fa = obj(root.firstAdmin, 'firstAdmin')
   const firstAdmin: HubConfig['firstAdmin'] = {}
   if (fa.oid !== undefined) firstAdmin.oid = str(fa.oid, 'firstAdmin.oid')
+  if (firstAdmin.oid !== undefined && !GUID.test(firstAdmin.oid)) bad('firstAdmin.oid', 'must be a GUID (the Entra object id)')
   if (fa.upn !== undefined) firstAdmin.upn = str(fa.upn, 'firstAdmin.upn')
   if (!firstAdmin.oid && !firstAdmin.upn) bad('firstAdmin', 'needs oid or upn')
 

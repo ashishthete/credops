@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { DEFAULT_GROUP_ID } from '../../src/shared/hub'
+import { firstAdminWarning } from '../src/config'
 import { testHub, type TestHub } from './helpers'
 
 let hub: TestHub
@@ -166,5 +167,34 @@ describe('bootstrap re-promotion', () => {
     hub.clock.now = new Date(hub.clock.now.getTime() + 5 * 60_000)
     const me = (await hub.app.inject({ method: 'GET', url: '/api/v1/me', headers: { authorization: `Bearer ${token}` } })).json()
     expect(me.lastSeenAt).toBe(hub.clock.now.toISOString())
+  })
+})
+
+describe('first admin matching', () => {
+  it('with an oid configured, matches on oid only: a person holding the configured upn is not promoted', async () => {
+    hub = await testHub({ firstAdmin: { oid: ADMIN.oid, upn: BOB.upn } })
+    const bob = await hub.signIn(BOB)
+    expect(bob.body.user).toMatchObject({ role: 'maintainer', status: 'pending' })
+    const admin = await hub.signIn(ADMIN)
+    expect(admin.body.user).toMatchObject({ role: 'admin', status: 'active' })
+  })
+
+  it('the oid match ignores case, and a renamed upn does not matter', async () => {
+    hub = await testHub({ firstAdmin: { oid: ADMIN.oid.toUpperCase() } })
+    const r = await hub.signIn({ ...ADMIN, upn: 'renamed@example.com' })
+    expect(r.body.user.role).toBe('admin')
+  })
+
+  it('with only a upn configured, keeps matching on upn and warns at startup', async () => {
+    hub = await testHub({ firstAdmin: { upn: 'admin@example.com' } })
+    expect((await hub.signIn(ADMIN)).body.user.role).toBe('admin')
+    expect(hub.logs.join('')).toMatch(/firstAdmin is matched by upn only.*firstAdmin\.oid/)
+  })
+
+  it('no warning when an oid is configured', async () => {
+    hub = await testHub({ firstAdmin: { oid: ADMIN.oid } })
+    expect(hub.logs.join('')).not.toMatch(/firstAdmin is matched/)
+    expect(firstAdminWarning({ firstAdmin: { oid: ADMIN.oid, upn: 'x@y' } })).toBeNull()
+    expect(firstAdminWarning({ firstAdmin: { upn: 'x@y' } })).toMatch(/oid/)
   })
 })
