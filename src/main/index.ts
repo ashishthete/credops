@@ -769,6 +769,7 @@ if (!app.requestSingleInstanceLock()) {
             lastReleases: () => release.latestPerEnvironment(),
             knownSecrets,
             runbooks,
+            vault: service,
           }),
           ...createServiceHandlers({
             services,

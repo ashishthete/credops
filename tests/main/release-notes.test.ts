@@ -9,6 +9,7 @@ import { createAiHandlers } from '../../src/main/ipc/handlers/ai'
 import { VALIDATORS } from '../../src/main/ipc/validators'
 import { AiFailure, type ReleaseNotesRequest } from '../../src/shared/ai'
 import type { CommitInfo } from '../../src/shared/deploy'
+import { openVault } from './deploy-helpers'
 
 const API = '11111111-1111-4111-8111-111111111111'
 const WEB = '22222222-2222-4222-8222-222222222222'
@@ -386,7 +387,7 @@ describe('release:set-notes', () => {
     const r = await rig()
     const id = await ready(r)
     const before = r.f.audit.list({}).length
-    const h = createDeployHandlers({ deploys: r.f.deploys, releases: r.svc, tooling: async () => ({}) as never })
+    const h = createDeployHandlers({ vault: openVault(), deploys: r.f.deploys, releases: r.svc, tooling: async () => ({}) as never })
     await h['release:set-notes'](id, '## Features\n- Refunds')
     expect(r.svc.detail(id).releaseNotes).toBe('## Features\n- Refunds')
     // An empty string clears the notes so finalize writes them again.

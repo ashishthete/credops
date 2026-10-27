@@ -5,6 +5,7 @@ import { ReleaseStore } from '../../src/main/deploy/release-store'
 import { ServiceStore } from '../../src/main/deploy/service-store'
 import type { DeploymentInput } from '../../src/shared/deploy'
 import { SecretStore } from '../../src/main/vault/secret-store'
+import type { VaultService } from '../../src/main/vault/vault-service'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import { makeInventory, type InventoryFixture, PRODUCT, REGION } from './inventory-helpers'
 import { readFileSync } from 'node:fs'
@@ -477,4 +478,28 @@ export function scriptFromPlaybook(playbook: string, opts: { failStep?: StepKind
     }
   }
   return lines
+}
+
+/** An unlocked vault for `createDeployHandlers`. `lock()` locks it and runs the lock and reset hooks it was given. */
+export function openVault(): Pick<VaultService, 'assertUnlocked' | 'onLock' | 'onBeforeReset'> & { locked: boolean; lock(): void } {
+  const hooks: (() => unknown)[] = []
+  const v = {
+    locked: false,
+    assertUnlocked() {
+      if (v.locked) throw new Error('Vault is locked')
+    },
+    onLock(fn: Parameters<VaultService['onLock']>[0]) {
+      hooks.push(() => fn('manual'))
+      return () => true
+    },
+    onBeforeReset(fn: () => void) {
+      hooks.push(fn)
+      return () => true
+    },
+    lock() {
+      v.locked = true
+      for (const fn of hooks) fn()
+    },
+  }
+  return v
 }

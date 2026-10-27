@@ -16,6 +16,7 @@ import type { DeployStore } from '../../deploy/deploy-store'
 import type { ReleaseApi } from '../../hub/runner'
 import type { HubCatalog } from '../../hub/catalog'
 import type { RunbookStore } from '../../deploy/runbook-store'
+import type { VaultService } from '../../vault/vault-service'
 
 export const REVIEW_REQUIRED_MESSAGE = 'Review the playbook before you deploy.'
 
@@ -67,8 +68,13 @@ export function createDeployHandlers(deps: {
   knownSecrets?: () => readonly string[]
   /** An environment's runbooks; absent where the wiring has none. */
   runbooks?: Pick<RunbookStore, 'list' | 'create' | 'update' | 'delete'>
+  /**
+   * Saving a playbook needs the vault unlocked: its masking reads the known secret values, which a locked vault
+   * can't give. A lock (or reset) also forgets every reviewed playbook, which holds raw secret values in memory.
+   */
+  vault: Pick<VaultService, 'assertUnlocked' | 'onLock' | 'onBeforeReset'>
 }): Pick<Handlers, DeployChannel> {
-  const { deploys, releases, tooling, catalog, published, playbookFile, lastReleases, knownSecrets, runbooks } = deps
+  const { deploys, releases, tooling, catalog, published, playbookFile, lastReleases, knownSecrets, runbooks, vault } = deps
   const store = () => {
     if (!runbooks) throw new DeployError('INVALID_STATE', 'Runbooks are not available')
     return runbooks
@@ -79,6 +85,8 @@ export function createDeployHandlers(deps: {
   // The last playbook reviewed per release, as generated: its hash is the one start checks against a fresh generation.
   // Saving writes this text, masked, so the renderer sends only its hash, never a path or text.
   const reviewed = new Map<string, PlaybookPreview>()
+  vault.onLock(() => reviewed.clear())
+  vault.onBeforeReset(() => reviewed.clear())
   return {
     'deploy:list': (environmentId) => {
       const local = deploys.list(environmentId)
@@ -111,21 +119,27 @@ export function createDeployHandlers(deps: {
       return { ...preview, playbook: maskPlaybook(preview.playbook, known), ...(preview.inventory !== undefined && { inventory: maskPlaybook(preview.inventory, known) }) }
     },
     'deploy:savePlaybook': async (id, sha256) => {
+      vault.assertUnlocked()
       const preview = reviewed.get(id)
       if (!preview || preview.sha256 !== sha256) throw new DeployError('INVALID_STATE', PLAYBOOK_CHANGED_MESSAGE)
       if (!playbookFile) throw new DeployError('INVALID_STATE', 'Saving a playbook is not available here')
+      // Masked now, while the vault's values are known; a lock during the dialog stops the write.
+      const text = maskPlaybook(preview.playbook, secrets())
       const path = await playbookFile.saveDialog(id)
       if (path === undefined) return null
-      await playbookFile.write(path, maskPlaybook(preview.playbook, secrets()))
+      vault.assertUnlocked()
+      await playbookFile.write(path, text)
       return { path }
     },
     // The text the release stored, read and masked exactly as `release:get` returns it (the same access check).
     'release:savePlaybook': async (id) => {
+      vault.assertUnlocked()
       const { playbook } = await maskedDetail(id)
       if (!playbook) throw new DeployError('INVALID_STATE', PLAYBOOK_NOT_STORED_MESSAGE)
       if (!playbookFile) throw new DeployError('INVALID_STATE', 'Saving a playbook is not available here')
       const path = await playbookFile.saveDialog(id)
       if (path === undefined) return null
+      vault.assertUnlocked()
       await playbookFile.write(path, playbook)
       return { path }
     },

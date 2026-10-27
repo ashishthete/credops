@@ -11,7 +11,7 @@ import { MAX_EVENTS_PAGE, PLAYBOOK_NOT_STORED_MESSAGE, type ReleaseDetail } from
 import { MAX_SERVICES } from '../../src/shared/services'
 import { DeployError } from '../../src/shared/deploy-error'
 import { RunbookStore } from '../../src/main/deploy/runbook-store'
-import { makeDeployFixture } from './deploy-helpers'
+import { makeDeployFixture, openVault } from './deploy-helpers'
 
 const ID = '0190a1b2-c3d4-7e5f-8a6b-1234567890ab'
 const check = (channel: string, args: unknown[]): unknown => (VALIDATORS as Record<string, (a: unknown[]) => unknown>)[channel](args)
@@ -93,7 +93,7 @@ describe('release:* validators', () => {
 describe('release handlers', () => {
   it('release:events caps limit at 5000 and defaults to 1000', () => {
     const events = vi.fn(() => [])
-    const handlers = createDeployHandlers({ deploys: {} as never, releases: { events } as unknown as ReleaseService, tooling: async () => ({}) as never })
+    const handlers = createDeployHandlers({ vault: openVault(), deploys: {} as never, releases: { events } as unknown as ReleaseService, tooling: async () => ({}) as never })
     const h = (handlers as Record<string, unknown>)['release:events'] as (id: string, after: number, limit?: number) => unknown
     h(ID, 3, 5000)
     h(ID, 3, 999999)
@@ -110,8 +110,8 @@ describe('release handlers', () => {
     const row = { id: ID, environmentId: ID, previousCommit: 'a', deployedCommit: 'b' }
     const base = { deploys: {} as never, releases: {} as unknown as ReleaseService, tooling: async () => ({}) as never }
     const h = (x: ReturnType<typeof createDeployHandlers>) => (x as Record<string, unknown>)['release:latest'] as () => unknown
-    expect(await h(createDeployHandlers({ ...base, lastReleases: () => [row as never] }))()).toEqual([row])
-    expect(await h(createDeployHandlers(base))()).toEqual([])
+    expect(await h(createDeployHandlers({ vault: openVault(), ...base, lastReleases: () => [row as never] }))()).toEqual([row])
+    expect(await h(createDeployHandlers({ vault: openVault(), ...base }))()).toEqual([])
   })
 })
 
@@ -130,15 +130,42 @@ describe('playbook review handlers', () => {
     }
     const writes: [string, string][] = []
     const saveDialog = vi.fn(async () => over.path)
-    const handlers = createDeployHandlers({
+    const vault = openVault()
+    const handlers = createDeployHandlers({ vault,
       deploys: {} as never,
       releases: releases as unknown as ReleaseService,
       tooling: async () => ({}) as never,
       playbookFile: { saveDialog, write: async (path, text) => void writes.push([path, text]) },
       knownSecrets: () => over.secrets ?? [],
     })
-    return { releases, writes, saveDialog, h: handlers as unknown as Record<string, (...a: unknown[]) => Promise<unknown>> }
+    return { releases, writes, saveDialog, vault, h: handlers as unknown as Record<string, (...a: unknown[]) => Promise<unknown>> }
   }
+
+  it('both saves refuse while the vault is locked, a lock forgets the reviewed playbook, and a lock during the dialog stops the write', async () => {
+    const { h, writes, saveDialog, vault } = setup({ path: '/tmp/x/review.yml', secrets: ['hunter22'] })
+    await h['deploy:previewPlaybook'](ID)
+    vault.lock()
+    await expect(h['deploy:savePlaybook'](ID, HASH)).rejects.toThrow('Vault is locked')
+    await expect(h['release:savePlaybook'](ID)).rejects.toThrow('Vault is locked')
+    expect(saveDialog).not.toHaveBeenCalled()
+    // Unlocked again, the review is gone: it must be previewed again.
+    vault.locked = false
+    await expect(h['deploy:savePlaybook'](ID, HASH)).rejects.toThrow(PLAYBOOK_CHANGED_MESSAGE)
+
+    await h['deploy:previewPlaybook'](ID)
+    saveDialog.mockImplementationOnce(async () => {
+      vault.lock()
+      return '/tmp/x/review.yml'
+    })
+    await expect(h['deploy:savePlaybook'](ID, HASH)).rejects.toThrow('Vault is locked')
+    saveDialog.mockImplementationOnce(async () => {
+      vault.lock()
+      return '/tmp/x/review.yml'
+    })
+    vault.locked = false
+    await expect(h['release:savePlaybook'](ID)).rejects.toThrow('Vault is locked')
+    expect(writes).toEqual([])
+  })
 
   it('release:validateEdit masks the canonical text and the error messages, and keeps the hash', async () => {
     const { releases, h } = setup({ secrets: ['hunter22'] })
@@ -264,7 +291,7 @@ describe('playbook review handlers', () => {
     try {
       const path = join(dir, 'release.yml')
       const detail = vi.fn(async () => ({ id: ID, playbook: stored }))
-      const handlers = createDeployHandlers({
+      const handlers = createDeployHandlers({ vault: openVault(),
         deploys: {} as never,
         releases: { detail } as unknown as ReleaseService,
         tooling: async () => ({}) as never,
@@ -291,7 +318,7 @@ describe('playbook review handlers', () => {
       preflight: { releaseId: ID, checks: [{ id: 'ssh', label: 'ssh', level: 'block', message: `auth ${SECRET} refused` }] },
       runs: [],
     }))
-    const handlers = createDeployHandlers({ deploys: {} as never, releases: { detail } as unknown as ReleaseService, tooling: async () => ({}) as never, knownSecrets: () => [SECRET] })
+    const handlers = createDeployHandlers({ vault: openVault(), deploys: {} as never, releases: { detail } as unknown as ReleaseService, tooling: async () => ({}) as never, knownSecrets: () => [SECRET] })
     const got = (await (handlers as unknown as Record<string, (id: string) => Promise<ReleaseDetail>>)['release:get'](ID))
     expect(JSON.stringify(got)).not.toContain(SECRET)
     expect(got.playbook).toContain('"name": "curl https://x.example/?t=‹redacted›"')
@@ -308,7 +335,7 @@ describe('playbook review handlers', () => {
     const dir = await mkdtemp(join(tmpdir(), 'credops-save-'))
     try {
       const path = join(dir, 'release.yml')
-      const handlers = createDeployHandlers({
+      const handlers = createDeployHandlers({ vault: openVault(),
         deploys: {} as never,
         releases: { detail: vi.fn(async () => ({ id: ID, playbook: stored, error: `GET /?t=${SECRET} 503`, preflight: null, runs: [] })) } as unknown as ReleaseService,
         tooling: async () => ({}) as never,
@@ -345,7 +372,7 @@ describe('playbook review handlers', () => {
     const dir = await mkdtemp(join(tmpdir(), 'credops-save-'))
     try {
       const path = join(dir, 'release.yml')
-      const handlers = createDeployHandlers({
+      const handlers = createDeployHandlers({ vault: openVault(),
         deploys: {} as never,
         releases: { detail: vi.fn(async () => ({ id: ID, playbook: stored, error: null, preflight: null, runs: [] })) } as unknown as ReleaseService,
         tooling: async () => ({}) as never,
@@ -369,14 +396,14 @@ describe('playbook review handlers', () => {
   it('release:events masks known secret values in main, as a Hub release sends its events unmasked', async () => {
     const SECRET = 'hunter2-secret-value'
     const raw = [{ id: 'e1', runId: ID, seq: 1, at: 'now', type: 'log', stepId: 'r1:health', hostId: 'h1', stream: 'out', line: `GET /?t=${SECRET}` }]
-    const handlers = createDeployHandlers({ deploys: {} as never, releases: { events: vi.fn(async () => raw) } as unknown as ReleaseService, tooling: async () => ({}) as never, knownSecrets: () => [SECRET] })
+    const handlers = createDeployHandlers({ vault: openVault(), deploys: {} as never, releases: { events: vi.fn(async () => raw) } as unknown as ReleaseService, tooling: async () => ({}) as never, knownSecrets: () => [SECRET] })
     const got = await (handlers as unknown as Record<string, (id: string, after: number) => Promise<unknown>>)['release:events'](ID, 0)
     expect(got).toEqual([{ ...raw[0], line: 'GET /?t=‹redacted›' }])
   })
   it('release:list and release:active mask a known secret in a Hub summary error, and leave its ids and times', async () => {
     const SECRET = 'hunter2-secret-value'
     const hub = { id: ID, environmentId: ID, status: 'failed', startedAt: '2026-10-21T18:00:00.000Z', error: `health failed: GET /?t=${SECRET} 503` }
-    const handlers = createDeployHandlers({
+    const handlers = createDeployHandlers({ vault: openVault(),
       deploys: {} as never,
       releases: { list: vi.fn(async () => [hub]), listActive: vi.fn(async () => [hub]) } as unknown as ReleaseService,
       tooling: async () => ({}) as never,
@@ -431,7 +458,7 @@ describe('runbook and operation channels', () => {
     const s = f.services.create({ kind: 'service', environmentId: f.staging.id, name: 'api', deploymentId: d.id })
     const runbooks = new RunbookStore({ db: f.db, audit: f.audit, vault: f.vault })
     const preflightOperation = vi.fn(async () => ({ releaseId: ID }))
-    const h = createDeployHandlers({ deploys: {} as never, releases: { preflightOperation } as unknown as ReleaseService, tooling: async () => ({}) as never, runbooks }) as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>
+    const h = createDeployHandlers({ vault: openVault(), deploys: {} as never, releases: { preflightOperation } as unknown as ReleaseService, tooling: async () => ({}) as never, runbooks }) as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>
     const input = { ...RB, environmentId: f.staging.id, targetServiceIds: [s.id] }
     const made = (await h['runbook:save'](input)) as { id: string; name: string }
     expect(made.name).toBe('Bounce')

@@ -4,6 +4,7 @@ import { createDeployHandlers } from '../../src/main/ipc/handlers/deploy'
 import { createServiceHandlers } from '../../src/main/ipc/handlers/services'
 import { HubError } from '../../src/main/hub/client'
 import { HUB_OFFLINE_NOTICE, HubRunner, RoutingReleases, type ReleaseApi } from '../../src/main/hub/runner'
+import { openVault } from './deploy-helpers'
 
 const HUB_ENV = 'e1111111-1111-4111-8111-111111111111'
 const LOCAL_ENV = 'e2222222-2222-4222-8222-222222222222'
@@ -281,14 +282,14 @@ describe('hub runner and release routing', () => {
         throw new Error('environment not found')
       }),
     }
-    const h = createDeployHandlers({ deploys: deploys as never, releases: stub(), tooling: async () => ({}) as never, catalog })
+    const h = createDeployHandlers({ vault: openVault(), deploys: deploys as never, releases: stub(), tooling: async () => ({}) as never, catalog })
     expect((await h['deploy:list'](HUB_ENV)).map((d) => [d.id, d.vaultIds])).toEqual([['d1', []]])
     expect((await h['deploy:list'](undefined)).map((d) => d.id)).toEqual(['d1'])
     expect(await h['deploy:list'](LOCAL_ENV)).toEqual([])
     expect(await h['deploy:settings'](HUB_ENV)).toEqual({ environmentId: HUB_ENV, versioned: true, autoRollback: true, currentVersion: 'v1.2.3', parallelPrepare: true, prepareCap: 3, flow: null })
     await expect(Promise.resolve().then(() => h['deploy:settings'](LOCAL_ENV))).rejects.toThrow('environment not found')
     // An environment this desktop published reads its own row, the one its edits write.
-    const own = createDeployHandlers({ deploys: { ...deploys, settings: vi.fn(() => ({ environmentId: HUB_ENV, versioned: false, autoRollback: false, currentVersion: null })) } as never, releases: stub(), tooling: async () => ({}) as never, catalog, published: (id) => id === HUB_ENV })
+    const own = createDeployHandlers({ vault: openVault(), deploys: { ...deploys, settings: vi.fn(() => ({ environmentId: HUB_ENV, versioned: false, autoRollback: false, currentVersion: null })) } as never, releases: stub(), tooling: async () => ({}) as never, catalog, published: (id) => id === HUB_ENV })
     expect(await own['deploy:settings'](HUB_ENV)).toMatchObject({ versioned: false })
     const sh = createServiceHandlers({ services: { list: () => [] } as never, copy: vi.fn(), deploys: {} as never, containers: {} as never, tunnels: {} as never, openExternal: async () => undefined, catalog })
     const services = await sh['service:list'](HUB_ENV)
