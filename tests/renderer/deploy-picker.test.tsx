@@ -90,6 +90,9 @@ async function mount({ preselect = [] as string[], env = staging, persisted = []
     'deploy:previewPlaybook': preview,
     'release:get': detail,
     'release:active': [],
+    // Main answers these with nothing, as the real bridge does.
+    'release:start': undefined,
+    'release:break-lock': undefined,
   })
   const base = invoke.getMockImplementation()!
   invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
@@ -342,6 +345,20 @@ describe('deploy wizard', () => {
     await waitFor(() => expect(calls(invoke, 'release:start')[0].slice(1)).toEqual([REL, { redeploy: true, playbookSha256: HASH }]))
   })
 
+  it('breaking a stale lock runs preflight again', async () => {
+    const holder = { releaseId: 'r-old', user: 'ash', machine: 'mac', environment: 'staging', version: null, startedAt: '2026-01-01T00:00:00.000Z' }
+    const lock = check({ id: 'lock', level: 'block', message: 'locked' })
+    const locked = report({ blocked: true, checks: [lock], locks: { h1: { holder, stale: true, raw: '{}' } } })
+    const { user, dialog, invoke } = await mount({ preselect: ['s1'], persisted: events([{ type: 'preflight.check', check: lock }, { type: 'preflight.done', report: locked }]) })
+    await preflight(user, dialog)
+    await user.click(await within(dialog).findByRole('button', { name: 'Break lock' }))
+    const confirm = await screen.findByRole('dialog', { name: 'Break the lock on app1?' })
+    await user.type(within(confirm).getByLabelText('Type app1 to confirm'), 'app1')
+    await user.click(within(confirm).getByRole('button', { name: 'Break lock' }))
+    await waitFor(() => expect(calls(invoke, 'release:break-lock').map((c) => c.slice(1))).toEqual([[REL, 'h1', { typedLabel: 'app1' }]]))
+    await waitFor(() => expect(calls(invoke, 'release:preflight')).toHaveLength(2))
+  })
+
   it('protected start requires typing the environment name', async () => {
     const prod = environment({ ...staging, protected: true })
     const { user, dialog, invoke } = await mount({ env: prod, preselect: ['s1', 's3'], persisted: events([{ type: 'preflight.done', report: report() }]) })
@@ -535,6 +552,9 @@ describe('stale preflight releases', () => {
     await waitFor(() => expect(calls(invoke, 'deploy:savePlaybook').map((c) => c.slice(1))).toEqual([[REL, HASH]]))
     await user.click(within(dialog).getByRole('button', { name: 'Deploy' }))
     await waitFor(() => expect(calls(invoke, 'release:start').map((c) => c.slice(1))).toEqual([[REL, { redeploy: false, playbookSha256: HASH }]]))
+    // Started: the review gives way to the release, with no second Deploy on offer.
+    await waitFor(() => expect(within(dialog).queryByRole('button', { name: 'Deploy' })).not.toBeInTheDocument())
+    expect(within(dialog).getByRole('button', { name: 'Close' })).toBeInTheDocument()
   })
 
   it.each([

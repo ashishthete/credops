@@ -41,7 +41,8 @@ async function mount({ protectedEnv = false, noEnv = false, runbooks = [] as Run
     'runbook:save': TAIL,
     'release:preflightOperation': { releaseId: 'rel-op' },
     'deploy:previewPlaybook': { playbook: '- hosts: all\n  tasks: []\n', sha256: SHA },
-    'release:start': null,
+    // Main answers with nothing, as the real bridge does.
+    'release:start': undefined,
     'release:get': releaseDetail({ id: 'rel-op', status: 'ready' }),
   })
   await act(async () => {
@@ -114,6 +115,7 @@ describe('runbooks section', () => {
     await user.click(within(confirm).getByRole('button', { name: 'Run' }))
     await waitFor(() => expect(calls(invoke, 'release:start')).toHaveLength(1))
     expect(calls(invoke, 'release:start')[0].slice(1)).toEqual(['rel-op', { typedName: 'staging', playbookSha256: SHA }])
+    await waitFor(() => expect(within(dialog).queryByRole('button', { name: 'Run' })).not.toBeInTheDocument())
   })
 })
 
