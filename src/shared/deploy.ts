@@ -668,6 +668,8 @@ export const PREPARE_FETCH_FAILED_MESSAGE = (svc: string, others: PrepareOthers)
 export const RESTORE_FIRST_NOTE = 'First deploy: there is no previous commit to go back to'
 /** A release with skipped services fails before any change when origin's head is not the one its preflight saw. */
 export const ORIGIN_MOVED_MESSAGE = 'origin moved since preview, preview again'
+/** Added to a release's error when its deploy-lock release at the end failed. */
+export const LOCK_LEFT_MESSAGE = 'The deploy lock could not be removed from the hosts; the next preflight shows it'
 export const PLAYBOOK_CHANGED_MESSAGE = 'The playbook changed since you reviewed it. Review it again.'
 /** How long a reviewed playbook can be started from (main's `PREVIEW_TTL_MS`). */
 export const REVIEW_TTL_MS = 30 * 60_000

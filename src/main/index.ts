@@ -48,6 +48,7 @@ import { SettingsStore } from './settings/settings-store'
 import { detectTools } from './deploy/tooling'
 import { startPrivateAgent, type ChildLike } from './deploy/agent'
 import { prepareHosts } from './deploy/hostkeys'
+import { HeldIdentities } from './deploy/held-identities'
 import { LocalRunner, nodeFs, nodeSpawn } from './deploy/local-runner'
 import { startTap } from './deploy/log-tap'
 import { maskEvents, maskSummary } from './deploy/mask'
@@ -372,6 +373,8 @@ if (!app.requestSingleInstanceLock()) {
           ),
         exists: (path: string) => existsSync(path),
       }
+      // A started release keeps the ssh identities it resolved until it finishes (deploy/held-identities.ts).
+      const heldIdentities = new HeldIdentities(identities as IdentityStore)
       const localRunner = new LocalRunner({
         tools: () => detectTools(toolDeps),
         prepare: (plan, signal) =>
@@ -380,7 +383,7 @@ if (!app.requestSingleInstanceLock()) {
             connectChain,
             prompts,
             knownHosts,
-            identities: identities as IdentityStore,
+            identities: heldIdentities.for(plan.releaseId, plan.kind),
             auth: { env: process.env, home: homedir(), sshConfig },
             signal,
           }),
@@ -649,6 +652,10 @@ if (!app.requestSingleInstanceLock()) {
       // tunnels, closes sessions, cancels runs (writing their run.finish), stops container log
       // follows, closes exec links, and only then locks the vault.
       wireVaultHooks(service, { sessions: manager, tunnels: runner, runs, links, containers, releases: release, ai: aiRequests, prompts })
+      release.onEvent((batch) => {
+        for (const e of batch) if (e.type === 'run.finished') heldIdentities.drop(e.runId)
+      })
+      service.onBeforeReset(() => heldIdentities.dropAll())
       stopAutoLock = new AutoLock({
         idleSeconds: () => powerMonitor.getSystemIdleTime(),
         minutes: () => service.autoLockMinutes(),

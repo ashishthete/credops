@@ -8,7 +8,7 @@ import type { DeployPlan } from '../../src/main/deploy/runner'
 import { generatePlaybook } from '../../src/main/deploy/generate'
 import { ToolingError } from '../../src/main/deploy/tooling'
 import { CONFIRM_MESSAGE } from '../../src/shared/ops'
-import { BREAK_LOCK_CONFIRM_MESSAGE, DEFAULT_RELEASE_OPTIONS, PREPARE_FAILED_MESSAGE, PREPARE_FETCH_FAILED_MESSAGE, type CommitInfo, type DeploymentMeta, type PreflightCheck, type RunEvent, type StepKind } from '../../src/shared/deploy'
+import { BREAK_LOCK_CONFIRM_MESSAGE, DEFAULT_RELEASE_OPTIONS, LOCK_LEFT_MESSAGE, PREPARE_FAILED_MESSAGE, PREPARE_FETCH_FAILED_MESSAGE, type CommitInfo, type DeploymentMeta, type PreflightCheck, type RunEvent, type StepKind } from '../../src/shared/deploy'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import type { AppServiceMeta } from '../../src/shared/services'
 import { A, B, C, NOW, SECRET, dep, opReady, ready, rig, runbook, tracked, type Rig } from './release-rig'
@@ -361,7 +361,7 @@ describe('ReleaseService', () => {
     expect(r.runner.cancels).toHaveLength(1)
     expect(r.runner.kinds).toEqual(['preflight', 'release', 'rollback', 'unlock'])
     expect(atUnlock).toEqual({})
-    expect(r.svc.detail(id)).toMatchObject({ status: 'cancelled', error: RESET_CUT_ROLLBACK })
+    expect(r.svc.detail(id)).toMatchObject({ status: 'cancelled', error: `${RESET_CUT_ROLLBACK}. ${LOCK_LEFT_MESSAGE}` })
     expect(r.svc.hasActive()).toBe(false)
     const lines = r.svc.events(id, 0).flatMap((e) => (e.type === 'log' ? [e.line] : []))
     expect(lines).toContain(`Could not release the deploy lock: ssh: permission denied near ${REDACTED}`)
@@ -536,6 +536,19 @@ describe('ReleaseService', () => {
     await r2.svc.start(id2, {})
     await r2.svc.whenIdle()
     expect(order).toEqual([])
+  })
+
+  it('a deploy-lock release that fails at the end says the lock may still be on the hosts', async () => {
+    const r = await rig()
+    const id = await ready(r)
+    r.runner.on.unlock = () => {
+      throw new Error("Couldn't read the credentials for app1: vault locked")
+    }
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id)).toMatchObject({ status: 'succeeded', error: LOCK_LEFT_MESSAGE })
+    const finished = r.svc.events(id, 0).find((e) => e.type === 'run.finished')
+    expect(finished).toMatchObject({ status: 'succeeded', error: LOCK_LEFT_MESSAGE })
   })
 
   it('cancel and a vault lock abort a slow finalize; the run stays succeeded', async () => {

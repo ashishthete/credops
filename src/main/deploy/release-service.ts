@@ -22,6 +22,7 @@ import {
   PREPARE_FETCH_FAILED_MESSAGE,
   type PrepareCheckout,
   type PrepareOthers,
+  LOCK_LEFT_MESSAGE,
   REVIEW_EXPIRED_MESSAGE,
   REVIEW_TTL_MS,
   stepBound,
@@ -158,6 +159,8 @@ interface Live {
   cancelRequested: boolean
   /** Set by a vault reset: no playbook but the deploy-lock release runs again. */
   vaultReset: boolean
+  /** The deploy-lock release at the end failed: the lock may still be on the hosts, and the release says so. */
+  lockLeft: boolean
   done: Promise<void>
   runStatus: Map<string, DeploymentRunStatus>
   checkedOut: Set<string>
@@ -1442,6 +1445,7 @@ export class ReleaseService {
     try {
       await this.unlock(live, infos, holder)
     } catch (e) {
+      live.lockLeft = true
       this.push(live.id, { type: 'log', stepId: null, hostId: null, stream: 'ansible', line: this.red(live, `Unlock failed: ${e instanceof Error ? e.message : String(e)}`) })
     }
   }
@@ -1462,6 +1466,7 @@ export class ReleaseService {
     if (infos.length === 0) return
     const res = await this.exec(live, this.plan('unlock', live, infos, { version: null, holder: null, docker: new Map(), killBuilds: live.killBuilds }), EMPTY)
     if (res.err !== null || !res.out || this.failed(res.out)) {
+      live.lockLeft = true
       this.push(live.id, { type: 'log', stepId: null, hostId: null, stream: 'err', line: this.red(live, `Could not release the deploy lock: ${res.err ?? 'see the log'}`) })
     }
   }
@@ -1528,6 +1533,7 @@ export class ReleaseService {
       /* the release row is the source of truth; a sweep failure must not block the final status */
     }
     const finished = status === 'succeeded' || status === 'failed' || status === 'rolled_back' || status === 'cancelled' ? status : 'failed'
+    if (live.lockLeft) error = error === null ? LOCK_LEFT_MESSAGE : `${error}. ${LOCK_LEFT_MESSAGE}`
     const safe = error === null ? null : this.red(live, error)
     this.push(id, { type: 'run.finished', status: finished, ...(safe !== null ? { error: safe } : {}) })
     this.flush()
@@ -1913,6 +1919,7 @@ export class ReleaseService {
       runId: null,
       cancelRequested: false,
       vaultReset: false,
+      lockLeft: false,
       done: Promise.resolve(),
       runStatus: new Map(),
       checkedOut: new Set(),
