@@ -293,6 +293,14 @@ describe('releaseNotesFinalizeStep', () => {
     expect(c2.lines).toEqual(['Release notes: Claude unavailable (api); used commit list'])
   })
 
+  it('finalize strips links from the commit-list fallback too', async () => {
+    const commits = [commit('feat: claim it at [the portal](https://evil.example/login)', API, 1), commit('fix: see https://evil.example/x', API, 2)]
+    const out = await releaseNotesFinalizeStep(deps(fakeClaude('', { fail: new AiFailure('rate-limit', 'x') })))(ctx(meta({ commits })))
+    expect(out).not.toBeNull()
+    expect(out).not.toContain('evil.example')
+    expect(out).toContain('the portal')
+  })
+
   it("finalize strips links and URLs from Claude's notes before they go out", async () => {
     const claude = fakeClaude(
       [

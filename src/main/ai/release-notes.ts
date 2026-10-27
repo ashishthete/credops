@@ -173,7 +173,8 @@ export function releaseNotesFinalizeStep(deps: NotesDeps): FinalizeSteps['releas
       } else {
         ctx.log('Release notes: skipped (no commits)')
       }
-      const text = res.source === 'claude' ? stripNoteLinks(res.text) : res.text
+      // Claude's notes and the commit list both come from commit subjects anyone with push can write: no links go out.
+      const text = stripNoteLinks(res.text)
       return text.trim() === '' ? null : text
     } catch {
       ctx.log('Release notes: failed; none written')
