@@ -1700,11 +1700,12 @@ describe('parallel prepare', () => {
   })
 
   /** A prepare where `two`'s build fails after its checkout, and its restore step ends as given. */
-  const failedPrepare = async (o: { restore: 'ok' | 'first' | 'failed'; env?: boolean; alone?: boolean }) => {
+  const failedPrepare = async (o: { restore: 'ok' | 'first' | 'failed'; env?: boolean; alone?: boolean; shared?: boolean; oneBuilt?: boolean }) => {
     const r = await rig()
     on(r)
     const envOpts = { managedEnv: true, vaultIds: [DEFAULT_VAULT_ID], envTemplate: `TOKEN=\${secret:${r.f.secretId}}` }
-    const deps = o.alone ? [dep(r, 'two', o.env ? envOpts : {})] : [dep(r, 'one'), dep(r, 'two', o.env ? envOpts : {})]
+    const twoOpts = { ...(o.env ? envOpts : {}), ...(o.shared ? { repoPath: '/srv/one' } : {}) }
+    const deps = o.alone ? [dep(r, 'two', twoOpts)] : [dep(r, 'one'), dep(r, 'two', twoOpts)]
     const id = await ready(r, deps)
     r.runner.on.release = (plan, _s, emit) => {
       const ids = runIds(plan)
@@ -1714,6 +1715,10 @@ describe('parallel prepare', () => {
         emit({ type: 'step.started', stepId: `${r2}:${key}`, kind, name: `${key} two`, hostId: host, deploymentRunId: r2 })
         if (end === 'failed') emit({ type: 'step.failed', stepId: `${r2}:${key}`, error: message ?? `${key} failed`, durationMs: 1 })
         else emit({ type: 'step.done', stepId: `${r2}:${key}`, state: end, durationMs: 1, ...(message ? { message } : {}) })
+      }
+      if (o.oneBuilt) {
+        emit({ type: 'step.started', stepId: `${ids[0]}:build`, kind: 'build', name: 'build one', hostId: host, deploymentRunId: ids[0] })
+        emit({ type: 'step.done', stepId: `${ids[0]}:build`, state: 'ok', durationMs: 1 })
       }
       step('checkout', 'checkout', 'ok')
       if (o.env) step('env', 'env', 'ok')
@@ -1725,8 +1730,24 @@ describe('parallel prepare', () => {
     }
     await r.svc.start(id, {})
     await r.svc.whenIdle()
-    return { error: r.svc.detail(id).error ?? '', svc: tracked(r, deps.at(-1)!).map((s) => s.name).join(', ') }
+    const name = (d: DeploymentMeta) => tracked(r, d).map((s) => s.name).join(', ')
+    return { error: r.svc.detail(id).error ?? '', svc: name(deps.at(-1)!), one: name(deps[0]) }
   }
+
+  it('a restore of a checkout another shares says that one is back on the previous commit too', async () => {
+    const { error, svc, one } = await failedPrepare({ restore: 'ok', shared: true })
+    expect(error).toBe(
+      `Build failed for ${svc}: no service was restarted; the checkout is back on the previous commit; ${one} shares that checkout, so it is back on the previous commit too; running containers are unchanged.`,
+    )
+    // a restore that did not run leaves the shared checkout where the release put it
+    const left = await failedPrepare({ restore: 'failed', shared: true })
+    expect(left.error).toContain('; other checkouts are left at the new commit;')
+  })
+
+  it('a build that finished before another failed says the next compose up starts its new images', async () => {
+    const { error, one } = await failedPrepare({ restore: 'ok', oneBuilt: true })
+    expect(error).toMatch(new RegExp(`; running containers are unchanged, but the next compose up of ${one} starts the newly built images\\.$`))
+  })
 
   it('a build that fails in prepare puts its checkout back on the previous commit and says so', async () => {
     const { error, svc } = await failedPrepare({ restore: 'ok' })

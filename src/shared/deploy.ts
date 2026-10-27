@@ -641,12 +641,29 @@ export const PLAYBOOK_NOT_STORED_MESSAGE = 'Playbook not stored for this release
 export type PrepareCheckout = 'restored' | 'first' | 'failed' | 'left'
 /** Checkouts other than the failed one still at the new commit; `env` when one of them wrote its managed .env. Null: none. */
 export type PrepareOthers = { env: boolean } | null
+/**
+ * Checkouts that share the failed one's repo on its host, so its restore put them back on the previous commit too;
+ * `names` their services, `env` when one of them wrote its managed .env (which the restore leaves). Null: none.
+ */
+export type PrepareShared = { names: string[]; env: boolean } | null
 const othersLeft = (o: PrepareOthers): string => (o ? `; other checkouts are left at the new commit${o.env ? ' with the new .env' : ''}` : '')
+const sharedBack = (o: PrepareShared): string => {
+  if (!o || o.names.length === 0) return ''
+  const one = o.names.length === 1
+  return `; ${o.names.join(', ')} ${one ? 'shares' : 'share'} that checkout, so ${one ? 'it is' : 'they are'} back on the previous commit too${o.env ? ' with the new .env' : ''}`
+}
+/** Built images replace the old ones under their tags at once: the containers keep running, the next compose up starts the new. */
+const containers = (built: readonly string[]): string =>
+  built.length > 0 ? `running containers are unchanged, but the next compose up of ${built.join(', ')} starts the newly built images` : 'running containers are unchanged'
 /**
  * A parallel prepare that failed at or after its checkout, before any service went up. `env`: the failed checkout has
- * a managed .env and this release wrote it; with no managed .env none is mentioned.
+ * a managed .env and this release wrote it; with no managed .env none is mentioned. `built`: services whose build
+ * finished in this release.
  */
-export const PREPARE_FAILED_MESSAGE = (svc: string, o: { checkout: PrepareCheckout; env: boolean; others: PrepareOthers }): string => {
+export const PREPARE_FAILED_MESSAGE = (
+  svc: string,
+  o: { checkout: PrepareCheckout; env: boolean; others: PrepareOthers; shared?: PrepareShared; built?: readonly string[] },
+): string => {
   const envNew = o.env ? ' with the new .env' : ''
   const own: Record<PrepareCheckout, string> = {
     restored: `the checkout is back on the previous commit${o.env ? ' with the previous .env' : ''}`,
@@ -654,15 +671,15 @@ export const PREPARE_FAILED_MESSAGE = (svc: string, o: { checkout: PrepareChecko
     failed: `putting the checkout back on the previous commit failed, so it is still on the new commit${envNew}`,
     left: `the checkout is left at the new commit${envNew}`,
   }
-  return `Build failed for ${svc}: no service was restarted; ${own[o.checkout]}${othersLeft(o.others)}; running containers are unchanged.`
+  return `Build failed for ${svc}: no service was restarted; ${own[o.checkout]}${sharedBack(o.shared ?? null)}${othersLeft(o.others)}; ${containers(o.built ?? [])}.`
 }
 /**
  * A parallel prepare that failed before its checkout (the fetch, a step before it), before any service went up. When
  * other checkouts did check out (and were not put back), they are said to be at the new commit.
  */
-export const PREPARE_FETCH_FAILED_MESSAGE = (svc: string, others: PrepareOthers): string =>
+export const PREPARE_FETCH_FAILED_MESSAGE = (svc: string, others: PrepareOthers, built: readonly string[] = []): string =>
   others
-    ? `Fetch failed for ${svc}: no service was restarted; ${svc} is unchanged and still on the old commit${othersLeft(others)}; running containers are unchanged.`
+    ? `Fetch failed for ${svc}: no service was restarted; ${svc} is unchanged and still on the old commit${othersLeft(others)}; ${containers(built)}.`
     : `Fetch failed for ${svc}: no service was restarted; servers are unchanged and still on the old commit.`
 /** A prepare restore's note when the checkout had no previous commit to go back to. */
 export const RESTORE_FIRST_NOTE = 'First deploy: there is no previous commit to go back to'

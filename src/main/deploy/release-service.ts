@@ -22,6 +22,7 @@ import {
   PREPARE_FETCH_FAILED_MESSAGE,
   type PrepareCheckout,
   type PrepareOthers,
+  type PrepareShared,
   LOCK_LEFT_MESSAGE,
   REVIEW_EXPIRED_MESSAGE,
   REVIEW_TTL_MS,
@@ -1489,20 +1490,27 @@ export class ReleaseService {
     const run = live.failedStep?.split(':')[0]
     const info = infos.find((i) => i.run.id === run)
     if (!info) return null
-    const names = info.sel.services.map((x) => x.name)
-    const svc = names.length > 0 ? names.join(', ') : info.dep.name
+    const nameOf = (i: Info): string => (i.sel.services.length > 0 ? i.sel.services.map((x) => x.name).join(', ') : i.dep.name)
+    const svc = nameOf(info)
     const checkedOut = new Set([...(out?.reachedCheckout ?? []), ...live.checkedOut])
     const stateOf = (i: Info, kind: StepKind) => this.stepsOf(i.run.id).find((s) => s.kind === kind)?.state
     // a managed .env this release wrote
     const wroteEnv = (i: Info): boolean => i.dep.managedEnv && stateOf(i, 'env') === 'ok'
+    // builds that finished: their images already replaced the old ones under the same tags
+    const built = infos.filter((i) => stateOf(i, 'build') === 'ok').map(nameOf)
+    const restored = checkedOut.has(info.run.id) && stateOf(info, 'restore') === 'ok'
+    // a restore checks out the repo's tree, so checkouts sharing it on this host went back with it
+    const sharing = (i: Info): boolean => restored && i.dep.hostId === info.dep.hostId && i.dep.repoPath === info.dep.repoPath
+    const back = infos.filter((i) => i !== info && checkedOut.has(i.run.id) && sharing(i))
+    const shared: PrepareShared = back.length > 0 ? { names: back.map(nameOf), env: back.some(wroteEnv) } : null
     // other checkouts that are still at the new commit: they checked out and no restore put them back
-    const left = infos.filter((i) => i !== info && checkedOut.has(i.run.id) && stateOf(i, 'restore') !== 'ok')
+    const left = infos.filter((i) => i !== info && checkedOut.has(i.run.id) && !sharing(i) && stateOf(i, 'restore') !== 'ok')
     const others: PrepareOthers = left.length > 0 ? { env: left.some(wroteEnv) } : null
     // before its checkout the failed one's server is still on the old commit
-    if (!checkedOut.has(info.run.id)) return PREPARE_FETCH_FAILED_MESSAGE(svc, others)
+    if (!checkedOut.has(info.run.id)) return PREPARE_FETCH_FAILED_MESSAGE(svc, others, built)
     const restore = stateOf(info, 'restore')
     const checkout: PrepareCheckout = restore === 'ok' ? 'restored' : restore === 'warn' ? 'first' : restore === 'failed' ? 'failed' : 'left'
-    return PREPARE_FAILED_MESSAGE(svc, { checkout, env: wroteEnv(info), others })
+    return PREPARE_FAILED_MESSAGE(svc, { checkout, env: wroteEnv(info), others, shared, built })
   }
 
   /** The runs a rollback undoes: those that reached checkout, or with a parallel prepare only those that reached up. */
