@@ -1,8 +1,9 @@
 import type { Client } from 'ssh2'
 import type { ResolvedHost } from '../../shared/inventory'
+import type { HostKeyInfo } from '../../shared/ssh'
 import { PREPARE_DIAL_TIMEOUT_MS, type PreflightCheck } from '../../shared/deploy'
 import type { IdentityStore } from '../vault/identity-store'
-import { AuthFailedError, describeError, hopsOf, type connectChain, type ConnectDeps, type HopTarget } from '../ssh/connect'
+import { AuthFailedError, HostKeyError, describeError, hopsOf, type connectChain, type ConnectDeps, type HopTarget } from '../ssh/connect'
 import { authPlan, type AuthDeps } from '../ssh/auth'
 import { hostToken, type KnownHostStore } from '../ssh/known-hosts'
 import { verifyWithStore, type PromptBroker } from '../ssh/prompts'
@@ -45,6 +46,22 @@ export interface PrepareDeps {
 }
 
 export const passwordMessage = (label: string): string => `Deploys need key or agent auth; "${label}" uses a password`
+
+/**
+ * A changed host key's block: the fingerprints, and how to drop the old key when the change was expected. CredOps
+ * never edits ~/.ssh/known_hosts, so for a key from that file it gives the command; its own pins are removed under
+ * Known hosts.
+ */
+export function changedKeyMessage(base: string, info: HostKeyInfo): string {
+  const old = info.known.filter((k) => k.keyType === info.keyType)
+  const lines = old.flatMap((k) => (k.source === 'openssh' && k.line !== undefined ? [k.line] : []))
+  const ways: string[] = []
+  if (old.some((k) => k.source === 'openssh'))
+    ways.push(`remove the old key from ~/.ssh/known_hosts${lines.length > 0 ? ` (line ${lines.join(', ')})` : ''} with: ssh-keygen -R '${info.host}'`)
+  if (old.some((k) => k.source === 'app')) ways.push('remove the pinned key under Known hosts')
+  const seen = old.length > 0 ? ` Expected ${old.map((k) => k.fingerprint).join(' or ')}, got ${info.fingerprint}.` : ''
+  return `${base}${seen} If you expected this change (the server was rebuilt or rekeyed), ${ways.join(', and ')}, then run preflight again.`
+}
 
 export async function prepareHosts(plan: DeployPlan, deps: PrepareDeps): Promise<PreparedHosts> {
   const links = new Map<string, Client>()
@@ -152,7 +169,8 @@ export async function prepareHosts(plan: DeployPlan, deps: PrepareDeps): Promise
       } catch (err) {
         const hop = failed ?? hops[hops.length - 1] ?? null
         const e = describeError(err, hop, { user: false })
-        block(err instanceof AuthFailedError || e.code === 'auth' ? 'auth' : 'reachable', e.message)
+        const message = err instanceof HostKeyError && err.code === 'host-key-changed' ? changedKeyMessage(e.message, err.info) : e.message
+        block(err instanceof AuthFailedError || e.code === 'auth' ? 'auth' : 'reachable', message)
         continue
       }
       for (const e of recorded) entries.set(`${e.token} ${e.keyType} ${e.keyBase64}`, e)
