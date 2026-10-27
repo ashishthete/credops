@@ -65,6 +65,8 @@ export function buildApp(deps: HubDeps): FastifyInstance {
   const deployKeys = new DeployKeys(deps.db, ring, { now: deps.now })
   const app = Fastify({
     bodyLimit: HUB_BODY_LIMIT,
+    // Only the configured proxies may name the client; otherwise req.ip is the socket address.
+    ...(deps.config.trustProxy ? { trustProxy: deps.config.trustProxy } : {}),
     ...(deps.config.tls
       ? { https: { cert: readFileSync(deps.config.tls.certFile), key: readFileSync(deps.config.tls.keyFile) } }
       : {}),
@@ -85,7 +87,7 @@ export function buildApp(deps: HubDeps): FastifyInstance {
   let releases: HubReleases | null = null
   const releaseSecrets = (): string[] => releases?.knownSecrets() ?? []
   installErrorHandler(app, () => [...secrets.inflight, ...releaseSecrets()])
-  // req.ip is the socket address: the Hub does not set trustProxy, so a forwarded header cannot pick the bucket.
+  // req.ip is the socket address unless config.trustProxy names the proxy in front; a forwarded header from anyone else is ignored.
   const signInWindow = { windowMs: 60_000, maxKeys: 10_000, now: deps.now }
   const limiter = new RateLimiter(deps.config.sessionRateLimitPerMinute ?? DEFAULT_SESSION_RATE_LIMIT_PER_MINUTE, signInWindow)
   const denials = new Coalescer(signInWindow, (ip, suppressed) =>

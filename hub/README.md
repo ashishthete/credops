@@ -80,11 +80,14 @@ Write `/etc/credops-hub/hub.config.json` (see `hub/hub.config.example.json`):
     "redirectUri": "http://127.0.0.1/callback"
   },
   "firstAdmin": { "upn": "you@example.com" },
+  "trustProxy": ["127.0.0.1"],
   "masterKeyFile": "${CREDENTIALS_DIRECTORY}/master-key"
 }
 ```
 
-The Hub listens on loopback and Caddy terminates TLS. `${CREDENTIALS_DIRECTORY}` is filled in from
+The Hub listens on loopback and Caddy terminates TLS. `trustProxy` lists the proxy addresses whose
+`X-Forwarded-For` the Hub believes, so sign-in attempts are counted per real client (`sessionRateLimitPerMinute`,
+default 20 per address) rather than all as Caddy's; leave it out when nothing sits in front of the Hub. `${CREDENTIALS_DIRECTORY}` is filled in from
 systemd's `LoadCredential=` (the unit hands over `/etc/credops-hub/master.key`). systemd leaves that copy
 owned by root with the Hub user's access granted by ACL, so for a file inside `$CREDENTIALS_DIRECTORY` the Hub
 accepts owner root or the Hub user, no write bits and no "other" bits, instead of the strict 0600 check. This

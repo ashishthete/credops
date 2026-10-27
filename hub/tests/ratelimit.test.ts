@@ -88,6 +88,19 @@ describe('sign-in rate limit', () => {
     expect(spoofed.statusCode).toBe(429)
   })
 
+  it('behind a trusted proxy, counts each forwarded client on its own', async () => {
+    hub = await testHub({ sessionRateLimitPerMinute: 1, trustProxy: ['127.0.0.1'] })
+    const via = (client: string) => hub.app.inject({ method: 'POST', url: '/api/v1/session', headers: { 'x-forwarded-for': client } })
+    expect((await via('10.0.0.1')).statusCode).toBe(401)
+    expect((await via('10.0.0.2')).statusCode).toBe(401)
+    expect((await via('10.0.0.1')).statusCode).toBe(429)
+    // A caller that is not the proxy cannot pick its bucket.
+    const direct = (client: string) => hub.app.inject({ method: 'POST', url: '/api/v1/session', remoteAddress: '192.0.2.7', headers: { 'x-forwarded-for': client } })
+    expect((await direct('10.0.0.3')).statusCode).toBe(401)
+    expect((await direct('10.0.0.4')).statusCode).toBe(429)
+    expect(hub.audit.list({ actions: ['session.denied'] }).map((r) => r.details.ip)).toEqual(['192.0.2.7', '10.0.0.2', '10.0.0.1'])
+  })
+
   it('defaults to 20 a minute', async () => {
     hub = await testHub()
     for (let i = 0; i < 20; i++) expect((await post()).statusCode).toBe(401)
@@ -132,5 +145,14 @@ describe('sessionRateLimitPerMinute config', () => {
     expect(loadConfig(write({ ...base, sessionRateLimitPerMinute: 5 })).sessionRateLimitPerMinute).toBe(5)
     expect(() => loadConfig(write({ ...base, sessionRateLimitPerMinute: 0 }))).toThrow(/sessionRateLimitPerMinute/)
     expect(() => loadConfig(write({ ...base, sessionRateLimitPerMinute: 'x' }))).toThrow(/sessionRateLimitPerMinute/)
+  })
+
+  it('trustProxy is an optional list of proxy addresses or CIDRs', () => {
+    const base = JSON.parse(readFileSync(EXAMPLE, 'utf8'))
+    expect(loadConfig(EXAMPLE).trustProxy).toBeUndefined()
+    expect(loadConfig(write({ ...base, trustProxy: ['127.0.0.1', '10.0.0.0/8', '::1'] })).trustProxy).toEqual(['127.0.0.1', '10.0.0.0/8', '::1'])
+    for (const bad of [true, [], ['caddy'], ['10.0.0.0/33'], '127.0.0.1']) {
+      expect(() => loadConfig(write({ ...base, trustProxy: bad }))).toThrow(/trustProxy/)
+    }
   })
 })
