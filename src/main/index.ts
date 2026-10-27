@@ -622,7 +622,7 @@ if (!app.requestSingleInstanceLock()) {
           return { label: h.label, keepaliveSec: h.keepaliveSec, envVars: h.envVars }
         },
         connect: connectChain,
-        plan: (identity) => authPlan(identity, authDeps),
+        plan: (identity, hop) => authPlan(identity, authDeps, hop),
         knownHosts,
         prompts,
         isLocked,

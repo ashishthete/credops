@@ -15,7 +15,8 @@ export interface ExecLinksDeps {
   resolve(hostId: string, environmentId?: string): ResolvedHost
   hostInfo(hostId: string): { label: string; keepaliveSec: number | null; envVars: Record<string, string> }
   connect: typeof connectChain
-  plan(identity: IdentityRef): Promise<AuthPlan>
+  /** `hop` lets ~/.ssh/config (IdentityFile and the like) match the host being dialed. */
+  plan(identity: IdentityRef, hop: HopTarget): Promise<AuthPlan>
   knownHosts: Pick<KnownHostStore, 'check' | 'trust' | 'recordMismatch'>
   prompts: PromptBroker
   isLocked(): boolean
@@ -281,9 +282,9 @@ export class ExecLinks {
 
     const dialing = (): boolean => link.state === 'dialing' && !link.abort.signal.aborted
     const deps: ConnectDeps = {
-      plan: async (identity) => {
+      plan: async (identity, hop) => {
         try {
-          return await this.deps.plan(identity)
+          return await this.deps.plan(identity, hop)
         } catch (err) {
           throw new ConfigError(messageOf(err))
         }
