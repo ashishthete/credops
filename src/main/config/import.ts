@@ -13,6 +13,7 @@ import {
   type ImportResult,
   type VaultRef,
 } from '../../shared/config-file'
+import { EXPORT_SECRET_NAME, URL_USERINFO_VALUE, blankTemplateLine, blankUrlParams } from '../../shared/config-secrets'
 import { SENSITIVE_KEY } from '../../shared/deploy'
 import { UNASSIGNED_PRODUCT, stripRepoCredentials } from '../../shared/inventory'
 import type { AuditLog } from '../audit/audit-log'
@@ -26,7 +27,7 @@ import { asRunbookSaveInput } from '../ipc/validators'
 import { EnvironmentStore } from '../inventory/environment-store'
 import { HostStore } from '../inventory/host-store'
 import { ProductStore } from '../inventory/product-store'
-import type { ReleaseFlow } from '../../shared/deploy'
+import type { HealthUrl, ReleaseFlow } from '../../shared/deploy'
 import type { RunbookInput, RunbookItem } from '../../shared/runbooks'
 import type { Step, StepBody, StepSecret } from '../../shared/steps'
 import { RegionStore } from '../inventory/region-store'
@@ -75,6 +76,46 @@ const ambiguous = (n: number): string => `ambiguous: ${n} matches`
 const union = (a: string[], b: string[]): string[] => [...new Set([...a, ...b])].sort()
 /** The env var name a template line sets, for saying which lines lost their secret. */
 const lineKey = (line: string, i: number): string => /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(line)?.[1] ?? `line ${i + 1}`
+/** The file's URL, or the local one when the file's is the local one as the export writes it (credentials and secret params removed). */
+const keepLocalUrl = (here: string | null | undefined, file: string, strip = false): string =>
+  here != null && blankUrlParams(strip ? stripRepoCredentials(here) : here) === file ? here : file
+/** Health URLs the same way: each file URL takes the first unused local one it stands for. */
+function keepLocalUrls(here: HealthUrl[], file: HealthUrl[]): HealthUrl[] {
+  const used = new Set<number>()
+  return file.map((u) => {
+    const i = here.findIndex((l, j) => !used.has(j) && keepLocalUrl(l.url, u.url) === l.url)
+    if (i < 0) return u
+    used.add(i)
+    return { ...u, url: here[i].url }
+  })
+}
+
+/**
+ * The file's template with each line the export blanked put back as the local template has it. A live line with a
+ * secret-looking name that is blank in the file and that the local template can't fill is added to `lost`.
+ */
+function restoreTemplate(file: string, local: string | null, lost: Set<string>): string {
+  // Each blanked form of a local line, with the lines it came from in order.
+  const blanked = new Map<string, string[]>()
+  const localLines = new Set<string>()
+  for (const line of local === null ? [] : local.split('\n')) {
+    localLines.add(line)
+    const b = blankTemplateLine(line)
+    if (b !== line) blanked.set(b, [...(blanked.get(b) ?? []), line])
+  }
+  return file
+    .split('\n')
+    .map((line, i) => {
+      const original = blanked.get(line)?.shift()
+      if (original !== undefined) return original
+      // Blank in the file, live and secret-named, and not blank here too: its value can't be known.
+      const eq = line.indexOf('=')
+      if (eq <= 0 || line.trimStart().startsWith('#') || line.slice(eq + 1).replace(/\r$/, '') !== '') return line
+      if (EXPORT_SECRET_NAME.test(line.slice(0, eq)) && !localLines.has(line)) lost.add(lineKey(line, i))
+      return line
+    })
+    .join('\n')
+}
 
 /**
  * Writes the file into the DB through the stores and reports what each object did. It always writes: planImport
@@ -333,7 +374,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
     }
     // The file has the URL without its credentials: the local one with them is the same URL.
     const here = (db.prepare('SELECT repo_url FROM products WHERE id = ?').get(local) as { repo_url: string | null }).repo_url
-    const repoUrl = here !== null && stripRepoCredentials(here) === x.repoUrl ? undefined : x.repoUrl
+    const repoUrl = here !== null && x.repoUrl !== null && keepLocalUrl(here, x.repoUrl, true) === here ? undefined : x.repoUrl
     const next = s.products.updateInTx(local, { name: x.name, color: x.color, icon: x.icon, description: x.description, repoUrl })
     map.products.set(x.id, local)
     // Environment pages show their products.
@@ -360,11 +401,13 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
       local === null
         ? {}
         : (JSON.parse((db.prepare('SELECT env_vars FROM hosts WHERE id = ?').get(local) as { env_vars: string }).env_vars) as Record<string, string>)
+    // The export's own rule counts too: a value it blanked keeps the local one rather than being emptied.
     const envVars = Object.fromEntries(
       Object.entries(x.envVars).map(([k, v]) => {
-        if (!SENSITIVE_KEY.test(k)) return [k, v]
+        const hereValue = Object.hasOwn(localVars, k) ? localVars[k] : undefined
+        if (!SENSITIVE_KEY.test(k) && !EXPORT_SECRET_NAME.test(k) && !(hereValue !== undefined && URL_USERINFO_VALUE.test(hereValue))) return [k, v]
         if (v !== '') need('hosts', x.label, 'envVars', `${k} left blank; set it in the host editor`)
-        return [k, localVars[k] ?? '']
+        return [k, hereValue ?? '']
       }),
     )
     if (local === null) {
@@ -646,6 +689,8 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
           }),
         )
         .join('\n')
+      // Lines the export blanked: the local template's value stands for them.
+      envTemplate = restoreTemplate(envTemplate, before?.envTemplate ?? null, lost)
       if (lost.size > 0) {
         need('deployments', x.name, 'envTemplate', [...lost].join(', ') + (before ? '; kept the local template' : ''))
         if (before) envTemplate = undefined
@@ -655,14 +700,14 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
     const here = before?.repoUrl ?? null
     const f = {
       name: x.name,
-      repoUrl: here !== null && stripRepoCredentials(here) === x.repoUrl ? here : x.repoUrl,
+      repoUrl: x.repoUrl === null ? null : keepLocalUrl(here, x.repoUrl, true),
       repoPath: x.repoPath,
       defaultBranch: x.defaultBranch,
       composeFile: x.composeFile,
       composeProject: x.composeProject,
       deployTag: x.deployTag,
       position: x.position,
-      urls: x.urls,
+      urls: keepLocalUrls(before?.urls ?? [], x.urls),
       healthStatus: x.healthStatus,
       healthTimeoutSec: x.healthTimeoutSec,
       dbBackup: x.dbBackup,
@@ -728,7 +773,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
         name: x.name,
         description: x.description,
         composeService: x.composeService,
-        url: x.url,
+        url: x.url === null ? null : keepLocalUrl(before?.kind === 'service' ? before.url : null, x.url),
         urlCheckFrom: x.urlCheckFrom,
         skipUnchanged: x.skipUnchanged,
       }

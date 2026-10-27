@@ -137,6 +137,63 @@ describe('config import', () => {
     expect(events[0].details).toEqual({ counts: { add: 0, update: 0, unchanged: 13, skip: 0 }, unresolved: 0 })
   })
 
+  it('re-importing keeps every local value the export blanked: env vars, template lines and URL params', async () => {
+    const f = await makeConfigFixture()
+    const envVars = {
+      LANG: 'C.UTF-8',
+      DB_PASS: 'local-db-pass',
+      DATABASE_URL: 'postgres://u:pw@db.internal/x',
+      SENTRY_DSN: 'https://k3y@sentry.example.io/1',
+    }
+    f.hosts.update(f.host.id, { envVars })
+    const template = [
+      '# managed',
+      `DB_PASSWORD=\${secret:${f.ids.dotenvSecret}}`,
+      'APP_ENV=staging',
+      'DB_PASS=tmpl-db-pass',
+      'DATABASE_URL=postgres://u:pw@db.internal/x',
+      'SENTRY_DSN=https://k3y@sentry.example.io/1',
+      '# OLD_TOKEN=old-token-value',
+      '',
+    ].join('\n')
+    const urls = [{ url: 'https://staging.example.com/health?api_key=abc&v=1', from: 'mac' as const }]
+    f.deploys.update(f.ids.deployment, { envTemplate: template, urls })
+    f.services.update(f.ids.appService, { url: 'https://staging.example.com/?token=xyz' })
+
+    const file = buildConfigExport(f.db, clock).file
+    // The export did blank them.
+    const app1 = file.hosts.find((h) => h.label === 'app1')!
+    expect(app1.envVars).toEqual({ LANG: 'C.UTF-8', DB_PASS: '', DATABASE_URL: '', SENTRY_DSN: '' })
+    const api = file.deployments.find((d) => d.name === 'api')!
+    expect(api.envTemplate).toContain('\nDB_PASS=\nDATABASE_URL=\nSENTRY_DSN=\n# OLD_TOKEN=\n')
+    expect(api.urls[0].url).toBe('https://staging.example.com/health?api_key=&v=1')
+    expect(file.services.find((s) => s.name === 'web')).toMatchObject({ url: 'https://staging.example.com/?token=' })
+
+    const before = snapshot(f.db)
+    const plan = planImport(f.db, file)
+    expect(plan.items.filter((i) => i.action !== 'unchanged')).toEqual([])
+    expect(plan.needsSecret).toEqual([])
+    importFile(f, file)
+    expect(snapshot(f.db)).toBe(before)
+    expect(JSON.parse(hostRow(f.db, f.host.id).env_vars as string)).toEqual(envVars)
+    const d = f.deploys.get(f.ids.deployment)
+    expect(d.envTemplate).toBe(template)
+    expect(d.urls).toEqual(urls)
+    expect(f.services.get(f.ids.appService)).toMatchObject({ url: 'https://staging.example.com/?token=xyz' })
+  })
+
+  it('a blanked secret template line the local template has no value for keeps the local template and says so', async () => {
+    const f = await makeConfigFixture()
+    const local = f.deploys.get(f.ids.deployment).envTemplate!
+    f.deploys.update(f.ids.deployment, { envTemplate: `${local}DB_PASS=tmpl-db-pass\n` })
+    const file = buildConfigExport(f.db, clock).file
+    f.deploys.update(f.ids.deployment, { envTemplate: local })
+    const plan = planImport(f.db, file)
+    expect(plan.needsSecret).toContainEqual({ kind: 'deployments', name: 'api', field: 'envTemplate', reason: 'DB_PASS; kept the local template' })
+    importFile(f, file)
+    expect(f.deploys.get(f.ids.deployment).envTemplate).toBe(local)
+  })
+
   it('matches by id, then by name within the parent, and remaps references', async () => {
     const { f, file } = await sourceFile()
     const t = await makeTarget(f)
