@@ -101,7 +101,7 @@
           {
             "name": "rb_build dep1",
             "ansible.builtin.shell": {
-              "cmd": "U=\"${SUDO_USER:-}\"\nif [ -n \"$U\" ]; then H=$(awk -F: -v u=\"$U\" '$1==u {print $6; exit}' /etc/passwd 2>/dev/null); fi\nH=\"${H:-$HOME}\"\nL=\"$H/.opsdeck/runs/{{ od.rel }}/stream.log\"\numask 022\nP=\"{{ d.run }}:rb_build\"\n(\ndocker compose '-f' deploy/compose.yml build\n) 2>&1 | while IFS= read -r l || [ -n \"$l\" ]; do printf '%s\\t%s\\n' \"$P\" \"$l\"; done >> \"$L\"; rc=${PIPESTATUS[0]}\nif [ \"$rc\" -ne 0 ]; then grep -F \"$P\"$'\\t' \"$L\" | tail -n 40; fi\nexit \"$rc\"",
+              "cmd": "U=\"${SUDO_USER:-}\"\nif [ -n \"$U\" ]; then H=$(awk -F: -v u=\"$U\" '$1==u {print $6; exit}' /etc/passwd 2>/dev/null); fi\nH=\"${H:-$HOME}\"\nL=\"$H/.opsdeck/runs/{{ od.rel }}/stream.log\"\numask 022\nP=\"{{ d.run }}:rb_build\"\nod_g=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')\ncase \"$od_g\" in ''|*[!0-9]*) od_g=$(sed 's/.*) //' /proc/$$/stat 2>/dev/null | cut -d' ' -f3);; esac\ncase \"$od_g\" in ''|*[!0-9]*) od_g=$$;; esac\nod_pf=\"${L%/*}/od-{{ d.run }}-rb_build.pgid\"\nif [ \"$od_g\" -gt 1 ]; then { printf '%s' \"$od_g\" > \"$od_pf\"; } 2>/dev/null || true; fi\n(\ndocker compose '-f' deploy/compose.yml build\n) 2>&1 | while IFS= read -r l || [ -n \"$l\" ]; do printf '%s\\t%s\\n' \"$P\" \"$l\"; done >> \"$L\"; rc=${PIPESTATUS[0]}\nrm -f \"$od_pf\" 2>/dev/null\nif [ \"$rc\" -ne 0 ]; then grep -F \"$P\"$'\\t' \"$L\" | tail -n 40; fi\nexit \"$rc\"",
               "executable": "/bin/bash",
               "chdir": "{{ d.repo }}"
             },
@@ -115,7 +115,7 @@
           {
             "name": "rb_up dep1",
             "ansible.builtin.shell": {
-              "cmd": "U=\"${SUDO_USER:-}\"\nif [ -n \"$U\" ]; then H=$(awk -F: -v u=\"$U\" '$1==u {print $6; exit}' /etc/passwd 2>/dev/null); fi\nH=\"${H:-$HOME}\"\nL=\"$H/.opsdeck/runs/{{ od.rel }}/stream.log\"\numask 022\nP=\"{{ d.run }}:rb_up\"\n(\ndocker compose '-f' deploy/compose.yml up '-d'\n) 2>&1 | while IFS= read -r l || [ -n \"$l\" ]; do printf '%s\\t%s\\n' \"$P\" \"$l\"; done >> \"$L\"; rc=${PIPESTATUS[0]}\nif [ \"$rc\" -ne 0 ]; then grep -F \"$P\"$'\\t' \"$L\" | tail -n 40; fi\nexit \"$rc\"",
+              "cmd": "U=\"${SUDO_USER:-}\"\nif [ -n \"$U\" ]; then H=$(awk -F: -v u=\"$U\" '$1==u {print $6; exit}' /etc/passwd 2>/dev/null); fi\nH=\"${H:-$HOME}\"\nL=\"$H/.opsdeck/runs/{{ od.rel }}/stream.log\"\numask 022\nP=\"{{ d.run }}:rb_up\"\nod_g=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')\ncase \"$od_g\" in ''|*[!0-9]*) od_g=$(sed 's/.*) //' /proc/$$/stat 2>/dev/null | cut -d' ' -f3);; esac\ncase \"$od_g\" in ''|*[!0-9]*) od_g=$$;; esac\nod_pf=\"${L%/*}/od-{{ d.run }}-rb_up.pgid\"\nif [ \"$od_g\" -gt 1 ]; then { printf '%s' \"$od_g\" > \"$od_pf\"; } 2>/dev/null || true; fi\n(\ndocker compose '-f' deploy/compose.yml up '-d'\n) 2>&1 | while IFS= read -r l || [ -n \"$l\" ]; do printf '%s\\t%s\\n' \"$P\" \"$l\"; done >> \"$L\"; rc=${PIPESTATUS[0]}\nrm -f \"$od_pf\" 2>/dev/null\nif [ \"$rc\" -ne 0 ]; then grep -F \"$P\"$'\\t' \"$L\" | tail -n 40; fi\nexit \"$rc\"",
               "executable": "/bin/bash",
               "chdir": "{{ d.repo }}"
             },
@@ -194,7 +194,7 @@
           {
             "name": "rb_build dep2",
             "ansible.builtin.shell": {
-              "cmd": "U=\"${SUDO_USER:-}\"\nif [ -n \"$U\" ]; then H=$(awk -F: -v u=\"$U\" '$1==u {print $6; exit}' /etc/passwd 2>/dev/null); fi\nH=\"${H:-$HOME}\"\nL=\"$H/.opsdeck/runs/{{ od.rel }}/stream.log\"\numask 022\nP=\"{{ d.run }}:rb_build\"\n(\ndocker compose '-f' deploy/compose.yml build\n) 2>&1 | while IFS= read -r l || [ -n \"$l\" ]; do printf '%s\\t%s\\n' \"$P\" \"$l\"; done >> \"$L\"; rc=${PIPESTATUS[0]}\nif [ \"$rc\" -ne 0 ]; then grep -F \"$P\"$'\\t' \"$L\" | tail -n 40; fi\nexit \"$rc\"",
+              "cmd": "U=\"${SUDO_USER:-}\"\nif [ -n \"$U\" ]; then H=$(awk -F: -v u=\"$U\" '$1==u {print $6; exit}' /etc/passwd 2>/dev/null); fi\nH=\"${H:-$HOME}\"\nL=\"$H/.opsdeck/runs/{{ od.rel }}/stream.log\"\numask 022\nP=\"{{ d.run }}:rb_build\"\nod_g=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')\ncase \"$od_g\" in ''|*[!0-9]*) od_g=$(sed 's/.*) //' /proc/$$/stat 2>/dev/null | cut -d' ' -f3);; esac\ncase \"$od_g\" in ''|*[!0-9]*) od_g=$$;; esac\nod_pf=\"${L%/*}/od-{{ d.run }}-rb_build.pgid\"\nif [ \"$od_g\" -gt 1 ]; then { printf '%s' \"$od_g\" > \"$od_pf\"; } 2>/dev/null || true; fi\n(\ndocker compose '-f' deploy/compose.yml build\n) 2>&1 | while IFS= read -r l || [ -n \"$l\" ]; do printf '%s\\t%s\\n' \"$P\" \"$l\"; done >> \"$L\"; rc=${PIPESTATUS[0]}\nrm -f \"$od_pf\" 2>/dev/null\nif [ \"$rc\" -ne 0 ]; then grep -F \"$P\"$'\\t' \"$L\" | tail -n 40; fi\nexit \"$rc\"",
               "executable": "/bin/bash",
               "chdir": "{{ d.repo }}"
             },
@@ -208,7 +208,7 @@
           {
             "name": "rb_up dep2",
             "ansible.builtin.shell": {
-              "cmd": "U=\"${SUDO_USER:-}\"\nif [ -n \"$U\" ]; then H=$(awk -F: -v u=\"$U\" '$1==u {print $6; exit}' /etc/passwd 2>/dev/null); fi\nH=\"${H:-$HOME}\"\nL=\"$H/.opsdeck/runs/{{ od.rel }}/stream.log\"\numask 022\nP=\"{{ d.run }}:rb_up\"\n(\ndocker compose '-f' deploy/compose.yml up '-d'\n) 2>&1 | while IFS= read -r l || [ -n \"$l\" ]; do printf '%s\\t%s\\n' \"$P\" \"$l\"; done >> \"$L\"; rc=${PIPESTATUS[0]}\nif [ \"$rc\" -ne 0 ]; then grep -F \"$P\"$'\\t' \"$L\" | tail -n 40; fi\nexit \"$rc\"",
+              "cmd": "U=\"${SUDO_USER:-}\"\nif [ -n \"$U\" ]; then H=$(awk -F: -v u=\"$U\" '$1==u {print $6; exit}' /etc/passwd 2>/dev/null); fi\nH=\"${H:-$HOME}\"\nL=\"$H/.opsdeck/runs/{{ od.rel }}/stream.log\"\numask 022\nP=\"{{ d.run }}:rb_up\"\nod_g=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')\ncase \"$od_g\" in ''|*[!0-9]*) od_g=$(sed 's/.*) //' /proc/$$/stat 2>/dev/null | cut -d' ' -f3);; esac\ncase \"$od_g\" in ''|*[!0-9]*) od_g=$$;; esac\nod_pf=\"${L%/*}/od-{{ d.run }}-rb_up.pgid\"\nif [ \"$od_g\" -gt 1 ]; then { printf '%s' \"$od_g\" > \"$od_pf\"; } 2>/dev/null || true; fi\n(\ndocker compose '-f' deploy/compose.yml up '-d'\n) 2>&1 | while IFS= read -r l || [ -n \"$l\" ]; do printf '%s\\t%s\\n' \"$P\" \"$l\"; done >> \"$L\"; rc=${PIPESTATUS[0]}\nrm -f \"$od_pf\" 2>/dev/null\nif [ \"$rc\" -ne 0 ]; then grep -F \"$P\"$'\\t' \"$L\" | tail -n 40; fi\nexit \"$rc\"",
               "executable": "/bin/bash",
               "chdir": "{{ d.repo }}"
             },
@@ -328,7 +328,7 @@
           {
             "name": "rb_build dep3",
             "ansible.builtin.shell": {
-              "cmd": "U=\"${SUDO_USER:-}\"\nif [ -n \"$U\" ]; then H=$(awk -F: -v u=\"$U\" '$1==u {print $6; exit}' /etc/passwd 2>/dev/null); fi\nH=\"${H:-$HOME}\"\nL=\"$H/.opsdeck/runs/{{ od.rel }}/stream.log\"\numask 022\nP=\"{{ d.run }}:rb_build\"\n(\ndocker compose '-f' deploy/compose.yml build\n) 2>&1 | while IFS= read -r l || [ -n \"$l\" ]; do printf '%s\\t%s\\n' \"$P\" \"$l\"; done >> \"$L\"; rc=${PIPESTATUS[0]}\nif [ \"$rc\" -ne 0 ]; then grep -F \"$P\"$'\\t' \"$L\" | tail -n 40; fi\nexit \"$rc\"",
+              "cmd": "U=\"${SUDO_USER:-}\"\nif [ -n \"$U\" ]; then H=$(awk -F: -v u=\"$U\" '$1==u {print $6; exit}' /etc/passwd 2>/dev/null); fi\nH=\"${H:-$HOME}\"\nL=\"$H/.opsdeck/runs/{{ od.rel }}/stream.log\"\numask 022\nP=\"{{ d.run }}:rb_build\"\nod_g=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')\ncase \"$od_g\" in ''|*[!0-9]*) od_g=$(sed 's/.*) //' /proc/$$/stat 2>/dev/null | cut -d' ' -f3);; esac\ncase \"$od_g\" in ''|*[!0-9]*) od_g=$$;; esac\nod_pf=\"${L%/*}/od-{{ d.run }}-rb_build.pgid\"\nif [ \"$od_g\" -gt 1 ]; then { printf '%s' \"$od_g\" > \"$od_pf\"; } 2>/dev/null || true; fi\n(\ndocker compose '-f' deploy/compose.yml build\n) 2>&1 | while IFS= read -r l || [ -n \"$l\" ]; do printf '%s\\t%s\\n' \"$P\" \"$l\"; done >> \"$L\"; rc=${PIPESTATUS[0]}\nrm -f \"$od_pf\" 2>/dev/null\nif [ \"$rc\" -ne 0 ]; then grep -F \"$P\"$'\\t' \"$L\" | tail -n 40; fi\nexit \"$rc\"",
               "executable": "/bin/bash",
               "chdir": "{{ d.repo }}"
             },
@@ -341,7 +341,7 @@
           {
             "name": "rb_up dep3",
             "ansible.builtin.shell": {
-              "cmd": "U=\"${SUDO_USER:-}\"\nif [ -n \"$U\" ]; then H=$(awk -F: -v u=\"$U\" '$1==u {print $6; exit}' /etc/passwd 2>/dev/null); fi\nH=\"${H:-$HOME}\"\nL=\"$H/.opsdeck/runs/{{ od.rel }}/stream.log\"\numask 022\nP=\"{{ d.run }}:rb_up\"\n(\ndocker compose '-f' deploy/compose.yml up '-d'\n) 2>&1 | while IFS= read -r l || [ -n \"$l\" ]; do printf '%s\\t%s\\n' \"$P\" \"$l\"; done >> \"$L\"; rc=${PIPESTATUS[0]}\nif [ \"$rc\" -ne 0 ]; then grep -F \"$P\"$'\\t' \"$L\" | tail -n 40; fi\nexit \"$rc\"",
+              "cmd": "U=\"${SUDO_USER:-}\"\nif [ -n \"$U\" ]; then H=$(awk -F: -v u=\"$U\" '$1==u {print $6; exit}' /etc/passwd 2>/dev/null); fi\nH=\"${H:-$HOME}\"\nL=\"$H/.opsdeck/runs/{{ od.rel }}/stream.log\"\numask 022\nP=\"{{ d.run }}:rb_up\"\nod_g=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')\ncase \"$od_g\" in ''|*[!0-9]*) od_g=$(sed 's/.*) //' /proc/$$/stat 2>/dev/null | cut -d' ' -f3);; esac\ncase \"$od_g\" in ''|*[!0-9]*) od_g=$$;; esac\nod_pf=\"${L%/*}/od-{{ d.run }}-rb_up.pgid\"\nif [ \"$od_g\" -gt 1 ]; then { printf '%s' \"$od_g\" > \"$od_pf\"; } 2>/dev/null || true; fi\n(\ndocker compose '-f' deploy/compose.yml up '-d'\n) 2>&1 | while IFS= read -r l || [ -n \"$l\" ]; do printf '%s\\t%s\\n' \"$P\" \"$l\"; done >> \"$L\"; rc=${PIPESTATUS[0]}\nrm -f \"$od_pf\" 2>/dev/null\nif [ \"$rc\" -ne 0 ]; then grep -F \"$P\"$'\\t' \"$L\" | tail -n 40; fi\nexit \"$rc\"",
               "executable": "/bin/bash",
               "chdir": "{{ d.repo }}"
             },

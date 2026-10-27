@@ -1968,7 +1968,9 @@ describe('ReleaseService operations', () => {
     expect(unlocks.map((p) => p.releaseId)).toEqual([bad, stopped])
     for (const p of unlocks) {
       expect(p).not.toHaveProperty('killBuilds')
-      expect(generatePlaybook(p)).not.toMatch(/kill_pids|kill -/)
+      expect(generatePlaybook(p)).not.toMatch(/kill_pids|opsdeck-build-/)
+      // what it does stop is a streamed step the cancel left running
+      expect(generatePlaybook(p)).toContain('od-*.pgid')
     }
     // The same unlock with builds to stop does carry the kill, so the check above is not vacuous.
     const withKill = { ...unlocks[0], killBuilds: [{ runId: unlocks[0].deployments[0]?.runId ?? 'r', repoPath: '/srv/api' }] }
