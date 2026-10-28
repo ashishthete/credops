@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import { openDatabase, type Db } from '../../src/main/db/connection'
-import { migrate, migrations } from '../../src/main/db/migrations'
+import { currentVersion, migrate } from '../../src/main/db/migrations'
 import { SSO_N } from '../../src/main/db/sso-migration'
 import { makeVault, seedLegacy, type VaultFixture } from './vault-helpers'
 
@@ -9,8 +9,11 @@ let f: VaultFixture
 let db: Db
 
 beforeAll(async () => {
+  // openDatabase has already applied every migration (SSO_N included): the vault service needs sso_binding
+  // to set up, so the legacy state is seeded into the migrated schema. A partial migrate here would now be
+  // refused as a downgrade.
   db = openDatabase(':memory:')
-  migrate(db, migrations.filter((m) => m.version < SSO_N))
+  expect(currentVersion(db)).toBeGreaterThanOrEqual(SSO_N)
   f = makeVault({ db })
   await f.vault.setup({ password: PW, touchId: true })
   // A vault keyed before this build: password-derived KEK, no password wrap.

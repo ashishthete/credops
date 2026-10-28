@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 import './suppress-sqlite-warning'
-import { migrate, type Db } from './migrations'
+import { backupBeforeMigrating } from './backup'
+import { migrate, migrations, type Db } from './migrations'
 
 export type { Db }
 
@@ -13,6 +14,13 @@ export function openDatabase(file: string): Db {
   const db: DatabaseSync = new (sqlite().DatabaseSync)(file)
   db.exec('PRAGMA foreign_keys = ON')
   if (file !== ':memory:') db.exec('PRAGMA journal_mode = WAL')
-  migrate(db)
+  try {
+    // Refuses a database from a newer build, then copies an existing one aside before changing its schema.
+    backupBeforeMigrating(db, file, migrations)
+    migrate(db)
+  } catch (err) {
+    db.close()
+    throw err
+  }
   return db
 }

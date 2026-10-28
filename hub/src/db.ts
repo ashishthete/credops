@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { chmodSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
+import { backupBeforeMigrating } from '../../src/main/db/backup'
 import { migrate, type Migration } from '../../src/main/db/migrations'
 import { DEFAULT_ALL_GRANT_ID, DEFAULT_GROUP_ID } from '../../src/shared/hub'
 
@@ -214,7 +215,13 @@ export function openHubDb(file: string): HubDb {
   db.exec('PRAGMA foreign_keys = ON')
   db.exec('PRAGMA busy_timeout = 5000')
   db.exec('PRAGMA journal_mode = WAL')
-  migrate(db, HUB_MIGRATIONS)
+  try {
+    backupBeforeMigrating(db, file, HUB_MIGRATIONS, { product: 'CredOps Hub' })
+    migrate(db, HUB_MIGRATIONS, { product: 'CredOps Hub' })
+  } catch (err) {
+    db.close()
+    throw err
+  }
   if (file !== ':memory:') chmodSync(file, 0o600)
   return db
 }

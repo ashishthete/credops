@@ -87,3 +87,28 @@ describe('settings page', () => {
     expect(commandStore.get().find((c) => c.id === 'settings.open')).toMatchObject({ title: 'Settings', shortcut: 'mod+,' })
   })
 })
+
+describe('settings support', () => {
+  it('Copy diagnostics asks main for the bundle and toasts', async () => {
+    const invoke = mockBridge({ 'app:copyDiagnostics': { chars: 1200 } })
+    renderPage()
+    expect(screen.getByRole('heading', { name: 'Support' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Copy diagnostics' }))
+    expect(invoke).toHaveBeenCalledWith('app:copyDiagnostics')
+    expect(await screen.findByText('Diagnostics copied')).toBeInTheDocument()
+  })
+
+  it('says so when copying fails, and Show log file reveals the log', async () => {
+    const invoke = mockBridge()
+    invoke.mockImplementation(async (channel: string) => {
+      if (channel === 'app:copyDiagnostics') throw new Error('no clipboard')
+      return null
+    })
+    renderPage()
+    await userEvent.click(screen.getByRole('button', { name: 'Copy diagnostics' }))
+    expect(await screen.findByText("Couldn't copy diagnostics")).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Show log file' }))
+    expect(invoke).toHaveBeenCalledWith('app:revealLog')
+  })
+})
+

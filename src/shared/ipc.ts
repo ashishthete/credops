@@ -139,6 +139,10 @@ export interface AppInfo {
 
 export interface IpcContract {
   'app:info': { args: []; result: AppInfo }
+  /** Puts a redacted support bundle (versions, schema, counts, log tail; no names) on the clipboard. */
+  'app:copyDiagnostics': { args: []; result: { chars: number } }
+  /** Shows the log file in Finder. */
+  'app:revealLog': { args: []; result: void }
   'audit:list': { args: [filter: AuditFilter]; result: AuditEvent[] }
   'audit:verify': { args: []; result: ChainVerification }
   'audit:exportCsv': { args: [filter: AuditFilter]; result: { path: string } | null }
@@ -386,6 +390,8 @@ export type Channel = keyof IpcContract
 // Every key of IpcContract, listed literally (the preload needs it at runtime).
 export const CHANNELS = [
   'app:info',
+  'app:copyDiagnostics',
+  'app:revealLog',
   'audit:list',
   'audit:verify',
   'audit:exportCsv',
