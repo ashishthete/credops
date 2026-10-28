@@ -1,4 +1,4 @@
-import type { Explanation } from '../../../shared/ai'
+import { UNSAFE_COMMAND_CHARS, type Explanation } from '../../../shared/ai'
 import { api } from '../lib/api'
 import { openLocal, openSsh, sessionStore, setActive } from '../terminal/sessions'
 import { errorText } from '../ui/common'
@@ -38,6 +38,11 @@ function whenReady(id: string, ms: number): Promise<boolean> {
 export async function runInTerminal(e: Explanation, requestId: string, index: number, goToTerminal: () => void): Promise<void> {
   const c = e.commands[index]
   if (!c) return
+  // Main drops these already; typed into a shell, a control character would run something the dialog didn't show.
+  if (UNSAFE_COMMAND_CHARS.test(c.command)) {
+    toast({ title: "The command didn't run", description: 'It holds hidden or control characters, so it could run differently from how it reads.', tone: 'error' })
+    return
+  }
   const host = c.where === 'host'
   if (host && !e.target.hostId) return
   const id = host ? await openSsh(e.target.hostId!, e.target.environmentId ?? undefined) : await openLocal()

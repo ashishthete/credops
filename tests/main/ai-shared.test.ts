@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { EXPLANATION_SCHEMA, parseExplanation } from '../../src/shared/ai'
+import { commandRisk, EXPLANATION_SCHEMA, parseExplanation, UNSAFE_COMMAND_CHARS } from '../../src/shared/ai'
 
 const good = {
   summary: 'The container failed its health check.',
@@ -41,5 +41,34 @@ describe('parseExplanation', () => {
     expect(out.steps.length).toBeLessThanOrEqual(12)
     expect(out.commands).toHaveLength(8)
     expect(out.commands.map((c) => c.title)).toEqual(many.slice(0, 8).map((c) => c.title))
+  })
+
+  it('drops a command holding a control, bidi or zero-width character, so what runs is what is shown', () => {
+    const hidden = [
+      'ls\tx', 'ls\nrm -rf /', 'ls\rrm -rf /', 'ls\u0015rm', 'ls\u007f', 'ls\bx', 'ls\u001b[2K', 'ls\u0085', 'ls\u009b',
+      'ls ‮rm', 'ls ‪', 'ls ⁦x⁩', 'ls​', 'ls‏', 'ls⁠', 'ls﻿',
+    ]
+    const out = parseExplanation(JSON.stringify({ ...good, commands: [...hidden.map((command) => ({ ...good.commands[0], command })), good.commands[0]] }))
+    expect(out.commands).toEqual(good.commands)
+    for (const c of hidden) expect(UNSAFE_COMMAND_CHARS.test(c)).toBe(true)
+    // Printable non-ASCII stays.
+    expect(UNSAFE_COMMAND_CHARS.test('grep "café ✓" /var/log/app.log')).toBe(false)
+  })
+
+  it('raises a command matching the destructive pattern to destructive, and never lowers a risk', () => {
+    const out = parseExplanation(
+      JSON.stringify({
+        ...good,
+        commands: [
+          { ...good.commands[0], command: 'rm -rf /var/lib/app', risk: 'read-only' },
+          { ...good.commands[0], command: 'docker compose down', risk: 'changes-state' },
+          { ...good.commands[0], command: 'ls -la', risk: 'destructive' },
+          { ...good.commands[0], command: 'systemctl status nginx', risk: 'read-only' },
+        ],
+      }),
+    )
+    expect(out.commands.map((c) => c.risk)).toEqual(['destructive', 'destructive', 'destructive', 'read-only'])
+    expect(commandRisk('reboot', 'read-only')).toBe('destructive')
+    expect(commandRisk('uptime', 'changes-state')).toBe('changes-state')
   })
 })

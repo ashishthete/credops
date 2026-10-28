@@ -1,7 +1,7 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { Check, Copy, Laptop, Server, SquareTerminal } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import type { ExplainCommand, Explanation } from '../../../shared/ai'
+import { commandRisk, type ExplainCommand, type Explanation } from '../../../shared/ai'
 import { api } from '../lib/api'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
@@ -30,6 +30,7 @@ export function CommandCard({
   useEffect(() => () => void (timer.current && clearTimeout(timer.current)), [])
   const host = command.where === 'host'
   const noHost = host && !target.hostId
+  const risk = commandRisk(command.command, command.risk)
 
   const copy = async () => {
     try {
@@ -52,7 +53,7 @@ export function CommandCard({
           {host ? <Server aria-hidden className="size-3" /> : <Laptop aria-hidden className="size-3" />}
           {host ? (target.hostLabel ?? 'host') : 'local'}
         </Badge>
-        <Badge tone={RISK_TONE[command.risk]}>{command.risk}</Badge>
+        <Badge tone={RISK_TONE[risk]}>{risk}</Badge>
       </div>
       <pre className="mt-2 overflow-x-auto rounded-md bg-canvas/60 px-2.5 py-1.5 font-mono text-[12px] leading-5 whitespace-pre-wrap break-all text-fg">
         {command.command}
@@ -81,7 +82,7 @@ export function CommandCard({
         </Button>
         <Button
           size="sm"
-          variant={command.risk === 'destructive' ? 'danger' : 'ghost'}
+          variant={risk === 'destructive' ? 'danger' : 'ghost'}
           icon={<SquareTerminal aria-hidden className="size-3" />}
           disabled={noHost}
           title={noHost ? 'No host to run this on' : undefined}
