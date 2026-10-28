@@ -8,6 +8,11 @@ vi.mock('../../src/main/vault/crypto', async (importOriginal) => {
   const mod = await importOriginal<typeof import('../../src/main/vault/crypto')>()
   return { ...mod, deriveKek: vi.fn(mod.deriveKek) }
 })
+// Passes through; a test turns it off once to store a PIN set before the 6-8 rule.
+vi.mock('../../src/main/vault/pin', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('../../src/main/vault/pin')>()
+  return { ...mod, checkPin: vi.fn(mod.checkPin) }
+})
 
 const PW = 'correct horse'
 const PW2 = 'battery staple!'
@@ -18,6 +23,12 @@ afterEach(() => {
   vi.restoreAllMocks()
   vi.mocked(deriveKek).mockClear()
 })
+
+/** A vault whose PIN was set before the 6-8 rule. */
+async function legacy(pin: string, opts: { password?: string; touchId?: boolean } = {}): Promise<Fx> {
+  vi.mocked(checkPin).mockImplementationOnce(() => {})
+  return ready({ ...opts, pin })
+}
 
 interface PinRow {
   pin_wrap: string | null
@@ -57,20 +68,20 @@ async function miss(f: Fx, n: number): Promise<unknown[]> {
 }
 
 describe('checkPin', () => {
-  it('accepts 4-8 digits for a new PIN and refuses the rest', () => {
-    for (const ok of ['2048', '204816', '013579', '20481620']) expect(() => checkPin(ok)).not.toThrow()
-    for (const bad of ['204', '204816204', '204816204816', '12 34 56', '20481a', '', '２０４８１６']) {
-      expect(() => checkPin(bad)).toThrow('PIN must be 4-8 digits')
+  it('accepts 6-8 digits for a new PIN and refuses the rest', () => {
+    for (const ok of ['204816', '013579', '2048162', '20481620']) expect(() => checkPin(ok)).not.toThrow()
+    for (const bad of ['204', '2048', '20481', '204816204', '204816204816', '12 34 56', '20481a', '', '２０４８１６']) {
+      expect(() => checkPin(bad)).toThrow('PIN must be 6-8 digits')
     }
   })
 
-  it('an attempt may carry up to 12 digits, for a PIN set before the 4-8 rule', () => {
-    for (const ok of ['2048', '20481620', '204816204816']) expect(() => checkPinFormat(ok)).not.toThrow()
-    for (const bad of ['204', '2048162048161', '20481a']) expect(() => checkPinFormat(bad)).toThrow('PIN must be 4-8 digits')
+  it('an attempt may carry 4 to 12 digits, for a PIN set before the current rule', () => {
+    for (const ok of ['2048', '20481', '20481620', '204816204816']) expect(() => checkPinFormat(ok)).not.toThrow()
+    for (const bad of ['204', '2048162048161', '20481a']) expect(() => checkPinFormat(bad)).toThrow('PIN must be 6-8 digits')
   })
 
   it('refuses repeated digits and straight runs', () => {
-    for (const easy of ['1111', '00000000', '123456', '987654', '01234567', '3456789']) {
+    for (const easy of ['111111', '00000000', '123456', '987654', '01234567', '3456789']) {
       expect(() => checkPin(easy)).toThrow('PIN is too easy to guess')
     }
     for (const ok of ['112233', '123457', '890123', '135791']) expect(() => checkPin(ok)).not.toThrow()
@@ -103,7 +114,7 @@ describe('PIN unlock', () => {
     const f = await ready()
     f.vault.lock('manual')
     for (const bad of ['12 34 56', '204', 'abcdef', '2048162048161']) {
-      await expect(f.vault.unlockPin(bad)).rejects.toThrow('PIN must be 4-8 digits')
+      await expect(f.vault.unlockPin(bad)).rejects.toThrow('PIN must be 6-8 digits')
     }
     expect(row(f).pin_failed).toBe(0)
     expect(deriveKek).toHaveBeenCalledTimes(1) // setup only
@@ -153,8 +164,25 @@ describe('PIN unlock', () => {
     expect(f.vault.status().pin.length).toBe(PIN.length)
   })
 
+  it('a 4- or 5-digit PIN set before the 6-8 rule still unlocks', async () => {
+    for (const pin of ['2580', '25801']) {
+      const f = await legacy(pin)
+      f.vault.lock('manual')
+      expect(await f.vault.unlockPin(pin)).toEqual({ ok: true })
+      f.vault.lock('manual')
+      expect(await f.vault.unlockPin('9999')).toMatchObject({ ok: false, reason: 'wrong-pin' })
+    }
+  })
+
+  it('a new PIN of 4 or 5 digits is refused, at setup and on change', async () => {
+    await expect(makeVault().vault.setup({ pin: '2580' })).rejects.toThrow('PIN must be 6-8 digits')
+    const f = await ready({ password: PW, touchId: true })
+    for (const pin of ['2580', '25801']) await expect(f.vault.setPin(pin)).rejects.toThrow('PIN must be 6-8 digits')
+    expect(row(f).pin_wrap).toBeNull()
+  })
+
   it('a 4-digit PIN reports its length, and removing the PIN clears it', async () => {
-    const f = await ready({ password: PW, pin: '2580', touchId: true })
+    const f = await legacy('2580', { password: PW, touchId: true })
     expect(f.vault.status().pin.length).toBe(4)
     await f.vault.setPin('20481620')
     expect(f.vault.status().pin.length).toBe(8)

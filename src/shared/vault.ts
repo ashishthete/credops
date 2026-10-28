@@ -11,8 +11,10 @@ export const VAULT_RESET_CONFIRM = 'RESET'
 export const MIN_MASTER_PASSWORD = 8
 export const MAX_MASTER_PASSWORD = 1024
 /** A new PIN's length. */
-export const MIN_PIN = 4
+export const MIN_PIN = 6
 export const MAX_PIN = 8
+/** The shortest PIN an attempt may carry: PINs set before the 6-8 rule can be 4 digits. */
+export const MIN_PIN_ATTEMPT = 4
 /** The longest PIN an attempt may carry: PINs set before the 4-8 rule were up to 12 digits. */
 export const MAX_PIN_ATTEMPT = 12
 export const PIN_FORMAT_ERROR = `PIN must be ${MIN_PIN}-${MAX_PIN} digits`

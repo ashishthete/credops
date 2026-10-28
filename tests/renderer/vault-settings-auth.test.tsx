@@ -210,8 +210,36 @@ describe('unlock methods', () => {
     await user.type(within(proof).getByLabelText('Confirm new password'), 'battery staple!')
     await user.type(within(proof).getByLabelText('PIN'), '123')
     await user.click(within(proof).getByRole('button', { name: 'Add password' }))
-    expect(await within(proof).findByText('PIN must be 4-8 digits')).toBeInTheDocument()
+    expect(await within(proof).findByText('PIN must be 6-8 digits')).toBeInTheDocument()
     expect(invoke).not.toHaveBeenCalledWith('vault:setPassword', expect.anything(), expect.anything())
+  })
+
+  it('a 4-digit PIN set before the 6-8 rule still proves the user', async () => {
+    const user = userEvent.setup()
+    const { invoke } = fakeVault({ hasPassword: false, quickUnlock: 'off', pin: { enabled: true, attemptsLeft: 5 } })
+    const dialog = await openSettings()
+    await user.click(within(dialog).getByRole('button', { name: 'Add master password' }))
+    const proof = await screen.findByRole('dialog', { name: 'Add a master password' })
+    await user.type(within(proof).getByLabelText('New password'), 'battery staple!')
+    await user.type(within(proof).getByLabelText('Confirm new password'), 'battery staple!')
+    await user.type(within(proof).getByLabelText('PIN'), '2580')
+    await user.click(within(proof).getByRole('button', { name: 'Add password' }))
+    expect(invoke).toHaveBeenCalledWith('vault:setPassword', 'battery staple!', { method: 'pin', pin: '2580' })
+  })
+
+  it('a new PIN needs 6 digits', async () => {
+    const user = userEvent.setup()
+    const { invoke } = fakeVault({ hasPassword: true })
+    const dialog = await openSettings()
+    await user.click(within(dialog).getByRole('button', { name: 'Set PIN' }))
+    const proof = await screen.findByRole('dialog', { name: 'Set a PIN' })
+    expect(within(proof).getByText('6 to 8 digits.')).toBeInTheDocument()
+    await user.type(within(proof).getByLabelText('New PIN'), '24681')
+    await user.type(within(proof).getByLabelText('Confirm new PIN'), '24681')
+    await user.type(within(proof).getByLabelText('Master password'), 'correct horse')
+    expect(within(proof).getByText('PIN must be 6-8 digits')).toBeInTheDocument()
+    expect(within(proof).getByRole('button', { name: 'Set PIN' })).toBeDisabled()
+    expect(invoke).not.toHaveBeenCalledWith('vault:setPin', expect.anything(), expect.anything())
   })
 
   it('a wrong proof reports it and keeps the dialog open', async () => {

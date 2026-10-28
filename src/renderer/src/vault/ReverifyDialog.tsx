@@ -5,6 +5,7 @@ import {
   MAX_PIN,
   MAX_PIN_ATTEMPT,
   MIN_PIN,
+  MIN_PIN_ATTEMPT,
   PIN_FORMAT_ERROR,
   PIN_INPUT_MAX,
   VERIFICATION_FAILED,
@@ -23,8 +24,8 @@ export type ProofMethod = 'password' | 'pin' | 'touchId'
 
 /** A new PIN. */
 export const PIN_SHAPE = new RegExp(`^\\d{${MIN_PIN},${MAX_PIN}}$`)
-/** A PIN being proved: one set before the 4-8 rule can run to MAX_PIN_ATTEMPT digits. */
-const PIN_ATTEMPT_SHAPE = new RegExp(`^\\d{${MIN_PIN},${MAX_PIN_ATTEMPT}}$`)
+/** A PIN being proved: one set before the current rule can be MIN_PIN_ATTEMPT to MAX_PIN_ATTEMPT digits. */
+const PIN_ATTEMPT_SHAPE = new RegExp(`^\\d{${MIN_PIN_ATTEMPT},${MAX_PIN_ATTEMPT}}$`)
 export const PIN_LENGTH = PIN_FORMAT_ERROR
 
 /** The ways this vault can re-prove the user, in the order they are offered. */
