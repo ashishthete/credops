@@ -444,6 +444,18 @@ describe('preflight parsing', () => {
     expect(m('lock')).toEqual(['block: the lock check gave no result on label od-2 (ansible-playbook exited with code 4)'])
   })
 
+  it('the repo check reports the checkout holding the repo path, and ignores a malformed one', () => {
+    const p = planFixture({ kind: 'preflight' })
+    p.deployments = [p.deployments[2]]
+    p.hosts = [p.hosts[1]]
+    const out = (root: string) => ({
+      [R3]: ['tools missing=', 'docker plain=ok sudo=ok mode=plain use=auto', `repo exists=1 git=1 root=${root}`, 'clean ok=1', 'branch fetched=1 exists=1', 'compose exists=1', 'disk avail_kb=9999999', `tag exists=1 commit=${'c'.repeat(40)}`, 'version-tag exists=0', 'commits log_b64='].map((l) => `OD-PF ${l}`).join('\n'),
+      'host:host-od-2': 'OD-PF lock repo=/srv/apps held=0 raw_b64=',
+    })
+    expect(parsePreflight(p, out('/srv/apps'), { now: NOW }).checkouts).toEqual({ 'dep-3': '/srv/apps' })
+    expect(parsePreflight(p, out('../etc'), { now: NOW }).checkouts).toEqual({})
+  })
+
   it('zero commits gives commitsTotal 0 and firstDeploy false', () => {
     const p = planFixture({ kind: 'preflight' })
     p.deployments = [p.deployments[2]]

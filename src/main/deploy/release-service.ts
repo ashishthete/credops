@@ -472,10 +472,10 @@ export class ReleaseService {
         this.finish(live, 'cancelled', 'Cancelled', null)
         return
       }
-      const checks: PreflightCheck[] = this.sharedRepoChecks(live.environmentId, infos)
+      const found = out?.preflight ? this.finishedLocks(out.preflight) : null
+      const checks: PreflightCheck[] = this.sharedRepoChecks(live.environmentId, infos, found?.checkouts ?? {})
       if (err !== null) checks.push(this.block('ansible', err))
       else checks.push({ id: 'ansible', deploymentId: null, hostId: '', label: 'ansible', level: 'ok', message: 'ansible-playbook is available' })
-      const found = out?.preflight ? this.finishedLocks(out.preflight) : null
       if (found)
         report = { releaseId: id, ...found, checks: [...checks, ...found.checks], serviceCommits: serviceCommits(infos, found.commits, this.d.services.list(live.environmentId), stepBound(this.d.deploys.settings(live.environmentId).flow)) }
       else {
@@ -716,6 +716,7 @@ export class ReleaseService {
       backup: rel.options.backup,
       startedAt,
       tagCommits: rel.preflight?.commits,
+      checkouts: rel.preflight?.checkouts,
       originHeads: originHeads(rel, skips),
       prepare: settings.parallelPrepare ? { cap: settings.prepareCap } : null,
     })
@@ -1526,8 +1527,9 @@ export class ReleaseService {
     // builds that finished: their images already replaced the old ones under the same tags
     const built = infos.filter((i) => stateOf(i, 'build') === 'ok').map(nameOf)
     const restored = checkedOut.has(info.run.id) && stateOf(info, 'restore') === 'ok'
-    // a restore checks out the repo's tree, so checkouts sharing it on this host went back with it
-    const sharing = (i: Info): boolean => restored && i.dep.hostId === info.dep.hostId && i.dep.repoPath === info.dep.repoPath
+    // a restore checks out the repo's tree, so deployments sharing that checkout on this host went back with it
+    const checkoutOf = (i: Info): string => plan.deployments.find((d) => d.runId === i.run.id)?.checkout ?? i.dep.repoPath
+    const sharing = (i: Info): boolean => restored && i.dep.hostId === info.dep.hostId && checkoutOf(i) === checkoutOf(info)
     const back = infos.filter((i) => i !== info && checkedOut.has(i.run.id) && sharing(i))
     const shared: PrepareShared = back.length > 0 ? { names: back.map(nameOf), env: back.some(wroteEnv) } : null
     // other checkouts that are still at the new commit: they checked out and no restore put them back
@@ -1623,6 +1625,8 @@ export class ReleaseService {
       operation?: PlanOperation
       /** Manual rollback only: the release it undoes. */
       rollbackOf?: string
+      /** Preflight's checkout per deployment (PlanDeployment.checkout). */
+      checkouts?: PreflightReport['checkouts']
     },
   ): DeployPlan {
     const hosts = this.planHosts(live.environmentId, infos)
@@ -1633,6 +1637,7 @@ export class ReleaseService {
       name: dep.name,
       hostId: dep.hostId,
       repoPath: dep.repoPath,
+      ...(o.checkouts?.[dep.id] !== undefined ? { checkout: o.checkouts[dep.id] } : {}),
       branch: dep.defaultBranch,
       composeFile: dep.composeFile,
       deployTag: dep.deployTag,
@@ -2177,12 +2182,13 @@ export class ReleaseService {
    * With parallel prepare on, two selected checkouts in one repo on one host must deploy the same branch: their
    * prepares run one after the other there, so the second checkout would replace the tree the first one built.
    */
-  private sharedRepoChecks(environmentId: string, infos: Info[]): PreflightCheck[] {
+  private sharedRepoChecks(environmentId: string, infos: Info[], checkouts: Record<string, string>): PreflightCheck[] {
     if (!this.d.deploys.settings(environmentId).parallelPrepare) return []
     const first = new Map<string, Info>()
     const out: PreflightCheck[] = []
     for (const i of infos) {
-      const key = `${i.dep.hostId}\0${i.dep.repoPath}`
+      const checkout = checkouts[i.dep.id] ?? i.dep.repoPath
+      const key = `${i.dep.hostId}\0${checkout}`
       const a = first.get(key)
       if (!a) {
         first.set(key, i)
@@ -2195,7 +2201,7 @@ export class ReleaseService {
         hostId: i.dep.hostId,
         label: 'shared repo',
         level: 'block',
-        message: `${a.dep.name} and ${i.dep.name} share ${i.dep.repoPath} on this host but deploy different branches; deploy them in separate releases, or turn off parallel prepare`,
+        message: `${a.dep.name} and ${i.dep.name} share ${checkout} on this host but deploy different branches; deploy them in separate releases, or turn off parallel prepare`,
       })
     }
     return out

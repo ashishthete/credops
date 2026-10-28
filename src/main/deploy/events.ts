@@ -17,6 +17,7 @@ import {
   type TaskState,
   filterReverts,
   lockHolderText,
+  REPO_PATH,
 } from '../../shared/deploy'
 import { isHelperTask } from '../../shared/playbook-steps'
 import { redact } from '../security/redact'
@@ -892,6 +893,7 @@ export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, str
   const commits: PreflightReport['commits'] = {}
   const dockerModes: Record<string, DockerMode> = {}
   const composeServices: PreflightReport['composeServices'] = Object.fromEntries(plan.deployments.map((d) => [d.deploymentId, null]))
+  const checkouts: Record<string, string> = {}
   const locks: PreflightReport['locks'] = {}
   const red = (s: string): string => redact(s, o.secrets ?? [])
   const cutRuns = new Set(o.cut ?? [])
@@ -953,6 +955,7 @@ export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, str
     else if (repo.git !== '1') add('repo', 'block', `${d.repoPath} is not a git repository on ${hl}`)
     else {
       repoOk = true
+      if (repo.root !== undefined && REPO_PATH.test(repo.root)) checkouts[d.deploymentId] = repo.root
       add('repo', 'ok', `${d.repoPath} is a git repository`)
     }
 
@@ -1086,5 +1089,5 @@ export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, str
     }
   }
 
-  return { checks, commits, dockerModes, composeServices, locks, commitsTotal, blocked: checks.some((c) => c.level === 'block') }
+  return { checks, commits, dockerModes, composeServices, locks, checkouts, commitsTotal, blocked: checks.some((c) => c.level === 'block') }
 }

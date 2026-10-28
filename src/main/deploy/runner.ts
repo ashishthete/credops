@@ -59,6 +59,8 @@ export interface PlanDeployment {
   postHookB64: string | null
   /** In anchor order within each anchor; empty when the checkout has none. */
   steps: PlanStep[]
+  /** The checkout holding repoPath, as preflight found it (its git root); absent when unknown, and then repoPath stands for it. */
+  checkout?: string
   /** The previous commit `when` compares against (SHA-checked); null counts as changed. */
   whenBase: string | null
   buildTimeoutSec: number

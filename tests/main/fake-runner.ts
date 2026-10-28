@@ -13,6 +13,7 @@ export class FakeRunner implements DeployRunner {
   commitsTotal = 1
   checks: PreflightCheck[] = []
   locks: PreflightReport['locks'] = {}
+  checkouts: PreflightReport['checkouts'] = undefined
   /** Overrides per plan kind; the default is a clean run. */
   on: Partial<Record<DeployPlan['kind'], Handler>> = {}
   onCancel: (runId: string) => void = () => undefined
@@ -42,6 +43,7 @@ export class FakeRunner implements DeployRunner {
             dockerModes: Object.fromEntries(plan.deployments.map((d) => [d.deploymentId, 'plain' as const])),
             composeServices: Object.fromEntries(plan.deployments.map((d) => [d.deploymentId, null])),
             locks: this.locks,
+            ...(this.checkouts ? { checkouts: this.checkouts } : {}),
             commitsTotal: this.commitsTotal,
             blocked: this.checks.some((c) => c.level === 'block'),
           }

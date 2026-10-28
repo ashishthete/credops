@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -637,6 +637,45 @@ describe('fix round 1', () => {
     }
   })
 
+  it('deployments in subfolders of one clone share one lock, at the clone root', () => {
+    const plan = planFixture()
+    const tasks = every(plays(plan)[0].tasks).map(({ t }) => t)
+    const lock = tasks.find((t) => step(t) === 'lock' && cmdOf(t).includes('set -C'))!
+    const unlock = every(plays(planFixture({ kind: 'unlock' }))[0].tasks).map(({ t }) => t).find((t) => step(t) === 'unlock')!
+    const root = mkdtempSync(join(tmpdir(), 'od-lock-'))
+    mkdirSync(join(root, 'mono/.git'), { recursive: true })
+    mkdirSync(join(root, 'mono/api'), { recursive: true })
+    mkdirSync(join(root, 'mono/web'), { recursive: true })
+    mkdirSync(join(root, 'plain'))
+    const repos = ['mono/api', 'mono/web', 'plain'].map((r) => `'${join(root, r)}'`).join(' ')
+    const run = (t: Record<string, unknown>, rel: string) => {
+      const cmd = cmdOf(t)
+        .replace("{{ od.lock_repos | map('quote') | join(' ') }}", repos)
+        .replace('{{ od.lock_b64 | quote }}', Buffer.from(`{"releaseId":"${rel}"}`).toString('base64'))
+        .replaceAll('{{ od.rel }}', rel)
+        .replace(/rm -rf \S*\{\{[^\n]*/, ':')
+      return spawnSync('/bin/sh', [], { input: cmd, encoding: 'utf8' })
+    }
+    try {
+      const a = run(lock, 'relA')
+      expect(a.status).toBe(0)
+      expect(existsSync(join(root, 'mono/.opsdeck-deploy.lock'))).toBe(true)
+      expect(existsSync(join(root, 'mono/api/.opsdeck-deploy.lock'))).toBe(false)
+      expect(existsSync(join(root, 'plain/.opsdeck-deploy.lock'))).toBe(true)
+      // one lock line per checkout, not per subfolder
+      expect(a.stdout.trim().split('\n')).toHaveLength(2)
+      // another release touching only one subfolder is busy, and takes nothing
+      const b = run(lock, 'relB')
+      expect(b.status).toBe(42)
+      expect(readFileSync(join(root, 'mono/.opsdeck-deploy.lock'), 'utf8')).toContain('relA')
+      expect(run(unlock, 'relA').stdout).toContain(`OD-UNLOCK released ${join(root, 'mono')}`)
+      expect(existsSync(join(root, 'mono/.opsdeck-deploy.lock'))).toBe(false)
+      expect(existsSync(join(root, 'plain/.opsdeck-deploy.lock'))).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('backup reads DB_* without sourcing and keeps the password out of argv', () => {
     const c = cmdOf(flat(plays(planFixture())[0].tasks).find((t) => step(t) === 'backup')!)
     expect(c).toContain('while IFS= read -r')
@@ -735,8 +774,8 @@ describe('fix round 1', () => {
     const run = (repo: string) =>
       spawnSync('/bin/sh', [], { input: cmdOf(t).replace('{{ d.repo | quote }}', `'${join(root, repo)}'`), encoding: 'utf8' }).stdout.trim()
     try {
-      expect(run('mono')).toBe('OD-PF repo exists=1 git=1')
-      expect(run('mono/webapp/esg')).toBe('OD-PF repo exists=1 git=1')
+      expect(run('mono')).toBe(`OD-PF repo exists=1 git=1 root=${join(root, 'mono')}`)
+      expect(run('mono/webapp/esg')).toBe(`OD-PF repo exists=1 git=1 root=${join(root, 'mono')}`)
       expect(run('plain')).toBe('OD-PF repo exists=1 git=0')
       expect(run('missing')).toBe('OD-PF repo exists=0 git=0')
     } finally {

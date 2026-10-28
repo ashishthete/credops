@@ -636,6 +636,26 @@ const odRunDir = `"$HOME/${RUNS_SUBDIR}/{{ od.rel }}"`
 const REPOS = "{{ od.lock_repos | map('quote') | join(' ') }}"
 const HOST_CWD = '/'
 
+/**
+ * `G` = the checkout that holds `from`: the nearest folder at or above it with a `.git` (a deployment can sit in a
+ * subfolder of a monorepo), else `/`.
+ */
+const gitRootOf = (from: string) => `G=${from}; while [ ! -e "$G/.git" ] && [ "$G" != / ] && [ -n "$G" ]; do G=$(dirname "$G"); done`
+
+/**
+ * Opens a loop over the checkouts that hold the host's repos, each once: `G` is the checkout (the git root above a
+ * monorepo subfolder, else the repo path) and `f` its lock file, so deployments in one clone share one lock.
+ */
+const EACH_CHECKOUT = [
+  'seen=" "',
+  `for r in ${REPOS}; do`,
+  `  ${gitRootOf('"$r"')}`,
+  '  [ -e "$G/.git" ] || G="$r"',
+  '  case "$seen" in *" $G "*) continue;; esac',
+  '  seen="$seen$G "',
+  `  f="$G/${LOCK_FILE}"`,
+]
+
 export function taskPrep(h: PlanHost): Task {
   const cmd = ['umask 077', `mkdir -p ${odRunDir}`, `touch ${odRunDir}/stream.log`].join('\n')
   return sh(`lock prep ${sanitizeIdent(h.alias)}`, 'lock', hostRun(h), cmd, { timeout: T_SHORT, chdir: HOST_CWD })
@@ -651,26 +671,19 @@ export function taskLock(h: PlanHost): Task {
     'J=$(echo {{ od.lock_b64 | quote }} | base64 -d)',
     'umask 077',
     'acq=""',
-    `for r in ${REPOS}; do`,
-    `  f="$r/${LOCK_FILE}"`,
-    '  if ( set -C; printf \'%s\' "$J" > "$f" ) 2>/dev/null; then acq="$acq $r"; echo "OD-LOCK $J"; continue; fi',
+    ...EACH_CHECKOUT,
+    '  if ( set -C; printf \'%s\' "$J" > "$f" ) 2>/dev/null; then acq="$acq $G"; echo "OD-LOCK $J"; continue; fi',
     '  cur=$(cat "$f" 2>/dev/null)',
     '  echo "OD-LOCK $cur"',
     '  case "$cur" in *\'"releaseId":"{{ od.rel }}"\'*) continue;; esac',
     `  for a in $acq; do rm -f "$a/${LOCK_FILE}"; done`,
     '  [ -n "$cur" ] && exit 42',
-    '  echo "OD-LOCK-ERROR cannot create the lock in $r"; exit 2',
+    '  echo "OD-LOCK-ERROR cannot create the lock in $G"; exit 2',
     'done',
     'exit 0',
   ].join('\n')
   return sh(`lock ${sanitizeIdent(h.alias)}`, 'lock', hostRun(h), cmd, { timeout: T_SHORT, chdir: HOST_CWD })
 }
-
-/**
- * `G` = the checkout that holds `from`: the nearest folder at or above it with a `.git` (a deployment can sit in a
- * subfolder of a monorepo), else `/`.
- */
-const gitRootOf = (from: string) => `G=${from}; while [ ! -e "$G/.git" ] && [ "$G" != / ] && [ -n "$G" ]; do G=$(dirname "$G"); done`
 
 /**
  * Stops the builds a parallel prepare launched on the host (each recorded its process group, `od.kill_pids`) and
@@ -706,12 +719,11 @@ export function taskUnlock(h: PlanHost, breakLock: boolean, kill = false): Task 
   const cmd = [
     ...(kill ? [KILL_BUILDS] : []),
     'rc=0',
-    `for r in ${REPOS}; do`,
-    `  f="$r/${LOCK_FILE}"`,
+    ...EACH_CHECKOUT,
     '  cur=$(cat "$f" 2>/dev/null)',
     '  [ -n "$cur" ] || continue',
     '  echo "OD-LOCK $cur"',
-    `  if ${guard}; then rm -f "$f"; echo "OD-UNLOCK released $r"; else echo "OD-UNLOCK kept $r"; ${breakLock ? 'rc=43' : ':'}; fi`,
+    `  if ${guard}; then rm -f "$f"; echo "OD-UNLOCK released $G"; else echo "OD-UNLOCK kept $G"; ${breakLock ? 'rc=43' : ':'}; fi`,
     'done',
     `rm -rf ${odRunDir}`,
     'exit "$rc"',
@@ -767,7 +779,7 @@ function preflightTasks(plan: DeployPlan, d: PlanDeployment): Task[] {
       'R={{ d.repo | quote }}',
       'if [ -d "$R" ]; then',
       `  ${gitRootOf('"$R"')}`,
-      '  if [ -e "$G/.git" ]; then echo "OD-PF repo exists=1 git=1"; else echo "OD-PF repo exists=1 git=0"; fi',
+      '  if [ -e "$G/.git" ]; then echo "OD-PF repo exists=1 git=1 root=$G"; else echo "OD-PF repo exists=1 git=0"; fi',
       'else echo "OD-PF repo exists=0 git=0"; fi',
     ].join('\n'), { chdir: false }),
     pf(d, 'clean', ['git update-index -q --refresh', 'if git diff-index --quiet HEAD --; then echo "OD-PF clean ok=1"; else echo "OD-PF clean ok=0 files=$(git status --porcelain --untracked-files=no 2>/dev/null | wc -l | tr -d \' \')"; fi'].join('\n')),
@@ -851,9 +863,8 @@ function commitsCmd(d: PlanDeployment): string {
 
 function taskPreflightLock(h: PlanHost): Task {
   return sh(`preflight lock ${sanitizeIdent(h.alias)}`, 'preflight', hostRun(h), [
-    `for r in ${REPOS}; do`,
-    `  f="$r/${LOCK_FILE}"`,
-    '  if [ -f "$f" ]; then echo "OD-PF lock repo=$r held=1 raw_b64=$(base64 < "$f" | tr -d \'\\n\')"; else echo "OD-PF lock repo=$r held=0 raw_b64="; fi',
+    ...EACH_CHECKOUT,
+    '  if [ -f "$f" ]; then echo "OD-PF lock repo=$G held=1 raw_b64=$(base64 < "$f" | tr -d \'\\n\')"; else echo "OD-PF lock repo=$G held=0 raw_b64="; fi',
     'done',
   ].join('\n'), { timeout: T_PREFLIGHT, chdir: HOST_CWD, failedWhen: false })
 }
@@ -1109,9 +1120,9 @@ function flowPlays(plan: DeployPlan, flow: PlanFlow): Play[] {
 const PREPARE_STOPPED = 'CredOps prepare stopped: a checkout did not prepare'
 
 /**
- * Per host, waves of at most `cap` checkouts, in plan order; a wave holds every host's next group. Checkouts that
- * share a host and repo path go in successive waves, so one's fetch and checkout never run while another's build
- * reads that tree.
+ * Per host, waves of at most `cap` checkouts, in plan order; a wave holds every host's next group. Deployments that
+ * share a checkout on a host (one repo path, or monorepo subfolders of one clone) go in successive waves, so one's
+ * fetch and checkout never run while another's build reads that tree.
  */
 export function prepareSchedule(deps: readonly PlanDeployment[], cap: number): string[][] {
   need(Number.isInteger(cap) && cap >= 1 && cap <= 8, 'prepare cap')
@@ -1119,7 +1130,7 @@ export function prepareSchedule(deps: readonly PlanDeployment[], cap: number): s
   const used = new Map<string, number>()
   const lastOfRepo = new Map<string, number>()
   for (const d of deps) {
-    const repo = `${d.hostId}\0${d.repoPath}`
+    const repo = `${d.hostId}\0${d.checkout ?? d.repoPath}`
     let w = (lastOfRepo.get(repo) ?? -1) + 1
     while ((used.get(`${w}\0${d.hostId}`) ?? 0) >= cap) w++
     used.set(`${w}\0${d.hostId}`, (used.get(`${w}\0${d.hostId}`) ?? 0) + 1)

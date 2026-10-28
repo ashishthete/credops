@@ -108,6 +108,7 @@ function scopeReport(p: PreflightReport, v: Visible): PreflightReport {
     dockerModes: pick(p.dockerModes, dep),
     composeServices: pick(p.composeServices, dep),
     ...(p.composeDatabases ? { composeDatabases: pick(p.composeDatabases, dep) } : {}),
+    ...(p.checkouts ? { checkouts: pick(p.checkouts, dep) } : {}),
     serviceCommits: pick(p.serviceCommits, (k) => v.services.has(k)),
     locks: pick(p.locks, (k) => v.hosts.has(k)),
     commitsTotal: Object.values(commits).reduce((n, c) => n + c.commits.length, 0),

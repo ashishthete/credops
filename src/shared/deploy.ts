@@ -461,6 +461,8 @@ export interface PreflightReport {
    */
   serviceCommits: Record<string, { since: string | null; count: number; known: boolean; skippable?: boolean }>
   locks: Record<string, { holder: LockHolder; stale: boolean; raw: string } | null>
+  /** Per deployment: the checkout on its host that holds the repo path (a monorepo subfolder's git root). Absent when unknown. */
+  checkouts?: Record<string, string>
   commitsTotal: number
   blocked: boolean
 }

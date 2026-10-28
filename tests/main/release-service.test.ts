@@ -5,7 +5,7 @@ import { INTERRUPTED_MESSAGE } from '../../src/main/deploy/release-store'
 import { RESET_CUT_ROLLBACK } from '../../src/main/deploy/release-service'
 import { REDACTED } from '../../src/main/security/redact'
 import type { DeployPlan } from '../../src/main/deploy/runner'
-import { generatePlaybook } from '../../src/main/deploy/generate'
+import { generatePlaybook, prepareSchedule } from '../../src/main/deploy/generate'
 import { ToolingError } from '../../src/main/deploy/tooling'
 import { CONFIRM_MESSAGE } from '../../src/shared/ops'
 import { BREAK_LOCK_CONFIRM_MESSAGE, DEFAULT_RELEASE_OPTIONS, LOCK_FINISHED_NOTE, LOCK_LEFT_MESSAGE, PREPARE_FAILED_MESSAGE, PREPARE_FETCH_FAILED_MESSAGE, type CommitInfo, type DeploymentMeta, type PreflightCheck, type RunEvent, type StepKind } from '../../src/shared/deploy'
@@ -1969,6 +1969,30 @@ describe('parallel prepare', () => {
     const off = await rig()
     const oid = await ready(off, [dep(off, 'one'), dep(off, 'two', { repoPath: '/srv/one', defaultBranch: 'next' })])
     expect(off.svc.detail(oid).preflight?.checks.some((c) => c.id === 'shared-repo')).toBe(false)
+  })
+
+  it('monorepo subfolders of one clone share its checkout: blocked on different branches, prepared in successive waves', async () => {
+    const r = await rig()
+    on(r)
+    const api = dep(r, 'api', { repoPath: '/srv/mono/api' })
+    const web = dep(r, 'web', { repoPath: '/srv/mono/web', defaultBranch: 'next' })
+    r.runner.checkouts = { [api.id]: '/srv/mono', [web.id]: '/srv/mono' }
+    const id = await ready(r, [api, web])
+    const check = r.svc.detail(id).preflight?.checks.find((c) => c.id === 'shared-repo')
+    expect(check?.message).toContain('share /srv/mono on this host')
+    // on one branch they go through, one wave after the other
+    const same = await rig()
+    on(same)
+    const a = dep(same, 'api', { repoPath: '/srv/mono/api' })
+    const w = dep(same, 'web', { repoPath: '/srv/mono/web' })
+    same.runner.checkouts = { [a.id]: '/srv/mono', [w.id]: '/srv/mono' }
+    const sid = await ready(same, [a, w])
+    expect(same.svc.detail(sid).preflight?.checkouts).toEqual({ [a.id]: '/srv/mono', [w.id]: '/srv/mono' })
+    await same.svc.start(sid, {})
+    await same.svc.whenIdle()
+    const plan = same.runner.call('release')
+    expect(plan.deployments.map((d) => d.checkout)).toEqual(['/srv/mono', '/srv/mono'])
+    expect(prepareSchedule(plan.deployments, 8)).toHaveLength(2)
   })
 })
 

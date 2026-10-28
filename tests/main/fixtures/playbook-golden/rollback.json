@@ -35,7 +35,7 @@
       {
         "name": "lock od-1",
         "ansible.builtin.shell": {
-          "cmd": "J=$(echo {{ od.lock_b64 | quote }} | base64 -d)\numask 077\nacq=\"\"\nfor r in {{ od.lock_repos | map('quote') | join(' ') }}; do\n  f=\"$r/.opsdeck-deploy.lock\"\n  if ( set -C; printf '%s' \"$J\" > \"$f\" ) 2>/dev/null; then acq=\"$acq $r\"; echo \"OD-LOCK $J\"; continue; fi\n  cur=$(cat \"$f\" 2>/dev/null)\n  echo \"OD-LOCK $cur\"\n  case \"$cur\" in *'\"releaseId\":\"{{ od.rel }}\"'*) continue;; esac\n  for a in $acq; do rm -f \"$a/.opsdeck-deploy.lock\"; done\n  [ -n \"$cur\" ] && exit 42\n  echo \"OD-LOCK-ERROR cannot create the lock in $r\"; exit 2\ndone\nexit 0",
+          "cmd": "J=$(echo {{ od.lock_b64 | quote }} | base64 -d)\numask 077\nacq=\"\"\nseen=\" \"\nfor r in {{ od.lock_repos | map('quote') | join(' ') }}; do\n  G=\"$r\"; while [ ! -e \"$G/.git\" ] && [ \"$G\" != / ] && [ -n \"$G\" ]; do G=$(dirname \"$G\"); done\n  [ -e \"$G/.git\" ] || G=\"$r\"\n  case \"$seen\" in *\" $G \"*) continue;; esac\n  seen=\"$seen$G \"\n  f=\"$G/.opsdeck-deploy.lock\"\n  if ( set -C; printf '%s' \"$J\" > \"$f\" ) 2>/dev/null; then acq=\"$acq $G\"; echo \"OD-LOCK $J\"; continue; fi\n  cur=$(cat \"$f\" 2>/dev/null)\n  echo \"OD-LOCK $cur\"\n  case \"$cur\" in *'\"releaseId\":\"{{ od.rel }}\"'*) continue;; esac\n  for a in $acq; do rm -f \"$a/.opsdeck-deploy.lock\"; done\n  [ -n \"$cur\" ] && exit 42\n  echo \"OD-LOCK-ERROR cannot create the lock in $G\"; exit 2\ndone\nexit 0",
           "executable": "/bin/bash",
           "chdir": "/"
         },
@@ -317,7 +317,7 @@
       {
         "name": "lock od-2",
         "ansible.builtin.shell": {
-          "cmd": "J=$(echo {{ od.lock_b64 | quote }} | base64 -d)\numask 077\nacq=\"\"\nfor r in {{ od.lock_repos | map('quote') | join(' ') }}; do\n  f=\"$r/.opsdeck-deploy.lock\"\n  if ( set -C; printf '%s' \"$J\" > \"$f\" ) 2>/dev/null; then acq=\"$acq $r\"; echo \"OD-LOCK $J\"; continue; fi\n  cur=$(cat \"$f\" 2>/dev/null)\n  echo \"OD-LOCK $cur\"\n  case \"$cur\" in *'\"releaseId\":\"{{ od.rel }}\"'*) continue;; esac\n  for a in $acq; do rm -f \"$a/.opsdeck-deploy.lock\"; done\n  [ -n \"$cur\" ] && exit 42\n  echo \"OD-LOCK-ERROR cannot create the lock in $r\"; exit 2\ndone\nexit 0",
+          "cmd": "J=$(echo {{ od.lock_b64 | quote }} | base64 -d)\numask 077\nacq=\"\"\nseen=\" \"\nfor r in {{ od.lock_repos | map('quote') | join(' ') }}; do\n  G=\"$r\"; while [ ! -e \"$G/.git\" ] && [ \"$G\" != / ] && [ -n \"$G\" ]; do G=$(dirname \"$G\"); done\n  [ -e \"$G/.git\" ] || G=\"$r\"\n  case \"$seen\" in *\" $G \"*) continue;; esac\n  seen=\"$seen$G \"\n  f=\"$G/.opsdeck-deploy.lock\"\n  if ( set -C; printf '%s' \"$J\" > \"$f\" ) 2>/dev/null; then acq=\"$acq $G\"; echo \"OD-LOCK $J\"; continue; fi\n  cur=$(cat \"$f\" 2>/dev/null)\n  echo \"OD-LOCK $cur\"\n  case \"$cur\" in *'\"releaseId\":\"{{ od.rel }}\"'*) continue;; esac\n  for a in $acq; do rm -f \"$a/.opsdeck-deploy.lock\"; done\n  [ -n \"$cur\" ] && exit 42\n  echo \"OD-LOCK-ERROR cannot create the lock in $G\"; exit 2\ndone\nexit 0",
           "executable": "/bin/bash",
           "chdir": "/"
         },
