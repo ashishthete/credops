@@ -1,27 +1,11 @@
-import { memo, useSyncExternalStore, type ComponentType } from 'react'
+import { memo } from 'react'
 import type { LogFilter, LogLine } from '../../../deploy/log-buffer'
 import { useReleaseLog } from '../../../deploy/releases'
 import type { ChipState } from '../../../deploy/pipeline'
+import { FailureActionSlot } from '../../../deploy/slots'
 import type { RowOutput } from '../../../deploy/task-rows'
 import { plural } from '../../../ui/common'
-import { createStore } from '../../../ui/store'
 import { LogText } from './LiveLog'
-
-export interface FailureActionProps {
-  releaseId: string
-  stepId: string
-  error: string
-  /** The step's last log lines, already redacted by main. */
-  lines: string[]
-}
-
-const actions = createStore<ComponentType<FailureActionProps>[]>([])
-
-/** Phase 9 adds "Explain & fix" here; the panel renders nothing extra until something registers. */
-export function registerFailureAction(component: ComponentType<FailureActionProps>): () => void {
-  actions.set([...actions.get(), component])
-  return () => actions.set(actions.get().filter((c) => c !== component))
-}
 
 const TAIL = 12
 /** Lines a step's output shows in place; the rest are in All logs. */
@@ -91,7 +75,7 @@ export function StepOutput({
   )
 }
 
-/** The failed step's error, its output and exit code, and the registered actions (the AI help). */
+/** The failed step's error, its output and exit code, and the failure action slot (the AI's Explain). */
 export function FailurePanel({
   releaseId,
   chip,
@@ -107,7 +91,6 @@ export function FailurePanel({
   rc?: number | null
   onShowLog?: (stepId: string) => void
 }) {
-  const registered = useSyncExternalStore(actions.subscribe, actions.get)
   const { buffer, version } = useReleaseLog(releaseId)
   void version
   const filter = filterOf(output)
@@ -118,13 +101,9 @@ export function FailurePanel({
     <section role="region" aria-label={`${chip.label}${host ? ` on ${host}` : ''} failed`} data-failure={chip.stepId} className="flex flex-col gap-2 rounded-lg border border-err/40 bg-err/6 px-3 py-2">
       <p className="text-[12.5px] font-medium whitespace-pre-wrap text-err">{`${chip.label}${host ? ` on ${host}` : ''} failed: ${error}`}</p>
       <StepOutput releaseId={releaseId} stepId={chip.stepId} output={output} rc={rc} onShowLog={onShowLog} />
-      {registered.length > 0 && (
-        <div className="flex gap-2">
-          {registered.map((Action, i) => (
-            <Action key={i} releaseId={releaseId} stepId={chip.stepId} error={error} lines={lines} />
-          ))}
-        </div>
-      )}
+      <div className="flex gap-2 empty:hidden">
+        <FailureActionSlot releaseId={releaseId} stepId={chip.stepId} error={error} lines={lines} />
+      </div>
     </section>
   )
 }

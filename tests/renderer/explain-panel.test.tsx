@@ -5,6 +5,7 @@ import { ExplainButton, ExplainPanel } from '../../src/renderer/src/ai/ExplainPa
 import { explain, explainStore, resetExplain } from '../../src/renderer/src/ai/explain-store'
 import '../../src/renderer/src/ai/register'
 import { FailureActionSlot } from '../../src/renderer/src/deploy/slots'
+import { FailurePanel } from '../../src/renderer/src/pages/deployments/release/FailurePanel'
 import { SessionEnded } from '../../src/renderer/src/pages/terminals/SessionEnded'
 import { TunnelCard } from '../../src/renderer/src/pages/tunnels/TunnelCard'
 import { resetSessions, startSessionSync } from '../../src/renderer/src/terminal/sessions'
@@ -276,8 +277,18 @@ describe('Explain entry points', () => {
 
   it('the failure-panel slot renders Explain for its release step', async () => {
     const invoke = mockBridge({ 'ai:status': READY, 'ai:explain': new Promise(() => undefined) })
-    render(<FailureActionSlot releaseId={REL} stepId="s-build" />)
+    render(<FailureActionSlot releaseId={REL} stepId="s-build" error="build failed" lines={[]} />)
     const btn = await screen.findByRole('button', { name: 'Explain' })
+    await waitFor(() => expect(btn).toBeEnabled())
+    fireEvent.click(btn)
+    expect(invoke).toHaveBeenCalledWith('ai:explain', expect.any(String), SUBJECT)
+  })
+
+  it('the release failure panel shows the Explain ai/register put in the slot', async () => {
+    const invoke = mockBridge({ 'ai:status': READY, 'ai:explain': new Promise(() => undefined) })
+    render(<FailurePanel releaseId={REL} chip={{ stepId: 's-build', label: 'Build', error: 'build failed' }} host={null} />)
+    const panel = screen.getByRole('region', { name: 'Build failed' })
+    const btn = await within(panel).findByRole('button', { name: 'Explain' })
     await waitFor(() => expect(btn).toBeEnabled())
     fireEvent.click(btn)
     expect(invoke).toHaveBeenCalledWith('ai:explain', expect.any(String), SUBJECT)

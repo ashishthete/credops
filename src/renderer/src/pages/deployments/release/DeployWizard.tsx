@@ -1,10 +1,23 @@
 import { TriangleAlert } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType } from 'react'
-import { bumpVersion, stepBound, BREAK_LOCK_CONFIRM_MESSAGE, NOTHING_SELECTED_MESSAGE, ORIGIN_MOVED_MESSAGE, PLAYBOOK_CHANGED_MESSAGE, REVIEW_EXPIRED_MESSAGE, type PlaybookPreview, type VersionBump } from '../../../../../shared/deploy'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  bumpVersion,
+  stepBound,
+  BREAK_LOCK_CONFIRM_MESSAGE,
+  DEFAULT_RELEASE_OPTIONS,
+  NOTHING_SELECTED_MESSAGE,
+  ORIGIN_MOVED_MESSAGE,
+  PLAYBOOK_CHANGED_MESSAGE,
+  REVIEW_EXPIRED_MESSAGE,
+  type PlaybookPreview,
+  type ReleaseDetail,
+  type VersionBump,
+} from '../../../../../shared/deploy'
 import { hostRegions, regionRefs, regionsOfHosts } from '../../../../../shared/regions'
 import { pickerGroups, selectionRequest, type PickerGroup } from '../../../deploy/picker'
 import { originMoved } from '../../../deploy/pipeline'
 import { closeRelease, openRelease, startReleaseSync, usePipeline, usePreflight } from '../../../deploy/releases'
+import { flushReleaseNotes, ReleaseNotesSlot, RELEASE_OPTIONS_UNAVAILABLE, releaseOptionDefaults, releaseOptionsAvailable } from '../../../deploy/slots'
 import { loadSettings, startDeploySync, useDeploy, useDeployments, useServices } from '../../../deploy/store'
 import { useHub } from '../../../hub/store'
 import { useInventory } from '../../../inventory/store'
@@ -14,7 +27,6 @@ import { attempt, ConfirmDialog, plural, type ConfirmRequest } from '../../../ui
 import { Dialog } from '../../../ui/Dialog'
 import { RegionChip } from '../../../ui/RegionChip'
 import { Segmented } from '../../../ui/Segmented'
-import { createStore } from '../../../ui/store'
 import { CommitList } from './CommitList'
 import { PlaybookReview } from './PlaybookReview'
 import { AnsibleTerminal } from './AnsibleTerminal'
@@ -22,36 +34,14 @@ import { PreflightChecklist } from './PreflightChecklist'
 import { CheckoutNotice, DatabaseRows, ServicePicker, SkipRows } from './ServicePicker'
 import { ReleaseView } from './ReleaseView'
 
-export interface ReleaseNotesEditorProps {
-  environmentId: string
-  serviceIds: string[]
-  value: string
-  onChange: (value: string) => void
-}
-
-const notesEditor = createStore<ComponentType<ReleaseNotesEditorProps> | null>(null)
-
-/** Phase 9 puts its release-notes editor in the wizard through this; the value goes to `release:preflight`. */
-export function registerReleaseNotesEditor(component: ComponentType<ReleaseNotesEditorProps>): () => void {
-  notesEditor.set(component)
-  return () => {
-    if (notesEditor.get() === component) notesEditor.set(null)
-  }
-}
-
-/** Renders nothing until an editor is registered. */
-export function ReleaseNotesSlot(props: ReleaseNotesEditorProps) {
-  const Editor = useSyncExternalStore(notesEditor.subscribe, notesEditor.get)
-  return Editor ? <Editor {...props} /> : null
-}
-
 const BUMPS = [
   { id: 'patch', label: 'patch' },
   { id: 'minor', label: 'minor' },
   { id: 'major', label: 'major' },
 ] as const satisfies readonly { id: VersionBump; label: string }[]
 const FURTHER: Partial<Record<VersionBump, VersionBump>> = { patch: 'minor', minor: 'major' }
-const PHASE_9 = 'Available with notifications (Phase 9)'
+const NOTIFY_HINT = "Sends the Teams and email notifications in the environment's Notifications and QA settings"
+const QA_HINT = "Runs the QA workflow in the environment's Notifications and QA settings"
 
 type Step = 'pick' | 'preflight' | 'review' | 'started'
 
@@ -73,7 +63,9 @@ export function DeployWizard({
   const { catalog } = useHub()
   // A Hub environment this machine doesn't hold comes from the team catalog, with the same protected rule.
   const hubEnv = catalog.find((c) => c.environment.id === environmentId)?.environment
-  const env = data?.environments.find((e) => e.id === environmentId) ?? (hubEnv ? { name: hubEnv.name, protected: hubEnv.protected, color: undefined } : undefined)
+  const own = data?.environments.find((e) => e.id === environmentId)
+  const productName = (own && data?.products.find((p) => p.id === own.productId)?.name) ?? null
+  const env = own ?? (hubEnv ? { name: hubEnv.name, protected: hubEnv.protected, color: undefined } : undefined)
   const checkouts = useDeployments(environmentId)
   const services = useServices(environmentId)
   const settings = useDeploy().settings[environmentId]
@@ -84,7 +76,13 @@ export function DeployWizard({
   const [wholes, setWholes] = useState(() => new Set(preselectCheckouts))
   const [bump, setBump] = useState<VersionBump>('minor')
   const [backup, setBackup] = useState(true)
-  const [notes, setNotes] = useState('')
+  // Registered at startup by ai/register; read once, as nothing registers later.
+  const [available] = useState(releaseOptionsAvailable)
+  const [notify, setNotify] = useState(available.notify && DEFAULT_RELEASE_OPTIONS.notify)
+  const [qa, setQa] = useState(false)
+  const qaTouched = useRef(false)
+  // The preflighted release for the notes editor in the review.
+  const [detail, setDetail] = useState<ReleaseDetail | null>(null)
   const [step, setStep] = useState<Step>('pick')
   const [releaseId, setReleaseId] = useState<string | null>(null)
   const [showOutput, setShowOutput] = useState(false)
@@ -108,6 +106,15 @@ export function DeployWizard({
   useEffect(() => startReleaseSync(), [])
   useEffect(() => startDeploySync(), [])
   useEffect(() => void loadSettings(environmentId), [environmentId])
+  useEffect(() => {
+    let live = true
+    void releaseOptionDefaults(environmentId).then((d) => {
+      if (live && d.qa !== undefined && !qaTouched.current) setQa(d.qa)
+    })
+    return () => {
+      live = false
+    }
+  }, [environmentId])
 
   const { groups, unavailable } = useMemo(() => pickerGroups(services, checkouts, selected, wholes), [services, checkouts, selected, wholes])
   const request = selectionRequest(groups)
@@ -190,8 +197,7 @@ export function DeployWizard({
           serviceIds: request.serviceIds,
           ...(request.checkoutIds.length ? { checkoutIds: request.checkoutIds } : {}),
           bump: withBump,
-          options: { backup, notify: false, qa: false },
-          ...(notes.trim() ? { releaseNotes: notes } : {}),
+          options: { backup, notify: available.notify && notify, qa: available.qa && qa },
         }),
       (message) => {
         if (token === attemptRef.current) setError(message)
@@ -221,6 +227,15 @@ export function DeployWizard({
     setReviewed(null)
     setSaved(null)
     setStep('review')
+    // The notes editor drafts from the preflight's commits and saves onto this release. A release that can't
+    // be read fails the preview too, which says so; the editor just stays away.
+    if (detail?.id !== id)
+      void api.invoke('release:get', id).then(
+        (d) => {
+          if (held.current === id) setDetail(d)
+        },
+        () => {},
+      )
     const out = await attempt("Couldn't generate the playbook", () => previewOf(id, forced), setError)
     if (out && held.current === id) setReviewed(out)
   }
@@ -252,16 +267,18 @@ export function DeployWizard({
       const ok = await attempt(
         "Couldn't start the release",
         // release:start answers nothing, so success is marked here: undefined is attempt's failure.
-        async () => (
+        async () => {
+          // The release runs with the notes main holds: an edit still on its debounce goes first.
+          await flushReleaseNotes(releaseId)
           await api.invoke('release:start', releaseId, {
             ...(typedName !== undefined ? { typedName } : {}),
             redeploy,
             playbookSha256: sha256,
             ...(edit ? { editedPlaybook: edit.text } : {}),
             ...(forced.size ? { forceServiceIds: [...forced] } : {}),
-          }),
-          true
-        ),
+          })
+          return true
+        },
         (message) => {
           changed = message.includes(PLAYBOOK_CHANGED_MESSAGE) || message.includes(REVIEW_EXPIRED_MESSAGE)
           setError(message)
@@ -416,16 +433,31 @@ export function DeployWizard({
                   <input type="checkbox" className="size-3.5 accent-(--accent)" checked={backup} onChange={(e) => setBackup(e.target.checked)} />
                   Back up databases
                 </label>
-                <label title={PHASE_9} className="flex items-center gap-2 text-muted">
-                  <input type="checkbox" className="size-3.5 accent-(--accent)" checked={false} disabled onChange={() => {}} />
+                <label title={available.notify ? NOTIFY_HINT : RELEASE_OPTIONS_UNAVAILABLE} className={`flex items-center gap-2 ${available.notify ? '' : 'text-muted'}`}>
+                  <input
+                    type="checkbox"
+                    className="size-3.5 accent-(--accent)"
+                    checked={available.notify && notify}
+                    disabled={!available.notify}
+                    onChange={(e) => setNotify(e.target.checked)}
+                  />
                   Notify
                 </label>
-                <label title={PHASE_9} className="flex items-center gap-2 text-muted">
-                  <input type="checkbox" className="size-3.5 accent-(--accent)" checked={false} disabled onChange={() => {}} />
+                <label title={available.qa ? QA_HINT : RELEASE_OPTIONS_UNAVAILABLE} className={`flex items-center gap-2 ${available.qa ? '' : 'text-muted'}`}>
+                  <input
+                    type="checkbox"
+                    className="size-3.5 accent-(--accent)"
+                    checked={available.qa && qa}
+                    disabled={!available.qa}
+                    onChange={(e) => {
+                      qaTouched.current = true
+                      setQa(e.target.checked)
+                    }}
+                  />
                   QA
                 </label>
               </div>
-              <ReleaseNotesSlot environmentId={environmentId} serviceIds={request.serviceIds} value={notes} onChange={setNotes} />
+              <ReleaseNotesSlot environmentId={environmentId} release={null} productName={productName} />
             </>
           )}
 
@@ -512,6 +544,7 @@ export function DeployWizard({
                   {[backup ? 'Databases backed up first' : 'No database backup', ...(redeploy ? ['Redeploys the current commits'] : [])].join(' · ')}
                 </p>
               </div>
+              {detail && detail.id === releaseId && <ReleaseNotesSlot environmentId={environmentId} release={detail} productName={productName} />}
               {!!reviewed?.skippedServiceIds?.length && (
                 <p className="text-[12px] text-muted">{`Skipped, no changes: ${reviewed.skippedServiceIds.map(nameOf).join(', ')}`}</p>
               )}
