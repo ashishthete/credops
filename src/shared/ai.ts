@@ -38,7 +38,7 @@ export const CONFIDENCES = ['low', 'medium', 'high'] as const
  * dialog shows: C0 controls (tab, newline and CR among them), DEL, C1 controls, bidi overrides and isolates,
  * and zero-width characters.
  */
-export const UNSAFE_COMMAND_CHARS = /[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁠⁦-⁩﻿]/
+export const UNSAFE_COMMAND_CHARS = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/
 
 /** The risk a command is shown and confirmed with: Claude's claim, raised to destructive when the command matches DESTRUCTIVE_PATTERN, never lowered. */
 export function commandRisk(command: string, claimed: CommandRisk): CommandRisk {

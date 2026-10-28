@@ -46,7 +46,7 @@ describe('parseExplanation', () => {
   it('drops a command holding a control, bidi or zero-width character, so what runs is what is shown', () => {
     const hidden = [
       'ls\tx', 'ls\nrm -rf /', 'ls\rrm -rf /', 'ls\u0015rm', 'ls\u007f', 'ls\bx', 'ls\u001b[2K', 'ls\u0085', 'ls\u009b',
-      'ls ‮rm', 'ls ‪', 'ls ⁦x⁩', 'ls​', 'ls‏', 'ls⁠', 'ls﻿',
+      'ls \u202erm', 'ls \u202a', 'ls \u2066x\u2069', 'ls\u200b', 'ls\u200f', 'ls\u2060', 'ls\ufeff',
     ]
     const out = parseExplanation(JSON.stringify({ ...good, commands: [...hidden.map((command) => ({ ...good.commands[0], command })), good.commands[0]] }))
     expect(out.commands).toEqual(good.commands)
