@@ -107,6 +107,8 @@ const stats = (over: Partial<TunnelStats> & { id: string }): TunnelStats => ({
   rateOut: 0,
   connections: 1,
   rejected: 0,
+  openFailed: 0,
+  lastOpenError: null,
   ...over,
 })
 

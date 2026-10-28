@@ -32,7 +32,7 @@ async function sync(results: Record<string, unknown> = {}) {
   return invoke
 }
 
-const stats = (id: string, rateIn: number): TunnelStats => ({ id, bytesIn: 0, bytesOut: 0, rateIn, rateOut: 0, connections: 0, rejected: 0 })
+const stats = (id: string, rateIn: number): TunnelStats => ({ id, bytesIn: 0, bytesOut: 0, rateIn, rateOut: 0, connections: 0, rejected: 0, openFailed: 0, lastOpenError: null })
 const failedEvent: TunnelEvent = {
   type: 'failed',
   tunnelId: 't1',

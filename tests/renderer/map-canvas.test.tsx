@@ -147,7 +147,7 @@ describe('map canvas', () => {
     const renders = seen.flow.length
 
     act(() => emitBridgeEvent('tunnel:state', tunnelRuntime({ id: 't1', state: 'up', boundPort: 6000 })))
-    act(() => emitBridgeEvent('tunnel:stats', [{ id: 't1', bytesIn: 10, bytesOut: 20, rateIn: 1, rateOut: 2, connections: 1, rejected: 0 }]))
+    act(() => emitBridgeEvent('tunnel:stats', [{ id: 't1', bytesIn: 10, bytesOut: 20, rateIn: 1, rateOut: 2, connections: 1, rejected: 0, openFailed: 0, lastOpenError: null }]))
     await flush()
     expect(seen.flow.length).toBe(renders)
 

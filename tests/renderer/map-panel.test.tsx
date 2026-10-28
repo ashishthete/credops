@@ -336,8 +336,8 @@ describe('map detail panel', () => {
     await click(node('e:e1/h:h1')!)
     expect(panel('web')).toBeInTheDocument()
     const renders = seen.flowRenders
-    act(() => emitBridgeEvent('tunnel:stats', [{ id: 't1', bytesIn: 10, bytesOut: 20, rateIn: 1, rateOut: 2, connections: 1, rejected: 0 }]))
-    act(() => emitBridgeEvent('tunnel:stats', [{ id: 't1', bytesIn: 30, bytesOut: 40, rateIn: 3, rateOut: 4, connections: 2, rejected: 0 }]))
+    act(() => emitBridgeEvent('tunnel:stats', [{ id: 't1', bytesIn: 10, bytesOut: 20, rateIn: 1, rateOut: 2, connections: 1, rejected: 0, openFailed: 0, lastOpenError: null }]))
+    act(() => emitBridgeEvent('tunnel:stats', [{ id: 't1', bytesIn: 30, bytesOut: 40, rateIn: 3, rateOut: 4, connections: 2, rejected: 0, openFailed: 0, lastOpenError: null }]))
     await flush()
     expect(seen.flowRenders).toBe(renders)
     expect(panel('web')).toBeInTheDocument()

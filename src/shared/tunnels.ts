@@ -104,6 +104,9 @@ export interface TunnelStats {
   rateOut: number
   connections: number
   rejected: number
+  /** Connections the server would not forward to the target, and why the latest one failed. */
+  openFailed: number
+  lastOpenError: string | null
 }
 
 export type TunnelStopReason = 'user' | 'failed' | 'quit' | 'deleted' | 'edited' | 'reset'

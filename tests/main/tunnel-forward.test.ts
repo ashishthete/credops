@@ -6,6 +6,7 @@ import {
   Counter,
   ProbeTokens,
   TARGET_CONNECT_MS,
+  openFailureText,
   realTimers,
   startLocal,
   startRemote,
@@ -239,6 +240,30 @@ describe('L forwards', () => {
   })
 })
 
+describe('openFailureText', () => {
+  const failure = (reason: unknown, description = ''): Error & { reason?: unknown } =>
+    Object.assign(new Error(`(SSH) Channel open failure: ${description}`), { reason })
+
+  it('names the target and asks whether anything listens there when the connect failed', () => {
+    expect(openFailureText(failure(2, 'Connection refused'), 'localhost', 5432)).toBe(
+      "The server couldn't connect to localhost:5432 (Connection refused): is anything listening there?",
+    )
+    expect(openFailureText(failure(2), 'localhost', 5432)).toBe("The server couldn't connect to localhost:5432: is anything listening there?")
+  })
+
+  it('says forwarding is not permitted when the server prohibits the channel', () => {
+    expect(openFailureText(failure(1, 'open failed'), 'db.internal', 5432)).toBe(
+      'The server refused to forward to db.internal:5432 (open failed): port forwarding is disabled or not permitted for that target',
+    )
+  })
+
+  it('falls back to what the server said for any other reason', () => {
+    expect(openFailureText(failure(4, 'resource shortage'), '10.0.0.5', 6379)).toBe(
+      "The server couldn't open a connection to 10.0.0.5:6379 (resource shortage)",
+    )
+  })
+})
+
 describe('R forwards', () => {
   it('R listens remotely and forwards to the local target', async () => {
     const r = await rig({ allowRemoteForward: true })
@@ -346,7 +371,7 @@ describe('probe tokens and counters', () => {
     counter.bytesIn = 2000
     counter.bytesOut = 500
     now = 1000
-    expect(counter.sample()).toEqual({ bytesIn: 2000, bytesOut: 500, rateIn: 2000, rateOut: 500, connections: 0, rejected: 0 })
+    expect(counter.sample()).toEqual({ bytesIn: 2000, bytesOut: 500, rateIn: 2000, rateOut: 500, connections: 0, rejected: 0, openFailed: 0, lastOpenError: null })
     counter.bytesIn += 1000
     now = 3000
     expect(counter.sample()).toMatchObject({ bytesIn: 3000, rateIn: 500, rateOut: 0 })

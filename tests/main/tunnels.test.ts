@@ -240,6 +240,32 @@ describe('TunnelManager', () => {
     expect(JSON.stringify(starts)).not.toContain('127.0.0.1')
   })
 
+  it('a target the server cannot reach is counted in stats and logged once, and the tunnel stays up', async () => {
+    const t = await setup()
+    const srv = await server()
+    const closed = await freePort()
+    const tun = t.tunnel(t.host(srv), { targetPort: closed })
+    t.manager.start(tun.id)
+    const up = await t.waitState(tun.id, 'up')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    onTestFinished(() => warn.mockRestore())
+    for (let i = 0; i < 2; i++) {
+      const sock = await dial(up.boundPort!)
+      sock.write('hello')
+      await new Promise((resolve) => sock.once('close', resolve))
+    }
+    t.statsMt.fire(STATS_MS)
+    const stats = t.events.flatMap((e) => (e.event === 'tunnel:stats' ? [e.payload] : [])).at(-1)!
+    expect(stats.find((s) => s.id === tun.id)).toMatchObject({
+      connections: 0,
+      openFailed: 2,
+      lastOpenError: `The server couldn't connect to 127.0.0.1:${closed}: is anything listening there?`,
+    })
+    const logged = warn.mock.calls.map((c) => c.join(' ')).filter((line) => line.includes('a connection failed'))
+    expect(logged).toEqual([`Tunnel db: a connection failed: The server couldn't connect to 127.0.0.1:${closed}: is anything listening there?`])
+    expect(t.manager.runtime(tun.id).state).toBe('up')
+  })
+
   it('never reports up before the first probe passes', async () => {
     const { ctl, engines } = stubbableEngines()
     const t = await setup({ deps: { engines } })

@@ -336,11 +336,21 @@ describe('tunnels page', () => {
     )
     const before = routeRenders.get('t2')
     expect(before).toBeGreaterThan(0)
-    const stats: TunnelStats = { id: 't1', bytesIn: 0, bytesOut: 0, rateIn: 1_200_000, rateOut: 30_000, connections: 3, rejected: 0 }
+    const stats: TunnelStats = { id: 't1', bytesIn: 0, bytesOut: 0, rateIn: 1_200_000, rateOut: 30_000, connections: 3, rejected: 0, openFailed: 0, lastOpenError: null }
     act(() => emitBridgeEvent('tunnel:stats', [stats]))
     expect(within(card('pg')).getByText('↓ 1.2 MB/s ↑ 30 KB/s · 3 connections')).toBeInTheDocument()
     expect(within(card('pg')).getByText('Throughput of pg')).toBeInTheDocument()
     expect(routeRenders.get('t2')).toBe(before)
+  })
+
+  it('connections the server would not forward show why, under the throughput', async () => {
+    await renderPage([tunnelMeta({ id: 't1', label: 'pg', hostId: 'h-db' })], [tunnelRuntime({ id: 't1' })])
+    const quiet: TunnelStats = { id: 't1', bytesIn: 0, bytesOut: 0, rateIn: 0, rateOut: 0, connections: 0, rejected: 0, openFailed: 0, lastOpenError: null }
+    act(() => emitBridgeEvent('tunnel:stats', [quiet]))
+    expect(within(card('pg')).queryByTestId('tunnel-open-failures')).not.toBeInTheDocument()
+    const reason = "The server couldn't connect to localhost:5432: is anything listening there?"
+    act(() => emitBridgeEvent('tunnel:stats', [{ ...quiet, openFailed: 2, lastOpenError: reason }]))
+    expect(within(card('pg')).getByTestId('tunnel-open-failures')).toHaveTextContent(`2 connections failed. ${reason}`)
   })
 
   it('filter chips narrow the grid', async () => {

@@ -33,6 +33,7 @@ import { BindError } from './bind'
 import {
   Counter,
   ForwardError,
+  openFailureText,
   ProbeTokens,
   realTimers,
   startLocal,
@@ -452,11 +453,25 @@ export class TunnelManager {
           cb(new Error('The connection is down'), undefined as never)
           return via
         }
-        client.forwardOut(srcIP, srcPort, dstIP, dstPort, cb)
+        client.forwardOut(srcIP, srcPort, dstIP, dstPort, (err, channel) => {
+          if (err) this.openFailed(run, openFailureText(err, dstIP, dstPort))
+          cb(err, channel)
+        })
         return via
       },
     }
     return via as unknown as ForwardOut
+  }
+
+  /**
+   * Counts a connection the server would not forward, keeps why for the card, and logs it once per
+   * distinct reason so a client retrying in a loop doesn't flood the log.
+   */
+  private openFailed(run: Run, text: string): void {
+    const { counter } = run
+    counter.openFailed += 1
+    if (counter.lastOpenError !== text) this.warn(`Tunnel ${run.meta.label}: a connection failed`, new Error(text))
+    counter.lastOpenError = text
   }
 
   /** The label of another running tunnel listening on `address:port`. */

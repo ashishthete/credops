@@ -176,6 +176,7 @@ export const TunnelCard = memo(function TunnelCard({ id, hostLabel, hostAddress,
           </p>
           {(state === 'up' || state === 'retrying') && <Throughput id={id} label={meta.label} live={state === 'up'} />}
         </div>
+        {(state === 'up' || state === 'retrying') && <OpenFailures id={id} />}
       </div>
     </motion.article>
   )
@@ -344,6 +345,21 @@ export function StatusLine({ runtime }: { runtime: TunnelRuntime | undefined }) 
         Retry
       </Button>
     </div>
+  )
+}
+
+/**
+ * Connections the server would not forward to the target. The tunnel itself stays up (its probe only
+ * checks this side), so without this a client like a database GUI just sees its connection close.
+ */
+function OpenFailures({ id }: { id: string }) {
+  const stats = useTunnelStats(id)
+  if (!stats?.last.openFailed) return null
+  const { openFailed, lastOpenError } = stats.last
+  return (
+    <p role="status" className="text-[12px] leading-[18px] break-words text-warn" data-testid="tunnel-open-failures">
+      {plural(openFailed, 'connection')} failed. {lastOpenError}
+    </p>
   )
 }
 

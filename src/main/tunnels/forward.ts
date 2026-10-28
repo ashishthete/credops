@@ -29,6 +29,8 @@ export const realTimers: Timers = {
 const PROBE_TOKEN_BYTES = 16
 /** RFC 4254 open failure reason: the server forbids the channel type. */
 const SSH_OPEN_ADMINISTRATIVELY_PROHIBITED = 1
+/** RFC 4254 open failure reason: the server could not connect to the target. */
+const SSH_OPEN_CONNECT_FAILED = 2
 /** How long an `R` target may take to accept before its forwarded connection is dropped (and leaves the cap). */
 export const TARGET_CONNECT_MS = 30000
 
@@ -50,6 +52,9 @@ export class Counter {
   connections = 0
   /** Connections destroyed on arrival (not accepting, or at `MAX_TUNNEL_CHANNELS`). */
   rejected = 0
+  /** Connections the server would not open to the target, and why the latest one failed. */
+  openFailed = 0
+  lastOpenError: string | null = null
   private last: { at: number; bytesIn: number; bytesOut: number }
 
   constructor(private readonly now: () => number = Date.now) {
@@ -71,10 +76,28 @@ export class Counter {
       rateOut: rate(this.bytesOut - this.last.bytesOut),
       connections: this.connections,
       rejected: this.rejected,
+      openFailed: this.openFailed,
+      lastOpenError: this.lastOpenError,
     }
     this.last = { at, bytesIn: this.bytesIn, bytesOut: this.bytesOut }
     return sample
   }
+}
+
+/**
+ * Why the server would not open a forwarded connection to `host:port`, in words a user can act on.
+ * The SSH session is fine when this happens: only the server's own connect to the target failed, so
+ * the client on this machine just sees its connection close.
+ */
+export function openFailureText(err: Error & { reason?: unknown }, host: string, port: number): string {
+  const target = `${host}:${port}`
+  const said = err.message.replace(/^\(SSH\) Channel open failure:\s*/, '').trim()
+  const because = said ? ` (${said})` : ''
+  if (err.reason === SSH_OPEN_ADMINISTRATIVELY_PROHIBITED) {
+    return `The server refused to forward to ${target}${because}: port forwarding is disabled or not permitted for that target`
+  }
+  if (err.reason === SSH_OPEN_CONNECT_FAILED) return `The server couldn't connect to ${target}${because}: is anything listening there?`
+  return `The server couldn't open a connection to ${target}${because}`
 }
 
 /** Single-use random tokens a probe sends as its first chunk, so a listener can recognise and drop it. */
