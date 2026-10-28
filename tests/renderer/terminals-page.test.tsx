@@ -300,6 +300,31 @@ describe('terminals page', () => {
     expect(within(card).getByRole('button', { name: 'Close' })).toBeInTheDocument()
   })
 
+  it('host-key-changed to a key of another type shows the pinned keys with their types', async () => {
+    await renderShell()
+    state(
+      ssh('db', {
+        state: 'failed',
+        hops: [{ label: 'db', state: 'failed' }],
+        error: {
+          code: 'host-key-changed',
+          message: 'The host key for db has changed',
+          hopLabel: 'db',
+          hostKey: {
+            host: 'db.internal',
+            keyType: 'ecdsa-sha2-nistp256',
+            fingerprint: 'SHA256:newnewnew',
+            known: [{ keyType: 'ssh-ed25519', fingerprint: 'SHA256:oldoldold', source: 'openssh', line: 3 }],
+          },
+        },
+      }),
+    )
+    const card = screen.getByRole('alert')
+    expect(within(card).getByText('ssh-ed25519 SHA256:oldoldold')).toBeInTheDocument()
+    expect(within(card).getByText('ecdsa-sha2-nistp256 SHA256:newnewnew')).toBeInTheDocument()
+    expect(within(card).getByText("ssh-keygen -R 'db.internal'")).toBeInTheDocument()
+  })
+
   it('closing a ready tab asks; closing a failed tab does not', async () => {
     const invoke = await renderShell()
     state(ssh('web'))

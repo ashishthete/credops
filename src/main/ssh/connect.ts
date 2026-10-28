@@ -1,5 +1,5 @@
 import ssh2 from 'ssh2'
-import type { Client, ClientChannel } from 'ssh2'
+import type { Client, ClientChannel, ServerHostKeyAlgorithm } from 'ssh2'
 import type { IdentityRef, ResolvedHost } from '../../shared/inventory'
 import { READY_TIMEOUT_MS } from '../../shared/ssh'
 import type { HopState, HostKeyInfo, SessionError } from '../../shared/ssh'
@@ -32,6 +32,8 @@ export interface ConnectDeps {
   plan(identity: IdentityRef, hop: HopTarget): Promise<AuthPlan>
   /** True to proceed. Throws `HostKeyError` for a changed or revoked key; asks the user about an unknown one. */
   verifyHostKey(hop: HopTarget, keyType: string, keyBase64: string): Promise<boolean>
+  /** Key types already pinned for the hop; the server is asked for these first. */
+  pinnedKeyTypes?(hop: HopTarget): Promise<string[]>
   askPassword(hop: HopTarget, username: string): Promise<string | null>
   askKeyboard(hop: HopTarget, name: string, instructions: string, prompts: KeyboardPrompt[]): Promise<string[] | null>
   onHop(index: number, state: HopState): void
@@ -141,6 +143,20 @@ function blobKeyType(blob: Buffer): string {
   return blob.length < 4 + len ? '' : blob.subarray(4, 4 + len).toString('latin1')
 }
 
+/** ssh2's own default order. */
+const HOST_KEY_ALGORITHMS: ServerHostKeyAlgorithm[] = ['ssh-ed25519', 'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384', 'ecdsa-sha2-nistp521', 'rsa-sha2-512', 'rsa-sha2-256', 'ssh-rsa']
+const ALGORITHMS_FOR_KEY_TYPE: Record<string, ServerHostKeyAlgorithm[]> = { 'ssh-rsa': ['rsa-sha2-512', 'rsa-sha2-256', 'ssh-rsa'], 'ssh-dss': ['ssh-dss'] }
+
+/**
+ * Like OpenSSH: the pinned key types' algorithms first, then the rest, so a server holding several keys presents the
+ * one already trusted. `undefined` (ssh2's default) when nothing is pinned.
+ */
+export function hostKeyAlgorithms(pinnedTypes: string[]): ServerHostKeyAlgorithm[] | undefined {
+  const first = pinnedTypes.flatMap((t) => ALGORITHMS_FOR_KEY_TYPE[t] ?? HOST_KEY_ALGORITHMS.filter((a) => a === t))
+  if (first.length === 0) return undefined
+  return [...new Set([...first, ...HOST_KEY_ALGORITHMS])]
+}
+
 /** Dials one hop, directly or over `prev`. `track` receives the client as soon as it exists. */
 async function dialHop(
   hop: HopTarget,
@@ -150,6 +166,7 @@ async function dialHop(
   track: (client: Client) => void,
 ): Promise<Client> {
   const plan = await deps.plan(hop.identity, hop)
+  const serverHostKey = hostKeyAlgorithms((await deps.pinnedKeyTypes?.(hop)) ?? [])
   if (signal.aborted) throw new ClosedError()
   // What the user typed in, by kind only, for the failure message.
   const typed = new Set<string>()
@@ -236,6 +253,7 @@ async function dialHop(
       client.connect({
         ...(sock ? { sock } : { host: hop.address, port: hop.port }),
         username: plan.username,
+        ...(serverHostKey ? { algorithms: { serverHostKey } } : {}),
         authHandler: authHandler(
           plan,
           async () => {

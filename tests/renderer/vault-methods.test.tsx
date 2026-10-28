@@ -117,12 +117,24 @@ describe('setup', () => {
     expect(document.body.textContent).not.toContain('135792')
   })
 
+  it('setup needs a PIN of 6 digits or more', async () => {
+    const user = userEvent.setup()
+    renderSetup(NO_TOUCH_ID)
+    expect(screen.getByText('6-8 digits')).toBeInTheDocument()
+    await user.type(screen.getByLabelText('PIN'), '13579')
+    await user.type(screen.getByLabelText('Confirm PIN'), '13579')
+    expect(continueButton()).toBeDisabled()
+    await user.type(screen.getByLabelText('PIN'), '2')
+    await user.type(screen.getByLabelText('Confirm PIN'), '2')
+    expect(continueButton()).toBeEnabled()
+  })
+
   it('a pasted PIN over 12 digits gets the format message', async () => {
     const user = userEvent.setup()
     renderSetup(NO_TOUCH_ID)
     await user.click(screen.getByLabelText('PIN'))
     await user.paste('1357924680135')
-    expect(screen.getByText('PIN must be 4-8 digits')).toBeInTheDocument()
+    expect(screen.getByText('PIN must be 6-8 digits')).toBeInTheDocument()
     expect(continueButton()).toBeDisabled()
   })
 
@@ -294,7 +306,7 @@ describe('method chooser', () => {
     const { invoke } = renderUnlock({ ...ALL_METHODS, lastMethod: 'pin' })
     await user.click(screen.getByLabelText('PIN'))
     await user.paste('1357924680135')
-    expect(screen.getByText('PIN must be 4-8 digits')).toBeInTheDocument()
+    expect(screen.getByText('PIN must be 6-8 digits')).toBeInTheDocument()
     await user.keyboard('{Enter}')
     expect(invoke).not.toHaveBeenCalledWith('vault:unlockPin', expect.anything())
   })

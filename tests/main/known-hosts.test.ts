@@ -108,13 +108,29 @@ describe('KnownHostStore.check', () => {
     expect(r.info.known).toEqual([{ keyType: a.type, fingerprint: fingerprintOf(a.b64), source: 'openssh', line: 1 }])
   })
 
-  it('different key type only is unknown, with known listed', async () => {
+  it('a key of another type than the pins is changed, with every pin listed', async () => {
     const e = gen('ecdsa')
     const k = gen('ed25519')
     const s = await setup(`db ${e.type} ${e.b64}\n`)
     const r = await s.store.check('db', 22, k.type, k.b64)
-    expect(r.status).toBe('unknown')
+    expect(r.status).toBe('changed')
     expect(r.info.known).toEqual([{ keyType: e.type, fingerprint: fingerprintOf(e.b64), source: 'openssh', line: 1 }])
+
+    const k2 = gen('ed25519')
+    s.store.trust('app', 22, k2.type, k2.b64)
+    const r2 = await s.store.check('app', 22, e.type, e.b64)
+    expect(r2.status).toBe('changed')
+    expect(r2.info.known).toEqual([{ keyType: k2.type, fingerprint: fingerprintOf(k2.b64), source: 'app' }])
+  })
+
+  it('pinnedKeyTypes() lists each pinned type once, from both sources', async () => {
+    const e = gen('ecdsa')
+    const k = gen('ed25519')
+    const k2 = gen('ed25519')
+    const s = await setup(`db ${k.type} ${k.b64}\ndb ${k2.type} ${k2.b64}\n`)
+    s.store.trust('db', 22, e.type, e.b64)
+    expect((await s.store.pinnedKeyTypes('db', 22)).sort()).toEqual([e.type, k.type].sort())
+    expect(await s.store.pinnedKeyTypes('other', 22)).toEqual([])
   })
 
   it('revoked wins over match', async () => {

@@ -1,10 +1,10 @@
-import { MAX_PIN, MAX_PIN_ATTEMPT, MIN_PIN, PIN_FORMAT_ERROR } from '../../shared/vault'
+import { MAX_PIN, MAX_PIN_ATTEMPT, MIN_PIN, MIN_PIN_ATTEMPT, PIN_FORMAT_ERROR } from '../../shared/vault'
 import { deriveKek, type KdfParams } from './crypto'
 
 const PIN_FORMAT = new RegExp(`^\\d{${MIN_PIN},${MAX_PIN}}$`)
-const ATTEMPT_FORMAT = new RegExp(`^\\d{${MIN_PIN},${MAX_PIN_ATTEMPT}}$`)
+const ATTEMPT_FORMAT = new RegExp(`^\\d{${MIN_PIN_ATTEMPT},${MAX_PIN_ATTEMPT}}$`)
 
-/** An attempt: digits only, MIN_PIN-MAX_PIN_ATTEMPT of them (older PINs run longer). The message never carries the PIN. */
+/** An attempt: digits only, MIN_PIN_ATTEMPT-MAX_PIN_ATTEMPT of them (older PINs run shorter or longer). The message never carries the PIN. */
 export function checkPinFormat(pin: string): void {
   if (typeof pin !== 'string' || !ATTEMPT_FORMAT.test(pin)) throw new Error(PIN_FORMAT_ERROR)
 }

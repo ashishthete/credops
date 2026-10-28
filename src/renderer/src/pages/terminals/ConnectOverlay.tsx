@@ -1,7 +1,7 @@
 import { motion } from 'framer-motion'
 import { Check, Copy, Laptop, RotateCw, ShieldAlert, TriangleAlert, X } from 'lucide-react'
 import { useState } from 'react'
-import type { HopState, SessionError, SessionHop, SessionMeta } from '../../../../shared/ssh'
+import { replacedKeys, type HopState, type SessionError, type SessionHop, type SessionMeta } from '../../../../shared/ssh'
 import { Button } from '../../ui/Button'
 import { exitFast, fast, spring, useMotionSafe, useShake } from '../../ui/motion'
 
@@ -183,16 +183,19 @@ function FailedCard({
 
 function HostKeyChanged({ error, onOpenKnownHosts }: { error: SessionError; onOpenKnownHosts?: () => void }) {
   const info = error.hostKey!
-  const expected = info.known.filter((k) => k.keyType === info.keyType)
+  const expected = replacedKeys(info)
+  // A server that presented a key of a new type: name the types too.
+  const typed = expected.some((k) => k.keyType !== info.keyType)
+  const shown = (keyType: string, fingerprint: string) => (typed ? `${keyType} ${fingerprint}` : fingerprint)
   const openssh = expected.some((k) => k.source === 'openssh')
   const app = expected.some((k) => k.source === 'app')
   return (
     <div className="mt-4 flex flex-col gap-3">
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 rounded-lg border border-line bg-canvas/60 px-3 py-2.5 text-[12px]">
         {expected.map((k) => (
-          <Fingerprint key={`${k.source}-${k.fingerprint}`} term="Expected" value={k.fingerprint} />
+          <Fingerprint key={`${k.source}-${k.fingerprint}`} term="Expected" value={shown(k.keyType, k.fingerprint)} />
         ))}
-        <Fingerprint term="Got" value={info.fingerprint} tone="text-err" />
+        <Fingerprint term="Got" value={shown(info.keyType, info.fingerprint)} tone="text-err" />
       </dl>
       {openssh && <CopyCommand command={`ssh-keygen -R '${info.host}'`} />}
       {app && onOpenKnownHosts && (

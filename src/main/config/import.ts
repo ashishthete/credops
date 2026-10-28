@@ -11,6 +11,7 @@ import {
   type ImportNeedsSecret,
   type ImportPreview,
   type ImportResult,
+  type ImportStepChange,
   type VaultRef,
 } from '../../shared/config-file'
 import { SENSITIVE_KEY } from '../../shared/deploy'
@@ -28,7 +29,7 @@ import { HostStore } from '../inventory/host-store'
 import { ProductStore } from '../inventory/product-store'
 import type { ReleaseFlow } from '../../shared/deploy'
 import type { RunbookInput, RunbookItem } from '../../shared/runbooks'
-import type { Step, StepBody, StepSecret } from '../../shared/steps'
+import { effectiveSteps, type Step, type StepBody, type StepSecret } from '../../shared/steps'
 import { RegionStore } from '../inventory/region-store'
 import { selectSegment } from './segment'
 import { TunnelStore } from '../tunnels/tunnel-store'
@@ -189,6 +190,29 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
     return out
   }
   const stepBody = (st: ConfigStepBody, allowed: ReadonlySet<string>, lost: string[]): StepBody => ({ ...st, secrets: stepSecrets(st.secrets, allowed, st.id, lost) })
+
+  // What the stored steps run before and after the write, so the preview shows every script that would run and the
+  // secrets it would read.
+  const steps: ImportStepChange[] = []
+  const secretLabel = db.prepare('SELECT v.name AS vault, s.name AS item FROM secrets s JOIN vaults v ON v.id = s.vault_id WHERE s.id = ?')
+  const labelOf = (secretId: string): string => {
+    const r = secretLabel.get(secretId) as { vault: string; item: string } | undefined
+    return r ? `${r.vault} / ${r.item}` : secretId
+  }
+  /** Steps matched by id; one that runs the same thing with no new secret isn't listed. */
+  const stepChanges = (kind: ImportStepChange['kind'], owner: string, before: StepBody[], after: StepBody[]): void => {
+    const was = new Map(before.map((st) => [st.id, st]))
+    for (const st of after) {
+      const old = was.get(st.id)
+      const had = new Set(old?.secrets.map((x) => `${x.envName}=${x.secretId}`))
+      const secrets = st.secrets.map((x) => ({ envName: x.envName, secret: labelOf(x.secretId), gained: !had.has(`${x.envName}=${x.secretId}`) }))
+      const same = old && old.script === st.script && old.run === st.run && old.service === st.service && old.cwd === st.cwd && old.sudo === st.sudo
+      if (same && !secrets.some((x) => x.gained)) continue
+      steps.push({ kind, owner, step: st.name, action: old ? 'update' : 'add', script: st.script, ...(old && old.script !== st.script ? { before: old.script } : {}), secrets })
+    }
+  }
+  const flowSteps = (environmentId: string): StepBody[] => s.deploys.settings(environmentId).flow?.stages.flatMap((st) => (st.kind === 'step' ? [st.step] : [])) ?? []
+  const runbookSteps = (id: string): StepBody[] => s.runbooks.get(id).items.flatMap((it) => (it.type === 'step' ? [it.step] : []))
 
   // Which existing environments change, for the typed confirmation of the protected ones.
   const envsBefore = new Map(
@@ -428,6 +452,8 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
   // Parts that name services or secrets of other rows are written after those exist (see "checkouts' steps" below).
   const flows: { x: ConfigFile['environments'][number]; local: string; added: boolean; item: number }[] = []
   const stepRows: { x: ConfigFile['deployments'][number]; local: string; environmentId: string; added: boolean; item: number }[] = []
+  /** Each checkout written, with the steps it ran before (its hooks count as steps). */
+  const checkoutSteps: { name: string; local: string; before: Step[] }[] = []
   /** Adds fields found after an item was recorded: an unchanged item becomes an update. */
   const amend = (index: number, fields: string[]): void => {
     const it = items[index]
@@ -687,10 +713,12 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
       )
       map.deployments.set(x.id, x.id)
       touch(environmentId)
+      checkoutSteps.push({ name: x.name, local: x.id, before: [] })
       done('deployments', x.id, x.name, true, [], addedNotes('deployments'))
       if (x.steps !== undefined) stepRows.push({ x, local: x.id, environmentId, added: true, item: items.length - 1 })
       continue
     }
+    checkoutSteps.push({ name: x.name, local: before.id, before: effectiveSteps(before) })
     const fields = s.deploys
       .updateInTx(before.id, { ...f, becomeSecretId, envTemplate, vaultIds: union(before.vaultIds, vaultIdsHere) })
       .map((k) => (k === 'vaultIds' ? 'vaults' : k))
@@ -781,6 +809,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
     if (fields.length > 0) touch(r.environmentId)
     amend(r.item, fields)
   }
+  for (const c of checkoutSteps) stepChanges('deployments', c.name, c.before, effectiveSteps(s.deploys.get(c.local)))
 
   // ---- release flows ----
   const fileServiceName = new Map(file.services.map((x) => [x.id, x.name]))
@@ -809,9 +838,11 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
       need('environments', r.x.name, 'flow', lost.join(', ') + (r.added ? '' : '; kept the local flow'))
       if (!r.added) continue
     }
+    const before = flowSteps(r.local)
     const fields = s.deploys.updateSettingsInTx(r.local, { flow: local })
     if (fields.length > 0) touch(r.local)
     amend(r.item, fields)
+    stepChanges('environments', r.x.name, before, flowSteps(r.local))
   }
 
   // ---- runbooks ----
@@ -860,9 +891,12 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
       s.runbooks.insertInTx(input, x.id)
       touch(environmentId)
       done('runbooks', x.id, x.name, true, [])
+      stepChanges('runbooks', x.name, [], runbookSteps(x.id))
       continue
     }
+    const before = runbookSteps(local)
     const changed = s.runbooks.updateInTx(local, input, true)
+    stepChanges('runbooks', x.name, before, runbookSteps(local))
     if (changed) touch(environmentId)
     done('runbooks', local, x.name, false, changed ? ['runbook'] : [])
   }
@@ -872,7 +906,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
     .filter((e): e is { id: string; name: string; protected: number } => e !== undefined && e.protected === 1)
     .map((e) => e.name)
     .sort()
-  return { items, counts, needsSecret, protectedEnvironments, needsRegion, environmentIds: [...new Set([...touched, ...reloaded])].sort() }
+  return { items, counts, needsSecret, steps, protectedEnvironments, needsRegion, environmentIds: [...new Set([...touched, ...reloaded])].sort() }
 }
 
 /** What importing `file` would do, without changing anything: the writes run in a transaction that is rolled back. */

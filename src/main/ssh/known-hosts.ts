@@ -143,30 +143,26 @@ export class KnownHostStore {
     const known: HostKeyInfo['known'] = []
     let revoked = false
     let match = false
-    let changed = false
     for (const l of lines) {
       if (l.marker === 'revoked') {
         if (l.key === keyBase64) revoked = true
         continue
       }
       known.push({ keyType: l.keyType, fingerprint: fingerprintOf(l.key), source: 'openssh', line: l.line })
-      if (l.keyType === keyType) {
-        if (l.key === keyBase64) match = true
-        else changed = true
-      }
+      if (l.keyType === keyType && l.key === keyBase64) match = true
     }
     let appMatch: Row | undefined
     for (const r of rows) {
       known.push({ keyType: r.key_type, fingerprint: r.fingerprint, source: 'app' })
-      if (r.key_type === keyType) {
-        if (r.key === keyBase64) {
-          match = true
-          appMatch = r
-        } else changed = true
+      if (r.key_type === keyType && r.key === keyBase64) {
+        match = true
+        appMatch = r
       }
     }
 
-    const status: HostKeyStatus = revoked ? 'revoked' : match ? 'match' : changed ? 'changed' : 'unknown'
+    // Like OpenSSH: once a host has pinned keys, a key of another type is a change, not a new host. Dials list the
+    // pinned types first (pinnedKeyTypes), so a server that still holds its pinned key presents it.
+    const status: HostKeyStatus = revoked ? 'revoked' : match ? 'match' : known.length > 0 ? 'changed' : 'unknown'
     if (status === 'match' && appMatch) {
       this.db.prepare('UPDATE known_hosts SET last_seen = ? WHERE id = ?').run(this.now().toISOString(), appMatch.id)
     }
@@ -216,6 +212,11 @@ export class KnownHostStore {
       if (l.marker === null && l.matches(token) && !revoked.has(l.key)) lines.add(`${token} ${l.keyType} ${l.key}`)
     }
     return [...lines].sort()
+  }
+
+  /** The key types pinned for one address, for the dial's host key algorithm order. */
+  async pinnedKeyTypes(address: string, port: number): Promise<string[]> {
+    return [...new Set((await this.pinned(address, port)).map((l) => l.split(' ')[1]))]
   }
 
   /** Works while locked. */

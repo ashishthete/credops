@@ -1,7 +1,15 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { ChevronRight, KeyRound } from 'lucide-react'
+import { ChevronRight, KeyRound, SquareTerminal } from 'lucide-react'
 import { useState } from 'react'
-import { IMPORT_ACTIONS, type ConfigSegment, type ImportAction, type ImportItem, type ImportPreview, type ImportNeedsSecret } from '../../../../shared/config-file'
+import {
+  IMPORT_ACTIONS,
+  type ConfigSegment,
+  type ImportAction,
+  type ImportItem,
+  type ImportPreview,
+  type ImportNeedsSecret,
+  type ImportStepChange,
+} from '../../../../shared/config-file'
 import { reloadInventory, useInventory } from '../../inventory/store'
 import { api } from '../../lib/api'
 import { loadTunnels } from '../../tunnels/store'
@@ -155,6 +163,7 @@ function PreviewDialog({ preview, segment, onClose }: { preview: ImportPreview; 
           <RegionSelect label="Put new hosts in region" value={region} onChange={setRegionId} hint="The file predates regions, so its hosts don't say where they run." />
         </div>
       )}
+      {preview.steps.length > 0 && <StepChanges steps={preview.steps} />}
       {preview.needsSecret.length > 0 && <NeedsSecret entries={preview.needsSecret} />}
       {preview.protectedEnvironments.length > 0 && (
         <div className="mt-4 space-y-3">
@@ -211,6 +220,58 @@ function Group({ action, items, count, notes }: { action: ImportAction; items: I
           </motion.ul>
         )}
       </AnimatePresence>
+    </section>
+  )
+}
+
+const STEP_OWNER: Record<ImportStepChange['kind'], string> = { deployments: 'Checkout', runbooks: 'Runbook', environments: 'Release flow' }
+const SCRIPT = 'max-h-40 overflow-auto rounded-md border border-line bg-canvas/60 px-2.5 py-1.5 font-mono text-[12px] leading-5 break-all whitespace-pre-wrap'
+
+/** Every script the import adds or changes, and the secrets it would run with. */
+function StepChanges({ steps }: { steps: ImportStepChange[] }) {
+  const withSecrets = steps.filter((st) => st.secrets.length > 0).length
+  return (
+    <section aria-labelledby="import-steps" className="mt-4 rounded-lg border border-line bg-surface-2/40 p-3">
+      <h3 id="import-steps" className="flex items-center gap-1.5 text-[12.5px] font-semibold text-fg">
+        <SquareTerminal aria-hidden className={`size-3.5 ${withSecrets > 0 ? 'text-warn' : 'text-muted'}`} />
+        Scripts this import adds or changes: {steps.length}
+      </h3>
+      <p className="mt-1 text-[12px] text-muted">
+        They run on your hosts{withSecrets > 0 ? `, and ${withSecrets} of them with secrets from your vaults` : ''}. Read them before you import.
+      </p>
+      <ul className="mt-2 max-h-72 space-y-3 overflow-y-auto">
+        {steps.map((st, i) => (
+          <li key={i} className="text-[12.5px] leading-5">
+            <div className="flex min-w-0 items-baseline gap-2">
+              <span className="shrink-0 text-muted">{STEP_OWNER[st.kind]}</span>
+              <span className="truncate text-fg">{st.owner}</span>
+              <span className="truncate font-mono text-fg">{st.step}</span>
+              <span className="shrink-0 text-muted">{st.action === 'add' ? 'new step' : 'changed'}</span>
+            </div>
+            {st.secrets.length > 0 && (
+              <ul className="mt-0.5 text-warn" aria-label="Secrets it reads">
+                {st.secrets.map((x) => (
+                  <li key={x.envName} className="flex min-w-0 items-baseline gap-1.5">
+                    <KeyRound aria-hidden className="size-3 shrink-0 self-center" />
+                    <span className="truncate">
+                      <span className="font-mono">{x.envName}</span> from {x.secret}
+                      {x.gained && st.action === 'update' ? ' (new)' : ''}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {st.before !== undefined && (
+              <>
+                <p className="mt-1 text-[11.5px] text-muted">Now</p>
+                <pre className={`${SCRIPT} text-muted`}>{st.before}</pre>
+                <p className="mt-1 text-[11.5px] text-muted">After import</p>
+              </>
+            )}
+            <pre className={`${SCRIPT} mt-1 text-fg`}>{st.script}</pre>
+          </li>
+        ))}
+      </ul>
     </section>
   )
 }

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { SessionPrompt } from '../../src/shared/ssh'
 import type { ResolvedHost } from '../../src/shared/inventory'
-import { prepareHosts, type PrepareDeps } from '../../src/main/deploy/hostkeys'
+import { changedKeyMessage, prepareHosts, type PrepareDeps } from '../../src/main/deploy/hostkeys'
 import { startTap, tapCommand } from '../../src/main/deploy/log-tap'
 import type { DeployPlan } from '../../src/main/deploy/runner'
 import { connectChain } from '../../src/main/ssh/connect'
@@ -132,6 +132,21 @@ describe('prepareHosts', () => {
     const pinned = await prepareHosts(planFor([{ hostId: HOST_ID, label: 'web' }], s.port), deps)
     expect(pinned.checks[0].message).toContain('remove the pinned key under Known hosts, then run preflight again.')
     expect(pinned.checks[0].message).not.toContain('ssh-keygen')
+  })
+
+  it('a key of a new type names the pinned keys, with their types', () => {
+    const message = changedKeyMessage('Changed.', {
+      host: 'db',
+      keyType: 'ecdsa-sha2-nistp256',
+      fingerprint: 'SHA256:new',
+      known: [
+        { keyType: 'ssh-ed25519', fingerprint: 'SHA256:old', source: 'openssh', line: 4 },
+        { keyType: 'ssh-rsa', fingerprint: 'SHA256:rsa', source: 'app' },
+      ],
+    })
+    expect(message).toBe(
+      "Changed. Expected ssh-ed25519 SHA256:old or ssh-rsa SHA256:rsa, got ecdsa-sha2-nistp256 SHA256:new. If you expected this change (the server was rebuilt or rekeyed), remove the old key from ~/.ssh/known_hosts (line 4) with: ssh-keygen -R 'db', and remove the pinned key under Known hosts, then run preflight again.",
+    )
   })
 
   it('password identity is rejected with the §9a message before dialling', async () => {

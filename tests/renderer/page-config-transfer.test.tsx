@@ -22,6 +22,7 @@ const preview: ImportPreview = {
   ],
   counts: { add: 2, update: 0, unchanged: 1, skip: 1 },
   needsSecret: [],
+  steps: [],
   protectedEnvironments: [],
   needsRegion: false,
   ignored: 5,

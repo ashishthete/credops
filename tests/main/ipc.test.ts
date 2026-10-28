@@ -117,7 +117,7 @@ describe('sign-in and factor contract', () => {
     }
   })
 
-  it('rejects an over-long PIN before the vault sees it; the 4-8 digit rule is the vault’s', async () => {
+  it('rejects an over-long PIN before the vault sees it; the 6-8 digit rule is the vault’s', async () => {
     const spy = vi.fn(async () => ({ ok: true as const }))
     const fn = setup({ 'vault:unlockPin': spy })('vault:unlockPin')
     await expect(fn(ev, '1'.repeat(65))).rejects.toThrow(/invalid arguments/)
