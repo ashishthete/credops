@@ -13,6 +13,8 @@ import { HostKeyError } from '../../src/main/ssh/connect'
 import { PLAYBOOK_CHANGED_MESSAGE } from '../../src/shared/deploy'
 import { READY_RELEASE_TTL_MS } from '../../src/shared/hub'
 import { hubVerify } from '../src/releases/adapters'
+import { RESTART_MESSAGE } from '../src/releases/service'
+import { INTERRUPTED_RUN_NOTE } from '../../src/main/deploy/release-store'
 import { testHub, type TestHub } from './helpers'
 import { DEP_API, DEP_WEB, ENV_ID, HOST_ID, JUMP_ID, SECRET_DB, SECRET_SUDO, deployment, manifest } from './manifest'
 
@@ -409,7 +411,7 @@ describe('hub releases', () => {
     expect(app2.releases.recover()).toBe(1)
     const row = hub.db.prepare('SELECT status, error FROM releases WHERE id = ?').get(id) as { status: string; error: string }
     expect(row.status).toBe('failed')
-    expect(row.error).toBe('Hub restarted')
+    expect(row.error).toBe(RESTART_MESSAGE + INTERRUPTED_RUN_NOTE)
     expect(lockRows()).toEqual([])
     expect(hub.audit.verify().ok).toBe(true)
     const again = await app2.inject({
