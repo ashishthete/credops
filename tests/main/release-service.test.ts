@@ -207,6 +207,8 @@ describe('ReleaseService', () => {
     const kinds = Object.fromEntries(r.svc.detail(releaseId).runs.map((run) => [run.deploymentName, run.steps.map((s) => s.kind)]))
     expect(kinds.one).toEqual(['rb_checkout', 'rb_build', 'rb_up', 'rb_health', 'rb_tag'])
     expect(kinds.two).toEqual(['rb_checkout', 'rb_build', 'rb_up', 'rb_tag'])
+    // its .env restore looks for the backup the rolled-back release wrote
+    expect(r.runner.call('rollback').rollbackOf).toBe(id)
   })
 
   it('a first deploy is left out of the rollback plan', async () => {

@@ -132,6 +132,8 @@ export interface DeployPlan {
   /** In plan order. */
   deployments: PlanDeployment[]
   secretRefs: Record<string, { secretId: string } | { envTemplate: { deploymentId: string } }>
+  /** Rollback only: the release being rolled back, when it is another one (a manual rollback); its .env backup is restored. */
+  rollbackOf?: string
   /** For `break-lock`: the raw lock content preflight saw, per host. */
   lock: { expectRaw?: Record<string, string> }
   startedAt: string

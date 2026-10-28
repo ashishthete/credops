@@ -656,15 +656,26 @@ describe('fix round 1', () => {
     expect(m.cmd).toContain('rm -f .env')
   })
 
-  it('rb_env acts only when .env.opsdeck-rel names this release, and cleans up', () => {
+  it('rb_env acts only when .env.opsdeck-rel names the release being rolled back, and cleans up after a restore', () => {
     const rb = flat(plays(planFixture({ kind: 'rollback' }))[0].tasks).find((t) => step(t) === 'rb_env')!
     const c = cmdOf(rb)
-    expect(c).toContain('if [ "$(cat .env.opsdeck-rel 2>/dev/null)" = {{ od.rel | quote }} ]; then')
+    expect(c).toContain('if [ "$(cat .env.opsdeck-rel 2>/dev/null)" = {{ od.env_rel | default(od.rel) | quote }} ]; then')
     expect(c).toContain('OD-ENV skipped')
     expect(c).toContain('rm -f .env.opsdeck-rel .env.opsdeck-prev .env.opsdeck-none')
     // the restore sits inside the guard
     expect(c.indexOf('mv -f .env.opsdeck-prev .env')).toBeGreaterThan(c.indexOf('if [ "$(cat'))
     expect(c.indexOf('mv -f .env.opsdeck-prev .env')).toBeLessThan(c.indexOf('OD-ENV skipped'))
+    // a backup another release wrote stays for that release's own rollback
+    expect(c.indexOf('rm -f .env.opsdeck-rel')).toBeLessThan(c.indexOf('OD-ENV skipped'))
+  })
+
+  it("a manual rollback's rb_env compares against the release it undoes", () => {
+    const src = '0190a1b2-c3d4-7e5f-8a6b-aaaaaaaaaaaa'
+    const plan = { ...planFixture({ kind: 'rollback' }), rollbackOf: src }
+    expect(plays(plan)[0].vars).toMatchObject({ od: { rel: plan.releaseId, env_rel: src } })
+    // an auto-rollback inside the release keeps comparing against its own id
+    expect((plays(planFixture({ kind: 'rollback' }))[0].vars as { od: object }).od).not.toHaveProperty('env_rel')
+    expect(() => plays({ ...plan, rollbackOf: '$(id)' })).toThrow()
   })
 
   it('checks the rel marker write and the backup mv, and flags unknown commits', () => {
@@ -1521,7 +1532,7 @@ describe('parallel prepare', () => {
         expect(c.trimEnd().split('\n').at(-1)).toBe('echo "OD-RESTORE ok $(git rev-parse HEAD)"')
         // the .env only with a managed one, only when this release wrote it (rb_env's check), after the checkout is back
         if (d.envSecretKey !== null) {
-          expect(c).toContain('if [ "$(cat .env.opsdeck-rel 2>/dev/null)" = {{ od.rel | quote }} ]; then')
+          expect(c).toContain('if [ "$(cat .env.opsdeck-rel 2>/dev/null)" = {{ od.env_rel | default(od.rel) | quote }} ]; then')
           expect(c.indexOf('.env.opsdeck-rel')).toBeGreaterThan(c.indexOf('git checkout -q --detach'))
         } else expect(c).not.toContain('.env')
       }

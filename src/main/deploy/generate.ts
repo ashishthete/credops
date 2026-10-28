@@ -420,17 +420,18 @@ const ENV_CMD = [
   "printf '%s' {{ od.rel | quote }} > .env.opsdeck-rel || exit 1",
   'base64 -d > .env.opsdeck-new && chmod 600 .env.opsdeck-new && mv -f .env.opsdeck-new .env',
 ].join('\n')
+// A manual rollback names the release it undoes (od.env_rel); a backup another release wrote is left for that one.
 const RB_ENV_CMD = [
   'umask 077',
-  'if [ "$(cat .env.opsdeck-rel 2>/dev/null)" = {{ od.rel | quote }} ]; then',
+  'if [ "$(cat .env.opsdeck-rel 2>/dev/null)" = {{ od.env_rel | default(od.rel) | quote }} ]; then',
   '  if [ -f .env.opsdeck-prev ]; then mv -f .env.opsdeck-prev .env',
   '  elif [ -f .env.opsdeck-none ]; then rm -f .env',
   '  fi',
+  '  rm -f .env.opsdeck-rel .env.opsdeck-prev .env.opsdeck-none',
   '  echo "OD-ENV restored"',
   'else',
-  '  echo "OD-ENV skipped: .env was not written by this release"',
+  '  echo "OD-ENV skipped: .env was not written by the release being rolled back"',
   'fi',
-  'rm -f .env.opsdeck-rel .env.opsdeck-prev .env.opsdeck-none',
 ].join('\n')
 
 function envTask(kind: 'env' | 'rb_env', d: PlanDeployment): Task {

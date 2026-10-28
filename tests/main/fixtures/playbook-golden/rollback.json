@@ -88,7 +88,7 @@
           {
             "name": "rb_env dep1",
             "ansible.builtin.shell": {
-              "cmd": "umask 077\nif [ \"$(cat .env.opsdeck-rel 2>/dev/null)\" = {{ od.rel | quote }} ]; then\n  if [ -f .env.opsdeck-prev ]; then mv -f .env.opsdeck-prev .env\n  elif [ -f .env.opsdeck-none ]; then rm -f .env\n  fi\n  echo \"OD-ENV restored\"\nelse\n  echo \"OD-ENV skipped: .env was not written by this release\"\nfi\nrm -f .env.opsdeck-rel .env.opsdeck-prev .env.opsdeck-none",
+              "cmd": "umask 077\nif [ \"$(cat .env.opsdeck-rel 2>/dev/null)\" = {{ od.env_rel | default(od.rel) | quote }} ]; then\n  if [ -f .env.opsdeck-prev ]; then mv -f .env.opsdeck-prev .env\n  elif [ -f .env.opsdeck-none ]; then rm -f .env\n  fi\n  rm -f .env.opsdeck-rel .env.opsdeck-prev .env.opsdeck-none\n  echo \"OD-ENV restored\"\nelse\n  echo \"OD-ENV skipped: .env was not written by the release being rolled back\"\nfi",
               "executable": "/bin/bash",
               "chdir": "{{ d.repo }}"
             },

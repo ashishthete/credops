@@ -23,6 +23,11 @@ export function hostOd(plan: DeployPlan, h: PlanHost, deps: PlanDeployment[]): R
     lock_b64: b64(lockJson(plan)),
   }
   for (const r of od.lock_repos as string[]) need(REPO_PATH.test(r), 'repo path')
+  if (plan.kind === 'rollback' && plan.rollbackOf !== undefined) {
+    // rb_env restores the .env the rolled-back release replaced: its id is what .env.opsdeck-rel holds
+    need(SAFE_IDENT.test(plan.rollbackOf), 'rolled-back release')
+    od.env_rel = plan.rollbackOf
+  }
   if (plan.version !== null) {
     need(VERSION.test(plan.version), 'version')
     od.version = plan.version

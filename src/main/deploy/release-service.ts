@@ -1123,7 +1123,7 @@ export class ReleaseService {
       live.known = holder.secrets?.known ?? []
       const previous = new Map(infos.map((i, n) => [i.run.id, eligible[n].previousCommit as string]))
       const docker = new Map<string, DockerMode>(Object.entries(src.preflight?.dockerModes ?? {}))
-      const plan = this.plan('rollback', live, infos, { version: null, holder, docker, backup: false, previous })
+      const plan = this.plan('rollback', live, infos, { version: null, holder, docker, backup: false, previous, rollbackOf: src.id })
       // An edit ran once: the rollback is always the generated one, and its notes say so.
       this.d.releases.setStatus(rb.rel.id, 'running', { playbook: generatePlaybook(plan), ...(src.playbookSource === 'edited' ? { releaseNotes: ROLLBACK_GENERATED_NOTE } : {}) })
       this.emitState(rb.rel.id)
@@ -1621,6 +1621,8 @@ export class ReleaseService {
       killBuilds?: { runId: string; repoPath: string }[]
       /** Operation only: what the runbook runs. */
       operation?: PlanOperation
+      /** Manual rollback only: the release it undoes. */
+      rollbackOf?: string
     },
   ): DeployPlan {
     const hosts = this.planHosts(live.environmentId, infos)
@@ -1666,6 +1668,7 @@ export class ReleaseService {
       prepare: kind === 'release' ? (o.prepare ?? null) : null,
       ...(kind === 'unlock' && o.killBuilds && o.killBuilds.length > 0 ? { killBuilds: o.killBuilds } : {}),
       ...(kind === 'operation' && o.operation ? { operation: o.operation } : {}),
+      ...(kind === 'rollback' && o.rollbackOf !== undefined ? { rollbackOf: o.rollbackOf } : {}),
     }
   }
 
