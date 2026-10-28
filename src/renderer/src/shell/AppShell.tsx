@@ -1,26 +1,17 @@
 import { motion } from 'framer-motion'
-import { useEffect, useRef } from 'react'
+import { Suspense, useEffect, useRef } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router'
 import { useHubCommands } from '../hub/commands'
 import { resetHub, startHubSync } from '../hub/store'
 import { useInventoryCommands } from '../inventory/commands'
 import { loadInventory } from '../inventory/store'
 import { useMapCommands } from '../map/commands'
-import { AuditPage } from '../pages/AuditPage'
-import { HubPage } from '../pages/hub/HubPage'
 import { HostsPage } from '../pages/hosts/HostsPage'
-import { MapPage } from '../pages/map/MapPage'
-import { OpsPage } from '../pages/ops/OpsPage'
-import { DeploymentsPage } from '../pages/deployments/DeploymentsPage'
-import { PlaybookLogsPage } from '../pages/deployments/PlaybookLogsPage'
-import { ReleasePage } from '../pages/deployments/ReleasePage'
 import { ProductsPage } from '../pages/products/ProductsPage'
-import { SettingsPage } from '../pages/settings/SettingsPage'
 import { KnownHostsDialog, closeKnownHosts, openKnownHosts } from '../pages/terminals/KnownHostsDialog'
 import { PromptHost } from '../pages/terminals/PromptHost'
 import { TerminalDeck } from '../pages/terminals/TerminalDeck'
-import { TunnelsPage } from '../pages/tunnels/TunnelsPage'
-import { resetVaultsCache, VaultsPage } from '../pages/vaults/VaultsPage'
+import { resetVaultsCache } from '../pages/vaults/cache'
 import { SETTINGS_PATH, useSettingsCommands } from '../settings/commands'
 import { resetOps, startOpsSync } from '../ops/runs'
 import { resetReleases, startReleaseSync } from '../deploy/releases'
@@ -39,6 +30,7 @@ import { resetKept } from '../ui/kept'
 import { fast, useMotionSafe } from '../ui/motion'
 import { useShortcut } from '../ui/shortcuts'
 import { SECTIONS, sectionShortcut } from './sections'
+import { AuditPage, DeploymentsPage, HubPage, MapPage, OpsPage, PlaybookLogsPage, preloadPages, ReleasePage, SettingsPage, TunnelsPage, VaultsPage } from './pages'
 import { Sidebar } from './Sidebar'
 import { useAccountCommands } from '../vault/account'
 import { SignInBanner } from '../vault/SignInBanner'
@@ -60,6 +52,7 @@ export function AppShell() {
   useEffect(() => {
     void loadInventory()
   }, [])
+  useEffect(() => preloadPages(), [])
   useEffect(
     () =>
       registerCommand({
@@ -122,26 +115,29 @@ export function AppShell() {
             animate={motionSafe ? { opacity: 1, y: 0 } : { opacity: 1 }}
             transition={fast}
           >
-            <Routes location={location}>
-              <Route path="/" element={<Navigate to={SECTIONS[0].path} replace />} />
-              <Route path="/deployments" element={<DeploymentsPage />} />
-              <Route path="/deployments/release/:id" element={<ReleasePage />} />
-              <Route path="/deployments/release/:id/logs" element={<PlaybookLogsPage />} />
-              <Route path="/products" element={<ProductsPage />} />
-              {/* The deck below draws this page; it stays mounted so terminals survive navigation. */}
-              <Route path="/terminals" element={null} />
-              <Route path="/hosts" element={<HostsPage />} />
-              <Route path="/environments" element={<Navigate to="/products" replace />} />
-              <Route path="/vaults" element={<VaultsPage />} />
-              <Route path="/tunnels" element={<TunnelsPage />} />
-              <Route path="/map" element={<MapPage />} />
-              <Route path="/ops" element={<Navigate to="/ops/run" replace />} />
-              <Route path="/ops/:tab" element={<OpsPage />} />
-              <Route path="/hub" element={<HubPage />} />
-              <Route path="/audit" element={<AuditPage />} />
-              <Route path={SETTINGS_PATH} element={<SettingsPage />} />
-              <Route path="*" element={<Navigate to={SECTIONS[0].path} replace />} />
-            </Routes>
+            {/* A lazy page still loading shows nothing; the enter transition covers the wait. */}
+            <Suspense fallback={null}>
+              <Routes location={location}>
+                <Route path="/" element={<Navigate to={SECTIONS[0].path} replace />} />
+                <Route path="/deployments" element={<DeploymentsPage />} />
+                <Route path="/deployments/release/:id" element={<ReleasePage />} />
+                <Route path="/deployments/release/:id/logs" element={<PlaybookLogsPage />} />
+                <Route path="/products" element={<ProductsPage />} />
+                {/* The deck below draws this page; it stays mounted so terminals survive navigation. */}
+                <Route path="/terminals" element={null} />
+                <Route path="/hosts" element={<HostsPage />} />
+                <Route path="/environments" element={<Navigate to="/products" replace />} />
+                <Route path="/vaults" element={<VaultsPage />} />
+                <Route path="/tunnels" element={<TunnelsPage />} />
+                <Route path="/map" element={<MapPage />} />
+                <Route path="/ops" element={<Navigate to="/ops/run" replace />} />
+                <Route path="/ops/:tab" element={<OpsPage />} />
+                <Route path="/hub" element={<HubPage />} />
+                <Route path="/audit" element={<AuditPage />} />
+                <Route path={SETTINGS_PATH} element={<SettingsPage />} />
+                <Route path="*" element={<Navigate to={SECTIONS[0].path} replace />} />
+              </Routes>
+            </Suspense>
           </motion.div>
           <TerminalDeck visible={location.pathname === '/terminals'} />
         </div>
