@@ -3,6 +3,7 @@ import {
   type CommitInfo,
   DISK_WARN_KB,
   LOCK_STALE_MS,
+  LOCK_STALE_NOTE,
   type LockHolder,
   MAX_COMMITS,
   MAX_LOG_LINE,
@@ -1081,7 +1082,7 @@ export function parsePreflight(plan: DeployPlan, stdoutByRun: Record<string, str
       const stale = Number.isFinite(at) && o.now - at > LOCK_STALE_MS
       const safe: LockHolder = { ...holder, releaseId: red(holder.releaseId), user: red(holder.user), machine: red(holder.machine), environment: red(holder.environment), version: holder.version === null ? null : red(holder.version) }
       locks[h.hostId] = { holder: safe, stale, raw: rawText }
-      add('block', `${red(lockHolderText(holder, o.now))}${stale ? ' (older than 2 hours; it may be stale and can be broken)' : ''}`)
+      add('block', `${red(lockHolderText(holder, o.now))}${stale ? LOCK_STALE_NOTE : ''}`)
     }
   }
 

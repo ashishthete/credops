@@ -251,14 +251,17 @@ export function DeployWizard({
       let changed = false
       const ok = await attempt(
         "Couldn't start the release",
-        () =>
-          api.invoke('release:start', releaseId, {
+        // release:start answers nothing, so success is marked here: undefined is attempt's failure.
+        async () => (
+          await api.invoke('release:start', releaseId, {
             ...(typedName !== undefined ? { typedName } : {}),
             redeploy,
             playbookSha256: sha256,
             ...(edit ? { editedPlaybook: edit.text } : {}),
             ...(forced.size ? { forceServiceIds: [...forced] } : {}),
           }),
+          true
+        ),
         (message) => {
           changed = message.includes(PLAYBOOK_CHANGED_MESSAGE) || message.includes(REVIEW_EXPIRED_MESSAGE)
           setError(message)
@@ -305,7 +308,7 @@ export function DeployWizard({
       confirmLabel: 'Break lock',
       typeToConfirm: label,
       run: async () => {
-        const ok = await attempt("Couldn't break the lock", () => api.invoke('release:break-lock', releaseId, hostId, { typedLabel: label }))
+        const ok = await attempt("Couldn't break the lock", async () => (await api.invoke('release:break-lock', releaseId, hostId, { typedLabel: label }), true))
         if (ok !== undefined) void runPreflight()
       },
     })

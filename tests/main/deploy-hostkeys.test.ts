@@ -56,7 +56,8 @@ async function fixture(resolve: PrepareDeps['resolve'], identities: PrepareDeps[
   await f.vault.setup({ password: 'correct horse', touchId: true })
   const dir = mkdtempSync(join(tmpdir(), 'od-kh-'))
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
-  const knownHosts = new KnownHostStore(f.db, f.vault, f.audit, { knownHostsPath: join(dir, 'known_hosts') })
+  const knownHostsPath = join(dir, 'known_hosts')
+  const knownHosts = new KnownHostStore(f.db, f.vault, f.audit, { knownHostsPath })
   const raised: SessionPrompt[] = []
   let broker!: PromptBroker
   broker = new PromptBroker({
@@ -83,7 +84,7 @@ async function fixture(resolve: PrepareDeps['resolve'], identities: PrepareDeps[
     signal: new AbortController().signal,
     timeoutMs: 2000,
   }
-  return { deps, raised, connect, knownHosts }
+  return { deps, raised, connect, knownHosts, knownHostsPath }
 }
 
 describe('prepareHosts', () => {
@@ -106,6 +107,31 @@ describe('prepareHosts', () => {
     cleanups.push(() => again.close())
     expect(raised).toHaveLength(1)
     expect(again.knownHosts).toHaveLength(1)
+  })
+
+  it('a changed host key blocks with both fingerprints and how to drop the old key', async () => {
+    const old = await server()
+    const s = await server()
+    const token = hostToken('127.0.0.1', s.port)
+    const { deps, raised, knownHosts, knownHostsPath } = await fixture(resolved(s.port))
+    const oldFp = (await knownHosts.check('127.0.0.1', old.port, old.hostKeyType, old.hostKeyBase64)).info.fingerprint
+    const newFp = (await knownHosts.check('127.0.0.1', s.port, s.hostKeyType, s.hostKeyBase64)).info.fingerprint
+    // the server was rebuilt: ~/.ssh/known_hosts still holds the key it had (line 2)
+    writeFileSync(knownHostsPath, `other.example ${old.hostKeyType} ${old.hostKeyBase64}\n${token} ${old.hostKeyType} ${old.hostKeyBase64}\n`)
+    const prepared = await prepareHosts(planFor([{ hostId: HOST_ID, label: 'web' }], s.port), deps)
+    expect(raised).toHaveLength(0)
+    expect(prepared.checks).toHaveLength(1)
+    const message = prepared.checks[0].message
+    expect(message).toContain(`Expected ${oldFp}, got ${newFp}.`)
+    expect(message).toContain(`remove the old key from ~/.ssh/known_hosts (line 2) with: ssh-keygen -R '${token}', then run preflight again.`)
+    expect(message).not.toContain('Known hosts')
+
+    // the app's own pin instead: it is removed in the app
+    writeFileSync(knownHostsPath, '')
+    knownHosts.trust('127.0.0.1', s.port, old.hostKeyType, old.hostKeyBase64)
+    const pinned = await prepareHosts(planFor([{ hostId: HOST_ID, label: 'web' }], s.port), deps)
+    expect(pinned.checks[0].message).toContain('remove the pinned key under Known hosts, then run preflight again.')
+    expect(pinned.checks[0].message).not.toContain('ssh-keygen')
   })
 
   it('password identity is rejected with the §9a message before dialling', async () => {

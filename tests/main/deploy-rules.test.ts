@@ -112,7 +112,14 @@ describe('misc', () => {
         { releaseId: 'r', user: 'ana', machine: 'mbp', environment: 'prod', version: 'v1.5.0', startedAt: '2026-10-19T10:00:00.000Z' },
         Date.parse('2026-10-19T10:05:00.000Z'),
       ),
-    ).toBe('ana@mbp is deploying v1.5.0 since 2026-10-19T10:00:00.000Z')
+    ).toBe('ana@mbp is deploying v1.5.0, started 5 minutes ago')
+    const h = { releaseId: 'r', user: 'ana', machine: 'mbp', environment: 'prod', version: null, startedAt: '2026-10-19T10:00:00.000Z' }
+    const at = (iso: string) => lockHolderText(h, Date.parse(iso))
+    expect(at('2026-10-19T10:00:30.000Z')).toBe('ana@mbp is deploying release, started just now')
+    expect(at('2026-10-19T10:01:00.000Z')).toBe('ana@mbp is deploying release, started 1 minute ago')
+    expect(at('2026-10-19T11:59:00.000Z')).toBe('ana@mbp is deploying release, started 1 hour ago')
+    expect(at('2026-10-21T09:00:00.000Z')).toBe('ana@mbp is deploying release, started 47 hours ago')
+    expect(at('2026-10-22T10:00:00.000Z')).toBe('ana@mbp is deploying release, started 3 days ago')
   })
   it('lockHolderText says "release" without a version', () => {
     const h = { releaseId: 'r', user: 'ana', machine: 'mbp', environment: 'prod', version: null, startedAt: 'T' }

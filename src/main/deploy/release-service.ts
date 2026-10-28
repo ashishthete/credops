@@ -22,6 +22,10 @@ import {
   PREPARE_FETCH_FAILED_MESSAGE,
   type PrepareCheckout,
   type PrepareOthers,
+  type PrepareShared,
+  LOCK_FINISHED_NOTE,
+  LOCK_LEFT_MESSAGE,
+  lockHolderText,
   REVIEW_EXPIRED_MESSAGE,
   REVIEW_TTL_MS,
   stepBound,
@@ -158,6 +162,8 @@ interface Live {
   cancelRequested: boolean
   /** Set by a vault reset: no playbook but the deploy-lock release runs again. */
   vaultReset: boolean
+  /** The deploy-lock release at the end failed: the lock may still be on the hosts, and the release says so. */
+  lockLeft: boolean
   done: Promise<void>
   runStatus: Map<string, DeploymentRunStatus>
   checkedOut: Set<string>
@@ -200,6 +206,8 @@ interface Info {
 }
 
 const SHA = /^[0-9a-f]{40}$/
+/** Releases that ran and ended: any deploy lock one of them left on a host is no longer held. */
+const FINISHED: ReadonlySet<ReleaseStatus> = new Set(['succeeded', 'failed', 'rolled_back', 'cancelled'])
 const EMPTY: RunSecrets = { values: {}, known: [] }
 export { NOTHING_SELECTED_MESSAGE, PLAYBOOK_CHANGED_MESSAGE, STEP_SECRET_UNUSED_MESSAGE }
 /** What a start skips: the unchanged services left out, and each run's selection after them (null: the whole run). */
@@ -467,8 +475,9 @@ export class ReleaseService {
       const checks: PreflightCheck[] = this.sharedRepoChecks(live.environmentId, infos)
       if (err !== null) checks.push(this.block('ansible', err))
       else checks.push({ id: 'ansible', deploymentId: null, hostId: '', label: 'ansible', level: 'ok', message: 'ansible-playbook is available' })
-      if (out?.preflight)
-        report = { releaseId: id, ...out.preflight, checks: [...checks, ...out.preflight.checks], serviceCommits: serviceCommits(infos, out.preflight.commits, this.d.services.list(live.environmentId), stepBound(this.d.deploys.settings(live.environmentId).flow)) }
+      const found = out?.preflight ? this.finishedLocks(out.preflight) : null
+      if (found)
+        report = { releaseId: id, ...found, checks: [...checks, ...found.checks], serviceCommits: serviceCommits(infos, found.commits, this.d.services.list(live.environmentId), stepBound(this.d.deploys.settings(live.environmentId).flow)) }
       else {
         if (err === null) checks.push(this.block('tools', 'Preflight did not finish; see the log'))
         report = { releaseId: id, checks, commits: {}, dockerModes: {}, composeServices: {}, serviceCommits: {}, locks: {}, commitsTotal: 0, blocked: true }
@@ -1165,6 +1174,28 @@ export class ReleaseService {
 
   // ---- locks ----
 
+  /**
+   * Marks breakable the locks a release of this app left once it finished (not running here, and ended): nothing
+   * holds them, so they need not wait out LOCK_STALE_MS. Their preflight block says so.
+   */
+  private finishedLocks<T extends Pick<PreflightReport, 'checks' | 'locks'>>(report: T): T {
+    let { checks, locks } = report
+    for (const [hostId, lock] of Object.entries(report.locks)) {
+      if (!lock || lock.stale || this.live.has(lock.holder.releaseId)) continue
+      let status: ReleaseStatus | null = null
+      try {
+        status = this.d.releases.get(lock.holder.releaseId).status
+      } catch {
+        // another machine's release, or a lock with no release id
+      }
+      if (status === null || !FINISHED.has(status)) continue
+      locks = { ...locks, [hostId]: { ...lock, stale: true } }
+      const message = `${lockHolderText(lock.holder, this.d.now().getTime())}${LOCK_FINISHED_NOTE}`
+      checks = checks.map((c) => (c.id === 'lock' && c.hostId === hostId && c.level === 'block' ? { ...c, message } : c))
+    }
+    return { ...report, checks, locks }
+  }
+
   async breakLock(releaseId: string, hostId: string, confirm: BreakLockConfirm, ctx?: CallCtx): Promise<void> {
     const actor = ctx?.actor ?? this.d.actor
     this.d.vault.assertUnlocked()
@@ -1196,11 +1227,11 @@ export class ReleaseService {
       try {
         const pre = this.plan('preflight', live, infos, { version: null, holder, docker: new Map() })
         const b = await this.exec(live, pre, holder.secrets ?? EMPTY)
-        const fresh = b.out?.preflight
+        const fresh = b.out?.preflight ? this.finishedLocks(b.out.preflight) : undefined
         if (!fresh) throw new DeployError('INVALID_STATE', this.reason(live, b.out, b.err, 'Re-checking the lock'))
         const report: PreflightReport = rel.preflight as PreflightReport
-        const mine = new Set(infos.map((i) => i.dep.id))
-        const kept = report.checks.filter((c) => !(c.id === 'lock' && c.deploymentId !== null && mine.has(c.deploymentId)))
+        // lock checks are the host's (deploymentId null in preflight's report): the fresh ones replace them
+        const kept = report.checks.filter((c) => !(c.id === 'lock' && c.hostId === hostId))
         const checks = [...kept, ...fresh.checks.filter((c) => c.id === 'lock')]
         const next: PreflightReport = { ...report, checks, locks: { ...report.locks, [hostId]: fresh.locks[hostId] ?? null }, blocked: checks.some((c) => c.level === 'block') }
         this.push(releaseId, { type: 'preflight.done', report: next })
@@ -1442,6 +1473,7 @@ export class ReleaseService {
     try {
       await this.unlock(live, infos, holder)
     } catch (e) {
+      live.lockLeft = true
       this.push(live.id, { type: 'log', stepId: null, hostId: null, stream: 'ansible', line: this.red(live, `Unlock failed: ${e instanceof Error ? e.message : String(e)}`) })
     }
   }
@@ -1462,6 +1494,7 @@ export class ReleaseService {
     if (infos.length === 0) return
     const res = await this.exec(live, this.plan('unlock', live, infos, { version: null, holder: null, docker: new Map(), killBuilds: live.killBuilds }), EMPTY)
     if (res.err !== null || !res.out || this.failed(res.out)) {
+      live.lockLeft = true
       this.push(live.id, { type: 'log', stepId: null, hostId: null, stream: 'err', line: this.red(live, `Could not release the deploy lock: ${res.err ?? 'see the log'}`) })
     }
   }
@@ -1484,20 +1517,27 @@ export class ReleaseService {
     const run = live.failedStep?.split(':')[0]
     const info = infos.find((i) => i.run.id === run)
     if (!info) return null
-    const names = info.sel.services.map((x) => x.name)
-    const svc = names.length > 0 ? names.join(', ') : info.dep.name
+    const nameOf = (i: Info): string => (i.sel.services.length > 0 ? i.sel.services.map((x) => x.name).join(', ') : i.dep.name)
+    const svc = nameOf(info)
     const checkedOut = new Set([...(out?.reachedCheckout ?? []), ...live.checkedOut])
     const stateOf = (i: Info, kind: StepKind) => this.stepsOf(i.run.id).find((s) => s.kind === kind)?.state
     // a managed .env this release wrote
     const wroteEnv = (i: Info): boolean => i.dep.managedEnv && stateOf(i, 'env') === 'ok'
+    // builds that finished: their images already replaced the old ones under the same tags
+    const built = infos.filter((i) => stateOf(i, 'build') === 'ok').map(nameOf)
+    const restored = checkedOut.has(info.run.id) && stateOf(info, 'restore') === 'ok'
+    // a restore checks out the repo's tree, so checkouts sharing it on this host went back with it
+    const sharing = (i: Info): boolean => restored && i.dep.hostId === info.dep.hostId && i.dep.repoPath === info.dep.repoPath
+    const back = infos.filter((i) => i !== info && checkedOut.has(i.run.id) && sharing(i))
+    const shared: PrepareShared = back.length > 0 ? { names: back.map(nameOf), env: back.some(wroteEnv) } : null
     // other checkouts that are still at the new commit: they checked out and no restore put them back
-    const left = infos.filter((i) => i !== info && checkedOut.has(i.run.id) && stateOf(i, 'restore') !== 'ok')
+    const left = infos.filter((i) => i !== info && checkedOut.has(i.run.id) && !sharing(i) && stateOf(i, 'restore') !== 'ok')
     const others: PrepareOthers = left.length > 0 ? { env: left.some(wroteEnv) } : null
     // before its checkout the failed one's server is still on the old commit
-    if (!checkedOut.has(info.run.id)) return PREPARE_FETCH_FAILED_MESSAGE(svc, others)
+    if (!checkedOut.has(info.run.id)) return PREPARE_FETCH_FAILED_MESSAGE(svc, others, built)
     const restore = stateOf(info, 'restore')
     const checkout: PrepareCheckout = restore === 'ok' ? 'restored' : restore === 'warn' ? 'first' : restore === 'failed' ? 'failed' : 'left'
-    return PREPARE_FAILED_MESSAGE(svc, { checkout, env: wroteEnv(info), others })
+    return PREPARE_FAILED_MESSAGE(svc, { checkout, env: wroteEnv(info), others, shared, built })
   }
 
   /** The runs a rollback undoes: those that reached checkout, or with a parallel prepare only those that reached up. */
@@ -1528,6 +1568,7 @@ export class ReleaseService {
       /* the release row is the source of truth; a sweep failure must not block the final status */
     }
     const finished = status === 'succeeded' || status === 'failed' || status === 'rolled_back' || status === 'cancelled' ? status : 'failed'
+    if (live.lockLeft) error = error === null ? LOCK_LEFT_MESSAGE : `${error}. ${LOCK_LEFT_MESSAGE}`
     const safe = error === null ? null : this.red(live, error)
     this.push(id, { type: 'run.finished', status: finished, ...(safe !== null ? { error: safe } : {}) })
     this.flush()
@@ -1913,6 +1954,7 @@ export class ReleaseService {
       runId: null,
       cancelRequested: false,
       vaultReset: false,
+      lockLeft: false,
       done: Promise.resolve(),
       runStatus: new Map(),
       checkedOut: new Set(),

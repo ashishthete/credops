@@ -8,7 +8,7 @@ import type { DeployPlan } from '../../src/main/deploy/runner'
 import { generatePlaybook } from '../../src/main/deploy/generate'
 import { ToolingError } from '../../src/main/deploy/tooling'
 import { CONFIRM_MESSAGE } from '../../src/shared/ops'
-import { BREAK_LOCK_CONFIRM_MESSAGE, DEFAULT_RELEASE_OPTIONS, PREPARE_FAILED_MESSAGE, PREPARE_FETCH_FAILED_MESSAGE, type CommitInfo, type DeploymentMeta, type PreflightCheck, type RunEvent, type StepKind } from '../../src/shared/deploy'
+import { BREAK_LOCK_CONFIRM_MESSAGE, DEFAULT_RELEASE_OPTIONS, LOCK_FINISHED_NOTE, LOCK_LEFT_MESSAGE, PREPARE_FAILED_MESSAGE, PREPARE_FETCH_FAILED_MESSAGE, type CommitInfo, type DeploymentMeta, type PreflightCheck, type RunEvent, type StepKind } from '../../src/shared/deploy'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import type { AppServiceMeta } from '../../src/shared/services'
 import { A, B, C, NOW, SECRET, dep, opReady, ready, rig, runbook, tracked, type Rig } from './release-rig'
@@ -361,7 +361,7 @@ describe('ReleaseService', () => {
     expect(r.runner.cancels).toHaveLength(1)
     expect(r.runner.kinds).toEqual(['preflight', 'release', 'rollback', 'unlock'])
     expect(atUnlock).toEqual({})
-    expect(r.svc.detail(id)).toMatchObject({ status: 'cancelled', error: RESET_CUT_ROLLBACK })
+    expect(r.svc.detail(id)).toMatchObject({ status: 'cancelled', error: `${RESET_CUT_ROLLBACK}. ${LOCK_LEFT_MESSAGE}` })
     expect(r.svc.hasActive()).toBe(false)
     const lines = r.svc.events(id, 0).flatMap((e) => (e.type === 'log' ? [e.line] : []))
     expect(lines).toContain(`Could not release the deploy lock: ssh: permission denied near ${REDACTED}`)
@@ -536,6 +536,19 @@ describe('ReleaseService', () => {
     await r2.svc.start(id2, {})
     await r2.svc.whenIdle()
     expect(order).toEqual([])
+  })
+
+  it('a deploy-lock release that fails at the end says the lock may still be on the hosts', async () => {
+    const r = await rig()
+    const id = await ready(r)
+    r.runner.on.unlock = () => {
+      throw new Error("Couldn't read the credentials for app1: vault locked")
+    }
+    await r.svc.start(id, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id)).toMatchObject({ status: 'succeeded', error: LOCK_LEFT_MESSAGE })
+    const finished = r.svc.events(id, 0).find((e) => e.type === 'run.finished')
+    expect(finished).toMatchObject({ status: 'succeeded', error: LOCK_LEFT_MESSAGE })
   })
 
   it('cancel and a vault lock abort a slow finalize; the run stays succeeded', async () => {
@@ -745,6 +758,36 @@ describe('ReleaseService', () => {
     await expect(r.svc.start(b, {})).rejects.toThrow('The version changed since preflight; run preflight again')
     expect(r.f.deploys.settings(r.f.staging.id).currentVersion).toBe('v2.0.0')
     expect(r.svc.detail(b).status).toBe('ready')
+  })
+
+  it("a lock a finished release of this app left can be broken at once, and preflight says so", async () => {
+    const r = await rig()
+    const done = await ready(r)
+    await r.svc.start(done, {})
+    await r.svc.whenIdle()
+    expect(r.svc.detail(done).status).toBe('succeeded')
+    const holder = (releaseId: string) => ({ releaseId, user: 'ana', machine: 'mbp', environment: 'staging', version: null, startedAt: new Date(NOW - 12 * 60000).toISOString() })
+    const first = r.f.deploys.list(r.f.staging.id)[0]
+    r.runner.checks = [{ id: 'lock', deploymentId: null, hostId: r.f.host.id, label: 'app1', level: 'block', message: 'ana@mbp is deploying release, started 12 minutes ago' }]
+    r.runner.locks = { [r.f.host.id]: { holder: holder(done), stale: false, raw: 'raw-left' } }
+    const id = await ready(r, [first])
+    const d = r.svc.detail(id)
+    expect(d.preflight?.locks[r.f.host.id]?.stale).toBe(true)
+    expect(d.preflight?.checks.find((c) => c.id === 'lock')?.message).toBe(`ana@mbp is deploying release, started 12 minutes ago${LOCK_FINISHED_NOTE}`)
+    r.runner.locks = {}
+    r.runner.checks = []
+    await r.svc.breakLock(id, r.f.host.id, { typedLabel: 'app1' })
+    expect(r.runner.call('break-lock').lock.expectRaw).toEqual({ [r.f.host.id]: 'raw-left' })
+    expect(r.svc.detail(id).status).toBe('ready')
+
+    // a release this app does not know, or one it does not know as ended, still waits out the two hours
+    for (const other of ['someone-elses', id]) {
+      r.runner.checks = [{ id: 'lock', deploymentId: null, hostId: r.f.host.id, label: 'app1', level: 'block', message: 'locked' }]
+      r.runner.locks = { [r.f.host.id]: { holder: holder(other), stale: false, raw: 'raw' } }
+      const again = await ready(r, [first])
+      expect(r.svc.detail(again).preflight?.locks[r.f.host.id]?.stale).toBe(false)
+      await expect(r.svc.breakLock(again, r.f.host.id, { typedLabel: 'app1' })).rejects.toThrow('The lock is only 12 minutes old')
+    }
   })
 
   it('a release that is in flight rejects start, discard, break-lock, retry and rollback', async () => {
@@ -1687,11 +1730,12 @@ describe('parallel prepare', () => {
   })
 
   /** A prepare where `two`'s build fails after its checkout, and its restore step ends as given. */
-  const failedPrepare = async (o: { restore: 'ok' | 'first' | 'failed'; env?: boolean; alone?: boolean }) => {
+  const failedPrepare = async (o: { restore: 'ok' | 'first' | 'failed'; env?: boolean; alone?: boolean; shared?: boolean; oneBuilt?: boolean }) => {
     const r = await rig()
     on(r)
     const envOpts = { managedEnv: true, vaultIds: [DEFAULT_VAULT_ID], envTemplate: `TOKEN=\${secret:${r.f.secretId}}` }
-    const deps = o.alone ? [dep(r, 'two', o.env ? envOpts : {})] : [dep(r, 'one'), dep(r, 'two', o.env ? envOpts : {})]
+    const twoOpts = { ...(o.env ? envOpts : {}), ...(o.shared ? { repoPath: '/srv/one' } : {}) }
+    const deps = o.alone ? [dep(r, 'two', twoOpts)] : [dep(r, 'one'), dep(r, 'two', twoOpts)]
     const id = await ready(r, deps)
     r.runner.on.release = (plan, _s, emit) => {
       const ids = runIds(plan)
@@ -1701,6 +1745,10 @@ describe('parallel prepare', () => {
         emit({ type: 'step.started', stepId: `${r2}:${key}`, kind, name: `${key} two`, hostId: host, deploymentRunId: r2 })
         if (end === 'failed') emit({ type: 'step.failed', stepId: `${r2}:${key}`, error: message ?? `${key} failed`, durationMs: 1 })
         else emit({ type: 'step.done', stepId: `${r2}:${key}`, state: end, durationMs: 1, ...(message ? { message } : {}) })
+      }
+      if (o.oneBuilt) {
+        emit({ type: 'step.started', stepId: `${ids[0]}:build`, kind: 'build', name: 'build one', hostId: host, deploymentRunId: ids[0] })
+        emit({ type: 'step.done', stepId: `${ids[0]}:build`, state: 'ok', durationMs: 1 })
       }
       step('checkout', 'checkout', 'ok')
       if (o.env) step('env', 'env', 'ok')
@@ -1712,8 +1760,24 @@ describe('parallel prepare', () => {
     }
     await r.svc.start(id, {})
     await r.svc.whenIdle()
-    return { error: r.svc.detail(id).error ?? '', svc: tracked(r, deps.at(-1)!).map((s) => s.name).join(', ') }
+    const name = (d: DeploymentMeta) => tracked(r, d).map((s) => s.name).join(', ')
+    return { error: r.svc.detail(id).error ?? '', svc: name(deps.at(-1)!), one: name(deps[0]) }
   }
+
+  it('a restore of a checkout another shares says that one is back on the previous commit too', async () => {
+    const { error, svc, one } = await failedPrepare({ restore: 'ok', shared: true })
+    expect(error).toBe(
+      `Build failed for ${svc}: no service was restarted; the checkout is back on the previous commit; ${one} shares that checkout, so it is back on the previous commit too; running containers are unchanged.`,
+    )
+    // a restore that did not run leaves the shared checkout where the release put it
+    const left = await failedPrepare({ restore: 'failed', shared: true })
+    expect(left.error).toContain('; other checkouts are left at the new commit;')
+  })
+
+  it('a build that finished before another failed says the next compose up starts its new images', async () => {
+    const { error, one } = await failedPrepare({ restore: 'ok', oneBuilt: true })
+    expect(error).toMatch(new RegExp(`; running containers are unchanged, but the next compose up of ${one} starts the newly built images\\.$`))
+  })
 
   it('a build that fails in prepare puts its checkout back on the previous commit and says so', async () => {
     const { error, svc } = await failedPrepare({ restore: 'ok' })

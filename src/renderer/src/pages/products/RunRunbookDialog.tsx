@@ -87,7 +87,8 @@ export function RunRunbookDialog({ runbook, onClose }: { runbook: Runbook; onClo
     let changed = false
     const ok = await attempt(
       "Couldn't start the run",
-      () => api.invoke('release:start', id, { ...(typedName !== undefined ? { typedName } : {}), playbookSha256: edit?.sha256 ?? reviewed.sha256, ...(edit ? { editedPlaybook: edit.text } : {}) }),
+      // release:start answers nothing, so success is marked here: undefined is attempt's failure.
+      async () => (await api.invoke('release:start', id, { ...(typedName !== undefined ? { typedName } : {}), playbookSha256: edit?.sha256 ?? reviewed.sha256, ...(edit ? { editedPlaybook: edit.text } : {}) }), true),
       (message) => {
         changed = message.includes(PLAYBOOK_CHANGED_MESSAGE)
         setError(message)

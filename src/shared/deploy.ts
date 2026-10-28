@@ -401,9 +401,25 @@ export interface LockHolder {
   startedAt: string
 }
 
-export function lockHolderText(h: LockHolder, _now: number): string {
-  return `${h.user}@${h.machine} is deploying ${h.version ?? 'release'} since ${h.startedAt}`
+/** How long ago a lock was taken, in the largest whole unit: "just now", "5 minutes ago", "3 hours ago", "2 days ago". */
+function ago(ms: number): string {
+  const n = (v: number, unit: string): string => `${v} ${unit}${v === 1 ? '' : 's'} ago`
+  const m = Math.floor(ms / 60_000)
+  if (m < 1) return 'just now'
+  if (m < 60) return n(m, 'minute')
+  const h = Math.floor(m / 60)
+  return h < 48 ? n(h, 'hour') : n(Math.floor(h / 24), 'day')
 }
+
+export function lockHolderText(h: LockHolder, now: number): string {
+  const at = Date.parse(h.startedAt)
+  const when = Number.isFinite(at) ? `, started ${ago(now - at)}` : ` since ${h.startedAt}`
+  return `${h.user}@${h.machine} is deploying ${h.version ?? 'release'}${when}`
+}
+/** Added to a lock's preflight block when it is older than LOCK_STALE_MS. */
+export const LOCK_STALE_NOTE = ' (older than 2 hours; it may be stale and can be broken)'
+/** Added instead when a release of this app that has finished left the lock: nothing holds it any more. */
+export const LOCK_FINISHED_NOTE = ' (left by a release that has finished; it can be broken)'
 
 // ---- Preflight ----
 export interface PreflightCheck {
@@ -641,12 +657,29 @@ export const PLAYBOOK_NOT_STORED_MESSAGE = 'Playbook not stored for this release
 export type PrepareCheckout = 'restored' | 'first' | 'failed' | 'left'
 /** Checkouts other than the failed one still at the new commit; `env` when one of them wrote its managed .env. Null: none. */
 export type PrepareOthers = { env: boolean } | null
+/**
+ * Checkouts that share the failed one's repo on its host, so its restore put them back on the previous commit too;
+ * `names` their services, `env` when one of them wrote its managed .env (which the restore leaves). Null: none.
+ */
+export type PrepareShared = { names: string[]; env: boolean } | null
 const othersLeft = (o: PrepareOthers): string => (o ? `; other checkouts are left at the new commit${o.env ? ' with the new .env' : ''}` : '')
+const sharedBack = (o: PrepareShared): string => {
+  if (!o || o.names.length === 0) return ''
+  const one = o.names.length === 1
+  return `; ${o.names.join(', ')} ${one ? 'shares' : 'share'} that checkout, so ${one ? 'it is' : 'they are'} back on the previous commit too${o.env ? ' with the new .env' : ''}`
+}
+/** Built images replace the old ones under their tags at once: the containers keep running, the next compose up starts the new. */
+const containers = (built: readonly string[]): string =>
+  built.length > 0 ? `running containers are unchanged, but the next compose up of ${built.join(', ')} starts the newly built images` : 'running containers are unchanged'
 /**
  * A parallel prepare that failed at or after its checkout, before any service went up. `env`: the failed checkout has
- * a managed .env and this release wrote it; with no managed .env none is mentioned.
+ * a managed .env and this release wrote it; with no managed .env none is mentioned. `built`: services whose build
+ * finished in this release.
  */
-export const PREPARE_FAILED_MESSAGE = (svc: string, o: { checkout: PrepareCheckout; env: boolean; others: PrepareOthers }): string => {
+export const PREPARE_FAILED_MESSAGE = (
+  svc: string,
+  o: { checkout: PrepareCheckout; env: boolean; others: PrepareOthers; shared?: PrepareShared; built?: readonly string[] },
+): string => {
   const envNew = o.env ? ' with the new .env' : ''
   const own: Record<PrepareCheckout, string> = {
     restored: `the checkout is back on the previous commit${o.env ? ' with the previous .env' : ''}`,
@@ -654,20 +687,22 @@ export const PREPARE_FAILED_MESSAGE = (svc: string, o: { checkout: PrepareChecko
     failed: `putting the checkout back on the previous commit failed, so it is still on the new commit${envNew}`,
     left: `the checkout is left at the new commit${envNew}`,
   }
-  return `Build failed for ${svc}: no service was restarted; ${own[o.checkout]}${othersLeft(o.others)}; running containers are unchanged.`
+  return `Build failed for ${svc}: no service was restarted; ${own[o.checkout]}${sharedBack(o.shared ?? null)}${othersLeft(o.others)}; ${containers(o.built ?? [])}.`
 }
 /**
  * A parallel prepare that failed before its checkout (the fetch, a step before it), before any service went up. When
  * other checkouts did check out (and were not put back), they are said to be at the new commit.
  */
-export const PREPARE_FETCH_FAILED_MESSAGE = (svc: string, others: PrepareOthers): string =>
+export const PREPARE_FETCH_FAILED_MESSAGE = (svc: string, others: PrepareOthers, built: readonly string[] = []): string =>
   others
-    ? `Fetch failed for ${svc}: no service was restarted; ${svc} is unchanged and still on the old commit${othersLeft(others)}; running containers are unchanged.`
+    ? `Fetch failed for ${svc}: no service was restarted; ${svc} is unchanged and still on the old commit${othersLeft(others)}; ${containers(built)}.`
     : `Fetch failed for ${svc}: no service was restarted; servers are unchanged and still on the old commit.`
 /** A prepare restore's note when the checkout had no previous commit to go back to. */
 export const RESTORE_FIRST_NOTE = 'First deploy: there is no previous commit to go back to'
 /** A release with skipped services fails before any change when origin's head is not the one its preflight saw. */
 export const ORIGIN_MOVED_MESSAGE = 'origin moved since preview, preview again'
+/** Added to a release's error when its deploy-lock release at the end failed. */
+export const LOCK_LEFT_MESSAGE = 'The deploy lock could not be removed from the hosts; the next preflight shows it'
 export const PLAYBOOK_CHANGED_MESSAGE = 'The playbook changed since you reviewed it. Review it again.'
 /** How long a reviewed playbook can be started from (main's `PREVIEW_TTL_MS`). */
 export const REVIEW_TTL_MS = 30 * 60_000
