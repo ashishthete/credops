@@ -608,6 +608,24 @@ describe('stale preflight releases', () => {
     expect(within(dialog).getByRole('button', { name: 'Close' })).toBeInTheDocument()
     expect(calls(invoke, 'release:discard')).toEqual([])
   })
+
+  it('Escape once preflight has run asks before discarding it; Keep editing stays on the preflight', async () => {
+    const { user, dialog, invoke, closed } = await mount({ preselect: ['s1'], persisted: events([{ type: 'preflight.done', report: report() }]) })
+    await preflight(user, dialog)
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Review playbook' })).toBeEnabled())
+    await user.keyboard('{Escape}')
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('Discard changes?')
+    expect(closed()).toBe(0)
+    expect(calls(invoke, 'release:discard')).toEqual([])
+    await user.click(within(dialog).getByRole('button', { name: 'Keep editing' }))
+    expect(within(dialog).getByRole('button', { name: 'Review playbook' })).toBeEnabled()
+    await user.click(within(dialog).getByRole('button', { name: 'Review playbook' }))
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Deploy' })).toBeEnabled())
+    await user.keyboard('{Escape}')
+    await user.click(within(dialog).getByRole('button', { name: 'Discard' }))
+    expect(closed()).toBe(1)
+    expect(calls(invoke, 'release:discard').map((c) => c[1])).toEqual([REL])
+  })
 })
 
 describe('skipped services', () => {

@@ -359,6 +359,9 @@ export function DeployWizard({
   const spread = regions.length > 1
   const summary = [`Deploying to ${env?.name ?? ''}`, plural(hosts, 'host'), plural(request.serviceIds.length, 'service'), ...(whole ? [plural(whole, 'whole checkout')] : [])].join(' · ')
 
+  // A preflight run (or under way) and the review are lost to a stray Esc or click outside, so those ask first.
+  const dirty = !!releaseId && (step === 'preflight' || step === 'review') && !starting
+
   const footer = {
     pick: (
       <>
@@ -408,7 +411,7 @@ export function DeployWizard({
 
   return (
     <>
-      <Dialog open onClose={close} width={680} title={`Deploy to ${env?.name ?? ''}`} footer={<div className="flex justify-end gap-2">{footer}</div>}>
+      <Dialog open onClose={close} dirty={dirty} width={680} title={`Deploy to ${env?.name ?? ''}`} footer={<div className="flex justify-end gap-2">{footer}</div>}>
         <div className="flex max-h-[60vh] min-w-0 flex-col gap-4 overflow-x-hidden overflow-y-auto">
           {step === 'pick' && (
             <>

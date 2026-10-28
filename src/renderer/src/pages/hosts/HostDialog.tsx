@@ -150,6 +150,22 @@ export function HostDialog({ open, host, presetEnvironment, presetRegionId, cont
   const parsedPort = parsePort(port)
   const addrError = addressError(address)
   const advCheck = checkAdvanced(adv)
+  // Anything typed that a close would lose; blank env rows don't count.
+  const envRows = (a: AdvancedState) => JSON.stringify(a.rows.filter((r) => r.name || r.value).map((r) => [r.name, r.value]))
+  const start = useMemo(() => advancedFrom(host), [host])
+  const dirty =
+    label !== (host?.label ?? '') ||
+    address !== (host?.address ?? '') ||
+    port !== (host?.port != null ? String(host.port) : '') ||
+    regionId !== (host?.regionId ?? '') ||
+    identityId !== (host?.identityId ?? '') ||
+    jumpId !== (host?.jumpHostId ?? '') ||
+    tags.join('\n') !== (host?.tags ?? []).join('\n') ||
+    osIcon !== (host?.osIcon ?? 'linux') ||
+    notes !== (host?.notes ?? '') ||
+    adv.keepalive !== start.keepalive ||
+    adv.seconds !== start.seconds ||
+    envRows(adv) !== envRows(start)
   const valid = label.trim().length > 0 && address.trim().length > 0 && !!region && !addrError && !parsedPort.error && advCheck.valid
 
   const submit = async (e: FormEvent) => {
@@ -185,6 +201,7 @@ export function HostDialog({ open, host, presetEnvironment, presetRegionId, cont
     <Dialog
       open={open}
       onClose={onClose}
+      dirty={dirty && !busy}
       title={host ? 'Edit host' : 'New host'}
       description={host ? undefined : 'A machine you connect to. Blank fields inherit from its environment.'}
       width={520}

@@ -1,5 +1,6 @@
 import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
-import { useEffect, useId, useLayoutEffect, useRef, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { Button } from './Button'
 import { exitFast, fast, spring, useMotionSafe, useShake } from './motion'
 
 export interface DialogProps {
@@ -21,12 +22,17 @@ export interface DialogProps {
    * PromptHost inside the gate.
    */
   layer?: 'prompt'
+  /**
+   * Unsaved input: Esc and a click outside ask "Discard changes?" inside the dialog instead of closing.
+   * The dialog's own buttons still call `onClose` straight away.
+   */
+  dirty?: boolean
 }
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
-/** Modal dialog: focus trap, Esc to close, focus handed back to the opener on close. */
+/** Modal dialog: focus trap, Esc to close (asking first when `dirty`), focus handed back to the opener on close. */
 export function Dialog(props: DialogProps) {
   const opener = useRef<Element | null>(null)
   const wasOpen = useRef(false)
@@ -58,6 +64,7 @@ function DialogPanel({
   shake = 0,
   width = 420,
   layer,
+  dirty = false,
   onFocusRefused,
 }: DialogProps & { onFocusRefused: (el: Element) => void }) {
   const motionSafe = useMotionSafe()
@@ -66,6 +73,23 @@ function DialogPanel({
   const panel = useRef<HTMLDivElement>(null)
   const shakeScope = useShake(shake)
   const present = useIsPresent()
+  const [asking, setAsking] = useState(false)
+  // Where focus was when the question came up; Keep editing hands it back.
+  const before = useRef<Element | null>(null)
+  // Saved or reverted meanwhile: nothing is left to discard.
+  if (asking && !dirty) setAsking(false)
+
+  const dismiss = () => {
+    if (!dirty) return onClose()
+    before.current = document.activeElement
+    setAsking(true)
+  }
+  const keep = () => {
+    setAsking(false)
+    const el = before.current
+    before.current = null
+    ;(el instanceof HTMLElement && el.isConnected ? el : panel.current)?.focus()
+  }
 
   useEffect(() => {
     const el = panel.current
@@ -93,7 +117,9 @@ function DialogPanel({
     if (e.key === 'Escape') {
       e.preventDefault()
       e.stopPropagation()
-      onClose()
+      // Esc answers the question the safe way.
+      if (asking) keep()
+      else dismiss()
     } else if (e.key === 'Tab' && panel.current) {
       const items = [...panel.current.querySelectorAll<HTMLElement>(FOCUSABLE)]
       if (!items.length) return e.preventDefault()
@@ -120,7 +146,7 @@ function DialogPanel({
       exit={{ opacity: 0, transition: exitFast }}
       transition={fast}
       onMouseDown={(e) => {
-        if (present && e.target === e.currentTarget) onClose()
+        if (present && e.target === e.currentTarget) dismiss()
       }}
     >
       <div ref={shakeScope} className="w-full" style={{ maxWidth: width }}>
@@ -152,8 +178,20 @@ function DialogPanel({
             )}
           </div>
           <div className="px-5 pt-4 pb-5">{children}</div>
-          {footer && (
-            <div className="flex items-center justify-end gap-2 border-t border-line bg-canvas/40 px-5 py-3">{footer}</div>
+          {asking ? (
+            <div role="alert" className="flex items-center justify-end gap-2 border-t border-line bg-warn/8 px-5 py-3">
+              <span className="mr-auto text-[12.5px] font-medium text-fg">Discard changes?</span>
+              <Button variant="ghost" size="sm" autoFocus onClick={keep}>
+                Keep editing
+              </Button>
+              <Button variant="danger" size="sm" onClick={onClose}>
+                Discard
+              </Button>
+            </div>
+          ) : (
+            footer && (
+              <div className="flex items-center justify-end gap-2 border-t border-line bg-canvas/40 px-5 py-3">{footer}</div>
+            )
           )}
         </motion.div>
       </div>

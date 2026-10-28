@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -56,6 +56,79 @@ describe('Dialog', () => {
     await user.keyboard('{Escape}')
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(opener).toHaveFocus()
+  })
+})
+
+/** A form that is dirty once its field holds text; `closed` counts the onClose calls. */
+function DirtyHarness({ onClose }: { onClose: () => void }) {
+  const [name, setName] = useState('')
+  return (
+    <Dialog open onClose={onClose} title="Rename vault" dirty={name !== ''} footer={<button type="button">Save</button>}>
+      <input aria-label="Name" value={name} onChange={(e) => setName(e.target.value)} />
+    </Dialog>
+  )
+}
+
+describe('Dialog with unsaved input', () => {
+  async function typed() {
+    const user = userEvent.setup()
+    const onClose = vi.fn()
+    render(<DirtyHarness onClose={onClose} />)
+    const dialog = screen.getByRole('dialog', { name: 'Rename vault' })
+    await user.type(screen.getByLabelText('Name'), 'ops')
+    return { user, onClose, dialog }
+  }
+
+  it('closes on Esc straight away while nothing is typed', async () => {
+    const user = userEvent.setup()
+    const onClose = vi.fn()
+    render(<DirtyHarness onClose={onClose} />)
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveFocus())
+    await user.keyboard('{Escape}')
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('Esc asks inside the dialog; Keep editing hands focus back to the field with the text kept', async () => {
+    const { user, onClose } = await typed()
+    await user.keyboard('{Escape}')
+    expect(onClose).not.toHaveBeenCalled()
+    expect(screen.getByRole('alert')).toHaveTextContent('Discard changes?')
+    // The question takes the footer's place, so Save can't be clicked past it.
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Keep editing' })).toHaveFocus()
+    await user.click(screen.getByRole('button', { name: 'Keep editing' }))
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByLabelText('Name')).toHaveFocus()
+    expect(screen.getByLabelText('Name')).toHaveValue('ops')
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('a second Esc keeps editing; Discard closes', async () => {
+    const { user, onClose } = await typed()
+    await user.keyboard('{Escape}')
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(onClose).not.toHaveBeenCalled()
+    await user.keyboard('{Escape}')
+    await user.click(screen.getByRole('button', { name: 'Discard' }))
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('a click outside asks too', async () => {
+    const { onClose, dialog } = await typed()
+    fireEvent.mouseDown(dialog.parentElement!.parentElement!)
+    expect(onClose).not.toHaveBeenCalled()
+    expect(screen.getByRole('alert')).toHaveTextContent('Discard changes?')
+  })
+
+  it('the question goes away once the input is clean again', async () => {
+    const { user, onClose } = await typed()
+    await user.keyboard('{Escape}')
+    await user.click(screen.getByRole('button', { name: 'Keep editing' }))
+    await user.clear(screen.getByLabelText('Name'))
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(onClose).toHaveBeenCalledTimes(1)
   })
 })
 

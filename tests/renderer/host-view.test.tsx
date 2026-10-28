@@ -789,6 +789,39 @@ describe('HostDialog', () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('host:update', 'web1', { port: 2201 }))
   })
 
+  it('Esc closes an untouched host straight away, and asks before losing an edit', async () => {
+    const user = userEvent.setup()
+    const data = world()
+    setup(data)
+    const onClose = vi.fn()
+    render(<HostDialog open host={data.hosts[0]} onClose={onClose} onSaved={noop} />)
+    const dialog = screen.getByRole('dialog', { name: 'Edit host' })
+    await waitFor(() => expect(screen.getByLabelText('Label')).toHaveFocus())
+    await user.keyboard('{Escape}')
+    expect(onClose).toHaveBeenCalledTimes(1)
+    await user.type(screen.getByLabelText('Notes'), 'rebooted weekly')
+    await user.keyboard('{Escape}')
+    expect(onClose).toHaveBeenCalledTimes(1)
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('Discard changes?')
+    await user.click(within(dialog).getByRole('button', { name: 'Discard' }))
+    expect(onClose).toHaveBeenCalledTimes(2)
+  })
+
+  it('a new host asks before losing what was typed, but Cancel closes', async () => {
+    const user = userEvent.setup()
+    setup(world())
+    const onClose = vi.fn()
+    render(<HostDialog open onClose={onClose} onSaved={noop} />)
+    const dialog = screen.getByRole('dialog', { name: 'New host' })
+    await user.type(screen.getByLabelText('Address'), '10.0.0.9')
+    await user.keyboard('{Escape}')
+    expect(onClose).not.toHaveBeenCalled()
+    await user.click(within(dialog).getByRole('button', { name: 'Keep editing' }))
+    expect(screen.getByLabelText('Address')).toHaveValue('10.0.0.9')
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
   it('jump picker excludes self and loops', () => {
     const data = world()
     data.hosts = [host({ id: 'A', label: 'a', jumpHostId: 'B' }), host({ id: 'B', label: 'b' }), host({ id: 'C', label: 'c' })]
