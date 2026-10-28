@@ -97,6 +97,7 @@ describe('config export', () => {
         targetPort: 5432,
         autoStart: false,
         autoReconnect: true,
+        maxMinutes: 60,
       },
     ])
     const [d] = file.deployments

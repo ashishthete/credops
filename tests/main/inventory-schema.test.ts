@@ -114,7 +114,7 @@ describe('inventory schema', () => {
     const cols = (db.prepare('PRAGMA table_info(tunnels)').all() as { name: string }[]).map((c) => c.name)
     expect(cols).toEqual([
       'id', 'label', 'host_id', 'environment_id', 'type', 'bind_address', 'bind_port', 'target_host',
-      'target_port', 'auto_start', 'auto_reconnect', 'created_at', 'updated_at',
+      'target_port', 'auto_start', 'auto_reconnect', 'created_at', 'updated_at', 'max_minutes',
     ])
     db.prepare("INSERT INTO hosts(region_id, id, label, address, created_at, updated_at) VALUES ('r0', ?,?,?,?,?)").run('h1', 'web', '10.0.0.1', NOW, NOW)
     db.prepare("INSERT INTO environments(product_id, id, name, color, created_at, updated_at) VALUES ('p0', ?,?,?,?,?)").run('e1', 'prod', '#aabbcc', NOW, NOW)

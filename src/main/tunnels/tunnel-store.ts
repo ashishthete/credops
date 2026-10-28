@@ -3,6 +3,8 @@ import { isIP } from 'node:net'
 import { MAX_LABEL } from '../../shared/vault'
 import {
   BIND_ADDRESS,
+  DEFAULT_TUNNEL_MAX_MINUTES,
+  MAX_TUNNEL_MAX_MINUTES,
   MAX_BIND_ADDRESS,
   MAX_TUNNELS,
   isLoopback,
@@ -30,6 +32,7 @@ interface TunnelRow {
   target_port: number | null
   auto_start: number
   auto_reconnect: number
+  max_minutes: number | null
   created_at: string
   updated_at: string
 }
@@ -46,6 +49,7 @@ const meta = (r: TunnelRow): TunnelMeta => ({
   targetPort: r.target_port,
   autoStart: r.auto_start === 1,
   autoReconnect: r.auto_reconnect === 1,
+  maxMinutes: r.max_minutes,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 })
@@ -64,6 +68,7 @@ const FIELDS = [
   'targetPort',
   'autoStart',
   'autoReconnect',
+  'maxMinutes',
 ] as const satisfies readonly (keyof Fields)[]
 
 export interface TunnelStoreDeps {
@@ -150,6 +155,7 @@ export class TunnelStore {
       targetPort: input.targetPort ?? null,
       autoStart: input.autoStart ?? false,
       autoReconnect: input.autoReconnect ?? true,
+      maxMinutes: input.maxMinutes === undefined ? DEFAULT_TUNNEL_MAX_MINUTES : input.maxMinutes,
     })
     const count = (this.db.prepare('SELECT COUNT(*) AS n FROM tunnels').get() as { n: number }).n
     if (count >= MAX_TUNNELS) throw new Error(`too many tunnels (${MAX_TUNNELS})`)
@@ -157,7 +163,7 @@ export class TunnelStore {
     this.db
       .prepare(
         `INSERT INTO tunnels(id, label, host_id, environment_id, type, bind_address, bind_port, target_host, target_port,
-          auto_start, auto_reconnect, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          auto_start, auto_reconnect, max_minutes, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         id,
@@ -171,6 +177,7 @@ export class TunnelStore {
         f.targetPort,
         f.autoStart ? 1 : 0,
         f.autoReconnect ? 1 : 0,
+        f.maxMinutes,
         ts,
         ts,
       )
@@ -227,6 +234,7 @@ export class TunnelStore {
       targetPort: patch.targetPort === undefined ? before.targetPort : patch.targetPort,
       autoStart: patch.autoStart ?? before.autoStart,
       autoReconnect: patch.autoReconnect ?? before.autoReconnect,
+      maxMinutes: patch.maxMinutes === undefined ? before.maxMinutes : patch.maxMinutes,
     }
     const f = this.validate(merged)
     const fields = FIELDS.filter((k) => f[k] !== before[k])
@@ -234,7 +242,7 @@ export class TunnelStore {
     this.db
       .prepare(
         `UPDATE tunnels SET label = ?, host_id = ?, environment_id = ?, type = ?, bind_address = ?, bind_port = ?,
-          target_host = ?, target_port = ?, auto_start = ?, auto_reconnect = ?, updated_at = ? WHERE id = ?`,
+          target_host = ?, target_port = ?, auto_start = ?, auto_reconnect = ?, max_minutes = ?, updated_at = ? WHERE id = ?`,
       )
       .run(
         f.label,
@@ -247,6 +255,7 @@ export class TunnelStore {
         f.targetPort,
         f.autoStart ? 1 : 0,
         f.autoReconnect ? 1 : 0,
+        f.maxMinutes,
         this.now().toISOString(),
         id,
       )
@@ -300,6 +309,9 @@ export class TunnelStore {
       targetHost = checkAddress(f.targetHost)
       targetPort = checkPort(f.targetPort as number)
     }
+    if (f.maxMinutes !== null && !(Number.isInteger(f.maxMinutes) && f.maxMinutes >= 1 && f.maxMinutes <= MAX_TUNNEL_MAX_MINUTES)) {
+      throw new Error(`time limit must be 1-${MAX_TUNNEL_MAX_MINUTES} minutes`)
+    }
     return {
       label,
       hostId: f.hostId,
@@ -311,6 +323,7 @@ export class TunnelStore {
       targetPort,
       autoStart: f.autoStart === true,
       autoReconnect: f.autoReconnect === true,
+      maxMinutes: f.maxMinutes,
     }
   }
 }

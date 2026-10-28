@@ -234,7 +234,7 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: Omitt
   })
 
   const tunnels: ConfigTunnel[] = all(
-    'SELECT id, label, host_id, environment_id, type, bind_address, bind_port, target_host, target_port, auto_start, auto_reconnect FROM tunnels',
+    'SELECT id, label, host_id, environment_id, type, bind_address, bind_port, target_host, target_port, auto_start, auto_reconnect, max_minutes FROM tunnels',
   ).map((r) => ({
     id: str(r.id),
     label: str(r.label),
@@ -247,6 +247,7 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: Omitt
     targetPort: optInt(r.target_port),
     autoStart: bool(r.auto_start),
     autoReconnect: bool(r.auto_reconnect),
+    maxMinutes: optInt(r.max_minutes),
   }))
 
   const deployVaults = groups(all('SELECT deployment_id, vault_id FROM deployment_vaults'), 'deployment_id', (r) => str(r.vault_id), (x) => x)

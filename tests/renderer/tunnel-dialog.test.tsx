@@ -105,6 +105,7 @@ describe('tunnel dialog', () => {
           targetPort: 5432,
           autoStart: false,
           autoReconnect: true,
+          maxMinutes: 60,
         },
       ],
     ])
@@ -147,7 +148,7 @@ describe('tunnel dialog', () => {
     fireEvent.click(within(d).getByRole('button', { name: 'Create tunnel' }))
     await flush()
     const [, input] = calls(invoke, 'tunnel:create')[0] as [string, Record<string, unknown>]
-    expect(input).toEqual({ label: 'proxy', hostId: 'h-web', type: 'D', bindAddress: '127.0.0.1', bindPort: 1080, autoStart: false, autoReconnect: true })
+    expect(input).toEqual({ label: 'proxy', hostId: 'h-web', type: 'D', bindAddress: '127.0.0.1', bindPort: 1080, autoStart: false, autoReconnect: true, maxMinutes: 60 })
   })
 
   it('reduced motion still swaps the target fields and the type highlight', async () => {
@@ -254,6 +255,7 @@ describe('tunnel dialog', () => {
       targetPort: 5432,
       autoStart: false,
       autoReconnect: true,
+      maxMinutes: 60,
     })
   })
 
@@ -280,6 +282,19 @@ describe('tunnel dialog', () => {
     fireEvent.click(within(d).getByRole('button', { name: 'Save' }))
     await flush()
     expect(calls(invoke, 'tunnel:update')).toEqual([['tunnel:update', 't1', { type: 'D', targetHost: null, targetPort: null }]])
+  })
+
+  it('auto-disconnect starts at an hour and can be turned off on edit', async () => {
+    const before = tunnelMeta({ id: 't1', label: 'pg', hostId: 'h-db', bindPort: 5433, maxMinutes: 60 })
+    const invoke = setup([before], [], { 'tunnel:update': { ...before, maxMinutes: null } })
+    await openMenu('pg', 'Edit')
+    const d = dialog('Edit tunnel')
+    expect(field(d, 'Auto-disconnect').value).toBe('60')
+    expect(within(d).getByRole('option', { name: 'After 1 h' })).toBeInTheDocument()
+    type(d, 'Auto-disconnect', '')
+    fireEvent.click(within(d).getByRole('button', { name: 'Save' }))
+    await flush()
+    expect(calls(invoke, 'tunnel:update')).toEqual([['tunnel:update', 't1', { maxMinutes: null }]])
   })
 
   it('an edit with nothing changed just closes', async () => {

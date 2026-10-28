@@ -154,6 +154,8 @@ interface Run {
   retryTimer: unknown
   probeTimer: unknown
   stableTimer: unknown
+  /** Stops the tunnel at `rt.stopsAt`, its time limit. */
+  expiryTimer: unknown
   probing: boolean
   paused: boolean
   everUp: boolean
@@ -201,11 +203,12 @@ export class TunnelManager {
     if (this.runs.size >= MAX_RUNNING_TUNNELS) throw new TunnelLimitError()
     const meta = this.deps.store.get(id)
     this.last.delete(id)
+    const startedAt = this.now()
     const run: Run = {
       meta,
       key: `${meta.hostId}|${meta.environmentId ?? ''}`,
       trigger,
-      rt: { ...this.stoppedRuntime(id), state: 'connecting', startedAt: this.now().toISOString() },
+      rt: { ...this.stoppedRuntime(id), state: 'connecting', startedAt: startedAt.toISOString() },
       gen: 0,
       released: false,
       link: null,
@@ -217,12 +220,14 @@ export class TunnelManager {
       retryTimer: null,
       probeTimer: null,
       stableTimer: null,
+      expiryTimer: null,
       probing: false,
       paused: false,
       everUp: false,
       firstUpMs: 0,
     }
     this.runs.set(id, run)
+    this.limit(run)
     this.publish(run.rt)
     this.event(run.meta, { type: 'connecting', trigger })
     this.syncStats()
@@ -330,6 +335,11 @@ export class TunnelManager {
       // Compare the stored rows, as the dialog does: run.meta can lag a cascade (environment cleared).
       if (!TUNNEL_ROUTE_FIELDS.some((k) => before[k] !== after[k])) {
         run.meta = after
+        // A new time limit counts from the start that is running, so lowering it may stop the tunnel now.
+        if (before.maxMinutes !== after.maxMinutes) {
+          this.limit(run)
+          if (this.runs.get(after.id) === run) this.publish(run.rt)
+        }
         return
       }
       this.stop(after.id, 'edited')
@@ -337,6 +347,27 @@ export class TunnelManager {
     } catch (err) {
       this.warn('Restarting an edited tunnel failed', err)
     }
+  }
+
+  /** (Re)arms the time limit from the run's start; one already past stops the tunnel at once. */
+  private limit(run: Run): void {
+    if (run.expiryTimer !== null) this.timers.clearTimeout(run.expiryTimer)
+    run.expiryTimer = null
+    const max = run.meta.maxMinutes
+    if (max === null || run.rt.startedAt === null) {
+      run.rt.stopsAt = null
+      return
+    }
+    const at = Date.parse(run.rt.startedAt) + max * 60_000
+    run.rt.stopsAt = new Date(at).toISOString()
+    const id = run.meta.id
+    const expire = (): void => {
+      if (this.runs.get(id) !== run) return
+      this.stop(id, 'expired')
+    }
+    const wait = at - this.now().getTime()
+    if (wait <= 0) queueMicrotask(expire)
+    else run.expiryTimer = this.timers.setTimeout(expire, wait)
   }
 
   // --- the per-tunnel loop ---
@@ -643,11 +674,12 @@ export class TunnelManager {
   private clearTimers(run: Run): void {
     this.clearTimer(run, 'retryTimer')
     this.clearTimer(run, 'stableTimer')
+    this.clearTimer(run, 'expiryTimer')
     if (run.probeTimer !== null) this.timers.clearInterval(run.probeTimer)
     run.probeTimer = null
   }
 
-  private clearTimer(run: Run, which: 'retryTimer' | 'stableTimer'): void {
+  private clearTimer(run: Run, which: 'retryTimer' | 'stableTimer' | 'expiryTimer'): void {
     if (run[which] !== null) this.timers.clearTimeout(run[which])
     run[which] = null
   }
@@ -836,6 +868,7 @@ export class TunnelManager {
       boundPort: null,
       liveness: 'probe',
       startedAt: null,
+      stopsAt: null,
       upAt: null,
       lastProbeAt: null,
     }

@@ -2,7 +2,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Cable, Check, Copy, Lock, RotateCw, TriangleAlert } from 'lucide-react'
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type KeyboardEvent } from 'react'
 import { MAX_ADDRESS } from '../../../../shared/inventory'
-import { MAX_BIND_ADDRESS, TUNNEL_ROUTE_FIELDS, isLoopback, type TunnelInput, type TunnelMeta, type TunnelType } from '../../../../shared/tunnels'
+import { MAX_BIND_ADDRESS, TUNNEL_MAX_MINUTES_CHOICES, TUNNEL_ROUTE_FIELDS, isLoopback, minutesText, type TunnelInput, type TunnelMeta, type TunnelType } from '../../../../shared/tunnels'
 import { MAX_LABEL } from '../../../../shared/vault'
 import { hostsByRegion } from '../../inventory/regions'
 import { useInventory } from '../../inventory/store'
@@ -158,6 +158,7 @@ export function TunnelDialog({ request, onClose }: TunnelDialogProps) {
       ...(f.type === 'D' ? {} : { targetHost: f.targetHost!, targetPort: f.targetPort! }),
       autoStart: f.autoStart,
       autoReconnect: f.autoReconnect,
+      maxMinutes: f.maxMinutes,
     }
     setBusy(true)
     const created = await createTunnel(input, onError)
@@ -396,6 +397,18 @@ export function TunnelDialog({ request, onClose }: TunnelDialogProps) {
             checked={form.autoReconnect}
             onChange={(autoReconnect) => set({ autoReconnect })}
           />
+          <SelectField
+            label="Auto-disconnect"
+            value={form.maxMinutes}
+            onChange={(e) => set({ maxMinutes: e.target.value })}
+            hint="Stops the tunnel this long after it starts, so a forgotten one doesn't stay open"
+          >
+            {maxMinutesChoices(form.maxMinutes).map((m) => (
+              <option key={m ?? 'none'} value={m === null ? '' : String(m)}>
+                {m === null ? 'No limit' : `After ${minutesText(m)}`}
+              </option>
+            ))}
+          </SelectField>
         </div>
 
         {formError && (
@@ -464,6 +477,14 @@ function TypePicker({ value, onChange }: { value: TunnelType; onChange: (t: Tunn
       <p className="text-[12px] leading-4 text-muted">{current.hint}</p>
     </div>
   )
+}
+
+/** The offered limits, plus a saved one that isn't among them (an imported or older value), in order. */
+function maxMinutesChoices(current: string): (number | null)[] {
+  const n = current === '' ? null : Number(current)
+  if (TUNNEL_MAX_MINUTES_CHOICES.includes(n)) return [...TUNNEL_MAX_MINUTES_CHOICES]
+  const timed = [...TUNNEL_MAX_MINUTES_CHOICES.filter((m): m is number => m !== null), n as number].sort((a, b) => a - b)
+  return [...timed, null]
 }
 
 function SwitchRow({ label, hint, checked, onChange }: { label: string; hint: string; checked: boolean; onChange: (v: boolean) => void }) {

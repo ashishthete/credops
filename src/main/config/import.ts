@@ -637,6 +637,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
       bindPort: x.bindPort,
       autoStart: x.autoStart,
       autoReconnect: x.autoReconnect,
+      maxMinutes: x.maxMinutes,
     }
     if (local === null) {
       s.tunnels.insertInTx(

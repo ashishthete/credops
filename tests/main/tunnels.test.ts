@@ -168,7 +168,7 @@ async function setup(opts: SetupOpts = {}) {
     return f.hosts.create({ regionId: REGION, label: `host-${++hostN}`, address: '127.0.0.1', port: srv.port }).id
   }
   const tunnel = (hostId: string, over: Partial<TunnelInput> = {}) =>
-    store.create({ label: 'db', hostId, type: 'L', bindPort: 0, targetHost: '127.0.0.1', targetPort: 1, ...over })
+    store.create({ label: 'db', hostId, type: 'L', bindPort: 0, targetHost: '127.0.0.1', targetPort: 1, maxMinutes: null, ...over })
   const states = (id: string): TunnelRuntime[] =>
     events.flatMap((e) => (e.event === 'tunnel:state' && e.payload.id === id ? [e.payload] : []))
   const tunnelEvents = (id: string): TunnelEvent[] =>
@@ -238,6 +238,45 @@ describe('TunnelManager', () => {
       details: { type: 'L', bindPort: 0, exposed: false, trigger: 'user' },
     })
     expect(JSON.stringify(starts)).not.toContain('127.0.0.1')
+  })
+
+  it('a tunnel disconnects itself when its time limit runs out, without reconnecting', async () => {
+    let clock = Date.parse('2026-10-28T10:00:00.000Z')
+    const t = await setup({ deps: { now: () => new Date(clock) } })
+    const srv = await server()
+    const echo = await target()
+    const tun = t.tunnel(t.host(srv), { targetPort: echo.port, maxMinutes: 60 })
+    t.manager.start(tun.id)
+    const up = await t.waitState(tun.id, 'up')
+    expect(up.stopsAt).toBe('2026-10-28T11:00:00.000Z')
+    clock += 60 * 60_000
+    t.mt.fire(60 * 60_000)
+    expect(t.manager.runtime(tun.id)).toMatchObject({ state: 'stopped', stopsAt: null })
+    expect(t.tunnelEvents(tun.id).at(-1)).toMatchObject({ type: 'stopped', reason: 'expired' })
+    expect(t.audits('tunnel.stop')[0]).toMatchObject({ details: { reason: 'expired' } })
+    expect(t.timeouts()).not.toContain(60 * 60_000)
+  })
+
+  it('a time limit changed on a running tunnel counts from its start, and no limit clears it', async () => {
+    let clock = Date.parse('2026-10-28T10:00:00.000Z')
+    const t = await setup({ deps: { now: () => new Date(clock) } })
+    const srv = await server()
+    const echo = await target()
+    const tun = t.tunnel(t.host(srv), { targetPort: echo.port, maxMinutes: 60 })
+    t.manager.start(tun.id)
+    await t.waitState(tun.id, 'up')
+    clock += 10 * 60_000
+    t.store.update(tun.id, { maxMinutes: 120 })
+    expect(t.manager.runtime(tun.id)).toMatchObject({ state: 'up', stopsAt: '2026-10-28T12:00:00.000Z' })
+    expect(t.timeouts()).toContain(110 * 60_000)
+    expect(t.timeouts()).not.toContain(60 * 60_000)
+    t.store.update(tun.id, { maxMinutes: null })
+    expect(t.manager.runtime(tun.id)).toMatchObject({ state: 'up', stopsAt: null })
+    expect(t.timeouts().filter((ms) => ms > STABLE_MS)).toEqual([])
+    // Lowered below its age, it stops straight away.
+    t.store.update(tun.id, { maxMinutes: 5 })
+    await t.waitState(tun.id, 'stopped')
+    expect(t.tunnelEvents(tun.id).at(-1)).toMatchObject({ type: 'stopped', reason: 'expired' })
   })
 
   it('a target the server cannot reach is counted in stats and logged once, and the tunnel stays up', async () => {

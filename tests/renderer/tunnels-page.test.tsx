@@ -192,6 +192,19 @@ describe('tunnels page', () => {
     expect(within(card('pg')).getByText('Up 12 min')).toBeInTheDocument()
   })
 
+  it('up counts down to its time limit, amber in the last five minutes', async () => {
+    const stopsAt = new Date(Date.now() + 45 * 60_000).toISOString()
+    await renderPage([tunnelMeta({ id: 't1', label: 'pg', hostId: 'h-db' })], [tunnelRuntime({ id: 't1', upAt: new Date().toISOString(), stopsAt })])
+    const left = within(card('pg')).getByTestId('tunnel-stops-in')
+    expect(left).toHaveTextContent('Disconnects in 45 min')
+    expect(left).not.toHaveClass('text-warn')
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(41 * 60_000)
+    })
+    expect(left).toHaveTextContent('Disconnects in 4 min')
+    expect(left).toHaveClass('text-warn')
+  })
+
   it('retrying shows a live countdown', async () => {
     await renderPage([tunnelMeta({ id: 't1', label: 'pg', hostId: 'h-db' })])
     state(

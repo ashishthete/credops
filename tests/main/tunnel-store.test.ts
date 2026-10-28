@@ -104,6 +104,20 @@ describe('TunnelStore', () => {
     expect(events('tunnel.update')).toHaveLength(1)
   })
 
+  it('a time limit defaults to 60 minutes, can be turned off, and must be 1-1440', async () => {
+    const { store, input, events } = await setup()
+    const t = store.create(input())
+    expect(t.maxMinutes).toBe(60)
+    expect(store.create(input({ label: 'b', bindPort: 5434, maxMinutes: null })).maxMinutes).toBeNull()
+    expect(store.update(t.id, { maxMinutes: 120 }).maxMinutes).toBe(120)
+    expect(events('tunnel.update')[0]).toMatchObject({ details: { fields: ['maxMinutes'] } })
+    expect(store.update(t.id, { label: 'db3' }).maxMinutes).toBe(120)
+    expect(store.update(t.id, { maxMinutes: null }).maxMinutes).toBeNull()
+    for (const bad of [0, 1441, 1.5]) expect(() => store.update(t.id, { maxMinutes: bad })).toThrow('time limit must be 1-1440 minutes')
+    expect(() => asTunnelInput({ ...input(), maxMinutes: 0 }, '[0]')).toThrow('[0].maxMinutes')
+    expect(asTunnelPatch({ maxMinutes: null }, '[1]')).toEqual({ maxMinutes: null })
+  })
+
   it('switching to D clears the target', async () => {
     const { store, input } = await setup()
     const t = store.create(input())

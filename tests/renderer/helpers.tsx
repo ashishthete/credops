@@ -173,6 +173,7 @@ export function tunnelMeta(over: Partial<TunnelMeta> & { id: string }): TunnelMe
     targetPort: 5432,
     autoStart: false,
     autoReconnect: true,
+    maxMinutes: 60,
     createdAt: STAMP,
     updatedAt: STAMP,
     ...over,
@@ -192,6 +193,7 @@ export function tunnelRuntime(over: Partial<TunnelRuntime> & { id: string }): Tu
     startedAt: STAMP,
     upAt: STAMP,
     lastProbeAt: null,
+    stopsAt: null,
     ...over,
   }
 }

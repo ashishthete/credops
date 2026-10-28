@@ -104,6 +104,17 @@ describe('migration versions', () => {
   })
 })
 
+describe('migration 16 tunnel_max_minutes', () => {
+  it('gives existing tunnels the 60 minute limit', () => {
+    const db = new (process.getBuiltinModule('node:sqlite').DatabaseSync)(':memory:')
+    migrate(db, migrations.filter((m) => m.version <= 15))
+    db.exec('PRAGMA foreign_keys = OFF')
+    db.exec("INSERT INTO tunnels(id,label,host_id,type,bind_port,created_at,updated_at) VALUES ('t','db','h','D',1080,'t','t')")
+    expect(migrate(db, migrations.filter((m) => m.version <= 16))).toEqual({ from: 15, to: 16 })
+    expect(db.prepare("SELECT max_minutes AS m FROM tunnels WHERE id='t'").get()).toEqual({ m: 60 })
+  })
+})
+
 describe('migration 13 playbook_ops', () => {
   const upTo = (version: number) => migrations.filter((m) => m.version <= version)
   it('migrates a version 11 database, keeping parallel prepare on and existing releases plain', () => {
@@ -197,7 +208,7 @@ describe('snippets schema', () => {
     const tunnelCols = db.prepare("SELECT name FROM pragma_table_info('tunnels')").all().map((r) => (r as { name: string }).name)
     expect(tunnelCols).toEqual([
       'id', 'label', 'host_id', 'environment_id', 'type', 'bind_address', 'bind_port',
-      'target_host', 'target_port', 'auto_start', 'auto_reconnect', 'created_at', 'updated_at',
+      'target_host', 'target_port', 'auto_start', 'auto_reconnect', 'created_at', 'updated_at', 'max_minutes',
     ])
   })
 

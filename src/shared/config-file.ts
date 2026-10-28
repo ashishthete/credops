@@ -78,7 +78,7 @@ import {
   type StepBody,
   type StepWhen,
 } from './steps'
-import { BIND_ADDRESS, MAX_BIND_ADDRESS, MAX_TUNNELS, type TunnelType } from './tunnels'
+import { BIND_ADDRESS, MAX_BIND_ADDRESS, MAX_TUNNEL_MAX_MINUTES, MAX_TUNNELS, type TunnelType } from './tunnels'
 import { IDENTITY_AUTHS, MAX_LABEL, MAX_SECRET_NAME, MAX_USERNAME, MAX_VAULT_NAME, VAULT_COLOR, type IdentityAuth } from './vault'
 
 export const CONFIG_FORMAT = 'credops-config'
@@ -194,6 +194,8 @@ export interface ConfigTunnel {
   targetPort: number | null
   autoStart: boolean
   autoReconnect: boolean
+  /** Absent in a file from before time limits: the tunnel keeps (or gets) the default. */
+  maxMinutes?: number | null
 }
 export interface ConfigDeployment {
   id: string
@@ -616,6 +618,7 @@ const tunnel = object(
     targetPort: nullable(port),
     autoStart: bool,
     autoReconnect: bool,
+    maxMinutes: optional(nullable(int(1, MAX_TUNNEL_MAX_MINUTES))),
   },
   (o, path, errs) =>
     (o.type === 'D') === (o.targetHost === null && o.targetPort === null) && (o.targetHost === null) === (o.targetPort === null)

@@ -98,6 +98,8 @@ function announce(event: TunnelEvent): void {
   })
   if (event.type === 'failed') {
     toast({ title: event.label, description: event.error.message, tone: 'error' })
+  } else if (event.type === 'stopped' && event.reason === 'expired') {
+    toast({ title: `${event.label} disconnected`, description: 'It reached its time limit. Start it again to keep using it.', tone: 'info' })
   } else if (event.type === 'up' && event.recovered) {
     toast({ title: `${event.label} is back up`, tone: 'success' })
   }

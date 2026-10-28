@@ -23,6 +23,7 @@ const runtime = (id: string, state: TunnelState, over: Partial<TunnelRuntime> = 
   startedAt: null,
   upAt: null,
   lastProbeAt: null,
+  stopsAt: null,
   ...over,
 })
 

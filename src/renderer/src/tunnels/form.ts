@@ -1,5 +1,5 @@
 import { HOST_ADDRESS, MAX_ADDRESS, type EnvironmentMeta } from '../../../shared/inventory'
-import { BIND_ADDRESS, MAX_BIND_ADDRESS, type TunnelMeta, type TunnelPatch, type TunnelType } from '../../../shared/tunnels'
+import { BIND_ADDRESS, DEFAULT_TUNNEL_MAX_MINUTES, MAX_BIND_ADDRESS, type TunnelMeta, type TunnelPatch, type TunnelType } from '../../../shared/tunnels'
 import { MAX_LABEL } from '../../../shared/vault'
 import { hostPort } from '../pages/tunnels/RouteLine'
 
@@ -20,6 +20,8 @@ export interface Form {
   targetPort: string
   autoStart: boolean
   autoReconnect: boolean
+  /** Minutes as text, '' for no limit (a select, so always one of its choices or the saved value). */
+  maxMinutes: string
 }
 
 export type FieldName = 'label' | 'hostId' | 'environmentId' | 'bindAddress' | 'bindPort' | 'targetHost' | 'targetPort'
@@ -39,6 +41,7 @@ export function formFrom(request: TunnelRequest, tunnels: readonly TunnelMeta[])
     targetPort: '',
     autoStart: false,
     autoReconnect: true,
+    maxMinutes: String(DEFAULT_TUNNEL_MAX_MINUTES),
   }
   if (request.kind === 'new') return { form: { ...blank, hostId: request.hostId ?? '', environmentId: request.environmentId ?? '' } }
   const t = tunnels.find((x) => x.id === request.id)
@@ -54,6 +57,7 @@ export function formFrom(request: TunnelRequest, tunnels: readonly TunnelMeta[])
     targetPort: t.targetPort != null ? String(t.targetPort) : '',
     autoStart: t.autoStart,
     autoReconnect: t.autoReconnect,
+    maxMinutes: t.maxMinutes === null ? '' : String(t.maxMinutes),
   }
   if (request.kind === 'edit') return { form, original: t }
   // A copy that could run beside the original: the next port up (0 already means "any free port"), and never
@@ -108,6 +112,7 @@ export function checkForm(f: Form, environments: readonly EnvironmentMeta[]): Ch
       targetPort: dynamic ? null : targetPort,
       autoStart: f.autoStart,
       autoReconnect: f.autoReconnect,
+      maxMinutes: f.maxMinutes === '' ? null : Number(f.maxMinutes),
     },
   }
 }

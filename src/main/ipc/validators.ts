@@ -89,7 +89,7 @@ import {
   MAX_COMMITS,
 } from '../../shared/deploy'
 import { FREEZE_MAX_HOURS, GROUP_NAME, MAX_FREEZE_REASON, HUB_AUDIT_ACTIONS, HUB_INTEGRATION_KINDS, MAX_BULK_MEMBERS, MAX_GROUP_DESCRIPTION } from '../../shared/hub'
-import { BIND_ADDRESS, MAX_BIND_ADDRESS, type TunnelInput, type TunnelPatch } from '../../shared/tunnels'
+import { BIND_ADDRESS, MAX_BIND_ADDRESS, MAX_TUNNEL_MAX_MINUTES, type TunnelInput, type TunnelPatch } from '../../shared/tunnels'
 import { MAX_COLS, MAX_ROWS, MAX_WRITE_CHARS, type OpenLocalRequest, type OpenSshRequest, type PromptAnswer } from '../../shared/ssh'
 import {
   AUTO_LOCK_CHOICES,
@@ -586,6 +586,7 @@ const tunnelBindAddress = v.str({ min: 1, max: MAX_BIND_ADDRESS, pattern: BIND_A
 const tunnelBindPort = v.int({ min: 0, max: 65535 })
 const tunnelTargetPort = v.int({ min: 1, max: 65535 })
 
+const tunnelMaxMinutes = v.nullable(v.int({ min: 1, max: MAX_TUNNEL_MAX_MINUTES }))
 // The store re-checks the cross-field rules (target present exactly for L and R).
 export const asTunnelInput: Check<TunnelInput> = v.object({
   label: hostLabel,
@@ -598,6 +599,7 @@ export const asTunnelInput: Check<TunnelInput> = v.object({
   targetPort: v.optional(tunnelTargetPort),
   autoStart: v.optional(v.bool()),
   autoReconnect: v.optional(v.bool()),
+  maxMinutes: v.optional(tunnelMaxMinutes),
 }) as Check<TunnelInput>
 export const asTunnelPatch: Check<TunnelPatch> = v.object({
   label: v.optional(hostLabel),
@@ -610,6 +612,7 @@ export const asTunnelPatch: Check<TunnelPatch> = v.object({
   targetPort: v.optional(v.nullable(tunnelTargetPort)),
   autoStart: v.optional(v.bool()),
   autoReconnect: v.optional(v.bool()),
+  maxMinutes: v.optional(tunnelMaxMinutes),
 }) as Check<TunnelPatch>
 
 const envName = v.str({ min: 1, max: MAX_NAME, trim: true })

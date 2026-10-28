@@ -423,6 +423,14 @@ CREATE TABLE runbooks(
 ALTER TABLE vault_state ADD COLUMN pin_length INTEGER;
 `,
   },
+  {
+    // Minutes after a start when a tunnel disconnects itself; NULL is no limit. Saved tunnels get the default.
+    version: 16,
+    name: 'tunnel_max_minutes',
+    up: `
+ALTER TABLE tunnels ADD COLUMN max_minutes INTEGER DEFAULT 60;
+`,
+  },
 ]
 
 /** One audit event summarising migration 12's report, by id and count only; none when there is no report. */

@@ -1,7 +1,7 @@
 import { motion } from 'framer-motion'
 import { ArrowLeftToLine, ArrowRightToLine, Copy, Globe, Link2, Lock, Pencil, RotateCw, Trash2, type LucideIcon } from 'lucide-react'
 import { memo, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { isLoopback, type TunnelMeta, type TunnelRuntime, type TunnelState, type TunnelType } from '../../../../shared/tunnels'
+import { isLoopback, minutesText, type TunnelMeta, type TunnelRuntime, type TunnelState, type TunnelType } from '../../../../shared/tunnels'
 import { ExplainButton } from '../../ai/ExplainPanel'
 import { startTunnel, stopTunnel, useTunnel, useTunnelStats } from '../../tunnels/store'
 import { Badge } from '../../ui/Badge'
@@ -299,6 +299,7 @@ export function StatusLine({ runtime }: { runtime: TunnelRuntime | undefined }) 
       <>
         {dot}
         <span className="text-fg/90">Up {formatUptime(Math.max(0, now - since))}</span>
+        {runtime.stopsAt && <StopsIn at={Date.parse(runtime.stopsAt)} now={now} />}
         {runtime.liveness === 'keepalive' && (
           <span title="This server doesn't allow probing the forward, so only the SSH keepalive watches it">
             Liveness: keepalive only
@@ -345,6 +346,17 @@ export function StatusLine({ runtime }: { runtime: TunnelRuntime | undefined }) 
         Retry
       </Button>
     </div>
+  )
+}
+
+/** The time limit's countdown, amber in its last five minutes; the exact time is in the tooltip. */
+function StopsIn({ at, now }: { at: number; now: number }) {
+  const mins = Math.max(0, Math.ceil((at - now) / 60_000))
+  const clock = new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+  return (
+    <span className={`shrink-0 tabular-nums ${mins <= 5 ? 'text-warn' : ''}`} title={`Disconnects automatically at ${clock}`} data-testid="tunnel-stops-in">
+      {mins <= 1 ? 'Disconnects in under a minute' : `Disconnects in ${minutesText(mins)}`}
+    </span>
   )
 }
 
