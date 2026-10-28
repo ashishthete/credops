@@ -627,6 +627,22 @@ describe('stale preflight releases', () => {
     expect(within(dialog).getByRole('button', { name: 'Deploy' })).toBeEnabled()
   })
 
+  it('the step indicator follows the wizard from Select to Running', async () => {
+    const { user, dialog } = await mount({ preselect: ['s1'], persisted: events([{ type: 'preflight.done', report: report() }]) })
+    const steps = within(dialog).getByRole('list', { name: 'Deploy steps' })
+    const current = () => within(steps).getByRole('listitem', { current: 'step' })
+    expect(within(steps).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['1Select', '2Preflight', '3Review', '4Running'])
+    expect(current()).toHaveTextContent('Select')
+    await preflight(user, dialog)
+    expect(current()).toHaveTextContent('Preflight')
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Review playbook' })).toBeEnabled())
+    await user.click(within(dialog).getByRole('button', { name: 'Review playbook' }))
+    expect(current()).toHaveTextContent('Review')
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Deploy' })).toBeEnabled())
+    await user.click(within(dialog).getByRole('button', { name: 'Deploy' }))
+    await waitFor(() => expect(current()).toHaveTextContent('Running'))
+  })
+
   it('Escape once preflight has run asks before discarding it; Keep editing stays on the preflight', async () => {
     const { user, dialog, invoke, closed } = await mount({ preselect: ['s1'], persisted: events([{ type: 'preflight.done', report: report() }]) })
     await preflight(user, dialog)

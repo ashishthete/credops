@@ -1,4 +1,4 @@
-import { TriangleAlert } from 'lucide-react'
+import { Check, ChevronRight, TriangleAlert } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   bumpVersion,
@@ -44,6 +44,40 @@ const NOTIFY_HINT = "Sends the Teams and email notifications in the environment'
 const QA_HINT = "Runs the QA workflow in the environment's Notifications and QA settings"
 
 type Step = 'pick' | 'preflight' | 'review' | 'started'
+
+const STEPS = [
+  { id: 'pick', label: 'Select' },
+  { id: 'preflight', label: 'Preflight' },
+  { id: 'review', label: 'Review' },
+  { id: 'started', label: 'Running' },
+] as const satisfies readonly { id: Step; label: string }[]
+
+/** Where the wizard is: the steps behind ticked, the current one marked (for screen readers too). */
+function StepIndicator({ step }: { step: Step }) {
+  const at = STEPS.findIndex((s) => s.id === step)
+  return (
+    <ol aria-label="Deploy steps" className="mb-4 flex flex-wrap items-center gap-1.5 text-[11.5px]">
+      {STEPS.map((s, i) => (
+        <li
+          key={s.id}
+          aria-current={i === at ? 'step' : undefined}
+          className={`flex items-center gap-1.5 ${i === at ? 'font-medium text-fg' : i < at ? 'text-fg/75' : 'text-muted'}`}
+        >
+          {i > 0 && <ChevronRight aria-hidden className="size-3 text-muted/60" />}
+          <span
+            aria-hidden
+            className={`grid size-4 place-items-center rounded-full border text-[10px] tabular-nums ${
+              i === at ? 'border-accent/60 bg-accent/14 text-fg' : i < at ? 'border-ok/40 bg-ok/10 text-ok' : 'border-line'
+            }`}
+          >
+            {i < at ? <Check className="size-2.5" /> : i + 1}
+          </span>
+          {s.label}
+        </li>
+      ))}
+    </ol>
+  )
+}
 
 /** Pick services, run preflight, review the playbook and start the release, on one surface. */
 export function DeployWizard({
@@ -421,6 +455,7 @@ export function DeployWizard({
   return (
     <>
       <Dialog open onClose={close} dirty={dirty} width={680} title={`Deploy to ${env?.name ?? ''}`} footer={<div className="flex justify-end gap-2">{footer}</div>}>
+        <StepIndicator step={step} />
         <div className="flex max-h-[60vh] min-w-0 flex-col gap-4 overflow-x-hidden overflow-y-auto">
           {step === 'pick' && (
             <>
