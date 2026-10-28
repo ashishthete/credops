@@ -25,6 +25,7 @@ import {
   type PrepareShared,
   LOCK_FINISHED_NOTE,
   LOCK_LIVE_NOTE,
+  LOCK_INTERRUPTED_NOTE,
   CANCELLED_PART_WAY,
   cancelledPartWay,
   LOCK_LEFT_MESSAGE,
@@ -64,7 +65,7 @@ import type { DeployStore } from './deploy-store'
 import { flowStages, planFields, resolveSelection, runServicesOf, skipServices, type RunSelection } from './selection'
 import type { ServiceStore } from './service-store'
 import { noopFinalize, type FinalizeSteps, type ReleaseRunMeta } from './finalize'
-import { INTERRUPTED_MESSAGE, type ReleaseStore } from './release-store'
+import { INTERRUPTED_MESSAGE, type ReleaseStore, wasInterrupted } from './release-store'
 import type { DeployPlan, DeployRunner, PlanDeployment, PlanFlow, PlanHop, PlanHost, PlanKind, PlanOperation, PlanStep, RunOutcome, RunSecrets } from './runner'
 import { generatePlaybook, stepList } from './generate'
 import { operationSteps } from './generate-ops'
@@ -1200,12 +1201,19 @@ export class ReleaseService {
       }
       if (!lock || lock.stale) continue
       let status: ReleaseStatus | null = null
+      let interrupted = false
       try {
-        status = this.d.releases.get(lock.holder.releaseId).status
+        const holder = this.d.releases.get(lock.holder.releaseId)
+        status = holder.status
+        interrupted = wasInterrupted(holder.error)
       } catch {
         // another machine's release, or a lock with no release id
       }
       if (status === null || !FINISHED.has(status)) continue
+      if (interrupted) {
+        note(hostId, `${lockHolderText(lock.holder, this.d.now().getTime())}${LOCK_INTERRUPTED_NOTE}`)
+        continue
+      }
       locks = { ...locks, [hostId]: { ...lock, stale: true } }
       note(hostId, `${lockHolderText(lock.holder, this.d.now().getTime())}${LOCK_FINISHED_NOTE}`)
     }

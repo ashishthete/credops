@@ -87,6 +87,11 @@ export interface RunPatch {
 }
 
 export const INTERRUPTED_MESSAGE = 'interrupted: CredOps quit during the run'
+/** Ends the error failInterrupted writes: the run it started may outlive the app, as may its lock. */
+export const INTERRUPTED_RUN_NOTE = '; the ansible run it started may still be working on the hosts'
+/** Ends it instead for a release that was rolling back. */
+export const INTERRUPTED_ROLLBACK_NOTE = '; it was rolling back, so its hosts may be part way back, and the rollback may still be running there'
+export const wasInterrupted = (error: string | null): boolean => error !== null && (error.endsWith(INTERRUPTED_RUN_NOTE) || error.endsWith(INTERRUPTED_ROLLBACK_NOTE))
 const MAX_PAGE = 5000
 /** previousRelease follows at most this many rollbacks back. */
 const MAX_ROLLBACK_CHAIN = 1000
@@ -485,11 +490,12 @@ export class ReleaseStore {
    * their steps too). `ready` is a stable waiting state and stays. Returns the ids.
    */
   failInterrupted(message: string = INTERRUPTED_MESSAGE): string[] {
-    const ids = (this.db.prepare("SELECT id FROM releases WHERE status IN ('preflight','running','rolling_back') ORDER BY id").all() as { id: string }[]).map((r) => r.id)
+    const rows = this.db.prepare("SELECT id, status, kind FROM releases WHERE status IN ('preflight','running','rolling_back') ORDER BY id").all() as { id: string; status: ReleaseStatus; kind: ReleaseKind }[]
+    const ids = rows.map((r) => r.id)
     if (ids.length === 0) return ids
     const ts = this.now().toISOString()
     this.transaction(() => {
-      for (const id of ids) {
+      for (const { id, status: was, kind } of rows) {
         const runs = this.db.prepare("SELECT id, status, steps FROM deployment_runs WHERE release_id = ? AND status IN ('running','pending')").all(id) as unknown as Pick<RunRow, 'id' | 'status' | 'steps'>[]
         for (const run of runs) {
           const steps = (JSON.parse(run.steps) as DeploymentRunMeta['steps']).map((st) =>
@@ -500,8 +506,10 @@ export class ReleaseStore {
             .prepare('UPDATE deployment_runs SET status = ?, steps = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?')
             .run(status, JSON.stringify(steps), run.status === 'running' ? ts : null, run.id)
         }
-        this.setStatus(id, 'failed', { error: message, finishedAt: ts })
-        this.appendEvents(id, [{ type: 'run.finished', status: 'failed', error: message }])
+        // A preflight holds no lock and changes nothing.
+        const error = was === 'preflight' ? message : `${message}${was === 'rolling_back' || kind === 'rollback' ? INTERRUPTED_ROLLBACK_NOTE : INTERRUPTED_RUN_NOTE}`
+        this.setStatus(id, 'failed', { error, finishedAt: ts })
+        this.appendEvents(id, [{ type: 'run.finished', status: 'failed', error }])
       }
     })
     return ids

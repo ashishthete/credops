@@ -421,6 +421,11 @@ export const LOCK_STALE_NOTE = ' (older than 2 hours; it may be stale and can be
 /** Added instead when a release of this app that has finished left the lock: nothing holds it any more. */
 export const LOCK_FINISHED_NOTE = ' (left by a release that has finished; it can be broken)'
 /** Added instead when the holder is a release still running in this app, however old: breaking it would let two deploys run at once. */
+/**
+ * Added instead when the holder was interrupted (the app quit or the Hub restarted mid-run): its ansible run leads
+ * its own process group and may still be working on the host, so the lock is judged by its age alone.
+ */
+export const LOCK_INTERRUPTED_NOTE = ' (left by a release that was interrupted; its run may still be working on the host, so it can be broken once it is 2 hours old)'
 export const LOCK_LIVE_NOTE = ' (that release is still running in this app; wait for it or cancel it)'
 
 // ---- Preflight ----
