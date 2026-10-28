@@ -1,4 +1,5 @@
 import { AnimatePresence } from 'framer-motion'
+import { Plus, SquareTerminal } from 'lucide-react'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 import type { SessionMeta } from '../../../../shared/ssh'
@@ -9,7 +10,9 @@ import { protectedEnvironment } from '../../terminal/protect'
 import { useConnect } from '../../terminal/connect'
 import { closeSession, nextTab, openLocal, reconnectSession, sessionsLoaded, sessionStore, setActive } from '../../terminal/sessions'
 import { TerminalView } from '../../terminal/TerminalView'
+import { Button } from '../../ui/Button'
 import { ConfirmDialog, type ConfirmRequest } from '../../ui/common'
+import { EmptyState } from '../../ui/EmptyState'
 import { useShortcut } from '../../ui/shortcuts'
 import { ConnectOverlay } from './ConnectOverlay'
 import { openKnownHosts } from './KnownHostsDialog'
@@ -37,15 +40,18 @@ export function TerminalDeck({ visible }: { visible: boolean }) {
   const tabs = order.flatMap((id) => byId.get(id) ?? [])
   const active = activeId ? byId.get(activeId) : undefined
 
-  // Where you were before Terminals; with no tab left to show (a direct visit, the last tab closed
-  // or its shell exited) the deck goes back there, or home.
+  // Where you were before Terminals. When the last tab goes while you watch (closed, or its shell
+  // exited) the deck goes back there, or home; arriving with no tabs shows the launcher instead.
   const location = useLocation()
   const before = useRef<string | null>(null)
   if (!location.pathname.startsWith('/terminals')) before.current = location.pathname + location.search
   // Not before the first session list lands: a reload on this page has no tabs yet.
   const loaded = useSyncExternalStore(sessionsLoaded.subscribe, sessionsLoaded.get)
+  const hadTabs = useRef(false)
   useEffect(() => {
-    if (loaded && visible && tabs.length === 0) navigate(before.current ?? '/', { replace: true })
+    if (!loaded) return
+    if (visible && hadTabs.current && tabs.length === 0) navigate(before.current ?? '/', { replace: true })
+    hadTabs.current = visible && tabs.length > 0
   }, [loaded, tabs.length, visible, navigate])
 
   const envName = (id: string | null) => (id ? inventory?.environments.find((e) => e.id === id)?.name : undefined)
@@ -78,12 +84,26 @@ export function TerminalDeck({ visible }: { visible: boolean }) {
   const copyOnSelect = (meta: SessionMeta) =>
     copySetting && (meta.kind === 'local' || (!!inventory && !protectedEnvironment(meta, inventory.environments)))
 
-  // The shell opens first; going to an empty Terminals page would bounce straight back.
+  // The shell opens first, so Terminals lands on its tab rather than the launcher.
   useShortcut('mod+t', () => void connectLocal())
 
   return (
     <section aria-label="Terminals" hidden={!visible} className="absolute inset-0 z-[1] flex flex-col bg-canvas">
       {visible && <TabShortcuts onClose={() => active && requestClose(active)} />}
+      {loaded && tabs.length === 0 && (
+        <div className="grid flex-1 place-items-center">
+          <EmptyState
+            icon={SquareTerminal}
+            title="No open sessions"
+            text="Open a shell on this Mac, or connect to a host from Hosts, the map or the command palette."
+            actions={
+              <Button icon={<Plus aria-hidden className="size-4" />} onClick={() => void connectLocal()}>
+                New local shell
+              </Button>
+            }
+          />
+        </div>
+      )}
       {tabs.length > 0 && (
         <>
           <TabStrip

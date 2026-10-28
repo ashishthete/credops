@@ -1,4 +1,4 @@
-import { AnimatePresence, motion } from 'framer-motion'
+import { motion } from 'framer-motion'
 import {
   Boxes,
   Cable,
@@ -17,7 +17,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
-import { NavLink, useLocation, useNavigate } from 'react-router'
+import { NavLink, useNavigate } from 'react-router'
 import type { AppInfo } from '../../../shared/ipc'
 import { releaseStore } from '../deploy/releases'
 import { api } from '../lib/api'
@@ -26,7 +26,7 @@ import { runningCount, runStore } from '../ops/runs'
 import { tunnelStore } from '../tunnels/store'
 import { openCommandPalette, registerCommand } from '../ui/commands'
 import { plural } from '../ui/common'
-import { exitFast, spring, useMotionSafe } from '../ui/motion'
+import { spring, useMotionSafe } from '../ui/motion'
 import { formatShortcut, useShortcut } from '../ui/shortcuts'
 import { Skeleton } from '../ui/Skeleton'
 import { readStored, writeStored } from '../ui/storage'
@@ -43,6 +43,7 @@ export const SECTION_ICONS: Record<SectionId, LucideIcon> = {
   deployments: Rocket,
   hub: Users,
   audit: ScrollText,
+  terminals: SquareTerminal,
 }
 
 const COLLAPSED_KEY = 'opsdeck.sidebar-collapsed'
@@ -185,6 +186,7 @@ export function Sidebar() {
                   {s.id === 'tunnels' && <TunnelBadge collapsed={collapsed} />}
                   {s.id === 'ops' && <RunBadge collapsed={collapsed} />}
                   {s.id === 'deployments' && <DeployBadge collapsed={collapsed} />}
+                  {s.id === 'terminals' && <SessionBadge collapsed={collapsed} />}
                   {shortcut && !collapsed && (
                     <Keys
                       combo={shortcut}
@@ -199,7 +201,6 @@ export function Sidebar() {
       </nav>
 
       <div className="mt-auto">
-        <OpenSessions collapsed={collapsed} />
         <SettingsButton collapsed={collapsed} />
         <VaultLockButton collapsed={collapsed} />
       </div>
@@ -299,47 +300,14 @@ const liveCount = () => sessionStore.get().sessions.filter((s) => s.state === 'c
 /** Sessions that are connecting or up. */
 const useLiveCount = () => useSyncExternalStore(sessionStore.subscribe, liveCount)
 
-/** Back to the open terminals, while any session is open. */
-function OpenSessions({ collapsed }: { collapsed: boolean }) {
-  const motionSafe = useMotionSafe()
-  const navigate = useNavigate()
-  const active = useLocation().pathname === '/terminals'
-  const open = useSyncExternalStore(sessionStore.subscribe, () => sessionStore.get().sessions.length > 0)
+/** Live sessions on the Terminals entry; a dot on the collapsed rail. */
+function SessionBadge({ collapsed }: { collapsed: boolean }) {
   const count = useLiveCount()
-  return (
-    <AnimatePresence initial={false}>
-      {open && (
-        <motion.div
-          key="open-sessions"
-          initial={motionSafe ? { height: 0, opacity: 0 } : false}
-          animate={motionSafe ? { height: 'auto', opacity: 1 } : undefined}
-          exit={motionSafe ? { height: 0, opacity: 0, transition: exitFast } : { opacity: 0, transition: { duration: 0 } }}
-          transition={spring}
-          className={`overflow-hidden ${collapsed ? 'px-2' : 'px-3'}`}
-        >
-          <button
-            type="button"
-            onClick={() => navigate('/terminals')}
-            aria-current={active ? 'page' : undefined}
-            aria-label={count > 0 ? `Open sessions, ${count} live` : 'Open sessions'}
-            title={collapsed ? 'Open sessions' : undefined}
-            className={`relative mb-1 flex h-8 w-full items-center rounded-lg text-[13px] font-medium transition-colors select-none ${
-              collapsed ? 'justify-center' : 'gap-2.5 px-2.5'
-            } ${
-              active ? 'bg-accent/12 text-fg shadow-[inset_2px_0_0_0_var(--accent)]' : 'text-muted hover:bg-white/[0.035] hover:text-fg'
-            }`}
-          >
-            <SquareTerminal aria-hidden className={`size-4 ${active ? 'text-accent' : ''}`} strokeWidth={2} />
-            {!collapsed && <span className="flex-1 text-left">Open sessions</span>}
-            {count > 0 && (collapsed ? <BadgeDot tone="bg-ok" label={`${count} live`} /> : <LiveCount count={count} />)}
-          </button>
-        </motion.div>
-      )}
-    </AnimatePresence>
-  )
+  if (!count) return null
+  return collapsed ? <BadgeDot tone="bg-ok" label={`${count} live`} /> : <LiveCount count={count} />
 }
 
-/** The live badge on the Open sessions button. */
+/** The live badge on the Terminals entry. */
 function LiveCount({ count }: { count: number }) {
   const motionSafe = useMotionSafe()
   return (
@@ -350,7 +318,7 @@ function LiveCount({ count }: { count: number }) {
       initial={motionSafe ? { scale: 0.6, opacity: 0 } : { opacity: 0 }}
       animate={motionSafe ? { scale: 1, opacity: 1 } : { opacity: 1 }}
       transition={spring}
-      className="grid h-[18px] min-w-[18px] place-items-center rounded-full bg-ok/15 px-1.5 text-[10.5px] font-semibold text-ok tabular-nums"
+      className="absolute right-2.5 grid h-[18px] min-w-[18px] place-items-center rounded-full bg-ok/15 px-1.5 text-[10.5px] font-semibold text-ok tabular-nums"
     >
       {count}
     </motion.span>

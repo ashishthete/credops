@@ -8,6 +8,8 @@ export const SECTIONS = [
   { id: 'deployments', label: 'Deployments', path: '/deployments' },
   { id: 'hub', label: 'Hub', path: '/hub' },
   { id: 'audit', label: 'Audit', path: '/audit' },
+  // Last, so the sections above keep their digits; mod+1…mod+9 pick tabs while it is on screen.
+  { id: 'terminals', label: 'Terminals', path: '/terminals' },
 ] as const
 
 export type Section = (typeof SECTIONS)[number]

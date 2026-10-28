@@ -169,7 +169,7 @@ describe('map detail panel', () => {
     await click(within(panel('web')).getByRole('button', { name: 'Connect' }))
     await flush()
     expect(invoke).toHaveBeenCalledWith('ssh:open', expect.objectContaining({ hostId: 'h1', environmentId: 'e2' }))
-    expect(screen.getByRole('button', { name: /Open sessions/ })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('link', { name: /^Terminals/ })).toHaveAttribute('aria-current', 'page')
   })
 
   it('Open host page goes to the host', async () => {
@@ -186,7 +186,7 @@ describe('map detail panel', () => {
     await flush()
     await flush()
     expect(calls(invoke, 'ssh:open')).toEqual([['ssh:open', expect.objectContaining({ hostId: 'h1', environmentId: 'e1' })]])
-    expect(screen.getByRole('button', { name: /Open sessions/ })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('link', { name: /^Terminals/ })).toHaveAttribute('aria-current', 'page')
   })
 
   it('the tunnel switch in the host panel starts and stops', async () => {

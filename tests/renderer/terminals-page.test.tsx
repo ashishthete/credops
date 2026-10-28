@@ -5,7 +5,7 @@ import { inventoryStore } from '../../src/renderer/src/inventory/store'
 import { resetIntegrations } from '../../src/renderer/src/settings/store'
 import { DEFAULT_SETTINGS } from '../../src/shared/settings'
 import { AppShell } from '../../src/renderer/src/shell/AppShell'
-import { SECTIONS } from '../../src/renderer/src/shell/sections'
+import { SECTIONS, sectionShortcut } from '../../src/renderer/src/shell/sections'
 import { openKnownHosts } from '../../src/renderer/src/pages/terminals/KnownHostsDialog'
 import { resetSessions, sessionStore } from '../../src/renderer/src/terminal/sessions'
 import { clearToasts } from '../../src/renderer/src/ui/Toaster'
@@ -48,7 +48,7 @@ function meta(id: string, over: Partial<SessionMeta> = {}): SessionMeta {
 const ssh = (id: string, over: Partial<SessionMeta> = {}) =>
   meta(id, { kind: 'ssh', hostId: `${id}-host`, hops: [{ label: id, state: 'up' }], ...over })
 
-// Terminals with no session leaves at once, so a test that starts there goes once a session exists.
+// A test that starts on Terminals goes there once its first session exists, so it never sees the launcher.
 let toTerminals: (() => void) | null = null
 let navigateTo: (path: string) => void = () => {}
 const state = (m: SessionMeta) => {
@@ -70,6 +70,7 @@ const key = (k: string, over: Partial<KeyboardEventInit> = {}) =>
   })
 const calls = (invoke: ReturnType<typeof mockBridge>, channel: string) =>
   (invoke.mock.calls as unknown[][]).filter((c) => c[0] === channel)
+const terminalsLink = () => within(screen.getByRole('navigation', { name: 'Sections' })).getByRole('link', { name: /^Terminals/ })
 const tab = (label: string) => screen.getByRole('tab', { name: new RegExp(`^${label}\\b`) })
 
 async function renderShell(path = '/terminals', results: Record<string, unknown> = {}) {
@@ -142,49 +143,55 @@ describe('terminals page', () => {
     expect(screen.queryByRole('dialog', { name: 'Known hosts' })).not.toBeInTheDocument()
   })
 
-  it('there is no Terminals section; Open sessions shows only while a session is open, and it goes to the tabs', async () => {
-    expect(SECTIONS.map((s) => s.id)).toEqual(['products', 'hosts', 'vaults', 'tunnels', 'map', 'ops', 'deployments', 'hub', 'audit'])
+  it('Terminals is the last section, with no digit of its own, and its entry counts live sessions', async () => {
+    expect(SECTIONS.at(-1)).toMatchObject({ id: 'terminals', path: '/terminals' })
+    expect(sectionShortcut(SECTIONS.length - 1)).toBeNull()
     await renderShell('/products')
-    const nav = screen.getByRole('navigation', { name: 'Sections' })
-    expect(within(nav).queryByRole('link', { name: /Terminals/ })).toBeNull()
-    expect(screen.queryByRole('button', { name: /Open sessions/ })).toBeNull()
+    const link = terminalsLink()
+    expect(link).not.toHaveAttribute('aria-current')
+    expect(link.querySelector('[data-badge]')).toBeNull()
 
     state(meta('s1', { label: 'Local shell 1' }))
-    const button = screen.getByRole('button', { name: /Open sessions/ })
-    expect(button).toHaveAccessibleName('Open sessions, 1 live')
-    expect(button).not.toHaveAttribute('aria-current')
-    fireEvent.click(button)
+    expect(link.querySelector('[data-badge]')).toHaveTextContent('1')
+    fireEvent.click(link)
     await flush()
     expect(tab('Local shell 1')).toBeVisible()
-    expect(screen.getByRole('button', { name: /Open sessions/ })).toHaveAttribute('aria-current', 'page')
+    expect(terminalsLink()).toHaveAttribute('aria-current', 'page')
 
-    // Closing the last tab takes the button away with it.
     await goTo('/products')
     act(() => sessionStore.set({ sessions: [], activeId: null, order: [] }))
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(500)
-    })
-    expect(screen.queryByRole('button', { name: /Open sessions/ })).toBeNull()
+    await flush()
+    expect(terminalsLink().querySelector('[data-badge]')).toBeNull()
   })
 
-  it('visiting Terminals with no sessions goes back to the previous page, or home', async () => {
-    await renderShell('/hosts')
-    await goTo('/terminals')
+  it('visiting Terminals with no sessions shows the launcher, and New local shell opens one', async () => {
+    const invoke = await renderShell('/hosts', { 'shell:open': meta('s1', { label: 'Local shell 1' }) })
+    fireEvent.click(terminalsLink())
     await flush()
-    expect(screen.getByRole('heading', { name: 'Hosts', level: 1 })).toBeInTheDocument()
-
-    cleanup()
-    await renderShell('/hosts')
-    await goTo('/vaults')
-    await goTo('/terminals')
+    expect(screen.getByRole('heading', { name: 'No open sessions' })).toBeInTheDocument()
+    expect(terminalsLink()).toHaveAttribute('aria-current', 'page')
+    fireEvent.click(screen.getByRole('button', { name: 'New local shell' }))
     await flush()
-    expect(screen.getByRole('heading', { name: 'Vaults', level: 1 })).toBeInTheDocument()
+    expect(calls(invoke, 'shell:open')).toHaveLength(1)
   })
 
-  it('a direct visit with no sessions and no earlier page goes home', async () => {
+  it('a direct visit with no sessions shows the launcher rather than leaving', async () => {
     await renderAt('/terminals', { 'session:list': [] })
     await flush()
-    expect(screen.getByRole('heading', { name: 'Products', level: 1 })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'No open sessions' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Products', level: 1 })).toBeNull()
+  })
+
+  it('closing the last tab while Terminals is on screen goes back to the previous page', async () => {
+    await renderShell('/hosts')
+    await goTo('/vaults')
+    fireEvent.click(terminalsLink())
+    state(meta('s1'))
+    await flush()
+    expect(tab('s1')).toBeVisible()
+    act(() => sessionStore.set({ sessions: [], activeId: null, order: [] }))
+    await flush()
+    expect(screen.getByRole('heading', { name: 'Vaults', level: 1 })).toBeInTheDocument()
   })
 
   it('a reload on Terminals keeps it until the session list lands, then shows the restored tabs', async () => {
@@ -198,13 +205,14 @@ describe('terminals page', () => {
     expect(screen.queryByRole('heading', { name: 'Products', level: 1 })).toBeNull()
   })
 
-  it('a reload on Terminals with no sessions goes home once the list lands empty', async () => {
+  it('a reload on Terminals with no sessions shows the launcher once the list lands empty', async () => {
     let release!: (list: SessionMeta[]) => void
     await renderAt('/terminals', { 'session:list': new Promise<SessionMeta[]>((r) => (release = r)) })
     await flush()
+    expect(screen.queryByRole('heading', { name: 'No open sessions' })).toBeNull()
     await act(async () => release([]))
     await flush()
-    expect(screen.getByRole('heading', { name: 'Products', level: 1 })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'No open sessions' })).toBeInTheDocument()
   })
 
   it('deck stays mounted across navigation', async () => {
@@ -215,7 +223,7 @@ describe('terminals page', () => {
     await goTo('/hosts')
     await flush()
     expect(screen.getByRole('heading', { name: 'Hosts', level: 1 })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /Open sessions/ }))
+    fireEvent.click(terminalsLink())
     await flush()
     expect(tab('Local shell 1')).toBeVisible()
     expect(fake.terms).toHaveLength(1)
@@ -484,7 +492,7 @@ describe('terminals page', () => {
     key('w')
     await flush()
     expect(calls(invoke, 'session:close')).toHaveLength(0)
-    fireEvent.click(screen.getByRole('button', { name: /Open sessions/ }))
+    fireEvent.click(terminalsLink())
     await flush()
     key('w')
     await flush()
@@ -496,7 +504,7 @@ describe('terminals page', () => {
     state(ssh('a', { state: 'connecting', hops: [] }))
     state(meta('b'))
     state(ssh('c', { state: 'closed' }))
-    expect(screen.getByRole('button', { name: /Open sessions/ }).querySelector('[data-badge]')).toHaveTextContent('2')
+    expect(terminalsLink().querySelector('[data-badge]')).toHaveTextContent('2')
   })
 
   it('reduced motion: no pulse class on the connecting dot', async () => {
