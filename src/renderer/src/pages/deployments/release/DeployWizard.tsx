@@ -99,6 +99,8 @@ export function DeployWizard({
   // The person is editing the playbook: Deploy would run the unedited one, so it waits.
   const [editing, setEditing] = useState(false)
   const [saved, setSaved] = useState<string | null>(null)
+  // The preview failed; the review shows it with Retry rather than waiting on a playbook that won't come.
+  const [previewError, setPreviewError] = useState<string | null>(null)
   const pre = usePreflight(releaseId)
   const report = pre?.report ?? null
   const pipeline = usePipeline(releaseId)
@@ -226,6 +228,7 @@ export function DeployWizard({
     const id = releaseId
     setReviewed(null)
     setSaved(null)
+    setPreviewError(null)
     setStep('review')
     // The notes editor drafts from the preflight's commits and saves onto this release. A release that can't
     // be read fails the preview too, which says so; the editor just stays away.
@@ -236,7 +239,9 @@ export function DeployWizard({
         },
         () => {},
       )
-    const out = await attempt("Couldn't generate the playbook", () => previewOf(id, forced), setError)
+    const out = await attempt("Couldn't generate the playbook", () => previewOf(id, forced), (message) => {
+      if (held.current === id) setPreviewError(message)
+    })
     if (out && held.current === id) setReviewed(out)
   }
 
@@ -289,7 +294,11 @@ export function DeployWizard({
         // Show what would run now, so the next Deploy is bound to the playbook the person has seen.
         if (changed) {
           setReviewed(null)
-          const out = await attempt("Couldn't generate the playbook", () => previewOf(releaseId, forced), setError)
+          setPreviewError(null)
+          // The refusal stays in the alert below; a failed preview shows in the review, with Retry.
+          const out = await attempt("Couldn't generate the playbook", () => previewOf(releaseId, forced), (message) => {
+            if (held.current === releaseId) setPreviewError(message)
+          })
           if (out && held.current === releaseId) setReviewed(out)
         }
         return
@@ -564,6 +573,8 @@ export function DeployWizard({
                 onEditingChange={setEditing}
                 busy={starting}
                 onPreviewAgain={() => void review()}
+                error={previewError}
+                onRetry={() => void review()}
               />
               {saved && <p className="text-[12px] text-muted">Saved to {saved}</p>}
             </>

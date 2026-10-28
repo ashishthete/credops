@@ -170,6 +170,8 @@ export function PlaybookReview({
   onEditingChange,
   onPreviewAgain,
   busy = false,
+  error = null,
+  onRetry,
 }: {
   playbook: string | null
   /** With a release flow: the inventory the hash covers too (host vars and the version, no secret values). */
@@ -190,6 +192,9 @@ export function PlaybookReview({
   onPreviewAgain?: () => void
   /** A start is in flight: Run edited waits. */
   busy?: boolean
+  /** The preview failed: shown, with Retry, in place of "Generating the playbook". */
+  error?: string | null
+  onRetry?: () => void
 }) {
   const [editing, setEditing] = useState(false)
   const [discarded, setDiscarded] = useState(false)
@@ -203,6 +208,17 @@ export function PlaybookReview({
       setDiscarded(true)
     }
   }
+  if (playbook === null && error)
+    return (
+      <div role="alert" className="flex items-center gap-3 rounded-lg border border-err/30 bg-err/[0.06] px-3 py-2 text-[12.5px] text-err">
+        <span className="flex-1">{error}</span>
+        {onRetry && (
+          <Button size="sm" variant="ghost" onClick={onRetry}>
+            Retry
+          </Button>
+        )}
+      </div>
+    )
   if (playbook === null) return <p className="text-[12px] text-muted">Generating the playbook</p>
   return (
     <div className="flex flex-col gap-2">

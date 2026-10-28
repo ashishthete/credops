@@ -609,6 +609,24 @@ describe('stale preflight releases', () => {
     expect(calls(invoke, 'release:discard')).toEqual([])
   })
 
+  it('a failed playbook preview says why and offers Retry, which generates it', async () => {
+    const { user, dialog, invoke } = await mount({ preselect: ['s1'], persisted: events([{ type: 'preflight.done', report: report() }]) })
+    await preflight(user, dialog)
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Review playbook' })).toBeEnabled())
+    const previewCall = hold(invoke, 'deploy:previewPlaybook')
+    await user.click(within(dialog).getByRole('button', { name: 'Review playbook' }))
+    await previewCall.fail(0, new Error('ansible-playbook not found'))
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('ansible-playbook not found')
+    expect(within(dialog).queryByText('Generating the playbook')).toBeNull()
+    expect(within(dialog).getByRole('button', { name: 'Deploy' })).toBeDisabled()
+    await user.click(within(dialog).getByRole('button', { name: 'Retry' }))
+    expect(within(dialog).queryByRole('alert')).toBeNull()
+    expect(within(dialog).getByText('Generating the playbook')).toBeInTheDocument()
+    await previewCall.settle(1, PREVIEW)
+    expect(within(dialog).getByRole('list', { name: 'Playbook steps' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Deploy' })).toBeEnabled()
+  })
+
   it('Escape once preflight has run asks before discarding it; Keep editing stays on the preflight', async () => {
     const { user, dialog, invoke, closed } = await mount({ preselect: ['s1'], persisted: events([{ type: 'preflight.done', report: report() }]) })
     await preflight(user, dialog)
