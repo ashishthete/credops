@@ -8,7 +8,7 @@ import type { DeployPlan } from '../../src/main/deploy/runner'
 import { generatePlaybook, prepareSchedule } from '../../src/main/deploy/generate'
 import { ToolingError } from '../../src/main/deploy/tooling'
 import { CONFIRM_MESSAGE } from '../../src/shared/ops'
-import { BREAK_LOCK_CONFIRM_MESSAGE, DEFAULT_RELEASE_OPTIONS, LOCK_FINISHED_NOTE, LOCK_LEFT_MESSAGE, LOCK_LIVE_NOTE, PREPARE_FAILED_MESSAGE, PREPARE_FETCH_FAILED_MESSAGE, type CommitInfo, type DeploymentMeta, type PreflightCheck, type RunEvent, type StepKind } from '../../src/shared/deploy'
+import { BREAK_LOCK_CONFIRM_MESSAGE, CANCELLED_PART_WAY, DEFAULT_RELEASE_OPTIONS, LOCK_FINISHED_NOTE, LOCK_LEFT_MESSAGE, LOCK_LIVE_NOTE, PREPARE_FAILED_MESSAGE, PREPARE_FETCH_FAILED_MESSAGE, type CommitInfo, type DeploymentMeta, type PreflightCheck, type RunEvent, type StepKind } from '../../src/shared/deploy'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import type { AppServiceMeta } from '../../src/shared/services'
 import { A, B, C, NOW, SECRET, dep, opReady, ready, rig, runbook, tracked, type Rig } from './release-rig'
@@ -337,6 +337,48 @@ describe('ReleaseService', () => {
     expect(r.runner.kinds).toEqual(['preflight', 'release', 'unlock'])
     expect(r.svc.detail(id).status).toBe('cancelled')
     expect(audits(r, 'release.cancel')).toHaveLength(1)
+  })
+
+  it('a cancel after a checkout names the half-applied deployments, and the release can then be rolled back', async () => {
+    const r = await rig()
+    r.f.deploys.updateSettings(r.f.staging.id, { autoRollback: false })
+    const g = gate()
+    r.runner.onCancel = g.open
+    r.runner.on.release = async (plan, _s, emit) => {
+      const [r1] = runIds(plan)
+      emit({ type: 'deployment.updated', deploymentRunId: r1, status: 'running', previousCommit: A })
+      emit({ type: 'step.started', stepId: `${r1}:checkout`, kind: 'checkout', name: 'Checkout one', hostId: r.f.host.id, deploymentRunId: r1 })
+      await g.p
+      return { cancelled: true, exitCode: null, reachedCheckout: [r1], commits: { [r1]: { previous: A } } }
+    }
+    const id = await ready(r, [dep(r, 'one'), dep(r, 'two')])
+    await r.svc.start(id, {})
+    await r.svc.cancel(id)
+    await r.svc.whenIdle()
+    const d = r.svc.detail(id)
+    expect(d.status).toBe('cancelled')
+    expect(d.error).toBe(`${CANCELLED_PART_WAY}: one had started deploying and may be half-applied (new code checked out, some services up); roll this release back to return it to the previous commit`)
+    const { releaseId } = await r.svc.rollback(id, {})
+    await r.svc.whenIdle()
+    const rb = r.runner.call('rollback')
+    expect(rb.deployments.map((x) => [x.name, x.previousCommit])).toEqual([['one', A]])
+    expect(r.svc.detail(releaseId).status).toBe('succeeded')
+  })
+
+  it('a cancel before any checkout is a plain cancel, which cannot be rolled back', async () => {
+    const r = await rig()
+    const g = gate()
+    r.runner.onCancel = g.open
+    r.runner.on.release = async () => {
+      await g.p
+      return { cancelled: true, exitCode: null }
+    }
+    const id = await ready(r)
+    await r.svc.start(id, {})
+    await r.svc.cancel(id)
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).error).toBe('Cancelled')
+    await expect(r.svc.rollback(id, {})).rejects.toThrow('This release is cancelled')
   })
 
   it('a vault reset cancels a running release, and still releases the deploy lock', async () => {

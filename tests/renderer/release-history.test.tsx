@@ -8,7 +8,7 @@ import { hubStore, resetHub } from '../../src/renderer/src/hub/store'
 import { inventoryStore, loadInventory } from '../../src/renderer/src/inventory/store'
 import { ReleaseHistory } from '../../src/renderer/src/pages/deployments/release/ReleaseHistory'
 import { ReleaseView } from '../../src/renderer/src/pages/deployments/release/ReleaseView'
-import type { ReleaseDetail, ReleaseSummary } from '../../src/shared/deploy'
+import { CANCELLED_PART_WAY, type ReleaseDetail, type ReleaseSummary } from '../../src/shared/deploy'
 import { events, OK_RUN, REL, releaseDetail } from './fixtures/release-events'
 import { appService, deploymentMeta, emitBridgeEvent, environment, host, mockBridge } from './helpers'
 
@@ -147,6 +147,14 @@ describe('release history', () => {
     expect(within(row('rel-4')).queryByRole('button', { name: 'Rollback' })).not.toBeInTheDocument()
     expect(within(row('rel-5')).getByText('rollback')).toBeInTheDocument()
     expect(within(row('rel-5')).queryByRole('button', { name: 'Rollback' })).not.toBeInTheDocument()
+  })
+
+  it('a release cancelled part way offers rollback; a plain cancel does not', async () => {
+    const part = summary({ id: 'rel-7', status: 'cancelled', error: `${CANCELLED_PART_WAY}: site had started deploying`, serviceIds: ['s3'], createdAt: '2026-10-19T13:00:00.000Z' })
+    const plain = summary({ id: 'rel-8', status: 'cancelled', error: 'Cancelled', serviceIds: ['s1'], createdAt: '2026-10-19T13:30:00.000Z' })
+    await mount({ pages: [[plain, part, R3, R2, R1]] })
+    expect(within(row('rel-7')).getByRole('button', { name: 'Rollback' })).toBeInTheDocument()
+    expect(within(row('rel-8')).queryByRole('button', { name: 'Rollback' })).not.toBeInTheDocument()
   })
 
   it('rollback confirm names siblings whose code moves back', async () => {

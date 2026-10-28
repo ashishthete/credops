@@ -25,6 +25,8 @@ import {
   type PrepareShared,
   LOCK_FINISHED_NOTE,
   LOCK_LIVE_NOTE,
+  CANCELLED_PART_WAY,
+  cancelledPartWay,
   LOCK_LEFT_MESSAGE,
   lockHolderText,
   REVIEW_EXPIRED_MESSAGE,
@@ -747,7 +749,7 @@ export class ReleaseService {
       this.recordDeployedRuns(live, res.out)
       if (live.cancelRequested || res.out?.cancelled) {
         status = 'cancelled'
-        error = 'Cancelled'
+        error = this.cancelledText(live, c.infos, res.out)
       } else if (res.err !== null || !res.out || this.failed(res.out)) {
         error = this.prepareFailed(live, c.infos, plan, res.out) ?? this.reason(live, res.out, res.err, 'Release')
         status = 'failed'
@@ -1065,10 +1067,12 @@ export class ReleaseService {
     await this.guard(actor, 'release.rollback', 'release.rollback', env, this.depIds(src), releaseId)
     if (src.operation !== null) throw new DeployError('INVALID_STATE', 'An operation deploys nothing, so it cannot be rolled back')
     if (src.kind !== 'release') throw new DeployError('INVALID_STATE', 'Only a release can be rolled back')
-    if (src.status !== 'succeeded' && src.status !== 'failed' && src.status !== 'rolled_back') throw new DeployError('INVALID_STATE', `This release is ${src.status}`)
-    // The runs the rollback rebuilds, last first: each checks out its run's previous commit.
+    if (src.status !== 'succeeded' && src.status !== 'failed' && src.status !== 'rolled_back' && !cancelledPartWay(src)) throw new DeployError('INVALID_STATE', `This release is ${src.status}`)
+    // The runs the rollback rebuilds, last first: each checks out its run's previous commit. A run a cancel cut
+    // short counts once its checkout started.
+    const tookCode = (r: DeploymentRunMeta) => r.status === 'succeeded' || r.status === 'failed' || (r.status === 'cancelled' && r.steps.some((s) => s.kind === 'checkout' && s.state !== 'pending' && s.state !== 'skipped'))
     const eligible = src.runs
-      .filter((r) => (r.status === 'succeeded' || r.status === 'failed') && r.previousCommit !== null && SHA.test(r.previousCommit) && r.deploymentId !== null)
+      .filter((r) => tookCode(r) && r.previousCommit !== null && SHA.test(r.previousCommit) && r.deploymentId !== null)
       .reverse()
     this.assertStillCurrent(src, eligible)
     this.confirmProtected(actor, 'release.rollback', src, env, src.runs.map((r) => r.hostId).filter((h): h is string => h !== null), confirm.typedName)
@@ -1582,6 +1586,22 @@ export class ReleaseService {
     return [
       ...(unknown.length > 0 ? [`; auto-rollback skipped ${unknown.join(', ')}: the previous commit could not be read, so ${unknown.length === 1 ? 'it stays' : 'they stay'} on the new code`] : []),
       ...(first.length > 0 ? [`; ${first.join(', ')} had no earlier deploy to roll back to`] : []),
+    ].join('')
+  }
+
+  /** A cancel after some checkout took new code names those deployments: their hosts may be half-applied. */
+  private cancelledText(live: Live, infos: Info[], out: RunOutcome | null): string {
+    const reached = new Set([...(out?.reachedCheckout ?? []), ...(out?.reachedUp ?? []), ...live.checkedOut, ...live.upped])
+    const runs = new Map(this.d.releases.detail(live.id).runs.map((r) => [r.id, r]))
+    const hit = infos.filter((i) => reached.has(i.run.id))
+    if (hit.length === 0) return 'Cancelled'
+    const back = hit.filter((i) => SHA.test(runs.get(i.run.id)?.previousCommit ?? '')).map((i) => i.dep.name)
+    const first = hit.filter((i) => !back.includes(i.dep.name)).map((i) => i.dep.name)
+    const them = (n: string[]) => (n.length === 1 ? 'it' : 'them')
+    return [
+      `${CANCELLED_PART_WAY}: ${hit.map((i) => i.dep.name).join(', ')} had started deploying and may be half-applied (new code checked out, some services up)`,
+      ...(back.length > 0 ? [`; roll this release back to return ${back.length === hit.length ? them(back) : back.join(', ')} to the previous commit`] : []),
+      ...(first.length > 0 ? [`; ${first.join(', ')} had no previous commit to go back to`] : []),
     ].join('')
   }
 

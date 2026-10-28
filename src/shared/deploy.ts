@@ -715,6 +715,9 @@ export const REVIEW_EXPIRED_MESSAGE = `Your review is more than ${REVIEW_TTL_MS 
 /** A start with an edited playbook whose text no longer passes the checks (the first problem follows). */
 export const EDIT_INVALID_MESSAGE = 'The edited playbook does not pass its checks; fix it and review again'
 /** The release notes of a rollback (manual or automatic) of a release that ran an edited playbook. */
+/** Starts the error of a release cancelled after some checkout took new code; such a release can be rolled back. */
+export const CANCELLED_PART_WAY = 'Cancelled part way'
+export const cancelledPartWay = (r: { status: ReleaseStatus; error: string | null }): boolean => r.status === 'cancelled' && r.error?.startsWith(CANCELLED_PART_WAY) === true
 export const ROLLBACK_GENERATED_NOTE = 'This release ran an edited playbook; the rollback uses the generated one.'
 /** A problem `release:validateEdit` found, at a 1-based line of the edited text. */
 export interface PlaybookEditError {

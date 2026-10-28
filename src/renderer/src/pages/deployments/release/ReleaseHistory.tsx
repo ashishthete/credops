@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { useNavigate } from 'react-router'
-import type { ReleaseStatus, ReleaseSummary } from '../../../../../shared/deploy'
+import { cancelledPartWay, type ReleaseStatus, type ReleaseSummary } from '../../../../../shared/deploy'
 import { listNames } from '../../../../../shared/services'
 import { loadHistory, releaseStore, startReleaseSync } from '../../../deploy/releases'
 import { deployStore } from '../../../deploy/store'
@@ -50,11 +50,11 @@ export function duration(r: ReleaseSummary, now = Date.now()): string | null {
 }
 
 /**
- * A finished release can be rolled back while it is still the newest started release for every one of its
+ * A finished release (or one cancelled part way) can be rolled back while it is still the newest started release for every one of its
  * services. `history` is newest first. Main checks the same rule again.
  */
 export function canRollback(r: ReleaseSummary, history: ReleaseSummary[]): boolean {
-  if (r.operation || r.kind !== 'release' || (r.status !== 'succeeded' && r.status !== 'failed') || !r.serviceIds.length) return false
+  if (r.operation || r.kind !== 'release' || (r.status !== 'succeeded' && r.status !== 'failed' && !cancelledPartWay(r)) || !r.serviceIds.length) return false
   return r.serviceIds.every((id) => history.find((x) => x.startedAt !== null && x.serviceIds.includes(id))?.id === r.id)
 }
 
