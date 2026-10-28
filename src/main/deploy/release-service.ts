@@ -5,6 +5,8 @@ import {
   MAX_ACTIVE_RELEASES,
   NOTHING_SELECTED_MESSAGE,
   REDEPLOY_CONFIRM_MESSAGE,
+  ROLLBACK_FROM,
+  rollbackRun,
   STEP_SECRET_UNUSED_MESSAGE,
   bumpVersion,
   parseEnvTemplate,
@@ -626,12 +628,16 @@ export class ReleaseService {
     }
     const live = this.register(releaseId, env, 'release', rel.version ?? 'release', actor)
     let run: { infos: Info[]; holder: Holder; tag: string | null; autoRollback: boolean; previousVersion: string | null; version: string | null; edited: boolean }
+    // Once the row says running, a throw must finish it: otherwise it stays running with nothing live behind it.
+    let running = false
+    let held: Holder | null = null
     try {
       this.dropPreviews(releaseId)
       // The skips stay in memory until the last step that can refuse (decrypting) has passed.
       const infos = this.infosFor(rel, skips)
       const settings = this.d.deploys.settings(env.id)
       const holder = this.resolveSecrets(infos, { env: true, scope: 'release', flow: built.plan.flow })
+      held = holder
       live.known = holder.secrets?.known ?? []
       const { playbook, version, docker } = built
       const plan: DeployPlan = edit === null ? built.plan : { ...built.plan, playbookText: edit.text }
@@ -648,6 +654,7 @@ export class ReleaseService {
         })
         return out
       })
+      running = true
       // In memory only once the rows are written.
       for (const [runId, steps] of skippedSteps) this.steps.set(runId, steps)
       for (const { run } of infos) if (!this.steps.has(run.id)) this.steps.set(run.id, run.steps.map((x) => ({ ...x })))
@@ -669,6 +676,8 @@ export class ReleaseService {
       if (edit !== null) this.audit('playbook.edited', 'success', live, { lineDelta: edit.lineDelta })
       live.done = this.runRelease(live, run, plan, docker, rel.options.backup).catch((e: unknown) => this.crash(live, e)).finally(() => this.unregister(live))
     } catch (e) {
+      if (running) this.failStart(live, e, held)
+      else this.drop(held)
       this.unregister(live)
       throw e
     }
@@ -825,12 +834,16 @@ export class ReleaseService {
     const live = this.register(releaseId, env, 'release', op.name, actor)
     live.op = op
     live.lockFree = lockFree
+    let running = false
+    let held: Holder | null = null
     try {
       this.dropPreviews(releaseId)
       const infos = this.infosFor(rel)
       const holder = this.opSecrets(infos, built.rb, op.params, true)
+      held = holder
       live.known = holder.secrets?.known ?? []
       this.d.releases.setStatus(releaseId, 'running', { startedAt: this.d.now().toISOString(), ...this.playbookFields(built.playbook, edit) })
+      running = true
       for (const { run } of infos) if (!this.steps.has(run.id)) this.steps.set(run.id, run.steps.map((x) => ({ ...x })))
       for (const i of infos) live.runIds.add(i.run.id)
       this.emitState(releaseId)
@@ -838,6 +851,8 @@ export class ReleaseService {
       if (edit !== null) this.audit('playbook.edited', 'success', live, { lineDelta: edit.lineDelta })
       live.done = this.runOperation(live, infos, holder, edit === null ? built.plan : { ...built.plan, playbookText: edit.text }).catch((e: unknown) => this.crash(live, e)).finally(() => this.unregister(live))
     } catch (e) {
+      if (running) this.failStart(live, e, held)
+      else this.drop(held)
       this.unregister(live)
       throw e
     }
@@ -1068,17 +1083,23 @@ export class ReleaseService {
     await this.guard(actor, 'release.rollback', 'release.rollback', env, this.depIds(src), releaseId)
     if (src.operation !== null) throw new DeployError('INVALID_STATE', 'An operation deploys nothing, so it cannot be rolled back')
     if (src.kind !== 'release') throw new DeployError('INVALID_STATE', 'Only a release can be rolled back')
-    if (src.status !== 'succeeded' && src.status !== 'failed' && src.status !== 'rolled_back' && !cancelledPartWay(src)) throw new DeployError('INVALID_STATE', `This release is ${src.status}`)
-    // The runs the rollback rebuilds, last first: each checks out its run's previous commit. A run a cancel cut
-    // short counts once its checkout started.
-    const tookCode = (r: DeploymentRunMeta) => r.status === 'succeeded' || r.status === 'failed' || (r.status === 'cancelled' && r.steps.some((s) => s.kind === 'checkout' && s.state !== 'pending' && s.state !== 'skipped'))
+    if (!ROLLBACK_FROM.includes(src.status)) throw new DeployError('INVALID_STATE', `This release is ${src.status}`)
+    // The runs the rollback rebuilds, last first: each checks out its run's previous commit. A cancelled release's
+    // runs count once their checkout started (rollbackRun): the cancel skipped the auto-rollback.
     const eligible = src.runs
-      .filter((r) => tookCode(r) && r.previousCommit !== null && SHA.test(r.previousCommit) && r.deploymentId !== null)
+      .filter((r) => rollbackRun(src.status, r) && r.previousCommit !== null && SHA.test(r.previousCommit) && r.deploymentId !== null)
       .reverse()
     this.assertStillCurrent(src, eligible)
     this.confirmProtected(actor, 'release.rollback', src, env, src.runs.map((r) => r.hostId).filter((h): h is string => h !== null), confirm.typedName)
     if (eligible.length === 0) {
-      throw new DeployError('INVALID_STATE', src.status === 'rolled_back' ? 'Nothing to roll back: this release was already rolled back' : 'Nothing to roll back: every deployment was a first deploy')
+      throw new DeployError(
+        'INVALID_STATE',
+        src.status === 'rolled_back'
+          ? 'Nothing to roll back: this release was already rolled back'
+          : src.status === 'cancelled' && !src.runs.some((r) => rollbackRun(src.status, r))
+            ? 'Nothing to roll back: the release was cancelled before any checkout changed'
+            : 'Nothing to roll back: every deployment was a first deploy',
+      )
     }
 
     this.assertCapacity(env)
@@ -1220,6 +1241,18 @@ export class ReleaseService {
     return { ...report, checks, locks }
   }
 
+  /** True when the lock holder is a release this app is still driving, or whose row still says it runs. */
+  private holderActive(holderId: string): boolean {
+    if (!holderId) return false
+    if (this.live.has(holderId)) return true
+    try {
+      const st = this.d.releases.get(holderId).status
+      return st === 'running' || st === 'rolling_back'
+    } catch {
+      return false // another machine's release, or a row since removed
+    }
+  }
+
   async breakLock(releaseId: string, hostId: string, confirm: BreakLockConfirm, ctx?: CallCtx): Promise<void> {
     const actor = ctx?.actor ?? this.d.actor
     this.d.vault.assertUnlocked()
@@ -1237,6 +1270,10 @@ export class ReleaseService {
     if (!lock.stale) {
       const minutes = Math.max(0, Math.floor((this.d.now().getTime() - Date.parse(lock.holder.startedAt)) / 60000))
       throw new DeployError('INVALID_STATE', STALE_TEXT(minutes, `${lock.holder.user}@${lock.holder.machine}`))
+    }
+    // Age alone is not proof the holder died: the lock is never refreshed and a long build outlives LOCK_STALE_MS.
+    if (this.holderActive(lock.holder.releaseId)) {
+      throw new DeployError('INVALID_STATE', `The release holding this lock is still running here. Cancel it or wait for it to finish instead of breaking its lock.`)
     }
     if (confirm.typedLabel !== label) {
       this.auditRelease(actor, 'deploy.lock_break', 'denied', releaseId, env.name, rel.version ?? 'release', { reason: 'confirm', hostCount: 1 })
@@ -1359,14 +1396,18 @@ export class ReleaseService {
     }
     this.assertCapacity(env)
     const live = this.register(releaseId, env, 'version', rel.version ?? 'release', actor)
+    let running = false
     try {
       const infos = this.infosOf(rel)
       for (const i of infos) live.runIds.add(i.run.id)
       const tag = rel.version as string
       this.setStatus(releaseId, 'running', { error: null, finishedAt: null })
+      running = true
       this.audit('release.start', 'success', live, { kind: 'release', version: rel.version, bump: 'none', redeploy: false, retryVersion: true, deployments: infos.map((i) => i.dep.id), hostCount: this.hostCount(infos), ...this.counts(infos), credentialIds: [] })
       live.done = this.runRetry(live, infos, tag, rel.previousVersion).catch((e: unknown) => this.crash(live, e)).finally(() => this.unregister(live))
     } catch (e) {
+      // Still a failed tag, so the retry stays on offer.
+      if (running) this.failStart(live, e, null, `${TAG_FAILED} ${rel.version as string} failed: `)
       this.unregister(live)
       throw e
     }
@@ -1505,6 +1546,19 @@ export class ReleaseService {
   }
 
   /** A throw nothing else caught: end the row failed instead of leaving it preflight/running with an unhandled rejection. */
+  /**
+   * A start that threw after its row was set running: nothing ran on a host, so no lock was taken. The row ends
+   * failed (and the secrets are dropped) instead of staying running until the next launch's recovery.
+   */
+  private failStart(live: Live, e: unknown, holder: Holder | null, prefix = ''): void {
+    try {
+      this.finish(live, 'failed', prefix + (e instanceof Error ? e.message : String(e)), null, holder)
+    } catch {
+      /* the store itself is failing; startup recovery will mark the row */
+      this.drop(holder)
+    }
+  }
+
   private crash(live: Live, e: unknown): void {
     try {
       const status = this.d.releases.get(live.id).status

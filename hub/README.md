@@ -79,12 +79,15 @@ Write `/etc/credops-hub/hub.config.json` (see `hub/hub.config.example.json`):
     "clientId": "<application id>",
     "redirectUri": "http://127.0.0.1/callback"
   },
-  "firstAdmin": { "upn": "you@example.com" },
+  "firstAdmin": { "oid": "<your Entra object id>" },
+  "trustProxy": ["127.0.0.1"],
   "masterKeyFile": "${CREDENTIALS_DIRECTORY}/master-key"
 }
 ```
 
-The Hub listens on loopback and Caddy terminates TLS. `${CREDENTIALS_DIRECTORY}` is filled in from
+The Hub listens on loopback and Caddy terminates TLS. `trustProxy` lists the proxy addresses whose
+`X-Forwarded-For` the Hub believes, so sign-in attempts are counted per real client (`sessionRateLimitPerMinute`,
+default 20 per address) rather than all as Caddy's; leave it out when nothing sits in front of the Hub. `${CREDENTIALS_DIRECTORY}` is filled in from
 systemd's `LoadCredential=` (the unit hands over `/etc/credops-hub/master.key`). systemd leaves that copy
 owned by root with the Hub user's access granted by ACL, so for a file inside `$CREDENTIALS_DIRECTORY` the Hub
 accepts owner root or the Hub user, no write bits and no "other" bits, instead of the strict 0600 check. This
@@ -125,7 +128,8 @@ sudo systemctl status credops-hub
 ```
 
 The first person to sign in whose object id (or UPN) matches `firstAdmin` becomes an admin. Prefer
-`firstAdmin.oid`: a UPN can be renamed or reassigned, an object id cannot. A matching person is promoted
+`firstAdmin.oid`: a UPN can be renamed or reassigned, an object id cannot. When `oid` is set, `upn` is ignored;
+a config with `upn` alone still works, but the Hub logs a warning at startup (and `check-config` prints one). A matching person is promoted
 again only when the Hub has no enabled admin, so remove or change `firstAdmin` afterwards if you do not
 want that recovery path. In CredOps, open **Hub** in the sidebar, enter the Hub URL and sign in. The Hub
 section then shows the tabs Overview, People, Groups, Environments, Secrets and Audit. Create groups, add

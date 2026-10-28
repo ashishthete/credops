@@ -9,6 +9,6 @@
     "clientId": "00000000-0000-4000-8000-0000000000bb",
     "redirectUri": "http://127.0.0.1/callback"
   },
-  "firstAdmin": { "upn": "admin@example.com" },
+  "firstAdmin": { "oid": "00000000-0000-4000-8000-0000000000cc" },
   "sessionTtlHours": 12
 }

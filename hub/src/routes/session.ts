@@ -6,6 +6,7 @@ import { bearerOf, makeAuth } from '../auth/plugin'
 import { AuthError, type EntraVerifier } from '../auth/entra'
 import type { SessionStore } from '../auth/sessions'
 import { HubHttpError } from '../errors'
+import type { Coalescer, RateLimiter } from '../ratelimit'
 
 export interface SessionRouteDeps {
   audit: HubAudit
@@ -13,14 +14,30 @@ export interface SessionRouteDeps {
   sessions: SessionStore
   directory: Directory
   now: () => Date
+  /** Sign-in attempts per client address. */
+  limiter: RateLimiter
+  /** One full `session.denied` row per client address per window; the rest are summarised (see buildApp). */
+  denials: Coalescer
 }
 
 export function registerSession(app: FastifyInstance, deps: SessionRouteDeps, auth: ReturnType<typeof makeAuth>): void {
 
+  // Unauthenticated denials are written once per address per window, so a caller cannot flood the append-only log.
+  const denied = (ip: string, reason: string): void => {
+    if (deps.denials.first(ip)) {
+      deps.audit.append({ action: 'session.denied', outcome: 'denied', actor: null, details: { reason, ip } })
+    }
+  }
+
   app.post('/api/v1/session', async (req, reply) => {
+    const limit = deps.limiter.hit(req.ip)
+    if (!limit.allowed) {
+      void reply.header('retry-after', String(Math.max(1, Math.ceil(limit.retryAfterMs / 1000))))
+      throw new HubHttpError(429, 'unavailable', 'Too many sign-in attempts; try again shortly')
+    }
     const entraToken = bearerOf(req)
     if (!entraToken) {
-      deps.audit.append({ action: 'session.denied', outcome: 'denied', actor: null, details: { reason: 'missing' } })
+      denied(req.ip, 'missing')
       throw new HubHttpError(401, 'unauthenticated', 'Sign in with Microsoft')
     }
     let identity
@@ -28,7 +45,7 @@ export function registerSession(app: FastifyInstance, deps: SessionRouteDeps, au
       identity = await deps.verifier.verify(entraToken)
     } catch (err) {
       const reason = err instanceof AuthError ? err.reason : 'jwks'
-      deps.audit.append({ action: 'session.denied', outcome: 'denied', actor: null, details: { reason } })
+      denied(req.ip, reason)
       throw new HubHttpError(401, 'unauthenticated', 'Microsoft sign-in token was not accepted')
     }
     const { user, created, bootstrapped, recovery, previousRole } = deps.directory.upsertOnSignIn(identity)

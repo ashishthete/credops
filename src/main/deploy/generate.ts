@@ -318,19 +318,43 @@ const LOG_SETUP = [
   'umask 022',
 ].join('\n')
 
+/** The suffix of a step's process-group file in the run dir; the unlock walks `od-*${STEP_GROUP_EXT}` there. */
+const STEP_GROUP_EXT = '.pgid'
+
+/**
+ * Records the step shell's process group in `<run dir>/od-<run>-<kind>.pgid` (`log` names the stream.log variable),
+ * so an unlock after a cancel can stop a step whose controller went away: without a pty, nothing else ends it on the
+ * host. Sshd starts each command in its own session, so the group is this task's alone. The group comes from ps,
+ * else /proc (BusyBox ps has no -o pgid), else the shell's own pid, as the parallel prepare's build launch records
+ * it. The file name is in this shell's argv, which is how the unlock tells the group is still this step's. `od_pf`
+ * is removed by stepGroupDone once the body ends.
+ */
+const stepGroup = (log: string, kind: string): string =>
+  [
+    "od_g=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')",
+    "case \"$od_g\" in ''|*[!0-9]*) od_g=$(sed 's/.*) //' /proc/$$/stat 2>/dev/null | cut -d' ' -f3);; esac",
+    "case \"$od_g\" in ''|*[!0-9]*) od_g=$$;; esac",
+    `od_pf="\${${log}%/*}/od-{{ d.run }}-${kind}${STEP_GROUP_EXT}"`,
+    `if [ "$od_g" -gt 1 ]; then { printf '%s' "$od_g" > "$od_pf"; } 2>/dev/null || true; fi`,
+  ].join('\n')
+const STEP_GROUP_DONE = 'rm -f "$od_pf" 2>/dev/null'
+
 /**
  * Runs `body` with its output appended to stream.log, each line prefixed `<run>:<kind>\t` (a plain bash
  * read loop: no GNU sed -u). The exit code is the body's. On failure the step's own last 40 lines are
- * printed so the failure carries context; `post` runs only on success, outside the log.
+ * printed so the failure carries context; `post` runs only on success, outside the log. While the body runs its
+ * process group is recorded in the run dir (stepGroup), for the unlock to stop after a cancel.
  */
 export function streamed(kind: string, body: string, o: { pre?: string; post?: string } = {}): string {
   return [
     ...(o.pre ? [o.pre] : []),
     LOG_SETUP,
     `P="{{ d.run }}:${kind}"`,
+    stepGroup('L', kind),
     '(',
     body,
     `) 2>&1 | while IFS= read -r l || [ -n "$l" ]; do printf '%s\\t%s\\n' "$P" "$l"; done >> "$L"; rc=\${PIPESTATUS[0]}`,
+    STEP_GROUP_DONE,
     `if [ "$rc" -ne 0 ]; then grep -F "$P"$'\\t' "$L" | tail -n 40; fi`,
     ...(o.post ? [`if [ "$rc" -eq 0 ]; then ${o.post}; fi`] : []),
     'exit "$rc"',
@@ -517,9 +541,11 @@ function stepStreamed(key: string, body: string, o: { pre?: string; cont: boolea
     'umask 022',
     `od_p="{{ d.run }}:${key}"`,
     ...(o.pre ? [o.pre] : []),
+    stepGroup('od_l', key),
     '(',
     body,
     `) 2>&1 | while IFS= read -r od_l1 || [ -n "$od_l1" ]; do printf '%s\\t%s\\n' "$od_p" "$od_l1"; done >> "$od_l"; rc=\${PIPESTATUS[0]}`,
+    STEP_GROUP_DONE,
     `if [ "$rc" -ne 0 ]; then grep -F "$od_p"$'\\t' "$od_l" | tail -n 40; fi`,
     ...(o.cont ? [`if [ "$rc" -ne 0 ]; then echo "OD-STEP rc=$rc"; ${streamLine('OD-STEP rc=$rc')}; fi`] : []),
     'exit "$rc"',
@@ -715,13 +741,44 @@ const KILL_BUILDS = [
   'done',
 ].join('\n')
 
-/** Unlock releases only locks this release holds; break-lock only locks whose content equals the expected raw. */
+/**
+ * Stops every step a cancel left running on the host: each streamed step records its process group in the run dir
+ * (stepGroup) and removes the file when it ends, so a file left behind is a step whose controller went away. The
+ * group is signalled only while it is still that step's (the same check as KILL_BUILDS). As the user first; if any
+ * member is left after a few seconds (a step under become runs as root), with sudo. It waits for the group to go,
+ * so the lock is not released under a step that still runs, and says when it could not stop one.
+ */
+const KILL_STEPS = [
+  "me=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')",
+  // group $g still has a member: any but a zombie, which only waits for its parent to reap it
+  "left() { ps -eo pgid=,stat= 2>/dev/null | awk -v g=\"$g\" '$1 == g && $2 !~ /^Z/' | grep -q .; }",
+  `for p in ${odRunDir}/od-*${STEP_GROUP_EXT}; do`,
+  '  [ -f "$p" ] || continue',
+  '  m="${p##*/}"',
+  '  g=$(cat "$p" 2>/dev/null)',
+  '  ours=',
+  '  case "$g" in \'\'|*[!0-9]*) ;; *) if [ "$g" -gt 1 ] && [ "$g" != "$me" ] && ps -eo pgid=,args= 2>/dev/null | awk -v g="$g" \'$1 == g\' | grep -qF -- "$m"; then ours=1; fi;; esac',
+  '  if [ -n "$ours" ]; then',
+  '    kill -TERM -- "-$g" 2>/dev/null',
+  '    n=0; while [ "$n" -lt 5 ] && left; do sleep 1; n=$((n+1)); done',
+  '    if left; then sudo -n kill -TERM -- "-$g" 2>/dev/null; sleep 2; fi',
+  '    if left; then echo "CredOps warning: could not stop step process group $g ($m)"; else echo "stopped step process group $g"; fi',
+  '  fi',
+  '  rm -f "$p" 2>/dev/null || sudo -n rm -f "$p" 2>/dev/null || true',
+  'done',
+].join('\n')
+
+/**
+ * Unlock releases only locks this release holds; break-lock only locks whose content equals the expected raw.
+ * An unlock first stops what a cancel left running: a parallel prepare's builds (`kill`) and any streamed step.
+ */
 export function taskUnlock(h: PlanHost, breakLock: boolean, kill = false): Task {
   const guard = breakLock
     ? '[ "$cur" = "$(echo {{ od.expect_b64 | quote }} | base64 -d)" ]'
     : 'case "$cur" in *\'"releaseId":"{{ od.rel }}"\'*) true;; *) false;; esac'
   const cmd = [
     ...(kill ? [KILL_BUILDS] : []),
+    ...(breakLock ? [] : [KILL_STEPS]),
     'rc=0',
     ...EACH_CHECKOUT,
     '  cur=$(cat "$f" 2>/dev/null)',

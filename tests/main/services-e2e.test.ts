@@ -15,7 +15,7 @@ import { SecretStore } from '../../src/main/vault/secret-store'
 import { DEFAULT_RELEASE_OPTIONS, type ReleaseConfirm, type StepKind } from '../../src/shared/deploy'
 import type { AppServiceMeta, ServiceMeta } from '../../src/shared/services'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
-import { FakeAnsible, TOOLS_OK, fakeAgent, fakePrepare, fakeTap, makeDeployFixture, memFs, scriptFromPlaybook } from './deploy-helpers'
+import { FakeAnsible, TOOLS_OK, fakeAgent, fakePrepare, fakeTap, makeDeployFixture, memFs, scriptFromPlaybook, openVault } from './deploy-helpers'
 import { makeInventory, REGION } from './inventory-helpers'
 
 const P0 = '1'.repeat(40)
@@ -101,7 +101,7 @@ async function world() {
     results.push(r)
     return r
   }
-  const deployIpc = createDeployHandlers({ deploys: f.deploys, releases: svc, tooling: async () => TOOLS_OK })
+  const deployIpc = createDeployHandlers({ vault: openVault(), deploys: f.deploys, releases: svc, tooling: async () => TOOLS_OK })
   const serviceIpc = createServiceHandlers({
     services: f.services,
     copy: (req) => copyServices({ db: f.db, deploys: f.deploys, services: f.services, audit: f.audit, vault: f.vault }, req),

@@ -287,6 +287,82 @@ describe('ReleaseService', () => {
     await expect(r.svc.rollback(releaseId, {})).rejects.toThrow('Only a release can be rolled back')
   })
 
+  it('a cancelled release rolls back the runs whose checkout started, and refuses when none did', async () => {
+    const r = await rig()
+    const deps = [dep(r, 'one'), dep(r, 'two')]
+    const g = gate()
+    r.runner.onCancel = g.open
+    const inCheckout = gate()
+    r.runner.on.release = async (plan, _s, emit) => {
+      const [r1, r2] = runIds(plan)
+      emit({ type: 'deployment.updated', deploymentRunId: r1, status: 'running', previousCommit: A })
+      emit({ type: 'step.started', stepId: `${r1}:checkout`, kind: 'checkout', name: 'Checkout one', hostId: r.f.host.id, deploymentRunId: r1 })
+      // two's commit is known, but its checkout never started.
+      emit({ type: 'deployment.updated', deploymentRunId: r2, status: 'running', previousCommit: B })
+      inCheckout.open()
+      await g.p
+      return { cancelled: true, exitCode: null }
+    }
+    const id = await ready(r, deps)
+    await r.svc.start(id, {})
+    await inCheckout.p
+    await r.svc.cancel(id)
+    await r.svc.whenIdle()
+    expect(r.svc.detail(id).status).toBe('cancelled')
+    const { releaseId } = await r.svc.rollback(id, {})
+    await r.svc.whenIdle()
+    const plan = r.runner.call('rollback')
+    expect(plan.deployments.map((d) => [d.name, d.previousCommit])).toEqual([['one', A]])
+    expect(r.svc.detail(releaseId)).toMatchObject({ kind: 'rollback', rollbackOf: id, status: 'succeeded' })
+
+    // Cancelled before any checkout: nothing moved, so nothing to roll back.
+    const g2 = gate()
+    r.runner.onCancel = g2.open
+    const started = gate()
+    r.runner.on.release = async (plan, _s, emit) => {
+      emit({ type: 'deployment.updated', deploymentRunId: runIds(plan)[0], status: 'running', previousCommit: A })
+      started.open()
+      await g2.p
+      return { cancelled: true, exitCode: null }
+    }
+    const early = await ready(r, deps)
+    await r.svc.start(early, {})
+    await started.p
+    await r.svc.cancel(early)
+    await r.svc.whenIdle()
+    expect(r.svc.detail(early).status).toBe('cancelled')
+    await expect(r.svc.rollback(early, {})).rejects.toThrow('Nothing to roll back: the release was cancelled before any checkout changed')
+  })
+
+  it('a start that throws after its row went running ends the release failed, and the next start is not blocked', async () => {
+    const r = await rig()
+    const id = await ready(r)
+    const append = r.f.audit.append.bind(r.f.audit)
+    const spy = vi.spyOn(r.f.audit, 'append').mockImplementation((row) => {
+      if (row.action === 'release.start') throw new Error('audit disk full')
+      return append(row)
+    })
+    await expect(r.svc.start(id, {})).rejects.toThrow('audit disk full')
+    expect(r.svc.detail(id)).toMatchObject({ status: 'failed', error: 'audit disk full' })
+    expect(r.svc.hasActive()).toBe(false)
+    expect(r.runner.kinds).toEqual(['preflight'])
+    expect(r.svc.events(id, 0).find((e) => e.type === 'run.finished')).toMatchObject({ status: 'failed' })
+    spy.mockRestore()
+
+    // A failure before the row moved leaves it ready.
+    const next = await ready(r, [r.f.deploys.list(r.f.staging.id)[0]])
+    const before = vi.spyOn(r.f.audit, 'append').mockImplementation(() => {
+      throw new Error('never')
+    })
+    vi.spyOn(r.f.releases, 'setStatus').mockImplementationOnce(() => {
+      throw new Error('row write failed')
+    })
+    await expect(r.svc.start(next, {})).rejects.toThrow('row write failed')
+    before.mockRestore()
+    expect(r.svc.detail(next).status).toBe('ready')
+    expect(r.svc.hasActive()).toBe(false)
+  })
+
   it('unlock always runs', async () => {
     const scenarios: [string, (r: Rig) => Promise<void>][] = [
       ['success', async () => undefined],
@@ -378,7 +454,7 @@ describe('ReleaseService', () => {
     await r.svc.cancel(id)
     await r.svc.whenIdle()
     expect(r.svc.detail(id).error).toBe('Cancelled')
-    await expect(r.svc.rollback(id, {})).rejects.toThrow('This release is cancelled')
+    await expect(r.svc.rollback(id, {})).rejects.toThrow('Nothing to roll back: the release was cancelled before any checkout changed')
   })
 
   it('a vault reset cancels a running release, and still releases the deploy lock', async () => {
@@ -533,6 +609,33 @@ describe('ReleaseService', () => {
     expect(d.status).toBe('ready')
     expect(d.preflight?.locks[r.f.host.id]).toBeNull()
     expect(audits(r, 'deploy.lock_break').map((e) => e.outcome).sort()).toEqual(['denied', 'success'])
+  })
+
+  it('break-lock refuses a stale-looking lock whose holder release is still running', async () => {
+    const r = await rig()
+    const g = gate()
+    r.runner.on.release = async () => {
+      await g.p
+    }
+    // A long build in prod holds the host's lock past LOCK_STALE_MS.
+    r.f.envs.putHost(r.f.prod.id, r.f.host.id, 'app')
+    const prodId = await ready(r, [dep(r, 'api-prod', { environmentId: r.f.prod.id, deployTag: 'deploy_prod' })], { envId: r.f.prod.id })
+    await r.svc.start(prodId, { typedName: 'prod' })
+    const holder = (releaseId: string) => ({ releaseId, user: 'ana', machine: 'mbp', environment: 'prod', version: null, startedAt: new Date(NOW - 300 * 60000).toISOString() })
+    r.runner.locks = { [r.f.host.id]: { holder: holder(prodId), stale: true, raw: 'raw-live' } }
+    const blocked = await ready(r)
+    const err = await r.svc.breakLock(blocked, r.f.host.id, { typedLabel: 'app1' }).catch((e: unknown) => e)
+    expect((err as DeployError).code).toBe('INVALID_STATE')
+    expect((err as DeployError).message).toMatch(/still running/)
+    expect(r.runner.kinds).not.toContain('break-lock')
+    g.open()
+    await r.svc.whenIdle()
+
+    // A row still marked running (nothing here drives it) is refused too.
+    r.f.releases.setStatus(prodId, 'rolling_back')
+    const again = await ready(r, [r.f.deploys.list(r.f.staging.id)[0]])
+    await expect(r.svc.breakLock(again, r.f.host.id, { typedLabel: 'app1' })).rejects.toThrow(/still running/)
+    expect(r.runner.kinds).not.toContain('break-lock')
   })
 
   it('one active release per environment; MAX_ACTIVE_RELEASES', async () => {
@@ -2255,7 +2358,9 @@ describe('ReleaseService operations', () => {
     expect(unlocks.map((p) => p.releaseId)).toEqual([bad, stopped])
     for (const p of unlocks) {
       expect(p).not.toHaveProperty('killBuilds')
-      expect(generatePlaybook(p)).not.toMatch(/kill_pids|kill -/)
+      expect(generatePlaybook(p)).not.toMatch(/kill_pids|opsdeck-build-/)
+      // what it does stop is a streamed step the cancel left running
+      expect(generatePlaybook(p)).toContain('od-*.pgid')
     }
     // The same unlock with builds to stop does carry the kill, so the check above is not vacuous.
     const withKill = { ...unlocks[0], killBuilds: [{ runId: unlocks[0].deployments[0]?.runId ?? 'r', repoPath: '/srv/api' }] }

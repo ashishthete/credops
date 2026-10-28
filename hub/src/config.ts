@@ -22,6 +22,21 @@ export interface HubConfig {
   runRoot?: string
   /** Lets a Hub admin edit a release's playbook before it starts. Off unless set; only admins can use it. */
   allowPlaybookEdits?: boolean
+  /** Sign-in attempts (POST /api/v1/session) allowed per client address per minute; defaults to 20. */
+  sessionRateLimitPerMinute?: number
+  /**
+   * Proxy addresses (IPs or CIDRs) whose X-Forwarded-For is believed, so the client address (the sign-in rate-limit
+   * key) is the real caller's behind Caddy. Off unless set: then the socket address is used.
+   */
+  trustProxy?: string[]
+}
+
+export const DEFAULT_SESSION_RATE_LIMIT_PER_MINUTE = 20
+
+/** Startup advice when the first admin is matched by UPN alone, which can be renamed or reassigned to someone else. */
+export function firstAdminWarning(c: Pick<HubConfig, 'firstAdmin'>): string | null {
+  if (c.firstAdmin.oid !== undefined || c.firstAdmin.upn === undefined) return null
+  return 'firstAdmin is matched by upn only; a UPN can be renamed or reassigned. Set firstAdmin.oid (the Entra object id) instead.'
 }
 
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -102,6 +117,7 @@ export function loadConfig(file: string): HubConfig {
   const fa = obj(root.firstAdmin, 'firstAdmin')
   const firstAdmin: HubConfig['firstAdmin'] = {}
   if (fa.oid !== undefined) firstAdmin.oid = str(fa.oid, 'firstAdmin.oid')
+  if (firstAdmin.oid !== undefined && !GUID.test(firstAdmin.oid)) bad('firstAdmin.oid', 'must be a GUID (the Entra object id)')
   if (fa.upn !== undefined) firstAdmin.upn = str(fa.upn, 'firstAdmin.upn')
   if (!firstAdmin.oid && !firstAdmin.upn) bad('firstAdmin', 'needs oid or upn')
 
@@ -125,6 +141,27 @@ export function loadConfig(file: string): HubConfig {
   if (root.allowPlaybookEdits !== undefined && typeof root.allowPlaybookEdits !== 'boolean') bad('allowPlaybookEdits', 'must be true or false')
   const allowPlaybookEdits = root.allowPlaybookEdits === true
 
+  const rate = root.sessionRateLimitPerMinute
+  if (rate !== undefined && (typeof rate !== 'number' || !Number.isInteger(rate) || rate < 1 || rate > 10_000)) {
+    bad('sessionRateLimitPerMinute', 'must be 1-10000')
+  }
+
+  let trustProxy: string[] | undefined
+  if (root.trustProxy !== undefined) {
+    const t = root.trustProxy
+    const isAddr = (v: unknown): boolean => {
+      if (typeof v !== 'string') return false
+      const [ip, bits, extra] = v.split('/')
+      const fam = isIP(ip ?? '')
+      if (fam === 0 || extra !== undefined) return false
+      if (bits === undefined) return true
+      const n = Number(bits)
+      return /^\d+$/.test(bits) && n <= (fam === 4 ? 32 : 128)
+    }
+    if (!Array.isArray(t) || t.length === 0 || !t.every(isAddr)) bad('trustProxy', 'must be a list of proxy IP addresses or CIDRs')
+    trustProxy = t as string[]
+  }
+
   const sendgridFrom = root.sendgridFrom === undefined ? undefined : str(root.sendgridFrom, 'sendgridFrom')
   if (sendgridFrom !== undefined && !EMAIL.test(sendgridFrom)) bad('sendgridFrom', 'must be an email address')
 
@@ -142,6 +179,8 @@ export function loadConfig(file: string): HubConfig {
     ...(runRoot ? { runRoot } : {}),
     ...(sendgridFrom ? { sendgridFrom } : {}),
     allowPlaybookEdits,
+    ...(rate !== undefined ? { sessionRateLimitPerMinute: rate as number } : {}),
+    ...(trustProxy ? { trustProxy } : {}),
   }
 }
 

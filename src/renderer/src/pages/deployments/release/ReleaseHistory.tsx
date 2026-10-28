@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { useNavigate } from 'react-router'
-import { cancelledPartWay, type ReleaseStatus, type ReleaseSummary } from '../../../../../shared/deploy'
+import { cancelledPartWay, rollbackRun, type ReleaseStatus, type ReleaseSummary } from '../../../../../shared/deploy'
 import { listNames } from '../../../../../shared/services'
 import { loadHistory, releaseStore, startReleaseSync } from '../../../deploy/releases'
 import { deployStore } from '../../../deploy/store'
@@ -75,6 +75,8 @@ export function useRollback(): { request: ConfirmRequest | null; begin: (r: Rele
     const lines: string[] = []
     const notes: string[] = []
     for (const run of [...detail.runs].sort((a, b) => a.position - b.position)) {
+      // A cancelled release rolls back only the runs whose checkout started.
+      if (detail.status === 'cancelled' && !rollbackRun(detail.status, run)) continue
       for (const svc of run.services) {
         if (!mine.has(svc.id)) continue
         lines.push(`${svc.name} on ${run.hostLabel}: ${short(svc.deployedCommit ?? run.deployedCommit)} → ${short(svc.previousCommit ?? run.previousCommit)}`)

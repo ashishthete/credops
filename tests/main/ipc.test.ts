@@ -19,6 +19,7 @@ import type { ContainerService } from '../../src/main/ops/containers'
 import type { RunManager } from '../../src/main/ops/run-manager'
 import type { SnippetStore } from '../../src/main/ops/snippet-store'
 import { stubHandlers } from './ipc-helpers'
+import { openVault } from './deploy-helpers'
 
 const actor = { osUser: 'tester', machine: 'box' }
 const rendererFile = '/app/out/renderer/index.html'
@@ -282,7 +283,7 @@ describe('deploy contract', () => {
   })
 
   it('wires every deploy channel', () => {
-    const handlers = createDeployHandlers({ deploys: {} as DeployStore, releases: {} as ReleaseService, tooling: async () => ({}) as never })
+    const handlers = createDeployHandlers({ vault: openVault(), deploys: {} as DeployStore, releases: {} as ReleaseService, tooling: async () => ({}) as never })
     expect(Object.keys(handlers).sort()).toEqual([...DEPLOY_CHANNELS].sort())
   })
 })

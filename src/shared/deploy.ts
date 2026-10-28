@@ -589,6 +589,21 @@ export interface DeploymentRunMeta {
   wholeCheckout: boolean
 }
 
+/**
+ * The runs a manual rollback of a release in `status` rebuilds (before the previous-commit and deployment checks).
+ * A finished release: its succeeded and failed runs. A cancelled one: any run whose checkout step started, since
+ * from there its tree may be off the previous commit (a cancel skips the auto-rollback and leaves such runs cancelled).
+ */
+export function rollbackRun(status: ReleaseStatus, run: Pick<DeploymentRunMeta, 'status' | 'steps'>): boolean {
+  if (status === 'cancelled') {
+    return (run.status === 'succeeded' || run.status === 'failed' || run.status === 'cancelled') && run.steps.some((s) => s.kind === 'checkout' && s.state !== 'pending' && s.state !== 'skipped')
+  }
+  return run.status === 'succeeded' || run.status === 'failed'
+}
+
+/** The release statuses a manual rollback starts from. */
+export const ROLLBACK_FROM: readonly ReleaseStatus[] = ['succeeded', 'failed', 'rolled_back', 'cancelled']
+
 export interface ReleaseDetail extends ReleaseSummary {
   options: ReleaseOptions
   releaseNotes: string | null

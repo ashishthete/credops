@@ -112,7 +112,8 @@ describe('release playbook', () => {
     const ps = plays(planFixture())
     const build = cmdOf(flat(ps[0].tasks).find((t) => step(t) === 'build')!)
     expect(dockerWords(build)).toEqual(['docker', 'compose', '-f', FIX.compose, 'build'])
-    expect(build).not.toContain('sed ')
+    // no stream through sed (GNU sed -u is not everywhere); the process-group lookup may read /proc with it
+    expect(build).not.toMatch(/\|\s*sed\b/)
     expect(build).toContain('while IFS= read -r l')
     expect(build).toContain("printf '%s\\t%s\\n' \"$P\" \"$l\"")
     expect(build).toContain('P="{{ d.run }}:build"')
@@ -124,6 +125,15 @@ describe('release playbook', () => {
     expect(pre).toContain('od_p="{{ d.run }}:c_0"')
     expect(pre).toContain('od_s=$(echo {{ d.steps.c_0.script_b64 | quote }} | base64 -d && printf .) || exit 2')
     expect(pre).toContain('bash -e -c "$od_s"')
+    // each streamed step records its process group for the unlock after a cancel, and drops it once the body ends
+    for (const [cmd, kind, log] of [[build, 'build', 'L'], [up, 'up', 'L'], [pre, 'c_0', 'od_l']] as const) {
+      const ls = cmd.split('\n')
+      const rec = ls.indexOf(`od_pf="\${${log}%/*}/od-{{ d.run }}-${kind}.pgid"`)
+      const pipe = ls.findIndex((l) => l.endsWith('rc=${PIPESTATUS[0]}'))
+      expect(rec, kind).toBeGreaterThan(-1)
+      expect(rec, kind).toBeLessThan(ls.indexOf('('))
+      expect(ls[pipe + 1], kind).toBe('rm -f "$od_pf" 2>/dev/null')
+    }
     const backup = cmdOf(flat(ps[0].tasks).find((t) => step(t) === 'backup')!)
     expect(backup).not.toContain('. ./.env')
     expect(backup).not.toContain('set -a')
@@ -1625,7 +1635,9 @@ describe('parallel prepare', () => {
   it('the unlock signals a recorded group only after checking it is still the run\'s build, on both kill paths', () => {
     const base = planFixture({ kind: 'unlock' })
     const [d1] = base.deployments
-    const cmd = cmdOf(plays({ ...base, killBuilds: [{ runId: d1.runId, repoPath: d1.repoPath }] })[0].tasks[0])
+    const full = cmdOf(plays({ ...base, killBuilds: [{ runId: d1.runId, repoPath: d1.repoPath }] })[0].tasks[0])
+    // the builds' part, before the streamed steps' (checked on their own below)
+    const cmd = full.slice(0, full.indexOf('od-*.pgid'))
     const lines = cmd.split('\n')
     const check = lines.findIndex((l) => l.includes('ps -eo pgid=,args='))
     expect(check).toBeGreaterThan(-1)

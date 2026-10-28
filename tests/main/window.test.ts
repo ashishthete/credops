@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { LockReason } from '../../src/shared/vault'
 import {
+  allowsPermission,
   appMenuTemplate,
   devRendererUrl,
   dropOnRendererReset,
@@ -163,5 +164,24 @@ describe('dropOnRendererReset', () => {
     handlers.get('did-start-navigation')!({ isMainFrame: true, isSameDocument: true })
     handlers.get('did-start-navigation')!({ isMainFrame: false, isSameDocument: false })
     expect(drop).not.toHaveBeenCalled()
+  })
+})
+
+describe('allowsPermission', () => {
+  const page = 'file:///app/renderer/index.html'
+  const trusted = (url: string): boolean => url.split('#')[0] === page
+
+  it("grants clipboard writes to the app's own page", () => {
+    expect(allowsPermission('clipboard-sanitized-write', `${page}#/audit`, trusted)).toBe(true)
+  })
+
+  it('denies clipboard writes from any other page, or with no url', () => {
+    expect(allowsPermission('clipboard-sanitized-write', 'https://evil.example/', trusted)).toBe(false)
+    expect(allowsPermission('clipboard-sanitized-write', undefined, trusted)).toBe(false)
+    expect(allowsPermission('clipboard-sanitized-write', '', trusted)).toBe(false)
+  })
+
+  it('denies every other permission, clipboard reads included, even to the app', () => {
+    for (const p of ['clipboard-read', 'media', 'notifications', 'geolocation', 'openExternal', 'unknown']) expect(allowsPermission(p, page, trusted)).toBe(false)
   })
 })

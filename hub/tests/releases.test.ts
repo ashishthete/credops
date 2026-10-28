@@ -609,3 +609,63 @@ describe('hub releases', () => {
     await expect(check('10.0.0.9', other)).rejects.toMatchObject({ code: 'host-key-revoked' })
   })
 })
+
+describe('ended-release lock sweep', () => {
+  it('lets go a lock whose release ended but whose release-on-finish failed, and leaves a live release alone', async () => {
+    const { bob } = await setup({ protectedEnv: false })
+    const id = await ready(bob)
+    const locks = (hub.app.releases as any).d.locks as { releaseFor: (id: string) => void }
+    const real = locks.releaseFor.bind(locks)
+    // A ready release holds its lock: the sweep must not touch it.
+    expect(hub.app.releases.sweepEndedLocks()).toBe(0)
+    expect(lockRows()).toHaveLength(1)
+    const spy = vi.spyOn(locks, 'releaseFor').mockImplementationOnce(() => {
+      throw new Error('database is locked')
+    })
+    expect((await call(bob, 'POST', `/api/v1/releases/${id}/start`, {})).statusCode).toBe(204)
+    await hub.app.releases.whenIdle()
+    expect((await detail(bob, id)).status).toBe('succeeded')
+    expect(lockRows()).toEqual([expect.objectContaining({ release_id: id })])
+    spy.mockImplementation(real)
+    expect(hub.app.releases.sweepEndedLocks()).toBe(1)
+    expect(lockRows()).toEqual([])
+    expect(hub.app.releases.sweepEndedLocks()).toBe(0)
+  })
+})
+
+describe('deploy key masking with overlapping runs', () => {
+  it('keeps an environment key masked until the last of its concurrent runs ends', async () => {
+    const finish = new Map<string, () => void>()
+    const base = {
+      start: (plan: DeployPlan) => {
+        let resolve!: () => void
+        const done = new Promise<void>((r) => (resolve = r))
+        finish.set(plan.releaseId, resolve)
+        return { runId: randomUUID(), done }
+      },
+      cancel: () => undefined,
+      onEvent: () => () => undefined,
+    }
+    hub = await testHub({}, { runner: base as never })
+    const admin = (await hub.signIn(ADMIN)).token
+    expect((await call(admin, 'PUT', `/api/v1/admin/environments/${ENV_ID}`, manifestOne({}))).statusCode).toBe(200)
+    expect((await call(admin, 'POST', `/api/v1/admin/environments/${ENV_ID}/deploy-key`)).statusCode).toBe(200)
+    // Lock-free runbook runs can overlap in one environment; the wrapped runner is what the service starts them on.
+    const wrapped = (hub.app.releases.service as any).d.runner as { start: (p: unknown, s: unknown) => { done: Promise<unknown> } }
+    const plan = (releaseId: string) => ({ releaseId, environment: { id: ENV_ID } })
+    const secrets = { values: {}, known: [] }
+    const a = wrapped.start(plan('rel-a'), secrets)
+    const b = wrapped.start(plan('rel-b'), secrets)
+    const { privateKey: pem } = await hub.app.releases.identities.resolve(ENV_ID)
+    expect(hub.app.releases.runKnownSecrets()).toContain(pem)
+    finish.get('rel-a')!()
+    await a.done
+    await new Promise((r) => setImmediate(r))
+    // rel-b still runs with the same key: it must stay masked.
+    expect(hub.app.releases.runKnownSecrets()).toContain(pem)
+    finish.get('rel-b')!()
+    await b.done
+    await new Promise((r) => setImmediate(r))
+    expect(hub.app.releases.runKnownSecrets()).not.toContain(pem)
+  })
+})

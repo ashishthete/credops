@@ -13,7 +13,9 @@ const REL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export function tapCommand(releaseId: string): string {
   if (!REL_ID.test(releaseId)) throw new Error('release id is not safe to use in a path')
   const dir = `~/${RUNS_SUBDIR}/${releaseId}`
-  return `mkdir -p ${dir} && touch ${dir}/stream.log && exec tail -n +1 -F ${dir}/stream.log`
+  // The tap can win the race with the playbook's prep: create the tree the way prep does (umask 077, so ~/.opsdeck and
+  // runs come out 0700 when new) and the run dir 0700 explicitly, or the log could be readable by other users.
+  return `umask 077; mkdir -p -m 700 ${dir} && touch ${dir}/stream.log && exec tail -n +1 -F ${dir}/stream.log`
 }
 
 export const unavailableLine = (host: string): string => `Live output unavailable on ${host}; output will appear when each step ends`

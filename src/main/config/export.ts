@@ -26,6 +26,7 @@ import {
   type VaultRef,
 } from '../../shared/config-file'
 import { REPO_URL, isParsableRepoUrl, stripRepoCredentials } from '../../shared/inventory'
+import { blankTemplateLines as blankTemplate, blankUrlParams as blankParams, isExportSecretVar } from '../../shared/config-secrets'
 import type { ReleaseFlow } from '../../shared/deploy'
 import type { Runbook } from '../../shared/runbooks'
 import type { Step, StepBody, StepSecret } from '../../shared/steps'
@@ -40,16 +41,6 @@ import { selectSegment } from './segment'
 // config columns are left out too: sensitive host env var values, repo URL credentials and refs to deleted secrets.
 
 type Row = Record<string, unknown>
-
-// Export-only rules, wider than the stores' SENSITIVE_KEY (which stays as it is so stored templates and older
-// files keep validating). They err toward blanking too much: a blanked value is easy to re-enter, a leaked one is not.
-const EXPORT_SECRET_NAME = /PASS|PWD|TOKEN|SECRET|KEY|CREDENTIAL|PRIVATE|AUTH|DSN|SALT|COOKIE|SESSION|WEBHOOK|CERT|SIGNATURE/i
-/** A URL with a password in its userinfo, or any http(s) userinfo (a bare token), wherever it sits in the value. */
-const URL_USERINFO_VALUE = /https?:[\s\/\\]*[^\s\/\\@?#]*@|[a-z][a-z0-9+.-]*:[\s\/\\]*[^\s\/\\@]*:[^\s\/\\@]*@/i
-/** A value that is exactly one secret ref: the only form the store reads as a ref. */
-const WHOLE_SECRET_REF = /^\$\{secret:[^}]*\}$/
-/** Query or fragment parameters, with the delimiter kept. */
-const URL_PARAM = /([?&#;])([^=&#;?\s]*)=([^&#;?\s]*)/g
 
 const byId = <T extends { id: string }>(xs: T[]): T[] => xs.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
 const byKey = <T>(xs: T[], key: (x: T) => string): T[] => xs.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0))
@@ -92,16 +83,11 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: Omitt
     return blankUrlParams(clean)
   }
   /** Blanks the value of every query parameter whose name looks secret; each one counts. */
-  const blankUrlParams = (url: string): string =>
-    url.replace(URL_PARAM, (m, d: string, name: string, value: string) => {
-      if (value === '' || !EXPORT_SECRET_NAME.test(name)) return m
-      omit()
-      return `${d}${name}=`
-    })
+  const blankUrlParams = (url: string): string => blankParams(url, omit)
   const envVars = (v: unknown): Record<string, string> => {
     const vars = JSON.parse(str(v)) as Record<string, string>
     for (const [k, value] of Object.entries(vars)) {
-      if (value === '' || !(EXPORT_SECRET_NAME.test(k) || URL_USERINFO_VALUE.test(value))) continue
+      if (!isExportSecretVar(k, value)) continue
       vars[k] = ''
       omit()
     }
@@ -266,21 +252,7 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: Omitt
   const deployVaults = groups(all('SELECT deployment_id, vault_id FROM deployment_vaults'), 'deployment_id', (r) => str(r.vault_id), (x) => x)
   // A ref to a secret that no longer exists exports blank: its local id means nothing elsewhere.
   // Template lines with a secret-looking name or a credentialed URL value (and no ${secret:} ref) export as `KEY=`.
-  const blankTemplateLines = (template: string): string =>
-    template
-      .split('\n')
-      .map((line) => {
-        // A commented-out assignment (`# KEY=value`) is checked like a live one.
-        const comment = /^(\s*#+\s*(?:export\s+)?)([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/.exec(line.replace(/\r$/, ''))
-        const eq = line.indexOf('=')
-        if (!comment && (eq <= 0 || line.trimStart().startsWith('#'))) return line
-        const [prefix, key, value] = comment ? [comment[1], comment[2], comment[3]] : ['', line.slice(0, eq), line.slice(eq + 1).replace(/\r$/, '')]
-        if (value === '' || WHOLE_SECRET_REF.test(value)) return line
-        if (!EXPORT_SECRET_NAME.test(key) && !URL_USERINFO_VALUE.test(value)) return line
-        omit()
-        return `${prefix}${key}=${line.endsWith('\r') ? '\r' : ''}`
-      })
-      .join('\n')
+  const blankTemplateLines = (template: string): string => blankTemplate(template, omit)
   const rewrite = (template: string | null): string | null =>
     template === null
       ? null

@@ -111,7 +111,7 @@ import { IdentityStore } from './vault/identity-store'
 import { KeyStore } from './vault/key-store'
 import { SecretStore } from './vault/secret-store'
 import { VaultService, type QuickUnlockDeps } from './vault/vault-service'
-import { appMenuTemplate, devRendererUrl, dropOnRendererReset, forwardVaultLocks, pushEvent, shouldAllowNavigation, windowOptions } from './window'
+import { allowsPermission, appMenuTemplate, devRendererUrl, dropOnRendererReset, forwardVaultLocks, pushEvent, shouldAllowNavigation, windowOptions } from './window'
 
 // Keep dev data apart from the packaged app's (same name, same userData otherwise).
 // Must run before anything touches userData, including the single-instance lock.
@@ -184,6 +184,46 @@ let quitAudited = false
 let stopAutoLock: (() => void) | null = null
 let stopSsoWatch: (() => void) | null = null
 
+/**
+ * A running release holds host locks, so quitting asks first and, on "Quit and cancel", cancels it
+ * and waits for the unlock before quitting. True while the quit must wait: no confirmation yet,
+ * or the question is already on screen (one prompt for a window close and Cmd+Q together).
+ */
+function holdQuitForRelease(parent: BrowserWindow | null): boolean {
+  if (quitConfirmed || !releaseService?.hasActive()) return false
+  if (quitPrompting) return true
+  quitPrompting = true
+  const svc = releaseService
+  const env = svc.activeEnvironments()[0]
+  const opts: Electron.MessageBoxOptions = { type: 'warning', buttons: ['Quit and cancel', 'Keep open'], defaultId: 1, cancelId: 1, message: `A release is running on ${env}. Quit and cancel it?` }
+  void (parent && !parent.isDestroyed() ? dialog.showMessageBox(parent, opts) : dialog.showMessageBox(opts))
+    .then(async ({ response }) => {
+      if (response !== 0) return
+      await Promise.race([svc.cancelAll(), new Promise((r) => setTimeout(r, RELEASE_QUIT_WAIT_MS))])
+      quitConfirmed = true
+      app.quit()
+    })
+    .catch((err: unknown) => console.error('Failed to cancel releases on quit:', err))
+    .finally(() => {
+      quitPrompting = false
+    })
+  return true
+}
+
+/** Startup has registered the IPC handlers, so a window can be (re)made. */
+let appStarted = false
+
+/** Brings the window forward, or makes a new one when there is none (Dock click, second launch). */
+function showMainWindow(): void {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.focus()
+    return
+  }
+  // IPC handlers are registered once at startup; createWindow only builds the window and its own listeners.
+  if (appStarted) createWindow()
+}
+
 function createWindow(): void {
   const stateFile = join(app.getPath('userData'), WINDOW_STATE_FILE)
   const opening = initialWindowState(
@@ -199,8 +239,13 @@ function createWindow(): void {
     win.show()
     if (opening.fullScreen) win.setFullScreen(true)
   })
-  // Size, place and full screen come back on the next launch. Losing them is harmless.
-  win.on('close', () => {
+  // Closing the window quits the app (window-all-closed), so a running release is asked about
+  // here, while the window is still there for "Keep open" to leave in place.
+  win.on('close', (event) => {
+    if (holdQuitForRelease(win)) {
+      event.preventDefault()
+      return
+    }
     try {
       saveWindowState(stateFile, { bounds: win.getNormalBounds(), maximized: win.isMaximized(), fullScreen: win.isFullScreen() })
     } catch {
@@ -229,17 +274,20 @@ function createWindow(): void {
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
-  app.on('second-instance', () => {
-    if (!mainWindow) return
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.focus()
-  })
+  app.on('second-instance', () => showMainWindow())
+  app.on('activate', () => showMainWindow())
 
   app
     .whenReady()
     .then(() => {
-      session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
-      session.defaultSession.setPermissionCheckHandler(() => false)
+      // Clipboard writes from the app's own page only (the Copy buttons); every other permission is denied.
+      const trustedPage = (url: string): boolean => isTrustedSender(url, { devServerUrl, rendererFile: join(__dirname, '../renderer/index.html') })
+      session.defaultSession.setPermissionRequestHandler((wc, permission, callback, details) =>
+        callback(allowsPermission(permission, details.requestingUrl || wc.getURL(), trustedPage)),
+      )
+      session.defaultSession.setPermissionCheckHandler((wc, permission, _origin, details) =>
+        allowsPermission(permission, details.requestingUrl || wc?.getURL(), trustedPage),
+      )
       Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(app.isPackaged, process.platform)))
       // Packaged builds take build/icon.icns; a dev run shows the same icon in the Dock.
       if (!app.isPackaged && process.platform === 'darwin') app.dock?.setIcon(join(app.getAppPath(), 'resources', 'icon.png'))
@@ -597,7 +645,7 @@ if (!app.requestSingleInstanceLock()) {
           return { label: h.label, keepaliveSec: h.keepaliveSec, envVars: h.envVars }
         },
         connect: connectChain,
-        plan: (identity) => authPlan(identity, authDeps),
+        plan: (identity, hop) => authPlan(identity, authDeps, hop),
         knownHosts,
         prompts,
         isLocked,
@@ -764,6 +812,7 @@ if (!app.requestSingleInstanceLock()) {
             lastReleases: () => release.latestPerEnvironment(),
             knownSecrets,
             runbooks,
+            vault: service,
           }),
           ...createServiceHandlers({
             services,
@@ -817,6 +866,7 @@ if (!app.requestSingleInstanceLock()) {
         (url) => isTrustedSender(url, { devServerUrl, rendererFile }),
         { validators: VALIDATORS, knownSecrets },
       )
+      appStarted = true
       createWindow()
       logFile.info('ready')
     })
@@ -829,25 +879,9 @@ if (!app.requestSingleInstanceLock()) {
     })
 
   app.on('before-quit', (event) => {
-    // A running release holds host locks: ask first, then cancel and wait for the unlock before quitting.
-    if (releaseService?.hasActive() && !quitConfirmed) {
+    // Cmd+Q comes here before any window closes; the window's close handler asks the same question.
+    if (holdQuitForRelease(mainWindow)) {
       event.preventDefault()
-      if (quitPrompting) return
-      quitPrompting = true
-      const svc = releaseService
-      const env = svc.activeEnvironments()[0]
-      void dialog
-        .showMessageBox({ type: 'warning', buttons: ['Quit and cancel', 'Keep open'], defaultId: 1, cancelId: 1, message: `A release is running on ${env}. Quit and cancel it?` })
-        .then(async ({ response }) => {
-          if (response !== 0) return
-          await Promise.race([svc.cancelAll(), new Promise((r) => setTimeout(r, RELEASE_QUIT_WAIT_MS))])
-          quitConfirmed = true
-          app.quit()
-        })
-        .catch((err: unknown) => console.error('Failed to cancel releases on quit:', err))
-        .finally(() => {
-          quitPrompting = false
-        })
       return
     }
     if (!audit || quitAudited) return

@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
-import { cpSync, existsSync, readdirSync, renameSync, rmSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { cpSync, existsSync, mkdirSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
 
 /**
  * The app was called OpsDeck. On the first CredOps launch its data folder is copied over and
@@ -14,13 +14,27 @@ const OLD_KEY = { service: 'OpsDeck Safe Storage', account: 'OpsDeck Key' }
 const NEW_KEY = { service: 'CredOps Safe Storage', account: 'CredOps Key' }
 /** Chromium's per-profile instance lock: copying it would make the new app think the old one runs. */
 const SINGLETON = new Set(['SingletonLock', 'SingletonSocket', 'SingletonCookie'])
+/** The database and its journal files: the database goes over as a snapshot instead. */
+const DB_FILES = new Set([OLD_DB, `${OLD_DB}-wal`, `${OLD_DB}-shm`, `${OLD_DB}-journal`])
+/** Symlink in the temp folder naming the pid of the launch that is copying into it. */
+export const OWNER = '.credops-migrating-pid'
 /** Chromium's safeStorage password is base64; anything else is refused rather than quoted into a command. */
 const KEY_SHAPE = /^[A-Za-z0-9+/=]{8,256}$/
 
 export interface MigrationDeps {
   exists(path: string): boolean
-  /** Recursive copy that skips Chromium's singleton lock files. */
+  /** Recursive copy into the existing folder `to` that skips Chromium's singleton lock files and the OpsDeck database files. */
   copyDir(from: string, to: string): void
+  /** Writes a consistent copy of the SQLite database `from` (WAL folded in) to `to`, opening `from` read-only. */
+  snapshotDb(from: string, to: string): void
+  /** The pid in Chromium's SingletonLock (`<host>-<pid>`) of a profile folder, or null when there is none. */
+  lockHolder(dir: string): number | null
+  /** True when a process with this pid exists. */
+  alive(pid: number): boolean
+  /** Creates `path` (not its parents) and records this process as its owner; false when it already exists. */
+  claimDir(path: string): boolean
+  /** The owner pid `claimDir` recorded in `path`, or null when there is none. */
+  owner(path: string): number | null
   rename(from: string, to: string): void
   remove(path: string): void
   list(dir: string): string[]
@@ -50,6 +64,9 @@ export type MigrationResult = 'none' | 'migrated'
 export function migrateFromOpsDeck(paths: { oldDir: string; newDir: string }, d: MigrationDeps): MigrationResult {
   const { oldDir, newDir } = paths
   if (d.exists(join(newDir, DB_FILE)) || !d.exists(join(oldDir, OLD_DB))) return 'none'
+  // A running OpsDeck is still writing its database; Chromium's lock names its pid.
+  const holder = d.lockHolder(oldDir)
+  if (holder !== null && d.alive(holder)) throw new Error('OpsDeck is still running')
 
   let key: string | null
   try {
@@ -73,13 +90,22 @@ export function migrateFromOpsDeck(paths: { oldDir: string; newDir: string }, d:
     if (saved !== key) throw new Error("CredOps couldn't save its key to the Keychain")
   }
 
+  // The temp folder is the migration's lock: made exclusively, with the owner's pid inside. One that
+  // exists already belongs to another launch copying right now when its owner is alive; otherwise a
+  // crash left it (an owner that died, or none recorded because the crash came between the two
+  // steps of claimDir), and it is removed and claimed again. Losing that second claim means another
+  // launch got there first.
   const tmp = `${newDir}.migrating`
-  if (d.exists(tmp)) d.remove(tmp)
-  d.copyDir(oldDir, tmp)
-  for (const suffix of ['', '-wal', '-shm']) {
-    const from = join(tmp, OLD_DB + suffix)
-    if (d.exists(from)) d.rename(from, join(tmp, DB_FILE + suffix))
+  const busy = (): Error => new Error('Another CredOps launch is already moving the OpsDeck data')
+  if (!d.claimDir(tmp)) {
+    const owner = d.owner(tmp)
+    if (owner !== null && d.alive(owner)) throw busy()
+    d.remove(tmp)
+    if (!d.claimDir(tmp)) throw busy()
   }
+  d.copyDir(oldDir, tmp)
+  d.snapshotDb(join(oldDir, OLD_DB), join(tmp, DB_FILE))
+  d.remove(join(tmp, OWNER))
   if (d.exists(newDir)) {
     if (d.list(newDir).length === 0) d.remove(newDir)
     else d.rename(newDir, `${newDir}.unused-${d.now()}`)
@@ -102,7 +128,56 @@ const quote = (s: string): string => {
 export function systemMigrationDeps(trustedApp: string): MigrationDeps {
   return {
     exists: existsSync,
-    copyDir: (from, to) => cpSync(from, to, { recursive: true, preserveTimestamps: true, filter: (src) => !SINGLETON.has(basename(src)) }),
+    copyDir: (from, to) =>
+      cpSync(from, to, {
+        recursive: true,
+        preserveTimestamps: true,
+        filter: (src) => !SINGLETON.has(basename(src)) && !(resolve(dirname(src)) === resolve(from) && DB_FILES.has(basename(src))),
+      }),
+    snapshotDb: (from, to) => {
+      const db = new (process.getBuiltinModule('node:sqlite').DatabaseSync)(from, { readOnly: true })
+      try {
+        db.prepare('VACUUM INTO ?').run(to)
+      } finally {
+        db.close()
+      }
+    },
+    lockHolder: (dir) => {
+      let target: string
+      try {
+        target = readlinkSync(join(dir, 'SingletonLock'))
+      } catch {
+        return null
+      }
+      const pid = Number(/-(\d+)$/.exec(target)?.[1])
+      return Number.isSafeInteger(pid) && pid > 0 ? pid : null
+    },
+    alive: (pid) => {
+      try {
+        process.kill(pid, 0)
+        return true
+      } catch (err) {
+        return (err as NodeJS.ErrnoException).code === 'EPERM'
+      }
+    },
+    claimDir: (path) => {
+      try {
+        mkdirSync(path)
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false
+        throw err
+      }
+      symlinkSync(String(process.pid), join(path, OWNER))
+      return true
+    },
+    owner: (path) => {
+      try {
+        const pid = Number(readlinkSync(join(path, OWNER)))
+        return Number.isSafeInteger(pid) && pid > 0 ? pid : null
+      } catch {
+        return null
+      }
+    },
     rename: renameSync,
     remove: (p) => rmSync(p, { recursive: true, force: true }),
     list: (dir) => readdirSync(dir),

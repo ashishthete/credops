@@ -144,6 +144,15 @@ describe('ExecLinks and execOnce', () => {
     expect(srv.execs()).toEqual(['printf out; printf err >&2; exit 3'])
   })
 
+  it('plans auth with the hop being dialed, so ~/.ssh/config can match it', async () => {
+    const plan = vi.fn<ExecLinksDeps['plan']>(async () => passwordPlan())
+    const t = await setup({ plan })
+    const srv = await server()
+    await t.lease(t.host(srv))
+    expect(plan).toHaveBeenCalledTimes(1)
+    expect(plan.mock.calls[0]![1]).toMatchObject({ label: 'host-1', address: '127.0.0.1', port: srv.port })
+  })
+
   it('never splits a UTF-8 character across chunks', async () => {
     const t = await setup()
     const srv = await server()

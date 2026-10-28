@@ -5,7 +5,7 @@ import { Directory } from './access/directory'
 import type { EntraVerifier } from './auth/entra'
 import { SessionStore } from './auth/sessions'
 import type { HubAudit } from './audit'
-import type { HubConfig } from './config'
+import { DEFAULT_SESSION_RATE_LIMIT_PER_MINUTE, firstAdminWarning, type HubConfig } from './config'
 import type { HubDb } from './db'
 import { installErrorHandler } from './errors'
 import { makeAuth } from './auth/plugin'
@@ -29,6 +29,7 @@ import { LiveBus } from './live/bus'
 import { registerLive } from './routes/live'
 import { registerMeta } from './routes/meta'
 import { registerSession } from './routes/session'
+import { Coalescer, RateLimiter } from './ratelimit'
 
 export interface HubDeps {
   config: HubConfig
@@ -64,6 +65,8 @@ export function buildApp(deps: HubDeps): FastifyInstance {
   const deployKeys = new DeployKeys(deps.db, ring, { now: deps.now })
   const app = Fastify({
     bodyLimit: HUB_BODY_LIMIT,
+    // Only the configured proxies may name the client; otherwise req.ip is the socket address.
+    ...(deps.config.trustProxy ? { trustProxy: deps.config.trustProxy } : {}),
     ...(deps.config.tls
       ? { https: { cert: readFileSync(deps.config.tls.certFile), key: readFileSync(deps.config.tls.keyFile) } }
       : {}),
@@ -84,9 +87,18 @@ export function buildApp(deps: HubDeps): FastifyInstance {
   let releases: HubReleases | null = null
   const releaseSecrets = (): string[] => releases?.knownSecrets() ?? []
   installErrorHandler(app, () => [...secrets.inflight, ...releaseSecrets()])
+  // req.ip is the socket address unless config.trustProxy names the proxy in front; a forwarded header from anyone else is ignored.
+  const signInWindow = { windowMs: 60_000, maxKeys: 10_000, now: deps.now }
+  const limiter = new RateLimiter(deps.config.sessionRateLimitPerMinute ?? DEFAULT_SESSION_RATE_LIMIT_PER_MINUTE, signInWindow)
+  const denials = new Coalescer(signInWindow, (ip, suppressed) =>
+    deps.audit.append({ action: 'session.denied', outcome: 'denied', actor: null, details: { reason: 'repeated', ip, suppressed } }),
+  )
   app.addHook('onClose', async () => {
+    denials.flush()
     deps.audit.append({ action: 'hub.stop', outcome: 'info', actor: null })
   })
+  const adminWarning = firstAdminWarning(deps.config)
+  if (adminWarning) app.log.warn(adminWarning)
   registerMeta(app, deps)
   const sessions = new SessionStore(deps.db, { now: deps.now, ttlHours: deps.config.sessionTtlHours })
   const directory = new Directory(deps.db, { firstAdmin: deps.config.firstAdmin, now: deps.now, ids: deps.ids, audit: deps.audit, sessions })
@@ -97,7 +109,7 @@ export function buildApp(deps: HubDeps): FastifyInstance {
   sessions.onRevoke((r) => ('oid' in r ? live.closeUser(r.oid) : live.closeSession(r.tokenHash)))
   directory.onAccessChange(() => live.publish({ type: 'access.changed' }))
   const auth = makeAuth({ sessions, directory, now: deps.now })
-  registerSession(app, { audit: deps.audit, verifier: deps.verifier, sessions, directory, now: deps.now }, auth)
+  registerSession(app, { audit: deps.audit, verifier: deps.verifier, sessions, directory, now: deps.now, limiter, denials }, auth)
   registerAdmin(app, { directory, audit: deps.audit, auth })
   registerAccess(app, { directory, auth })
   const locks = new EnvLocks(deps.db, { now: deps.now })
@@ -107,6 +119,9 @@ export function buildApp(deps: HubDeps): FastifyInstance {
     try {
       locks.sweepExpired()
       releases?.expireReady()
+      releases?.sweepEndedLocks()
+      limiter.sweep()
+      denials.sweep()
     } catch (err) {
       // A timer must never take the Hub down. Only the error's name is logged.
       app.log.error({ errName: err instanceof Error ? err.name : 'Error' }, 'lock sweep failed')

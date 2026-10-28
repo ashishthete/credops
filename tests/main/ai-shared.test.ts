@@ -43,6 +43,19 @@ describe('parseExplanation', () => {
     expect(out.commands.map((c) => c.title)).toEqual(many.slice(0, 8).map((c) => c.title))
   })
 
+  it('drops commands holding control, bidi or zero-width characters and keeps printable unicode', () => {
+    const bad = [
+      '\u0001', '\u0008', '\n', '\r', '\u001b', '\u001f', '\u007f', '\u0080', '\u009b', '\u009f',
+      '​', '‍', '‎', '‏', '‪', '‮', '⁠', '⁤', '⁦', '⁩', '﻿',
+    ]
+    const commands = [
+      ...bad.map((ch, i) => ({ ...good.commands[0], title: `bad${i}`, command: `ls${ch} -la` })),
+      { ...good.commands[0], title: 'unicode', command: 'echo "héllo — 日本"' },
+    ]
+    const out = parseExplanation(JSON.stringify({ ...good, commands }))
+    expect(out.commands.map((c) => c.title)).toEqual(['unicode'])
+  })
+
   it('drops a command holding a control, bidi or zero-width character, so what runs is what is shown', () => {
     const hidden = [
       'ls\tx', 'ls\nrm -rf /', 'ls\rrm -rf /', 'ls\u0015rm', 'ls\u007f', 'ls\bx', 'ls\u001b[2K', 'ls\u0085', 'ls\u009b',

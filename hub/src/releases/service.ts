@@ -130,6 +130,10 @@ export class HubReleases {
   private readonly store: ReleaseStore
   private readonly runSecrets = new Map<string, string[]>()
   private readonly pems = new Map<string, string>()
+  /** Releases that took their lock again (a version retry) but whose service call has not set them running yet. */
+  private readonly claiming = new Set<string>()
+  /** Runs alive per environment: lock-free runbooks can overlap, and a key stays masked until the last one ends. */
+  private readonly pemRuns = new Map<string, number>()
 
   constructor(private readonly d: HubReleasesDeps) {
     const access = new HubDeployAccess({ directory: d.directory })
@@ -147,11 +151,28 @@ export class HubReleases {
     // Remembers every secret value of a run while it lives, so the live stream and error bodies can mask them.
     const runner: DeployRunner = {
       start: (plan, secrets: RunSecrets) => {
+        const env = plan.environment.id
         this.runSecrets.set(plan.releaseId, [...secrets.known, ...Object.values(secrets.values)])
-        const handle = base.start(plan, secrets)
+        this.pemRuns.set(env, (this.pemRuns.get(env) ?? 0) + 1)
+        let settled = false
         const settle = (): void => {
+          if (settled) return
+          settled = true
           this.runSecrets.delete(plan.releaseId)
-          this.pems.delete(plan.environment.id)
+          const left = (this.pemRuns.get(env) ?? 1) - 1
+          if (left > 0) {
+            this.pemRuns.set(env, left)
+          } else {
+            this.pemRuns.delete(env)
+            this.pems.delete(env)
+          }
+        }
+        let handle: ReturnType<DeployRunner['start']>
+        try {
+          handle = base.start(plan, secrets)
+        } catch (err) {
+          settle()
+          throw err
         }
         void handle.done.then(settle, settle)
         return handle
@@ -223,6 +244,29 @@ export class HubReleases {
       })
       this.onState(this.store.get(row.id))
       n++
+    }
+    return n
+  }
+
+  /**
+   * A release lock whose release has ended is normally let go in onState; if that failed, the environment would stay
+   * locked until a restart. The 60s sweep calls this to let such locks go. Returns how many it released.
+   */
+  sweepEndedLocks(): number {
+    const statuses = [...LOCK_FREE]
+    const rows = this.d.db
+      .prepare(`SELECT l.release_id AS id FROM env_locks l JOIN releases r ON r.id = l.release_id WHERE l.kind = 'release' AND r.status IN (${statuses.map(() => '?').join(',')})`)
+      .all(...statuses) as { id: string }[]
+    let n = 0
+    for (const { id } of rows) {
+      // Still being worked on: a retry re-takes the lock of a failed release before it sets it running.
+      if (this.service.isBusy(id) || this.claiming.has(id)) continue
+      try {
+        this.d.locks.releaseFor(id)
+        n++
+      } catch (err) {
+        this.d.log?.(redact(`releasing the lock of release ${id} failed: ${err instanceof Error ? err.message : String(err)}`, this.knownSecrets()))
+      }
     }
     return n
   }
@@ -541,11 +585,14 @@ export class HubReleases {
     this.allow(user, 'release.start', environmentId, this.deploymentsOf(releaseId), 'release.retry_version', releaseId)
     // The retry runs again, so it holds the environment lock like any release: a freeze or another release refuses it.
     this.d.locks.acquireRelease(environmentId, releaseId, { oid: user.oid, name: user.name })
+    this.claiming.add(releaseId)
     try {
       await this.service.retryVersion(releaseId, { actor: this.actorOf(user) })
     } catch (err) {
       this.d.locks.releaseFor(releaseId)
       this.fail(err)
+    } finally {
+      this.claiming.delete(releaseId)
     }
   }
 
