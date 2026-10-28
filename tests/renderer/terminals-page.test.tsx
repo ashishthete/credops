@@ -209,7 +209,7 @@ describe('terminals page', () => {
     state(meta('s1', { label: 'Local shell 1' }))
     await flush()
     expect(fake.terms).toHaveLength(1)
-    key('2') // Hosts
+    await goTo('/hosts')
     await flush()
     expect(screen.getByRole('heading', { name: 'Hosts', level: 1 })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /Open sessions/ }))
@@ -408,10 +408,38 @@ describe('terminals page', () => {
     expect(tab('Local shell 2')).toHaveAttribute('aria-selected', 'true')
   })
 
+  it('on Terminals the digit shortcuts pick tabs (mod+9 the last); elsewhere they switch sections', async () => {
+    await renderShell()
+    state(meta('s1', { label: 'Local shell 1' }))
+    state(meta('s2', { label: 'Local shell 2' }))
+    state(meta('s3', { label: 'Local shell 3' }))
+    await flush()
+    expect(tab('Local shell 1')).toHaveAttribute('aria-selected', 'true')
+    // Typed in the terminal itself, where xterm keeps focus.
+    const textarea = document.createElement('textarea')
+    document.querySelector('.xterm')!.appendChild(textarea)
+    act(() => {
+      fireEvent.keyDown(textarea, { key: '2', metaKey: true })
+    })
+    expect(tab('Local shell 2')).toHaveAttribute('aria-selected', 'true')
+    key('9')
+    expect(tab('Local shell 3')).toHaveAttribute('aria-selected', 'true')
+    key('7') // past the last tab: nothing
+    expect(tab('Local shell 3')).toHaveAttribute('aria-selected', 'true')
+    await flush()
+    expect(screen.queryByRole('heading', { level: 1 })).toBeNull()
+
+    await goTo('/products')
+    key('2')
+    await flush()
+    expect(screen.getByRole('heading', { name: 'Hosts', level: 1 })).toBeInTheDocument()
+    expect(sessionStore.get().activeId).toBe('s3')
+  })
+
   it('mod+w closes the active tab, only while Terminals is visible', async () => {
     const invoke = await renderShell()
     state(ssh('old', { state: 'closed' }))
-    key('2') // Hosts
+    await goTo('/hosts')
     await flush()
     key('w')
     await flush()

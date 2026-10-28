@@ -29,7 +29,7 @@ import { resetDeploy, startDeploySync } from '../deploy/store'
 import { useDeployCommands } from '../deploy/commands'
 import { ServiceLogsHost } from '../pages/products/services/ServiceLogs'
 import { disposeAll } from '../terminal/registry'
-import { resetSessions, startSessionSync } from '../terminal/sessions'
+import { resetSessions, selectTabByDigit, sessionStore, startSessionSync } from '../terminal/sessions'
 import { InsertHost } from '../pages/ops/InsertHost'
 import { useOpsCommands } from '../ops/commands'
 import { useTunnelCommands } from '../tunnels/commands'
@@ -46,7 +46,7 @@ import { SignInBanner } from '../vault/SignInBanner'
 export function AppShell() {
   const location = useLocation()
   const motionSafe = useMotionSafe()
-  useSectionNavigation()
+  useSectionNavigation(location.pathname)
   useInventoryCommands()
   useTunnelCommands()
   useMapCommands()
@@ -150,12 +150,17 @@ export function AppShell() {
   )
 }
 
-// mod+1…mod+9 (later sections have none) and a "Go to …" palette command per section.
-function useSectionNavigation() {
+/**
+ * mod+1…mod+9 (later sections have none) and a "Go to …" palette command per section. On Terminals,
+ * with a tab open, the digits pick tabs instead, as in iTerm; the palette's "Go to …" still leaves.
+ */
+function useSectionNavigation(pathname: string) {
   const navigate = useNavigate()
   const navigateRef = useRef(navigate)
+  const pathRef = useRef(pathname)
   useEffect(() => {
     navigateRef.current = navigate
+    pathRef.current = pathname
   })
 
   useEffect(() => {
@@ -174,6 +179,9 @@ function useSectionNavigation() {
 
   // SECTIONS is a fixed-length constant, so the hook order is stable.
   for (let i = 0; i < SECTIONS.length; i++) {
-    useShortcut(sectionShortcut(i), () => navigate(SECTIONS[i].path))
+    useShortcut(sectionShortcut(i), () => {
+      if (pathRef.current === '/terminals' && sessionStore.get().order.length) selectTabByDigit(i + 1)
+      else navigate(SECTIONS[i].path)
+    })
   }
 }
