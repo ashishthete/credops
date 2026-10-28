@@ -9,6 +9,7 @@ import { MULTIPLE_PROTECTED, requestProtection, runProtection } from '../../src/
 import { OpsPage } from '../../src/renderer/src/pages/ops/OpsPage'
 import { RunTab } from '../../src/renderer/src/pages/ops/RunTab'
 import { clearToasts, toast } from '../../src/renderer/src/ui/Toaster'
+import { encodeIpcError } from '../../src/shared/ipc-error'
 import { MAX_RUNS_KEPT, MULTIPLE_PROTECTED_MESSAGE, type RunEvent, type RunHostMeta, type RunSummary, type SnippetMeta } from '../../src/shared/ops'
 import { emitBridgeEvent, environment, host, mockBridge } from './helpers'
 
@@ -362,7 +363,7 @@ describe('run tab', () => {
   it("main's refusal still shows as a toast", async () => {
     const { invoke } = await renderTab()
     invoke.mockImplementation(async (channel: string) => {
-      if (channel === 'runs:start') throw new Error("Error invoking remote method 'runs:start': Error: Type the environment name to confirm")
+      if (channel === 'runs:start') throw new Error(`Error invoking remote method 'runs:start': Error: ${encodeIpcError('confirm', 'Type the environment name to confirm')}`)
       if (channel === 'snippets:list' || channel === 'runs:list') return []
       return null
     })
@@ -665,7 +666,7 @@ describe('run tab', () => {
   it("main's typed-name refusal opens the confirmation instead of a toast", async () => {
     const invoke = mockBridge({ 'snippets:list': [] })
     invoke.mockImplementation(async (channel: string) => {
-      if (channel === 'runs:start') throw new Error("Error invoking remote method 'runs:start': Error: Type the environment name to confirm")
+      if (channel === 'runs:start') throw new Error(`Error invoking remote method 'runs:start': Error: ${encodeIpcError('confirm', 'Type the environment name to confirm')}`)
       return channel === 'snippets:list' ? [] : null
     })
     inventoryStore.set({ products: [], environments: [prod, staging, audit], hosts: [...prodHosts, stg, ops], identities: [], vaults: [], regions: [] })
@@ -676,6 +677,22 @@ describe('run tab', () => {
     )
     expect(onConfirm).toHaveBeenCalledWith(expect.objectContaining({ title: 'Run on 1 host in prod?', typeToConfirm: 'prod' }))
     expect(vi.mocked(toast)).not.toHaveBeenCalled()
+  })
+
+  it('the same words without main\'s confirm code are an ordinary failure, not a confirmation', async () => {
+    const invoke = mockBridge({ 'snippets:list': [] })
+    invoke.mockImplementation(async (channel: string) => {
+      if (channel === 'runs:start') throw new Error("Error invoking remote method 'runs:start': Error: Type the environment name to confirm")
+      return channel === 'snippets:list' ? [] : null
+    })
+    inventoryStore.set({ products: [], environments: [prod, staging, audit], hosts: [...prodHosts, stg, ops], identities: [], vaults: [], regions: [] })
+    const onConfirm = vi.fn()
+    await launch(
+      { target: { kind: 'hosts', hostIds: ['h-web-1'], environmentId: 'e-prod' }, command: { kind: 'text', text: 'uptime' }, concurrency: 4, timeoutSec: 600 } as never,
+      onConfirm,
+    )
+    expect(onConfirm).not.toHaveBeenCalled()
+    expect(calls(invoke, 'runs:start')).toHaveLength(1)
   })
 
   it("a finished host's check doesn't pop when the run is reopened, only when it finishes in view", async () => {

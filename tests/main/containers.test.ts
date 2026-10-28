@@ -5,7 +5,7 @@ import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import type { Client } from 'ssh2'
 import type { AuditEvent } from '../../src/shared/audit'
 import { MAX_LOG_FOLLOWS, type ContainerLogEvent } from '../../src/shared/ops'
-import { VAULT_LOCKED } from '../../src/shared/vault'
+import { vaultLockedError } from '../../src/shared/vault'
 import { ContainerService, type ContainerServiceDeps } from '../../src/main/ops/containers'
 import type { Lease } from '../../src/main/ops/exec-links'
 import { CONFIRM_MESSAGE } from '../../src/main/ops/protect'
@@ -406,10 +406,10 @@ describe('ContainerService', () => {
     expect(t.ends(id)).toEqual([])
     expect(t.sh.running()).toBe(1)
 
-    await expect(t.containers.list(host, null)).rejects.toThrow(new Error(VAULT_LOCKED))
-    await expect(t.containers.logs(host, null, 'web-1', 10)).rejects.toThrow(new Error(VAULT_LOCKED))
-    await expect(t.containers.follow(host, null, 'web-1', 10)).rejects.toThrow(new Error(VAULT_LOCKED))
-    await expect(t.containers.action(host, null, 'web-1', 'start')).rejects.toThrow(new Error(VAULT_LOCKED))
+    await expect(t.containers.list(host, null)).rejects.toThrow(vaultLockedError())
+    await expect(t.containers.logs(host, null, 'web-1', 10)).rejects.toThrow(vaultLockedError())
+    await expect(t.containers.follow(host, null, 'web-1', 10)).rejects.toThrow(vaultLockedError())
+    await expect(t.containers.action(host, null, 'web-1', 'start')).rejects.toThrow(vaultLockedError())
     expect(t.containerRows().map((r) => [r.action, r.outcome, r.details['reason']])).toEqual([['container.start', 'denied', 'locked']])
 
     t.containers.unfollow(id)

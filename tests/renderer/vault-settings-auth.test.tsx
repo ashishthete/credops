@@ -10,6 +10,7 @@ import { SignInBanner } from '../../src/renderer/src/vault/SignInBanner'
 import { vaultStatusStore } from '../../src/renderer/src/vault/status'
 import { cancelUnlock } from '../../src/renderer/src/vault/unlock'
 import { openVaultSettings, VaultSettingsDialog } from '../../src/renderer/src/vault/VaultSettingsDialog'
+import { encodeIpcError } from '../../src/shared/ipc-error'
 import type { HubStatus } from '../../src/shared/hub'
 import type { SsoState } from '../../src/shared/sso'
 import { VAULT_LOCKED, type VaultStatus } from '../../src/shared/vault'
@@ -169,7 +170,7 @@ describe('unlock methods', () => {
       {
         'vault:clearPin': () => {
           state.unlocked = false
-          return Promise.reject(new Error(VAULT_LOCKED))
+          return Promise.reject(new Error(encodeIpcError('VAULT_LOCKED', VAULT_LOCKED)))
         },
       },
     )
@@ -246,7 +247,7 @@ describe('unlock methods', () => {
     const user = userEvent.setup()
     fakeVault(
       { hasPassword: true },
-      { 'vault:setPin': () => Promise.reject(new Error('verification failed')) },
+      { 'vault:setPin': () => Promise.reject(new Error(encodeIpcError('VERIFICATION_FAILED', 'verification failed'))) },
     )
     const dialog = await openSettings()
     await user.click(within(dialog).getByRole('button', { name: 'Set PIN' }))
@@ -289,7 +290,7 @@ describe('proof methods', () => {
   })
 
   it('a missed Touch ID says so', async () => {
-    fakeVault({ hasPassword: false, quickUnlock: 'touchId' }, { 'vault:setPin': () => Promise.reject(new Error('verification failed')) })
+    fakeVault({ hasPassword: false, quickUnlock: 'touchId' }, { 'vault:setPin': () => Promise.reject(new Error(encodeIpcError('VERIFICATION_FAILED', 'verification failed'))) })
     const { user, proof } = await startSetPin()
     await user.click(within(proof).getByRole('button', { name: 'Set PIN' }))
     expect(await within(proof).findByText('Touch ID did not confirm it is you')).toBeInTheDocument()

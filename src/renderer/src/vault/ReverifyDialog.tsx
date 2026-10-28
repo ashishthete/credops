@@ -8,10 +8,11 @@ import {
   MIN_PIN_ATTEMPT,
   PIN_FORMAT_ERROR,
   PIN_INPUT_MAX,
-  VERIFICATION_FAILED,
+  VERIFICATION_FAILED_CODE,
   type ProvenResult,
   type VaultStatus,
 } from '../../../shared/vault'
+import { errorCode } from '../lib/api'
 import { Button } from '../ui/Button'
 import { Dialog } from '../ui/Dialog'
 import { SecretField } from '../ui/Field'
@@ -45,7 +46,7 @@ const METHOD_SWITCH: Record<ProofMethod, string> = {
 }
 
 /** Wrong password or PIN: the cue every dialog here shares. */
-const isWrongProof = (err: unknown) => err instanceof Error && err.message === VERIFICATION_FAILED
+const isWrongProof = (err: unknown) => errorCode(err) === VERIFICATION_FAILED_CODE
 
 export interface ReverifyDialogProps {
   open: boolean

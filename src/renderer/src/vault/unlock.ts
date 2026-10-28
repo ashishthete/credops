@@ -1,5 +1,5 @@
-import { VAULT_LOCKED } from '../../../shared/vault'
-import { api } from '../lib/api'
+import { VAULT_LOCKED_CODE } from '../../../shared/vault'
+import { api, errorCode } from '../lib/api'
 import { toast } from '../ui/Toaster'
 import { markLocked, noteLockReason, refreshVaultStatus, vaultStatusStore } from './status'
 
@@ -35,7 +35,7 @@ export async function ensureUnlocked(): Promise<boolean> {
 }
 
 function isLocked(err: unknown): boolean {
-  return err instanceof Error && err.message === VAULT_LOCKED
+  return errorCode(err) === VAULT_LOCKED_CODE
 }
 
 /**

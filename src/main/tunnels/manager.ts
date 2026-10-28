@@ -20,7 +20,7 @@ import {
   type TunnelRuntime,
   type TunnelStopReason,
 } from '../../shared/tunnels'
-import { VAULT_LOCKED } from '../../shared/vault'
+import { vaultLockedError } from '../../shared/vault'
 import { redact } from '../security/redact'
 import type { AuthPlan } from '../ssh/auth'
 import { describeError, hopsOf } from '../ssh/connect'
@@ -194,7 +194,7 @@ export class TunnelManager {
 
   /** Returns at once in `connecting`; a tunnel that is already running is returned as it is. */
   start(id: string, trigger: Trigger = 'user'): TunnelRuntime {
-    if (this.deps.isLocked()) throw new Error(VAULT_LOCKED)
+    if (this.deps.isLocked()) throw vaultLockedError()
     const running = this.runs.get(id)
     if (running) return cloneRuntime(running.rt)
     if (this.runs.size >= MAX_RUNNING_TUNNELS) throw new TunnelLimitError()

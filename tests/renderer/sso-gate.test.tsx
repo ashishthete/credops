@@ -7,6 +7,7 @@ import { clearToasts, Toaster } from '../../src/renderer/src/ui/Toaster'
 import { AuthGate } from '../../src/renderer/src/vault/AuthGate'
 import { vaultStatusStore } from '../../src/renderer/src/vault/status'
 import { cancelUnlock } from '../../src/renderer/src/vault/unlock'
+import { encodeIpcError } from '../../src/shared/ipc-error'
 import type { HubStatus } from '../../src/shared/hub'
 import type { SsoState } from '../../src/shared/sso'
 import type { UnlockResult, VaultStatus } from '../../src/shared/vault'
@@ -372,7 +373,7 @@ describe('Touch ID needs turning on again', () => {
     const user = userEvent.setup()
     fakeVault(
       { quickUnlock: 'touchId', lastMethod: 'password', touchIdNeedsReenable: true },
-      { 'vault:unlock': [{ ok: true }], 'vault:setQuickUnlock': [() => Promise.reject(new Error('verification failed'))] },
+      { 'vault:unlock': [{ ok: true }], 'vault:setQuickUnlock': [() => Promise.reject(new Error(encodeIpcError('VERIFICATION_FAILED', 'verification failed')))] },
     )
     renderApp()
     await user.type(await screen.findByLabelText('Master password'), 'correct horse{Enter}')
@@ -392,7 +393,7 @@ describe('Touch ID needs turning on again', () => {
         'vault:setQuickUnlock': [
           () => {
             vault.state.pin = { enabled: true, attemptsLeft: 2 }
-            return Promise.reject(new Error('verification failed'))
+            return Promise.reject(new Error(encodeIpcError('VERIFICATION_FAILED', 'verification failed')))
           },
         ],
       },

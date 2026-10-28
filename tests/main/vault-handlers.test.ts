@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { createVaultHandlers } from '../../src/main/ipc/handlers/vault'
 import type { VaultService } from '../../src/main/vault/vault-service'
 import type { ReverifyProof } from '../../src/shared/sso'
-import { DEFAULT_VAULT_ID, PIN_ATTEMPTS, PIN_WIPED, VERIFICATION_FAILED, type VaultStatus } from '../../src/shared/vault'
+import { DEFAULT_VAULT_ID, PIN_ATTEMPTS, PIN_WIPED, verificationFailedError, type VaultStatus } from '../../src/shared/vault'
 import { fakeQuick, makeVault } from './vault-helpers'
 
 const status: VaultStatus = {
@@ -92,9 +92,9 @@ describe('createVaultHandlers', () => {
     expect(vault.setQuickUnlock).toHaveBeenCalledWith('touchId')
 
     vault.reverify.mockResolvedValue(false)
-    await expect(h['vault:setPin'](PIN, proof)).rejects.toThrow(new Error(VERIFICATION_FAILED))
-    await expect(h['vault:setPassword'](PW, proof)).rejects.toThrow(new Error(VERIFICATION_FAILED))
-    await expect(h['vault:setQuickUnlock']('touchId', proof)).rejects.toThrow(new Error(VERIFICATION_FAILED))
+    await expect(h['vault:setPin'](PIN, proof)).rejects.toThrow(verificationFailedError())
+    await expect(h['vault:setPassword'](PW, proof)).rejects.toThrow(verificationFailedError())
+    await expect(h['vault:setQuickUnlock']('touchId', proof)).rejects.toThrow(verificationFailedError())
     expect(vault.setPin).toHaveBeenCalledTimes(1)
     expect(vault.setPassword).toHaveBeenCalledTimes(1)
     expect(vault.setQuickUnlock).toHaveBeenCalledTimes(1)
@@ -114,7 +114,7 @@ describe('createVaultHandlers', () => {
   it('never enables Touch ID without a proof', async () => {
     const vault = fakeVault()
     const h = createVaultHandlers(vault as unknown as VaultService)
-    await expect(h['vault:setQuickUnlock']('touchId')).rejects.toThrow(new Error(VERIFICATION_FAILED))
+    await expect(h['vault:setQuickUnlock']('touchId')).rejects.toThrow(verificationFailedError())
     expect(vault.reverify).not.toHaveBeenCalled()
     expect(vault.setQuickUnlock).not.toHaveBeenCalled()
   })
@@ -133,7 +133,7 @@ describe('createVaultHandlers', () => {
     const h = createVaultHandlers(f.vault)
     const wrong: ReverifyProof = { method: 'pin', pin: '135799' }
     for (let i = 1; i < PIN_ATTEMPTS; i++) {
-      await expect(h['vault:setPassword'](PW, wrong)).rejects.toThrow(new Error(VERIFICATION_FAILED))
+      await expect(h['vault:setPassword'](PW, wrong)).rejects.toThrow(verificationFailedError())
     }
     const res = await h['vault:setPassword'](PW, wrong)
     expect(res).toMatchObject({ ok: false, reason: 'pin-wiped', status: { unlocked: false, resetRequired: true } })

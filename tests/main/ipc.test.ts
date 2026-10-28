@@ -9,6 +9,8 @@ import { createAuditHandlers } from '../../src/main/ipc/handlers/audit'
 import { isTrustedSender, registerHandlers } from '../../src/main/ipc/register'
 import { VALIDATORS } from '../../src/main/ipc/validators'
 import { CHANNELS, EVENTS } from '../../src/shared/ipc'
+import { CodedError, decodeIpcError } from '../../src/shared/ipc-error'
+import { DeployError } from '../../src/shared/deploy-error'
 import type { ReleaseService } from '../../src/main/deploy/release-service'
 import { createDeployHandlers } from '../../src/main/ipc/handlers/deploy'
 import type { DeployStore } from '../../src/main/deploy/deploy-store'
@@ -82,6 +84,31 @@ describe('registerHandlers', () => {
     ).get('audit:verify')!
     await expect(fn(frame('file:///ok'))).rejects.toThrow(new Error('boom ‹redacted›'))
     await expect(fn(frame('file:///ok'))).rejects.toThrow(/^boom ‹redacted›$/)
+  })
+
+  it("puts a typed error's code in front of its redacted message, and nothing in front of an uncoded one", async () => {
+    const thrown: unknown[] = [
+      new DeployError('PLAYBOOK_CHANGED', 'changed hunter22'),
+      new CodedError('VAULT_LOCKED', 'vault locked'),
+      Object.assign(new Error('no such file'), { code: 'ENOENT' }),
+      // Not an identifier: the code is dropped, never written in front.
+      Object.assign(new Error('odd'), { code: 'has space] x' }),
+      Object.assign(new Error('numeric'), { code: 42 }),
+      'a string',
+    ]
+    let next = 0
+    const fn = setup({ 'audit:verify': () => { throw thrown[next++] } }, () => ['hunter22']).get('audit:verify')!
+    const messages: string[] = []
+    for (let i = 0; i < thrown.length; i++) messages.push(((await (fn(frame('file:///ok')) as Promise<unknown>).catch((e: Error) => e)) as Error).message)
+    expect(messages).toEqual([
+      '[code:PLAYBOOK_CHANGED] changed ‹redacted›',
+      '[code:VAULT_LOCKED] vault locked',
+      '[code:ENOENT] no such file',
+      'odd',
+      'numeric',
+      'a string',
+    ])
+    expect(decodeIpcError(messages[0])).toEqual({ code: 'PLAYBOOK_CHANGED', message: 'changed ‹redacted›' })
   })
 })
 

@@ -22,6 +22,7 @@ import type {
   SshImportPreview,
   SshImportRequest,
 } from '../../src/shared/inventory'
+import { encodeIpcError } from '../../src/shared/ipc-error'
 import type { SessionMeta } from '../../src/shared/ssh'
 import { DEFAULT_VAULT_ID, VAULT_LOCKED, type VaultMeta } from '../../src/shared/vault'
 import { REGION, defaultVault, environment, host, mockBridge, product, vaultStatus } from './helpers'
@@ -189,7 +190,7 @@ function renderApp(w: World, path = '/hosts', { strict = false } = {}) {
       case 'sshconfig:import': {
         const failure = w.importFailures.shift()
         if (failure) {
-          if (failure.message === VAULT_LOCKED) w.unlocked = false
+          if (failure.message.endsWith(VAULT_LOCKED)) w.unlocked = false
           throw failure
         }
         const req = args[0] as SshImportRequest
@@ -525,7 +526,7 @@ describe('hosts page', () => {
   it('locked import unlocks first', async () => {
     motion.safe = false
     const user = userEvent.setup()
-    const w = world({ importFailures: [new Error(VAULT_LOCKED)] })
+    const w = world({ importFailures: [new Error(encodeIpcError('VAULT_LOCKED', VAULT_LOCKED))] })
     const { invoke } = renderApp(w)
     await screen.findByRole('option', { name: 'api-1' })
     await user.click(screen.getByRole('button', { name: 'Import from ~/.ssh/config' }))

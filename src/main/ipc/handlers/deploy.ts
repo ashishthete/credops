@@ -112,7 +112,7 @@ export function createDeployHandlers(deps: {
     },
     'deploy:savePlaybook': async (id, sha256) => {
       const preview = reviewed.get(id)
-      if (!preview || preview.sha256 !== sha256) throw new DeployError('INVALID_STATE', PLAYBOOK_CHANGED_MESSAGE)
+      if (!preview || preview.sha256 !== sha256) throw new DeployError('PLAYBOOK_CHANGED', PLAYBOOK_CHANGED_MESSAGE)
       if (!playbookFile) throw new DeployError('INVALID_STATE', 'Saving a playbook is not available here')
       const path = await playbookFile.saveDialog(id)
       if (path === undefined) return null

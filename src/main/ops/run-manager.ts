@@ -22,7 +22,7 @@ import {
   type RunSummary,
 } from '../../shared/ops'
 import type { SessionError } from '../../shared/ssh'
-import { VAULT_LOCKED } from '../../shared/vault'
+import { vaultLockedError } from '../../shared/vault'
 import { redact } from '../security/redact'
 import { realTimers, type Timers } from '../tunnels/forward'
 import { quietly } from '../util/teardown'
@@ -158,7 +158,7 @@ export class RunManager {
     if (this.closed) throw new Error('CredOps is quitting')
     if (this.deps.isLocked()) {
       this.deps.audit.append({ action: 'run.start', outcome: 'denied', ...this.lockedTarget(req.target), details: { reason: 'locked' } })
-      throw new Error(VAULT_LOCKED)
+      throw vaultLockedError()
     }
     const active = [...this.runs.values()].filter((r) => r.state === 'running').length
     if (active >= MAX_ACTIVE_RUNS) throw new Error(`too many runs at once (${MAX_ACTIVE_RUNS}); wait for one to finish`)
