@@ -5,11 +5,13 @@ import { ExplainButton, ExplainPanel } from '../../src/renderer/src/ai/ExplainPa
 import { explain, explainStore, resetExplain } from '../../src/renderer/src/ai/explain-store'
 import '../../src/renderer/src/ai/register'
 import { FailureActionSlot } from '../../src/renderer/src/deploy/slots'
+import { FailurePanel } from '../../src/renderer/src/pages/deployments/release/FailurePanel'
 import { SessionEnded } from '../../src/renderer/src/pages/terminals/SessionEnded'
 import { TunnelCard } from '../../src/renderer/src/pages/tunnels/TunnelCard'
 import { resetSessions, startSessionSync } from '../../src/renderer/src/terminal/sessions'
 import { resetTunnels, tunnelStore } from '../../src/renderer/src/tunnels/store'
 import { commandStore } from '../../src/renderer/src/ui/commands'
+import { toast } from '../../src/renderer/src/ui/Toaster'
 import type { ExplainCommand, ExplainSubject, Explanation } from '../../src/shared/ai'
 import type { SessionMeta } from '../../src/shared/ssh'
 import { emitBridgeEvent, mockBridge, tunnelMeta, tunnelRuntime } from './helpers'
@@ -187,6 +189,29 @@ describe('ExplainPanel', () => {
     expect(within(dialog).getByRole('button', { name: 'Run destructive command' })).toBeInTheDocument()
   })
 
+  it('a command Claude calls read-only is shown and confirmed as destructive when it matches the destructive pattern', async () => {
+    mount({ 'ai:explain': explanation({ commands: [cmd({ risk: 'read-only', command: 'rm -rf /var/lib/app' })] }) })
+    await open()
+    const badge = await screen.findByText('destructive')
+    expect(badge.closest('[style]')?.getAttribute('style')).toContain('--err')
+    expect(screen.queryByText('read-only')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Run in terminal' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Run on web-1?' })
+    expect(within(dialog).getByRole('button', { name: 'Run destructive command' })).toBeInTheDocument()
+  })
+
+  it('a command holding a control character is refused at write time, before any session opens', async () => {
+    vi.mocked(toast).mockClear()
+    const { calls } = mount({ 'ai:explain': explanation({ commands: [cmd({ command: 'df -h\u0015rm -rf ~' })] }), 'ssh:open': sessionMeta() })
+    stopSync = startSessionSync()
+    await open()
+    fireEvent.click(await screen.findByRole('button', { name: 'Run in terminal' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Run on web-1?' })
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Run/ }))
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: "The command didn't run", tone: 'error' })))
+    for (const ch of ['session:write', 'ssh:open', 'shell:open', 'ai:command']) expect(calls(ch)).toHaveLength(0)
+  })
+
   it('a host command with no host cannot run', async () => {
     mount({ 'ai:explain': explanation({ target: { hostId: null, hostLabel: null, environmentId: null, environmentName: null, protected: false } }) })
     await open()
@@ -276,8 +301,18 @@ describe('Explain entry points', () => {
 
   it('the failure-panel slot renders Explain for its release step', async () => {
     const invoke = mockBridge({ 'ai:status': READY, 'ai:explain': new Promise(() => undefined) })
-    render(<FailureActionSlot releaseId={REL} stepId="s-build" />)
+    render(<FailureActionSlot releaseId={REL} stepId="s-build" error="build failed" lines={[]} />)
     const btn = await screen.findByRole('button', { name: 'Explain' })
+    await waitFor(() => expect(btn).toBeEnabled())
+    fireEvent.click(btn)
+    expect(invoke).toHaveBeenCalledWith('ai:explain', expect.any(String), SUBJECT)
+  })
+
+  it('the release failure panel shows the Explain ai/register put in the slot', async () => {
+    const invoke = mockBridge({ 'ai:status': READY, 'ai:explain': new Promise(() => undefined) })
+    render(<FailurePanel releaseId={REL} chip={{ stepId: 's-build', label: 'Build', error: 'build failed' }} host={null} />)
+    const panel = screen.getByRole('region', { name: 'Build failed' })
+    const btn = await within(panel).findByRole('button', { name: 'Explain' })
     await waitFor(() => expect(btn).toBeEnabled())
     fireEvent.click(btn)
     expect(invoke).toHaveBeenCalledWith('ai:explain', expect.any(String), SUBJECT)

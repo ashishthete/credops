@@ -1,9 +1,17 @@
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { useEffect } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { checkoutNotice, pickerGroups, selectionRequest } from '../../src/renderer/src/deploy/picker'
 import { releaseStore, resetReleases } from '../../src/renderer/src/deploy/releases'
+import {
+  registerNotesFlush,
+  registerReleaseNotesEditor,
+  registerReleaseOptions,
+  RELEASE_OPTIONS_UNAVAILABLE,
+  type ReleaseNotesSlotProps,
+} from '../../src/renderer/src/deploy/slots'
 import { loadDeploy, resetDeploy } from '../../src/renderer/src/deploy/store'
 import { inventoryStore, loadInventory } from '../../src/renderer/src/inventory/store'
 import { DeployWizard } from '../../src/renderer/src/pages/deployments/release/DeployWizard'
@@ -78,8 +86,9 @@ const PREVIEW = { playbook: PLAYBOOK, sha256: HASH }
 const calls = (invoke: ReturnType<typeof mockBridge>, channel: string) => (invoke.mock.calls as unknown[][]).filter((x) => x[0] === channel)
 
 /** `persisted` is what `release:events` replays; a test can also push live batches. */
-async function mount({ preselect = [] as string[], env = staging, persisted = [] as RunEvent[], detail = releaseDetail({ status: 'preflight', runs: [] }), preview = PREVIEW as PlaybookPreview, settings = envSettings(), hosts = HOSTS, regions = [REGION] } = {}) {
+async function mount({ preselect = [] as string[], env = staging, persisted = [] as RunEvent[], detail = releaseDetail({ status: 'preflight', runs: [] }), preview = PREVIEW as PlaybookPreview, settings = envSettings(), hosts = HOSTS, regions = [REGION], extra = {} as Record<string, unknown> } = {}) {
   const invoke = mockBridge({
+    ...extra,
     'env:list': [env],
     'host:list': hosts,
     'region:list': regions,
@@ -266,7 +275,8 @@ describe('deploy wizard', () => {
     await user.click(box(group(dialog, 'web'), 'Whole checkout'))
     expect(within(group(dialog, 'web')).getByText('whole checkout')).toBeInTheDocument()
     expect(box(dialog, 'Notify')).toBeDisabled()
-    expect(box(dialog, 'Notify').closest('label')).toHaveAttribute('title', 'Available with notifications (Phase 9)')
+    expect(box(dialog, 'Notify').closest('label')).toHaveAttribute('title', RELEASE_OPTIONS_UNAVAILABLE)
+    expect(box(dialog, 'QA')).toBeDisabled()
     await preflight(user, dialog)
     expect(calls(invoke, 'release:preflight')[0][1]).toEqual({
       environmentId: 'e1',
@@ -769,5 +779,60 @@ describe('skipped services', () => {
     expect(calls(invoke, 'deploy:previewPlaybook').map((c) => c.slice(1))).toEqual([[REL, ['s1']], [REL2]])
     // the new review's hash, bound to the new release
     await waitFor(() => expect(calls(invoke, 'release:start').map((c) => c.slice(1))[1]).toEqual([REL2, { redeploy: false, playbookSha256: NEW }]))
+  })
+})
+
+describe('deploy slots in the wizard', () => {
+  it('the notes editor and notify/QA options registered through deploy/slots show, and Deploy waits for the notes', async () => {
+    const seen: ReleaseNotesSlotProps[] = []
+    const flushes: string[] = []
+    let finish = () => {}
+    function Editor(p: ReleaseNotesSlotProps) {
+      seen.push(p)
+      const id = p.release?.id
+      useEffect(
+        () =>
+          id
+            ? registerNotesFlush(id, () => {
+                flushes.push(id)
+                return new Promise<void>((r) => (finish = r))
+              })
+            : undefined,
+        [id],
+      )
+      return <p>{id ? `notes for ${id}` : 'notes after preflight'}</p>
+    }
+    const offEditor = registerReleaseNotesEditor(Editor)
+    const offOptions = registerReleaseOptions({ notify: true, qa: true })
+    try {
+      const { user, dialog, invoke } = await mount({
+        preselect: ['s1'],
+        persisted: events([{ type: 'preflight.done', report: report() }]),
+        extra: { 'integration:get': { environmentId: 'e1', qaOnDeploy: true, qa: { repo: 'o/r', workflow: 'qa.yml', ref: 'main' } } },
+      })
+      expect(within(dialog).getByText('notes after preflight')).toBeInTheDocument()
+      expect(seen.at(-1)).toMatchObject({ environmentId: 'e1', release: null })
+      expect(box(dialog, 'Notify')).toBeEnabled()
+      expect(box(dialog, 'Notify')).toBeChecked()
+      expect(box(dialog, 'Notify').closest('label')!.getAttribute('title')).toMatch(/Notifications and QA settings/)
+      // QA follows the environment's qaOnDeploy.
+      await waitFor(() => expect(box(dialog, 'QA')).toBeChecked())
+      await user.click(box(dialog, 'Notify'))
+      await preflight(user, dialog)
+      expect(calls(invoke, 'release:preflight')[0][1]).toMatchObject({ options: { backup: true, notify: false, qa: true } })
+      await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Review playbook' })).toBeEnabled())
+      await user.click(within(dialog).getByRole('button', { name: 'Review playbook' }))
+      expect(await within(dialog).findByText(`notes for ${REL}`)).toBeInTheDocument()
+      expect(seen.at(-1)).toMatchObject({ environmentId: 'e1', release: { id: REL } })
+      await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Deploy' })).toBeEnabled())
+      await user.click(within(dialog).getByRole('button', { name: 'Deploy' }))
+      await waitFor(() => expect(flushes).toEqual([REL]))
+      expect(calls(invoke, 'release:start')).toHaveLength(0)
+      await act(async () => finish())
+      await waitFor(() => expect(calls(invoke, 'release:start')).toHaveLength(1))
+    } finally {
+      offEditor()
+      offOptions()
+    }
   })
 })

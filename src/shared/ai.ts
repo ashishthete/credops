@@ -1,6 +1,7 @@
 // Imported by the renderer: keep runtime code to plain constants and pure functions (no node or electron imports).
 
 import type { CommitInfo } from './deploy'
+import { DESTRUCTIVE_PATTERN } from './ops'
 
 export type AiErrorCode = 'no-key' | 'auth' | 'rate-limit' | 'network' | 'refused' | 'truncated' | 'bad-output' | 'cancelled' | 'api'
 
@@ -31,6 +32,18 @@ export type ExplainSubject =
 export const COMMAND_RISKS = ['read-only', 'changes-state', 'destructive'] as const
 export type CommandRisk = (typeof COMMAND_RISKS)[number]
 export const CONFIDENCES = ['low', 'medium', 'high'] as const
+
+/**
+ * Characters a suggested command must not hold, as typing it would run something other than what the confirm
+ * dialog shows: C0 controls (tab, newline and CR among them), DEL, C1 controls, bidi overrides and isolates,
+ * and zero-width characters.
+ */
+export const UNSAFE_COMMAND_CHARS = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/
+
+/** The risk a command is shown and confirmed with: Claude's claim, raised to destructive when the command matches DESTRUCTIVE_PATTERN, never lowered. */
+export function commandRisk(command: string, claimed: CommandRisk): CommandRisk {
+  return DESTRUCTIVE_PATTERN.test(command) ? 'destructive' : claimed
+}
 
 export interface ExplainCommand {
   title: string
@@ -102,7 +115,10 @@ const bad = (): AiFailure => new AiFailure('bad-output', 'Claude returned an ans
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x)
 const cap = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
-/** Parses Claude's structured answer. Throws `bad-output`; caps lengths; drops commands that are too long, hold a NUL or are malformed. */
+/**
+ * Parses Claude's structured answer. Throws `bad-output`; caps lengths; drops commands that are too long, hold an
+ * UNSAFE_COMMAND_CHARS character or are malformed; raises a command's risk by `commandRisk`.
+ */
 export function parseExplanation(json: string): ParsedExplanation {
   let raw: unknown
   try {
@@ -122,10 +138,10 @@ export function parseExplanation(json: string): ParsedExplanation {
     if (!isObj(c)) continue
     const { title, command, where, risk } = c
     if (typeof title !== 'string' || typeof command !== 'string') continue
-    if (command.trim().length === 0 || command.length > MAX_COMMAND || command.includes('\u0000')) continue
+    if (command.trim().length === 0 || command.length > MAX_COMMAND || UNSAFE_COMMAND_CHARS.test(command)) continue
     if (where !== 'host' && where !== 'local') continue
     if (!COMMAND_RISKS.includes(risk as never)) continue
-    kept.push({ title: cap(title, MAX_TITLE), command, where, risk: risk as CommandRisk })
+    kept.push({ title: cap(title, MAX_TITLE), command, where, risk: commandRisk(command, risk as CommandRisk) })
   }
   return {
     summary: cap(summary, MAX_SUMMARY),

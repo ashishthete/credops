@@ -2,7 +2,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronRight, CircleCheck, Sparkles, X } from 'lucide-react'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useNavigate } from 'react-router'
-import type { ExplainSubject, Explanation, RedactionKind } from '../../../shared/ai'
+import { commandRisk, type ExplainSubject, type Explanation, type RedactionKind } from '../../../shared/ai'
 import { sessionStore } from '../terminal/sessions'
 import { tunnelStore } from '../tunnels/store'
 import { Badge } from '../ui/Badge'
@@ -230,7 +230,7 @@ export function ExplainPanel() {
         ? 'Opens a new terminal on the host and types this command. Read it first.'
         : 'Opens a local shell and types this command. Read it first.',
       code: c.command,
-      confirmLabel: c.risk === 'destructive' ? 'Run destructive command' : 'Run',
+      confirmLabel: commandRisk(c.command, c.risk) === 'destructive' ?'Run destructive command' : 'Run',
       ...(e.target.protected && e.target.environmentName ? { typeToConfirm: e.target.environmentName } : {}),
       run: () =>
         runInTerminal(e, requestId, index, () => {
