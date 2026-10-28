@@ -752,6 +752,7 @@ export class ReleaseService {
         error = this.prepareFailed(live, c.infos, plan, res.out) ?? this.reason(live, res.out, res.err, 'Release')
         status = 'failed'
         const targets = c.autoRollback && live.busyText === null ? this.rollbackTargets(live, c.infos, res.out, plan.prepare !== null) : []
+        if (c.autoRollback && live.busyText === null) error = `${error}${this.unrolled(live, c.infos, res.out, targets, plan.prepare !== null)}`
         if (targets.length > 0) {
           const rb = await this.autoRollback(live, c, targets, docker, backup)
           if (c.edited) notes = withNote(this.d.releases.detail(id).releaseNotes, ROLLBACK_GENERATED_NOTE)
@@ -1566,6 +1567,22 @@ export class ReleaseService {
       if (commit && SHA.test(commit)) targets.push({ info, commit })
     }
     return targets.reverse()
+  }
+
+  /**
+   * What an auto-rollback leaves out, for the error: runs it should undo that have no commit to go back to. A first
+   * deploy has none; any other run's previous commit could not be read, so it stays on the new code.
+   */
+  private unrolled(live: Live, infos: Info[], out: RunOutcome | null, targets: { info: Info }[], prepared: boolean): string {
+    const reached = prepared ? new Set([...(out?.reachedUp ?? []), ...live.upped]) : new Set([...(out?.reachedCheckout ?? []), ...live.checkedOut])
+    const commits = this.d.releases.detail(live.id).preflight?.commits ?? {}
+    const left = infos.filter((i) => reached.has(i.run.id) && !targets.some((t) => t.info === i))
+    const first = left.filter((i) => commits[i.dep.id]?.firstDeploy === true).map((i) => i.dep.name)
+    const unknown = left.filter((i) => commits[i.dep.id]?.firstDeploy !== true).map((i) => i.dep.name)
+    return [
+      ...(unknown.length > 0 ? [`; auto-rollback skipped ${unknown.join(', ')}: the previous commit could not be read, so ${unknown.length === 1 ? 'it stays' : 'they stay'} on the new code`] : []),
+      ...(first.length > 0 ? [`; ${first.join(', ')} had no earlier deploy to roll back to`] : []),
+    ].join('')
   }
 
   // ---- finishing ----

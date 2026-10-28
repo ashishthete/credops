@@ -349,12 +349,16 @@ const REMOTE_TAG = [
 ].join('\n')
 const GIT_ID = 'GIT_COMMITTER_NAME=CredOps GIT_COMMITTER_EMAIL=credops@localhost'
 
-/** The deployed commit is read from origin (peeled), so a stale local tag or a fetch cannot change it. */
+/**
+ * The deployed commit is read from origin (peeled), so a stale local tag or a fetch cannot change it. The server's
+ * HEAD before the checkout comes with it: when a tag push failed, the tag lags behind what is running.
+ */
 const taskRecord = (d: PlanDeployment): Task =>
   sh(nm('record', d), 'record', runOf(d), [
     'T={{ d.tag | quote }}',
     REMOTE_TAG,
-    'if [ "$ok" = 0 ]; then echo "OD-PREV unknown"; elif [ -n "$c" ]; then echo "OD-PREV $c"; else echo "OD-PREV none"; fi',
+    'h=$(git rev-parse -q --verify HEAD 2>/dev/null)',
+    'if [ "$ok" = 0 ]; then echo "OD-PREV unknown head=$h"; elif [ -n "$c" ]; then echo "OD-PREV $c head=$h"; else echo "OD-PREV none head=$h"; fi',
   ].join('\n'), { timeout: T_SHORT, chdir: IN_REPO, guarded: true })
 
 export const taskBackup = (d: PlanDeployment): Task => {

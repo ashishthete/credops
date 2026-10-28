@@ -74,7 +74,7 @@
           {
             "name": "record dep1",
             "ansible.builtin.shell": {
-              "cmd": "T={{ d.tag | quote }}\nif o=$(git ls-remote origin \"refs/tags/$T\" \"refs/tags/$T^{}\" 2>/dev/null); then ok=1; c=$(echo \"$o\" | awk 'END {print $1}'); else ok=0; c=\"\"; fi\nif [ \"$ok\" = 0 ]; then echo \"OD-PREV unknown\"; elif [ -n \"$c\" ]; then echo \"OD-PREV $c\"; else echo \"OD-PREV none\"; fi",
+              "cmd": "T={{ d.tag | quote }}\nif o=$(git ls-remote origin \"refs/tags/$T\" \"refs/tags/$T^{}\" 2>/dev/null); then ok=1; c=$(echo \"$o\" | awk 'END {print $1}'); else ok=0; c=\"\"; fi\nh=$(git rev-parse -q --verify HEAD 2>/dev/null)\nif [ \"$ok\" = 0 ]; then echo \"OD-PREV unknown head=$h\"; elif [ -n \"$c\" ]; then echo \"OD-PREV $c head=$h\"; else echo \"OD-PREV none head=$h\"; fi",
               "executable": "/bin/bash",
               "chdir": "{{ d.repo }}"
             },
@@ -287,7 +287,7 @@
           {
             "name": "record dep2",
             "ansible.builtin.shell": {
-              "cmd": "T={{ d.tag | quote }}\nif o=$(git ls-remote origin \"refs/tags/$T\" \"refs/tags/$T^{}\" 2>/dev/null); then ok=1; c=$(echo \"$o\" | awk 'END {print $1}'); else ok=0; c=\"\"; fi\nif [ \"$ok\" = 0 ]; then echo \"OD-PREV unknown\"; elif [ -n \"$c\" ]; then echo \"OD-PREV $c\"; else echo \"OD-PREV none\"; fi",
+              "cmd": "T={{ d.tag | quote }}\nif o=$(git ls-remote origin \"refs/tags/$T\" \"refs/tags/$T^{}\" 2>/dev/null); then ok=1; c=$(echo \"$o\" | awk 'END {print $1}'); else ok=0; c=\"\"; fi\nh=$(git rev-parse -q --verify HEAD 2>/dev/null)\nif [ \"$ok\" = 0 ]; then echo \"OD-PREV unknown head=$h\"; elif [ -n \"$c\" ]; then echo \"OD-PREV $c head=$h\"; else echo \"OD-PREV none head=$h\"; fi",
               "executable": "/bin/bash",
               "chdir": "{{ d.repo }}"
             },
@@ -471,7 +471,7 @@
           {
             "name": "record dep3",
             "ansible.builtin.shell": {
-              "cmd": "T={{ d.tag | quote }}\nif o=$(git ls-remote origin \"refs/tags/$T\" \"refs/tags/$T^{}\" 2>/dev/null); then ok=1; c=$(echo \"$o\" | awk 'END {print $1}'); else ok=0; c=\"\"; fi\nif [ \"$ok\" = 0 ]; then echo \"OD-PREV unknown\"; elif [ -n \"$c\" ]; then echo \"OD-PREV $c\"; else echo \"OD-PREV none\"; fi",
+              "cmd": "T={{ d.tag | quote }}\nif o=$(git ls-remote origin \"refs/tags/$T\" \"refs/tags/$T^{}\" 2>/dev/null); then ok=1; c=$(echo \"$o\" | awk 'END {print $1}'); else ok=0; c=\"\"; fi\nh=$(git rev-parse -q --verify HEAD 2>/dev/null)\nif [ \"$ok\" = 0 ]; then echo \"OD-PREV unknown head=$h\"; elif [ -n \"$c\" ]; then echo \"OD-PREV $c head=$h\"; else echo \"OD-PREV none head=$h\"; fi",
               "executable": "/bin/bash",
               "chdir": "{{ d.repo }}"
             },

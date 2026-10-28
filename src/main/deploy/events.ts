@@ -24,7 +24,7 @@ import { redact } from '../security/redact'
 import { planSteps, stepList } from './generate'
 import { operationSteps } from './generate-ops'
 import { withBase64Forms } from './mask'
-import { MARK, RC_BREAK_KEPT, RC_LOCK_BUSY, parseMarker, parsePfLine, parsePrev, parseStreamLine } from './markers'
+import { MARK, RC_BREAK_KEPT, RC_LOCK_BUSY, parseMarker, parsePfLine, parsePrev, parseStreamLine, type PrevValue } from './markers'
 import type { DeployPlan, PlanDeployment, PlanHost, PlanStep, RunnerPreflight } from './runner'
 
 export { parseStreamLine }
@@ -96,6 +96,8 @@ export class EventTranslator {
   private readonly strangers = new Set<string>()
   private readonly rescuedBy = new Map<string, number>()
   private readonly unknownPrevious = new Set<string>()
+  /** Record notes by deployment run: the previous commit came from the server's HEAD, not the deploy tag. */
+  private readonly prevFromHead = new Map<string, string>()
   /** When each task (by name) last started, for its task.done duration. */
   private readonly taskBegan = new Map<string, number>()
   /** The step each host last started (a task_start carries no host, so it is the host of the task's run). */
@@ -541,7 +543,22 @@ export class EventTranslator {
   }
 
   private prevNote(kind: StepKind, run: string): string | undefined {
-    return kind === 'record' && this.unknownPrevious.has(run) ? 'The previous commit could not be read from origin' : undefined
+    if (kind !== 'record') return undefined
+    return this.prevFromHead.get(run) ?? (this.unknownPrevious.has(run) ? 'The previous commit could not be read from origin' : undefined)
+  }
+
+  /**
+   * The commit a rollback goes back to. The deploy tag says what was deployed last, unless a tag push failed and it
+   * lags: when the server's HEAD before this checkout is the commit this app last deployed for every selected service,
+   * that is what was running, whatever the tag says (or when it could not be read).
+   */
+  private previousOf(p: PrevValue, dep: PlanDeployment | undefined): { sha: string | null; note?: string } {
+    const tag = p.kind === 'sha' ? p.sha : null
+    const ours = dep && dep.commitBases.shas.length === 1 && !dep.commitBases.tag ? dep.commitBases.shas[0] : null
+    if (p.head === undefined || ours === null || p.head !== ours || tag === ours) return { sha: tag }
+    const short = (s: string) => s.slice(0, 7)
+    const said = p.kind === 'sha' ? `The deploy tag points at ${short(p.sha)}` : p.kind === 'none' ? 'The deploy tag is missing' : 'The deploy tag could not be read'
+    return { sha: ours, note: `${said}, but the server was on ${short(ours)}, which this app deployed last (a tag push may have failed); a rollback goes to ${short(ours)}` }
   }
 
   /** Counts a finished task toward its step; the step closes once all its tasks are in. */
@@ -670,8 +687,11 @@ export class EventTranslator {
     const run = d.deploymentRunId
     if (mark === MARK.PREV && run && d.key === 'record') {
       const p = parsePrev(rest)
-      if (p?.kind === 'sha') out.push({ type: 'deployment.updated', deploymentRunId: run, status: 'running', previousCommit: p.sha })
-      else if (p?.kind === 'unknown') this.unknownPrevious.add(run)
+      if (!p) return true
+      const prev = this.previousOf(p, this.depByRun.get(run))
+      if (prev.sha !== null) out.push({ type: 'deployment.updated', deploymentRunId: run, status: 'running', previousCommit: prev.sha })
+      else if (p.kind === 'unknown') this.unknownPrevious.add(run)
+      if (prev.note !== undefined) this.prevFromHead.set(run, prev.note)
       return true
     }
     if (mark === MARK.HEAD && run && (d.key === 'checkout' || d.key === 'rb_checkout')) {

@@ -49,14 +49,17 @@ export function parsePfLine(rest: string): { check: string; fields: Record<strin
   return { check, fields }
 }
 
-export type PrevValue = { kind: 'sha'; sha: string } | { kind: 'none' } | { kind: 'unknown' }
+/** `head`: the server's HEAD before this release's checkout, when it printed one. */
+export type PrevValue = ({ kind: 'sha'; sha: string } | { kind: 'none' } | { kind: 'unknown' }) & { head?: string }
 
-/** `unknown` (origin unreachable) is never a first deploy and never a commit. */
+/** `unknown` (origin unreachable) is never a first deploy and never a commit. An optional ` head=<sha>` follows. */
 export function parsePrev(rest: string): PrevValue | null {
-  const v = rest.trim()
-  if (v === 'none') return { kind: 'none' }
-  if (v === 'unknown') return { kind: 'unknown' }
-  return /^[0-9a-f]{40}$/.test(v) ? { kind: 'sha', sha: v } : null
+  const m = /^(\S+)(?: head=(\S*))?$/.exec(rest.trim())
+  if (!m) return null
+  const head = m[2] !== undefined && /^[0-9a-f]{40}$/.test(m[2]) ? { head: m[2] } : {}
+  if (m[1] === 'none') return { kind: 'none', ...head }
+  if (m[1] === 'unknown') return { kind: 'unknown', ...head }
+  return /^[0-9a-f]{40}$/.test(m[1]) ? { kind: 'sha', sha: m[1], ...head } : null
 }
 
 const STREAM = /^([A-Za-z0-9_-]{1,64}):([a-z0-9_]{1,32})\t([\s\S]*)$/

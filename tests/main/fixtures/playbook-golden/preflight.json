@@ -48,8 +48,8 @@
             "health_timeout": 60,
             "backup_dir": "/var/backups/app",
             "backup_label": "alpha",
-            "pre_hook": "ZWNobyAne3sgNyo3IH19JyAiJChpZCkiIDsgZWNobyBkb25l",
-            "post_hook": "ZWNobyBwb3N0",
+            "pre_hook": "",
+            "post_hook": "",
             "urls": [
               {
                 "url": "https://app.example.com/health",

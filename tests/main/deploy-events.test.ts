@@ -253,6 +253,33 @@ describe('EventTranslator', () => {
     expect(n.previousUnknown()).toEqual([])
   })
 
+  it("the server's HEAD is the previous commit when it is what this app last deployed and the tag says otherwise", () => {
+    const [T, D, X] = ['a'.repeat(40), 'd'.repeat(40), 'e'.repeat(40)]
+    const tags = ['od_step=record', `od_run=${R1}`]
+    const rec = (stdout: string, shas: string[] = [D], tag = false) => {
+      const plan = planFixture()
+      plan.deployments[0].commitBases = { shas, tag }
+      const tr = new EventTranslator({ plan, secrets: () => [], now: clock().now })
+      tr.feed(JSON.stringify({ event: 'task_start', name: 'record dep1', tags }))
+      const out = tr.feed(JSON.stringify({ event: 'ok', host: 'od-1', task: 'record dep1', tags, rc: 0, stdout }))
+      return { prev: of(out, 'deployment.updated').map((e) => e.previousCommit), done: of(out, 'step.done')[0], unknown: tr.previousUnknown() }
+    }
+    // a stale tag (its last push failed): the server is on what this app deployed
+    const stale = rec(`OD-PREV ${T} head=${D}`)
+    expect(stale.prev).toEqual([D])
+    expect(stale.done).toMatchObject({ state: 'warn' })
+    expect(stale.done.message).toContain('a rollback goes to ddddddd')
+    // an unreadable or missing tag, same server state
+    expect(rec(`OD-PREV unknown head=${D}`)).toMatchObject({ prev: [D], unknown: [] })
+    expect(rec(`OD-PREV none head=${D}`).prev).toEqual([D])
+    // the tag agrees, the server is elsewhere, or the app's own record is mixed: the tag as before
+    expect(rec(`OD-PREV ${D} head=${D}`).done.state).toBe('ok')
+    expect(rec(`OD-PREV ${T} head=${X}`).prev).toEqual([T])
+    expect(rec(`OD-PREV ${T} head=${D}`, [D, X]).prev).toEqual([T])
+    expect(rec(`OD-PREV ${T} head=${D}`, [D], true).prev).toEqual([T])
+    expect(rec(`OD-PREV unknown head=`)).toMatchObject({ prev: [], unknown: [R1] })
+  })
+
   it('OD-BACKUP carries the final file path and OD-ENV lines are logs', () => {
     const tr = new EventTranslator({ plan: planFixture(), secrets: () => [], now: clock().now })
     const tags = ['od_step=backup', `od_run=${R1}`]
@@ -883,6 +910,9 @@ describe('markers and the generator agree', () => {
     expect(parsePrev('unknown')).toEqual({ kind: 'unknown' })
     expect(parsePrev('none')).toEqual({ kind: 'none' })
     expect(parsePrev('zzz')).toBeNull()
+    expect(parsePrev(`${'a'.repeat(40)} head=${'b'.repeat(40)}`)).toEqual({ kind: 'sha', sha: 'a'.repeat(40), head: 'b'.repeat(40) })
+    expect(parsePrev('none head=')).toEqual({ kind: 'none' })
+    expect(parsePrev('unknown head=zz')).toEqual({ kind: 'unknown' })
     expect(parsePfLine('lock repo=/a held=1 raw_b64=QQ==')).toEqual({ check: 'lock', fields: { repo: '/a', held: '1', raw_b64: 'QQ==' } })
     expect(parsePfLine('commits unknown')).toEqual({ check: 'commits', fields: { unknown: '' } })
     expect(parsePfLine('tag exists=0 commit=')).toEqual({ check: 'tag', fields: { exists: '0', commit: '' } })

@@ -223,6 +223,34 @@ describe('ReleaseService', () => {
     expect(runIds(r.runner.call('rollback'))).toEqual([runIds(r.runner.call('release'))[1]])
   })
 
+  it('an auto-rollback names the runs it could not undo: an unread previous commit, or a first deploy', async () => {
+    const r = await rig()
+    const deps = [dep(r, 'one'), dep(r, 'two'), dep(r, 'three')]
+    r.runner.on.preflight = (plan) => ({
+      preflight: {
+        checks: [],
+        commits: Object.fromEntries(plan.deployments.map((d) => [d.deploymentId, { commits: [], hiddenPairs: 0, truncated: 0, firstDeploy: d.deploymentId === deps[2].id, head: A, tagCommit: null }])),
+        dockerModes: Object.fromEntries(plan.deployments.map((d) => [d.deploymentId, 'plain' as const])),
+        composeServices: {},
+        locks: {},
+        commitsTotal: 0,
+        blocked: false,
+      },
+    })
+    const id = await ready(r, deps)
+    r.runner.on.release = (plan) => {
+      const [r1, r2, r3] = runIds(plan)
+      return { exitCode: 2, failedDeploymentRunIds: [r3], reachedCheckout: [r1, r2, r3], commits: { [r1]: { previous: A } } }
+    }
+    await r.svc.start(id, { redeploy: true })
+    await r.svc.whenIdle()
+    const d = r.svc.detail(id)
+    expect(runIds(r.runner.call('rollback'))).toEqual([runIds(r.runner.call('release'))[0]])
+    expect(d.error).toContain('auto-rollback skipped two: the previous commit could not be read, so it stays on the new code')
+    expect(d.error).toContain('three had no earlier deploy to roll back to')
+    expect(d.error).not.toContain('skipped one')
+  })
+
   it('auto-rollback off ends failed and rollback() refuses a release whose services were deployed since', async () => {
     const r = await rig()
     r.f.deploys.updateSettings(r.f.staging.id, { autoRollback: false })
