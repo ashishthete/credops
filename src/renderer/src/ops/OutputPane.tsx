@@ -2,6 +2,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { ArrowDown, Check, Copy } from 'lucide-react'
 import { memo, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { RUN_OUTPUT_CHARS } from '../../../shared/ops'
+import { ANSI_START, ansiColor, scanAnsi, stripAnsi, type AnsiRun, type AnsiState } from '../ui/ansi'
 import { fast, spring, useMotionSafe } from '../ui/motion'
 import type { HostOutput } from './runs'
 
@@ -15,11 +16,15 @@ const BLOCK = 64
 /** Within this many pixels of the end counts as following the live output. */
 const STICK_PX = 8
 
-/** One appended piece of text; `err` are [start, end) offsets into it where stderr wrote. */
+/**
+ * One appended piece of text; `err` are [start, end) offsets into it where stderr wrote. `ansi` is the
+ * terminal style in force where it starts, so a colour the previous piece set carries on into it.
+ */
 interface Span {
   key: number
   text: string
   err: [number, number][]
+  ansi: AnsiState
 }
 
 interface Spans {
@@ -33,9 +38,11 @@ interface Spans {
   nextKey: number
   /** Older output was dropped here (the store may still hold it). */
   hidden: boolean
+  /** The terminal style where the last span ends. */
+  ansi: AnsiState
 }
 
-const NONE: Spans = { source: undefined, spans: [], total: 0, chars: 0, errs: 0, nextKey: 0, hidden: false }
+const NONE: Spans = { source: undefined, spans: [], total: 0, chars: 0, errs: 0, nextKey: 0, hidden: false, ansi: ANSI_START }
 
 const blockOf = (s: Span) => Math.floor(s.key / BLOCK)
 
@@ -57,12 +64,13 @@ function errIn(out: HostOutput, from: number): [number, number][] {
   return [[ranges[0][0], ranges[fold - 1][1]], ...ranges.slice(fold)]
 }
 
-/** Drops `cut` chars from the front of a span. */
+/** Drops `cut` chars from the front of a span; it starts in the style the dropped chars left. */
 function trimFront(s: Span, cut: number): Span {
   return {
     key: s.key,
     text: s.text.slice(cut),
     err: s.err.map(([a, b]): [number, number] => [Math.max(0, a - cut), b - cut]).filter(([a, b]) => b > a),
+    ansi: scanAnsi(s.text.slice(0, cut), s.ansi).state,
   }
 }
 
@@ -75,17 +83,19 @@ function trimFront(s: Span, cut: number): Span {
 function advance(prev: Spans, out: HostOutput | undefined): Spans {
   if (!out || !out.text) return { ...NONE, source: out, nextKey: prev.nextKey }
   const fresh = out.total - prev.total
-  let { spans, chars, errs, nextKey, hidden } = prev
+  let { spans, chars, errs, nextKey, hidden, ansi } = prev
   const add = (from: number) => {
-    const span = { key: nextKey++, text: out.text.slice(from), err: errIn(out, from) }
+    const span = { key: nextKey++, text: out.text.slice(from), err: errIn(out, from), ansi }
     spans = [...spans, span]
     chars += span.text.length
     errs += span.err.length
+    ansi = scanAnsi(span.text, ansi).state
   }
   if (fresh < 0 || fresh > out.text.length || !prev.source) {
     spans = []
     chars = errs = 0
     hidden = false
+    ansi = ANSI_START
     add(0)
   } else if (fresh > 0) {
     add(out.text.length - fresh)
@@ -109,45 +119,70 @@ function advance(prev: Spans, out: HostOutput | undefined): Spans {
     spans = [s]
     chars = RUN_OUTPUT_CHARS
   }
-  return { source: out, spans, total: out.total, chars, errs, nextKey, hidden }
+  return { source: out, spans, total: out.total, chars, errs, nextKey, hidden, ansi }
 }
 
 /** An RFC 3339 timestamp at the start of a line, as `docker logs --timestamps` writes it. */
 const STAMP = /^(\d{4}-\d\d-\d\dT[\d:.]+(?:Z|[+-]\d\d:\d\d))(?= |$)/gm
 
-/** `text` with line-start timestamps dimmed. */
-function dimStamps(text: string): ReactNode[] {
-  const parts: ReactNode[] = []
-  let at = 0
-  for (const m of text.matchAll(STAMP)) {
-    if (m.index > at) parts.push(text.slice(at, m.index))
-    parts.push(
-      <span key={m.index} data-stamp className="text-muted/70">
-        {m[1]}
-      </span>,
-    )
-    at = m.index + m[1].length
+/**
+ * A span's text as styled pieces: terminal colours and bold from its escapes (which are never shown),
+ * stderr tinted, and with `dim` a line-start timestamp dimmed. Always text nodes, never markup.
+ */
+function pieces(span: Span, dim: boolean): ReactNode[] {
+  const out: ReactNode[] = []
+  // The span's start counts as a line start: a chunk of docker output starts on one.
+  let lineStart = true
+  let ri = 0
+  const piece = (text: string, run: AnsiRun, err: boolean) => {
+    const parts: [string, boolean][] = []
+    let at = 0
+    if (dim) {
+      for (const m of text.matchAll(STAMP)) {
+        if (m.index === 0 && !lineStart) continue
+        if (m.index > at) parts.push([text.slice(at, m.index), false])
+        parts.push([m[1], true])
+        at = m.index + m[1].length
+      }
+    }
+    if (at < text.length) parts.push([text.slice(at), false])
+    for (const [t, stamp] of parts) {
+      const cls = [stamp ? 'text-muted/70' : err ? 'text-err' : '', run.bold ? 'font-semibold' : ''].filter(Boolean).join(' ')
+      if (!cls && !run.fg) out.push(t)
+      else
+        out.push(
+          <span
+            key={out.length}
+            data-stamp={stamp || undefined}
+            data-stream={err ? 'err' : undefined}
+            className={cls || undefined}
+            style={run.fg && !stamp ? { color: ansiColor(run.fg) } : undefined}
+          >
+            {t}
+          </span>,
+        )
+    }
+    if (text) lineStart = text.endsWith('\n')
   }
-  if (at < text.length) parts.push(text.slice(at))
-  return parts
+  for (const run of scanAnsi(span.text, span.ansi).runs) {
+    // Split the run where stderr starts and stops.
+    let pos = 0
+    while (pos < run.text.length) {
+      const abs = run.at + pos
+      while (ri < span.err.length && span.err[ri][1] <= abs) ri++
+      const r = span.err[ri]
+      const inErr = !!r && r[0] <= abs
+      const end = r ? Math.min(run.text.length, (inErr ? r[1] : r[0]) - run.at) : run.text.length
+      piece(run.text.slice(pos, end), run, inErr)
+      pos = end
+    }
+  }
+  return out
 }
 
 /** A span never changes once added, so it renders once (a single span over the char cap is cut, as a new one). */
 const Chunk = memo(function Chunk({ span, dim }: { span: Span; dim: boolean }) {
-  if (!span.err.length) return <span data-chunk>{dim ? dimStamps(span.text) : span.text}</span>
-  const parts = []
-  let at = 0
-  for (const [a, b] of span.err) {
-    if (a > at) parts.push(span.text.slice(at, a))
-    parts.push(
-      <span key={a} data-stream="err" className="text-err">
-        {span.text.slice(a, b)}
-      </span>,
-    )
-    at = b
-  }
-  if (at < span.text.length) parts.push(span.text.slice(at))
-  return <span data-chunk>{parts}</span>
+  return <span data-chunk>{pieces(span, dim)}</span>
 })
 
 /** A run of consecutive spans; it re-renders only when it gains a span (the newest block only). */
@@ -171,7 +206,7 @@ function blocks(spans: Span[]): [number, Span[]][] {
 
 /**
  * A host's output, streamed: new text is appended as a span and earlier spans never re-render. Stderr is
- * tinted. The view follows the end until the user scrolls up, then offers "Jump to live".
+ * tinted, terminal colours are shown and every other escape is dropped. The view follows the end until the user scrolls up, then offers "Jump to live".
  */
 export function OutputPane({
   output,
@@ -217,7 +252,7 @@ export function OutputPane({
   const copy = () => {
     // Output stays in the renderer: no toast, success or not.
     void navigator.clipboard
-      ?.writeText(output?.text ?? '')
+      ?.writeText(stripAnsi(output?.text ?? ''))
       .then(() => {
         setCopied(true)
         clearTimeout(copiedTimer.current)

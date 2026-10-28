@@ -1,5 +1,5 @@
 import type { RunEvent } from '../../../shared/deploy'
-import { stripAnsi } from './ansi'
+import { stripAnsi } from '../ui/ansi'
 
 /** Lines kept per release; older ones are dropped and counted. */
 export const LOG_CAP = 50000

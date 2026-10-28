@@ -41,6 +41,8 @@ export function interleave(prev: Merged, runId: string, sources: Record<string, 
   const write = (label: string, line: [string, boolean][]) => {
     out = appendOutput(out, `${label} │ `, false)
     for (const [t, err] of line) out = appendOutput(out, t, err)
+    // A colour one host left on must not run on into the next host's label and line.
+    if (line.some(([t]) => t.includes('\u001b'))) out = appendOutput(out, '\u001b[0m', false)
   }
   for (const h of hosts) {
     const src = sources?.[h.hostId]

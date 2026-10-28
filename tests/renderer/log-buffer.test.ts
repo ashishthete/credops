@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseAnsi, stripAnsi } from '../../src/renderer/src/deploy/ansi'
+import { parseAnsi, stripAnsi } from '../../src/renderer/src/ui/ansi'
 import { LOG_CAP, LogBuffer } from '../../src/renderer/src/deploy/log-buffer'
 import type { RunEvent } from '../../src/shared/deploy'
 
