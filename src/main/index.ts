@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
-import { homedir, hostname, userInfo } from 'node:os'
+import { arch, homedir, hostname, release as osRelease, userInfo } from 'node:os'
 import {
   app,
   BrowserWindow,
@@ -21,7 +21,9 @@ import {
 } from 'electron'
 import { AuditLog } from './audit/audit-log'
 import { openDatabase, type Db } from './db/connection'
-import { SchemaTooNewError } from './db/migrations'
+import { currentVersion, SchemaTooNewError } from './db/migrations'
+import { diagnosticsFrom } from './diagnostics/bundle'
+import { captureConsole, LogFile } from './diagnostics/log-file'
 import { DB_FILE, migrateFromOpsDeck, systemMigrationDeps } from './rename-migration'
 import { initialWindowState, loadWindowState, saveWindowState, WINDOW_STATE_FILE } from './window-state'
 import { createAppHandlers } from './ipc/handlers/app'
@@ -132,6 +134,15 @@ try {
 app.setName('CredOps')
 app.setAboutPanelOptions({ applicationName: 'CredOps', applicationVersion: app.getVersion() })
 
+// main.log in ~/Library/Logs/CredOps (CredOps-dev for a dev run). Every line is redacted as it is written,
+// with the vault values decrypted at that moment once the stores exist.
+app.setAppLogsPath()
+if (!app.isPackaged) app.setAppLogsPath(`${app.getPath('logs')}-dev`)
+let logSecrets: () => readonly string[] = () => []
+const logFile = new LogFile({ dir: app.getPath('logs'), knownSecrets: () => logSecrets() })
+captureConsole(logFile)
+logFile.info(`start: CredOps ${app.getVersion()}${app.isPackaged ? '' : ' (dev)'}, ${process.platform} ${osRelease()} ${arch()}, electron ${process.versions.electron}`)
+
 const devServerUrl = devRendererUrl(app.isPackaged, process.env)
 
 /** A port free on 127.0.0.1 right now: bind port 0, read what the OS gave, close. */
@@ -233,6 +244,7 @@ if (!app.requestSingleInstanceLock()) {
       // Packaged builds take build/icon.icns; a dev run shows the same icon in the Dock.
       if (!app.isPackaged && process.platform === 'darwin') app.dock?.setIcon(join(app.getAppPath(), 'resources', 'icon.png'))
       db = openDatabase(join(app.getPath('userData'), DB_FILE))
+      logFile.info(`database open: schema ${currentVersion(db)}`)
       // Decrypted values are known only while unlocked; the vault drops them on lock. Each store
       // registers its own with the vault; asking the stores first makes each decrypt its values once
       // after an unlock.
@@ -243,6 +255,7 @@ if (!app.requestSingleInstanceLock()) {
         const hubTokens = hubConnection?.knownValues() ?? []
         return [...hubTokens, ...(vault?.knownValues() ?? [])]
       }
+      logSecrets = knownSecrets
       audit = new AuditLog(db, { knownSecrets })
       audit.append({ action: 'app.start', outcome: 'info', details: { version: app.getVersion() } })
       const log = audit
@@ -672,12 +685,34 @@ if (!app.requestSingleInstanceLock()) {
       registerHandlers(
         ipcMain,
         {
-          ...createAppHandlers(() => ({
-            version: app.getVersion(),
-            platform: process.platform,
-            userDataPath: app.getPath('userData'),
-            actor,
-          })),
+          ...createAppHandlers(
+            () => ({
+              version: app.getVersion(),
+              platform: process.platform,
+              userDataPath: app.getPath('userData'),
+              actor,
+            }),
+            {
+              build: () =>
+                diagnosticsFrom({
+                  db: db!,
+                  log: logFile,
+                  knownSecrets,
+                  extraNames: [actor.osUser, actor.machine],
+                  env: {
+                    appVersion: app.getVersion(),
+                    platform: process.platform,
+                    osRelease: osRelease(),
+                    arch: arch(),
+                    versions: { electron: process.versions.electron, node: process.versions.node, chrome: process.versions.chrome },
+                    packaged: app.isPackaged,
+                    homeDir: homedir(),
+                  },
+                }),
+              writeClipboard: (text) => clipboard.writeText(text),
+              revealLog: () => shell.showItemInFolder(logFile.file),
+            },
+          ),
           ...createAuditHandlers(log, {
             saveDialog: async () => {
               const opts = { defaultPath: `credops-audit-${new Date().toISOString().slice(0, 10)}.csv` }
@@ -783,6 +818,7 @@ if (!app.requestSingleInstanceLock()) {
         { validators: VALIDATORS, knownSecrets },
       )
       createWindow()
+      logFile.info('ready')
     })
     .catch((err) => {
       console.error('Startup failed:', err)
@@ -869,6 +905,7 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   app.on('will-quit', () => {
+    logFile.info('quit')
     stopAutoLock?.()
     stopAutoLock = null
     stopSsoWatch?.()

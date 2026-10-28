@@ -825,6 +825,8 @@ const asHubAuditFilter = v.object({
 /** Every channel must have an entry; each later task adds its own. */
 export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']> } = {
   'app:info': args(),
+  'app:copyDiagnostics': args(),
+  'app:revealLog': args(),
   'audit:list': args(asFilter),
   'audit:verify': args(),
   'audit:exportCsv': args(asFilter),
