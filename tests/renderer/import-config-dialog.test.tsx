@@ -26,6 +26,7 @@ const preview: ImportPreview = {
     { kind: 'identities', name: 'root-login', field: 'password' },
     { kind: 'deployments', name: 'api', field: 'becomeSecret' },
   ],
+  steps: [],
   protectedEnvironments: ['prod', 'live'],
   needsRegion: false,
 }
@@ -63,6 +64,30 @@ describe('import config dialog', () => {
     const needs = screen.getByRole('region', { name: 'Needs a secret' })
     expect(within(needs).getByText('root-login')).toBeInTheDocument()
     expect(within(needs).getByText('api')).toBeInTheDocument()
+  })
+
+  it('lists the scripts it adds or changes and flags the ones that read secrets', () => {
+    mockBridge()
+    renderDialog({
+      ...preview,
+      steps: [
+        { kind: 'deployments', owner: 'api', step: 'migrate', action: 'update', script: 'curl -d "$DB_PASS" x', before: 'echo migrate', secrets: [{ envName: 'DB_PASS', secret: 'Team / db-pass', gained: true }] },
+        { kind: 'runbooks', owner: 'Reindex', step: 'reindex', action: 'add', script: 'echo reindex', secrets: [] },
+      ],
+    })
+    const steps = screen.getByRole('region', { name: 'Scripts this import adds or changes: 2' })
+    expect(within(steps).getByText(/1 of them with secrets from your vaults/)).toBeInTheDocument()
+    expect(within(steps).getByText('curl -d "$DB_PASS" x')).toBeInTheDocument()
+    expect(within(steps).getByText('echo migrate')).toBeInTheDocument()
+    expect(within(steps).getByRole('list', { name: 'Secrets it reads' })).toHaveTextContent('DB_PASS from Team / db-pass (new)')
+    expect(within(steps).getByText('echo reindex')).toBeInTheDocument()
+    expect(within(steps).getByText('new step')).toBeInTheDocument()
+  })
+
+  it('shows no script section when no step changes', () => {
+    mockBridge()
+    renderDialog()
+    expect(screen.queryByRole('region', { name: /^Scripts this import/ })).not.toBeInTheDocument()
   })
 
   it('a sensitive host env var left blank reads as host: KEY left blank', () => {

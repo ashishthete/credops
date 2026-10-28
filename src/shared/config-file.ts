@@ -908,11 +908,26 @@ export interface ImportNeedsSecret {
   reason?: string
 }
 
+/** A step the import adds, or changes in what it runs or which secrets it reads: a checkout's, a runbook's or a release flow's. */
+export interface ImportStepChange {
+  kind: 'deployments' | 'runbooks' | 'environments'
+  /** The checkout, runbook or environment's name. */
+  owner: string
+  step: string
+  action: 'add' | 'update'
+  script: string
+  /** An update that changes the script: the script here now. */
+  before?: string
+  /** The secrets the step reads, as `vault / item`; `gained` when the step here doesn't read it already. */
+  secrets: { envName: string; secret: string; gained: boolean }[]
+}
+
 export interface ImportPreview {
   token: string
   items: ImportItem[]
   counts: Record<ImportAction, number>
   needsSecret: ImportNeedsSecret[]
+  steps: ImportStepChange[]
   /** Existing protected environments the import changes: each name must be typed to confirm. */
   protectedEnvironments: string[]
   /** A version 1 file adds hosts: the apply needs the region to put them in. */
