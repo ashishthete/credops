@@ -1,12 +1,14 @@
 import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
 import { CornerDownLeft, Search } from 'lucide-react'
 import {
+  useCallback,
   useEffect,
   useId,
   useMemo,
   useRef,
   useState,
   useSyncExternalStore,
+  type CSSProperties,
   type KeyboardEvent,
 } from 'react'
 import {
@@ -20,6 +22,7 @@ import {
   type Command,
   type RankedCommand,
 } from './commands'
+import { useListWindow, WINDOW_AFTER } from './listWindow'
 import { exitFast, fast, spring, useMotionSafe } from './motion'
 import { formatShortcut, useShortcut } from './shortcuts'
 
@@ -43,6 +46,36 @@ function PaletteDialog() {
 
   const results = useMemo(() => rankCommands(commands, query, getRecents()), [commands, query])
   const activeIndex = results.length ? Math.min(active, results.length - 1) : -1
+
+  // A long list draws only the rows near the view: headers and rows, flattened, are the window's items.
+  const groups = useMemo(() => groupRows(results), [results])
+  const items = useMemo(() => groups.flatMap(({ group, rows }) => [`g:${group}`, ...rows.map((r) => r.result.command.id)]), [groups])
+  // Each group is its header's item then its rows'; an option's item is its index plus the headers before it.
+  const firstItem = useMemo(() => {
+    let at = 0
+    return groups.map(({ rows }) => {
+      const first = at
+      at += rows.length + 1
+      return first
+    })
+  }, [groups])
+  const itemOf = (index: number) => {
+    let gi = 0
+    while (gi + 1 < groups.length && groups[gi + 1]!.rows[0]!.index <= index) gi++
+    return firstItem[gi]! + 1 + index - (groups[gi]?.rows[0]?.index ?? 0)
+  }
+  const headerItems = useMemo(() => new Set(firstItem), [firstItem])
+  const estimate = useCallback((i: number) => (headerItems.has(i) ? (i === 0 ? HEADER_FIRST_PX : HEADER_PX) : ROW_PX), [headerItems])
+  const scroller = useRef<HTMLDivElement>(null)
+  const listbox = useRef<HTMLDivElement>(null)
+  const win = useListWindow({
+    keys: items,
+    estimate,
+    scroller,
+    list: listbox,
+    keep: activeIndex >= 0 ? itemOf(activeIndex) : -1,
+    enabled: results.length > WINDOW_AFTER,
+  })
 
   useEffect(() => {
     document.getElementById(optionId(activeIndex))?.scrollIntoView?.({ block: 'nearest' })
@@ -122,30 +155,69 @@ function PaletteDialog() {
           <Keycaps keys={['Esc']} />
         </div>
 
-        <div className="max-h-[min(380px,52vh)] overflow-y-auto p-2">
-          <div id={listboxId} role="listbox" aria-label="Commands">
-            {groupRows(results).map(({ group, rows }, gi) => (
-              <div key={group} role="group" aria-labelledby={`${listboxId}-g${gi}`}>
-                <div
-                  id={`${listboxId}-g${gi}`}
-                  className={`px-3 pb-1.5 text-[11px] font-medium text-muted ${gi === 0 ? 'pt-1' : 'pt-3'}`}
-                >
-                  {group}
+        <div ref={scroller} className="max-h-[min(380px,52vh)] overflow-y-auto p-2">
+          {win.enabled ? (
+            <div id={listboxId} ref={listbox} role="listbox" aria-label="Commands" className="relative">
+              <div aria-hidden style={{ height: win.before }} />
+              {groups.map(({ group, rows }, gi) => {
+                const head = firstItem[gi]!
+                const shown = rows.filter((_, ri) => win.show(head + 1 + ri))
+                if (!shown.length && win.show(head) !== 'flow') return null
+                // A group drawn only in part is labelled directly: its header may be out of range.
+                return (
+                  <div key={group} role="group" aria-label={group}>
+                    {win.show(head) === 'flow' && (
+                      <div ref={win.measure(head)} aria-hidden className={`px-3 pb-1.5 text-[11px] font-medium text-muted ${gi === 0 ? 'pt-1' : 'pt-3'}`}>
+                        {group}
+                      </div>
+                    )}
+                    {shown.map(({ result, index }) => {
+                      const item = head + 1 + index - rows[0]!.index
+                      return (
+                        <PaletteRow
+                          key={result.command.id}
+                          id={optionId(index)}
+                          result={result}
+                          active={index === activeIndex}
+                          motionSafe={motionSafe}
+                          position={{ index, size: results.length }}
+                          style={win.show(item) === 'pinned' ? win.pinnedStyle(item) : undefined}
+                          measureRef={win.measure(item)}
+                          onHover={() => setActive(index)}
+                          onRun={() => runCommand(result.command)}
+                        />
+                      )
+                    })}
+                  </div>
+                )
+              })}
+              <div aria-hidden style={{ height: win.after }} />
+            </div>
+          ) : (
+            <div id={listboxId} role="listbox" aria-label="Commands">
+              {groups.map(({ group, rows }, gi) => (
+                <div key={group} role="group" aria-labelledby={`${listboxId}-g${gi}`}>
+                  <div
+                    id={`${listboxId}-g${gi}`}
+                    className={`px-3 pb-1.5 text-[11px] font-medium text-muted ${gi === 0 ? 'pt-1' : 'pt-3'}`}
+                  >
+                    {group}
+                  </div>
+                  {rows.map(({ result, index }) => (
+                    <PaletteRow
+                      key={result.command.id}
+                      id={optionId(index)}
+                      result={result}
+                      active={index === activeIndex}
+                      motionSafe={motionSafe}
+                      onHover={() => setActive(index)}
+                      onRun={() => runCommand(result.command)}
+                    />
+                  ))}
                 </div>
-                {rows.map(({ result, index }) => (
-                  <PaletteRow
-                    key={result.command.id}
-                    id={optionId(index)}
-                    result={result}
-                    active={index === activeIndex}
-                    motionSafe={motionSafe}
-                    onHover={() => setActive(index)}
-                    onRun={() => runCommand(result.command)}
-                  />
-                ))}
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
           {results.length === 0 && <p className="px-3 py-10 text-center text-sm text-muted">No results</p>}
         </div>
 
@@ -162,22 +234,35 @@ function PaletteDialog() {
   )
 }
 
+// What the window assumes before a row or header has been measured.
+const ROW_PX = 40
+const HEADER_FIRST_PX = 26
+const HEADER_PX = 34
+
 interface PaletteRowProps {
   id: string
   result: RankedCommand
   active: boolean
   motionSafe: boolean
+  /** In a windowed list, where the option sits in the whole list (most of which isn't drawn). */
+  position?: { index: number; size: number }
+  style?: CSSProperties
+  measureRef?: (el: HTMLElement | null) => void
   onHover: () => void
   onRun: () => void
 }
 
-function PaletteRow({ id, result, active, motionSafe, onHover, onRun }: PaletteRowProps) {
+function PaletteRow({ id, result, active, motionSafe, position, style, measureRef, onHover, onRun }: PaletteRowProps) {
   const { command, indices } = result
   return (
     <div
+        ref={measureRef}
         id={id}
         role="option"
         aria-selected={active}
+        aria-posinset={position && position.index + 1}
+        aria-setsize={position?.size}
+        style={style}
         onMouseMove={active ? undefined : onHover}
         onMouseDown={(e) => e.preventDefault()}
         onClick={onRun}
