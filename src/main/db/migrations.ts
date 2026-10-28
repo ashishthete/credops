@@ -484,11 +484,48 @@ export function currentVersion(db: Db): number {
   return row.v ?? 0
 }
 
+/** The database was written by a build that knows more migrations than this one: opening it could corrupt it. */
+export class SchemaTooNewError extends Error {
+  constructor(
+    readonly dbVersion: number,
+    readonly knownVersion: number,
+    product = 'CredOps',
+  ) {
+    super(
+      `This data was written by a newer ${product} (schema ${dbVersion}); this build knows up to ${knownVersion}. Update ${product}.`,
+    )
+    this.name = 'SchemaTooNewError'
+  }
+}
+
+export interface MigrateOptions {
+  /** Names the app in the downgrade error ("Update CredOps Hub."). */
+  product?: string
+}
+
+/** Throws SchemaTooNewError when the database records a version above every one in `list`. */
+export function assertSchemaKnown(db: Db, list: Migration[] = migrations, opts: MigrateOptions = {}): void {
+  const dbVersion = currentVersion(db)
+  const known = list.reduce((max, m) => Math.max(max, m.version), 0)
+  if (dbVersion > known) throw new SchemaTooNewError(dbVersion, known, opts.product)
+}
+
+/** The listed migrations not yet recorded in schema_migrations, in ascending order. */
+export function pendingMigrations(db: Db, list: Migration[] = migrations): Migration[] {
+  db.exec(ENSURE_TABLE)
+  const applied = new Set(
+    (db.prepare('SELECT version FROM schema_migrations').all() as { version: number }[]).map((r) => r.version),
+  )
+  return [...list].filter((m) => !applied.has(m.version)).sort((a, b) => a.version - b.version)
+}
+
 /**
  * Applies every listed migration missing from schema_migrations, in ascending order, so a version merged in
  * after a later one (parallel phase branches) still runs. `to` is the highest version recorded afterwards.
+ * Refuses (SchemaTooNewError) a database written by a newer build rather than running against it.
  */
-export function migrate(db: Db, list: Migration[] = migrations): { from: number; to: number } {
+export function migrate(db: Db, list: Migration[] = migrations, opts: MigrateOptions = {}): { from: number; to: number } {
+  assertSchemaKnown(db, list, opts)
   const from = currentVersion(db)
   let to = from
   const applied = new Set(

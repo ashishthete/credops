@@ -21,6 +21,7 @@ import {
 } from 'electron'
 import { AuditLog } from './audit/audit-log'
 import { openDatabase, type Db } from './db/connection'
+import { SchemaTooNewError } from './db/migrations'
 import { DB_FILE, migrateFromOpsDeck, systemMigrationDeps } from './rename-migration'
 import { initialWindowState, loadWindowState, saveWindowState, WINDOW_STATE_FILE } from './window-state'
 import { createAppHandlers } from './ipc/handlers/app'
@@ -786,7 +787,8 @@ if (!app.requestSingleInstanceLock()) {
     .catch((err) => {
       console.error('Startup failed:', err)
       const message = redact(err instanceof Error ? err.message : String(err))
-      dialog.showErrorBox('CredOps could not start', message)
+      // A newer build's data is left untouched: say which build to install instead of a generic failure.
+      dialog.showErrorBox(err instanceof SchemaTooNewError ? 'CredOps needs an update' : 'CredOps could not start', message)
       app.quit()
     })
 

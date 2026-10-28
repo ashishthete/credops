@@ -1,8 +1,11 @@
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_ALL_GRANT_ID, DEFAULT_GROUP_ID } from '../../src/shared/hub'
 import { HUB_MIGRATIONS, openHubDb } from '../src/db'
-import { migrate } from '../../src/main/db/migrations'
+import { currentVersion, migrate, SchemaTooNewError } from '../../src/main/db/migrations'
 
 describe('hub db', () => {
   it('migration 1 seeds Default and its all-grant', () => {
@@ -87,5 +90,51 @@ describe('hub db', () => {
     expect(v9.prepare('SELECT label, region_code, region_name FROM hosts').all()).toEqual([{ label: 'l', region_code: null, region_name: null }])
     expect(v9.prepare('SELECT host_id FROM deployments').all()).toEqual([{ host_id: 'h1' }])
     expect(v9.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+  })
+})
+
+describe('hub db file safety', () => {
+  const latest = HUB_MIGRATIONS.at(-1)!.version
+  const withDir = (fn: (dir: string) => void): void => {
+    const dir = mkdtempSync(join(tmpdir(), 'credops-hub-db-'))
+    try {
+      fn(dir)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  it('refuses a hub.db written by a newer hub and leaves it as it was', () => {
+    withDir((dir) => {
+      const file = join(dir, 'hub.db')
+      openHubDb(file).close()
+      const raw = new DatabaseSync(file)
+      raw.prepare('INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)').run(latest + 1, 'future', 'now')
+      raw.close()
+      expect(() => openHubDb(file)).toThrow(SchemaTooNewError)
+      expect(() => openHubDb(file)).toThrow(`newer CredOps Hub (schema ${latest + 1}); this build knows up to ${latest}. Update CredOps Hub.`)
+      const check = new DatabaseSync(file)
+      expect(currentVersion(check)).toBe(latest + 1)
+      check.close()
+      expect(readdirSync(dir).filter((n) => n.endsWith('.bak'))).toEqual([])
+    })
+  })
+
+  it('backs up an existing hub.db before upgrading it, and not a new one', () => {
+    withDir((dir) => {
+      const file = join(dir, 'hub.db')
+      const old = new DatabaseSync(file)
+      migrate(old, HUB_MIGRATIONS.filter((m) => m.version < latest))
+      old.close()
+      openHubDb(file).close()
+      expect(readdirSync(dir).filter((n) => n.endsWith('.bak'))).toEqual([`hub.db.pre-v${latest}.bak`])
+      const copy = new DatabaseSync(join(dir, `hub.db.pre-v${latest}.bak`))
+      expect(currentVersion(copy)).toBe(latest - 1)
+      copy.close()
+
+      const fresh = join(dir, 'fresh.db')
+      openHubDb(fresh).close()
+      expect(readdirSync(dir).filter((n) => n.startsWith('fresh.db') && n.endsWith('.bak'))).toEqual([])
+    })
   })
 })
