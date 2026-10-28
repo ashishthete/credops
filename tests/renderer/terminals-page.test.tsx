@@ -473,6 +473,26 @@ describe('terminals page', () => {
     expect(writeText).not.toHaveBeenCalledWith('hunter22')
   })
 
+  it('a session on a host in a protected environment asks before a destructive Enter; others do not', async () => {
+    const invoke = await renderShell('/terminals', {
+      'env:list': [
+        environment({ id: 'prod', name: 'prod', protected: true, hosts: [{ hostId: 'db-host', role: 'app' }] }),
+        environment({ id: 'dev', name: 'dev', hosts: [{ hostId: 'web-host', role: 'app' }] }),
+      ],
+      'host:list': [host({ id: 'db-host', label: 'db' }), host({ id: 'web-host', label: 'web' })],
+    })
+    state(ssh('web', { environmentId: 'dev' }))
+    state(ssh('db', { environmentId: 'prod' }))
+    await flush()
+    act(() => fake.terms[0].type('rm -rf /tmp/x\r'))
+    expect(calls(invoke, 'session:write')).toEqual([['session:write', 'web', 'rm -rf /tmp/x\r']])
+    fireEvent.click(tab('db'))
+    await flush()
+    act(() => fake.terms[1].type('rm -rf /tmp/x\r'))
+    expect(screen.getByRole('dialog', { name: 'Run this on prod?' })).toBeInTheDocument()
+    expect(calls(invoke, 'session:write').at(-1)).toEqual(['session:write', 'db', 'rm -rf /tmp/x'])
+  })
+
   it('copy on select stays off until the setting turns it on', async () => {
     const writeText = vi.fn(async () => {})
     vi.stubGlobal('navigator', Object.assign(Object.create(navigator), { clipboard: { writeText } }))

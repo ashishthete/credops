@@ -2,12 +2,18 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronDown, ChevronUp, Search, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../lib/api'
+import { ConfirmDialog, type ConfirmRequest } from '../ui/common'
 import { exitFast, fast, spring, useMotionSafe } from '../ui/motion'
 import { isMac, useShortcut } from '../ui/shortcuts'
+import { cursorLine, inFullScreenApp, isDestructive, LineTracker } from './inputGuard'
 import { attachSession, getTerminal, setLastSize } from './registry'
 
 const CHUNK_CHARS = 32 * 1024
 const RESIZE_DEBOUNCE_MS = 50
+
+const write = (sessionId: string, data: string) => {
+  for (const chunk of chunks(data)) api.invoke('session:write', sessionId, chunk).catch(() => {})
+}
 
 /** Splits input into chunks of at most CHUNK_CHARS without cutting a surrogate pair. */
 function* chunks(data: string): Generator<string> {
@@ -44,9 +50,14 @@ export interface TerminalViewProps {
   visible: boolean
   /** Selecting text copies it to the clipboard. */
   copyOnSelect?: boolean
+  /**
+   * The protected environment the session's host is in. While set, a paste with a line break and Enter on
+   * a line that looks destructive (DESTRUCTIVE_PATTERN) ask first.
+   */
+  protectedEnv?: string | null
 }
 
-export function TerminalView({ sessionId, visible, copyOnSelect = false }: TerminalViewProps) {
+export function TerminalView({ sessionId, visible, copyOnSelect = false, protectedEnv = null }: TerminalViewProps) {
   const motionSafe = useMotionSafe()
   const host = useRef<HTMLDivElement>(null)
   const searchInput = useRef<HTMLInputElement>(null)
@@ -57,6 +68,11 @@ export function TerminalView({ sessionId, visible, copyOnSelect = false }: Termi
   visibleRef.current = visible
   const copyRef = useRef(copyOnSelect)
   copyRef.current = copyOnSelect
+  const envRef = useRef(protectedEnv)
+  envRef.current = protectedEnv
+  const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
+  // Input from the held Enter on, while the destructive confirmation is open; dropped on cancel.
+  const held = useRef<string | null>(null)
 
   if (visible && !opened) setOpened(true)
 
@@ -93,10 +109,67 @@ export function TerminalView({ sessionId, visible, copyOnSelect = false }: Termi
     observer.observe(el)
     syncSize()
 
+    const tracker = new LineTracker()
+    // Set while a paste the user already confirmed is typed, so its Enters don't ask again.
+    let confirmedPaste = false
+    // Sends `data` as typed, holding it at an Enter that would run a destructive line on a protected host.
+    const onData = (data: string) => {
+      if (held.current !== null) return void (held.current += data)
+      const env = envRef.current
+      if (inFullScreenApp(term)) {
+        tracker.reset()
+        return write(sessionId, data)
+      }
+      const at = tracker.feed(
+        data,
+        env && !confirmedPaste ? (line, unsure) => isDestructive(line) || (unsure && isDestructive(cursorLine(term))) : undefined,
+      )
+      if (at < 0 || !env) return write(sessionId, data)
+      write(sessionId, data.slice(0, at))
+      held.current = data.slice(at)
+      setConfirm({
+        title: `Run this on ${env}?`,
+        description: `${env} is a protected environment and this looks destructive. Check the command before it runs.`,
+        code: tracker.uncertain ? cursorLine(term).trim() || tracker.text : tracker.text,
+        confirmLabel: 'Run',
+        run: async () => {
+          const rest = held.current ?? ''
+          held.current = null
+          tracker.feed(rest)
+          write(sessionId, rest)
+        },
+      })
+    }
+    // Ahead of xterm's own listener on its textarea: a paste with a line break would run its lines as it lands.
+    const onPaste = (e: ClipboardEvent) => {
+      const env = envRef.current
+      const text = e.clipboardData?.getData('text/plain') ?? ''
+      if (!env || !/[\r\n]/.test(text) || inFullScreenApp(term)) return
+      e.preventDefault()
+      e.stopPropagation()
+      const lines = text.replace(/[\r\n]+$/, '').split(/\r\n|\r|\n/).length
+      setConfirm({
+        title: `Paste ${lines === 1 ? 'a line' : `${lines} lines`} into ${env}?`,
+        description: term.modes.bracketedPasteMode
+          ? `${env} is a protected environment. Check what will be pasted.`
+          : `${env} is a protected environment, and each line break runs as Enter. Check what will be pasted.`,
+        code: text,
+        confirmLabel: 'Paste',
+        gentle: isDestructive(text) ? undefined : { cancelLabel: 'Cancel' },
+        run: async () => {
+          confirmedPaste = true
+          try {
+            term.paste(text)
+          } finally {
+            confirmedPaste = false
+          }
+        },
+      })
+    }
+    el.addEventListener('paste', onPaste, true)
+
     const subs = [
-      term.onData((data) => {
-        for (const chunk of chunks(data)) api.invoke('session:write', sessionId, chunk).catch(() => {})
-      }),
+      term.onData(onData),
       term.onSelectionChange(() => {
         if (!copyRef.current) return
         const selection = term.getSelection()
@@ -106,6 +179,7 @@ export function TerminalView({ sessionId, visible, copyOnSelect = false }: Termi
     term.attachCustomKeyEventHandler((e) => !(e.type === 'keydown' && isAppCombo(e)))
 
     return () => {
+      el.removeEventListener('paste', onPaste, true)
       observer.disconnect()
       clearTimeout(timer)
       subs.forEach((s) => s.dispose())
@@ -194,6 +268,14 @@ export function TerminalView({ sessionId, visible, copyOnSelect = false }: Termi
           </motion.div>
         )}
       </AnimatePresence>
+      <ConfirmDialog
+        request={confirm}
+        onClose={() => {
+          held.current = null // a cancel: the line stays as typed, without its Enter
+          setConfirm(null)
+          getTerminal(sessionId).term.focus()
+        }}
+      />
     </div>
   )
 }

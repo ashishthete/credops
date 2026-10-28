@@ -83,6 +83,8 @@ export function TerminalDeck({ visible }: { visible: boolean }) {
   // by a stray drag. Until the inventory loads, an ssh session counts as protected.
   const copyOnSelect = (meta: SessionMeta) =>
     copySetting && (meta.kind === 'local' || (!!inventory && !protectedEnvironment(meta, inventory.environments)))
+  // Asks before a multi-line paste or a destructive Enter; only once the inventory says the host is protected.
+  const protectedEnv = (meta: SessionMeta) => (inventory && protectedEnvironment(meta, inventory.environments)?.name) || null
 
   // The shell opens first, so Terminals lands on its tab rather than the launcher.
   useShortcut('mod+t', () => void connectLocal())
@@ -122,6 +124,7 @@ export function TerminalDeck({ visible }: { visible: boolean }) {
                 meta={s}
                 visible={visible && s.id === activeId}
                 copyOnSelect={copyOnSelect(s)}
+                protectedEnv={protectedEnv(s)}
                 onClose={() => requestClose(s)}
               />
             ))}
@@ -164,7 +167,15 @@ function TabShortcuts({ onClose }: { onClose: () => void }) {
   return null
 }
 
-function SessionPane({ meta, visible, copyOnSelect, onClose }: { meta: SessionMeta; visible: boolean; copyOnSelect: boolean; onClose: () => void }) {
+interface SessionPaneProps {
+  meta: SessionMeta
+  visible: boolean
+  copyOnSelect: boolean
+  protectedEnv: string | null
+  onClose: () => void
+}
+
+function SessionPane({ meta, visible, copyOnSelect, protectedEnv, onClose }: SessionPaneProps) {
   // The store drops a second reconnect too; this only keeps the button honest while one runs.
   const [reconnecting, setReconnecting] = useState(false)
   const reconnect = () => {
@@ -182,7 +193,7 @@ function SessionPane({ meta, visible, copyOnSelect, onClose }: { meta: SessionMe
       className="absolute inset-0 flex flex-col"
     >
       <div className="relative min-h-0 flex-1">
-        <TerminalView sessionId={meta.id} visible={visible} copyOnSelect={copyOnSelect} />
+        <TerminalView sessionId={meta.id} visible={visible} copyOnSelect={copyOnSelect} protectedEnv={protectedEnv} />
         <AnimatePresence>
           {visible && overlay && (
             <ConnectOverlay key="overlay" meta={meta} onReconnect={reconnect} reconnecting={reconnecting} onClose={onClose} onOpenKnownHosts={openKnownHosts} />
