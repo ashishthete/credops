@@ -164,6 +164,7 @@ export function createHubNotify(d: HubFinalizeDeps): HubNotify {
       githubTokenSecretId: has('github_token') ? 'github_token' : null,
       macos: false,
       macosUnscoped: false,
+      terminalCopyOnSelect: false,
     }),
   }
 

@@ -2,9 +2,12 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { MemoryRouter, useNavigate } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { inventoryStore } from '../../src/renderer/src/inventory/store'
+import { resetIntegrations } from '../../src/renderer/src/settings/store'
+import { DEFAULT_SETTINGS } from '../../src/shared/settings'
 import { AppShell } from '../../src/renderer/src/shell/AppShell'
-import { SECTIONS } from '../../src/renderer/src/shell/sections'
+import { SECTIONS, sectionShortcut } from '../../src/renderer/src/shell/sections'
 import { openKnownHosts } from '../../src/renderer/src/pages/terminals/KnownHostsDialog'
+import { reloadFavourites } from '../../src/renderer/src/terminal/favourites'
 import { resetSessions, sessionStore } from '../../src/renderer/src/terminal/sessions'
 import { clearToasts } from '../../src/renderer/src/ui/Toaster'
 import type { SessionMeta } from '../../src/shared/ssh'
@@ -46,7 +49,7 @@ function meta(id: string, over: Partial<SessionMeta> = {}): SessionMeta {
 const ssh = (id: string, over: Partial<SessionMeta> = {}) =>
   meta(id, { kind: 'ssh', hostId: `${id}-host`, hops: [{ label: id, state: 'up' }], ...over })
 
-// Terminals with no session leaves at once, so a test that starts there goes once a session exists.
+// A test that starts on Terminals goes there once its first session exists, so it never sees the launcher.
 let toTerminals: (() => void) | null = null
 let navigateTo: (path: string) => void = () => {}
 const state = (m: SessionMeta) => {
@@ -68,6 +71,7 @@ const key = (k: string, over: Partial<KeyboardEventInit> = {}) =>
   })
 const calls = (invoke: ReturnType<typeof mockBridge>, channel: string) =>
   (invoke.mock.calls as unknown[][]).filter((c) => c[0] === channel)
+const terminalsLink = () => within(screen.getByRole('navigation', { name: 'Sections' })).getByRole('link', { name: /^Terminals/ })
 const tab = (label: string) => screen.getByRole('tab', { name: new RegExp(`^${label}\\b`) })
 
 async function renderShell(path = '/terminals', results: Record<string, unknown> = {}) {
@@ -103,6 +107,7 @@ beforeEach(() => {
   resetFakeXterm()
   inventoryStore.set(null)
   resetSessions()
+  resetIntegrations()
   vi.stubGlobal(
     'ResizeObserver',
     class {
@@ -139,49 +144,88 @@ describe('terminals page', () => {
     expect(screen.queryByRole('dialog', { name: 'Known hosts' })).not.toBeInTheDocument()
   })
 
-  it('there is no Terminals section; Open sessions shows only while a session is open, and it goes to the tabs', async () => {
-    expect(SECTIONS.map((s) => s.id)).toEqual(['products', 'hosts', 'vaults', 'tunnels', 'map', 'ops', 'deployments', 'hub', 'audit'])
+  it('Terminals is the last section, with no digit of its own, and its entry counts live sessions', async () => {
+    expect(SECTIONS.at(-1)).toMatchObject({ id: 'terminals', path: '/terminals' })
+    expect(sectionShortcut(SECTIONS.length - 1)).toBeNull()
     await renderShell('/products')
-    const nav = screen.getByRole('navigation', { name: 'Sections' })
-    expect(within(nav).queryByRole('link', { name: /Terminals/ })).toBeNull()
-    expect(screen.queryByRole('button', { name: /Open sessions/ })).toBeNull()
+    const link = terminalsLink()
+    expect(link).not.toHaveAttribute('aria-current')
+    expect(link.querySelector('[data-badge]')).toBeNull()
 
     state(meta('s1', { label: 'Local shell 1' }))
-    const button = screen.getByRole('button', { name: /Open sessions/ })
-    expect(button).toHaveAccessibleName('Open sessions, 1 live')
-    expect(button).not.toHaveAttribute('aria-current')
-    fireEvent.click(button)
+    expect(link.querySelector('[data-badge]')).toHaveTextContent('1')
+    fireEvent.click(link)
     await flush()
     expect(tab('Local shell 1')).toBeVisible()
-    expect(screen.getByRole('button', { name: /Open sessions/ })).toHaveAttribute('aria-current', 'page')
+    expect(terminalsLink()).toHaveAttribute('aria-current', 'page')
 
-    // Closing the last tab takes the button away with it.
     await goTo('/products')
     act(() => sessionStore.set({ sessions: [], activeId: null, order: [] }))
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(500)
-    })
-    expect(screen.queryByRole('button', { name: /Open sessions/ })).toBeNull()
+    await flush()
+    expect(terminalsLink().querySelector('[data-badge]')).toBeNull()
   })
 
-  it('visiting Terminals with no sessions goes back to the previous page, or home', async () => {
-    await renderShell('/hosts')
-    await goTo('/terminals')
+  it('visiting Terminals with no sessions shows the launcher, and New local shell opens one', async () => {
+    const invoke = await renderShell('/hosts', { 'shell:open': meta('s1', { label: 'Local shell 1' }) })
+    fireEvent.click(terminalsLink())
     await flush()
-    expect(screen.getByRole('heading', { name: 'Hosts', level: 1 })).toBeInTheDocument()
-
-    cleanup()
-    await renderShell('/hosts')
-    await goTo('/vaults')
-    await goTo('/terminals')
+    expect(screen.getByRole('heading', { name: 'No open sessions' })).toBeInTheDocument()
+    expect(terminalsLink()).toHaveAttribute('aria-current', 'page')
+    fireEvent.click(screen.getByRole('button', { name: 'New local shell' }))
     await flush()
-    expect(screen.getByRole('heading', { name: 'Vaults', level: 1 })).toBeInTheDocument()
+    expect(calls(invoke, 'shell:open')).toHaveLength(1)
   })
 
-  it('a direct visit with no sessions and no earlier page goes home', async () => {
+  it('the launcher offers Quick connect and one click on each favourite host; the tab strip has Quick connect too', async () => {
+    localStorage.setItem('opsdeck.terminal.favourites', JSON.stringify(['db-host', 'gone']))
+    reloadFavourites()
+    try {
+      const invoke = await renderShell('/hosts', {
+        'env:list': [environment({ id: 'prod', name: 'prod', hosts: [{ hostId: 'db-host', role: 'db' }] })],
+        'host:list': [host({ id: 'db-host', label: 'db', environments: [{ environmentId: 'prod', role: 'db' }] }), host({ id: 'web-host', label: 'web' })],
+        'ssh:open': ssh('db', { environmentId: 'prod' }),
+      })
+      fireEvent.click(terminalsLink())
+      await flush()
+      const favs = screen.getByRole('region', { name: 'Favourite hosts' })
+      expect(within(favs).getAllByRole('button').map((b) => b.textContent)).toEqual(['db'])
+      fireEvent.click(screen.getByRole('button', { name: 'Quick connect' }))
+      expect(screen.getByRole('dialog', { name: 'Quick connect' })).toBeInTheDocument()
+      expect(screen.getAllByRole('option')[0]).toHaveTextContent('db')
+      fireEvent.keyDown(screen.getByRole('combobox', { name: 'Host' }), { key: 'Escape' })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500)
+      })
+      fireEvent.click(within(favs).getByRole('button', { name: 'db' }))
+      await flush()
+      expect(calls(invoke, 'ssh:open')).toEqual([['ssh:open', expect.objectContaining({ hostId: 'db-host', environmentId: 'prod' })]])
+      state(ssh('db', { environmentId: 'prod' }))
+      await flush()
+      fireEvent.click(screen.getByRole('button', { name: 'Quick connect' }))
+      expect(screen.getByRole('dialog', { name: 'Quick connect' })).toBeInTheDocument()
+    } finally {
+      localStorage.clear()
+      reloadFavourites()
+    }
+  })
+
+  it('a direct visit with no sessions shows the launcher rather than leaving', async () => {
     await renderAt('/terminals', { 'session:list': [] })
     await flush()
-    expect(screen.getByRole('heading', { name: 'Products', level: 1 })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'No open sessions' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Products', level: 1 })).toBeNull()
+  })
+
+  it('closing the last tab while Terminals is on screen goes back to the previous page', async () => {
+    await renderShell('/hosts')
+    await goTo('/vaults')
+    fireEvent.click(terminalsLink())
+    state(meta('s1'))
+    await flush()
+    expect(tab('s1')).toBeVisible()
+    act(() => sessionStore.set({ sessions: [], activeId: null, order: [] }))
+    await flush()
+    expect(screen.getByRole('heading', { name: 'Vaults', level: 1 })).toBeInTheDocument()
   })
 
   it('a reload on Terminals keeps it until the session list lands, then shows the restored tabs', async () => {
@@ -195,13 +239,14 @@ describe('terminals page', () => {
     expect(screen.queryByRole('heading', { name: 'Products', level: 1 })).toBeNull()
   })
 
-  it('a reload on Terminals with no sessions goes home once the list lands empty', async () => {
+  it('a reload on Terminals with no sessions shows the launcher once the list lands empty', async () => {
     let release!: (list: SessionMeta[]) => void
     await renderAt('/terminals', { 'session:list': new Promise<SessionMeta[]>((r) => (release = r)) })
     await flush()
+    expect(screen.queryByRole('heading', { name: 'No open sessions' })).toBeNull()
     await act(async () => release([]))
     await flush()
-    expect(screen.getByRole('heading', { name: 'Products', level: 1 })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'No open sessions' })).toBeInTheDocument()
   })
 
   it('deck stays mounted across navigation', async () => {
@@ -209,10 +254,10 @@ describe('terminals page', () => {
     state(meta('s1', { label: 'Local shell 1' }))
     await flush()
     expect(fake.terms).toHaveLength(1)
-    key('2') // Hosts
+    await goTo('/hosts')
     await flush()
     expect(screen.getByRole('heading', { name: 'Hosts', level: 1 })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /Open sessions/ }))
+    fireEvent.click(terminalsLink())
     await flush()
     expect(tab('Local shell 1')).toBeVisible()
     expect(fake.terms).toHaveLength(1)
@@ -408,15 +453,100 @@ describe('terminals page', () => {
     expect(tab('Local shell 2')).toHaveAttribute('aria-selected', 'true')
   })
 
+  it('on Terminals the digit shortcuts pick tabs (mod+9 the last); elsewhere they switch sections', async () => {
+    await renderShell()
+    state(meta('s1', { label: 'Local shell 1' }))
+    state(meta('s2', { label: 'Local shell 2' }))
+    state(meta('s3', { label: 'Local shell 3' }))
+    await flush()
+    expect(tab('Local shell 1')).toHaveAttribute('aria-selected', 'true')
+    // Typed in the terminal itself, where xterm keeps focus.
+    const textarea = document.createElement('textarea')
+    document.querySelector('.xterm')!.appendChild(textarea)
+    act(() => {
+      fireEvent.keyDown(textarea, { key: '2', metaKey: true })
+    })
+    expect(tab('Local shell 2')).toHaveAttribute('aria-selected', 'true')
+    key('9')
+    expect(tab('Local shell 3')).toHaveAttribute('aria-selected', 'true')
+    key('7') // past the last tab: nothing
+    expect(tab('Local shell 3')).toHaveAttribute('aria-selected', 'true')
+    await flush()
+    expect(screen.queryByRole('heading', { level: 1 })).toBeNull()
+
+    await goTo('/products')
+    key('2')
+    await flush()
+    expect(screen.getByRole('heading', { name: 'Hosts', level: 1 })).toBeInTheDocument()
+    expect(sessionStore.get().activeId).toBe('s3')
+  })
+
+  it('copy on select follows the setting, and never copies from a host in a protected environment', async () => {
+    const writeText = vi.fn(async () => {})
+    vi.stubGlobal('navigator', Object.assign(Object.create(navigator), { clipboard: { writeText } }))
+    await renderShell('/terminals', {
+      'settings:get': { ...DEFAULT_SETTINGS, terminalCopyOnSelect: true },
+      'env:list': [
+        environment({ id: 'prod', name: 'prod', protected: true, hosts: [{ hostId: 'db-host', role: 'app' }] }),
+        environment({ id: 'dev', name: 'dev', hosts: [{ hostId: 'web-host', role: 'app' }] }),
+      ],
+      'host:list': [host({ id: 'db-host', label: 'db' }), host({ id: 'web-host', label: 'web' })],
+    })
+    state(ssh('web', { environmentId: 'dev' }))
+    state(ssh('db')) // opened with no environment; its host is still in prod
+    await flush()
+    const select = (i: number, text: string) => {
+      fake.terms[i].getSelection.mockReturnValue(text)
+      act(() => fake.terms[i].selectionListeners.forEach((l) => l()))
+    }
+    select(0, 'from web')
+    expect(writeText).toHaveBeenCalledWith('from web')
+    fireEvent.click(tab('db'))
+    await flush()
+    select(1, 'hunter22')
+    expect(writeText).not.toHaveBeenCalledWith('hunter22')
+  })
+
+  it('a session on a host in a protected environment asks before a destructive Enter; others do not', async () => {
+    const invoke = await renderShell('/terminals', {
+      'env:list': [
+        environment({ id: 'prod', name: 'prod', protected: true, hosts: [{ hostId: 'db-host', role: 'app' }] }),
+        environment({ id: 'dev', name: 'dev', hosts: [{ hostId: 'web-host', role: 'app' }] }),
+      ],
+      'host:list': [host({ id: 'db-host', label: 'db' }), host({ id: 'web-host', label: 'web' })],
+    })
+    state(ssh('web', { environmentId: 'dev' }))
+    state(ssh('db', { environmentId: 'prod' }))
+    await flush()
+    act(() => fake.terms[0].type('rm -rf /tmp/x\r'))
+    expect(calls(invoke, 'session:write')).toEqual([['session:write', 'web', 'rm -rf /tmp/x\r']])
+    fireEvent.click(tab('db'))
+    await flush()
+    act(() => fake.terms[1].type('rm -rf /tmp/x\r'))
+    expect(screen.getByRole('dialog', { name: 'Run this on prod?' })).toBeInTheDocument()
+    expect(calls(invoke, 'session:write').at(-1)).toEqual(['session:write', 'db', 'rm -rf /tmp/x'])
+  })
+
+  it('copy on select stays off until the setting turns it on', async () => {
+    const writeText = vi.fn(async () => {})
+    vi.stubGlobal('navigator', Object.assign(Object.create(navigator), { clipboard: { writeText } }))
+    await renderShell('/terminals', { 'settings:get': DEFAULT_SETTINGS })
+    state(meta('s1'))
+    await flush()
+    fake.terms[0].getSelection.mockReturnValue('selected')
+    act(() => fake.terms[0].selectionListeners.forEach((l) => l()))
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
   it('mod+w closes the active tab, only while Terminals is visible', async () => {
     const invoke = await renderShell()
     state(ssh('old', { state: 'closed' }))
-    key('2') // Hosts
+    await goTo('/hosts')
     await flush()
     key('w')
     await flush()
     expect(calls(invoke, 'session:close')).toHaveLength(0)
-    fireEvent.click(screen.getByRole('button', { name: /Open sessions/ }))
+    fireEvent.click(terminalsLink())
     await flush()
     key('w')
     await flush()
@@ -428,7 +558,7 @@ describe('terminals page', () => {
     state(ssh('a', { state: 'connecting', hops: [] }))
     state(meta('b'))
     state(ssh('c', { state: 'closed' }))
-    expect(screen.getByRole('button', { name: /Open sessions/ }).querySelector('[data-badge]')).toHaveTextContent('2')
+    expect(terminalsLink().querySelector('[data-badge]')).toHaveTextContent('2')
   })
 
   it('reduced motion: no pulse class on the connecting dot', async () => {

@@ -5,6 +5,7 @@ import { Button } from '../../ui/Button'
 import { toast } from '../../ui/Toaster'
 import { useConfigTransfer } from './ConfigTransfer'
 import { IntegrationsSection } from './IntegrationsPage'
+import { TerminalSection } from './TerminalSettings'
 
 export function SettingsPage() {
   return (
@@ -14,6 +15,7 @@ export function SettingsPage() {
       </header>
       <div className="flex min-h-0 flex-1 flex-col gap-8 overflow-y-auto px-8 pb-8">
         <IntegrationsSection />
+        <TerminalSection />
         <ConfigSection />
         <SupportSection />
       </div>

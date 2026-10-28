@@ -1,16 +1,23 @@
 import { AnimatePresence } from 'framer-motion'
+import { Plus, SquareTerminal, Star, Zap } from 'lucide-react'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 import type { SessionMeta } from '../../../../shared/ssh'
 import { insertStore } from '../../ops/insert'
 import { useInventory } from '../../inventory/store'
+import { ensureSettings, useIntegrations } from '../../settings/store'
+import { protectedEnvironment } from '../../terminal/protect'
 import { useConnect } from '../../terminal/connect'
 import { closeSession, nextTab, openLocal, reconnectSession, sessionsLoaded, sessionStore, setActive } from '../../terminal/sessions'
 import { TerminalView } from '../../terminal/TerminalView'
+import { Button } from '../../ui/Button'
 import { ConfirmDialog, type ConfirmRequest } from '../../ui/common'
+import { EmptyState } from '../../ui/EmptyState'
 import { useShortcut } from '../../ui/shortcuts'
+import { useFavourites } from '../../terminal/favourites'
 import { ConnectOverlay } from './ConnectOverlay'
 import { openKnownHosts } from './KnownHostsDialog'
+import { openQuickConnect } from './QuickConnect'
 import { SessionEnded } from './SessionEnded'
 import { paneId, TabStrip, tabId } from './TabStrip'
 
@@ -25,6 +32,7 @@ export function TerminalDeck({ visible }: { visible: boolean }) {
   const { connectLocal } = useConnect()
   const { sessions, order, activeId } = useSessions()
   const inventory = useInventory()
+  const copySetting = !!useIntegrations().settings?.terminalCopyOnSelect
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   // The session a close was asked for, with the tab order at that moment, until focus is placed.
   const [closing, setClosing] = useState<{ id: string; order: string[] } | null>(null)
@@ -34,15 +42,18 @@ export function TerminalDeck({ visible }: { visible: boolean }) {
   const tabs = order.flatMap((id) => byId.get(id) ?? [])
   const active = activeId ? byId.get(activeId) : undefined
 
-  // Where you were before Terminals; with no tab left to show (a direct visit, the last tab closed
-  // or its shell exited) the deck goes back there, or home.
+  // Where you were before Terminals. When the last tab goes while you watch (closed, or its shell
+  // exited) the deck goes back there, or home; arriving with no tabs shows the launcher instead.
   const location = useLocation()
   const before = useRef<string | null>(null)
   if (!location.pathname.startsWith('/terminals')) before.current = location.pathname + location.search
   // Not before the first session list lands: a reload on this page has no tabs yet.
   const loaded = useSyncExternalStore(sessionsLoaded.subscribe, sessionsLoaded.get)
+  const hadTabs = useRef(false)
   useEffect(() => {
-    if (loaded && visible && tabs.length === 0) navigate(before.current ?? '/', { replace: true })
+    if (!loaded) return
+    if (visible && hadTabs.current && tabs.length === 0) navigate(before.current ?? '/', { replace: true })
+    hadTabs.current = visible && tabs.length > 0
   }, [loaded, tabs.length, visible, navigate])
 
   const envName = (id: string | null) => (id ? inventory?.environments.find((e) => e.id === id)?.name : undefined)
@@ -68,12 +79,43 @@ export function TerminalDeck({ visible }: { visible: boolean }) {
     focusAfterClose(refocus.id, refocus.order)
   }, [refocus])
 
-  // The shell opens first; going to an empty Terminals page would bounce straight back.
+  useEffect(() => void ensureSettings(), [])
+
+  // Never on a protected host, whatever the setting: a secret printed there must not reach the clipboard
+  // by a stray drag. Until the inventory loads, an ssh session counts as protected.
+  const copyOnSelect = (meta: SessionMeta) =>
+    copySetting && (meta.kind === 'local' || (!!inventory && !protectedEnvironment(meta, inventory.environments)))
+  // Asks before a multi-line paste or a destructive Enter; only once the inventory says the host is protected.
+  const protectedEnv = (meta: SessionMeta) => (inventory && protectedEnvironment(meta, inventory.environments)?.name) || null
+
+  // The shell opens first, so Terminals lands on its tab rather than the launcher.
   useShortcut('mod+t', () => void connectLocal())
 
   return (
     <section aria-label="Terminals" hidden={!visible} className="absolute inset-0 z-[1] flex flex-col bg-canvas">
       {visible && <TabShortcuts onClose={() => active && requestClose(active)} />}
+      {loaded && tabs.length === 0 && (
+        <div className="grid flex-1 place-items-center">
+          <div className="flex flex-col items-center">
+            <EmptyState
+              icon={SquareTerminal}
+              title="No open sessions"
+              text="Open a shell on this Mac, or connect to a host by name. Hosts, the map and the command palette connect too."
+              actions={
+                <>
+                  <Button icon={<Zap aria-hidden className="size-4" />} onClick={openQuickConnect}>
+                    Quick connect
+                  </Button>
+                  <Button variant="ghost" icon={<Plus aria-hidden className="size-4" />} onClick={() => void connectLocal()}>
+                    New local shell
+                  </Button>
+                </>
+              }
+            />
+            <FavouriteHosts />
+          </div>
+        </div>
+      )}
       {tabs.length > 0 && (
         <>
           <TabStrip
@@ -84,10 +126,18 @@ export function TerminalDeck({ visible }: { visible: boolean }) {
             onClose={requestClose}
             onNew={() => void openLocal()}
             onSnippets={() => insertStore.set({ kind: 'pick' })}
+            onQuickConnect={openQuickConnect}
           />
           <div className="relative min-h-0 flex-1">
             {tabs.map((s) => (
-              <SessionPane key={s.id} meta={s} visible={visible && s.id === activeId} onClose={() => requestClose(s)} />
+              <SessionPane
+                key={s.id}
+                meta={s}
+                visible={visible && s.id === activeId}
+                copyOnSelect={copyOnSelect(s)}
+                protectedEnv={protectedEnv(s)}
+                onClose={() => requestClose(s)}
+              />
             ))}
           </div>
         </>
@@ -120,6 +170,35 @@ function focusAfterClose(id: string, before: string[]): void {
   if (next) document.getElementById(tabId(next))?.focus()
 }
 
+/** The launcher's starred hosts, one click each; starring happens in Quick connect. */
+function FavouriteHosts() {
+  const favourites = useFavourites()
+  const inventory = useInventory()
+  const { connect } = useConnect()
+  if (!inventory) return null
+  const byId = new Map(inventory.hosts.map((h) => [h.id, h]))
+  const hosts = favourites.flatMap((id) => byId.get(id) ?? [])
+  if (!hosts.length) return null
+  return (
+    <section aria-label="Favourite hosts" className="-mt-8 flex max-w-lg flex-wrap justify-center gap-2 px-6">
+      {hosts.map((h) => {
+        const envs = h.environments.map((m) => m.environmentId)
+        return (
+          <Button
+            key={h.id}
+            variant="ghost"
+            size="sm"
+            icon={<Star aria-hidden className="size-3.5 text-warn" fill="currentColor" />}
+            onClick={() => void connect(h.id, envs.length === 1 ? envs[0] : undefined)}
+          >
+            {h.label}
+          </Button>
+        )
+      })}
+    </section>
+  )
+}
+
 /** Bound only while the deck is on screen, so mod+w never closes a tab you can't see. */
 function TabShortcuts({ onClose }: { onClose: () => void }) {
   useShortcut('mod+w', onClose)
@@ -128,7 +207,15 @@ function TabShortcuts({ onClose }: { onClose: () => void }) {
   return null
 }
 
-function SessionPane({ meta, visible, onClose }: { meta: SessionMeta; visible: boolean; onClose: () => void }) {
+interface SessionPaneProps {
+  meta: SessionMeta
+  visible: boolean
+  copyOnSelect: boolean
+  protectedEnv: string | null
+  onClose: () => void
+}
+
+function SessionPane({ meta, visible, copyOnSelect, protectedEnv, onClose }: SessionPaneProps) {
   // The store drops a second reconnect too; this only keeps the button honest while one runs.
   const [reconnecting, setReconnecting] = useState(false)
   const reconnect = () => {
@@ -146,7 +233,7 @@ function SessionPane({ meta, visible, onClose }: { meta: SessionMeta; visible: b
       className="absolute inset-0 flex flex-col"
     >
       <div className="relative min-h-0 flex-1">
-        <TerminalView sessionId={meta.id} visible={visible} />
+        <TerminalView sessionId={meta.id} visible={visible} copyOnSelect={copyOnSelect} protectedEnv={protectedEnv} />
         <AnimatePresence>
           {visible && overlay && (
             <ConnectOverlay key="overlay" meta={meta} onReconnect={reconnect} reconnecting={reconnecting} onClose={onClose} onOpenKnownHosts={openKnownHosts} />

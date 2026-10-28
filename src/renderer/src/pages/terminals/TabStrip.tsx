@@ -1,5 +1,5 @@
 import { AnimatePresence, motion, Reorder } from 'framer-motion'
-import { FileCode2, Plus, X } from 'lucide-react'
+import { FileCode2, Plus, X, Zap } from 'lucide-react'
 import { useRef, type KeyboardEvent } from 'react'
 import type { SessionMeta, SessionState } from '../../../../shared/ssh'
 import { moveTab } from '../../terminal/sessions'
@@ -57,9 +57,11 @@ export interface TabStripProps {
   onNew: () => void
   /** Opens the snippet picker, which types a snippet into the active tab. */
   onSnippets?: () => void
+  /** Opens Quick connect, to a host by name. */
+  onQuickConnect?: () => void
 }
 
-export function TabStrip({ sessions, activeId, envName, onSelect, onClose, onNew, onSnippets }: TabStripProps) {
+export function TabStrip({ sessions, activeId, envName, onSelect, onClose, onNew, onSnippets, onQuickConnect }: TabStripProps) {
   const motionSafe = useMotionSafe()
   // Reorder hands back the whole new order; the tab being dragged is the one that moved.
   const dragging = useRef<string | null>(null)
@@ -188,6 +190,17 @@ export function TabStrip({ sessions, activeId, envName, onSelect, onClose, onNew
       >
         <Plus aria-hidden className="size-3.5" />
       </motion.button>
+      {onQuickConnect && (
+        <button
+          type="button"
+          aria-label="Quick connect"
+          title="Connect to a host by name"
+          onClick={onQuickConnect}
+          className="mb-1 ml-0.5 grid size-6 shrink-0 place-items-center rounded-md text-muted transition-colors hover:bg-white/6 hover:text-fg"
+        >
+          <Zap aria-hidden className="size-3.5" />
+        </button>
+      )}
       {onSnippets && (
         <button
           type="button"

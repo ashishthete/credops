@@ -89,8 +89,8 @@ describe('shell', () => {
 
   it(`${shortcutOf('hub')} jumps to the Hub; Audit, the ninth section, is mod+9`, async () => {
     renderShell()
-    expect(SECTIONS.at(-1)!.id).toBe('audit')
-    expect(sectionShortcut(SECTIONS.length - 1)).toBe('mod+9')
+    expect(SECTIONS[8].id).toBe('audit')
+    expect(sectionShortcut(8)).toBe('mod+9')
     act(() => {
       fireEvent.keyDown(window, { key: digitOf('hub'), metaKey: true })
     })

@@ -27,7 +27,7 @@ export interface SettingsStoreDeps {
 const FIELDS = Object.keys(SETTINGS) as (keyof IntegrationSettings)[]
 
 /**
- * App-wide integration settings (AI model and key, SendGrid, GitHub, macOS alerts). Values are secret
+ * App-wide integration settings (AI model and key, SendGrid, GitHub, macOS alerts) and terminal preferences. Values are secret
  * *ids*, never secret values. Reads work while locked; writes need the vault unlocked and are audited
  * with the changed field names only, after COMMIT.
  */
@@ -122,6 +122,7 @@ export class SettingsStore {
       if (from.length === 0 || from.length > MAX_EMAIL || !EMAIL.test(from)) throw new Error('from address must be an email address')
     }
     if (typeof s.macos !== 'boolean' || typeof s.macosUnscoped !== 'boolean') throw new Error('macOS alerts must be on or off')
+    if (typeof s.terminalCopyOnSelect !== 'boolean') throw new Error('copy on select must be on or off')
     return {
       aiModel: s.aiModel,
       aiApiKeySecretId: checkSecretRef(this.secrets, s.aiApiKeySecretId, 'api_key'),
@@ -130,6 +131,7 @@ export class SettingsStore {
       githubTokenSecretId: checkSecretRef(this.secrets, s.githubTokenSecretId, 'token'),
       macos: s.macos,
       macosUnscoped: s.macosUnscoped,
+      terminalCopyOnSelect: s.terminalCopyOnSelect,
     }
   }
 }

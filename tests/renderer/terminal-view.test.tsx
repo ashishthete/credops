@@ -41,9 +41,9 @@ afterEach(async () => {
 
 const calls = (invoke: ReturnType<typeof mockBridge>, channel: string) => (invoke.mock.calls as unknown[][]).filter((c) => c[0] === channel)
 
-async function mount(visible = true) {
+async function mount(visible = true, props: { copyOnSelect?: boolean; protectedEnv?: string | null } = {}) {
   const invoke = mockBridge({ 'session:attach': { meta: {}, buffer: '', end: 0 } })
-  const view = render(<TerminalView sessionId="s1" visible={visible} />)
+  const view = render(<TerminalView sessionId="s1" visible={visible} {...props} />)
   await act(async () => {})
   return { invoke, view }
 }
@@ -97,16 +97,140 @@ describe('TerminalView', () => {
     expect(fake.terms[0].element).toBeDefined()
   })
 
-  it('copy on select writes to the clipboard', async () => {
+  it('on a protected host, Enter on a destructive line waits for Run; what came before it is sent', async () => {
+    const { invoke } = await mount(true, { protectedEnv: 'prod' })
+    const term = fake.terms[0]
+    act(() => term.type('ls\r'))
+    act(() => term.type('sudo rm -rf /var/www'))
+    act(() => term.type('\r'))
+    const sent = () => calls(invoke, 'session:write').map((c) => c[2]).join('')
+    expect(sent()).toBe('ls\rsudo rm -rf /var/www')
+    const dialog = screen.getByRole('dialog', { name: 'Run this on prod?' })
+    expect(dialog).toHaveTextContent('sudo rm -rf /var/www')
+    act(() => term.type('x')) // typed while it asks: held with the Enter
+    fireEvent.click(screen.getByRole('button', { name: 'Run' }))
+    await act(async () => {})
+    expect(sent()).toBe('ls\rsudo rm -rf /var/www\rx')
+    // The tracker moved on: the next line starts empty.
+    act(() => term.type('\r'))
+    expect(sent()).toBe('ls\rsudo rm -rf /var/www\rx\r')
+  })
+
+  it('cancelling a destructive Enter drops it and keeps the line; Ctrl-C clears it', async () => {
+    const { invoke } = await mount(true, { protectedEnv: 'prod' })
+    const term = fake.terms[0]
+    act(() => term.type('systemctl restart nginx\r'))
+    expect(screen.getByRole('dialog', { name: 'Run this on prod?' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await act(async () => {})
+    const sent = () => calls(invoke, 'session:write').map((c) => c[2]).join('')
+    expect(sent()).toBe('systemctl restart nginx')
+    expect(term.focus).toHaveBeenCalled()
+    act(() => term.type('\x03'))
+    act(() => term.type('uptime\r'))
+    expect(sent()).toBe('systemctl restart nginx\x03uptime\r')
+  })
+
+  it('unprotected, or in a full-screen program, Enter goes straight through', async () => {
+    const { invoke, view } = await mount()
+    const term = fake.terms[0]
+    act(() => term.type('rm -rf build\r'))
+    expect(calls(invoke, 'session:write').map((c) => c[2])).toEqual(['rm -rf build\r'])
+    view.rerender(<TerminalView sessionId="s1" visible protectedEnv="prod" />)
+    Object.assign(term, { buffer: { active: { type: 'alternate' } } })
+    act(() => term.type(':!rm x\r'))
+    expect(calls(invoke, 'session:write').map((c) => c[2])).toEqual(['rm -rf build\r', ':!rm x\r'])
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('after history or Tab it checks the line on screen', async () => {
+    await mount(true, { protectedEnv: 'prod' })
+    const term = fake.terms[0]
+    act(() => term.type('\x1b[A')) // up: recalls a line the tracker never saw
+    Object.assign(term, {
+      buffer: {
+        active: {
+          type: 'normal',
+          baseY: 0,
+          cursorY: 0,
+          getLine: () => ({ isWrapped: false, translateToString: () => 'deploy@web:~$ docker rm -f api' }),
+        },
+      },
+    })
+    act(() => term.type('\r'))
+    expect(screen.getByRole('dialog', { name: 'Run this on prod?' })).toHaveTextContent('deploy@web:~$ docker rm -f api')
+  })
+
+  it('on a protected host a paste with a line break shows its text and waits; one line pastes as usual', async () => {
+    const { invoke } = await mount(true, { protectedEnv: 'prod' })
+    const term = fake.terms[0]
+    const paste = (text: string) => {
+      const event = new Event('paste', { bubbles: true, cancelable: true })
+      Object.assign(event, { clipboardData: { getData: () => text } })
+      act(() => void term.element!.dispatchEvent(event))
+      return event
+    }
+    expect(paste('uptime').defaultPrevented).toBe(false)
+    expect(screen.queryByRole('dialog')).toBeNull()
+
+    expect(paste('cd /srv\ngit pull\n').defaultPrevented).toBe(true)
+    const dialog = screen.getByRole('dialog', { name: 'Paste 2 lines into prod?' })
+    expect(dialog).toHaveTextContent('cd /srv git pull')
+    expect(dialog).toHaveTextContent('each line break runs as Enter')
+    expect(term.paste).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Paste' }))
+    await act(async () => {})
+    expect(term.paste).toHaveBeenCalledWith('cd /srv\ngit pull\n')
+    expect(calls(invoke, 'session:write').map((c) => c[2]).join('')).toBe('cd /srv\rgit pull\r')
+  })
+
+  it('a confirmed paste with a destructive line is not asked about twice; a cancelled one sends nothing', async () => {
+    const { invoke } = await mount(true, { protectedEnv: 'prod' })
+    const term = fake.terms[0]
+    const paste = (text: string) => {
+      const event = new Event('paste', { bubbles: true, cancelable: true })
+      Object.assign(event, { clipboardData: { getData: () => text } })
+      act(() => void term.element!.dispatchEvent(event))
+    }
+    paste('rm -rf /tmp/a\n')
+    expect(screen.getByRole('dialog', { name: 'Paste a line into prod?' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await act(async () => {})
+    expect(calls(invoke, 'session:write')).toHaveLength(0)
+
+    paste('rm -rf /tmp/a\n')
+    fireEvent.click(screen.getByRole('button', { name: 'Paste' }))
+    await act(async () => {})
+    expect(calls(invoke, 'session:write').map((c) => c[2]).join('')).toBe('rm -rf /tmp/a\r')
+    expect(screen.queryByRole('dialog', { name: 'Run this on prod?' })).toBeNull()
+  })
+
+  it('copy on select writes to the clipboard when turned on', async () => {
     const writeText = vi.fn(async () => {})
     vi.stubGlobal('navigator', Object.assign(Object.create(navigator), { clipboard: { writeText } }))
-    await mount()
+    await mount(true, { copyOnSelect: true })
     const term = fake.terms[0]
     act(() => term.selectionListeners.forEach((l) => l()))
     expect(writeText).not.toHaveBeenCalled()
     term.getSelection.mockReturnValue('selected text')
     act(() => term.selectionListeners.forEach((l) => l()))
     expect(writeText).toHaveBeenCalledWith('selected text')
+  })
+
+  it('copy on select is off by default, and turning it off takes effect at once', async () => {
+    const writeText = vi.fn(async () => {})
+    vi.stubGlobal('navigator', Object.assign(Object.create(navigator), { clipboard: { writeText } }))
+    const { view } = await mount()
+    const term = fake.terms[0]
+    term.getSelection.mockReturnValue('hunter22')
+    act(() => term.selectionListeners.forEach((l) => l()))
+    expect(writeText).not.toHaveBeenCalled()
+    view.rerender(<TerminalView sessionId="s1" visible copyOnSelect />)
+    act(() => term.selectionListeners.forEach((l) => l()))
+    expect(writeText).toHaveBeenCalledTimes(1)
+    view.rerender(<TerminalView sessionId="s1" visible copyOnSelect={false} />)
+    act(() => term.selectionListeners.forEach((l) => l()))
+    expect(writeText).toHaveBeenCalledTimes(1)
   })
 
   it('app combos are released by the key handler; ctrl keys stay with the terminal', async () => {

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router'
+import { openQuickConnect } from '../pages/terminals/QuickConnect'
 import { useConnect } from '../terminal/connect'
+import { useFavourites } from '../terminal/favourites'
 import { registerCommand, registerCommands } from '../ui/commands'
 import { useInventory } from './store'
 import { environmentKey } from './tree'
@@ -18,6 +20,7 @@ export function useInventoryCommands(): void {
     navigateRef.current = navigate
   })
   const { connect, connectLocal } = useConnect()
+  const favourites = useFavourites()
   const go = useCallback((path: string) => () => navigateRef.current(path), [])
 
   useEffect(() => {
@@ -45,6 +48,13 @@ export function useInventoryCommands(): void {
         shortcut: 'mod+t',
         run: () => void connectLocal(),
       }),
+      registerCommand({
+        id: 'terminal.quickConnect',
+        title: 'Quick connect…',
+        section: 'Terminals',
+        keywords: ['ssh', 'host', 'terminal', 'favourite', 'favorite'],
+        run: openQuickConnect,
+      }),
     ]
     return () => off.forEach((fn) => fn())
   }, [go, connectLocal])
@@ -55,6 +65,7 @@ export function useInventoryCommands(): void {
     const productName = new Map(data.products.map((p) => [p.id, p.name]))
     const envById = new Map(data.environments.map((e) => [e.id, e]))
     const regionById = new Map(data.regions.map((r) => [r.id, r]))
+    const starred = new Set(favourites)
     return registerCommands([
       ...data.hosts.map((h) => {
         const envs = h.environments.flatMap((m) => envById.get(m.environmentId) ?? [])
@@ -64,6 +75,7 @@ export function useInventoryCommands(): void {
           title: region ? `Connect to ${h.label} · ${region.code}` : `Connect to ${h.label}`,
           section: 'Terminals',
           keywords: [h.address, ...h.tags, ...envs.map((e) => e.name), ...(region ? [region.code, region.displayName] : [])],
+          favourite: starred.has(h.id),
           // A host in exactly one environment connects with its defaults; otherwise there is no single context.
           run: () => void connect(h.id, envs.length === 1 ? envs[0].id : undefined),
         }
@@ -85,5 +97,5 @@ export function useInventoryCommands(): void {
         }
       }),
     ])
-  }, [data, go, connect])
+  }, [data, go, connect, favourites])
 }

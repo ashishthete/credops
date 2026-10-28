@@ -175,6 +175,13 @@ export function nextTab(dir: 1 | -1): void {
   setActive(order[(at + dir + order.length) % order.length])
 }
 
+/** mod+1…mod+8 pick that tab and mod+9 the last one, as in Chrome and Safari; a digit past the end does nothing. */
+export function selectTabByDigit(digit: number): void {
+  const { order } = sessionStore.get()
+  const id = digit === 9 ? order.at(-1) : order[digit - 1]
+  if (id) setActive(id)
+}
+
 export function moveTab(id: string, toIndex: number): void {
   const s = sessionStore.get()
   const from = s.order.indexOf(id)
