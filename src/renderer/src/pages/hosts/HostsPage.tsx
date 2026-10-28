@@ -14,6 +14,7 @@ import { exitFast, fast, spring, staggerDelay, useMotionSafe } from '../../ui/mo
 import { useShortcut } from '../../ui/shortcuts'
 import { plural } from '../../ui/common'
 import { Skeleton } from '../../ui/Skeleton'
+import { useKeptRef, useKeptState } from '../../ui/kept'
 import { createStore } from '../../ui/store'
 import { ROLE_LABEL, ROLE_ORDER } from '../products/ProductView'
 import { useConfigTransfer } from '../settings/ConfigTransfer'
@@ -44,10 +45,11 @@ const IMPORT_LABEL = 'Import from ~/.ssh/config'
 export function HostsPage() {
   const data = useInventory()
   const [params, setParams] = useSearchParams()
-  const [query, setQuery] = useState('')
-  const [tags, setTags] = useState<string[]>([])
-  const [regionId, setRegionId] = useState('')
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
+  // The filters outlive the page, so a trip to a terminal comes back to the same list.
+  const [query, setQuery] = useKeptState('hosts.query', '')
+  const [tags, setTags] = useKeptState<string[]>('hosts.tags', [])
+  const [regionId, setRegionId] = useKeptState('hosts.region', '')
+  const [collapsed, setCollapsed] = useKeptState<ReadonlySet<string>>('hosts.collapsed', () => new Set())
   const [dialog, setDialog] = useState<HostsAction | null>(null)
   // Regions, identities and hosts: what this page and its dialogs edit.
   const transfer = useConfigTransfer('hosts')
@@ -73,8 +75,14 @@ export function HostsPage() {
   // What the list shows, in its order: hosts in a collapsed group are left out.
   const visible = useMemo(() => groups.flatMap((g) => (collapsed.has(groupKey(g)) ? [] : g.hosts)), [groups, collapsed])
 
-  const wanted = params.get('host')
+  // The host picked when the page was last left comes back with it, unless the URL names one.
+  const lastSelected = useKeptRef<string | null>('hosts.selected', null)
+  const [remembered] = useState(() => lastSelected.current)
+  const wanted = params.get('host') ?? remembered
   const selected = wanted && hosts.some((h) => h.id === wanted) ? wanted : (visible[0]?.id ?? null)
+  useEffect(() => {
+    if (data) lastSelected.current = selected
+  }, [data, lastSelected, selected])
   const selectedRegion = hosts.find((h) => h.id === selected)?.regionId
 
   const updateParams = useCallback(

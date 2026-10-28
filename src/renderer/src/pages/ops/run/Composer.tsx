@@ -16,6 +16,7 @@ import { SelectField, TextAreaField, TextField } from '../../../ui/Field'
 import { fast, spring, useMotionSafe } from '../../../ui/motion'
 import { RegionChip } from '../../../ui/RegionChip'
 import { Segmented } from '../../../ui/Segmented'
+import { useKeptRef, useKeptState } from '../../../ui/kept'
 import { isMac } from '../../../ui/shortcuts'
 import { confirmFor, launch } from './launch'
 
@@ -56,16 +57,18 @@ export function Composer({ onConfirm }: { onConfirm: (req: ConfirmRequest) => vo
     if (!loaded) void loadSnippets()
   }, [loaded])
 
+  // The draft outlives the page (useKeptState), so a trip to a terminal comes back to it.
   // Targets.
-  const [targetMode, setTargetMode] = useState<TargetMode>('environment')
-  const [envId, setEnvId] = useState('')
-  const [role, setRole] = useState<Role>('all')
-  const [picked, setPicked] = useState<ReadonlySet<string>>(new Set())
-  const [contextId, setContextId] = useState('')
+  const [targetMode, setTargetMode] = useKeptState<TargetMode>('ops.run.targetMode', 'environment')
+  const [envId, setEnvId] = useKeptState('ops.run.envId', '')
+  const [role, setRole] = useKeptState<Role>('ops.run.role', 'all')
+  const [picked, setPicked] = useKeptState<ReadonlySet<string>>('ops.run.picked', () => new Set())
+  const [contextId, setContextId] = useKeptState('ops.run.contextId', '')
 
   // `?hosts=a,b&env=x` (the Host view's Run… button) preselects those hosts and the context once the inventory has them.
   const [params] = useSearchParams()
-  const seeded = useRef<string | null>(null)
+  // Kept too, so coming back to the same URL doesn't seed over the draft.
+  const seeded = useKeptRef<string | null>('ops.run.seededHosts', null)
   useEffect(() => {
     const q = params.get('hosts')
     if (!q || seeded.current === q || !hosts.length) return
@@ -99,10 +102,10 @@ export function Composer({ onConfirm }: { onConfirm: (req: ConfirmRequest) => vo
   const context = targetMode === 'environment' ? (env ?? null) : (environments.find((e) => e.id === contextId) ?? null)
 
   // Command.
-  const [commandMode, setCommandMode] = useState<CommandMode>('text')
-  const [text, setText] = useState('')
-  const [snippetId, setSnippetId] = useState('')
-  const [values, setValues] = useState<Record<string, string>>({})
+  const [commandMode, setCommandMode] = useKeptState<CommandMode>('ops.run.commandMode', 'text')
+  const [text, setText] = useKeptState('ops.run.text', '')
+  const [snippetId, setSnippetId] = useKeptState('ops.run.snippetId', '')
+  const [values, setValues] = useKeptState<Record<string, string>>('ops.run.values', {})
   const snippet = snippets.find((s) => s.id === snippetId)
   // Blank fields are left out, so main uses the default or says what is missing.
   const filled = useMemo(() => Object.fromEntries(Object.entries(values).filter(([, v]) => v !== '')), [values])
@@ -132,7 +135,7 @@ export function Composer({ onConfirm }: { onConfirm: (req: ConfirmRequest) => vo
   }
 
   // `?snippet=<id>` (the palette, the Snippets tab) opens the snippet's mode with it picked, once it is loaded.
-  const seededSnippet = useRef<string | null>(null)
+  const seededSnippet = useKeptRef<string | null>('ops.run.seededSnippet', null)
   const wantedSnippet = params.get('snippet')
   useEffect(() => {
     if (!wantedSnippet || seededSnippet.current === wantedSnippet || !loaded) return
@@ -145,8 +148,8 @@ export function Composer({ onConfirm }: { onConfirm: (req: ConfirmRequest) => vo
   }, [wantedSnippet, loaded, snippets])
 
   // Options.
-  const [concurrency, setConcurrency] = useState(DEFAULT_CONCURRENCY)
-  const [timeoutSec, setTimeoutSec] = useState(DEFAULT_RUN_TIMEOUT_SEC)
+  const [concurrency, setConcurrency] = useKeptState('ops.run.concurrency', DEFAULT_CONCURRENCY)
+  const [timeoutSec, setTimeoutSec] = useKeptState('ops.run.timeoutSec', DEFAULT_RUN_TIMEOUT_SEC)
 
   const commandText = commandMode === 'text' ? text : rendered.key === renderKey ? (rendered.text ?? '') : ''
   const destructive = (commandMode === 'snippet' && !!snippet?.destructive) || DESTRUCTIVE_PATTERN.test(commandText)
@@ -404,9 +407,9 @@ function HostChecklist({
   picked: ReadonlySet<string>
   onChange: (s: ReadonlySet<string>) => void
 }) {
-  const [query, setQuery] = useState('')
-  const [tag, setTag] = useState('')
-  const [regionId, setRegionId] = useState('')
+  const [query, setQuery] = useKeptState('ops.run.hostQuery', '')
+  const [tag, setTag] = useKeptState('ops.run.hostTag', '')
+  const [regionId, setRegionId] = useKeptState('ops.run.hostRegion', '')
   const tags = useMemo(() => [...new Set(hosts.flatMap((h) => h.tags))].sort((a, b) => a.localeCompare(b)), [hosts])
   // Region by region, like every host picker; the filter only shows once there is more than one to choose.
   const groups = useMemo(() => hostsByRegion(regions, hosts), [regions, hosts])

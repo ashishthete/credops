@@ -35,6 +35,7 @@ import { useOpsCommands } from '../ops/commands'
 import { useTunnelCommands } from '../tunnels/commands'
 import { resetTunnels, startTunnelSync } from '../tunnels/store'
 import { registerCommand } from '../ui/commands'
+import { resetKept } from '../ui/kept'
 import { fast, useMotionSafe } from '../ui/motion'
 import { useShortcut } from '../ui/shortcuts'
 import { SECTIONS, sectionShortcut } from './sections'
@@ -96,6 +97,8 @@ export function AppShell() {
       resetLatest()
       // Relies on a lock unmounting the shell; see the cache in VaultsPage.
       resetVaultsCache()
+      // Drafts and filters can hold anything typed; they go with the lock.
+      resetKept()
       closeKnownHosts()
     }
   }, [])
@@ -110,9 +113,10 @@ export function AppShell() {
             aria-hidden
             className="pointer-events-none absolute inset-x-0 top-0 h-64 bg-[radial-gradient(60%_100%_at_30%_0%,color-mix(in_oklab,var(--accent)_7%,transparent),transparent)]"
           />
-          {/* Enter-only transition: the next page never waits on the previous one to leave. */}
+          {/* Enter-only transition: the next page never waits on the previous one to leave. Ops' tabs share a key,
+              so switching tabs keeps the page mounted; what a page keeps across navigation lives in ui/kept. */}
           <motion.div
-            key={location.pathname}
+            key={pageKey(location.pathname)}
             className="relative h-full"
             initial={motionSafe ? { opacity: 0, y: 6 } : { opacity: 0 }}
             animate={motionSafe ? { opacity: 1, y: 0 } : { opacity: 1 }}
@@ -149,6 +153,9 @@ export function AppShell() {
     </div>
   )
 }
+
+/** What the page transition keys on: the path, except that Ops' tabs (`/ops/:tab`) are one page. */
+const pageKey = (pathname: string) => (pathname.startsWith('/ops/') ? '/ops' : pathname)
 
 // mod+1…mod+9 (later sections have none) and a "Go to …" palette command per section.
 function useSectionNavigation() {

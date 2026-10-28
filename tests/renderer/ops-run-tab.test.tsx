@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { forwardRef, createElement, type ComponentType } from 'react'
-import { MemoryRouter, Route, Routes } from 'react-router'
+import { Link, MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { inventoryStore } from '../../src/renderer/src/inventory/store'
 import { rememberRequest, resetOps, startOpsSync } from '../../src/renderer/src/ops/runs'
@@ -291,6 +291,45 @@ describe('run tab', () => {
     ])
     // The new run is shown.
     expect(screen.getByRole('heading', { name: 'uptime' })).toBeInTheDocument()
+  })
+
+  it('the draft survives leaving the page and coming back', async () => {
+    mockBridge({ 'snippets:list': [snippet] })
+    inventoryStore.set({ products: [], environments: [prod, staging, audit], hosts: [...prodHosts, stg, ops], identities: [], vaults: [], regions: [] })
+    stopSync = startOpsSync()
+    render(
+      <MemoryRouter initialEntries={['/ops/run']}>
+        <Routes>
+          <Route path="/ops/:tab" element={<OpsPage />} />
+          <Route path="/terminals" element={<Link to="/ops/run">Back to Ops</Link>} />
+        </Routes>
+        <Link to="/terminals">Terminals</Link>
+      </MemoryRouter>,
+    )
+    await flush()
+    fireEvent.click(screen.getByRole('radio', { name: 'Hosts' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Tag' }), { target: { value: 'frontend' } })
+    fireEvent.click(screen.getByRole('checkbox', { name: 'web-2' }))
+    typeCommand('uptime')
+    fireEvent.change(screen.getByRole('combobox', { name: 'Timeout' }), { target: { value: '600' } })
+
+    fireEvent.click(screen.getByRole('link', { name: 'Terminals' }))
+    expect(screen.queryByRole('form', { name: 'New run' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('link', { name: 'Back to Ops' }))
+    await flush()
+
+    expect(screen.getByRole('textbox', { name: 'Command' })).toHaveValue('uptime')
+    expect(screen.getByRole('radio', { name: 'Hosts' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('combobox', { name: 'Tag' })).toHaveValue('frontend')
+    expect(screen.getByRole('checkbox', { name: 'web-2' })).toBeChecked()
+    expect(screen.getByRole('combobox', { name: 'Timeout' })).toHaveValue('600')
+    expect(within(screen.getByRole('list', { name: 'Target hosts' })).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['web-2'])
+
+    // Another tab and back keeps it too.
+    fireEvent.click(screen.getByRole('link', { name: 'Snippets' }))
+    fireEvent.click(screen.getByRole('link', { name: 'Run' }))
+    await flush()
+    expect(screen.getByRole('textbox', { name: 'Command' })).toHaveValue('uptime')
   })
 
   it('mod+enter in the command runs it', async () => {

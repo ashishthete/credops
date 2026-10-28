@@ -305,6 +305,40 @@ describe('hosts page', () => {
     await waitFor(() => expect(rowNames()).toEqual(['db-1']))
   })
 
+  it('search, tags and the selected host survive a trip to a terminal and back', async () => {
+    const user = userEvent.setup()
+    renderApp(world())
+    await waitFor(() => expect(rowNames()).toEqual(['api-1', 'db-1', 'edge']))
+    await sessionsLanded()
+    await user.type(screen.getByRole('searchbox', { name: 'Search hosts' }), 'ed')
+    await user.click(within(screen.getByRole('group', { name: 'Tags' })).getByRole('button', { name: 'api' }))
+    await waitFor(() => expect(rowNames()).toEqual(['edge']))
+    await user.click(within(hostList()).getByRole('option', { name: 'edge' }))
+
+    await user.click(within(hostList()).getByRole('button', { name: 'Connect to edge' }))
+    await onTerminals('edge')
+    await user.click(within(screen.getByRole('navigation', { name: 'Sections' })).getByRole('link', { name: /Hosts/ }))
+
+    await waitFor(() => expect(rowNames()).toEqual(['edge']))
+    expect(where).toBe('/hosts')
+    expect(screen.getByRole('searchbox', { name: 'Search hosts' })).toHaveValue('ed')
+    expect(within(screen.getByRole('group', { name: 'Tags' })).getByRole('button', { name: 'api' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('option', { name: 'edge' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('a lock forgets the filters', async () => {
+    const user = userEvent.setup()
+    const { unmount } = renderApp(world())
+    await waitFor(() => expect(rowNames()).toEqual(['api-1', 'db-1', 'edge']))
+    await user.type(screen.getByRole('searchbox', { name: 'Search hosts' }), 'edge')
+    await waitFor(() => expect(rowNames()).toEqual(['edge']))
+    // A lock unmounts the shell; the next unlock mounts a fresh one.
+    unmount()
+    renderApp(world())
+    await waitFor(() => expect(rowNames()).toEqual(['api-1', 'db-1', 'edge']))
+    expect(screen.getByRole('searchbox', { name: 'Search hosts' })).toHaveValue('')
+  })
+
   it('selects a host into the side pane', async () => {
     const user = userEvent.setup()
     renderApp(world())
