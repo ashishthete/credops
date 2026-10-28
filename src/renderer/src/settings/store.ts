@@ -26,6 +26,20 @@ export async function loadIntegrations(): Promise<void> {
   if (out) patch({ settings: out[0], status: out[1], secrets: out[2] ?? [], loaded: true })
 }
 
+/**
+ * Loads the settings once for features off the Settings page (the terminal). Quiet on failure: until
+ * they load, every feature keeps its default.
+ */
+export async function ensureSettings(): Promise<void> {
+  if (integrationsStore.get().settings) return
+  try {
+    const settings = await api.invoke('settings:get')
+    if (settings && !integrationsStore.get().settings) patch({ settings })
+  } catch {
+    // The defaults stay; the Settings page loads them again with a toast.
+  }
+}
+
 export async function refreshSecrets(): Promise<SecretMeta[]> {
   const secrets = (await attempt("Couldn't load secrets", () => api.invoke('secret:list'))) ?? integrationsStore.get().secrets
   patch({ secrets })

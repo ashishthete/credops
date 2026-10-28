@@ -39,7 +39,14 @@ function SearchShortcut({ onFire }: { onFire: () => void }) {
   return null
 }
 
-export function TerminalView({ sessionId, visible }: { sessionId: string; visible: boolean }) {
+export interface TerminalViewProps {
+  sessionId: string
+  visible: boolean
+  /** Selecting text copies it to the clipboard. */
+  copyOnSelect?: boolean
+}
+
+export function TerminalView({ sessionId, visible, copyOnSelect = false }: TerminalViewProps) {
   const motionSafe = useMotionSafe()
   const host = useRef<HTMLDivElement>(null)
   const searchInput = useRef<HTMLInputElement>(null)
@@ -48,6 +55,8 @@ export function TerminalView({ sessionId, visible }: { sessionId: string; visibl
   const [query, setQuery] = useState('')
   const visibleRef = useRef(visible)
   visibleRef.current = visible
+  const copyRef = useRef(copyOnSelect)
+  copyRef.current = copyOnSelect
 
   if (visible && !opened) setOpened(true)
 
@@ -89,6 +98,7 @@ export function TerminalView({ sessionId, visible }: { sessionId: string; visibl
         for (const chunk of chunks(data)) api.invoke('session:write', sessionId, chunk).catch(() => {})
       }),
       term.onSelectionChange(() => {
+        if (!copyRef.current) return
         const selection = term.getSelection()
         if (selection) navigator.clipboard?.writeText(selection).catch(() => {})
       }),

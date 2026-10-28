@@ -35,6 +35,8 @@ export interface IntegrationSettings {
   macos: boolean
   /** macOS alerts for tunnels with no environment. */
   macosUnscoped: boolean
+  /** Selecting text in a terminal copies it. Off by default, and never for a host in a protected environment. */
+  terminalCopyOnSelect: boolean
 }
 export type IntegrationSettingsPatch = Partial<IntegrationSettings>
 
@@ -47,6 +49,7 @@ export const SETTINGS = {
   githubTokenSecretId: 'github.tokenSecretId',
   macos: 'notify.macos',
   macosUnscoped: 'notify.macosUnscoped',
+  terminalCopyOnSelect: 'terminal.copyOnSelect',
 } as const satisfies Record<keyof IntegrationSettings, string>
 
 export const DEFAULT_SETTINGS: IntegrationSettings = {
@@ -57,6 +60,7 @@ export const DEFAULT_SETTINGS: IntegrationSettings = {
   githubTokenSecretId: null,
   macos: true,
   macosUnscoped: true,
+  terminalCopyOnSelect: false,
 }
 
 export interface QaWorkflow {

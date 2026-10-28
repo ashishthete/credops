@@ -41,9 +41,9 @@ afterEach(async () => {
 
 const calls = (invoke: ReturnType<typeof mockBridge>, channel: string) => (invoke.mock.calls as unknown[][]).filter((c) => c[0] === channel)
 
-async function mount(visible = true) {
+async function mount(visible = true, props: { copyOnSelect?: boolean } = {}) {
   const invoke = mockBridge({ 'session:attach': { meta: {}, buffer: '', end: 0 } })
-  const view = render(<TerminalView sessionId="s1" visible={visible} />)
+  const view = render(<TerminalView sessionId="s1" visible={visible} {...props} />)
   await act(async () => {})
   return { invoke, view }
 }
@@ -97,16 +97,32 @@ describe('TerminalView', () => {
     expect(fake.terms[0].element).toBeDefined()
   })
 
-  it('copy on select writes to the clipboard', async () => {
+  it('copy on select writes to the clipboard when turned on', async () => {
     const writeText = vi.fn(async () => {})
     vi.stubGlobal('navigator', Object.assign(Object.create(navigator), { clipboard: { writeText } }))
-    await mount()
+    await mount(true, { copyOnSelect: true })
     const term = fake.terms[0]
     act(() => term.selectionListeners.forEach((l) => l()))
     expect(writeText).not.toHaveBeenCalled()
     term.getSelection.mockReturnValue('selected text')
     act(() => term.selectionListeners.forEach((l) => l()))
     expect(writeText).toHaveBeenCalledWith('selected text')
+  })
+
+  it('copy on select is off by default, and turning it off takes effect at once', async () => {
+    const writeText = vi.fn(async () => {})
+    vi.stubGlobal('navigator', Object.assign(Object.create(navigator), { clipboard: { writeText } }))
+    const { view } = await mount()
+    const term = fake.terms[0]
+    term.getSelection.mockReturnValue('hunter22')
+    act(() => term.selectionListeners.forEach((l) => l()))
+    expect(writeText).not.toHaveBeenCalled()
+    view.rerender(<TerminalView sessionId="s1" visible copyOnSelect />)
+    act(() => term.selectionListeners.forEach((l) => l()))
+    expect(writeText).toHaveBeenCalledTimes(1)
+    view.rerender(<TerminalView sessionId="s1" visible copyOnSelect={false} />)
+    act(() => term.selectionListeners.forEach((l) => l()))
+    expect(writeText).toHaveBeenCalledTimes(1)
   })
 
   it('app combos are released by the key handler; ctrl keys stay with the terminal', async () => {

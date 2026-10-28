@@ -2,6 +2,8 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { MemoryRouter, useNavigate } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { inventoryStore } from '../../src/renderer/src/inventory/store'
+import { resetIntegrations } from '../../src/renderer/src/settings/store'
+import { DEFAULT_SETTINGS } from '../../src/shared/settings'
 import { AppShell } from '../../src/renderer/src/shell/AppShell'
 import { SECTIONS } from '../../src/renderer/src/shell/sections'
 import { openKnownHosts } from '../../src/renderer/src/pages/terminals/KnownHostsDialog'
@@ -103,6 +105,7 @@ beforeEach(() => {
   resetFakeXterm()
   inventoryStore.set(null)
   resetSessions()
+  resetIntegrations()
   vi.stubGlobal(
     'ResizeObserver',
     class {
@@ -434,6 +437,43 @@ describe('terminals page', () => {
     await flush()
     expect(screen.getByRole('heading', { name: 'Hosts', level: 1 })).toBeInTheDocument()
     expect(sessionStore.get().activeId).toBe('s3')
+  })
+
+  it('copy on select follows the setting, and never copies from a host in a protected environment', async () => {
+    const writeText = vi.fn(async () => {})
+    vi.stubGlobal('navigator', Object.assign(Object.create(navigator), { clipboard: { writeText } }))
+    await renderShell('/terminals', {
+      'settings:get': { ...DEFAULT_SETTINGS, terminalCopyOnSelect: true },
+      'env:list': [
+        environment({ id: 'prod', name: 'prod', protected: true, hosts: [{ hostId: 'db-host', role: 'app' }] }),
+        environment({ id: 'dev', name: 'dev', hosts: [{ hostId: 'web-host', role: 'app' }] }),
+      ],
+      'host:list': [host({ id: 'db-host', label: 'db' }), host({ id: 'web-host', label: 'web' })],
+    })
+    state(ssh('web', { environmentId: 'dev' }))
+    state(ssh('db')) // opened with no environment; its host is still in prod
+    await flush()
+    const select = (i: number, text: string) => {
+      fake.terms[i].getSelection.mockReturnValue(text)
+      act(() => fake.terms[i].selectionListeners.forEach((l) => l()))
+    }
+    select(0, 'from web')
+    expect(writeText).toHaveBeenCalledWith('from web')
+    fireEvent.click(tab('db'))
+    await flush()
+    select(1, 'hunter22')
+    expect(writeText).not.toHaveBeenCalledWith('hunter22')
+  })
+
+  it('copy on select stays off until the setting turns it on', async () => {
+    const writeText = vi.fn(async () => {})
+    vi.stubGlobal('navigator', Object.assign(Object.create(navigator), { clipboard: { writeText } }))
+    await renderShell('/terminals', { 'settings:get': DEFAULT_SETTINGS })
+    state(meta('s1'))
+    await flush()
+    fake.terms[0].getSelection.mockReturnValue('selected')
+    act(() => fake.terms[0].selectionListeners.forEach((l) => l()))
+    expect(writeText).not.toHaveBeenCalled()
   })
 
   it('mod+w closes the active tab, only while Terminals is visible', async () => {

@@ -26,6 +26,7 @@ describe('SettingsStore', () => {
       githubTokenSecretId: null,
       macos: true,
       macosUnscoped: true,
+      terminalCopyOnSelect: false,
     })
     expect(store.status()).toEqual({ ai: { configured: false, model: 'claude-opus-5-5' }, sendgrid: false, github: false, macosSupported: true })
   })
@@ -84,6 +85,15 @@ describe('SettingsStore', () => {
     secrets.delete(gh.id)
     expect(store.status()).toMatchObject({ ai: { configured: false }, sendgrid: true, github: false })
     expect(store.get().aiApiKeySecretId).toBeNull()
+  })
+
+  it('copy on select is off until turned on, persists, and refuses a non-boolean', async () => {
+    const { f, store, secrets } = await setup()
+    expect(store.get().terminalCopyOnSelect).toBe(false)
+    expect(store.update({ terminalCopyOnSelect: true }).terminalCopyOnSelect).toBe(true)
+    expect(new SettingsStore({ db: f.db, audit: f.audit, vault: f.vault, secrets }).get().terminalCopyOnSelect).toBe(true)
+    expect(f.audit.list({ actions: ['settings.update'] })[0].details).toEqual({ fields: ['terminalCopyOnSelect'] })
+    expect(() => store.update({ terminalCopyOnSelect: 'yes' as unknown as boolean })).toThrow('copy on select must be on or off')
   })
 
   it('needs the vault unlocked', async () => {

@@ -69,6 +69,17 @@ describe('IntegrationsPage', () => {
     expect(within(card('AI')).getByLabelText('API key')).toHaveValue(KEY)
   })
 
+  it('the Terminal section turns copy on select on; it starts off', async () => {
+    const invoke = bridge({ 'settings:update': { ...SETTINGS, terminalCopyOnSelect: true } })
+    renderPage()
+    const toggle = within(card('Terminal')).getByRole('switch', { name: 'Copy on select' })
+    await waitFor(() => expect(toggle).toBeEnabled())
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(toggle)
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('settings:update', { terminalCopyOnSelect: true }))
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'))
+  })
+
   it('new API key creates a secret and selects it; value never rendered back', async () => {
     const invoke = bridge({
       'secret:create': secret({ id: NEW_KEY, name: 'Anthropic API key' }),

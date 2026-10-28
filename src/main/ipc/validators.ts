@@ -511,6 +511,7 @@ export const asSettingsPatch: Check<IntegrationSettingsPatch> = v.object({
   githubTokenSecretId: v.optional(nullableSecretId),
   macos: v.optional(v.bool()),
   macosUnscoped: v.optional(v.bool()),
+  terminalCopyOnSelect: v.optional(v.bool()),
 }) as Check<IntegrationSettingsPatch>
 
 const recipients = v.array(v.str({ min: 1, max: MAX_EMAIL }), MAX_RECIPIENTS)

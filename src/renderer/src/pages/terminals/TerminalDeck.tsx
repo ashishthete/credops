@@ -4,6 +4,8 @@ import { useLocation, useNavigate } from 'react-router'
 import type { SessionMeta } from '../../../../shared/ssh'
 import { insertStore } from '../../ops/insert'
 import { useInventory } from '../../inventory/store'
+import { ensureSettings, useIntegrations } from '../../settings/store'
+import { protectedEnvironment } from '../../terminal/protect'
 import { useConnect } from '../../terminal/connect'
 import { closeSession, nextTab, openLocal, reconnectSession, sessionsLoaded, sessionStore, setActive } from '../../terminal/sessions'
 import { TerminalView } from '../../terminal/TerminalView'
@@ -25,6 +27,7 @@ export function TerminalDeck({ visible }: { visible: boolean }) {
   const { connectLocal } = useConnect()
   const { sessions, order, activeId } = useSessions()
   const inventory = useInventory()
+  const copySetting = !!useIntegrations().settings?.terminalCopyOnSelect
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   // The session a close was asked for, with the tab order at that moment, until focus is placed.
   const [closing, setClosing] = useState<{ id: string; order: string[] } | null>(null)
@@ -68,6 +71,13 @@ export function TerminalDeck({ visible }: { visible: boolean }) {
     focusAfterClose(refocus.id, refocus.order)
   }, [refocus])
 
+  useEffect(() => void ensureSettings(), [])
+
+  // Never on a protected host, whatever the setting: a secret printed there must not reach the clipboard
+  // by a stray drag. Until the inventory loads, an ssh session counts as protected.
+  const copyOnSelect = (meta: SessionMeta) =>
+    copySetting && (meta.kind === 'local' || (!!inventory && !protectedEnvironment(meta, inventory.environments)))
+
   // The shell opens first; going to an empty Terminals page would bounce straight back.
   useShortcut('mod+t', () => void connectLocal())
 
@@ -87,7 +97,13 @@ export function TerminalDeck({ visible }: { visible: boolean }) {
           />
           <div className="relative min-h-0 flex-1">
             {tabs.map((s) => (
-              <SessionPane key={s.id} meta={s} visible={visible && s.id === activeId} onClose={() => requestClose(s)} />
+              <SessionPane
+                key={s.id}
+                meta={s}
+                visible={visible && s.id === activeId}
+                copyOnSelect={copyOnSelect(s)}
+                onClose={() => requestClose(s)}
+              />
             ))}
           </div>
         </>
@@ -128,7 +144,7 @@ function TabShortcuts({ onClose }: { onClose: () => void }) {
   return null
 }
 
-function SessionPane({ meta, visible, onClose }: { meta: SessionMeta; visible: boolean; onClose: () => void }) {
+function SessionPane({ meta, visible, copyOnSelect, onClose }: { meta: SessionMeta; visible: boolean; copyOnSelect: boolean; onClose: () => void }) {
   // The store drops a second reconnect too; this only keeps the button honest while one runs.
   const [reconnecting, setReconnecting] = useState(false)
   const reconnect = () => {
@@ -146,7 +162,7 @@ function SessionPane({ meta, visible, onClose }: { meta: SessionMeta; visible: b
       className="absolute inset-0 flex flex-col"
     >
       <div className="relative min-h-0 flex-1">
-        <TerminalView sessionId={meta.id} visible={visible} />
+        <TerminalView sessionId={meta.id} visible={visible} copyOnSelect={copyOnSelect} />
         <AnimatePresence>
           {visible && overlay && (
             <ConnectOverlay key="overlay" meta={meta} onReconnect={reconnect} reconnecting={reconnecting} onClose={onClose} onOpenKnownHosts={openKnownHosts} />
