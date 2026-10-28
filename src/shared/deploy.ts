@@ -420,6 +420,8 @@ export function lockHolderText(h: LockHolder, now: number): string {
 export const LOCK_STALE_NOTE = ' (older than 2 hours; it may be stale and can be broken)'
 /** Added instead when a release of this app that has finished left the lock: nothing holds it any more. */
 export const LOCK_FINISHED_NOTE = ' (left by a release that has finished; it can be broken)'
+/** Added instead when the holder is a release still running in this app, however old: breaking it would let two deploys run at once. */
+export const LOCK_LIVE_NOTE = ' (that release is still running in this app; wait for it or cancel it)'
 
 // ---- Preflight ----
 export interface PreflightCheck {

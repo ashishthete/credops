@@ -8,7 +8,7 @@ import type { DeployPlan } from '../../src/main/deploy/runner'
 import { generatePlaybook, prepareSchedule } from '../../src/main/deploy/generate'
 import { ToolingError } from '../../src/main/deploy/tooling'
 import { CONFIRM_MESSAGE } from '../../src/shared/ops'
-import { BREAK_LOCK_CONFIRM_MESSAGE, DEFAULT_RELEASE_OPTIONS, LOCK_FINISHED_NOTE, LOCK_LEFT_MESSAGE, PREPARE_FAILED_MESSAGE, PREPARE_FETCH_FAILED_MESSAGE, type CommitInfo, type DeploymentMeta, type PreflightCheck, type RunEvent, type StepKind } from '../../src/shared/deploy'
+import { BREAK_LOCK_CONFIRM_MESSAGE, DEFAULT_RELEASE_OPTIONS, LOCK_FINISHED_NOTE, LOCK_LEFT_MESSAGE, LOCK_LIVE_NOTE, PREPARE_FAILED_MESSAGE, PREPARE_FETCH_FAILED_MESSAGE, type CommitInfo, type DeploymentMeta, type PreflightCheck, type RunEvent, type StepKind } from '../../src/shared/deploy'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import type { AppServiceMeta } from '../../src/shared/services'
 import { A, B, C, NOW, SECRET, dep, opReady, ready, rig, runbook, tracked, type Rig } from './release-rig'
@@ -790,6 +790,32 @@ describe('ReleaseService', () => {
       expect(r.svc.detail(again).preflight?.locks[r.f.host.id]?.stale).toBe(false)
       await expect(r.svc.breakLock(again, r.f.host.id, { typedLabel: 'app1' })).rejects.toThrow('The lock is only 12 minutes old')
     }
+  })
+
+  it('a lock held by a release still running in this app is never stale, however old', async () => {
+    const r = await rig()
+    const first = r.f.deploys.list(r.f.staging.id)[0] ?? dep(r, 'api')
+    const a = await ready(r, [first])
+    const old = { releaseId: a, user: 'ana', machine: 'mbp', environment: 'staging', version: null, startedAt: new Date(NOW - 180 * 60000).toISOString() }
+    r.runner.checks = [{ id: 'lock', deploymentId: null, hostId: r.f.host.id, label: 'app1', level: 'block', message: 'locked' }]
+    r.runner.locks = { [r.f.host.id]: { holder: old, stale: true, raw: 'raw-a' } }
+    // preflight ran before `a` started: its age alone made it stale
+    const b = await ready(r, [first])
+    expect(r.svc.detail(b).preflight?.locks[r.f.host.id]?.stale).toBe(true)
+    const g = gate()
+    r.runner.on.release = async () => {
+      await g.p
+      return {}
+    }
+    await r.svc.start(a, {})
+    await expect(r.svc.breakLock(b, r.f.host.id, { typedLabel: 'app1' })).rejects.toThrow('still running in this app')
+    expect(r.runner.kinds).not.toContain('break-lock')
+    // a preflight while it runs says so, and does not offer the break
+    const c = await ready(r, [first])
+    expect(r.svc.detail(c).preflight?.locks[r.f.host.id]?.stale).toBe(false)
+    expect(r.svc.detail(c).preflight?.checks.find((x) => x.id === 'lock')?.message).toContain(LOCK_LIVE_NOTE)
+    g.open()
+    await r.svc.whenIdle()
   })
 
   it('a release that is in flight rejects start, discard, break-lock, retry and rollback', async () => {

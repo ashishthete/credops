@@ -24,6 +24,7 @@ import {
   type PrepareOthers,
   type PrepareShared,
   LOCK_FINISHED_NOTE,
+  LOCK_LIVE_NOTE,
   LOCK_LEFT_MESSAGE,
   lockHolderText,
   REVIEW_EXPIRED_MESSAGE,
@@ -227,6 +228,7 @@ const PREVIEW_KEEP_MS = 24 * 60 * 60_000
 export const RESET_CUT_ROLLBACK = 'Cancelled by a vault reset; the rollback did not finish'
 const TAG_FAILED = 'Deployed, but tagging'
 const STALE_TEXT = (minutes: number, who: string): string => `The lock is only ${minutes} minutes old; wait or ask ${who}`
+const LIVE_LOCK_TEXT = 'The release holding this lock is still running in this app; wait for it to finish or cancel it'
 
 export class ReleaseService {
   private readonly d: ReleaseServiceDeps
@@ -1177,12 +1179,21 @@ export class ReleaseService {
 
   /**
    * Marks breakable the locks a release of this app left once it finished (not running here, and ended): nothing
-   * holds them, so they need not wait out LOCK_STALE_MS. Their preflight block says so.
+   * holds them, so they need not wait out LOCK_STALE_MS. Their preflight block says so. A lock whose release is
+   * still running here is never stale, however long its build takes.
    */
   private finishedLocks<T extends Pick<PreflightReport, 'checks' | 'locks'>>(report: T): T {
     let { checks, locks } = report
+    const note = (hostId: string, message: string): void => {
+      checks = checks.map((c) => (c.id === 'lock' && c.hostId === hostId && c.level === 'block' ? { ...c, message } : c))
+    }
     for (const [hostId, lock] of Object.entries(report.locks)) {
-      if (!lock || lock.stale || this.live.has(lock.holder.releaseId)) continue
+      if (lock && this.live.has(lock.holder.releaseId)) {
+        locks = { ...locks, [hostId]: { ...lock, stale: false } }
+        note(hostId, `${lockHolderText(lock.holder, this.d.now().getTime())}${LOCK_LIVE_NOTE}`)
+        continue
+      }
+      if (!lock || lock.stale) continue
       let status: ReleaseStatus | null = null
       try {
         status = this.d.releases.get(lock.holder.releaseId).status
@@ -1191,8 +1202,7 @@ export class ReleaseService {
       }
       if (status === null || !FINISHED.has(status)) continue
       locks = { ...locks, [hostId]: { ...lock, stale: true } }
-      const message = `${lockHolderText(lock.holder, this.d.now().getTime())}${LOCK_FINISHED_NOTE}`
-      checks = checks.map((c) => (c.id === 'lock' && c.hostId === hostId && c.level === 'block' ? { ...c, message } : c))
+      note(hostId, `${lockHolderText(lock.holder, this.d.now().getTime())}${LOCK_FINISHED_NOTE}`)
     }
     return { ...report, checks, locks }
   }
@@ -1209,6 +1219,8 @@ export class ReleaseService {
     const lock = rel.preflight?.locks[hostId]
     if (!lock) throw new DeployError('INVALID_STATE', 'No lock was seen on this host in preflight')
     const label = this.inv.hostLabel(hostId, rel.environmentId)
+    // preflight may have run before that release started here, or judged the lock by its age alone
+    if (this.live.has(lock.holder.releaseId)) throw new DeployError('INVALID_STATE', LIVE_LOCK_TEXT)
     if (!lock.stale) {
       const minutes = Math.max(0, Math.floor((this.d.now().getTime() - Date.parse(lock.holder.startedAt)) / 60000))
       throw new DeployError('INVALID_STATE', STALE_TEXT(minutes, `${lock.holder.user}@${lock.holder.machine}`))
