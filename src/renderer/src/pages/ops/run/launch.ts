@@ -33,8 +33,8 @@ export function confirmFor(env: string, labels: readonly string[], run: (confirm
  */
 export async function launch(req: RunRequest, onConfirm?: (request: ConfirmRequest) => void): Promise<void> {
   let refused = false
-  const run = await attempt("Couldn't start the run", () => api.invoke('runs:start', req), (message) => {
-    refused = message === CONFIRM_MESSAGE
+  const run = await attempt("Couldn't start the run", () => api.invoke('runs:start', req), (_message, code) => {
+    refused = code === 'confirm'
   })
   if (!run) {
     if (!refused) return

@@ -4,7 +4,7 @@ import {
   MAX_SECRET_NAME,
   MAX_SECRET_VALUE,
   SECRET_KINDS,
-  VAULT_LOCKED,
+  vaultLockedError,
   type SecretInput,
   type SecretKind,
   type SecretMeta,
@@ -222,7 +222,7 @@ export class SecretStore {
         this.copied = copied
         await this.clearClipboard()
       }
-      throw new Error(VAULT_LOCKED)
+      throw vaultLockedError()
     }
     return { clearsInMs: CLIPBOARD_CLEAR_MS }
   }

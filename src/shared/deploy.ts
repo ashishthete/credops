@@ -717,6 +717,16 @@ export const PLAYBOOK_CHANGED_MESSAGE = 'The playbook changed since you reviewed
 export const REVIEW_TTL_MS = 30 * 60_000
 /** A review older than that limit: nothing changed, but its start time is too old to reuse. */
 export const REVIEW_EXPIRED_MESSAGE = `Your review is more than ${REVIEW_TTL_MS / 60_000} minutes old. Review the playbook again.`
+/**
+ * A start refused because the reviewed playbook is no longer the one that would run (it changed, or the review
+ * expired), so the caller previews again. Main says so with the error's code. A Hub-run environment's refusal
+ * reaches the renderer as the Hub's 409 `conflict`, which carries the same message but not the code, so that case
+ * still checks the message.
+ */
+export function needsReviewAgain(code: string | undefined, message: string): boolean {
+  if (code === 'PLAYBOOK_CHANGED' || code === 'REVIEW_EXPIRED') return true
+  return code === 'conflict' && (message.includes(PLAYBOOK_CHANGED_MESSAGE) || message.includes(REVIEW_EXPIRED_MESSAGE))
+}
 /** A start with an edited playbook whose text no longer passes the checks (the first problem follows). */
 export const EDIT_INVALID_MESSAGE = 'The edited playbook does not pass its checks; fix it and review again'
 /** The release notes of a rollback (manual or automatic) of a release that ran an edited playbook. */

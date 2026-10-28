@@ -1,7 +1,7 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { MoreHorizontal, type LucideIcon } from 'lucide-react'
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import { cleanIpcErrorMessage } from '../lib/api'
+import { cleanIpcErrorMessage, errorCode } from '../lib/api'
 import { Button } from './Button'
 import { Dialog } from './Dialog'
 import { TextField } from './Field'
@@ -20,11 +20,11 @@ export function fail(title: string, err: unknown): void {
  * Errors become a toast titled `failTitle`, or go to `onError` instead when a form shows them inline;
  * resolves undefined on failure or when no unlock happened.
  */
-export async function attempt<T>(failTitle: string, fn: () => Promise<T>, onError?: (message: string) => void): Promise<T | undefined> {
+export async function attempt<T>(failTitle: string, fn: () => Promise<T>, onError?: (message: string, code?: string) => void): Promise<T | undefined> {
   try {
     return await withUnlock(fn)
   } catch (err) {
-    if (onError) onError(errorText(err))
+    if (onError) onError(errorText(err), errorCode(err))
     else fail(failTitle, err)
     return undefined
   }

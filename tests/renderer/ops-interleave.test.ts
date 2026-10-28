@@ -33,6 +33,14 @@ describe('interleave', () => {
     expect(errText(m.out)).toBe('b1\n')
   })
 
+  it("ends a line that set a colour with a reset, so it never runs on into the next host's line", () => {
+    const hosts = [host('a'), host('b')]
+    const a = appendOutput(undefined, '\u001b[31mred, never reset\n', false)
+    const b = appendOutput(undefined, 'plain\n', false)
+    const m = interleave(NO_MERGE, 'r1', { a, b }, hosts)
+    expect(m.out?.text).toBe('a │ \u001b[31mred, never reset\n\u001b[0mb │ plain\n')
+  })
+
   it('holds a partial line until its newline arrives', () => {
     const hosts = [host('a')]
     let a = appendOutput(undefined, 'hel', false)

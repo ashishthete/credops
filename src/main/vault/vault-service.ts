@@ -8,8 +8,8 @@ import {
   PIN_ATTEMPTS,
   PIN_WIPED,
   VAULT_COLOR,
-  VAULT_LOCKED,
   VAULT_RESET_CONFIRM,
+  vaultLockedError,
   type LockReason,
   type QuickUnlockMode,
   type SetupOptions,
@@ -217,7 +217,7 @@ export class VaultService {
   }
 
   assertUnlocked(): void {
-    if (!this.kek) throw new Error(VAULT_LOCKED)
+    if (!this.kek) throw vaultLockedError()
   }
 
   /**
@@ -249,7 +249,7 @@ export class VaultService {
         } catch {
           throw new Error('Touch ID was cancelled')
         }
-        if (epoch !== this.epoch) throw new Error(VAULT_LOCKED)
+        if (epoch !== this.epoch) throw vaultLockedError()
       }
       const kek = randomKey()
       let pwWrap: PasswordWrap | null = null
@@ -258,11 +258,11 @@ export class VaultService {
       try {
         if (password !== undefined) {
           pwWrap = await this.passwordWrap(password, kek, epoch)
-          if (!pwWrap) throw new Error(VAULT_LOCKED)
+          if (!pwWrap) throw vaultLockedError()
         }
         if (pin !== undefined) {
           pinWrap = await this.pinWrap(pin, kek, epoch)
-          if (!pinWrap) throw new Error(VAULT_LOCKED)
+          if (!pinWrap) throw vaultLockedError()
         }
         if (touchId) blob = this.cacheBlob(kek)
         // The verdict may have turned while the prompt or scrypt ran.
@@ -443,7 +443,7 @@ export class VaultService {
       if (!this.keychainAvailable()) throw new Error(PIN_NEEDS_KEYCHAIN)
       const replacing = this.pinEnabled()
       const wrap = await this.pinWrap(pin, this.kek!, this.epoch)
-      if (!wrap) throw new Error(VAULT_LOCKED)
+      if (!wrap) throw vaultLockedError()
       this.tx(() => this.writePinWrap(wrap))
       this.audit.append({ action: 'vault.pin', outcome: 'success', details: { op: replacing ? 'changed' : 'set' } })
       return this.status()
@@ -641,7 +641,7 @@ export class VaultService {
       if (this.hasPassword()) throw new Error('a master password is already set')
       checkPassword(next, true)
       const wrap = await this.passwordWrap(next, this.kek!, this.epoch)
-      if (!wrap) throw new Error(VAULT_LOCKED)
+      if (!wrap) throw vaultLockedError()
       this.tx(() => this.writePasswordWrap(wrap))
       this.audit.append({ action: 'vault.password', outcome: 'success', details: { op: 'set' } })
       return this.status()

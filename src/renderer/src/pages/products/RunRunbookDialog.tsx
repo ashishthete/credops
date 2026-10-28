@@ -89,8 +89,9 @@ export function RunRunbookDialog({ runbook, onClose }: { runbook: Runbook; onClo
       "Couldn't start the run",
       // release:start answers nothing, so success is marked here: undefined is attempt's failure.
       async () => (await api.invoke('release:start', id, { ...(typedName !== undefined ? { typedName } : {}), playbookSha256: edit?.sha256 ?? reviewed.sha256, ...(edit ? { editedPlaybook: edit.text } : {}) }), true),
-      (message) => {
-        changed = message.includes(PLAYBOOK_CHANGED_MESSAGE)
+      (message, code) => {
+        // A Hub-run environment's refusal is its 409 `conflict`, which has the message but not the code.
+        changed = code === 'PLAYBOOK_CHANGED' || (code === 'conflict' && message.includes(PLAYBOOK_CHANGED_MESSAGE))
         setError(message)
       },
     )

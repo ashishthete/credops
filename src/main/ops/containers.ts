@@ -18,7 +18,7 @@ import {
   type ContainerMeta,
 } from '../../shared/ops'
 import { PROMPT_TIMEOUT_MS, type SessionError } from '../../shared/ssh'
-import { VAULT_LOCKED } from '../../shared/vault'
+import { vaultLockedError } from '../../shared/vault'
 import { redact } from '../security/redact'
 import { composeCommand, type ComposeTarget } from '../deploy/compose'
 import { quietly } from '../util/teardown'
@@ -368,7 +368,7 @@ export class ContainerService {
       })
     if (this.deps.isLocked()) {
       audit('denied', { reason: 'locked' })
-      throw new Error(VAULT_LOCKED)
+      throw vaultLockedError()
     }
     let confirmed = false
     try {
@@ -546,7 +546,7 @@ export class ContainerService {
   }
 
   private assertUnlocked(): void {
-    if (this.deps.isLocked()) throw new Error(VAULT_LOCKED)
+    if (this.deps.isLocked()) throw vaultLockedError()
   }
 
   /** A lease bounded by `leaseTimeoutMs`. A timeout, a quit and a dropped link all reject `closed`; only our own signal tells them apart. */

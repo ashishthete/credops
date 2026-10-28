@@ -1,4 +1,5 @@
 // Imported by the renderer: keep this file to plain constants and types (no node or electron imports).
+import { CodedError } from './ipc-error'
 import type { SsoState } from './sso'
 export const DEFAULT_VAULT_ID = '00000000-0000-4000-8000-000000000001'
 export const VAULT_LOCKED = 'vault locked'
@@ -6,6 +7,13 @@ export const VAULT_LOCKED = 'vault locked'
 export const PIN_WIPED = 'pin wiped'
 /** A reverify that did not prove the user, for a change that needs one. */
 export const VERIFICATION_FAILED = 'verification failed'
+/** The codes the renderer tests for these, carried across IPC in front of the message (shared/ipc-error). */
+export const VAULT_LOCKED_CODE = 'VAULT_LOCKED'
+export const VERIFICATION_FAILED_CODE = 'VERIFICATION_FAILED'
+/** The error every secret-needing action fails with while the vaults are locked; the renderer unlocks and retries. */
+export const vaultLockedError = (): CodedError => new CodedError(VAULT_LOCKED_CODE, VAULT_LOCKED)
+/** A reverify proof that missed (or was missing); the dialog asking for it says so. */
+export const verificationFailedError = (): CodedError => new CodedError(VERIFICATION_FAILED_CODE, VERIFICATION_FAILED)
 /** Typed by the user to confirm a forgotten-password reset, which erases every vault secret. */
 export const VAULT_RESET_CONFIRM = 'RESET'
 export const MIN_MASTER_PASSWORD = 8

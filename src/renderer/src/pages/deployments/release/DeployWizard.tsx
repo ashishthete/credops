@@ -7,8 +7,7 @@ import {
   DEFAULT_RELEASE_OPTIONS,
   NOTHING_SELECTED_MESSAGE,
   ORIGIN_MOVED_MESSAGE,
-  PLAYBOOK_CHANGED_MESSAGE,
-  REVIEW_EXPIRED_MESSAGE,
+  needsReviewAgain,
   type PlaybookPreview,
   type ReleaseDetail,
   type VersionBump,
@@ -318,8 +317,8 @@ export function DeployWizard({
           })
           return true
         },
-        (message) => {
-          changed = message.includes(PLAYBOOK_CHANGED_MESSAGE) || message.includes(REVIEW_EXPIRED_MESSAGE)
+        (message, code) => {
+          changed = needsReviewAgain(code, message)
           setError(message)
         },
       )

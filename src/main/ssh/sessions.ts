@@ -16,7 +16,7 @@ import {
   type SessionError,
   type SessionMeta,
 } from '../../shared/ssh'
-import { VAULT_LOCKED } from '../../shared/vault'
+import { VAULT_LOCKED, vaultLockedError } from '../../shared/vault'
 import { checkContainerRef, containerAuditId, containerExecArgv, shortRef } from '../ops/containers'
 import { shJoin } from '../ops/quote'
 import { redact } from '../security/redact'
@@ -286,7 +286,7 @@ export class SessionManager {
    */
   vaultLocked(): void {
     for (const s of [...this.sessions.values()]) {
-      if (s.meta.state === 'connecting') s.attempt?.fail?.(new Error(VAULT_LOCKED))
+      if (s.meta.state === 'connecting') s.attempt?.fail?.(vaultLockedError())
     }
   }
 
@@ -320,7 +320,7 @@ export class SessionManager {
   }
 
   private assertUnlocked(): void {
-    if (this.deps.isLocked()) throw new Error(VAULT_LOCKED)
+    if (this.deps.isLocked()) throw vaultLockedError()
   }
 
   private assertRoom(): void {
@@ -422,7 +422,7 @@ export class SessionManager {
           keyType,
           keyBase64,
           isLive: () => this.isLive(s, attempt),
-          onLocked: () => attempt.fail?.(new Error(VAULT_LOCKED)),
+          onLocked: () => attempt.fail?.(vaultLockedError()),
         }),
       askPassword: async (hop, username) => {
         const a = await this.ask(s, attempt, { kind: 'password', hopLabel: hop.label, username })
@@ -608,7 +608,7 @@ export class SessionManager {
     if (!this.isLive(s, attempt)) return null
     const answer = await this.deps.prompts.ask(s.meta.id, attempt.prompts, body)
     if (answer !== 'locked') return answer
-    attempt.fail?.(new Error(VAULT_LOCKED))
+    attempt.fail?.(vaultLockedError())
     return null
   }
 

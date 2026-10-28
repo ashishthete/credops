@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url'
 import { resolve } from 'node:path'
 import type { IpcMain, IpcMainInvokeEvent } from 'electron'
 import { CHANNELS, type Channel, type Handlers } from '../../shared/ipc'
+import { codeOf, encodeIpcError } from '../../shared/ipc-error'
 import { redact } from '../security/redact'
 import type { VALIDATORS } from './validators'
 
@@ -71,7 +72,8 @@ export function registerHandlers(
         return await handler(...validate(raw))
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
-        throw new Error(redact(message, [...(opts.knownSecrets?.() ?? []), ...callSecrets(channel, raw)]))
+        // Only the message reaches the renderer, so a typed error's code goes in front of it (api.invoke reads it back).
+        throw new Error(encodeIpcError(codeOf(err), redact(message, [...(opts.knownSecrets?.() ?? []), ...callSecrets(channel, raw)])))
       }
     })
   }

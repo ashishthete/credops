@@ -12,6 +12,24 @@
   --warn: #f2a93b;
   --violet: #a78bfa;
   --err: #ef5b5b;
+
+  /* The 16 terminal colours for run, container and deploy output (ui/ansi.ts maps every code onto these). */
+  --ansi-black: color-mix(in oklab, var(--muted) 70%, var(--bg));
+  --ansi-red: var(--err);
+  --ansi-green: var(--ok);
+  --ansi-yellow: var(--warn);
+  --ansi-blue: var(--accent);
+  --ansi-magenta: var(--violet);
+  --ansi-cyan: #3cc4d4;
+  --ansi-white: color-mix(in oklab, var(--text) 85%, var(--bg));
+  --ansi-bright-black: var(--muted);
+  --ansi-bright-red: color-mix(in oklab, var(--err) 70%, white);
+  --ansi-bright-green: color-mix(in oklab, var(--ok) 70%, white);
+  --ansi-bright-yellow: color-mix(in oklab, var(--warn) 70%, white);
+  --ansi-bright-blue: color-mix(in oklab, var(--accent) 70%, white);
+  --ansi-bright-magenta: color-mix(in oklab, var(--violet) 70%, white);
+  --ansi-bright-cyan: color-mix(in oklab, var(--ansi-cyan) 70%, white);
+  --ansi-bright-white: var(--text);
   --radius: 10px;
 
   --font-ui: 'Inter Variable', Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;

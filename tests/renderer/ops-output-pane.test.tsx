@@ -145,3 +145,67 @@ describe('OutputPane', () => {
     expect(screen.getByText('No output yet')).toBeInTheDocument()
   })
 })
+
+describe('OutputPane terminal escapes', () => {
+  const ESC = '\u001b'
+  const colorOf = (el: Element | null) => (el as HTMLElement | null)?.style.color
+
+  it('shows `ls --color` output styled, with no escape codes in the view', () => {
+    const ls = `${ESC}[0m${ESC}[01;34mreleases${ESC}[0m  ${ESC}[01;32mdeploy.sh${ESC}[0m  notes.txt\n`
+    render(<OutputPane output={appendOutput(undefined, ls, false)} label="web-1" />)
+    const log = screen.getByRole('log', { name: 'Output of web-1' })
+    expect(log.textContent).toBe('releases  deploy.sh  notes.txt\n')
+    expect(log.textContent).not.toContain(ESC)
+    const dir = screen.getByText('releases')
+    expect(colorOf(dir)).toBe('var(--ansi-blue)')
+    expect(dir).toHaveClass('font-semibold')
+    expect(colorOf(screen.getByText('deploy.sh'))).toBe('var(--ansi-green)')
+    // Plain text stays a bare text node.
+    expect(log.querySelectorAll('[data-chunk] span')).toHaveLength(2)
+  })
+
+  it('drops cursor moves, titles and stray controls, never rendering markup', () => {
+    const noisy = `${ESC}]0;user@web-1: ~${ESC}\\${ESC}[2K${ESC}[1Gstep 1${ESC}[?25l\u0007 <b>x</b>${ESC}(B\n`
+    render(<OutputPane output={appendOutput(undefined, noisy, false)} label="web-1" />)
+    const log = screen.getByRole('log', { name: 'Output of web-1' })
+    expect(log.textContent).toBe('step 1 <b>x</b>\n')
+    expect(log.querySelector('b')).toBeNull()
+  })
+
+  it('carries a colour, and an escape cut in two, across chunks', () => {
+    let out = appendOutput(undefined, `${ESC}[31mred `, false)
+    const { rerender } = render(<OutputPane output={out} label="web-1" />)
+    out = appendOutput(out, `still red${ESC}[3`, false)
+    rerender(<OutputPane output={out} label="web-1" />)
+    out = appendOutput(out, `2mgreen${ESC}[0m plain\n`, false)
+    rerender(<OutputPane output={out} label="web-1" />)
+    const log = screen.getByRole('log', { name: 'Output of web-1' })
+    expect(log.textContent).toBe('red still redgreen plain\n')
+    expect(colorOf(screen.getByText('still red'))).toBe('var(--ansi-red)')
+    expect(colorOf(screen.getByText('green'))).toBe('var(--ansi-green)')
+  })
+
+  it('keeps stderr tinted around colours and dims docker timestamps before them', () => {
+    let out = appendOutput(undefined, `2026-10-19T09:00:00Z ${ESC}[33mWARN${ESC}[0m slow\n`, false)
+    out = appendOutput(out, `${ESC}[1mfatal${ESC}[0m: boom\n`, true)
+    render(<OutputPane output={out} label="api" dimTimestamps />)
+    const log = screen.getByRole('log', { name: 'Output of api' })
+    expect(log.textContent).toBe('2026-10-19T09:00:00Z WARN slow\nfatal: boom\n')
+    expect(log.querySelector('[data-stamp]')).toHaveTextContent('2026-10-19T09:00:00Z')
+    expect(colorOf(screen.getByText('WARN'))).toBe('var(--ansi-yellow)')
+    const fatal = screen.getByText('fatal')
+    expect(fatal).toHaveAttribute('data-stream', 'err')
+    expect(fatal).toHaveClass('text-err', 'font-semibold')
+    expect(screen.getByText(': boom')).toHaveAttribute('data-stream', 'err')
+  })
+
+  it('copies the output without its escape codes', async () => {
+    const writeText = vi.fn(async () => {})
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    render(<OutputPane output={appendOutput(undefined, `${ESC}[32mok${ESC}[0m\n`, false)} label="db-1" />)
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Copy output of db-1' }))
+    })
+    expect(writeText).toHaveBeenCalledWith('ok\n')
+  })
+})

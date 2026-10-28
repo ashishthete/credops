@@ -19,6 +19,7 @@ import {
   type VaultMeta,
   type VaultStatus,
 } from '../../src/shared/vault'
+import { encodeIpcError } from '../../src/shared/ipc-error'
 import type { HostMeta } from '../../src/shared/inventory'
 import { defaultVault, host, mockBridge, vaultStatus } from './helpers'
 
@@ -680,7 +681,7 @@ describe('vaults page behind the gate', () => {
         if (revealCalls++ === 0) {
           // Auto-locked since the last poll.
           state.unlocked = false
-          throw new Error(VAULT_LOCKED)
+          throw new Error(encodeIpcError('VAULT_LOCKED', VAULT_LOCKED))
         }
         return { value: 'hunter22' }
       }

@@ -5,6 +5,7 @@ import { createElement, type ReactNode } from 'react'
 import { useInventoryCommands } from '../../src/renderer/src/inventory/commands'
 import { commandStore } from '../../src/renderer/src/ui/commands'
 import { inv, inventoryStore, loadInventory } from '../../src/renderer/src/inventory/store'
+import { encodeIpcError } from '../../src/shared/ipc-error'
 import { VAULT_LOCKED } from '../../src/shared/vault'
 import { vaultStatusStore } from '../../src/renderer/src/vault/status'
 import { loadTunnels, tunnelStore } from '../../src/renderer/src/tunnels/store'
@@ -80,7 +81,7 @@ describe('inventory store', () => {
     const base = invoke.getMockImplementation()!
     invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
       if (channel === 'host:create') {
-        if (creates++ === 0) throw new Error(VAULT_LOCKED)
+        if (creates++ === 0) throw new Error(encodeIpcError('VAULT_LOCKED', VAULT_LOCKED))
         return created
       }
       return base(channel, ...(args as []))

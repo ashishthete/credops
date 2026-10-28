@@ -1,6 +1,6 @@
 import type { Handlers } from '../../../shared/ipc'
 import type { ReverifyProof } from '../../../shared/sso'
-import { PIN_WIPED, VERIFICATION_FAILED, type ProvenResult } from '../../../shared/vault'
+import { PIN_WIPED, verificationFailedError, type ProvenResult } from '../../../shared/vault'
 import type { VaultService } from '../../vault/vault-service'
 
 type VaultChannel =
@@ -35,7 +35,7 @@ export async function withProof(
   action: string,
   change: () => unknown,
 ): Promise<ProvenResult> {
-  if (!proof) throw new Error(VERIFICATION_FAILED)
+  if (!proof) throw verificationFailedError()
   let proven: boolean
   try {
     proven = await vault.reverify(proof, action)
@@ -43,7 +43,7 @@ export async function withProof(
     if (err instanceof Error && err.message === PIN_WIPED) return { ok: false, reason: 'pin-wiped', status: vault.status() }
     throw err
   }
-  if (!proven) throw new Error(VERIFICATION_FAILED)
+  if (!proven) throw verificationFailedError()
   await change()
   return { ok: true, status: vault.status() }
 }

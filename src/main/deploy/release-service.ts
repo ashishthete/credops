@@ -553,7 +553,7 @@ export class ReleaseService {
     // An edit is of the preview this actor saw: without it (or once it is too old to start from) there is
     // nothing to check against, and a start time made up here would generate different lock text.
     const reviewed = this.previews.get(reviewKey(releaseId, actor))
-    if (reviewed === undefined || this.d.now().getTime() - reviewed.at > PREVIEW_TTL_MS) throw new DeployError('INVALID_STATE', REVIEW_EXPIRED_MESSAGE)
+    if (reviewed === undefined || this.d.now().getTime() - reviewed.at > PREVIEW_TTL_MS) throw new DeployError('REVIEW_EXPIRED', REVIEW_EXPIRED_MESSAGE)
     const startedAt = reviewed.startedAt
     const skips = rel.operation ? NO_SKIPS : this.skips(rel, forceServiceIds)
     const { playbook, inventory } = rel.operation ? this.opPlan(rel, env, actor, startedAt) : this.releasePlan(rel, env, actor, startedAt, skips)
@@ -574,7 +574,7 @@ export class ReleaseService {
       throw new DeployError('VALIDATION', first ? `${EDIT_INVALID_MESSAGE} (line ${first.line}: ${first.message})` : EDIT_INVALID_MESSAGE)
     }
     if (confirm.playbookSha256 === undefined || reviewHash(res.canonical, skips, inventory) !== confirm.playbookSha256) {
-      throw new DeployError('INVALID_STATE', PLAYBOOK_CHANGED_MESSAGE)
+      throw new DeployError('PLAYBOOK_CHANGED', PLAYBOOK_CHANGED_MESSAGE)
     }
     if (res.canonical === generated) return null
     return { text: res.canonical, lineDelta: lineCount(res.canonical) - lineCount(generated) }
@@ -617,12 +617,12 @@ export class ReleaseService {
     this.assertCapacity(env)
     const reviewed = confirm.playbookSha256 !== undefined ? this.previews.get(reviewKey(releaseId, actor)) : undefined
     if (reviewed !== undefined && this.d.now().getTime() - reviewed.at > PREVIEW_TTL_MS) {
-      throw new DeployError('INVALID_STATE', REVIEW_EXPIRED_MESSAGE)
+      throw new DeployError('REVIEW_EXPIRED', REVIEW_EXPIRED_MESSAGE)
     }
     const built = this.releasePlan(rel, env, actor, reviewed?.startedAt ?? this.d.now().toISOString(), skips)
     const edit = this.editOf(confirm, built.playbook, skips, built.inventory)
     if (confirm.editedPlaybook === undefined && confirm.playbookSha256 !== undefined && reviewHash(built.playbook, skips, built.inventory) !== confirm.playbookSha256) {
-      throw new DeployError('INVALID_STATE', PLAYBOOK_CHANGED_MESSAGE)
+      throw new DeployError('PLAYBOOK_CHANGED', PLAYBOOK_CHANGED_MESSAGE)
     }
     const live = this.register(releaseId, env, 'release', rel.version ?? 'release', actor)
     let run: { infos: Info[]; holder: Holder; tag: string | null; autoRollback: boolean; previousVersion: string | null; version: string | null; edited: boolean }
@@ -816,11 +816,11 @@ export class ReleaseService {
     const lockFree = !op.lock && op.readOnly
     this.assertCapacity(env, lockFree)
     const reviewed = confirm.playbookSha256 !== undefined ? this.previews.get(reviewKey(releaseId, actor)) : undefined
-    if (reviewed !== undefined && this.d.now().getTime() - reviewed.at > PREVIEW_TTL_MS) throw new DeployError('INVALID_STATE', REVIEW_EXPIRED_MESSAGE)
+    if (reviewed !== undefined && this.d.now().getTime() - reviewed.at > PREVIEW_TTL_MS) throw new DeployError('REVIEW_EXPIRED', REVIEW_EXPIRED_MESSAGE)
     const built = this.opPlan(rel, env, actor, reviewed?.startedAt ?? this.d.now().toISOString())
     const edit = this.editOf(confirm, built.playbook, NO_SKIPS, null)
     if (confirm.editedPlaybook === undefined && confirm.playbookSha256 !== undefined && reviewHash(built.playbook, NO_SKIPS, null) !== confirm.playbookSha256) {
-      throw new DeployError('INVALID_STATE', PLAYBOOK_CHANGED_MESSAGE)
+      throw new DeployError('PLAYBOOK_CHANGED', PLAYBOOK_CHANGED_MESSAGE)
     }
     const live = this.register(releaseId, env, 'release', op.name, actor)
     live.op = op

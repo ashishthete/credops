@@ -10,7 +10,7 @@ import { vaultStatusStore } from '../../src/renderer/src/vault/status'
 import { passwordStrength } from '../../src/renderer/src/vault/strength'
 import { cancelUnlock, ensureUnlocked, withUnlock } from '../../src/renderer/src/vault/unlock'
 import { closeVaultSettings, openVaultSettings, VaultSettingsDialog } from '../../src/renderer/src/vault/VaultSettingsDialog'
-import type { SetupOptions, UnlockResult, VaultStatus } from '../../src/shared/vault'
+import { vaultLockedError, type SetupOptions, type UnlockResult, type VaultStatus } from '../../src/shared/vault'
 import { emitBridgeEvent, mockBridge, vaultStatus } from './helpers'
 
 const WRONG: UnlockResult = { ok: false, reason: 'wrong-password', retryAfterMs: 0 }
@@ -302,7 +302,7 @@ describe('withUnlock', () => {
     fakeVault({}, { 'vault:unlock': [{ ok: true }] })
     renderApp()
     const fn = vi.fn<() => Promise<string>>()
-    fn.mockRejectedValueOnce(new Error('vault locked')).mockResolvedValueOnce('ok')
+    fn.mockRejectedValueOnce(vaultLockedError()).mockResolvedValueOnce('ok')
     // The cached status still says unlocked; withUnlock must refresh before asking.
     vaultStatusStore.set(vaultStatus({ unlocked: true }))
     let done!: Promise<string | undefined>
@@ -317,7 +317,7 @@ describe('withUnlock', () => {
   it('resolves undefined when the wait is cancelled and rethrows other errors', async () => {
     fakeVault()
     renderApp()
-    const fn = vi.fn<() => Promise<string>>().mockRejectedValue(new Error('vault locked'))
+    const fn = vi.fn<() => Promise<string>>().mockRejectedValue(vaultLockedError())
     let done!: Promise<string | undefined>
     act(() => {
       done = withUnlock(fn)

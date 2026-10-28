@@ -2,7 +2,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { ArrowDown, Copy, Download, Search, X } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactElement } from 'react'
 import { STEP_LABEL, type StepKind } from '../../../../../shared/deploy'
-import { parseAnsi, stripAnsi } from '../../../deploy/ansi'
+import { ansiColor, parseAnsi, stripAnsi } from '../../../ui/ansi'
 import type { LogFilter } from '../../../deploy/log-buffer'
 import { usePipeline, useReleaseLog } from '../../../deploy/releases'
 import { plural } from '../../../ui/common'
@@ -14,26 +14,6 @@ export const ROW_H = 18
 export const OVERSCAN = 20
 /** Used while the viewport has no measured height yet. */
 const FALLBACK_VIEWPORT = 400
-
-// Fixed palette names from parseAnsi; never a value taken from the log.
-const ANSI_COLOR: Record<string, string> = {
-  black: '#6b7280',
-  red: '#ef4444',
-  green: '#22c55e',
-  yellow: '#eab308',
-  blue: '#3b82f6',
-  magenta: '#d946ef',
-  cyan: '#06b6d4',
-  white: '#d1d5db',
-  'bright-black': '#9ca3af',
-  'bright-red': '#f87171',
-  'bright-green': '#4ade80',
-  'bright-yellow': '#facc15',
-  'bright-blue': '#60a5fa',
-  'bright-magenta': '#e879f9',
-  'bright-cyan': '#22d3ee',
-  'bright-white': '#f9fafb',
-}
 
 /** Marks every case-insensitive occurrence of `query` in `text`. */
 function marked(text: string, query: string) {
@@ -57,7 +37,7 @@ export function LogText({ line, query = '' }: { line: string; query?: string }) 
     <>
       {parseAnsi(line).map((seg, i) =>
         seg.fg || seg.bold ? (
-          <span key={i} style={seg.fg ? { color: ANSI_COLOR[seg.fg] } : undefined} className={seg.bold ? 'font-semibold' : undefined}>
+          <span key={i} style={seg.fg ? { color: ansiColor(seg.fg) } : undefined} className={seg.bold ? 'font-semibold' : undefined}>
             {marked(seg.text, query)}
           </span>
         ) : (

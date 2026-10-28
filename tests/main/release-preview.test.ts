@@ -55,7 +55,7 @@ describe('ReleaseService.previewPlaybook', () => {
     // Nothing changed, so the refusal says the review is old, not that the playbook changed.
     const err = await r.svc.start(id, { playbookSha256: old.sha256 }).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(DeployError)
-    expect((err as DeployError).code).toBe('INVALID_STATE')
+    expect((err as DeployError).code).toBe('REVIEW_EXPIRED')
     expect((err as DeployError).message).toBe(REVIEW_EXPIRED_MESSAGE)
     expect(r.svc.detail(id).status).toBe('ready')
     const fresh = await r.svc.previewPlaybook(id)
@@ -100,7 +100,7 @@ describe('ReleaseService.previewPlaybook', () => {
     const before = snapshot(r, id)
     const err = await r.svc.start(id, { playbookSha256: p.sha256 }).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(DeployError)
-    expect((err as DeployError).code).toBe('INVALID_STATE')
+    expect((err as DeployError).code).toBe('PLAYBOOK_CHANGED')
     expect((err as DeployError).message).toBe(PLAYBOOK_CHANGED_MESSAGE)
     expect(snapshot(r, id)).toEqual(before)
     expect(r.svc.detail(id).status).toBe('ready')
@@ -162,7 +162,7 @@ describe('ReleaseService.validateEdit', () => {
     for (const ctx of [undefined, { actor: { osUser: 'tester', machine: 'elsewhere' } }]) {
       const err = await Promise.resolve(r.svc.validateEdit(id, generated, ctx)).catch((e: unknown) => e)
       expect(err).toBeInstanceOf(DeployError)
-      expect((err as DeployError).code).toBe('INVALID_STATE')
+      expect((err as DeployError).code).toBe('REVIEW_EXPIRED')
       expect((err as Error).message).toBe(REVIEW_EXPIRED_MESSAGE)
     }
   })

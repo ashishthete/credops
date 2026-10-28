@@ -16,6 +16,7 @@ import { loadDeploy, resetDeploy } from '../../src/renderer/src/deploy/store'
 import { inventoryStore, loadInventory } from '../../src/renderer/src/inventory/store'
 import { DeployWizard } from '../../src/renderer/src/pages/deployments/release/DeployWizard'
 import { PreflightChecklist } from '../../src/renderer/src/pages/deployments/release/PreflightChecklist'
+import { encodeIpcError } from '../../src/shared/ipc-error'
 import { NOTHING_SELECTED_MESSAGE, ORIGIN_MOVED_MESSAGE, type CommitInfo, type PlaybookPreview, type PreflightCheck, type PreflightReport, type RunEvent } from '../../src/shared/deploy'
 import type { ServiceMeta } from '../../src/shared/services'
 import { events, REL, releaseDetail } from './fixtures/release-events'
@@ -568,9 +569,12 @@ describe('stale preflight releases', () => {
   })
 
   it.each([
-    ['changed since the review', 'The playbook changed since you reviewed it. Review it again.'],
-    ['reviewed too long ago', 'Your review is more than 30 minutes old. Review the playbook again.'],
-  ])('a playbook %s is shown again, and the next Deploy carries the new hash', async (_case, refusal) => {
+    ['changed since the review', 'PLAYBOOK_CHANGED', 'The playbook changed since you reviewed it. Review it again.'],
+    ['reviewed too long ago', 'REVIEW_EXPIRED', 'Your review is more than 30 minutes old. Review the playbook again.'],
+    // A Hub-run environment's refusal is the Hub's 409, which keeps the message but not main's code.
+    ['changed since the review, refused by the Hub', 'conflict', 'The playbook changed since you reviewed it. Review it again.'],
+    ['reviewed too long ago, refused by the Hub', 'conflict', 'Your review is more than 30 minutes old. Review the playbook again.'],
+  ])('a playbook %s is shown again, and the next Deploy carries the new hash', async (_case, code, refusal) => {
     const { user, dialog, invoke } = await mount({ preselect: ['s1'], persisted: events([{ type: 'preflight.done', report: report() }]) })
     await preflight(user, dialog)
     await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Review playbook' })).toBeEnabled())
@@ -581,7 +585,7 @@ describe('stale preflight releases', () => {
     const base = invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
     invoke.mockImplementation((ch: string, ...args: unknown[]) => (ch === 'deploy:previewPlaybook' ? Promise.resolve({ playbook: PLAYBOOK, sha256: NEW }) : base(ch, ...args)))
     await user.click(within(dialog).getByRole('button', { name: 'Deploy' }))
-    await startCall.fail(0, new Error(refusal))
+    await startCall.fail(0, new Error(encodeIpcError(code, refusal)))
     expect(within(dialog).getByRole('alert')).toHaveTextContent(refusal)
     await waitFor(() => expect(calls(invoke, 'deploy:previewPlaybook')).toHaveLength(2))
     await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Deploy' })).toBeEnabled())

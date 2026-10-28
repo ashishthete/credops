@@ -3,7 +3,7 @@ import { SsoGate, type SsoHub } from '../../src/main/auth/sso-gate'
 import { createAuthHandlers } from '../../src/main/ipc/handlers/auth'
 import type { HubStatus, HubUser } from '../../src/shared/hub'
 import type { SessionCheck } from '../../src/shared/sso'
-import { VERIFICATION_FAILED } from '../../src/shared/vault'
+import { verificationFailedError } from '../../src/shared/vault'
 import { fakeQuick, makeVault } from './vault-helpers'
 
 const PW = 'correct horse'
@@ -85,7 +85,7 @@ describe('createAuthHandlers', () => {
   it('auth:changeAccount with a wrong PIN fails verification and never rebinds', async () => {
     const r = await ready()
     const rebind = vi.spyOn(r.gate, 'rebind')
-    await expect(r.h['auth:changeAccount']({ method: 'pin', pin: '999999' })).rejects.toThrow(new Error(VERIFICATION_FAILED))
+    await expect(r.h['auth:changeAccount']({ method: 'pin', pin: '999999' })).rejects.toThrow(verificationFailedError())
     expect(rebind).not.toHaveBeenCalled()
     expect(r.hub.signIn).not.toHaveBeenCalled()
   })
@@ -108,7 +108,7 @@ describe('createAuthHandlers', () => {
   it('auth:disconnect with a wrong password keeps the binding and the link', async () => {
     const r = await ready()
     await expect(r.h['auth:disconnect']({ method: 'password', password: 'wrong horse' })).rejects.toThrow(
-      new Error(VERIFICATION_FAILED),
+      verificationFailedError(),
     )
     expect(r.binding()).toBeDefined()
     expect(r.hub.unlink).not.toHaveBeenCalled()
