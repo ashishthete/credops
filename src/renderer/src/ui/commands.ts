@@ -8,8 +8,13 @@ export interface Command {
   section: string
   keywords?: string[]
   shortcut?: string
+  /** A starred item: listed under Favourites, after Recent, on an empty query, and ranked up on a query. */
+  favourite?: boolean
   run: () => void
 }
+
+/** What a favourite gains on a query: about one more word-start match, so it wins near ties but not over a clearly better title. */
+const FAVOURITE_BOOST = 8
 
 export const commandStore = createStore<readonly Command[]>([])
 export const paletteOpenStore = createStore(false)
@@ -129,7 +134,7 @@ export function fuzzyMatch(query: string, text: string): FuzzyMatch | null {
 export interface RankedCommand {
   command: Command
   indices: number[]
-  /** Section to display under: "Recent" for recents on an empty query. */
+  /** Section to display under: "Recent" and "Favourites" on an empty query. */
   group: string
 }
 
@@ -148,10 +153,10 @@ export function rankCommands(
       .map((id) => commands.find((c) => c.id === id))
       .filter((c): c is Command => c !== undefined)
       .map((command) => ({ command, indices: [], group: 'Recent' }))
-    const rest = commands
-      .filter((c) => !recentIds.includes(c.id))
-      .map((command) => ({ command, indices: [], group: command.section }))
-    return [...recent, ...groupBySection(rest)]
+    const rest = commands.filter((c) => !recentIds.includes(c.id))
+    const favourites = rest.filter((c) => c.favourite).map((command) => ({ command, indices: [], group: 'Favourites' }))
+    const others = rest.filter((c) => !c.favourite).map((command) => ({ command, indices: [], group: command.section }))
+    return [...recent, ...favourites, ...groupBySection(others)]
   }
 
   const scored: Array<RankedCommand & { score: number }> = []
@@ -162,7 +167,7 @@ export function rankCommands(
       -Infinity,
     )
     if (!title && keyword === -Infinity) continue
-    const score = Math.max(title?.score ?? -Infinity, keyword - 3) + recency(command.id) * 2
+    const score = Math.max(title?.score ?? -Infinity, keyword - 3) + recency(command.id) * 2 + (command.favourite ? FAVOURITE_BOOST : 0)
     scored.push({ command, indices: title?.indices ?? [], group: command.section, score })
   }
   scored.sort((a, b) => b.score - a.score)

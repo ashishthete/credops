@@ -7,6 +7,7 @@ import { DEFAULT_SETTINGS } from '../../src/shared/settings'
 import { AppShell } from '../../src/renderer/src/shell/AppShell'
 import { SECTIONS, sectionShortcut } from '../../src/renderer/src/shell/sections'
 import { openKnownHosts } from '../../src/renderer/src/pages/terminals/KnownHostsDialog'
+import { reloadFavourites } from '../../src/renderer/src/terminal/favourites'
 import { resetSessions, sessionStore } from '../../src/renderer/src/terminal/sessions'
 import { clearToasts } from '../../src/renderer/src/ui/Toaster'
 import type { SessionMeta } from '../../src/shared/ssh'
@@ -173,6 +174,39 @@ describe('terminals page', () => {
     fireEvent.click(screen.getByRole('button', { name: 'New local shell' }))
     await flush()
     expect(calls(invoke, 'shell:open')).toHaveLength(1)
+  })
+
+  it('the launcher offers Quick connect and one click on each favourite host; the tab strip has Quick connect too', async () => {
+    localStorage.setItem('opsdeck.terminal.favourites', JSON.stringify(['db-host', 'gone']))
+    reloadFavourites()
+    try {
+      const invoke = await renderShell('/hosts', {
+        'env:list': [environment({ id: 'prod', name: 'prod', hosts: [{ hostId: 'db-host', role: 'db' }] })],
+        'host:list': [host({ id: 'db-host', label: 'db', environments: [{ environmentId: 'prod', role: 'db' }] }), host({ id: 'web-host', label: 'web' })],
+        'ssh:open': ssh('db', { environmentId: 'prod' }),
+      })
+      fireEvent.click(terminalsLink())
+      await flush()
+      const favs = screen.getByRole('region', { name: 'Favourite hosts' })
+      expect(within(favs).getAllByRole('button').map((b) => b.textContent)).toEqual(['db'])
+      fireEvent.click(screen.getByRole('button', { name: 'Quick connect' }))
+      expect(screen.getByRole('dialog', { name: 'Quick connect' })).toBeInTheDocument()
+      expect(screen.getAllByRole('option')[0]).toHaveTextContent('db')
+      fireEvent.keyDown(screen.getByRole('combobox', { name: 'Host' }), { key: 'Escape' })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500)
+      })
+      fireEvent.click(within(favs).getByRole('button', { name: 'db' }))
+      await flush()
+      expect(calls(invoke, 'ssh:open')).toEqual([['ssh:open', expect.objectContaining({ hostId: 'db-host', environmentId: 'prod' })]])
+      state(ssh('db', { environmentId: 'prod' }))
+      await flush()
+      fireEvent.click(screen.getByRole('button', { name: 'Quick connect' }))
+      expect(screen.getByRole('dialog', { name: 'Quick connect' })).toBeInTheDocument()
+    } finally {
+      localStorage.clear()
+      reloadFavourites()
+    }
   })
 
   it('a direct visit with no sessions shows the launcher rather than leaving', async () => {

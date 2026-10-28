@@ -1,5 +1,5 @@
 import { AnimatePresence } from 'framer-motion'
-import { Plus, SquareTerminal } from 'lucide-react'
+import { Plus, SquareTerminal, Star, Zap } from 'lucide-react'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 import type { SessionMeta } from '../../../../shared/ssh'
@@ -14,8 +14,10 @@ import { Button } from '../../ui/Button'
 import { ConfirmDialog, type ConfirmRequest } from '../../ui/common'
 import { EmptyState } from '../../ui/EmptyState'
 import { useShortcut } from '../../ui/shortcuts'
+import { useFavourites } from '../../terminal/favourites'
 import { ConnectOverlay } from './ConnectOverlay'
 import { openKnownHosts } from './KnownHostsDialog'
+import { openQuickConnect } from './QuickConnect'
 import { SessionEnded } from './SessionEnded'
 import { paneId, TabStrip, tabId } from './TabStrip'
 
@@ -94,16 +96,24 @@ export function TerminalDeck({ visible }: { visible: boolean }) {
       {visible && <TabShortcuts onClose={() => active && requestClose(active)} />}
       {loaded && tabs.length === 0 && (
         <div className="grid flex-1 place-items-center">
-          <EmptyState
-            icon={SquareTerminal}
-            title="No open sessions"
-            text="Open a shell on this Mac, or connect to a host from Hosts, the map or the command palette."
-            actions={
-              <Button icon={<Plus aria-hidden className="size-4" />} onClick={() => void connectLocal()}>
-                New local shell
-              </Button>
-            }
-          />
+          <div className="flex flex-col items-center">
+            <EmptyState
+              icon={SquareTerminal}
+              title="No open sessions"
+              text="Open a shell on this Mac, or connect to a host by name. Hosts, the map and the command palette connect too."
+              actions={
+                <>
+                  <Button icon={<Zap aria-hidden className="size-4" />} onClick={openQuickConnect}>
+                    Quick connect
+                  </Button>
+                  <Button variant="ghost" icon={<Plus aria-hidden className="size-4" />} onClick={() => void connectLocal()}>
+                    New local shell
+                  </Button>
+                </>
+              }
+            />
+            <FavouriteHosts />
+          </div>
         </div>
       )}
       {tabs.length > 0 && (
@@ -116,6 +126,7 @@ export function TerminalDeck({ visible }: { visible: boolean }) {
             onClose={requestClose}
             onNew={() => void openLocal()}
             onSnippets={() => insertStore.set({ kind: 'pick' })}
+            onQuickConnect={openQuickConnect}
           />
           <div className="relative min-h-0 flex-1">
             {tabs.map((s) => (
@@ -157,6 +168,35 @@ function focusAfterClose(id: string, before: string[]): void {
     ? id
     : (before.slice(at + 1).find((x) => order.includes(x)) ?? before.slice(0, at).reverse().find((x) => order.includes(x)))
   if (next) document.getElementById(tabId(next))?.focus()
+}
+
+/** The launcher's starred hosts, one click each; starring happens in Quick connect. */
+function FavouriteHosts() {
+  const favourites = useFavourites()
+  const inventory = useInventory()
+  const { connect } = useConnect()
+  if (!inventory) return null
+  const byId = new Map(inventory.hosts.map((h) => [h.id, h]))
+  const hosts = favourites.flatMap((id) => byId.get(id) ?? [])
+  if (!hosts.length) return null
+  return (
+    <section aria-label="Favourite hosts" className="-mt-8 flex max-w-lg flex-wrap justify-center gap-2 px-6">
+      {hosts.map((h) => {
+        const envs = h.environments.map((m) => m.environmentId)
+        return (
+          <Button
+            key={h.id}
+            variant="ghost"
+            size="sm"
+            icon={<Star aria-hidden className="size-3.5 text-warn" fill="currentColor" />}
+            onClick={() => void connect(h.id, envs.length === 1 ? envs[0] : undefined)}
+          >
+            {h.label}
+          </Button>
+        )
+      })}
+    </section>
+  )
 }
 
 /** Bound only while the deck is on screen, so mod+w never closes a tab you can't see. */

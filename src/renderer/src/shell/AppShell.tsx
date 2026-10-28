@@ -18,6 +18,7 @@ import { ProductsPage } from '../pages/products/ProductsPage'
 import { SettingsPage } from '../pages/settings/SettingsPage'
 import { KnownHostsDialog, closeKnownHosts, openKnownHosts } from '../pages/terminals/KnownHostsDialog'
 import { PromptHost } from '../pages/terminals/PromptHost'
+import { QuickConnect, closeQuickConnect } from '../pages/terminals/QuickConnect'
 import { TerminalDeck } from '../pages/terminals/TerminalDeck'
 import { TunnelsPage } from '../pages/tunnels/TunnelsPage'
 import { resetVaultsCache, VaultsPage } from '../pages/vaults/VaultsPage'
@@ -97,6 +98,7 @@ export function AppShell() {
       // Relies on a lock unmounting the shell; see the cache in VaultsPage.
       resetVaultsCache()
       closeKnownHosts()
+      closeQuickConnect()
     }
   }, [])
 
@@ -146,6 +148,7 @@ export function AppShell() {
       <InsertHost />
       <ServiceLogsHost />
       <KnownHostsDialog />
+      <QuickConnect />
     </div>
   )
 }
