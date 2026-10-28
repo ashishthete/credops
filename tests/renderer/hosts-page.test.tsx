@@ -305,6 +305,40 @@ describe('hosts page', () => {
     await waitFor(() => expect(rowNames()).toEqual(['db-1']))
   })
 
+  it('search, tags and the selected host survive a trip to a terminal and back', async () => {
+    const user = userEvent.setup()
+    renderApp(world())
+    await waitFor(() => expect(rowNames()).toEqual(['api-1', 'db-1', 'edge']))
+    await sessionsLanded()
+    await user.type(screen.getByRole('searchbox', { name: 'Search hosts' }), 'ed')
+    await user.click(within(screen.getByRole('group', { name: 'Tags' })).getByRole('button', { name: 'api' }))
+    await waitFor(() => expect(rowNames()).toEqual(['edge']))
+    await user.click(within(hostList()).getByRole('option', { name: 'edge' }))
+
+    await user.click(within(hostList()).getByRole('button', { name: 'Connect to edge' }))
+    await onTerminals('edge')
+    await user.click(within(screen.getByRole('navigation', { name: 'Sections' })).getByRole('link', { name: /Hosts/ }))
+
+    await waitFor(() => expect(rowNames()).toEqual(['edge']))
+    expect(where).toBe('/hosts')
+    expect(screen.getByRole('searchbox', { name: 'Search hosts' })).toHaveValue('ed')
+    expect(within(screen.getByRole('group', { name: 'Tags' })).getByRole('button', { name: 'api' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('option', { name: 'edge' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('a lock forgets the filters', async () => {
+    const user = userEvent.setup()
+    const { unmount } = renderApp(world())
+    await waitFor(() => expect(rowNames()).toEqual(['api-1', 'db-1', 'edge']))
+    await user.type(screen.getByRole('searchbox', { name: 'Search hosts' }), 'edge')
+    await waitFor(() => expect(rowNames()).toEqual(['edge']))
+    // A lock unmounts the shell; the next unlock mounts a fresh one.
+    unmount()
+    renderApp(world())
+    await waitFor(() => expect(rowNames()).toEqual(['api-1', 'db-1', 'edge']))
+    expect(screen.getByRole('searchbox', { name: 'Search hosts' })).toHaveValue('')
+  })
+
   it('selects a host into the side pane', async () => {
     const user = userEvent.setup()
     renderApp(world())
@@ -841,5 +875,59 @@ describe('hosts page regions', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New region' })).not.toBeInTheDocument())
     expect(within(dialog).getByLabelText('Region')).toHaveValue(EU.id)
     expect(screen.getByRole('dialog', { name: 'Import from ~/.ssh/config' })).toBeInTheDocument()
+  })
+})
+
+describe('long host lists', () => {
+  const EU: RegionMeta = { ...REGION, id: 'region-eu', code: 'eu-west-1', displayName: 'Ireland', provider: 'aws' }
+  const label = (i: number) => `node-${String(i).padStart(3, '0')}`
+  /** `n` hosts, labelled in order; the first fifty are in eu-west-1, which sorts first. */
+  const many = (n: number) =>
+    world({
+      regions: [REGION, EU],
+      hosts: Array.from({ length: n }, (_, i) =>
+        host({ id: `n${i}`, label: label(i), address: `10.1.${i >> 8}.${i & 255}`, regionId: i < 50 ? EU.id : REGION.id }),
+      ),
+    })
+
+  it('past the threshold only the rows near the view are drawn, still grouped by region', async () => {
+    const user = userEvent.setup()
+    renderApp(many(300))
+    await waitFor(() => expect(rowNames()[0]).toBe('node-000'))
+    expect(rowNames().length).toBeGreaterThan(5)
+    expect(rowNames().length).toBeLessThan(60)
+    expect(within(hostList()).getByRole('group', { name: 'eu-west-1' })).toBeInTheDocument()
+    // The search still reaches every host, drawn or not.
+    await user.type(screen.getByRole('searchbox', { name: 'Search hosts' }), 'node-299')
+    await waitFor(() => expect(rowNames()).toEqual(['node-299']))
+  })
+
+  it('End, Home and the arrows move through the whole list, focus following', async () => {
+    const user = userEvent.setup()
+    renderApp(many(300))
+    await user.click(await screen.findByRole('option', { name: 'node-000' }))
+    await user.keyboard('{End}')
+    expect(where).toBe('/hosts?host=n299')
+    expect(screen.getByRole('option', { name: 'node-299' })).toHaveFocus()
+    expect(screen.getByRole('option', { name: 'node-299' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('option', { name: 'node-000' })).not.toBeInTheDocument()
+    expect(within(hostList()).getByRole('group', { name: 'test-1' })).toBeInTheDocument()
+
+    await user.keyboard('{ArrowUp}')
+    expect(screen.getByRole('option', { name: 'node-298' })).toHaveFocus()
+    await user.keyboard('{Home}')
+    expect(where).toBe('/hosts?host=n0')
+    expect(screen.getByRole('option', { name: 'node-000' })).toHaveFocus()
+  })
+
+  it('a selected host deep in the list is drawn when the page opens on it', async () => {
+    renderApp(many(300), '/hosts?host=n200')
+    expect(await screen.findByRole('option', { name: 'node-200' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('option', { name: 'node-000' })).not.toBeInTheDocument()
+  })
+
+  it('a list at the threshold draws every row', async () => {
+    renderApp(many(100))
+    await waitFor(() => expect(rowNames()).toHaveLength(100))
   })
 })

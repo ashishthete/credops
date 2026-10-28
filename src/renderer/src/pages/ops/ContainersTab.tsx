@@ -11,6 +11,7 @@ import { useConnect } from '../../terminal/connect'
 import { Button } from '../../ui/Button'
 import { ConfirmDialog, plural, type ConfirmRequest } from '../../ui/common'
 import { EmptyState } from '../../ui/EmptyState'
+import { useKeptState } from '../../ui/kept'
 import { SelectField, TextField } from '../../ui/Field'
 import { fast, useMotionSafe } from '../../ui/motion'
 import { Skeleton } from '../../ui/Skeleton'
@@ -124,8 +125,8 @@ export function ContainersTab() {
     if (list) staggered.current = key
   }, [list, key])
 
-  const [filter, setFilter] = useState('')
-  const [runningOnly, setRunningOnly] = useState(false)
+  const [filter, setFilter] = useKeptState('ops.containers.filter', '')
+  const [runningOnly, setRunningOnly] = useKeptState('ops.containers.runningOnly', false)
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   const [logs, setLogs] = useState<{ hostId: string; environmentId: string | null; ref: string } | null>(null)

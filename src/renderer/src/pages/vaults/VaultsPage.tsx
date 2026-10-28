@@ -2,13 +2,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Search, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
-import {
-  DEFAULT_VAULT_ID,
-  type IdentityMeta,
-  type SecretMeta,
-  type SshKeyMeta,
-  type VaultMeta,
-} from '../../../../shared/vault'
+import { DEFAULT_VAULT_ID, type VaultMeta } from '../../../../shared/vault'
 import { reloadInventory } from '../../inventory/store'
 import { api } from '../../lib/api'
 import { Badge } from '../../ui/Badge'
@@ -27,28 +21,11 @@ import { KeysPanel } from './KeysPanel'
 import { SecretDialog } from './SecretDialog'
 import { hideAllReveals, SecretsPanel } from './SecretsPanel'
 import { VaultDialog, VaultRail } from './VaultRail'
+import { cache, type VaultData } from './cache'
 import { CorruptVault, Empty, SkeletonRows, TABS, Toolbar, type NewDialog, type Tab } from './VaultsParts'
-
-interface VaultData {
-  vaultId: string
-  secrets: SecretMeta[]
-  keys: SshKeyMeta[]
-  identities: IdentityMeta[]
-}
 
 const isTab = (t: string | null): t is Tab => TABS.some((x) => x.id === t)
 
-/**
- * What the page last showed, so coming back to it draws at once and refreshes underneath. Metadata
- * only, never a value. AppShell drops it when it unmounts, which a lock always does: if the shell ever
- * stays mounted across a lock, reset this on the lock as well.
- */
-const cache: { vaults: VaultMeta[] | null; data: Map<string, VaultData> } = { vaults: null, data: new Map() }
-
-export function resetVaultsCache() {
-  cache.vaults = null
-  cache.data.clear()
-}
 const upsert = <T extends { id: string }>(list: T[], item: T) =>
   list.some((x) => x.id === item.id) ? list.map((x) => (x.id === item.id ? item : x)) : [...list, item]
 /** Hosts and environments read vaults, identities and keys, so the shared inventory re-reads after these change. */

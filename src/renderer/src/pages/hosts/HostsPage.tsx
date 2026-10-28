@@ -1,6 +1,6 @@
 import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
 import { ChevronRight, CircleDashed, Database, Download, FileDown, Fingerprint, Globe2, Plus, Search, Server, ShieldHalf, SquareTerminal, Upload, X, type LucideIcon } from 'lucide-react'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type RefObject } from 'react'
 import { useSearchParams } from 'react-router'
 import type { EnvironmentMeta, HostMeta, HostRole, RegionMeta } from '../../../../shared/inventory'
 import type { HostsAction } from '../../inventory/commands'
@@ -14,6 +14,8 @@ import { exitFast, fast, spring, staggerDelay, useMotionSafe } from '../../ui/mo
 import { useShortcut } from '../../ui/shortcuts'
 import { plural } from '../../ui/common'
 import { Skeleton } from '../../ui/Skeleton'
+import { useKeptRef, useKeptState } from '../../ui/kept'
+import { useListWindow, WINDOW_AFTER } from '../../ui/listWindow'
 import { createStore } from '../../ui/store'
 import { ROLE_LABEL, ROLE_ORDER } from '../products/ProductView'
 import { useConfigTransfer } from '../settings/ConfigTransfer'
@@ -44,10 +46,11 @@ const IMPORT_LABEL = 'Import from ~/.ssh/config'
 export function HostsPage() {
   const data = useInventory()
   const [params, setParams] = useSearchParams()
-  const [query, setQuery] = useState('')
-  const [tags, setTags] = useState<string[]>([])
-  const [regionId, setRegionId] = useState('')
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
+  // The filters outlive the page, so a trip to a terminal comes back to the same list.
+  const [query, setQuery] = useKeptState('hosts.query', '')
+  const [tags, setTags] = useKeptState<string[]>('hosts.tags', [])
+  const [regionId, setRegionId] = useKeptState('hosts.region', '')
+  const [collapsed, setCollapsed] = useKeptState<ReadonlySet<string>>('hosts.collapsed', () => new Set())
   const [dialog, setDialog] = useState<HostsAction | null>(null)
   // Regions, identities and hosts: what this page and its dialogs edit.
   const transfer = useConfigTransfer('hosts')
@@ -56,6 +59,7 @@ export function HostsPage() {
   // Rows cascade in on the first view only, not on every selection or filter.
   const [fresh, setFresh] = useState(true)
   const search = useRef<HTMLInputElement>(null)
+  const listScroller = useRef<HTMLDivElement>(null)
 
   const hosts = useMemo(() => [...(data?.hosts ?? [])].sort((a, b) => a.label.localeCompare(b.label)), [data])
   const allTags = useMemo(() => [...new Set(hosts.flatMap((h) => h.tags))].sort((a, b) => a.localeCompare(b)), [hosts])
@@ -73,8 +77,14 @@ export function HostsPage() {
   // What the list shows, in its order: hosts in a collapsed group are left out.
   const visible = useMemo(() => groups.flatMap((g) => (collapsed.has(groupKey(g)) ? [] : g.hosts)), [groups, collapsed])
 
-  const wanted = params.get('host')
+  // The host picked when the page was last left comes back with it, unless the URL names one.
+  const lastSelected = useKeptRef<string | null>('hosts.selected', null)
+  const [remembered] = useState(() => lastSelected.current)
+  const wanted = params.get('host') ?? remembered
   const selected = wanted && hosts.some((h) => h.id === wanted) ? wanted : (visible[0]?.id ?? null)
+  useEffect(() => {
+    if (data) lastSelected.current = selected
+  }, [data, lastSelected, selected])
   const selectedRegion = hosts.find((h) => h.id === selected)?.regionId
 
   const updateParams = useCallback(
@@ -195,9 +205,10 @@ export function HostsPage() {
               </div>
             )}
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+          <div ref={listScroller} className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
             {data ? (
               <HostList
+                scroller={listScroller}
                 groups={groups}
                 collapsed={collapsed}
                 hosts={visible}
@@ -311,7 +322,16 @@ function TagFilter({ tags, active, onToggle }: { tags: string[]; active: string[
   )
 }
 
+// What a windowed list assumes before a header or row has been measured, and the spacing it adds between them.
+const HEADER_PX = 28
+const GROUP_GAP_PX = 8
+const ROW_PX = 52
+const CHIPS_PX = 22
+const ROW_GAP_PX = 2
+
 interface HostListProps {
+  /** The element the list scrolls in: a long list draws only the rows near its view. */
+  scroller: RefObject<HTMLElement | null>
   groups: RegionGroup[]
   /** Region ids whose group is folded away. */
   collapsed: ReadonlySet<string>
@@ -337,7 +357,7 @@ const useIs = (store: SelectionStore, which: keyof ListSelection, id: string) =>
  * A listbox: arrows, Home and End move the selection, which follows focus. The rows are built once per
  * list and read the selection from a store, so moving it re-renders two rows, not every row.
  */
-function HostList({ groups, collapsed, hosts, environments, selected, stagger, onSelect, onToggleGroup, onNewIn, onClearFilters }: HostListProps) {
+function HostList({ scroller, groups, collapsed, hosts, environments, selected, stagger, onSelect, onToggleGroup, onNewIn, onClearFilters }: HostListProps) {
   const list = useRef<HTMLUListElement>(null)
   const envById = useMemo(() => new Map(environments.map((e) => [e.id, e])), [environments])
   const focusId = useRef<string | null>(null)
@@ -372,40 +392,87 @@ function HostList({ groups, collapsed, hosts, environments, selected, stagger, o
     onSelect(hosts[to].id)
   }
 
-  const rows = useMemo(() => {
-    const index = new Map(hosts.map((h, i) => [h.id, i]))
-    return groups.map((g) => {
+  const header = useCallback(
+    (g: RegionGroup) => {
       const key = groupKey(g)
       const open = !collapsed.has(key)
       const code = g.region?.code ?? 'Unknown region'
       return (
-        <li key={key} role="group" aria-label={code} className="flex flex-col gap-0.5">
-          <div role="presentation" className="group/region flex h-7 items-center gap-1 pr-1 pl-1.5">
+        <div role="presentation" className="group/region flex h-7 items-center gap-1 pr-1 pl-1.5">
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-label={`${code}, ${plural(g.hosts.length, 'host')}`}
+            title={g.region?.displayName}
+            onClick={() => onToggleGroup(key)}
+            className="flex h-6 min-w-0 items-center gap-1.5 rounded-md px-1 text-[11.5px] text-muted hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+          >
+            <ChevronRight aria-hidden className={`size-3 shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />
+            <span className="truncate font-mono">{code}</span>
+            {g.region?.displayName && g.region.displayName !== code && <span className="truncate text-muted/70">{g.region.displayName}</span>}
+            <span className="rounded-full bg-white/[0.05] px-1.5 text-[10.5px] tabular-nums">{g.hosts.length}</span>
+          </button>
+          {g.region && (
             <button
               type="button"
-              aria-expanded={open}
-              aria-label={`${code}, ${plural(g.hosts.length, 'host')}`}
-              title={g.region?.displayName}
-              onClick={() => onToggleGroup(key)}
-              className="flex h-6 min-w-0 items-center gap-1.5 rounded-md px-1 text-[11.5px] text-muted hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+              aria-label={`New host in ${code}`}
+              title={`New host in ${code}`}
+              onClick={() => onNewIn(key)}
+              className="ml-auto grid size-6 place-items-center rounded-md text-muted opacity-0 transition-opacity group-hover/region:opacity-100 hover:text-fg focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
             >
-              <ChevronRight aria-hidden className={`size-3 shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />
-              <span className="truncate font-mono">{code}</span>
-              {g.region?.displayName && g.region.displayName !== code && <span className="truncate text-muted/70">{g.region.displayName}</span>}
-              <span className="rounded-full bg-white/[0.05] px-1.5 text-[10.5px] tabular-nums">{g.hosts.length}</span>
+              <Plus aria-hidden className="size-3" />
             </button>
-            {g.region && (
-              <button
-                type="button"
-                aria-label={`New host in ${code}`}
-                title={`New host in ${code}`}
-                onClick={() => onNewIn(key)}
-                className="ml-auto grid size-6 place-items-center rounded-md text-muted opacity-0 transition-opacity group-hover/region:opacity-100 hover:text-fg focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
-              >
-                <Plus aria-hidden className="size-3" />
-              </button>
-            )}
-          </div>
+          )}
+        </div>
+      )
+    },
+    [collapsed, onToggleGroup, onNewIn],
+  )
+
+  // A long list draws only the rows near the view. Its items are each group's header, then its rows if open.
+  const windowed = hosts.length > WINDOW_AFTER
+  const layout = useMemo(() => {
+    const keys: string[] = []
+    const heads: number[] = []
+    const itemOf = new Map<string, number>()
+    const chips = new Set<number>()
+    for (const g of groups) {
+      heads.push(keys.length)
+      keys.push(`region:${groupKey(g)}`)
+      if (collapsed.has(groupKey(g))) continue
+      for (const h of g.hosts) {
+        itemOf.set(h.id, keys.length)
+        if (h.environments.length || h.tags.length) chips.add(keys.length)
+        keys.push(`host:${h.id}`)
+      }
+    }
+    return { keys, heads, itemOf, headSet: new Set(heads), chips }
+  }, [groups, collapsed])
+  const estimate = useCallback(
+    (i: number) => (layout.headSet.has(i) ? (i === 0 ? HEADER_PX : HEADER_PX + GROUP_GAP_PX) : ROW_PX + (layout.chips.has(i) ? CHIPS_PX : 0)),
+    [layout],
+  )
+  // A row's top margin is outside its box.
+  const gap = useCallback((i: number) => (layout.headSet.has(i) ? 0 : ROW_GAP_PX), [layout])
+  const win = useListWindow({
+    keys: layout.keys,
+    estimate,
+    gap,
+    scroller,
+    list,
+    keep: selected ? (layout.itemOf.get(selected) ?? -1) : -1,
+    enabled: windowed,
+  })
+
+  const rows = useMemo(() => {
+    if (windowed) return null
+    const index = new Map(hosts.map((h, i) => [h.id, i]))
+    return groups.map((g) => {
+      const key = groupKey(g)
+      const open = !collapsed.has(key)
+      return (
+        <li key={key} role="group" aria-label={g.region?.code ?? 'Unknown region'} className="flex flex-col gap-0.5">
+          {header(g)}
           {open && (
             <ul role="presentation" className="flex flex-col gap-0.5">
               <AnimatePresence initial={false}>
@@ -427,13 +494,61 @@ function HostList({ groups, collapsed, hosts, environments, selected, stagger, o
         </li>
       )
     })
-  }, [groups, collapsed, hosts, envById, stagger, selection, pick, connect, onToggleGroup, onNewIn])
+  }, [windowed, groups, collapsed, hosts, envById, stagger, selection, pick, connect, header])
+
+  // Windowed rows don't animate in, out or between places: they come and go with the scroll.
+  const windowRows = () =>
+    groups.map((g, gi) => {
+      const key = groupKey(g)
+      const head = layout.heads[gi]!
+      const shown = collapsed.has(key) ? [] : g.hosts.filter((h) => win.show(layout.itemOf.get(h.id)!))
+      if (!shown.length && win.show(head) !== 'flow') return null
+      return (
+        <li key={key} role="group" aria-label={g.region?.code ?? 'Unknown region'} className="flex flex-col">
+          {win.show(head) === 'flow' && (
+            <div ref={win.measure(head)} className={gi === 0 ? '' : 'pt-2'}>
+              {header(g)}
+            </div>
+          )}
+          {shown.length > 0 && (
+            <ul role="presentation" className="flex flex-col">
+              {shown.map((h) => {
+                const item = layout.itemOf.get(h.id)!
+                return (
+                  <HostRow
+                    key={h.id}
+                    host={h}
+                    envs={h.environments.flatMap((m) => envById.get(m.environmentId) ?? [])}
+                    index={0}
+                    stagger={false}
+                    selection={selection}
+                    onSelect={pick}
+                    onConnect={connect}
+                    still
+                    style={win.show(item) === 'pinned' ? win.pinnedStyle(item) : undefined}
+                    measureRef={win.measure(item)}
+                  />
+                )
+              })}
+            </ul>
+          )}
+        </li>
+      )
+    })
 
   return (
     <>
-      <ul ref={list} role="listbox" aria-label="Hosts" onKeyDown={onKeyDown} className="flex flex-col gap-2">
-        {rows}
-      </ul>
+      {windowed ? (
+        <ul ref={list} role="listbox" aria-label="Hosts" onKeyDown={onKeyDown} className="relative flex flex-col">
+          <li role="presentation" aria-hidden style={{ height: win.before }} />
+          {windowRows()}
+          <li role="presentation" aria-hidden style={{ height: win.after }} />
+        </ul>
+      ) : (
+        <ul ref={list} role="listbox" aria-label="Hosts" onKeyDown={onKeyDown} className="flex flex-col gap-2">
+          {rows}
+        </ul>
+      )}
       {groups.length === 0 && (
         <div className="flex flex-col items-center gap-2 pt-10 text-center text-[12.5px] text-muted">
           No hosts match.
@@ -454,9 +569,13 @@ interface HostRowProps {
   selection: SelectionStore
   onSelect: (id: string) => void
   onConnect: (id: string) => Promise<void>
+  /** In a windowed list: no enter, exit or layout animation, and a top margin in place of the list's gap. */
+  still?: boolean
+  style?: CSSProperties
+  measureRef?: (el: HTMLElement | null) => void
 }
 
-function HostRow({ host, envs, index, stagger, selection, onSelect, onConnect: connect }: HostRowProps) {
+function HostRow({ host, envs, index, stagger, selection, onSelect, onConnect: connect, still = false, style, measureRef }: HostRowProps) {
   const motionSafe = useMotionSafe()
   // Rows filtered away fade out; while they do, they're out of reach (F19).
   const present = useIsPresent()
@@ -465,9 +584,12 @@ function HostRow({ host, envs, index, stagger, selection, onSelect, onConnect: c
   const role = primaryRole(host)
   const RoleIcon = role ? ROLE_ICON[role] : Server
   const delay = stagger && motionSafe ? staggerDelay(index) : 0
+  const animated = motionSafe && !still
 
   return (
     <motion.li
+      ref={measureRef}
+      style={style}
       role="option"
       aria-label={host.label}
       aria-selected={selected}
@@ -480,17 +602,17 @@ function HostRow({ host, envs, index, stagger, selection, onSelect, onConnect: c
       onKeyDown={(e) => {
         if (e.key === 'Enter' && e.target === e.currentTarget) void connect(host.id)
       }}
-      layout={motionSafe ? 'position' : false}
-      initial={motionSafe ? { opacity: 0, y: 8 } : { opacity: 0 }}
+      layout={animated ? 'position' : false}
+      initial={still ? false : motionSafe ? { opacity: 0, y: 8 } : { opacity: 0 }}
       animate={motionSafe ? { opacity: 1, y: 0 } : { opacity: 1 }}
       exit={motionSafe ? { opacity: 0, x: -12, transition: exitFast } : { opacity: 0, transition: exitFast }}
       transition={motionSafe ? { ...spring, delay } : fast}
       className={`group relative flex cursor-default items-start gap-3 rounded-lg px-3 py-2.5 transition-colors select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 ${
         present ? '' : 'pointer-events-none'
-      } ${selected ? 'text-fg' : 'text-fg/85 hover:bg-white/[0.03]'}`}
+      } ${selected ? 'text-fg' : 'text-fg/85 hover:bg-white/[0.03]'} ${still ? 'mt-0.5' : ''}`}
     >
       {selected &&
-        (motionSafe ? (
+        (animated ? (
           <motion.span
             layoutId="hosts-selected"
             transition={spring}

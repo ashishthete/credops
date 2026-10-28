@@ -9,6 +9,7 @@ import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
 import { ConfirmDialog, ListRow, RowMenu, type ConfirmRequest } from '../../ui/common'
 import { EmptyState } from '../../ui/EmptyState'
+import { useKeptState } from '../../ui/kept'
 import { Skeleton } from '../../ui/Skeleton'
 import { SnippetDialog, type SnippetRequest } from './SnippetDialog'
 
@@ -16,8 +17,8 @@ import { SnippetDialog, type SnippetRequest } from './SnippetDialog'
 export function SnippetsTab() {
   const { snippets, loaded } = useSyncExternalStore(snippetStore.subscribe, snippetStore.get)
   const navigate = useNavigate()
-  const [query, setQuery] = useState('')
-  const [tags, setTags] = useState<ReadonlySet<string>>(new Set())
+  const [query, setQuery] = useKeptState('ops.snippets.query', '')
+  const [tags, setTags] = useKeptState<ReadonlySet<string>>('ops.snippets.tags', () => new Set())
   const [request, setRequest] = useState<SnippetRequest | null>(null)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   const stagger = useRef(true)

@@ -105,6 +105,77 @@ describe('command palette', () => {
   })
 })
 
+describe('long palette lists', () => {
+  const cleanups: Array<() => void> = []
+  afterEach(() => {
+    act(() => closeCommandPalette())
+    cleanups.splice(0).forEach((fn) => fn())
+  })
+  const many = (n: number, section = 'Hosts') =>
+    Array.from({ length: n }, (_, i) => {
+      const id = `cmd-${String(i).padStart(3, '0')}`
+      return registerCommand({ id, title: `Connect to host ${String(i).padStart(3, '0')}`, section, run: vi.fn() })
+    })
+  const open = async () => {
+    act(() => {
+      pressModK()
+    })
+    return screen.findByRole('combobox')
+  }
+  const activeOption = (input: HTMLElement) => document.getElementById(input.getAttribute('aria-activedescendant')!)
+
+  it('a list past the threshold draws only the rows near the view, with their place in the whole', async () => {
+    cleanups.push(...many(300))
+    render(<CommandPalette />)
+    await open()
+    const options = screen.getAllByRole('option')
+    expect(options.length).toBeGreaterThan(5)
+    expect(options.length).toBeLessThan(60)
+    expect(options[0]).toHaveAttribute('aria-posinset', '1')
+    expect(options[0]).toHaveAttribute('aria-setsize', '300')
+    expect(screen.getByRole('group', { name: 'Hosts' })).toBeInTheDocument()
+  })
+
+  it('arrows still move through every row, and the active one is always drawn', async () => {
+    const user = userEvent.setup()
+    const runs = many(300)
+    cleanups.push(...runs)
+    render(<CommandPalette />)
+    const input = await open()
+    // Up from the first wraps to the last, far outside the first window.
+    await user.keyboard('{ArrowUp}')
+    expect(activeOption(input)).toHaveTextContent('Connect to host 299')
+    expect(activeOption(input)).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('option', { name: /host 000/ })).not.toBeInTheDocument()
+    await user.keyboard('{ArrowDown}')
+    expect(activeOption(input)).toHaveTextContent('Connect to host 000')
+    for (let i = 0; i < 120; i++) await user.keyboard('{ArrowDown}')
+    expect(activeOption(input)).toHaveTextContent('Connect to host 120')
+  })
+
+  it('Enter runs the active row of a long list', async () => {
+    const user = userEvent.setup()
+    const run = vi.fn()
+    cleanups.push(...many(200), registerCommand({ id: 'zz', title: 'Zulu last', section: 'Navigate', run }))
+    render(<CommandPalette />)
+    const input = await open()
+    await user.keyboard('{ArrowUp}')
+    expect(activeOption(input)).toHaveTextContent('Zulu last')
+    await user.keyboard('{Enter}')
+    expect(run).toHaveBeenCalledOnce()
+  })
+
+  it('a short list draws every row, without set positions', async () => {
+    cleanups.push(...many(40))
+    render(<CommandPalette />)
+    await open()
+    const options = screen.getAllByRole('option')
+    expect(options).toHaveLength(40)
+    expect(options[0]).not.toHaveAttribute('aria-setsize')
+    expect(screen.getByRole('group', { name: 'Hosts' })).toHaveAttribute('aria-labelledby')
+  })
+})
+
 describe('palette polish', () => {
   const cleanups: Array<() => void> = []
   afterEach(() => {
