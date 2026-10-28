@@ -45,7 +45,7 @@ export interface SessionManagerDeps {
   envColor(environmentId: string): string | null
   connect: typeof connectChain
   plan(identity: IdentityRef, hop: HopTarget): Promise<AuthPlan>
-  knownHosts: Pick<KnownHostStore, 'check' | 'trust' | 'recordMismatch'>
+  knownHosts: Pick<KnownHostStore, 'check' | 'trust' | 'recordMismatch' | 'pinnedKeyTypes'>
   /** Shared with tunnels; `session:answer` and `session:prompts` go to it directly. */
   prompts: PromptBroker
   /** Spawns the local shell; absent when it isn't available. */
@@ -412,6 +412,7 @@ export class SessionManager {
         if (attempt.hop === target.hops.length - 1) attempt.auth = plan.kind
         return plan
       },
+      pinnedKeyTypes: (hop) => this.deps.knownHosts.pinnedKeyTypes(hop.address, hop.port),
       verifyHostKey: (hop, keyType, keyBase64) =>
         verifyWithStore(this.deps.knownHosts, this.deps.prompts, {
           ownerId: s.meta.id,

@@ -44,6 +44,12 @@ export interface HostKeyInfo {
   known: { keyType: string; fingerprint: string; source: 'app' | 'openssh'; line?: number }[]
 }
 
+/** The pinned keys a changed key replaces: those of its type, or every pin when the server presented a new type. */
+export function replacedKeys(info: HostKeyInfo): HostKeyInfo['known'] {
+  const same = info.known.filter((k) => k.keyType === info.keyType)
+  return same.length > 0 ? same : info.known
+}
+
 export interface SessionError {
   code: SshErrorCode
   message: string

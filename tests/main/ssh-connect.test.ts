@@ -255,6 +255,39 @@ describe('connectChain', () => {
     expect(seen).toHaveBeenCalledWith(expect.anything(), 'ssh-rsa', s.hostKeyBase64)
   })
 
+  it('refuses a key of another type than the pinned one, listing the pin', async () => {
+    const s = await server({ hostKey: generateKey('ecdsa').private })
+    const pin = keyPair().publicKey.getPublicSSH().toString('base64')
+    const kh = await knownHosts(`[127.0.0.1]:${s.port} ssh-ed25519 ${pin}\n`)
+    const { err, described } = await failure(
+      [hop('target', s.port)],
+      deps({ verifyHostKey: kh.verifyHostKey, pinnedKeyTypes: (h) => kh.store.pinnedKeyTypes(h.address, h.port) }),
+    )
+    expect(described.code).toBe('host-key-changed')
+    expect(kh.ask).not.toHaveBeenCalled()
+    expect((err as HostKeyError).info.keyType).toBe('ecdsa-sha2-nistp256')
+    expect((err as HostKeyError).info.known).toEqual([expect.objectContaining({ keyType: 'ssh-ed25519', source: 'openssh', line: 1 })])
+  })
+
+  it('asks a server with several host keys for the pinned type first', async () => {
+    const ecdsa = generateKey('ecdsa')
+    const rsa = generateKey('rsa')
+    // ssh2 prefers the server's ed25519 key; the pins name the others.
+    const s = await server({ extraHostKeys: [ecdsa.private, rsa.private] })
+    for (const pub of [ecdsa.public, rsa.public]) {
+      const b64 = pub.getPublicSSH().toString('base64')
+      const kh = await knownHosts(`[127.0.0.1]:${s.port} ${pub.type} ${b64}\n`)
+      const seen = vi.fn(kh.verifyHostKey)
+      await connect([hop('target', s.port)], deps({ verifyHostKey: seen, pinnedKeyTypes: (h) => kh.store.pinnedKeyTypes(h.address, h.port) }))
+      expect(seen).toHaveBeenCalledWith(expect.anything(), pub.type, b64)
+      expect(kh.ask).not.toHaveBeenCalled()
+
+      // Without the pinned order the ed25519 key comes first, which the pin blocks.
+      const { described } = await failure([hop('target', s.port)], deps({ verifyHostKey: kh.verifyHostKey }))
+      expect(described.code).toBe('host-key-changed')
+    }
+  })
+
   it('unknown key asks and rejection stops the dial', async () => {
     const s = await server()
     const verifyHostKey = vi.fn(async () => false)

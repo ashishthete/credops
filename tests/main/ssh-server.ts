@@ -12,6 +12,8 @@ export interface TestUser {
 export interface ServerOpts {
   /** A private key; a fresh ed25519 key when omitted. */
   hostKey?: string
+  /** Further host keys of other types, offered alongside `hostKey`. */
+  extraHostKeys?: string[]
   users: TestUser[]
   /** Offers keyboard-interactive: one round asking `prompts`, accepted when the replies equal `answers`. */
   keyboard?: { prompts: string[]; answers: string[] }
@@ -205,7 +207,7 @@ export async function startServer(opts: ServerOpts): Promise<TestServer> {
   let tcpipRequests = 0
   const log: ExecLog = { execs: [], signals: [] }
 
-  const server = new Server({ hostKeys: [hostKey] }, (conn) => {
+  const server = new Server({ hostKeys: [hostKey, ...(opts.extraHostKeys ?? [])] }, (conn) => {
     live.add(conn)
     conn.on('close', () => live.delete(conn))
     conn.on('error', () => {})

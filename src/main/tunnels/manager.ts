@@ -60,7 +60,7 @@ export interface TunnelManagerDeps {
   hostInfo(hostId: string): { label: string; keepaliveSec: number | null }
   connect: typeof connectChain
   plan(identity: IdentityRef, hop: HopTarget): Promise<AuthPlan>
-  knownHosts: Pick<KnownHostStore, 'check' | 'trust' | 'recordMismatch'>
+  knownHosts: Pick<KnownHostStore, 'check' | 'trust' | 'recordMismatch' | 'pinnedKeyTypes'>
   prompts: PromptBroker
   isLocked(): boolean
   /** `bind.listen` bound with the real `whoHolds`; the manager supplies the check for its own tunnels. */
@@ -720,6 +720,7 @@ export class TunnelManager {
           throw new ConfigError(messageOf(err))
         }
       },
+      pinnedKeyTypes: (hop) => this.deps.knownHosts.pinnedKeyTypes(hop.address, hop.port),
       verifyHostKey: (hop, keyType, keyBase64) =>
         verifyWithStore(this.deps.knownHosts, this.deps.prompts, {
           ownerId: link.owner,

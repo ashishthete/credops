@@ -1,6 +1,6 @@
 import type { Client } from 'ssh2'
 import type { ResolvedHost } from '../../shared/inventory'
-import type { HostKeyInfo } from '../../shared/ssh'
+import { replacedKeys, type HostKeyInfo } from '../../shared/ssh'
 import { PREPARE_DIAL_TIMEOUT_MS, type PreflightCheck } from '../../shared/deploy'
 import type { IdentityStore } from '../vault/identity-store'
 import { AuthFailedError, HostKeyError, describeError, hopsOf, type connectChain, type ConnectDeps, type HopTarget } from '../ssh/connect'
@@ -37,7 +37,7 @@ export interface PrepareDeps {
   /** Defaults to Phase 4's verifyWithStore. */
   verify?: typeof verifyWithStore
   prompts: PromptBroker
-  knownHosts: Pick<KnownHostStore, 'check' | 'trust' | 'recordMismatch'>
+  knownHosts: Pick<KnownHostStore, 'check' | 'trust' | 'recordMismatch' | 'pinnedKeyTypes'>
   identities: Pick<IdentityStore, 'resolve'>
   /** Environment, home and ~/.ssh/config lookup used for the agent / default key chain. */
   auth: Omit<AuthDeps, 'identities'>
@@ -53,13 +53,15 @@ export const passwordMessage = (label: string): string => `Deploys need key or a
  * Known hosts.
  */
 export function changedKeyMessage(base: string, info: HostKeyInfo): string {
-  const old = info.known.filter((k) => k.keyType === info.keyType)
+  const old = replacedKeys(info)
+  const typed = old.some((k) => k.keyType !== info.keyType)
+  const shown = (keyType: string, fingerprint: string): string => (typed ? `${keyType} ${fingerprint}` : fingerprint)
   const lines = old.flatMap((k) => (k.source === 'openssh' && k.line !== undefined ? [k.line] : []))
   const ways: string[] = []
   if (old.some((k) => k.source === 'openssh'))
     ways.push(`remove the old key from ~/.ssh/known_hosts${lines.length > 0 ? ` (line ${lines.join(', ')})` : ''} with: ssh-keygen -R '${info.host}'`)
   if (old.some((k) => k.source === 'app')) ways.push('remove the pinned key under Known hosts')
-  const seen = old.length > 0 ? ` Expected ${old.map((k) => k.fingerprint).join(' or ')}, got ${info.fingerprint}.` : ''
+  const seen = old.length > 0 ? ` Expected ${old.map((k) => shown(k.keyType, k.fingerprint)).join(' or ')}, got ${shown(info.keyType, info.fingerprint)}.` : ''
   return `${base}${seen} If you expected this change (the server was rebuilt or rekeyed), ${ways.join(', and ')}, then run preflight again.`
 }
 
@@ -137,6 +139,7 @@ export async function prepareHosts(plan: DeployPlan, deps: PrepareDeps): Promise
       const recorded: KnownHostEntry[] = []
       const connectDeps: ConnectDeps = {
         plan: (identity, hop) => authPlan(identity, authDeps, { label: hop.label, address: hop.address }),
+        pinnedKeyTypes: (hop) => deps.knownHosts.pinnedKeyTypes(hop.address, hop.port),
         verifyHostKey: async (hop, keyType, keyBase64) => {
           const ok = await verify(deps.knownHosts, deps.prompts, {
             ownerId: plan.releaseId,

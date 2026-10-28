@@ -16,7 +16,7 @@ export interface ExecLinksDeps {
   hostInfo(hostId: string): { label: string; keepaliveSec: number | null; envVars: Record<string, string> }
   connect: typeof connectChain
   plan(identity: IdentityRef): Promise<AuthPlan>
-  knownHosts: Pick<KnownHostStore, 'check' | 'trust' | 'recordMismatch'>
+  knownHosts: Pick<KnownHostStore, 'check' | 'trust' | 'recordMismatch' | 'pinnedKeyTypes'>
   prompts: PromptBroker
   isLocked(): boolean
   /** The idle-close timers. */
@@ -288,6 +288,7 @@ export class ExecLinks {
           throw new ConfigError(messageOf(err))
         }
       },
+      pinnedKeyTypes: (hop) => this.deps.knownHosts.pinnedKeyTypes(hop.address, hop.port),
       verifyHostKey: (hop, keyType, keyBase64) =>
         verifyWithStore(this.deps.knownHosts, this.deps.prompts, {
           ownerId: link.owner,
