@@ -402,7 +402,8 @@ describe('Touch ID needs turning on again', () => {
     const unlock = await gate('Unlock vaults')
     await user.type(within(unlock).getByLabelText('Master password'), 'correct horse{Enter}')
     const card = await gate('Turn Touch ID on again')
-    await user.click(within(card).getByRole('button', { name: 'Use your PIN instead' }))
+    // The PIN comes before the password, so the card opens on it.
+    expect(within(card).getByRole('button', { name: 'Use your master password instead' })).toBeInTheDocument()
     await user.type(within(card).getByLabelText('PIN'), '000000')
     await user.click(within(card).getByRole('button', { name: 'Turn on Touch ID' }))
     expect(await within(card).findByText('Wrong PIN · 2 tries left')).toBeInTheDocument()
@@ -418,7 +419,8 @@ describe('Touch ID needs turning on again', () => {
     renderApp()
     await user.type(await screen.findByLabelText('Master password'), 'correct horse{Enter}')
     const card = await gate('Turn Touch ID on again')
-    await user.click(within(card).getByRole('button', { name: 'Use your PIN instead' }))
+    // The PIN comes before the password, so the card opens on it.
+    expect(within(card).getByRole('button', { name: 'Use your master password instead' })).toBeInTheDocument()
     const field = within(card).getByLabelText('PIN')
     await user.click(field)
     await user.paste('1234567890123')
@@ -441,7 +443,8 @@ describe('Touch ID needs turning on again', () => {
     renderApp()
     await user.type(await screen.findByLabelText('Master password'), 'correct horse{Enter}')
     const card = await gate('Turn Touch ID on again')
-    await user.click(within(card).getByRole('button', { name: 'Use your PIN instead' }))
+    // The PIN comes before the password, so the card opens on it.
+    expect(within(card).getByRole('button', { name: 'Use your master password instead' })).toBeInTheDocument()
     await user.type(within(card).getByLabelText('PIN'), '000000')
     await user.click(within(card).getByRole('button', { name: 'Turn on Touch ID' }))
     expect(await screen.findByText('Too many wrong PINs')).toBeInTheDocument()
@@ -473,7 +476,8 @@ describe('Touch ID needs turning on again', () => {
     // Unlock with the password, then prove with the (last-try) PIN.
     await user.type(await screen.findByLabelText('Master password'), 'correct horse{Enter}')
     const card = await gate('Turn Touch ID on again')
-    await user.click(within(card).getByRole('button', { name: 'Use your PIN instead' }))
+    // The PIN comes before the password, so the card opens on it.
+    expect(within(card).getByRole('button', { name: 'Use your master password instead' })).toBeInTheDocument()
     await user.type(within(card).getByLabelText('PIN'), '000000')
     await user.click(within(card).getByRole('button', { name: 'Turn on Touch ID' }))
     expect(await screen.findByText('Too many wrong PINs')).toBeInTheDocument()

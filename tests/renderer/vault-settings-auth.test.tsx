@@ -278,6 +278,20 @@ describe('proof methods', () => {
     return { user, dialog, proof }
   }
 
+  it('the proof opens on Touch ID, then the PIN, with the master password last', async () => {
+    fakeVault({ hasPassword: true, quickUnlock: 'touchId', pin: { enabled: true, attemptsLeft: 5 }, lastMethod: 'password' })
+    let { proof } = await startSetPin()
+    expect(within(proof).queryByLabelText('Master password')).not.toBeInTheDocument()
+    expect(within(proof).queryByLabelText('PIN')).not.toBeInTheDocument()
+    expect(within(proof).getByRole('button', { name: 'Use your PIN instead' })).toBeInTheDocument()
+    cleanup()
+
+    fakeVault({ hasPassword: true, quickUnlock: 'off', pin: { enabled: true, attemptsLeft: 5 }, lastMethod: 'password' })
+    ;({ proof } = await startSetPin())
+    expect(within(proof).getByLabelText('PIN')).toBeInTheDocument()
+    expect(within(proof).getByRole('button', { name: 'Use your master password instead' })).toBeInTheDocument()
+  })
+
   it('Touch ID proves it with no secret typed', async () => {
     const { invoke } = fakeVault(
       { hasPassword: false, quickUnlock: 'touchId' },

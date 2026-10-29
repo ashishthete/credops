@@ -39,6 +39,8 @@ export function proofMethods(status: VaultStatus): ProofMethod[] {
   return methods
 }
 
+const PROOF_ORDER: ProofMethod[] = ['touchId', 'pin', 'password']
+
 const METHOD_SWITCH: Record<ProofMethod, string> = {
   password: 'Use your master password instead',
   pin: 'Use your PIN instead',
@@ -110,9 +112,8 @@ export function ProofForm({
   onWrong,
 }: Omit<ReverifyDialogProps, 'open' | 'title' | 'description' | 'status'> & { status: VaultStatus; onWrong: () => void }) {
   const methods = offered ?? proofMethods(status)
-  const [method, setMethod] = useState<ProofMethod | null>(() =>
-    status.lastMethod === 'pin' && methods.includes('pin') ? 'pin' : (methods[0] ?? null),
-  )
+  // Opens on the quickest method set up: Touch ID, then the PIN, and the master password last.
+  const [method, setMethod] = useState<ProofMethod | null>(() => PROOF_ORDER.find((m) => methods.includes(m)) ?? null)
   const inputRef = useRef<HTMLInputElement>(null)
   const [hasInput, setHasInput] = useState(false)
   const [busy, setBusy] = useState(false)

@@ -5,7 +5,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { SettingsPage } from '../../src/renderer/src/pages/settings/SettingsPage'
 import { commandStore } from '../../src/renderer/src/ui/commands'
 import { Toaster, clearToasts } from '../../src/renderer/src/ui/Toaster'
-import { mockBridge } from './helpers'
+import { vaultStatusStore } from '../../src/renderer/src/vault/status'
+import { VaultSettingsDialog } from '../../src/renderer/src/vault/VaultSettingsDialog'
+import { mockBridge, vaultStatus } from './helpers'
 import { renderShell } from './shell-helpers'
 
 const counts = { products: 1, identities: 2, hosts: 3, environments: 2, tunnels: 1, deployments: 1, services: 2 }
@@ -24,6 +26,16 @@ afterEach(() => {
 })
 
 describe('settings page', () => {
+  it('Unlock says what unlocks the vaults and opens the unlock settings', async () => {
+    mockBridge({ 'vault:status': vaultStatus({ unlocked: true, hasPassword: true, autoLockMinutes: 15 }) })
+    act(() => vaultStatusStore.set(vaultStatus({ unlocked: true, hasPassword: true, autoLockMinutes: 15 })))
+    render(<MemoryRouter><SettingsPage /><VaultSettingsDialog /></MemoryRouter>)
+    const section = screen.getByRole('region', { name: 'Unlock' })
+    expect(section).toHaveTextContent('Unlocks with master password and locks after 15 minutes idle. Add Touch ID or a PIN to stop typing the master password.')
+    fireEvent.click(screen.getByRole('button', { name: 'Unlock methods and auto-lock' }))
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+  })
+
   it('Export config… calls config:export and toasts the count', async () => {
     const invoke = mockBridge({ 'config:export': { path: '/Users/me/Desktop/credops-config.json', counts, omitted: 0 } })
     renderPage()
