@@ -62,7 +62,7 @@ export function LogsDrawer({ target, onClose }: { target: LogsTarget | null; onC
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={fast}
-            className="fixed inset-0 z-30 bg-black/30"
+            className="app-no-drag fixed inset-0 z-30 bg-black/30"
           />
           <motion.aside
             key="sheet"

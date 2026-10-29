@@ -23,6 +23,13 @@ body {
   -webkit-app-region: no-drag;
 }
 
+/* Electron works drag strips out from CSS alone, not from what is drawn on top, so anything that floats
+   over a header (sheets, dialogs, menus and their scrims) has to cut itself out or its clicks drag. */
+:is([role='dialog'], [role='alertdialog'], [role='menu'], [role='listbox']),
+.app-no-drag {
+  -webkit-app-region: no-drag;
+}
+
 /* Native date pickers default to a light glyph; match the dark theme. */
 input[type='date']::-webkit-calendar-picker-indicator {
   filter: invert(0.6);

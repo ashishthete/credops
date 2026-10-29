@@ -112,7 +112,7 @@ function PaletteDialog() {
   return (
     <motion.div
       // Still swallows clicks while it fades out, so none lands on the page underneath.
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/45 px-4 pt-[14vh] backdrop-blur-md"
+      className="app-no-drag fixed inset-0 z-50 flex items-start justify-center bg-black/45 px-4 pt-[14vh] backdrop-blur-md"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0, transition: exitFast }}

@@ -139,7 +139,7 @@ function DialogPanel({
     <motion.div
       // Still swallows clicks while it fades out, so a second click meant for the dialog (a double-click
       // on Delete) can never land on the page underneath.
-      className={`fixed inset-0 ${layer === 'prompt' ? 'z-[60]' : 'z-50'} flex items-center justify-center bg-black/50 px-4 backdrop-blur-md`}
+      className={`app-no-drag fixed inset-0 ${layer === 'prompt' ? 'z-[60]' : 'z-50'} flex items-center justify-center bg-black/50 px-4 backdrop-blur-md`}
       data-layer={layer}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
