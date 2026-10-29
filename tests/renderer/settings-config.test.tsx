@@ -6,7 +6,6 @@ import { SettingsPage } from '../../src/renderer/src/pages/settings/SettingsPage
 import { commandStore } from '../../src/renderer/src/ui/commands'
 import { Toaster, clearToasts } from '../../src/renderer/src/ui/Toaster'
 import { vaultStatusStore } from '../../src/renderer/src/vault/status'
-import { VaultSettingsDialog } from '../../src/renderer/src/vault/VaultSettingsDialog'
 import { mockBridge, vaultStatus } from './helpers'
 import { renderShell } from './shell-helpers'
 
@@ -26,14 +25,45 @@ afterEach(() => {
 })
 
 describe('settings page', () => {
-  it('Unlock says what unlocks the vaults and opens the unlock settings', async () => {
-    mockBridge({ 'vault:status': vaultStatus({ unlocked: true, hasPassword: true, autoLockMinutes: 15 }) })
-    act(() => vaultStatusStore.set(vaultStatus({ unlocked: true, hasPassword: true, autoLockMinutes: 15 })))
-    render(<MemoryRouter><SettingsPage /><VaultSettingsDialog /></MemoryRouter>)
+  it('Unlock shows each way in where it stands, and Touch ID turns on with a proof', async () => {
+    const status = vaultStatus({ unlocked: true, hasPassword: true, autoLockMinutes: 15 })
+    const invoke = mockBridge({ 'vault:status': status, 'vault:setAutoLock': { ...status, autoLockMinutes: 60 } })
+    act(() => vaultStatusStore.set(status))
+    renderPage()
     const section = screen.getByRole('region', { name: 'Unlock' })
-    expect(section).toHaveTextContent('Unlocks with master password and locks after 15 minutes idle. Add Touch ID or a PIN to stop typing the master password.')
-    fireEvent.click(screen.getByRole('button', { name: 'Unlock methods and auto-lock' }))
-    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    expect(section).toHaveTextContent('Only your master password is on. Turn on Touch ID or set a PIN to stop typing it every time.')
+    expect(screen.getByRole('switch', { name: 'Touch ID' })).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByRole('button', { name: 'Set PIN' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Remove' })).toBeDisabled() // the password is the only way in
+    expect(screen.getByRole('radio', { name: '15 min' })).toHaveAttribute('aria-checked', 'true')
+
+    await userEvent.click(screen.getByRole('radio', { name: '1 hour' }))
+    expect(invoke).toHaveBeenCalledWith('vault:setAutoLock', 60)
+    expect(screen.getByRole('radio', { name: '1 hour' })).toHaveAttribute('aria-checked', 'true')
+
+    await userEvent.click(screen.getByRole('switch', { name: 'Touch ID' }))
+    expect(await screen.findByRole('dialog', { name: 'Turn on Touch ID' })).toBeInTheDocument()
+  })
+
+  it('Unlock with Touch ID and a PIN on drops the nudge and offers to change or remove them', () => {
+    const status = vaultStatus({ unlocked: true, quickUnlock: 'touchId', pin: { enabled: true, attemptsLeft: 5 } })
+    mockBridge({ 'vault:status': status })
+    act(() => vaultStatusStore.set(status))
+    renderPage()
+    const section = screen.getByRole('region', { name: 'Unlock' })
+    expect(section).not.toHaveTextContent('Only your master password is on')
+    expect(screen.getByRole('switch', { name: 'Touch ID' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('button', { name: 'Change PIN' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Change password' })).toBeInTheDocument()
+  })
+
+  it('Unlock says when this Mac has no Touch ID', () => {
+    const status = vaultStatus({ unlocked: true, quickUnlockAvailable: { touchId: false, login: false } })
+    mockBridge({ 'vault:status': status })
+    act(() => vaultStatusStore.set(status))
+    renderPage()
+    expect(screen.getByRole('switch', { name: 'Touch ID' })).toBeDisabled()
+    expect(screen.getByText('Not available on this Mac.')).toBeInTheDocument()
   })
 
   it('Export config… calls config:export and toasts the count', async () => {

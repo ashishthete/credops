@@ -49,7 +49,7 @@ const MODE_HINTS: Record<QuickUnlockMode, string> = {
   login: 'Your Mac login opens your vaults without a prompt.',
 }
 
-function autoLockLabel(m: number | null): string {
+export function autoLockLabel(m: number | null): string {
   if (m === null) return 'Never'
   if (m === 60) return 'After 1 hour'
   return `After ${m} minute${m === 1 ? '' : 's'}`
@@ -284,7 +284,7 @@ interface Measure {
 }
 const EMPTY: Measure = { nextLen: 0, strength: 0, confirmLen: 0, match: true, currentLen: 0 }
 
-function ChangePasswordForm({ onWrong }: { onWrong: () => void }) {
+export function ChangePasswordForm({ onWrong, onDone }: { onWrong: () => void; onDone?: () => void }) {
   const currentRef = useRef<HTMLInputElement>(null)
   const nextRef = useRef<HTMLInputElement>(null)
   const confirmRef = useRef<HTMLInputElement>(null)
@@ -326,6 +326,7 @@ function ChangePasswordForm({ onWrong }: { onWrong: () => void }) {
       if (!res) return
       if (res.ok) {
         toast({ title: 'Master password changed', tone: 'success' })
+        onDone?.()
         return
       }
       if (res.reason === 'wrong-password') {

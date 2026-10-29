@@ -1,10 +1,9 @@
-import { ClipboardCopy, Download, FileJson, Fingerprint, FolderOpen, LifeBuoy, Upload } from 'lucide-react'
-import { useState, useSyncExternalStore } from 'react'
+import { ClipboardCopy, Download, FileJson, FolderOpen, LifeBuoy, Upload } from 'lucide-react'
+import { useState } from 'react'
 import { api } from '../../lib/api'
 import { Button } from '../../ui/Button'
 import { toast } from '../../ui/Toaster'
-import { vaultStatusStore } from '../../vault/status'
-import { openVaultSettings } from '../../vault/VaultSettingsDialog'
+import { UnlockSettings } from '../../vault/UnlockSettings'
 import { useConfigTransfer } from './ConfigTransfer'
 import { IntegrationsSection } from './IntegrationsPage'
 import { TerminalSection } from './TerminalSettings'
@@ -16,45 +15,13 @@ export function SettingsPage() {
         <h1 className="text-[19px] font-semibold tracking-tight text-fg">Settings</h1>
       </header>
       <div className="flex min-h-0 flex-1 flex-col gap-8 overflow-y-auto px-8 pb-8">
-        <UnlockSection />
+        <UnlockSettings />
         <IntegrationsSection />
         <TerminalSection />
         <ConfigSection />
         <SupportSection />
       </div>
     </div>
-  )
-}
-
-/** What unlocks the vaults now, and the way into changing it (the same dialog as the sidebar's sliders). */
-function UnlockSection() {
-  const status = useSyncExternalStore(vaultStatusStore.subscribe, vaultStatusStore.get)
-  if (!status?.setUp) return null
-  const on = [status.quickUnlock === 'touchId' && 'Touch ID', status.pin.enabled && 'PIN', status.hasPassword && 'master password'].filter(Boolean)
-  const lock = status.autoLockMinutes ? `locks after ${status.autoLockMinutes} minutes idle` : 'never locks by itself'
-
-  return (
-    <section aria-labelledby="settings-unlock" className="mt-2 max-w-[640px] rounded-xl border border-line bg-surface p-5">
-      <div className="flex items-start gap-3">
-        <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-accent/12 text-accent">
-          <Fingerprint aria-hidden className="size-4" />
-        </span>
-        <div className="min-w-0">
-          <h2 id="settings-unlock" className="text-[14px] font-semibold text-fg">
-            Unlock
-          </h2>
-          <p className="mt-1 text-[12.5px] leading-relaxed text-muted">
-            Unlocks with {on.join(', ') || 'nothing set up'} and {lock}.
-            {status.quickUnlock !== 'touchId' && !status.pin.enabled && ' Add Touch ID or a PIN to stop typing the master password.'}
-          </p>
-        </div>
-      </div>
-      <div className="mt-4 flex gap-2 pl-11">
-        <Button size="sm" onClick={openVaultSettings}>
-          Unlock methods and auto-lock
-        </Button>
-      </div>
-    </section>
   )
 }
 
