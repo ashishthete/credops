@@ -1,6 +1,6 @@
 import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
-import { Check, ChevronRight, Inbox, Link2, Lock, MoreHorizontal, Server, Unlink } from 'lucide-react'
-import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type RefObject } from 'react'
+import { Check, ChevronRight, Database, Inbox, Layers, Link2, Lock, MoreHorizontal, Pencil, Plus, Server, Unlink, type LucideIcon } from 'lucide-react'
+import { Fragment, memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type RefObject } from 'react'
 import { HOST_ROLES, type HostRole, type ProductIcon } from '../../../../shared/inventory'
 import { isFocusable, moveFocus, type NodeKey, type TreeRow } from '../../inventory/tree'
 import { exitFast, fast, spring, useMotionSafe } from '../../ui/motion'
@@ -28,10 +28,38 @@ export interface InventoryTreeProps {
   /** Sets a host's role in the environment it is listed under. */
   onSetRole: (host: TreeRow, environment: TreeRow, role: HostRole) => void
   onRemoveHost: (host: TreeRow, environment: TreeRow) => void
+  /** Adds or edits from a product or environment row's menu; without it those rows have no menu. */
+  onRowAction?: (row: TreeRow, action: RowAction) => void
   productIcons?: Readonly<Record<string, ProductIcon>>
 }
 
 type MoveKey = Parameters<typeof moveFocus>[2]
+
+export type RowAction = 'newEnvironment' | 'editProduct' | 'newHost' | 'addService' | 'addDatabase' | 'editEnvironment'
+
+/** What a product or environment row's menu offers, in order. */
+const ROW_ACTIONS: Record<'product' | 'environment', { action: RowAction; label: string; icon: LucideIcon }[]> = {
+  product: [
+    { action: 'newEnvironment', label: 'New environment', icon: Layers },
+    { action: 'editProduct', label: 'Edit product', icon: Pencil },
+  ],
+  environment: [
+    { action: 'newHost', label: 'New host', icon: Server },
+    { action: 'addService', label: 'Add service', icon: Plus },
+    { action: 'addDatabase', label: 'Add database', icon: Database },
+    { action: 'editEnvironment', label: 'Edit environment', icon: Pencil },
+  ],
+}
+
+interface MenuAt {
+  row: TreeRow
+  /** The environment a host row is listed under: its menu is the role menu. */
+  env?: TreeRow
+  x: number
+  y: number
+  /** Top edge of the options button, when opened from it: a flipped menu sits above this. */
+  up?: number
+}
 
 /**
  * What a row does when used. Rows read it through a ref that always holds the latest handlers, so
@@ -71,6 +99,7 @@ export function InventoryTree({
   onDropEnvironment,
   onSetRole,
   onRemoveHost,
+  onRowAction,
   productIcons = {},
 }: InventoryTreeProps) {
   const tree = useRef<HTMLUListElement>(null)
@@ -79,14 +108,7 @@ export function InventoryTree({
   const [dragging, setDragging] = useState<TreeRow | null>(null)
   const [over, setOver] = useState<NodeKey | null>(null)
   const [hovered, setHovered] = useState<TreeRow | null>(null)
-  const [menu, setMenu] = useState<{
-    host: TreeRow
-    env: TreeRow
-    x: number
-    y: number
-    /** Top edge of the options button, when opened from it: a flipped menu sits above this. */
-    up?: number
-  } | null>(null)
+  const [menu, setMenu] = useState<MenuAt | null>(null)
   const tabKey = useMemo(() => tabbableKey(rows, selected), [rows, selected])
   const byKey = useMemo(() => new Map(rows.map((r) => [r.key, r])), [rows])
 
@@ -113,11 +135,14 @@ export function InventoryTree({
     onToggle(row.key)
   }
 
-  /** The role menu belongs to a host listed under an environment. */
-  const openMenu = (host: TreeRow, x: number, y: number, up?: number) => {
-    const env = host.parentKey ? byKey.get(host.parentKey) : undefined
+  /** A host listed under an environment has the role menu; a product or environment row, its add and edit menu. */
+  const hasMenu = (row: TreeRow): boolean =>
+    row.kind === 'host' ? !!row.parentKey && byKey.get(row.parentKey)?.kind === 'environment' : !!onRowAction && (row.kind === 'product' || row.kind === 'environment')
+  const openMenu = (row: TreeRow, x: number, y: number, up?: number) => {
+    if (!hasMenu(row)) return
+    const env = row.kind === 'host' && row.parentKey ? byKey.get(row.parentKey) : undefined
     // The options button toggles: a second click on it closes its own menu.
-    if (host.kind === 'host' && env?.kind === 'environment') setMenu((m) => (up !== undefined && m?.host.key === host.key ? null : { host, env, x, y, up }))
+    setMenu((m) => (up !== undefined && m?.row.key === row.key ? null : { row, env, x, y, up }))
   }
 
   const onKeyDown = (e: KeyboardEvent<HTMLUListElement>) => {
@@ -190,7 +215,7 @@ export function InventoryTree({
   const closeMenu = () => {
     setMenu(null)
     // Focus goes back to the row the menu was opened on.
-    if (menu) focusNext.current = menu.host.key
+    if (menu) focusNext.current = menu.row.key
   }
 
   return (
@@ -218,15 +243,15 @@ export function InventoryTree({
                 over={over === row.key}
                 sharedHighlight={!!hovered && hovered.key !== row.key && hovered.kind === row.kind && hovered.id === row.id}
                 icon={row.kind === 'product' ? productIcons[row.id] : undefined}
-                menuOpen={menu?.host.key === row.key}
-                hasMenu={row.kind === 'host' && !!row.parentKey && byKey.get(row.parentKey)?.kind === 'environment'}
+                menuOpen={menu?.row.key === row.key}
+                hasMenu={hasMenu(row)}
                 actions={actions}
               />
             ),
           )}
         </AnimatePresence>
       </ul>
-      {menu && <RoleMenu menu={menu} onClose={closeMenu} onSetRole={onSetRole} onRemove={onRemoveHost} />}
+      {menu && <RowMenu menu={menu} onClose={closeMenu} onSetRole={onSetRole} onRemove={onRemoveHost} onAction={onRowAction} />}
     </>
   )
 }
@@ -240,9 +265,9 @@ interface TreeItemProps {
   over: boolean
   sharedHighlight: boolean
   icon?: ProductIcon
-  /** Host rows under an environment open the role menu. */
+  /** Host rows under an environment open the role menu; product and environment rows, add and edit. */
   hasMenu: boolean
-  /** The role menu is open on this row. */
+  /** Its menu is open on this row. */
   menuOpen?: boolean
   actions: RefObject<TreeActions>
 }
@@ -538,20 +563,22 @@ const TreeHint = memo(function TreeHint({
   )
 })
 
-/** Role radios and remove for a host row, at a point; arrows move, Escape closes. */
-function RoleMenu({
+/** Role radios and remove for a host row, or add and edit for a product or environment, at a point; arrows move, Escape closes. */
+function RowMenu({
   menu,
   onClose,
   onSetRole,
   onRemove,
+  onAction,
 }: {
-  menu: { host: TreeRow; env: TreeRow; x: number; y: number; up?: number }
+  menu: MenuAt
   onClose: () => void
   onSetRole: (host: TreeRow, environment: TreeRow, role: HostRole) => void
   onRemove: (host: TreeRow, environment: TreeRow) => void
+  onAction?: (row: TreeRow, action: RowAction) => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
-  const { host, env } = menu
+  const { row: host, env } = menu
 
   // Keep the menu on screen: flip above its anchor when it would run off the bottom, and pull it in from the right.
   useLayoutEffect(() => {
@@ -614,6 +641,8 @@ function RoleMenu({
       style={{ left: menu.x, top: menu.y }}
       className="fixed z-50 w-[200px] rounded-ui border border-line bg-surface-2/95 p-1 shadow-pop backdrop-blur-xl"
     >
+      {env ? (
+      <>
       <div role="group" aria-label="Role">
       {HOST_ROLES.map((role) => (
         <button
@@ -645,6 +674,28 @@ function RoleMenu({
         <Unlink aria-hidden className="size-3.5 opacity-80" />
         Remove from {env.label}
       </button>
+      </>
+      ) : (
+        (host.kind === 'product' || host.kind === 'environment') &&
+        ROW_ACTIONS[host.kind].map(({ action, label, icon: Icon }, i) => (
+          <Fragment key={action}>
+            {/* Edit sits apart from the adds. */}
+            {i > 0 && action.startsWith('edit') && <div role="separator" className="my-1 h-px bg-line/70" />}
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onClose()
+                onAction?.(host, action)
+              }}
+              className={`${item} text-fg/90 hover:bg-white/6 focus:bg-white/6`}
+            >
+              <Icon aria-hidden className="size-3.5 opacity-80" />
+              {label}
+            </button>
+          </Fragment>
+        ))
+      )}
     </div>
   )
 }

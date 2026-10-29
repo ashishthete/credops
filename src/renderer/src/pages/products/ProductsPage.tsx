@@ -3,6 +3,7 @@ import { Boxes, Download, Inbox, Plus, Upload, type LucideIcon } from 'lucide-re
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
 import type { EnvironmentMeta, Membership, ProductMeta } from '../../../../shared/inventory'
+import type { ServiceKind } from '../../../../shared/services'
 import { regionHintText } from '../../inventory/regions'
 import { inv, inventoryStore, loadInventory, reloadInventory, useInventory, type InventoryData } from '../../inventory/store'
 import { buildTree, environmentKey, selectionFromKey, type NodeKey, type TreeRow } from '../../inventory/tree'
@@ -20,10 +21,11 @@ import { HostDialog } from '../hosts/HostDialog'
 import { HostView } from '../hosts/HostView'
 import { EnvironmentDialog } from './EnvironmentDialog'
 import { EnvironmentView } from './EnvironmentView'
-import { InventoryTree } from './InventoryTree'
+import { InventoryTree, type RowAction } from './InventoryTree'
 import { ProductDialog } from './ProductDialog'
 import { PaneHeader, ProductView } from './ProductView'
 import { RegionsUpgradeBanner } from './RegionsUpgradeBanner'
+import { ServiceDialog } from './services/ServiceDialog'
 import { useConfigTransfer } from '../settings/ConfigTransfer'
 import { ResizablePanel } from '../../ui/ResizablePanel'
 
@@ -46,6 +48,8 @@ type Dialogs =
   /** `productId` presets a new environment's product; `locked` keeps it there (opened from that product). */
   | { kind: 'environment'; environment?: EnvironmentMeta; productId?: string; locked?: boolean }
   | { kind: 'host'; presetEnvironment: Membership; envKey: NodeKey }
+  /** Mounted while open, as ServicesSection mounts it. */
+  | { kind: 'service'; environment: EnvironmentMeta; service: ServiceKind }
   | null
 
 export function ProductsPage() {
@@ -138,6 +142,21 @@ export function ProductsPage() {
   useShortcut('mod+n', () => (openNewRef.current.hasProduct ? openNewRef.current.newEnvironment() : openNewRef.current.newProduct()))
 
   const env = (id: string) => data?.environments.find((e) => e.id === id)
+
+  /** A product or environment row's menu: the same dialogs as the page's own buttons, preset to that row. */
+  const rowAction = (row: TreeRow, action: RowAction) => {
+    const product = row.kind === 'product' ? data?.products.find((p) => p.id === row.id) : undefined
+    const environment = row.kind === 'environment' ? env(row.id) : undefined
+    if (action === 'newEnvironment' && product) newEnvironment(product.id, true)
+    else if (action === 'editProduct' && product) openDialog({ kind: 'product', product })
+    else if (action === 'editEnvironment' && environment) openDialog({ kind: 'environment', environment })
+    else if (action === 'newHost' && environment) openDialog({ kind: 'host', presetEnvironment: { environmentId: environment.id, role: 'app' }, envKey: row.key })
+    else if ((action === 'addService' || action === 'addDatabase') && environment) {
+      // Its services show on the environment's page, so that is where the new one lands.
+      if (row.key !== selected) select(row.key)
+      openDialog({ kind: 'service', environment, service: action === 'addDatabase' ? 'db' : 'service' })
+    }
+  }
 
   // One drop at a time: the next is judged against the result of the last.
   const [dropping, setDropping] = useState(false)
@@ -334,6 +353,7 @@ export function ProductsPage() {
               onDropHost={(h, e) => void dropHost(h, e)}
               onDropEnvironment={(e, p) => void dropEnvironment(e, p)}
               onSetRole={(h, e, role) => void inv.putHost(e.id, h.id, role)}
+              onRowAction={rowAction}
               onRemoveHost={(h, e) => {
                 const meta = env(e.id)
                 if (meta) askRemoveHost(meta, h.id)
@@ -424,6 +444,7 @@ export function ProductsPage() {
           }}
         />
       )}
+      {dialog?.kind === 'service' && dialogOpen && <ServiceDialog env={dialog.environment} kind={dialog.service} onClose={closeDialog} />}
       <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
       {transfer.dialog}
     </div>

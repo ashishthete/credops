@@ -850,6 +850,33 @@ describe('products page', () => {
     expect(item('web-1')).toHaveFocus()
   })
 
+  it('right-clicking a product or environment opens its add and edit dialogs', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    fireEvent.contextMenu(await screen.findByRole('treeitem', { name: 'Acme' }))
+    let menu = await screen.findByRole('menu', { name: 'Options for Acme' })
+    expect(within(menu).getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['New environment', 'Edit product'])
+    await user.click(within(menu).getByRole('menuitem', { name: 'New environment' }))
+    const envDialog = await screen.findByRole('dialog', { name: 'New environment' })
+    expect(within(envDialog).getByLabelText('Product')).toHaveValue('acme')
+    expect(within(envDialog).getByLabelText('Product')).toBeDisabled()
+    await user.click(within(envDialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    fireEvent.contextMenu(item('staging'))
+    menu = await screen.findByRole('menu', { name: 'Options for staging' })
+    expect(within(menu).getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['New host', 'Add service', 'Add database', 'Edit environment'])
+    await user.click(within(menu).getByRole('menuitem', { name: 'New host' }))
+    expect(await screen.findByRole('dialog', { name: 'New host' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    fireEvent.contextMenu(item('staging'))
+    await user.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Add database' }))
+    expect(await screen.findByRole('dialog', { name: 'Add database' })).toBeInTheDocument()
+    expect(item('staging')).toHaveAttribute('aria-selected', 'true')
+  })
+
   it('the options button toggles its menu', async () => {
     const user = userEvent.setup()
     renderPage()
