@@ -1,8 +1,10 @@
 import { motion } from 'framer-motion'
-import { ArrowLeftToLine, ArrowRightToLine, Copy, Globe, Link2, Lock, Pencil, RotateCw, Trash2, type LucideIcon } from 'lucide-react'
+import { ArrowLeftToLine, ArrowRightToLine, Copy, Globe, Link2, Lock, Pencil, RotateCw, SquareTerminal, Trash2, type LucideIcon } from 'lucide-react'
 import { memo, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { isLoopback, minutesText, type TunnelMeta, type TunnelRuntime, type TunnelState, type TunnelType } from '../../../../shared/tunnels'
 import { ExplainButton } from '../../ai/ExplainPanel'
+import { api } from '../../lib/api'
+import { runnableSshCommand } from '../../tunnels/form'
 import { startTunnel, stopTunnel, useTunnel, useTunnelStats } from '../../tunnels/store'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
@@ -91,6 +93,22 @@ export const TunnelCard = memo(function TunnelCard({ id, hostLabel, hostAddress,
       .then(() => toast({ title: `Copied ${address}`, tone: 'success' }))
       .catch(() => {})
   }
+  const copyCommand = () => {
+    api
+      .invoke('host:resolve', meta.hostId, ...(meta.environmentId ? [meta.environmentId] : []))
+      .then((host) => {
+        if (!host) throw new Error("Couldn't work out how to reach this tunnel's host.")
+        return navigator.clipboard.writeText(runnableSshCommand(meta, host)).then(() =>
+          toast({
+            title: 'Copied the ssh command',
+            // A key or password kept in CredOps isn't something another terminal can use.
+            description: host.identity.auth === 'key' || host.identity.auth === 'password' ? `It logs in as ${host.identity.username}; that terminal needs its own key or password.` : undefined,
+            tone: 'success',
+          }),
+        )
+      })
+      .catch((err: unknown) => toast({ title: "Couldn't copy the command", description: err instanceof Error ? err.message : String(err), tone: 'error' }))
+  }
 
   return (
     <motion.article
@@ -151,6 +169,7 @@ export const TunnelCard = memo(function TunnelCard({ id, hostLabel, hostAddress,
                 { label: 'Edit', icon: Pencil, run: () => onEdit(id) },
                 { label: 'Duplicate', icon: Copy, run: () => onDuplicate(id) },
                 { label: 'Copy address', icon: Link2, run: copyAddress },
+                { label: 'Copy SSH command', icon: SquareTerminal, run: copyCommand },
                 { label: 'Delete', icon: Trash2, danger: true, run: () => onDelete(id) },
               ]}
             />

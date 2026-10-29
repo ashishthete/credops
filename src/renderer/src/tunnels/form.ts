@@ -1,4 +1,4 @@
-import { HOST_ADDRESS, MAX_ADDRESS, type EnvironmentMeta } from '../../../shared/inventory'
+import { HOST_ADDRESS, MAX_ADDRESS, type EnvironmentMeta, type ResolvedHost } from '../../../shared/inventory'
 import { BIND_ADDRESS, DEFAULT_TUNNEL_MAX_MINUTES, MAX_BIND_ADDRESS, type TunnelMeta, type TunnelPatch, type TunnelType } from '../../../shared/tunnels'
 import { MAX_LABEL } from '../../../shared/vault'
 import { hostPort } from '../pages/tunnels/RouteLine'
@@ -157,6 +157,23 @@ export function changes(original: TunnelMeta, fields: NonNullable<Check['fields'
 
 /** Safe to paste into a shell as is; anything else is single-quoted. */
 const shellWord = (s: string) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`)
+
+/** `user@address`, with `:port` when it isn't 22, as `-J` takes it. */
+const jumpWord = (user: string, address: string, port: number) => shellWord(`${user}@${port === 22 ? address : hostPort(address, port)}`)
+
+/**
+ * A command that opens this tunnel from any terminal: the resolved user, address, port and jump hosts,
+ * with `-N` so it only forwards. A 127.0.0.1 bind is left out, since ssh listens there anyway.
+ */
+export function runnableSshCommand(t: Pick<TunnelMeta, 'type' | 'bindAddress' | 'bindPort' | 'targetHost' | 'targetPort'>, host: ResolvedHost): string {
+  const bind = t.bindAddress === '127.0.0.1' ? String(t.bindPort) : hostPort(t.bindAddress, t.bindPort)
+  const spec = t.type === 'D' ? bind : `${bind}:${hostPort(t.targetHost ?? '', t.targetPort ?? 0)}`
+  const words = ['ssh', '-N', `-${t.type}`, shellWord(spec)]
+  if (host.port.value !== 22) words.push('-p', String(host.port.value))
+  if (host.chain.length) words.push('-J', host.chain.map((h) => jumpWord(h.identity.username, h.address, h.port)).join(','))
+  words.push(shellWord(`${host.identity.username}@${host.address}`))
+  return words.join(' ')
+}
 
 /** The equivalent `ssh` command, naming the host by its label (never its address or user). */
 export function sshCommand(f: Form, hostLabel: string | undefined): string {

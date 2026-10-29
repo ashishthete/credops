@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { inventoryStore } from '../../src/renderer/src/inventory/store'
 import { AppShell } from '../../src/renderer/src/shell/AppShell'
 import { resetTunnels } from '../../src/renderer/src/tunnels/store'
-import { clearToasts } from '../../src/renderer/src/ui/Toaster'
+import { clearToasts, Toaster } from '../../src/renderer/src/ui/Toaster'
 import type { TunnelMeta, TunnelRuntime, TunnelStats } from '../../src/shared/tunnels'
 import { emitBridgeEvent, environment, host, mockBridge, tunnelMeta, tunnelRuntime } from './helpers'
 
@@ -81,6 +81,31 @@ afterEach(async () => {
 })
 
 describe('tunnels page', () => {
+  it('Copy SSH command copies a command for another terminal', async () => {
+    const writeText = vi.fn(async () => {})
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    const resolved = {
+      hostId: 'h-db',
+      environmentId: null,
+      address: '198.51.100.99',
+      addressSource: 'host',
+      port: { value: 22, source: 'global' },
+      identity: { source: 'global', username: 'ubuntu', auth: 'default' },
+      jump: { hostId: null, source: null },
+      chain: [],
+      conflicts: [],
+    }
+    const invoke = await renderPage([tunnelMeta({ id: 't1', label: 'EU', hostId: 'h-db', bindPort: 5475 })], [], { 'host:resolve': resolved })
+    render(<Toaster />)
+    fireEvent.click(within(card('EU')).getByRole('button', { name: 'Actions for EU' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy SSH command' }))
+    await flush()
+    expect(calls(invoke, 'host:resolve')[0].slice(1)).toEqual(['h-db'])
+    expect(writeText).toHaveBeenCalledWith('ssh -N -L 5475:localhost:5432 ubuntu@198.51.100.99')
+    await flush()
+    expect(screen.getByText('Copied the ssh command')).toBeInTheDocument()
+  })
+
   it('placeholder is gone and /tunnels renders the page', async () => {
     await renderPage([tunnelMeta({ id: 't1', label: 'pg', hostId: 'h-db' })], [tunnelRuntime({ id: 't1', state: 'stopped' })])
     expect(screen.getByRole('heading', { name: 'Tunnels', level: 1 })).toBeInTheDocument()
