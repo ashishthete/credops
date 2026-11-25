@@ -17,7 +17,19 @@ window, with your keys and passwords kept in a local vault.
 
 CredOps is built with Electron, React and TypeScript. Packaged builds are currently made for macOS only.
 
+## Download
+
+**[Download CredOps for macOS (Apple silicon)](https://github.com/ashishthete/credops/releases/latest/download/CredOps-0.1.0-arm64.dmg)**
+
+Open the `.dmg` and drag CredOps into Applications. The app isn't notarized by Apple, so the first launch
+needs an extra step: see ["CredOps Not Opened" on first launch](#credops-not-opened-on-first-launch).
+
+Every version, with its checksum, is on the [releases page](https://github.com/ashishthete/credops/releases).
+There is no Intel build to download yet; on an Intel Mac, build it from source.
+
 ## Requirements
+
+These are only needed to run or build CredOps from source.
 
 - macOS (Apple silicon or Intel)
 - [Node.js](https://nodejs.org) 22 or newer
