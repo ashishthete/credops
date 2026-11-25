@@ -105,7 +105,10 @@ export async function makeConfigFixture(): Promise<ConfigFixture> {
     }),
   )
   const appService = f.services.create({ kind: 'service', environmentId: f.staging.id, name: 'web', deploymentId: deployment.id, url: 'https://staging.example.com', urlCheckFrom: 'mac' })
-  const dbService = f.services.create({ kind: 'db', environmentId: f.staging.id, name: 'main-db', dbEngine: 'postgres', dbAddress: '10.0.0.9', viaHostId: f.host.id, localPort: 15432 })
+  const dbService = f.services.create({ kind: 'db', environmentId: f.staging.id, name: 'main-db', dbEngine: 'postgres', dbAddress: '10.0.0.9', hostId: f.host.id, localPort: 15432 })
+  // app1 joined staging with a placeholder app; it runs real services now, so drop the placeholder. Prod keeps its
+  // own (that is how app1 is in prod) and staging keeps the bastion's.
+  f.db.prepare("DELETE FROM services WHERE environment_id = ? AND host_id = ? AND name = 'app1'").run(f.staging.id, f.host.id)
   f.services.setTunnel(dbService.id, tunnel.id, 15432)
 
   const snippets = new SnippetStore({ db: f.db, audit: f.audit, vault: f.vault })

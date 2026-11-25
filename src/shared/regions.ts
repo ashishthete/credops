@@ -19,22 +19,18 @@ export const hostRegion = (regions: HostRegions, hostId: string | null): string 
 export const checkoutRegion = (regions: HostRegions, checkout: Pick<DeploymentMeta, 'hostId'>): string | null =>
   hostRegion(regions, checkout.hostId)
 
-/**
- * An app service's region is its checkout host's; a db service's is its via-host's. None when the service has no
- * checkout or via-host.
- */
+/** A service's region is its host's. `checkouts` is unused since every service has a host; kept for callers. */
 export function serviceRegion(
   regions: HostRegions,
   service: ServiceMeta,
   checkouts: readonly Pick<DeploymentMeta, 'id' | 'hostId'>[],
 ): string | null {
-  if (service.kind === 'db') return hostRegion(regions, service.viaHostId)
-  const checkout = service.deploymentId === null ? undefined : checkouts.find((c) => c.id === service.deploymentId)
-  return checkout ? checkoutRegion(regions, checkout) : null
+  void checkouts
+  return hostRegion(regions, service.hostId)
 }
 
 /**
- * The distinct regions of an environment's member hosts, checkout hosts and db via-hosts. `checkouts` and
+ * The distinct regions of an environment's member hosts, checkout hosts and service hosts. `checkouts` and
  * `services` may hold other environments' too: only this one's count.
  */
 export function environmentRegions(
@@ -46,7 +42,7 @@ export function environmentRegions(
   const hostIds = [
     ...env.hosts.map((m) => m.hostId),
     ...checkouts.filter((c) => c.environmentId === env.id).map((c) => c.hostId),
-    ...services.filter((s) => s.environmentId === env.id && s.kind === 'db').map((s) => (s.kind === 'db' ? s.viaHostId : null)),
+    ...services.filter((s) => s.environmentId === env.id).map((s) => s.hostId),
   ]
   return distinct(hostIds.map((h) => hostRegion(regions, h)))
 }

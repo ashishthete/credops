@@ -295,32 +295,36 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: Omitt
   })
 
   const services: ConfigService[] = all(
-    `SELECT id, environment_id, name, kind, position, description, deployment_id, compose_service, url, url_check_from,
-       db_engine, db_address, db_port, via_host_id, local_port, tunnel_id, skip_unchanged FROM services`,
-  ).map((r) => {
+    `SELECT id, environment_id, host_id, name, kind, position, description, deployment_id, compose_service, url, url_check_from,
+       db_engine, db_address, db_port, local_port, tunnel_id, skip_unchanged FROM services`,
+  ).map((r): ConfigService => {
     at = `services:${str(r.id)}`
-    const common = { id: str(r.id), environmentId: str(r.environment_id), name: str(r.name) }
+    const common = {
+      id: str(r.id),
+      environmentId: str(r.environment_id),
+      name: str(r.name),
+      position: Number(r.position),
+      description: str(r.description),
+      hostId: str(r.host_id),
+    }
+    if (r.kind === 'bastion') return { ...common, kind: 'bastion' }
     return r.kind === 'service'
       ? {
           ...common,
-          kind: 'service' as const,
-          position: Number(r.position),
-          description: str(r.description),
+          kind: 'service',
           deploymentId: optStr(r.deployment_id),
-          composeService: str(r.compose_service),
+          composeService: optStr(r.compose_service) ?? '',
           url: r.url === null ? null : blankUrlParams(str(r.url)),
           urlCheckFrom: r.url_check_from as 'mac' | 'host',
           skipUnchanged: bool(r.skip_unchanged),
         }
       : {
           ...common,
-          kind: 'db' as const,
-          position: Number(r.position),
-          description: str(r.description),
+          kind: 'db',
           dbEngine: r.db_engine as DbEngine,
           dbAddress: str(r.db_address),
           dbPort: Number(r.db_port),
-          viaHostId: optStr(r.via_host_id),
+          viaHostId: str(r.host_id),
           localPort: optInt(r.local_port),
           tunnelId: optStr(r.tunnel_id),
         }

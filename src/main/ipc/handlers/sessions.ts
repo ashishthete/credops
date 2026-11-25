@@ -9,6 +9,7 @@ type SessionChannel =
   | 'session:reconnect'
   | 'session:write'
   | 'session:resize'
+  | 'session:ack'
   | 'session:close'
   | 'session:list'
   | 'session:attach'
@@ -19,7 +20,7 @@ type SessionChannel =
 
 export type SessionApi = Pick<
   SessionManager,
-  'openSsh' | 'openLocal' | 'reconnect' | 'write' | 'resize' | 'close' | 'list' | 'attach'
+  'openSsh' | 'openLocal' | 'reconnect' | 'write' | 'resize' | 'ack' | 'close' | 'list' | 'attach'
 >
 
 /** Session and tunnel prompts share one broker, so one answer channel serves both. */
@@ -37,6 +38,7 @@ export function createSessionHandlers(deps: {
     'session:reconnect': (id) => sessions.reconnect(id),
     'session:write': (id, data) => sessions.write(id, data),
     'session:resize': (id, cols, rows) => sessions.resize(id, cols, rows),
+    'session:ack': (id, chars) => sessions.ack(id, chars),
     'session:close': (id) => sessions.close(id),
     'session:list': () => sessions.list(),
     'session:attach': (id) => sessions.attach(id),

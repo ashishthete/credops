@@ -276,7 +276,7 @@ function LogsBody({ target, onClose }: { target: LogsTarget; onClose: () => void
         </motion.div>
       )}
       <div className="min-h-0 flex-1 px-5 pb-5">
-        <OutputPane key={`${following}:${followId}:${tail}`} output={output} label={title} dimTimestamps className="h-full max-h-none" />
+        <OutputPane key={`${following}:${followId}:${tail}`} output={output} label={title} dimTimestamps fill className="max-h-none" />
       </div>
     </>
   )

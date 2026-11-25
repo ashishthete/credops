@@ -1,19 +1,24 @@
-import type { EnvironmentMeta, HostMeta, HostRole, RegionRef } from '../../../shared/inventory'
+import type { EnvironmentMeta, HostRole, RegionRef } from '../../../shared/inventory'
+import type { ServiceKind } from '../../../shared/services'
 import { regionOfHost } from './regions'
 import type { InventoryData } from './store'
 
-/** 'p:<id>', 'p:<id>/e:<id>', 'p:<id>/e:<id>/h:<id>', 'u', 'u/h:<id>' */
+/** 'p:<id>', 'p:<id>/e:<id>', 'p:<id>/e:<id>/s:<id>', 'u', 'u/h:<id>' */
 export type NodeKey = string
 
 export interface TreeRow {
   key: NodeKey
-  kind: 'product' | 'environment' | 'host' | 'group' | 'hint'
+  kind: 'product' | 'environment' | 'service' | 'host' | 'group' | 'hint'
   id: string
   depth: 0 | 1 | 2
   parentKey: NodeKey | null
   label: string
   color: string
   role?: HostRole
+  /** Services only: its type, and the host it runs on. */
+  serviceKind?: ServiceKind
+  hostId?: string
+  hostLabel?: string
   protected?: boolean
   /** Other places this host appears; 0 = not shared. */
   sharedCount: number
@@ -36,6 +41,19 @@ export const ROLE_ORDER = ['bastion', 'app', 'db', 'other'] as const satisfies r
 export const UNASSIGNED_COLOR = '#8a91a3'
 export const byName = (a: string, b: string) => a.localeCompare(b)
 
+/** Services by type, in the order you reach them: bastions, then apps, then databases. */
+export const SERVICE_ORDER = ['bastion', 'service', 'db'] as const satisfies readonly ServiceKind[]
+
+/** What the tree needs of a service. */
+export interface TreeService {
+  id: string
+  environmentId: string
+  hostId: string
+  name: string
+  kind: ServiceKind
+  position: number
+}
+
 /** Hosts by role (bastions first, role-less last), then label. */
 export const compareHosts = (a: { role: HostRole | null; label: string }, b: { role: HostRole | null; label: string }) =>
   (a.role === null ? ROLE_ORDER.length : ROLE_ORDER.indexOf(a.role)) - (b.role === null ? ROLE_ORDER.length : ROLE_ORDER.indexOf(b.role)) ||
@@ -44,19 +62,15 @@ export const compareHosts = (a: { role: HostRole | null; label: string }, b: { r
 /** Rows focus and arrow keys can land on; hints are text only. */
 export const isFocusable = (r: TreeRow) => r.kind !== 'hint'
 
-/** The visible rows, in order. Products by name; environments by name; hosts by role then label. */
-export function buildTree(data: InventoryData, expanded: ReadonlySet<NodeKey>): TreeRow[] {
+/** The visible rows, in order. Products by name; environments by name; services by type, then their own order. */
+export function buildTree(data: InventoryData, expanded: ReadonlySet<NodeKey>, services: readonly TreeService[] = []): TreeRow[] {
   const envById = new Map(data.environments.map((e) => [e.id, e]))
   const hostById = new Map(data.hosts.map((h) => [h.id, h]))
-  const productName = new Map(data.products.map((p) => [p.id, p.name]))
   const rows: TreeRow[] = []
   const regionRef = (hostId: string): RegionRef | undefined => {
     const r = regionOfHost(data, hostId)
     return r && { id: r.id, code: r.code, displayName: r.displayName }
   }
-
-  // A host shows once under every environment it belongs to (or once if it has none).
-  const hostAppearances = (h: HostMeta) => Math.max(1, h.environments.length)
 
   const hostsOf = (envId: string) => {
     const env = envById.get(envId)
@@ -68,13 +82,6 @@ export function buildTree(data: InventoryData, expanded: ReadonlySet<NodeKey>): 
       })
       .sort((a, b) => compareHosts({ role: a.role, label: a.host.label }, { role: b.role, label: b.host.label }))
   }
-
-  /** Every "Product · Environment" the host sits in, keyed by where that environment shows in the tree. */
-  const placementsOf = (h: HostMeta) =>
-    h.environments.flatMap((m) => {
-      const env = envById.get(m.environmentId)
-      return env ? [{ key: environmentKey(env), label: `${productName.get(env.productId) ?? env.productId} · ${env.name}` }] : []
-    })
 
   const push = (row: Omit<TreeRow, 'expandable' | 'expanded'>, canOpen = row.childCount > 0) => {
     const expandable = canOpen
@@ -90,19 +97,24 @@ export function buildTree(data: InventoryData, expanded: ReadonlySet<NodeKey>): 
     return first && refs.every((r) => r?.id === first.id) ? first : undefined
   }
 
-  const addHosts = (envKey: NodeKey, envId: string, depth: 2) => {
-    const hosts = hostsOf(envId)
+  const servicesOf = (envId: string) =>
+    services
+      .filter((x) => x.environmentId === envId)
+      .sort((a, b) => SERVICE_ORDER.indexOf(a.kind) - SERVICE_ORDER.indexOf(b.kind) || a.position - b.position || byName(a.name, b.name))
+
+  const addServices = (envKey: NodeKey, envId: string, depth: 2) => {
+    const list = servicesOf(envId)
     const onParent = sharedRegion(envId) ? { regionOnParent: true as const } : {}
-    for (const { host, role } of hosts) {
-      const alsoIn = placementsOf(host).filter((p) => p.key !== envKey).map((p) => p.label).sort(byName)
+    for (const svc of list) {
+      const host = hostById.get(svc.hostId)
       push({
-        key: `${envKey}/h:${host.id}`, kind: 'host', id: host.id, depth, parentKey: envKey, label: host.label,
-        color: envById.get(envId)?.color ?? UNASSIGNED_COLOR, role, sharedCount: hostAppearances(host) - 1, alsoIn,
-        region: regionRef(host.id), ...onParent, childCount: 0,
+        key: `${envKey}/s:${svc.id}`, kind: 'service', id: svc.id, depth, parentKey: envKey, label: svc.name,
+        color: envById.get(envId)?.color ?? UNASSIGNED_COLOR, serviceKind: svc.kind, hostId: svc.hostId, hostLabel: host?.label,
+        region: host ? regionRef(host.id) : undefined, ...onParent, sharedCount: 0, childCount: 0,
       })
     }
-    if (hosts.length === 0) {
-      push({ key: `${envKey}/hint`, kind: 'hint', id: envId, depth, parentKey: envKey, label: 'No hosts — drag one here', color: UNASSIGNED_COLOR, sharedCount: 0, childCount: 0 })
+    if (list.length === 0) {
+      push({ key: `${envKey}/hint`, kind: 'hint', id: envId, depth, parentKey: envKey, label: 'No services — drag a host here', color: UNASSIGNED_COLOR, sharedCount: 0, childCount: 0 })
     }
   }
 
@@ -112,8 +124,8 @@ export function buildTree(data: InventoryData, expanded: ReadonlySet<NodeKey>): 
     // An empty environment still opens, to show where hosts can be dropped.
     if (push({
       key, kind: 'environment', id: envId, depth: 1, parentKey, label: env.name, color: env.color,
-      protected: env.protected, region: sharedRegion(envId), sharedCount: 0, childCount: hostsOf(envId).length,
-    }, true)) addHosts(key, envId, 2)
+      protected: env.protected, region: sharedRegion(envId), sharedCount: 0, childCount: servicesOf(envId).length,
+    }, true)) addServices(key, envId, 2)
   }
 
   for (const p of [...data.products].sort((a, b) => byName(a.name, b.name))) {
@@ -168,11 +180,12 @@ export function moveFocus(
   }
 }
 
-export function selectionFromKey(key: NodeKey): { productId?: string; environmentId?: string; hostId?: string } {
-  const out: { productId?: string; environmentId?: string; hostId?: string } = {}
+export function selectionFromKey(key: NodeKey): { productId?: string; environmentId?: string; serviceId?: string; hostId?: string } {
+  const out: { productId?: string; environmentId?: string; serviceId?: string; hostId?: string } = {}
   for (const part of key.split('/')) {
     if (part.startsWith('p:')) out.productId = part.slice(2)
     else if (part.startsWith('e:')) out.environmentId = part.slice(2)
+    else if (part.startsWith('s:')) out.serviceId = part.slice(2)
     else if (part.startsWith('h:')) out.hostId = part.slice(2)
   }
   return out

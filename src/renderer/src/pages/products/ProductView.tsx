@@ -1,10 +1,12 @@
 import { motion } from 'framer-motion'
 import { Layers, Lock, Network, Pencil, Plus, Trash2 } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { useSyncExternalStore, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import type { EnvironmentMeta, ProductMeta } from '../../../../shared/inventory'
+import { SERVICE_KIND_LABEL } from '../../../../shared/services'
+import { deployStore } from '../../deploy/store'
 import type { InventoryData } from '../../inventory/store'
-import { ROLE_ORDER } from '../../inventory/tree'
+import { ROLE_ORDER, SERVICE_ORDER } from '../../inventory/tree'
 import { showProductOnMapPath } from '../../map/commands'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
@@ -108,7 +110,9 @@ function EnvironmentCard({
   onOpen: () => void
 }) {
   const motionSafe = useMotionSafe()
-  const counts = ROLE_ORDER.map((role) => ({ role, n: env.hosts.filter((h) => h.role === role).length })).filter((c) => c.n)
+  const services = useSyncExternalStore(deployStore.subscribe, () => deployStore.get().services)
+  const mine = services.filter((s) => s.environmentId === env.id)
+  const counts = SERVICE_ORDER.map((kind) => ({ kind, n: mine.filter((s) => s.kind === kind).length })).filter((c) => c.n)
   return (
     <motion.li
       initial={stagger ? (motionSafe ? { opacity: 0, y: 8 } : { opacity: 0 }) : false}
@@ -135,10 +139,12 @@ function EnvironmentCard({
           )}
         </span>
         <span className="flex flex-wrap items-center gap-1.5 text-[12px] text-muted">
-          <span className="text-fg/85 tabular-nums">{plural(env.hosts.length, 'host')}</span>
-          {counts.map(({ role, n }) => (
-            <span key={role} className="rounded-full bg-white/[0.05] px-1.5 leading-[18px] tabular-nums">
-              {ROLE_LABEL[role]} {n}
+          <span className="text-fg/85 tabular-nums">
+            {plural(mine.length, 'service')} on {plural(env.hosts.length, 'host')}
+          </span>
+          {counts.map(({ kind, n }) => (
+            <span key={kind} className="rounded-full bg-white/[0.05] px-1.5 leading-[18px] tabular-nums">
+              {SERVICE_KIND_LABEL[kind]} {n}
             </span>
           ))}
         </span>

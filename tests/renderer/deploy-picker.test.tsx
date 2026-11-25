@@ -35,7 +35,7 @@ const SERVICES: ServiceMeta[] = [
   appService({ id: 's3', name: 'site', deploymentId: 'd3', composeService: 'site', position: 2 }),
   appService({ id: 's5', name: 'site-worker', deploymentId: 'd3', composeService: 'site-worker', position: 3 }),
   appService({ id: 's6', name: 'legacy', deploymentId: null, composeService: 'legacy', position: 4 }),
-  dbService({ id: 'b1', name: 'main-db', dbAddress: '10.0.0.5', dbPort: 5432, viaHostId: 'h1' }),
+  dbService({ id: 'b1', name: 'main-db', dbAddress: '10.0.0.5', dbPort: 5432 }),
 ]
 
 const commit = (n: number, deploymentId = 'd1'): CommitInfo => ({

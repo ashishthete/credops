@@ -58,6 +58,20 @@ describe('OutputPane', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Jump to live' })).not.toBeInTheDocument())
   })
 
+  it('fill takes the parent height so a drawer scrolls inside the log, not past the screen', () => {
+    const out = appendOutput(undefined, 'line\n', false)
+    const { rerender } = render(<OutputPane output={out} label="db-1" />)
+    let log = screen.getByRole('log', { name: 'Output of db-1' })
+    expect(log).toHaveClass('max-h-80', 'overflow-auto')
+    expect(log.parentElement).not.toHaveClass('h-full')
+
+    rerender(<OutputPane output={out} label="db-1" fill className="max-h-none" />)
+    log = screen.getByRole('log', { name: 'Output of db-1' })
+    // Without a height on the wrapper, the log's h-full resolves to its content and nothing scrolls.
+    expect(log.parentElement).toHaveClass('h-full')
+    expect(log).toHaveClass('h-full', 'max-h-none', 'overflow-auto')
+  })
+
   it('copies the host output without a toast', async () => {
     const writeText = vi.fn(async () => {})
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })

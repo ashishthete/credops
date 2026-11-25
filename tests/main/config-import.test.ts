@@ -102,7 +102,7 @@ describe('config import', () => {
     const t = await makeTarget(f)
     const plan = planImport(t.db, file)
     // The fixtures share their region and Fixture product ids: those match as they are.
-    expect(plan.counts).toEqual({ add: 10, update: 0, unchanged: 2, skip: 0 })
+    expect(plan.counts).toEqual({ add: 12, update: 0, unchanged: 2, skip: 0 })
     expect(plan.needsRegion).toBe(false)
     expect(plan.needsSecret).toEqual([])
     // Adding a protected environment needs no typed name.
@@ -126,7 +126,7 @@ describe('config import', () => {
     const before = snapshot(f.db)
     const plan = planImport(f.db, file)
     expect(plan.items.every((i) => i.action === 'unchanged')).toBe(true)
-    expect(plan.counts).toEqual({ add: 0, update: 0, unchanged: 13, skip: 0 })
+    expect(plan.counts).toEqual({ add: 0, update: 0, unchanged: 15, skip: 0 })
     expect(plan.needsSecret).toEqual([])
     expect(plan.protectedEnvironments).toEqual([])
 
@@ -134,7 +134,7 @@ describe('config import', () => {
     expect(snapshot(f.db)).toBe(before)
     const events = f.audit.list({ actions: ['config.import'] })
     expect(events).toHaveLength(1)
-    expect(events[0].details).toEqual({ counts: { add: 0, update: 0, unchanged: 13, skip: 0 }, unresolved: 0 })
+    expect(events[0].details).toEqual({ counts: { add: 0, update: 0, unchanged: 15, skip: 0 }, unresolved: 0 })
   })
 
   it('re-importing keeps every local value the export blanked: env vars, template lines and URL params', async () => {
@@ -242,8 +242,8 @@ describe('config import', () => {
     expect(t.tunnels.get(f.ids.tunnel)).toMatchObject({ hostId: app1.id, environmentId: staging.id })
     const d = t.db.prepare('SELECT host_id, environment_id FROM deployments WHERE id = ?').get(f.ids.deployment)
     expect(d).toEqual({ host_id: app1.id, environment_id: staging.id })
-    expect(t.db.prepare('SELECT via_host_id, tunnel_id, environment_id FROM services WHERE id = ?').get(f.ids.dbService)).toEqual({
-      via_host_id: app1.id,
+    expect(t.db.prepare('SELECT host_id, tunnel_id, environment_id FROM services WHERE id = ?').get(f.ids.dbService)).toEqual({
+      host_id: app1.id,
       tunnel_id: f.ids.tunnel,
       environment_id: staging.id,
     })
@@ -315,7 +315,8 @@ describe('config import', () => {
     expect(f.hosts.list().map((h) => h.label).sort()).toEqual(['app1', 'bastion', 'extra'])
     expect(f.products.list().map((p) => p.name).sort()).toEqual(['Fixture', 'Other', 'Shop'])
     expect(f.envs.get(f.prod.id).productId).toBe(other.id)
-    expect(f.envs.get(f.staging.id).hosts).toContainEqual({ hostId: extra.id, role: 'other' })
+    // Added as 'other', the host runs a placeholder app there: its role reads as the service it runs.
+    expect(f.envs.get(f.staging.id).hosts).toContainEqual({ hostId: extra.id, role: 'app' })
     // Links in the file come back; none is removed.
     expect(f.hosts.list().find((h) => h.id === f.host.id)!.vaultIds.sort()).toEqual([DEFAULT_VAULT_ID, f.teamVaultId].sort())
     expect(f.hosts.list().find((h) => h.id === extra.id)!.vaultIds).toEqual([f.teamVaultId])
@@ -438,7 +439,7 @@ describe('config import', () => {
     // None of these hosts is linked to prod; prod reaches each through one of its own rows.
     const jump = f.hosts.create({ regionId: REGION, label: 'tunjump', address: '10.5.0.1' })
     const via = f.hosts.create({ regionId: REGION, label: 'tunhost', address: '10.5.0.2', jumpHostId: jump.id })
-    f.services.create({ kind: 'db', environmentId: f.prod.id, name: 'prod-db', dbEngine: 'postgres', dbAddress: '10.5.0.9', viaHostId: via.id })
+    f.services.create({ kind: 'db', environmentId: f.prod.id, name: 'prod-db', dbEngine: 'postgres', dbAddress: '10.5.0.9', hostId: via.id })
     const build = f.hosts.create({ regionId: REGION, label: 'buildbox', address: '10.5.0.3' })
     f.deploys.create(f.input({ name: 'prod-build', environmentId: f.prod.id, hostId: build.id, deployTag: 'deploy_prod_build' }))
     // The checkout joined prod silently; taking the host out of prod leaves the checkout on it.
@@ -620,6 +621,89 @@ describe('config import', () => {
     await expect(h['config:importOpen']()).rejects.toThrow(VAULT_LOCKED)
     expect(asked).toBe(false)
   })
+
+  it('a file from before services ran on hosts gives every service a host and leaves no duplicate placeholder', async () => {
+    const { f, file } = await sourceFile()
+    const old = copy(file)
+    // Such a file has no placeholder services and no hostId: membership lived only in the environment's hosts.
+    old.services = old.services.filter((s) => s.id === f.ids.appService || s.id === f.ids.dbService)
+    for (const s of old.services) delete (s as { hostId?: string }).hostId
+    const app = old.services.find((s) => s.id === f.ids.appService)! as Extract<ConfigFile['services'][number], { kind: 'service' }>
+    const docsId = '0190a1b2-c3d4-7e5f-8a6b-dddddddddddd'
+    // An app outside any checkout: before, it named no host at all.
+    old.services.push({ ...app, id: docsId, name: 'docs', position: 9, deploymentId: null, url: null })
+    expect((old.services.find((s) => s.id === f.ids.dbService) as { viaHostId: string | null }).viaHostId).toBe(f.host.id)
+    expect(parseConfigFile(JSON.stringify(old)).ok).toBe(true)
+
+    const t = await makeTarget(f)
+    const plan = planImport(t.db, old)
+    expect(plan.counts.skip).toBe(0)
+    importFile(t, old)
+
+    const app1 = t.db.prepare("SELECT id FROM hosts WHERE label = 'app1'").get() as { id: string }
+    const bastion = t.db.prepare("SELECT id FROM hosts WHERE label = 'bastion'").get() as { id: string }
+    const hostOf = (id: string) => (t.db.prepare('SELECT host_id FROM services WHERE id = ?').get(id) as { host_id: string }).host_id
+    // The db lives on its old via host, the app on its checkout's host, the loose app on the environment's app host.
+    expect(hostOf(f.ids.dbService)).toBe(app1.id)
+    expect(hostOf(f.ids.appService)).toBe(app1.id)
+    expect(hostOf(docsId)).toBe(app1.id)
+    const names = (env: string) =>
+      (t.db.prepare('SELECT s.name, s.kind, h.label FROM services s JOIN hosts h ON h.id = s.host_id WHERE s.environment_id = ? ORDER BY s.name').all(env) as {
+        name: string
+        kind: string
+        label: string
+      }[]).map((r) => `${r.name}:${r.kind}@${r.label}`)
+    // app1 runs real services in staging, so its placeholder went; the bastion runs nothing else, so its stays.
+    expect(names(f.staging.id)).toEqual(['bastion:bastion@bastion', 'docs:service@app1', 'main-db:db@app1', 'web:service@app1'])
+    // In prod app1 runs nothing from the file: one placeholder keeps it there.
+    expect(names(f.prod.id)).toEqual(['app1:service@app1'])
+    expect(t.envs.get(f.staging.id).hosts).toEqual(
+      expect.arrayContaining([
+        { hostId: app1.id, role: 'app' },
+        { hostId: bastion.id, role: 'bastion' },
+      ]),
+    )
+    // Importing it again adds nothing, placeholders included.
+    const again = planImport(t.db, old)
+    expect(again.counts.add).toBe(0)
+    importFile(t, old)
+    expect(names(f.staging.id)).toHaveLength(4)
+    expect(names(f.prod.id)).toHaveLength(1)
+  })
+
+  it('round-trips a bastion service with its own name, host and description', async () => {
+    const f = await makeConfigFixture()
+    f.identities.delete(f.ids.passwordIdentity)
+    const jump = f.services.list(f.staging.id).find((s) => s.kind === 'bastion')!
+    f.services.update(jump.id, { name: 'jump-box', description: 'the way in' })
+    const file = buildConfigExport(f.db, clock).file
+    expect(file.services.find((s) => s.id === jump.id)).toEqual({
+      id: jump.id,
+      environmentId: f.staging.id,
+      name: 'jump-box',
+      kind: 'bastion',
+      position: jump.position,
+      description: 'the way in',
+      hostId: f.ids.bastion,
+    })
+
+    const t = await makeTarget(f)
+    importFile(t, file)
+    const bastion = t.db.prepare("SELECT id FROM hosts WHERE label = 'bastion'").get() as { id: string }
+    expect(t.db.prepare('SELECT name, kind, description, host_id, environment_id FROM services WHERE id = ?').get(jump.id)).toEqual({
+      name: 'jump-box',
+      kind: 'bastion',
+      description: 'the way in',
+      host_id: bastion.id,
+      environment_id: f.staging.id,
+    })
+    // No placeholder named after the host is left beside it.
+    expect(t.db.prepare("SELECT COUNT(*) AS n FROM services WHERE host_id = ? AND environment_id = ?").get(bastion.id, f.staging.id)).toEqual({ n: 1 })
+    expect(t.envs.get(f.staging.id).hosts).toContainEqual({ hostId: bastion.id, role: 'bastion' })
+    const again = buildConfigExport(t.db, later).file
+    expect(again.services.find((s) => s.id === jump.id)).toEqual(file.services.find((s) => s.id === jump.id))
+    expect({ ...again, exportedAt: '' }).toEqual({ ...file, exportedAt: '' })
+  })
 })
 
 function handlers(f: ConfigFixture, openDialog: () => Promise<string | undefined>, over: { readFile?: (path: string) => Promise<string>; now?: () => Date; onImported?: (environmentIds: string[]) => void } = {}) {
@@ -661,7 +745,7 @@ describe('config import over IPC', () => {
     const preview = await h['config:importOpen']()
     if (!preview || 'errors' in preview) throw new Error('expected a preview')
     expect(preview.token).toMatch(/^[0-9a-f]{32}$/)
-    expect(preview.counts).toEqual({ add: 0, update: 1, unchanged: 12, skip: 0 })
+    expect(preview.counts).toEqual({ add: 0, update: 1, unchanged: 14, skip: 0 })
     expect(preview.needsRegion).toBe(false)
     expect(JSON.stringify(preview)).not.toContain(path)
 
@@ -687,7 +771,7 @@ describe('config import over IPC', () => {
     const last = Math.max(0, ...t.audit.list({}).map((x) => x.id))
     importFile(t, file)
     const [e] = t.audit.list({ actions: ['config.import'] })
-    expect(e.details).toEqual({ counts: { add: 10, update: 0, unchanged: 2, skip: 0 }, unresolved: 1 })
+    expect(e.details).toEqual({ counts: { add: 12, update: 0, unchanged: 2, skip: 0 }, unresolved: 1 })
     expect(e.targetId ?? null).toBeNull()
     // No per-row audits: the import's one event is all it wrote.
     expect(t.audit.list({}).filter((x) => x.id > last).map((x) => x.action)).toEqual(['config.import'])
@@ -834,7 +918,7 @@ describe('config import of playbook ops settings', () => {
     const plan = planImport(t.db, file)
     expect(plan.needsSecret).toEqual([])
     // The target already has the fixture's region and product.
-    expect(plan.counts).toEqual({ add: 11, update: 0, unchanged: 2, skip: 0 })
+    expect(plan.counts).toEqual({ add: 13, update: 0, unchanged: 2, skip: 0 })
     importFile(t, file)
 
     const again = buildConfigExport(t.db, later).file
@@ -846,7 +930,7 @@ describe('config import of playbook ops settings', () => {
     expect(r.deploys.settings(f.staging.id)).toMatchObject({ parallelPrepare: false, prepareCap: 5 })
     // Importing it again changes nothing.
     const second = planImport(t.db, file)
-    expect(second.counts).toEqual({ add: 0, update: 0, unchanged: 13, skip: 0 })
+    expect(second.counts).toEqual({ add: 0, update: 0, unchanged: 15, skip: 0 })
   })
 
   it('an old file with only preHook/postHook imports as migrated steps pre-hook/post-hook', async () => {
@@ -961,7 +1045,7 @@ describe('config import of playbook ops settings', () => {
     const plan = planImport(t.db, edited)
     expect(itemOf(plan, 'deployments', 'api')).toMatchObject({ action: 'update', fields: ['steps'] })
     expect(itemOf(plan, 'runbooks', 'Reindex')).toMatchObject({ action: 'update' })
-    expect(plan.counts).toMatchObject({ update: 2, unchanged: 11 })
+    expect(plan.counts).toMatchObject({ update: 2, unchanged: 13 })
   })
 
   it('the preview lists each step it adds or changes, with its script and the secrets it reads', async () => {
@@ -1061,7 +1145,7 @@ describe('config import of playbook ops settings', () => {
 
   it('a flow or runbook that points at a service of another environment is refused', async () => {
     const { f, file } = await playbookSource()
-    const other = f.services.create({ kind: 'service', environmentId: f.prod.id, name: 'prod-web', deploymentId: null, composeService: 'web' })
+    const other = f.services.create({ kind: 'service', environmentId: f.prod.id, name: 'prod-web', deploymentId: null, composeService: 'web', hostId: f.host.id })
     const flowEdit = copy(file)
     flowEdit.services.push({ ...(flowEdit.services.find((x) => x.id === f.ids.appService)!), id: other.id, environmentId: f.prod.id, name: 'prod-web', deploymentId: null } as ConfigFile['services'][number])
     ;(flowEdit.environments.find((e) => e.id === f.staging.id)!.flow!.stages[1] as { serviceIds: string[] }).serviceIds = [other.id]

@@ -23,12 +23,13 @@ const checkouts = [
   { id: 'c3', environmentId: 'e2', hostId: 'h-ap' },
 ]
 const base = { name: 's', position: 0, description: '', createdAt: '', updatedAt: '' }
-const app = (id: string, environmentId: string, deploymentId: string | null): ServiceMeta => ({
+const app = (id: string, environmentId: string, hostId: string): ServiceMeta => ({
   ...base,
   id,
   environmentId,
+  hostId,
   kind: 'service',
-  deploymentId,
+  deploymentId: null,
   composeService: 'web',
   url: null,
   urlCheckFrom: 'mac',
@@ -36,15 +37,15 @@ const app = (id: string, environmentId: string, deploymentId: string | null): Se
   lastReleaseId: null,
   skipUnchanged: false,
 })
-const db = (id: string, environmentId: string, viaHostId: string | null): ServiceMeta => ({
+const db = (id: string, environmentId: string, hostId: string): ServiceMeta => ({
   ...base,
   id,
   environmentId,
+  hostId,
   kind: 'db',
   dbEngine: 'postgres',
   dbAddress: 'localhost',
   dbPort: 5432,
-  viaHostId,
   localPort: null,
   tunnelId: null,
 })
@@ -57,17 +58,15 @@ describe('derived regions', () => {
     expect(checkoutRegion(regions, { hostId: 'h-eu2' })).toBe('r-eu')
   })
 
-  it("gives an app service its checkout host's region and a db service its via-host's, else none", () => {
-    expect(serviceRegion(regions, app('s1', 'e1', 'c2'), checkouts)).toBe('r-us')
-    expect(serviceRegion(regions, app('s2', 'e1', null), checkouts)).toBeNull()
+  it("gives a service its host's region, else none", () => {
+    expect(serviceRegion(regions, app('s1', 'e1', 'h-us'), checkouts)).toBe('r-us')
     expect(serviceRegion(regions, app('s3', 'e1', 'gone'), checkouts)).toBeNull()
     expect(serviceRegion(regions, db('s4', 'e1', 'h-ap'), checkouts)).toBe('r-ap')
-    expect(serviceRegion(regions, db('s5', 'e1', null), checkouts)).toBeNull()
   })
 
-  it("gives an environment the distinct regions of its member hosts, checkout hosts and via-hosts, and no one else's", () => {
+  it("gives an environment the distinct regions of its member hosts, checkout hosts and service hosts, and no one else's", () => {
     const env = { id: 'e1', hosts: [{ hostId: 'h-eu2', role: 'app' as const }, { hostId: 'h-eu', role: 'db' as const }] }
-    expect(environmentRegions(regions, env, checkouts, [db('s1', 'e1', 'h-ap'), db('s2', 'e1', null), db('s3', 'e2', 'gone')])).toEqual([
+    expect(environmentRegions(regions, env, checkouts, [db('s1', 'e1', 'h-ap'), db('s2', 'e1', 'gone'), db('s3', 'e2', 'h-eu')])).toEqual([
       'r-eu',
       'r-us',
       'r-ap',

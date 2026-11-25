@@ -1,5 +1,4 @@
-import { motion } from 'framer-motion'
-import { ExternalLink, Globe, KeyRound, Link2, Lock, Network, Pencil, Plus, Route, Server, SquareTerminal, Trash2, Unlink } from 'lucide-react'
+import { ExternalLink, Globe, KeyRound, Lock, Network, Pencil, Plus, Route, Trash2 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
@@ -7,17 +6,15 @@ import { DEFAULT_SSH_PORT, type EnvironmentMeta } from '../../../../shared/inven
 import type { AppServiceMeta } from '../../../../shared/services'
 import { loadSettings, startDeploySync, updateSettings, useDeploy, useDeployments, useServices } from '../../deploy/store'
 import { sourceLabel } from '../../inventory/choices'
-import { regionOfHost, regionsOfEnvironment } from '../../inventory/regions'
+import { regionsOfEnvironment } from '../../inventory/regions'
 import { openEnvironmentDomain, type InventoryData } from '../../inventory/store'
-import type { NodeKey } from '../../inventory/tree'
 import { showEnvironmentOnMapPath } from '../../map/commands'
 import { useConnect } from '../../terminal/connect'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
 import { RowMenu } from '../../ui/common'
-import { fast, spring, staggerDelay, useMotionSafe } from '../../ui/motion'
 import { RegionChip } from '../../ui/RegionChip'
-import { GlowDot, PaneHeader, paneLabel, ROLE_LABEL, ROLE_ORDER } from './ProductView'
+import { GlowDot, PaneHeader, paneLabel } from './ProductView'
 import { DeployWizard } from '../deployments/release/DeployWizard'
 import { CopyServicesDialog } from './services/CopyServicesDialog'
 import { ServiceLogs } from './services/ServiceLogs'
@@ -27,17 +24,13 @@ import { RunbooksSection } from './RunbooksSection'
 
 interface EnvironmentViewProps {
   env: EnvironmentMeta
-  envKey: NodeKey
   data: InventoryData
-  onSelect: (key: NodeKey) => void
-  onRemoveHost: (hostId: string) => void
   onNewHost: () => void
   onEdit: () => void
   onDelete: () => void
 }
 
-export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onNewHost, onEdit, onDelete }: EnvironmentViewProps) {
-  const motionSafe = useMotionSafe()
+export function EnvironmentView({ env, data, onNewHost, onEdit, onDelete }: EnvironmentViewProps) {
   const { connect } = useConnect()
   const navigate = useNavigate()
   // The services and checkouts the Services section shows.
@@ -58,20 +51,6 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
   // Derived from the hosts it runs on: members, checkout hosts and db via-hosts.
   const checkouts = useDeployments(env.id)
   const regions = regionsOfEnvironment(data, env.id, checkouts, services)
-  // Per-host chips only where they tell hosts apart.
-  const regionChip = (hostId: string) => {
-    const region = regions.length > 1 ? regionOfHost(data, hostId) : undefined
-    return region && <RegionChip region={region} />
-  }
-
-  const groups = ROLE_ORDER.map((role) => ({
-    role,
-    hosts: env.hosts
-      .filter((m) => m.role === role)
-      .flatMap((m) => (hostById.has(m.hostId) ? [hostById.get(m.hostId)!] : []))
-      .sort((a, b) => a.label.localeCompare(b.label)),
-  })).filter((g) => g.hosts.length)
-
   return (
     <>
       <PaneHeader
@@ -151,7 +130,14 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
           />
         </dl>
 
-        <ServicesSection env={env} data={data} onDeploy={setDeployPick} onLogs={setLogsOf} onCopy={() => setCopyFrom(env)} />
+        <ServicesSection
+          env={env}
+          data={data}
+          onDeploy={setDeployPick}
+          onLogs={setLogsOf}
+          onCopy={() => setCopyFrom(env)}
+          onConnect={(hostId) => void connect(hostId, env.id)}
+        />
 
         {settings && apps.length > 0 && (
           <ReleaseFlowSection services={apps} flow={settings.flow} onSave={(flow) => updateSettings(env.id, { flow })} />
@@ -159,74 +145,6 @@ export function EnvironmentView({ env, envKey, data, onSelect, onRemoveHost, onN
 
         {apps.length > 0 && <RunbooksSection environmentId={env.id} />}
 
-        {groups.length === 0 ? (
-          <div className="mt-6 flex flex-col items-center gap-2 rounded-xl border border-dashed border-line px-6 py-10 text-center">
-            <Server aria-hidden className="size-5 text-muted" strokeWidth={1.8} />
-            <p className="text-[13px] font-medium text-fg">No hosts in this environment yet</p>
-            <p className="text-[12.5px] text-muted">Create one with New host, or drag a host onto {env.name} in the tree.</p>
-          </div>
-        ) : (
-          groups.map((g) => (
-            <section key={g.role} className="mt-6">
-              <h3 className="mb-2 flex items-center gap-2 text-[12.5px] font-semibold text-fg/90">
-                {ROLE_LABEL[g.role]}
-                <span className="min-w-5 rounded-full bg-white/[0.05] px-1.5 text-center text-[11px] leading-[18px] font-medium text-muted tabular-nums">
-                  {g.hosts.length}
-                </span>
-              </h3>
-              <ul className="flex flex-col gap-1">
-                {g.hosts.map((h, i) => (
-                  <motion.li
-                    key={h.id}
-                    initial={motionSafe ? { opacity: 0, x: -4 } : { opacity: 0 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={motionSafe ? { ...spring, delay: staggerDelay(i) } : fast}
-                    className="group relative"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => onSelect(`${envKey}/h:${h.id}`)}
-                      className="flex h-10 w-full items-center gap-3 rounded-lg border border-transparent px-3 pr-28 text-left transition-colors hover:border-line hover:bg-white/[0.03]"
-                    >
-                      <Server aria-hidden className="size-3.5 shrink-0 text-muted" />
-                      <span className="truncate text-[13px] font-medium text-fg">{h.label}</span>
-                      <span className="truncate font-mono text-[12px] text-muted">
-                        {h.address}
-                        {h.port != null ? `:${h.port}` : ''}
-                      </span>
-                      <span className="ml-auto flex shrink-0 items-center gap-2">
-                        {regionChip(h.id)}
-                        {h.environments.length > 1 && <Link2 aria-label="Shared" className="size-3 shrink-0 text-muted" strokeWidth={2.2} />}
-                      </span>
-                    </button>
-                    <div className="absolute top-1/2 right-2 flex -translate-y-1/2 items-center gap-1">
-                      <button
-                        type="button"
-                        aria-label={`Connect to ${h.label}`}
-                        title={`Connect to ${h.label} in ${env.name}`}
-                        onClick={() => void connect(h.id, env.id)}
-                        className="grid size-6 place-items-center rounded-md text-muted opacity-0 transition-[opacity,color,background-color] group-hover:opacity-100 hover:bg-white/[0.06] hover:text-fg focus-visible:opacity-100"
-                      >
-                        <SquareTerminal aria-hidden className="size-3.5" />
-                      </button>
-                      {/* Always shown and labelled, so removing a host is findable without hovering. */}
-                      <button
-                        type="button"
-                        aria-label={`Remove ${h.label} from ${env.name}`}
-                        title={`Remove from ${env.name}`}
-                        onClick={() => onRemoveHost(h.id)}
-                        className="inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[12px] text-muted opacity-60 transition-[opacity,color,background-color] group-focus-within:opacity-100 group-hover:opacity-100 hover:bg-white/[0.06] hover:text-fg focus-visible:opacity-100"
-                      >
-                        <Unlink aria-hidden className="size-3.5 shrink-0" />
-                        <span className="whitespace-nowrap">Remove</span>
-                      </button>
-                    </div>
-                  </motion.li>
-                ))}
-              </ul>
-            </section>
-          ))
-        )}
       </div>
       <ServiceLogs service={logsOf} onClose={() => setLogsOf(null)} />
       <CopyServicesDialog source={copyFrom} onClose={() => setCopyFrom(null)} />

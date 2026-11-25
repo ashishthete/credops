@@ -79,8 +79,9 @@ export function selectSegment(file: ConfigFile, segment: ConfigSegment): Segment
       case 'services': {
         const s = ix.services.get(id)!
         need('environments', s.environmentId)
+        if (s.hostId !== undefined) need('hosts', s.hostId)
         if (s.kind === 'service') need('deployments', s.deploymentId)
-        else {
+        else if (s.kind === 'db') {
           need('hosts', s.viaHostId)
           need('tunnels', s.tunnelId)
         }

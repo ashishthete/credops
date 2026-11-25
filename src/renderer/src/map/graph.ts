@@ -1,6 +1,6 @@
 import type { DeploymentMeta } from '../../../shared/deploy'
 import type { EnvironmentMeta, HostMeta, HostRole, OsIcon, ProductIcon, RegionRef } from '../../../shared/inventory'
-import type { ServiceMeta } from '../../../shared/services'
+import type { ServiceKind, ServiceMeta } from '../../../shared/services'
 import type { TunnelMeta, TunnelType } from '../../../shared/tunnels'
 import type { InventoryData } from '../inventory/store'
 import { regionById } from '../inventory/regions'
@@ -29,7 +29,7 @@ export type MapNodeKind = 'product' | 'environment' | 'host' | 'mac'
 export interface MapAttachment {
   /** The service id. */
   id: string
-  kind: 'service' | 'db'
+  kind: ServiceKind
   label: string
 }
 
@@ -37,8 +37,7 @@ export interface MapAttachment {
 export type MapAttachments = Record<string, Record<string, MapAttachment[]>>
 
 /**
- * A `service` attaches to its checkout's host; a `db` to the environment's host whose address is its
- * `dbAddress`, and nowhere when none is. Order follows the services' positions.
+ * Every service attaches to the host it runs on. Order follows the services' positions.
  */
 export function buildAttachments(data: InventoryData, services: ServiceMeta[], deployments: DeploymentMeta[]): MapAttachments {
   const checkoutHost = new Map(deployments.map((d) => [d.id, d.hostId]))
@@ -48,10 +47,7 @@ export function buildAttachments(data: InventoryData, services: ServiceMeta[], d
   for (const s of [...services].sort((a, b) => a.position - b.position)) {
     const env = envById.get(s.environmentId)
     if (!env) continue
-    const hostId =
-      s.kind === 'service'
-        ? s.deploymentId ? checkoutHost.get(s.deploymentId) : undefined
-        : env.hosts.find((m) => hostById.get(m.hostId)?.address === s.dbAddress)?.hostId
+    const hostId = s.hostId
     if (!hostId || !env.hosts.some((m) => m.hostId === hostId)) continue
     ;((out[hostId] ??= {})[env.id] ??= []).push({ id: s.id, kind: s.kind, label: s.name })
   }

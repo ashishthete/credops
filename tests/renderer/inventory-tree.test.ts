@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { addressSourceLabel, identityChoices, jumpHostChoices, sourceLabel } from '../../src/renderer/src/inventory/choices'
-import { buildTree, moveFocus, selectionFromKey } from '../../src/renderer/src/inventory/tree'
+import { buildTree, moveFocus, selectionFromKey, type TreeService } from '../../src/renderer/src/inventory/tree'
 import type { InventoryData } from '../../src/renderer/src/inventory/store'
 import type { IdentityMeta } from '../../src/shared/vault'
 import { defaultVault, environment, host, product, REGION } from './helpers'
@@ -26,15 +26,28 @@ const data = (): InventoryData => ({
 
 const all = new Set(['p:p1', 'p:p2', 'p:p1/e:prod', 'p:p1/e:shared', 'u'])
 
-const HINT = 'No hosts — drag one here'
+/** prod runs an app on web-1, a database on web-1 and a bastion on bastion. */
+const services: TreeService[] = [
+  { id: 'db', environmentId: 'prod', hostId: 'web', name: 'main-db', kind: 'db', position: 0 },
+  { id: 'api', environmentId: 'prod', hostId: 'web', name: 'api', kind: 'service', position: 1 },
+  { id: 'jump', environmentId: 'prod', hostId: 'bast', name: 'jump', kind: 'bastion', position: 2 },
+]
+
+const HINT = 'No services — drag a host here'
 
 describe('inventory tree', () => {
   it('builds the product tree', () => {
     const d = data()
-    const rows = buildTree(d, all)
+    const rows = buildTree(d, all, services)
+    // Services by type: bastions, apps, databases.
     expect(rows.map((r) => r.label)).toEqual([
-      'Acme', 'analytics-db', HINT, 'prod', 'bastion', 'web-1', 'Essentials', 'Unassigned hosts', 'orphan',
+      'Acme', 'analytics-db', HINT, 'prod', 'jump', 'api', 'main-db', 'Essentials', 'Unassigned hosts', 'orphan',
     ])
+    const api = rows.find((r) => r.label === 'api')!
+    expect(api).toMatchObject({ kind: 'service', key: 'p:p1/e:prod/s:api', serviceKind: 'service', hostId: 'web', hostLabel: 'web-1', depth: 2 })
+    expect(rows.find((r) => r.label === 'prod')!.childCount).toBe(3)
+    // Hosts in environments are not rows; only unassigned ones are.
+    expect(rows.filter((r) => r.kind === 'host').map((r) => r.key)).toEqual(['u/h:orph'])
   })
 
   it('collapsed hides children', () => {
@@ -45,29 +58,32 @@ describe('inventory tree', () => {
     const d = data()
     const collapsed = buildTree(d, new Set())
     expect(moveFocus(collapsed, 'p:p1', 'ArrowRight')).toEqual({ focus: 'p:p1', toggle: 'p:p1' })
-    const rows = buildTree(d, all)
+    const rows = buildTree(d, all, services)
     expect(moveFocus(rows, 'p:p1', 'ArrowRight')).toEqual({ focus: 'p:p1/e:shared' })
-    expect(moveFocus(rows, 'p:p1/e:prod/h:web', 'ArrowLeft')).toEqual({ focus: 'p:p1/e:prod' })
+    expect(moveFocus(rows, 'p:p1/e:prod/s:api', 'ArrowLeft')).toEqual({ focus: 'p:p1/e:prod' })
+    // The hint is skipped.
+    expect(moveFocus(rows, 'p:p1/e:shared', 'ArrowDown')).toEqual({ focus: 'p:p1/e:prod' })
     expect(moveFocus(rows, 'p:p1/e:prod', 'Home').focus).toBe('p:p1')
     expect(moveFocus(rows, 'p:p1', 'End').focus).toBe('u/h:orph')
   })
 
-  it('every host row carries its region, loose hosts too', () => {
+  it("every service row carries its host's region, loose hosts too", () => {
     const us = { ...REGION, id: 'region-2', code: 'us-east-1', displayName: 'US East' }
     const d = data()
-    const split = buildTree({ ...d, regions: [REGION, us], hosts: d.hosts.map((h) => (h.id === 'bast' ? { ...h, regionId: us.id } : h)) }, all)
+    const split = buildTree({ ...d, regions: [REGION, us], hosts: d.hosts.map((h) => (h.id === 'bast' ? { ...h, regionId: us.id } : h)) }, all, services)
     expect(split.filter((r) => r.region).map((r) => [r.label, r.region!.code])).toEqual([
-      ['bastion', 'us-east-1'],
-      ['web-1', 'test-1'],
+      ['jump', 'us-east-1'],
+      ['api', 'test-1'],
+      ['main-db', 'test-1'],
       ['orphan', 'test-1'],
     ])
     expect(split.find((r) => r.label === 'prod')!.region).toBeUndefined()
     expect(split.some((r) => r.regionOnParent)).toBe(false)
 
     // One region for the whole environment: its row carries the chip, its hosts point up to it.
-    const one = buildTree({ ...d, regions: [REGION] }, all)
+    const one = buildTree({ ...d, regions: [REGION] }, all, services)
     expect(one.find((r) => r.label === 'prod')!.region?.code).toBe('test-1')
-    expect(one.filter((r) => r.regionOnParent).map((r) => r.label)).toEqual(['bastion', 'web-1'])
+    expect(one.filter((r) => r.regionOnParent).map((r) => r.label)).toEqual(['jump', 'api', 'main-db'])
     expect(one.find((r) => r.label === 'orphan')!.regionOnParent).toBeUndefined()
     expect(one.find((r) => r.label === 'analytics-db')!.region).toBeUndefined()
   })
@@ -79,7 +95,7 @@ describe('inventory tree', () => {
   })
 
   it('maps keys to selections', () => {
-    expect(selectionFromKey('p:p1/e:prod/h:web')).toEqual({ productId: 'p1', environmentId: 'prod', hostId: 'web' })
+    expect(selectionFromKey('p:p1/e:prod/s:api')).toEqual({ productId: 'p1', environmentId: 'prod', serviceId: 'api' })
     expect(selectionFromKey('u/h:orph')).toEqual({ hostId: 'orph' })
     expect(selectionFromKey('u')).toEqual({})
   })

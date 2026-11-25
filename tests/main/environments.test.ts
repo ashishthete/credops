@@ -113,20 +113,66 @@ describe('EnvironmentStore and ProductStore', () => {
     expect(() => f.envs.removeHost(s.id, h.id)).toThrow(/host is not in this environment/)
   })
 
-  it('role changes are audited once', async () => {
+  it('adding a host is audited once; a role for a host already in is a no-op', async () => {
     const f = await makeInventory()
     const h = f.hosts.create({ regionId: REGION, label: 'H', address: 'h.example.com' })
     const p = f.envs.create({ productId: PRODUCT, name: 'prod', color: COLOR })
     f.envs.putHost(p.id, h.id, 'db')
     f.envs.putHost(p.id, h.id, 'db')
-    expect(actions(f, 'environment.host')).toHaveLength(1)
     f.envs.putHost(p.id, h.id, 'bastion')
     const rows = actions(f, 'environment.host')
-    expect(rows).toHaveLength(2)
+    expect(rows).toHaveLength(1)
     expect(rows[0]!.details).toEqual({ op: 'add', hostId: h.id, role: 'db' })
-    expect(rows[1]!.details).toEqual({ op: 'role', hostId: h.id, role: 'bastion', from: 'db' })
+    expect(f.envs.get(p.id).hosts).toEqual([{ hostId: h.id, role: 'db' }])
     f.envs.removeHost(p.id, h.id)
-    expect(actions(f, 'environment.host')[2]!.details).toEqual({ op: 'remove', hostId: h.id })
+    expect(actions(f, 'environment.host')[1]!.details).toEqual({ op: 'remove', hostId: h.id })
+  })
+
+  it('putHost adds a placeholder service typed by role, named after the host and unique', async () => {
+    const f = await makeInventory()
+    const p = f.envs.create({ productId: PRODUCT, name: 'prod', color: COLOR })
+    const app = f.hosts.create({ regionId: REGION, label: 'web', address: 'web.example.com' })
+    const db = f.hosts.create({ regionId: REGION, label: 'pg', address: 'pg.example.com' })
+    const jump = f.hosts.create({ regionId: REGION, label: 'jump', address: 'jump.example.com' })
+    const other = f.hosts.create({ regionId: REGION, label: 'misc', address: 'misc.example.com' })
+    f.envs.putHost(p.id, app.id, 'app')
+    f.envs.putHost(p.id, db.id, 'db')
+    f.envs.putHost(p.id, jump.id, 'bastion')
+    f.envs.putHost(p.id, other.id, 'other')
+    const rows = f.db
+      .prepare('SELECT host_id, name, kind, db_engine, db_address, db_port, url_check_from FROM services WHERE environment_id = ? ORDER BY position')
+      .all(p.id)
+    expect(rows).toEqual([
+      { host_id: app.id, name: 'web', kind: 'service', db_engine: null, db_address: null, db_port: null, url_check_from: 'mac' },
+      { host_id: db.id, name: 'pg', kind: 'db', db_engine: 'other', db_address: '127.0.0.1', db_port: 5432, url_check_from: null },
+      { host_id: jump.id, name: 'jump', kind: 'bastion', db_engine: null, db_address: null, db_port: null, url_check_from: null },
+      { host_id: other.id, name: 'misc', kind: 'service', db_engine: null, db_address: null, db_port: null, url_check_from: 'mac' },
+    ])
+    expect(f.envs.get(p.id).hosts.map((h) => h.role).sort()).toEqual(['app', 'app', 'bastion', 'db'])
+    // A name already taken in the environment gets a number.
+    const p2 = f.envs.create({ productId: PRODUCT, name: 'stage', color: COLOR })
+    f.db
+      .prepare("INSERT INTO services(id, environment_id, host_id, name, kind, position, url_check_from, created_at, updated_at) VALUES ('s-x', ?, ?, 'WEB', 'service', 0, 'mac', '', '')")
+      .run(p2.id, other.id)
+    f.envs.putHost(p2.id, app.id, 'app')
+    expect((f.db.prepare('SELECT name FROM services WHERE environment_id = ? AND host_id = ?').get(p2.id, app.id) as { name: string }).name).toBe('web 2')
+  })
+
+  it("removeHost deletes the host's services there and moves its tunnels there to host-only", async () => {
+    const f = await makeInventory()
+    const h = f.hosts.create({ regionId: REGION, label: 'H', address: 'h.example.com' })
+    const p = f.envs.create({ productId: PRODUCT, name: 'prod', color: COLOR })
+    const s = f.envs.create({ productId: PRODUCT, name: 'stage', color: COLOR })
+    f.envs.putHost(p.id, h.id, 'app')
+    f.envs.putHost(s.id, h.id, 'db')
+    const ts = new Date().toISOString()
+    f.db
+      .prepare("INSERT INTO tunnels(id, host_id, environment_id, label, type, bind_port, target_host, target_port, created_at, updated_at) VALUES ('t1', ?, ?, 't', 'L', 15432, '127.0.0.1', 5432, ?, ?)")
+      .run(h.id, p.id, ts, ts)
+    f.envs.removeHost(p.id, h.id)
+    expect(f.db.prepare('SELECT COUNT(*) AS n FROM services WHERE environment_id = ?').get(p.id)).toEqual({ n: 0 })
+    expect(f.db.prepare('SELECT COUNT(*) AS n FROM services WHERE environment_id = ?').get(s.id)).toEqual({ n: 1 })
+    expect(f.db.prepare("SELECT environment_id FROM tunnels WHERE id = 't1'").get()).toEqual({ environment_id: null })
   })
 
   it('defaults validate', async () => {

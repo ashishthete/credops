@@ -1,6 +1,7 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { MoreHorizontal, type LucideIcon } from 'lucide-react'
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { cleanIpcErrorMessage, errorCode } from '../lib/api'
 import { Button } from './Button'
 import { Dialog } from './Dialog'
@@ -82,6 +83,126 @@ export interface MenuItem {
   icon: LucideIcon
   run: () => void
   danger?: boolean
+  /** Shown but can't be picked (Copy with nothing selected). */
+  disabled?: boolean
+}
+
+/** Where a right-click menu opens, in viewport pixels. */
+export interface ContextMenuAt {
+  x: number
+  y: number
+}
+
+/** State for a right-click menu: `onContextMenu` opens it at the pointer, `close` shuts it. */
+export function useContextMenu() {
+  const [at, setAt] = useState<ContextMenuAt | null>(null)
+  const onContextMenu = useCallback((e: ReactMouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setAt({ x: e.clientX, y: e.clientY })
+  }, [])
+  const close = useCallback(() => setAt(null), [])
+  return { at, open: setAt, onContextMenu, close }
+}
+
+/**
+ * A menu at the pointer, for a right-click. Kept on screen, it takes the first item's focus; arrows,
+ * Home and End move, Escape and Tab close, and a click or a right-click elsewhere closes it too.
+ */
+export function ContextMenu({ at, label, items, onClose }: { at: ContextMenuAt | null; label: string; items: MenuItem[]; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const back = useRef<HTMLElement | null>(null)
+  const closeRef = useRef(onClose)
+  closeRef.current = onClose
+
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!at || !el) return
+    const gap = 8
+    const { width, height } = el.getBoundingClientRect()
+    el.style.left = `${Math.max(gap, Math.min(at.x, window.innerWidth - width - gap))}px`
+    el.style.top = `${Math.max(gap, at.y + height > window.innerHeight - gap ? at.y - height : at.y)}px`
+  }, [at])
+
+  useEffect(() => {
+    if (!at) return
+    back.current = document.activeElement as HTMLElement | null
+    ref.current?.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])')?.focus()
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) closeRef.current()
+    }
+    const onBlur = () => closeRef.current()
+    document.addEventListener('mousedown', onDown, true)
+    window.addEventListener('blur', onBlur)
+    window.addEventListener('resize', onBlur)
+    return () => {
+      document.removeEventListener('mousedown', onDown, true)
+      window.removeEventListener('blur', onBlur)
+      window.removeEventListener('resize', onBlur)
+    }
+  }, [at])
+
+  if (!at) return null
+
+  const finish = (refocus: boolean) => {
+    onClose()
+    if (refocus) back.current?.focus()
+  }
+
+  const onKeyDown = (e: KeyboardEvent) => {
+    const els = [...(ref.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])') ?? [])]
+    const i = els.indexOf(document.activeElement as HTMLElement)
+    const go = (n: number) => {
+      e.preventDefault()
+      els[(n + els.length) % els.length]?.focus()
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      e.stopPropagation()
+      finish(true)
+    } else if (e.key === 'ArrowDown') go(i + 1)
+    else if (e.key === 'ArrowUp') go(i - 1)
+    else if (e.key === 'Home') go(0)
+    else if (e.key === 'End') go(els.length - 1)
+    else if (e.key === 'Tab') {
+      e.preventDefault()
+      finish(true)
+    }
+  }
+
+  return createPortal(
+    <div
+      ref={ref}
+      role="menu"
+      aria-label={label}
+      onKeyDown={onKeyDown}
+      onContextMenu={(e) => e.preventDefault()}
+      onClick={(e) => e.stopPropagation()}
+      style={{ left: at.x, top: at.y }}
+      className="app-no-drag fixed z-[70] w-[200px] rounded-ui border border-line bg-surface-2/95 p-1 shadow-pop backdrop-blur-xl"
+    >
+      {items.map((item) => (
+        <button
+          key={item.label}
+          type="button"
+          role="menuitem"
+          disabled={item.disabled}
+          aria-disabled={item.disabled || undefined}
+          onClick={() => {
+            finish(true)
+            item.run()
+          }}
+          className={`flex h-8 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-[12.5px] transition-colors focus:outline-none disabled:pointer-events-none disabled:opacity-40 ${
+            item.danger ? 'text-err hover:bg-err/12 focus:bg-err/12' : 'text-fg/90 hover:bg-white/6 focus:bg-white/6'
+          }`}
+        >
+          <item.icon aria-hidden className="size-3.5 opacity-80" />
+          {item.label}
+        </button>
+      ))}
+    </div>,
+    document.body,
+  )
 }
 
 /**

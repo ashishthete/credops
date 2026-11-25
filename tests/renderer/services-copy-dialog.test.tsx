@@ -18,7 +18,7 @@ const CHECKOUTS = [
 const SERVICES: ServiceMeta[] = [
   appService({ id: 's1', name: 'api', environmentId: 'e1', deploymentId: 'd1' }),
   appService({ id: 's2', name: 'site', environmentId: 'e1', deploymentId: 'd2' }),
-  dbService({ id: 'b1', name: 'main-db', environmentId: 'e1', dbAddress: '10.0.0.5', dbPort: 5432, viaHostId: 'h1' }),
+  dbService({ id: 'b1', name: 'main-db', environmentId: 'e1', dbAddress: '10.0.0.5', dbPort: 5432 }),
 ]
 const HOSTS = [host({ id: 'h1', label: 'stg1' }), host({ id: 'h3', label: 'prod1' }), host({ id: 'h4', label: 'jump1' }), host({ id: 'h5', label: 'spare1' })]
 
@@ -72,7 +72,9 @@ describe('copy services dialog', () => {
     const db = within(dialog).getByRole('group', { name: 'main-db' })
     expect(within(db).getByLabelText('Address')).toHaveValue('10.0.0.5')
     expect(within(db).getByLabelText('Port')).toHaveValue('5432')
-    expect(within(db).getByLabelText('Via host')).toHaveDisplayValue('App host (prod1)')
+    // Its host (stg1) isn't in prod, so one has to be picked; every host is offered.
+    expect(within(db).getByLabelText('Host')).toHaveValue('')
+    expect([...within(db).getByLabelText('Host').querySelectorAll('option')].map((o) => o.textContent)).toEqual(['Choose a host…', 'jump1', 'prod1', 'spare1', 'stg1'])
 
     expect(
       within(dialog).getByText('Vault links, secrets, URLs and tunnels are not copied. Managed .env templates are copied with secret values cleared and turned off.'),
@@ -90,6 +92,8 @@ describe('copy services dialog', () => {
     const db = within(dialog).getByRole('group', { name: 'main-db' })
     await user.clear(within(db).getByLabelText('Address'))
     await user.type(within(db).getByLabelText('Address'), '10.1.0.5')
+    expect(within(dialog).getByRole('button', { name: 'Copy services' })).toBeDisabled()
+    await user.selectOptions(within(db).getByLabelText('Host'), 'jump1')
     await user.click(within(dialog).getByRole('button', { name: 'Copy services' }))
     await waitFor(() => expect(calls(invoke, 'service:copy')).toHaveLength(1))
     expect(calls(invoke, 'service:copy')[0][1]).toEqual({
@@ -99,7 +103,7 @@ describe('copy services dialog', () => {
         { deploymentId: 'd1', branch: 'main', repoPath: '/srv/core', hostId: 'h3', deployTag: 'deployed-prod' },
         { deploymentId: 'd2', branch: 'release', repoPath: '/srv/web', hostId: 'h5', deployTag: 'web-prod' },
       ],
-      dbs: [{ serviceId: 'b1', dbAddress: '10.1.0.5', dbPort: 5432, viaHostId: null }],
+      dbs: [{ serviceId: 'b1', dbAddress: '10.1.0.5', dbPort: 5432, hostId: 'h4' }],
     })
   })
 
@@ -111,6 +115,7 @@ describe('copy services dialog', () => {
     })
     await pickProd(user, dialog)
     await user.type(within(within(dialog).getByRole('group', { name: 'web' })).getByLabelText('Tag'), 'web-prod')
+    await user.selectOptions(within(within(dialog).getByRole('group', { name: 'main-db' })).getByLabelText('Host'), 'prod1')
     await user.click(within(dialog).getByRole('button', { name: 'Copy services' }))
     expect(await within(dialog).findByText('Copied 2 services and 2 checkouts to prod')).toBeInTheDocument()
     const skipped = within(dialog).getByRole('list', { name: 'Skipped' })
@@ -123,6 +128,7 @@ describe('copy services dialog', () => {
     const { user, dialog } = await mount()
     await pickProd(user, dialog)
     await user.type(within(within(dialog).getByRole('group', { name: 'web' })).getByLabelText('Tag'), 'web-prod')
+    await user.selectOptions(within(within(dialog).getByRole('group', { name: 'main-db' })).getByLabelText('Host'), 'prod1')
     await user.click(within(dialog).getByRole('button', { name: 'Copy services' }))
     expect(await within(dialog).findByText('Copied 3 services and 2 checkouts to prod')).toBeInTheDocument()
     expect(within(dialog).queryByText(/as app hosts/)).not.toBeInTheDocument()
@@ -147,15 +153,23 @@ describe('copy services dialog', () => {
     const groups = [...within(web).getByLabelText('Host').querySelectorAll('optgroup')].map((g) => [g.label, [...g.querySelectorAll('option')].map((o) => o.textContent)])
     expect(groups).toEqual([
       ['test-1', ['jump1', 'prod1']],
-      ['Other hosts in test-1 (joins as an app host)', ['stg1']],
-      ['Other hosts in us-east-1 (joins as an app host)', ['spare1']],
+      ['Other hosts in test-1 (joins the environment)', ['stg1']],
+      ['Other hosts in us-east-1 (joins the environment)', ['spare1']],
     ])
     expect(within(web).queryByText(/is in/)).not.toBeInTheDocument()
     await user.selectOptions(within(web).getByLabelText('Host'), 'spare1')
     expect(within(web).getByText("prod's hosts are all in test-1; spare1 is in us-east-1.")).toBeInTheDocument()
     // A hint, not a block.
     await user.type(within(web).getByLabelText('Tag'), 'web-prod')
+    await user.selectOptions(within(within(dialog).getByRole('group', { name: 'main-db' })).getByLabelText('Host'), 'prod1')
     expect(within(dialog).getByRole('button', { name: 'Copy services' })).toBeEnabled()
+  })
+
+  it('a database keeps its host when that host is already in the target', async () => {
+    const shared = { ...prod, hosts: [...prod.hosts, { hostId: 'h1', role: 'app' as const }] }
+    const { user, dialog } = await mount(undefined, staging, { 'env:list': [staging, shared, dev] })
+    await pickProd(user, dialog)
+    expect(within(within(dialog).getByRole('group', { name: 'main-db' })).getByLabelText('Host')).toHaveValue('h1')
   })
 
   it('a host from the same region brings no hint', async () => {

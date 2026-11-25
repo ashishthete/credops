@@ -32,9 +32,9 @@ const checkouts = [
 const SERVICES: ServiceMeta[] = [
   appService({ id: 's1', name: 'api', deploymentId: 'd1', position: 2, lastDeployedCommit: 'abc1234def5678', lastReleaseId: '0190a5c2-0000-7000-8000-000000000001' }),
   appService({ id: 's2', name: 'worker', deploymentId: 'd1', position: 0, composeService: 'jobs', lastDeployedCommit: 'fed9876cba5432', lastReleaseId: '0190a5c2-0000-7000-8000-000000000002' }),
-  appService({ id: 's3', name: 'site', deploymentId: 'd2', position: 1, url: 'https://site.example.com' }),
+  appService({ id: 's3', name: 'site', deploymentId: 'd2', hostId: 'h2', position: 1, url: 'https://site.example.com' }),
   appService({ id: 's4', name: 'cron', deploymentId: null, position: 3, url: 'https://cron.example.com' }),
-  dbService({ id: 'b1', name: 'main-db', position: 4, viaHostId: 'h1', localPort: 15432, tunnelId: 't1' }),
+  dbService({ id: 'b1', name: 'main-db', position: 4, localPort: 15432, tunnelId: 't1' }),
 ]
 
 const world = (extra: Record<string, unknown> = {}) =>
@@ -93,10 +93,7 @@ describe('services section', () => {
       <MemoryRouter>
         <EnvironmentView
           env={data.environments[0]}
-          envKey="e:e1"
           data={data}
-          onSelect={() => {}}
-          onRemoveHost={() => {}}
           onNewHost={() => {}}
           onEdit={() => {}}
           onDelete={() => {}}
@@ -105,14 +102,11 @@ describe('services section', () => {
     )
     const services = await screen.findByRole('region', { name: 'Services' })
     await within(services).findByRole('region', { name: 'core' })
-    // Above the host groups.
-    const hosts = screen.getByRole('heading', { name: /^App/ })
-    expect(services.compareDocumentPosition(hosts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    // Checkouts in position order, then No checkout, then Databases.
+    // Checkouts in position order, then apps without one, then Databases.
     const groups = within(services)
       .getAllByRole('region')
       .map((g) => g.getAttribute('aria-label'))
-    expect(groups).toEqual(['core', 'web', 'No checkout', 'Databases'])
+    expect(groups).toEqual(['core', 'web', 'Apps without a checkout', 'Databases'])
     expect(within(services).getByRole('heading', { name: /^Services/ })).toHaveTextContent('5')
     // Services within a checkout in position order.
     const core = within(services).getByRole('region', { name: 'core' })
@@ -126,7 +120,7 @@ describe('services section', () => {
     const data = inventoryStore.get()!
     render(
       <MemoryRouter>
-        <EnvironmentView env={data.environments[0]} envKey="e:e1" data={data} onSelect={() => {}} onRemoveHost={() => {}} onNewHost={() => {}} onEdit={() => {}} onDelete={() => {}} />
+        <EnvironmentView env={data.environments[0]} data={data} onNewHost={() => {}} onEdit={() => {}} onDelete={() => {}} />
       </MemoryRouter>,
     )
     const services = await screen.findByRole('region', { name: 'Services' })
@@ -154,7 +148,9 @@ describe('services section', () => {
     expect(within(core).getByText('git@github.com:acme/core.git')).toBeInTheDocument()
     expect(within(core).getByText('main')).toBeInTheDocument()
     expect(within(core).getByText('/srv/core')).toBeInTheDocument()
-    expect(within(core).getByText('app1')).toBeInTheDocument()
+    // The checkout's host, and each row names the host it runs on.
+    expect(within(core).getAllByText('app1')).toHaveLength(3)
+    expect(within(row('api')).getByTitle('Runs on app1')).toBeInTheDocument()
     // The newest of its services' commits (worker's release is the later one), 7 characters, and the tag.
     expect(within(core).getByTestId('checkout-commit')).toHaveTextContent('fed9876')
     expect(within(core).getByText('deployed-staging')).toBeInTheDocument()
@@ -162,13 +158,13 @@ describe('services section', () => {
     const web = group('web')
     expect(within(web).getAllByText('/srv/web').length).toBeGreaterThan(0)
     expect(within(web).getByText('release')).toBeInTheDocument()
-    expect(within(web).getByText('app2')).toBeInTheDocument()
+    expect(within(web).getAllByText('app2')).toHaveLength(2)
     expect(within(web).queryByTestId('checkout-commit')).not.toBeInTheDocument()
     // Rows: the compose service in mono and the commit or Never deployed.
     expect(within(row('worker')).getByText('jobs')).toHaveClass('font-mono')
     expect(within(row('worker')).getByText('fed9876')).toBeInTheDocument()
     expect(within(row('site')).getByText('Never deployed')).toBeInTheDocument()
-    expect(within(row('cron')).getByText('No checkout; only Open works')).toBeInTheDocument()
+    expect(within(row('cron')).getByText('No checkout')).toBeInTheDocument()
   })
 
   it('Deploy on a row calls onDeploy with that id; header Deploy calls it with none', async () => {
@@ -212,7 +208,7 @@ describe('services section', () => {
     const db = await waitFor(() => row('main-db'))
     expect(within(db).getByText('postgres')).toBeInTheDocument()
     expect(within(db).getByText('10.0.0.5:5432')).toBeInTheDocument()
-    expect(within(db).getByText('via app1')).toBeInTheDocument()
+    expect(within(db).getByTitle('Runs on app1')).toHaveTextContent('app1')
     expect(within(db).getByText(STATE_WORD[state])).toBeInTheDocument()
     expect(within(db).queryByText('127.0.0.1:15432') !== null).toBe(shown)
     expect(within(db).queryByRole('button', { name: 'Copy 127.0.0.1:15432' }) !== null).toBe(shown)
@@ -242,13 +238,18 @@ describe('services section', () => {
     expect(writeText).toHaveBeenCalledWith('127.0.0.1:15432')
   })
 
-  it('shows the empty state with both add actions', async () => {
+  it('shows the empty state with one Add service; the dialog picks the type', async () => {
     const user = userEvent.setup()
     world({ 'service:list': [] })
     await mount()
     expect(await within(section()).findByText('No services yet')).toBeInTheDocument()
-    await user.click(within(section()).getByRole('button', { name: 'Add database' }))
-    expect(await screen.findByRole('dialog', { name: 'Add database' })).toBeInTheDocument()
+    expect(within(section()).queryByRole('button', { name: 'Add database' })).not.toBeInTheDocument()
+    const adds = within(section()).getAllByRole('button', { name: 'Add service' })
+    await user.click(adds[adds.length - 1])
+    const dialog = await screen.findByRole('dialog', { name: 'Add service' })
+    expect(within(dialog).getByRole('radio', { name: 'App' })).toBeChecked()
+    await user.click(within(dialog).getByRole('radio', { name: 'Database' }))
+    expect(within(dialog).getByRole('button', { name: 'Add database' })).toBeDisabled()
   })
 
   it('dialog defaults compose service to the name until edited', async () => {
@@ -268,12 +269,16 @@ describe('services section', () => {
     await user.type(name, 'ing')
     expect(compose).toHaveValue('billing-svc')
     await user.selectOptions(within(dialog).getByLabelText('Checkout'), 'core')
+    // The checkout sets the host.
+    expect(within(dialog).getByLabelText('Host')).toHaveValue('h1')
+    expect(within(dialog).getByLabelText('Host')).toBeDisabled()
     await user.click(within(dialog).getByRole('radio', { name: 'The host' }))
-    await user.click(within(dialog).getByRole('button', { name: 'Add service' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Add app' }))
     await waitFor(() => expect(calls(invoke, 'service:create')).toHaveLength(1))
     expect(calls(invoke, 'service:create')[0][1]).toEqual({
       kind: 'service',
       environmentId: 'e1',
+      hostId: 'h1',
       name: 'billing',
       deploymentId: 'd1',
       composeService: 'billing-svc',
@@ -283,35 +288,96 @@ describe('services section', () => {
     })
   })
 
-  it('db dialog prefills the port from the engine and names the default via-host', async () => {
+  it('right-click on a service row opens its menu; Duplicate adds a copy with its own name and compose service', async () => {
     const user = userEvent.setup()
-    world()
+    const invoke = world({ 'service:create': appService({ id: 's9', name: 'api copy', deploymentId: 'd1', position: 5 }) })
     await mount()
     await waitFor(() => group('core'))
+    await user.pointer({ keys: '[MouseRight]', target: row('api') })
+    const menu = screen.getByRole('menu', { name: 'api options' })
+    expect(within(menu).getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['Edit', 'Duplicate', 'Copy name', 'Delete'])
+    await user.click(within(menu).getByRole('menuitem', { name: 'Duplicate' }))
+    expect(screen.queryByRole('menu', { name: 'api options' })).toBeNull()
+    const dialog = await screen.findByRole('dialog', { name: 'Duplicate api' })
+    expect(within(dialog).getByLabelText('Name')).toHaveValue('api copy')
+    expect(within(dialog).getByLabelText('Compose service')).toHaveValue('api-copy')
+    await user.click(within(dialog).getByRole('button', { name: 'Add app' }))
+    await waitFor(() => expect(calls(invoke, 'service:create')).toHaveLength(1))
+    expect(calls(invoke, 'service:create')[0][1]).toMatchObject({ kind: 'service', name: 'api copy', deploymentId: 'd1', composeService: 'api-copy' })
+  })
+
+  it('Duplicate on a db leaves the local port to be picked; Copy database address copies host:port', async () => {
+    const user = userEvent.setup()
+    const writeText = vi.fn(async () => {})
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    world()
+    await mount()
+    await waitFor(() => group('Databases'))
+    await user.pointer({ keys: '[MouseRight]', target: row('main-db') })
+    await user.click(screen.getByRole('menuitem', { name: 'Copy database address' }))
+    const db = SERVICES[4] as Extract<ServiceMeta, { kind: 'db' }>
+    expect(writeText).toHaveBeenCalledWith(`${db.dbAddress}:${db.dbPort}`)
+    await user.click(within(row('main-db')).getByRole('button', { name: 'main-db options' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Duplicate' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Duplicate main-db' })
+    expect(within(dialog).getByLabelText('Name')).toHaveValue('main-db copy')
+    expect(within(dialog).getByLabelText(/Local port/)).toHaveValue('')
+  })
+
+  /** Opens Add service from the options menu and switches it to a database. */
+  async function addDatabase(user: ReturnType<typeof userEvent.setup>) {
     await user.click(within(section()).getByRole('button', { name: 'Services options' }))
-    await user.click(screen.getByRole('menuitem', { name: 'Add database' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Add database' })
+    await user.click(screen.getByRole('menuitem', { name: 'Add service' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Add service' })
+    await user.click(within(dialog).getByRole('radio', { name: 'Database' }))
+    return dialog
+  }
+
+  it('db dialog prefills the port from the engine and asks for its host', async () => {
+    const user = userEvent.setup()
+    const invoke = world({ 'service:create': dbService({ id: 'b9', name: 'cache', dbEngine: 'redis', dbPort: 6379, dbAddress: '127.0.0.1', hostId: 'h2' }) })
+    await mount()
+    await waitFor(() => group('core'))
+    const dialog = await addDatabase(user)
     expect(within(dialog).getByLabelText('Port')).toHaveValue('5432')
     await user.selectOptions(within(dialog).getByLabelText('Engine'), 'redis')
     expect(within(dialog).getByLabelText('Port')).toHaveValue('6379')
-    // app1 holds the most checkouts? Both hold one; the tie goes to the lower label.
-    expect(within(dialog).getByRole('option', { name: 'App host (app1)' })).toBeInTheDocument()
+    // The address is as seen from the host.
+    expect(within(dialog).getByLabelText('Address')).toHaveValue('127.0.0.1')
+    expect(within(dialog).getByText('For a managed database, the bastion that reaches it')).toBeInTheDocument()
     expect(within(dialog).getByLabelText('Local port')).toHaveAttribute('placeholder', 'Picked on first open')
+    // No host, no save.
+    await user.type(within(dialog).getByLabelText('Name'), 'cache')
+    expect(within(dialog).getByRole('button', { name: 'Add database' })).toBeDisabled()
+    await user.selectOptions(within(dialog).getByLabelText('Host'), 'h2')
+    await user.click(within(dialog).getByRole('button', { name: 'Add database' }))
+    await waitFor(() => expect(calls(invoke, 'service:create')).toHaveLength(1))
+    expect(calls(invoke, 'service:create')[0][1]).toEqual({
+      kind: 'db',
+      environmentId: 'e1',
+      name: 'cache',
+      dbEngine: 'redis',
+      dbAddress: '127.0.0.1',
+      hostId: 'h2',
+      dbPort: 6379,
+      localPort: null,
+    })
   })
 
-  it('the via-host select groups hosts by region', async () => {
+  it('the host select groups every host by region and marks the environment\'s own', async () => {
     const user = userEvent.setup()
     const us = { ...REGION, id: 'region-2', code: 'us-east-1', displayName: 'US East' }
-    world({ 'host:list': [host({ id: 'h1', label: 'app1' }), host({ id: 'h2', label: 'app2', regionId: us.id })], 'region:list': [REGION, us] })
+    world({
+      'host:list': [host({ id: 'h1', label: 'app1' }), host({ id: 'h2', label: 'app2', regionId: us.id }), host({ id: 'h3', label: 'spare', regionId: us.id })],
+      'region:list': [REGION, us],
+    })
     await mount()
     await waitFor(() => group('core'))
-    await user.click(within(section()).getByRole('button', { name: 'Services options' }))
-    await user.click(screen.getByRole('menuitem', { name: 'Add database' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Add database' })
-    const groups = [...within(dialog).getByLabelText('Via host').querySelectorAll('optgroup')].map((g) => [g.label, [...g.querySelectorAll('option')].map((o) => o.textContent)])
+    const dialog = await addDatabase(user)
+    const groups = [...within(dialog).getByLabelText('Host').querySelectorAll('optgroup')].map((g) => [g.label, [...g.querySelectorAll('option')].map((o) => o.textContent)])
     expect(groups).toEqual([
-      ['test-1', ['app1']],
-      ['us-east-1', ['app2']],
+      ['test-1', ['app1 · in staging']],
+      ['us-east-1', ['app2 · in staging', 'spare']],
     ])
   })
 
@@ -334,7 +400,7 @@ describe('services section', () => {
 
   it('declining the restart prompt shows Route changed; restart to apply', async () => {
     const user = userEvent.setup()
-    const moved = dbService({ id: 'b1', name: 'main-db', position: 4, viaHostId: 'h1', localPort: 15432, tunnelId: 't1', dbAddress: '10.0.0.9' })
+    const moved = dbService({ id: 'b1', name: 'main-db', position: 4, localPort: 15432, tunnelId: 't1', dbAddress: '10.0.0.9' })
     const invoke = world({ 'service:update': { service: moved, tunnelRestartNeeded: true } })
     tunnel('up')
     await mount()
@@ -358,7 +424,7 @@ describe('services section', () => {
 
   it('accepting the restart prompt syncs the tunnel', async () => {
     const user = userEvent.setup()
-    const moved = dbService({ id: 'b1', name: 'main-db', position: 4, viaHostId: 'h1', localPort: 15432, tunnelId: 't1', dbPort: 5433 })
+    const moved = dbService({ id: 'b1', name: 'main-db', position: 4, localPort: 15432, tunnelId: 't1', dbPort: 5433 })
     const invoke = world({ 'service:update': { service: moved, tunnelRestartNeeded: true } })
     tunnel('up')
     await mount()
@@ -377,7 +443,7 @@ describe('services section', () => {
 
   it('a failed restart from the prompt still marks the route changed', async () => {
     const user = userEvent.setup()
-    const moved = dbService({ id: 'b1', name: 'main-db', position: 4, viaHostId: 'h1', localPort: 15432, tunnelId: 't1', dbPort: 5433 })
+    const moved = dbService({ id: 'b1', name: 'main-db', position: 4, localPort: 15432, tunnelId: 't1', dbPort: 5433 })
     const invoke = world({ 'service:update': { service: moved, tunnelRestartNeeded: true } })
     const base = invoke.getMockImplementation()!
     invoke.mockImplementation(async (channel: string) => {

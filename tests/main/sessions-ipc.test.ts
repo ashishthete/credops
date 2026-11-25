@@ -28,6 +28,7 @@ function fakeManager(): { [K in keyof SessionApi]: ReturnType<typeof vi.fn> } {
     reconnect: vi.fn(() => meta),
     write: vi.fn(),
     resize: vi.fn(),
+    ack: vi.fn(),
     close: vi.fn(),
     list: vi.fn(() => [meta]),
     attach: vi.fn(() => ({ meta, buffer: 'b', end: 1 })),
@@ -76,6 +77,8 @@ describe('session IPC', () => {
     expect(sessions.write).toHaveBeenCalledWith(id, 'ls\r')
     await call('session:resize', id, 1000, 500)
     expect(sessions.resize).toHaveBeenCalledWith(id, 1000, 500)
+    await call('session:ack', id, 16_384)
+    expect(sessions.ack).toHaveBeenCalledWith(id, 16_384)
     await call('session:close', id)
     expect(sessions.close).toHaveBeenCalledWith(id)
     await expect(call('session:list')).resolves.toEqual([meta])
@@ -97,6 +100,7 @@ describe('session IPC', () => {
     await expect(call('ssh:open', { hostId, cols: 80, rows: 501 })).rejects.toThrow('invalid arguments: [0].rows must be at most 500')
     await expect(call('ssh:open', { hostId: 42, cols: 80, rows: 24 })).rejects.toThrow('invalid arguments: [0].hostId must be a uuid')
     await expect(call('session:resize', id, 80, 501)).rejects.toThrow('invalid arguments: [2] must be at most 500')
+    await expect(call('session:ack', id, 0)).rejects.toThrow('invalid arguments: [1] must be at least 1')
     const long = 'x'.repeat(65_537)
     const err = await call('session:write', id, long).catch((e: Error) => e)
     expect((err as Error).message).toBe('invalid arguments: [1] must be at most 65536 chars')

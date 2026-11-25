@@ -213,12 +213,15 @@ export function OutputPane({
   label,
   className = 'max-h-80',
   dimTimestamps = false,
+  fill = false,
 }: {
   output: HostOutput | undefined
   label: string
   className?: string
   /** Dim a leading timestamp on each line (container logs). */
   dimTimestamps?: boolean
+  /** Take the parent's full height and scroll inside it (a drawer), instead of capping at `className`'s max height. */
+  fill?: boolean
 }) {
   const motionSafe = useMotionSafe()
   const built = useRef<Spans>(NONE)
@@ -262,7 +265,7 @@ export function OutputPane({
   }
 
   return (
-    <div className="group/pane relative">
+    <div className={`group/pane relative ${fill ? 'h-full' : ''}`}>
       <div
         ref={log}
         role="log"
@@ -270,7 +273,7 @@ export function OutputPane({
         aria-live="off"
         tabIndex={0}
         onScroll={onScroll}
-        className={`overflow-auto rounded-lg border border-line/70 bg-canvas/70 focus:outline-none focus-visible:border-accent/50 ${className}`}
+        className={`overflow-auto rounded-lg border border-line/70 bg-canvas/70 focus:outline-none focus-visible:border-accent/50 ${fill ? 'h-full' : ''} ${className}`}
       >
         {hidden && (
           <p className="border-b border-line/50 px-3 py-1.5 text-[11.5px] text-muted">Older output is hidden here; Copy output copies all that's kept.</p>

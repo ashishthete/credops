@@ -455,13 +455,15 @@ export const asOperationRequest: Check<OperationRequest> = v.object({
 // content rules (compose service, address, membership of the checkout).
 const serviceCommon = {
   environmentId: v.uuid(),
+  hostId: v.uuid(),
   name: deployName,
   description: v.optional(v.str({ max: MAX_DESCRIPTION })),
 }
 const servicePort = v.int({ min: 1, max: 65535 })
 const appServiceFields = {
   deploymentId: nullableId,
-  composeService: v.str({ min: 1, max: MAX_COMPOSE_NAME }),
+  // '' for an app without a checkout.
+  composeService: v.str({ max: MAX_COMPOSE_NAME }),
   url: v.nullable(v.str({ max: MAX_URL })),
   urlCheckFrom: v.oneOf(['mac', 'host'] as const),
   skipUnchanged: v.bool(),
@@ -470,13 +472,13 @@ const dbServiceFields = {
   dbEngine: v.oneOf(['postgres', 'mysql', 'mongodb', 'redis', 'other'] as const),
   dbAddress: v.str({ min: 1, max: MAX_ADDRESS }),
   dbPort: servicePort,
-  viaHostId: nullableId,
   localPort: v.nullable(servicePort),
 }
 export const asServiceInput: Check<ServiceInput> = v.tagged('kind', {
   service: v.object({
     kind: v.oneOf(['service'] as const),
     ...serviceCommon,
+    hostId: v.optional(serviceCommon.hostId),
     deploymentId: nullableId,
     composeService: v.optional(appServiceFields.composeService),
     url: v.optional(appServiceFields.url),
@@ -489,8 +491,11 @@ export const asServiceInput: Check<ServiceInput> = v.tagged('kind', {
     dbEngine: dbServiceFields.dbEngine,
     dbAddress: dbServiceFields.dbAddress,
     dbPort: v.optional(dbServiceFields.dbPort),
-    viaHostId: v.optional(dbServiceFields.viaHostId),
     localPort: v.optional(dbServiceFields.localPort),
+  }),
+  bastion: v.object({
+    kind: v.oneOf(['bastion'] as const),
+    ...serviceCommon,
   }),
 }) as Check<ServiceInput>
 // The patch can't know the kind: both kinds' keys are allowed here and the store refuses the other kind's. The kind
@@ -498,6 +503,7 @@ export const asServiceInput: Check<ServiceInput> = v.tagged('kind', {
 export const asServicePatch: Check<ServicePatch> = v.object({
   name: v.optional(deployName),
   description: serviceCommon.description,
+  hostId: v.optional(serviceCommon.hostId),
   ...Object.fromEntries(Object.entries({ ...appServiceFields, ...dbServiceFields }).map(([k, c]) => [k, v.optional(c as Check<unknown>)])),
 }) as Check<ServicePatch>
 
@@ -577,7 +583,7 @@ export const asCopyServicesRequest: Check<CopyServicesRequest> = v.object({
     MAX_DEPLOYMENTS,
   ),
   dbs: v.array(
-    v.object({ serviceId: v.uuid(), dbAddress: dbServiceFields.dbAddress, dbPort: servicePort, viaHostId: nullableId }),
+    v.object({ serviceId: v.uuid(), dbAddress: dbServiceFields.dbAddress, dbPort: servicePort, hostId: v.uuid() }),
     MAX_SERVICES,
   ),
 }) as Check<CopyServicesRequest>
@@ -908,6 +914,7 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'session:reconnect': args(v.uuid()),
   'session:write': args(v.uuid(), v.str({ max: MAX_WRITE_CHARS })),
   'session:resize': args(v.uuid(), cols, rows),
+  'session:ack': args(v.uuid(), v.int({ min: 1, max: 1 << 30 })),
   'session:close': args(v.uuid()),
   'session:list': args(),
   'session:attach': args(v.uuid()),

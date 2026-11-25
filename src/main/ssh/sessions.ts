@@ -5,6 +5,9 @@ import type { EventContract, EventName } from '../../shared/ipc'
 import type { IdentityRef, ResolvedHost } from '../../shared/inventory'
 import {
   DEFAULT_KEEPALIVE_SEC,
+  FLOW_HIGH_CHARS,
+  FLOW_LOW_CHARS,
+  FLOW_STALL_MS,
   FLUSH_CHARS,
   FLUSH_MS,
   MAX_SESSIONS,
@@ -34,6 +37,9 @@ export interface Pty {
   onData(cb: (chunk: Buffer | string) => void): void
   onExit(cb: (info: { code: number | null }) => void): void
   kill(): void
+  /** Stops reading output (the remote program blocks on a full pipe) until `resume`. */
+  pause?(): void
+  resume?(): void
 }
 
 export type CloseReason = 'user' | 'remote' | 'error' | 'quit' | 'reset'
@@ -118,6 +124,10 @@ interface Session {
   /** Chars ever appended to the scrollback, pending ones included; never shrinks on trim. */
   end: number
   flushTimer: NodeJS.Timeout | null
+  /** Chars sent in session:data that the window has not yet acknowledged drawing. */
+  unacked: number
+  /** Set while output reading is paused for the window to catch up; fires if it never does. */
+  stallTimer: NodeJS.Timeout | null
   pty: Pty | null
   /** Set while connecting or ready. */
   attempt: Attempt | null
@@ -184,6 +194,9 @@ function shellPty(stream: ClientChannel): Pty {
       stream.once('close', () => cb({ code }))
     },
     kill: () => stream.close(),
+    // Stops reading the channel: ssh2 stops widening its window, so the server holds the output.
+    pause: () => void stream.pause(),
+    resume: () => void stream.resume(),
   }
 }
 
@@ -253,6 +266,16 @@ export class SessionManager {
     if (s?.meta.state === 'ready') s.pty?.write(data)
   }
 
+  /** The window has drawn `chars` more of the output it was sent. */
+  ack(id: string, chars: number): void {
+    const s = this.sessions.get(id)
+    if (!s) return
+    s.unacked = Math.max(0, s.unacked - chars)
+    if (!s.stallTimer) return
+    if (s.unacked <= FLOW_LOW_CHARS) this.unpause(s)
+    else this.armStall(s) // still catching up
+  }
+
   resize(id: string, cols: number, rows: number): void {
     const s = this.sessions.get(id)
     if (!s) return
@@ -276,6 +299,8 @@ export class SessionManager {
   /** `end` is the stream offset the buffer reaches; later session:data events carry theirs. */
   attach(id: string): { meta: SessionMeta; buffer: string; end: number } {
     const s = this.get(id)
+    // A new view (or a reloaded window) starts from the buffer: nothing earlier is owed an ack.
+    this.unpause(s)
     return { meta: snapshot(s.meta), buffer: s.scrollback.text(), end: s.end }
   }
 
@@ -373,6 +398,8 @@ export class SessionManager {
       pending: '',
       end: 0,
       flushTimer: null,
+      unacked: 0,
+      stallTimer: null,
       pty: null,
       attempt: null,
       readyAtMs: 0,
@@ -384,6 +411,8 @@ export class SessionManager {
 
   private forget(s: Session): void {
     this.flush(s)
+    if (s.stallTimer) clearTimeout(s.stallTimer)
+    s.stallTimer = null
     this.sessions.delete(s.meta.id)
   }
 
@@ -500,6 +529,7 @@ export class SessionManager {
   }
 
   private ready(s: Session, attempt: Attempt, pty: Pty, onExit: () => void): void {
+    this.unpause(s)
     s.pty = pty
     const decoder = new TextDecoder('utf-8')
     if (s.meta.attempt > 1) this.output(s, RECONNECTED)
@@ -632,6 +662,25 @@ export class SessionManager {
     const data = s.pending
     s.pending = ''
     this.deps.emit('session:data', { id: s.meta.id, data, end: s.end })
+    s.unacked += data.length
+    if (!s.stallTimer && s.unacked > FLOW_HIGH_CHARS && s.pty) {
+      s.pty.pause?.()
+      this.armStall(s)
+    }
+  }
+
+  /** Paused, the session reads again after FLOW_STALL_MS without an ack: the window may never draw what it was sent. */
+  private armStall(s: Session): void {
+    if (s.stallTimer) clearTimeout(s.stallTimer)
+    s.stallTimer = setTimeout(() => this.unpause(s), FLOW_STALL_MS)
+  }
+
+  private unpause(s: Session): void {
+    s.unacked = 0
+    if (!s.stallTimer) return
+    clearTimeout(s.stallTimer)
+    s.stallTimer = null
+    s.pty?.resume?.()
   }
 
   /** Pending output goes first, so a state change never overtakes the data before it. */

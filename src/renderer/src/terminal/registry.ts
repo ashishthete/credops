@@ -2,7 +2,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { Terminal } from '@xterm/xterm'
-import { SCROLLBACK_CHARS } from '../../../shared/ssh'
+import { FLOW_ACK_CHARS, SCROLLBACK_CHARS } from '../../../shared/ssh'
 import { api } from '../lib/api'
 import { terminalTheme } from './theme'
 
@@ -20,6 +20,8 @@ interface Entry extends TerminalHandle {
   /** Live data that arrived while the attach was in flight; written after the buffer. */
   queue: { data: string; end: number }[] | null
   queuedChars: number
+  /** Set once the GPU renderer has been tried for this terminal. */
+  gpuTried: boolean
 }
 
 const entries = new Map<string, Entry>()
@@ -82,7 +84,7 @@ export function getTerminal(id: string): TerminalHandle {
     term.loadAddon(fit)
     term.loadAddon(search)
     term.loadAddon(new WebLinksAddon((_event, url) => void window.open(url)))
-    entry = { term, fit, search, attach: null, attachEnd: 0, queue: null, queuedChars: 0 }
+    entry = { term, fit, search, attach: null, attachEnd: 0, queue: null, queuedChars: 0, gpuTried: false }
     entries.set(id, entry)
     void loadTerminalFont()
   }
@@ -96,11 +98,57 @@ function unseen(data: string, end: number, attachEnd: number): string {
   return start >= attachEnd ? data : data.slice(attachEnd - start)
 }
 
+let webgl2: boolean | null = null
+function hasWebgl2(): boolean {
+  if (webgl2 === null) {
+    try {
+      webgl2 = !!document.createElement('canvas').getContext('webgl2')
+    } catch {
+      webgl2 = false
+    }
+  }
+  return webgl2
+}
+
+/**
+ * Draws the terminal on the GPU, as VS Code does; xterm's default DOM renderer rebuilds rows as elements
+ * and falls behind on fast or redrawing output. Call once the terminal is open. Without WebGL2, or after
+ * the GPU context is lost, the DOM renderer carries on.
+ */
+export function enableGpuRenderer(id: string): void {
+  const entry = entries.get(id)
+  if (!entry || entry.gpuTried || !entry.term.element) return
+  entry.gpuTried = true
+  if (!hasWebgl2()) return
+  void import('@xterm/addon-webgl')
+    .then(({ WebglAddon }) => {
+      if (entries.get(id) !== entry) return
+      const addon = new WebglAddon()
+      addon.onContextLoss(() => addon.dispose())
+      entry.term.loadAddon(addon)
+    })
+    .catch(() => {
+      /* the DOM renderer stays */
+    })
+}
+
+/** Drawn chars not yet acknowledged to main, per session; see FLOW_HIGH_CHARS. */
+const unacked = new Map<string, number>()
+function ack(id: string, chars: number): void {
+  if (!chars) return
+  const total = (unacked.get(id) ?? 0) + chars
+  if (total < FLOW_ACK_CHARS) return void unacked.set(id, total)
+  unacked.delete(id)
+  api.invoke('session:ack', id, total).catch(() => {})
+}
+
+/** Writes the part of a chunk not on screen yet, and acknowledges the whole chunk once it is drawn. */
 function write(id: string, entry: Entry, data: string, end: number): void {
   // A tab closed mid-attach disposes the terminal; writing to it would throw.
-  if (entries.get(id) !== entry) return
+  if (entries.get(id) !== entry) return ack(id, data.length)
   const text = unseen(data, end, entry.attachEnd)
-  if (text) entry.term.write(text)
+  if (text) entry.term.write(text, () => ack(id, data.length))
+  else ack(id, data.length)
 }
 
 /**
@@ -133,18 +181,24 @@ export function attachSession(id: string): Promise<void> {
 /** Terminal output goes straight to xterm; it never passes through React state. */
 export function writeData(id: string, data: string, end: number): void {
   const entry = entries.get(id)
-  if (!entry?.attach) return
+  // Not attached yet: the attach's buffer will cover it, so it counts as drawn.
+  if (!entry?.attach) return ack(id, data.length)
   if (!entry.queue) return write(id, entry, data, end)
   // Bound the in-flight queue at the scrollback size, oldest first, like the buffer itself.
   entry.queue.push({ data, end })
   entry.queuedChars += data.length
-  while (entry.queuedChars > SCROLLBACK_CHARS && entry.queue.length > 1) entry.queuedChars -= entry.queue.shift()!.data.length
+  while (entry.queuedChars > SCROLLBACK_CHARS && entry.queue.length > 1) {
+    const dropped = entry.queue.shift()!.data.length
+    entry.queuedChars -= dropped
+    ack(id, dropped)
+  }
 }
 
 export function disposeTerminal(id: string): void {
   const entry = entries.get(id)
   if (!entry) return
   entries.delete(id)
+  unacked.delete(id)
   entry.term.dispose()
 }
 

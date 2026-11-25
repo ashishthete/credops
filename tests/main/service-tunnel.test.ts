@@ -73,7 +73,7 @@ async function setup() {
     },
   })
   const db = (over: Record<string, unknown> = {}): DbServiceMeta =>
-    f.services.create({ kind: 'db', environmentId: f.staging.id, name: 'main-db', dbEngine: 'postgres', dbAddress: '10.0.0.9', ...over }) as DbServiceMeta
+    f.services.create({ kind: 'db', environmentId: f.staging.id, name: 'main-db', dbEngine: 'postgres', dbAddress: '10.0.0.9', hostId: f.host.id, ...over }) as DbServiceMeta
   const svc = (id: string): DbServiceMeta => f.services.get(id) as DbServiceMeta
   return { ...f, ...m, st, changed, ports, db, svc, sql: f.db }
 }
@@ -141,21 +141,16 @@ describe('ServiceTunnels', () => {
     await expect(t.st.open(d.id)).rejects.toThrow(TUNNEL_LIMIT)
   })
 
-  it('via-host gone falls back to the default app host, else asks for one', async () => {
+  it("tunnels through the db's own host, and the db goes with its host when that leaves the environment", async () => {
     const t = await setup()
     const h2 = t.hosts.create({ regionId: REGION, label: 'bastion', address: '10.0.0.8' })
-    t.envs.putHost(t.staging.id, h2.id, 'app')
-    const d = t.db({ viaHostId: h2.id })
+    const d = t.db({ hostId: h2.id })
+    expect(t.envs.get(t.staging.id).hosts.find((h) => h.hostId === h2.id)?.role).toBe('db')
     expect(t.st.viaHost(t.svc(d.id))).toBe(h2.id)
-    t.envs.removeHost(t.staging.id, h2.id)
-    expect(t.st.viaHost(t.svc(d.id))).toBe(t.host.id)
     await t.st.open(d.id)
-    expect(t.tunnels.get(t.svc(d.id).tunnelId!).hostId).toBe(t.host.id)
-    // A db-role member is no default via-host: with no app host left, the user picks one.
-    const h3 = t.hosts.create({ regionId: REGION, label: 'pg1', address: '10.0.0.9' })
-    t.envs.putHost(t.staging.id, h3.id, 'db')
-    t.envs.removeHost(t.staging.id, t.host.id)
-    expect(() => t.st.viaHost(t.svc(d.id))).toThrow(new Error('Pick a via-host for main-db; this environment has no app host'))
+    expect(t.tunnels.get(t.svc(d.id).tunnelId!).hostId).toBe(h2.id)
+    t.envs.removeHost(t.staging.id, h2.id)
+    expect(() => t.services.get(d.id)).toThrow()
   })
 
   it('afterUpdate updates a stopped tunnel and reports a running one without changing it', async () => {
@@ -206,22 +201,6 @@ describe('ServiceTunnels', () => {
     t.set(tunnelId, 'stopped')
     await t.st.open(d.id)
     expect(t.tunnels.get(tunnelId).targetPort).toBe(6543)
-  })
-
-  it('afterUpdate with no via-host leaves a stale tunnel alone', async () => {
-    const t = await setup()
-    const d = t.db()
-    await t.st.open(d.id)
-    const tunnelId = t.svc(d.id).tunnelId!
-    t.envs.removeHost(t.staging.id, t.host.id)
-    const row = t.tunnels.get(tunnelId)
-    for (const state of ['stopped', 'up'] as const) {
-      t.set(tunnelId, state)
-      expect(t.st.afterUpdate(t.services.update(d.id, { dbPort: state === 'up' ? 5434 : 5433 })), state).toBe(false)
-      expect(t.tunnels.get(tunnelId)).toEqual(row)
-    }
-    // The next open says why.
-    await expect(t.st.open(d.id)).rejects.toThrow('Pick a via-host for main-db; this environment has no app host')
   })
 
   it('open rethrows a tunnel read error instead of creating a second tunnel', async () => {
@@ -340,13 +319,13 @@ describe('ServiceTunnels', () => {
     await call['service:delete'](d.id, { deleteTunnel: true })
     expect(() => t.tunnels.get(gone)).toThrow(/tunnel not found/)
     expect(t.calls.slice(calls)).toEqual(['stop'])
-    expect(t.services.list(t.staging.id)).toEqual([])
+    expect(t.services.list(t.staging.id).map((s) => s.id)).not.toContain(d.id)
 
     const e = t.db()
     await t.st.open(e.id)
     const kept = t.svc(e.id).tunnelId!
     await call['service:delete'](e.id, { deleteTunnel: false })
     expect(t.tunnels.get(kept)).toMatchObject({ label: 'main-db' })
-    expect(t.services.list(t.staging.id)).toEqual([])
+    expect(t.services.list(t.staging.id).map((s) => s.id)).not.toContain(e.id)
   })
 })

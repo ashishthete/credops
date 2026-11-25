@@ -161,7 +161,7 @@ function Attachments({ data }: { data: HostNodeData }) {
         const release = status.releaseOf[a.id]
         const word = running ? 'deploying' : failed ? 'last release failed' : null
         const label = word ? `${a.label}: ${word}` : a.label
-        const Icon = a.kind === 'db' ? Database : AppWindow
+        const Icon = a.kind === 'db' ? Database : a.kind === 'bastion' ? ShieldCheck : AppWindow
         return (
           <button
             key={a.id}

@@ -107,8 +107,8 @@ export async function buildManifest(environmentId: string, deps: ManifestDeps, o
   const product = deps.db.prepare('SELECT id, name FROM products WHERE id = ?').get(env.productId) as { id: string; name: string }
 
   const services = deps.services.list(environmentId)
-  // A db's via-host is published too, so the Hub can reach it even when no checkout runs there.
-  const hostIds = [...new Set([...deployments.map((d) => d.hostId), ...services.flatMap((s) => (s.kind === 'db' && s.viaHostId ? [s.viaHostId] : []))])]
+  // A db's host is published too (as its via-host), so the Hub can reach it even when no checkout runs there.
+  const hostIds = [...new Set([...deployments.map((d) => d.hostId), ...services.flatMap((s) => (s.kind === 'db' ? [s.hostId] : []))])]
   const hosts: HubEnvManifest['hosts'] = []
   for (const hostId of hostIds) {
     const label = (labelOf.get(hostId) as { label: string } | undefined)?.label ?? 'host'
@@ -152,10 +152,15 @@ export async function buildManifest(environmentId: string, deps: ManifestDeps, o
       product: { id: product.id, name: product.name },
     },
     hosts,
-    services: services.map((s): HubEnvManifest['services'][number] =>
+    // The Hub deploys from checkouts and opens db tunnels: an app without a checkout and a bastion are not published.
+    services: services.flatMap((s): HubEnvManifest['services'] =>
       s.kind === 'service'
-        ? { id: s.id, name: s.name, kind: 'service', composeService: s.composeService, deploymentId: s.deploymentId, hostId: s.deploymentId ? (hostOf.get(s.deploymentId) ?? null) : null, viaHostId: null, ...(v2 ? { skipUnchanged: s.skipUnchanged } : {}) }
-        : { id: s.id, name: s.name, kind: 'db', composeService: null, deploymentId: null, hostId: null, viaHostId: s.viaHostId },
+        ? s.deploymentId === null
+          ? []
+          : [{ id: s.id, name: s.name, kind: 'service', composeService: s.composeService, deploymentId: s.deploymentId, hostId: hostOf.get(s.deploymentId) ?? null, viaHostId: null, ...(v2 ? { skipUnchanged: s.skipUnchanged } : {}) }]
+        : s.kind === 'db'
+          ? [{ id: s.id, name: s.name, kind: 'db', composeService: null, deploymentId: null, hostId: null, viaHostId: s.hostId }]
+          : [],
     ),
     deployments: deployments.map((d) => manifestDeployment(d, o.hubSchema)),
     integrations: deps.integrations?.(environmentId) ?? EMPTY_HUB_INTEGRATIONS,

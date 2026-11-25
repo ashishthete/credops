@@ -6,6 +6,7 @@ import {
   DB_DEFAULT_PORT,
   MAX_SERVICES,
   type AppServiceMeta,
+  type BastionServiceMeta,
   type DbEngine,
   type DbServiceMeta,
   type ServiceInput,
@@ -29,6 +30,7 @@ export interface ServiceStoreDeps {
 interface ServiceRow {
   id: string
   environment_id: string
+  host_id: string
   name: string
   kind: ServiceKind
   position: number
@@ -43,19 +45,22 @@ interface ServiceRow {
   db_engine: DbEngine | null
   db_address: string | null
   db_port: number | null
-  via_host_id: string | null
   local_port: number | null
   tunnel_id: string | null
   created_at: string
   updated_at: string
 }
 
-type AppFields = Pick<AppServiceMeta, 'name' | 'description' | 'deploymentId' | 'composeService' | 'url' | 'urlCheckFrom' | 'skipUnchanged'>
-type DbFields = Pick<DbServiceMeta, 'name' | 'description' | 'dbEngine' | 'dbAddress' | 'dbPort' | 'viaHostId' | 'localPort'>
+type AppFields = Pick<AppServiceMeta, 'name' | 'description' | 'hostId' | 'deploymentId' | 'composeService' | 'url' | 'urlCheckFrom' | 'skipUnchanged'>
+type DbFields = Pick<DbServiceMeta, 'name' | 'description' | 'hostId' | 'dbEngine' | 'dbAddress' | 'dbPort' | 'localPort'>
+type BastionFields = Pick<BastionServiceMeta, 'name' | 'description' | 'hostId'>
 
-/** The fields a caller may set, per kind; a field of the other kind is refused by name of the rule. */
-const APP_FIELDS = ['name', 'description', 'deploymentId', 'composeService', 'url', 'urlCheckFrom', 'skipUnchanged'] as const satisfies readonly (keyof AppFields)[]
-const DB_FIELDS = ['name', 'description', 'dbEngine', 'dbAddress', 'dbPort', 'viaHostId', 'localPort'] as const satisfies readonly (keyof DbFields)[]
+/** The fields a caller may set, per kind; a field of another kind is refused by name of the rule. */
+const APP_FIELDS = ['name', 'description', 'hostId', 'deploymentId', 'composeService', 'url', 'urlCheckFrom', 'skipUnchanged'] as const satisfies readonly (keyof AppFields)[]
+const DB_FIELDS = ['name', 'description', 'hostId', 'dbEngine', 'dbAddress', 'dbPort', 'localPort'] as const satisfies readonly (keyof DbFields)[]
+const BASTION_FIELDS = ['name', 'description', 'hostId'] as const satisfies readonly (keyof BastionFields)[]
+const FIELDS: Record<ServiceKind, readonly string[]> = { service: APP_FIELDS, db: DB_FIELDS, bastion: BASTION_FIELDS }
+const ALL_FIELDS = [...new Set([...APP_FIELDS, ...DB_FIELDS])]
 const ENGINES = Object.keys(DB_DEFAULT_PORT) as DbEngine[]
 
 const COMPOSE_MESSAGE = 'compose service must be letters, digits, dashes, dots or underscores'
@@ -67,8 +72,8 @@ const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.str
 const has = (o: object, k: string): boolean => (o as Record<string, unknown>)[k] !== undefined
 
 /**
- * Services: what runs from a checkout's compose file (kind `service`) and the databases reached through a tunnel
- * (kind `db`). Every write is audited by name, environment and kind only (never a host, address or URL), appended
+ * Services: apps (kind `service`, optionally from a checkout's compose file), databases reached through a tunnel
+ * (kind `db`) and bastions, each on one host. Every write is audited by name, environment and kind only (never a host, address or URL), appended
  * after COMMIT.
  */
 export class ServiceStore {
@@ -134,7 +139,7 @@ export class ServiceStore {
    */
   insertInTx(input: ServiceInput, position?: number, id: string = this.ids()): string {
     const kind = input.kind
-    if (kind !== 'service' && kind !== 'db') throw new Error('kind must be service or db')
+    if (kind !== 'service' && kind !== 'db' && kind !== 'bastion') throw new Error('kind must be app, db or bastion')
     this.refuseForeign(kind, input)
     if (!this.db.prepare('SELECT 1 FROM environments WHERE id = ?').get(input.environmentId)) throw new Error('environment not found')
     const n = (this.db.prepare('SELECT COUNT(*) AS n FROM services').get() as { n: number }).n
@@ -147,8 +152,9 @@ export class ServiceStore {
         {
           name,
           description: input.description ?? '',
+          hostId: input.hostId ?? this.checkoutHost(input.deploymentId) ?? '',
           deploymentId: input.deploymentId,
-          composeService: input.composeService ?? (COMPOSE_SERVICE.test(name) ? name : ''),
+          composeService: input.composeService ?? (input.deploymentId !== null && COMPOSE_SERVICE.test(name) ? name : ''),
           url: input.url ?? null,
           urlCheckFrom: input.urlCheckFrom ?? 'mac',
           skipUnchanged: input.skipUnchanged ?? false,
@@ -158,10 +164,19 @@ export class ServiceStore {
       )
       this.db
         .prepare(
-          `INSERT INTO services(id, environment_id, name, kind, position, description, deployment_id, compose_service, url,
-            url_check_from, skip_unchanged, created_at, updated_at) VALUES (?,?,?,'service',?,?,?,?,?,?,?,?,?)`,
+          `INSERT INTO services(id, environment_id, host_id, name, kind, position, description, deployment_id, compose_service, url,
+            url_check_from, skip_unchanged, created_at, updated_at) VALUES (?,?,?,?,'service',?,?,?,?,?,?,?,?,?)`,
         )
-        .run(id, input.environmentId, f.name, pos, f.description, f.deploymentId, f.composeService, f.url, f.urlCheckFrom, f.skipUnchanged ? 1 : 0, ts, ts)
+        .run(id, input.environmentId, f.hostId, f.name, pos, f.description, f.deploymentId, f.composeService || null, f.url, f.urlCheckFrom, f.skipUnchanged ? 1 : 0, ts, ts)
+    } else if (input.kind === 'bastion') {
+      const name = this.checkName(input.name, input.environmentId, null)
+      const f = this.validateBastion({ name, description: input.description ?? '', hostId: input.hostId })
+      this.db
+        .prepare(
+          `INSERT INTO services(id, environment_id, host_id, name, kind, position, description, created_at, updated_at)
+            VALUES (?,?,?,?,'bastion',?,?,?,?)`,
+        )
+        .run(id, input.environmentId, f.hostId, f.name, pos, f.description, ts, ts)
     } else {
       const name = this.checkName(input.name, input.environmentId, null)
       const engine = this.checkEngine(input.dbEngine)
@@ -171,15 +186,15 @@ export class ServiceStore {
         dbEngine: engine,
         dbAddress: input.dbAddress,
         dbPort: input.dbPort ?? (DB_DEFAULT_PORT[engine] as number),
-        viaHostId: input.viaHostId ?? null,
+        hostId: input.hostId,
         localPort: input.localPort ?? null,
       })
       this.db
         .prepare(
-          `INSERT INTO services(id, environment_id, name, kind, position, description, db_engine, db_address, db_port,
-            via_host_id, local_port, created_at, updated_at) VALUES (?,?,?,'db',?,?,?,?,?,?,?,?,?)`,
+          `INSERT INTO services(id, environment_id, host_id, name, kind, position, description, db_engine, db_address, db_port,
+            local_port, created_at, updated_at) VALUES (?,?,?,?,'db',?,?,?,?,?,?,?,?)`,
         )
-        .run(id, input.environmentId, f.name, pos, f.description, f.dbEngine, f.dbAddress, f.dbPort, f.viaHostId, f.localPort, ts, ts)
+        .run(id, input.environmentId, f.hostId, f.name, pos, f.description, f.dbEngine, f.dbAddress, f.dbPort, f.localPort, ts, ts)
     }
     return id
   }
@@ -214,11 +229,15 @@ export class ServiceStore {
     const name = has(raw, 'name') ? this.checkName(raw.name as string, before.environmentId, id) : before.name
     let changed: string[]
     if (before.kind === 'service') {
+      const deploymentId = pick(before, 'deploymentId')
+      // A new checkout brings its host along unless the patch names one.
+      const hostId = has(raw, 'hostId') ? (raw.hostId as string) : deploymentId !== before.deploymentId ? (this.checkoutHost(deploymentId) ?? before.hostId) : before.hostId
       const f = this.validateApp(
         {
           name,
           description: pick(before, 'description'),
-          deploymentId: pick(before, 'deploymentId'),
+          hostId,
+          deploymentId,
           composeService: pick(before, 'composeService'),
           url: pick(before, 'url'),
           urlCheckFrom: pick(before, 'urlCheckFrom'),
@@ -230,8 +249,15 @@ export class ServiceStore {
       changed = APP_FIELDS.filter((k) => !same(f[k], before[k]))
       if (changed.length === 0) return changed
       this.db
-        .prepare('UPDATE services SET name = ?, description = ?, deployment_id = ?, compose_service = ?, url = ?, url_check_from = ?, skip_unchanged = ?, updated_at = ? WHERE id = ?')
-        .run(f.name, f.description, f.deploymentId, f.composeService, f.url, f.urlCheckFrom, f.skipUnchanged ? 1 : 0, this.now().toISOString(), id)
+        .prepare('UPDATE services SET name = ?, description = ?, host_id = ?, deployment_id = ?, compose_service = ?, url = ?, url_check_from = ?, skip_unchanged = ?, updated_at = ? WHERE id = ?')
+        .run(f.name, f.description, f.hostId, f.deploymentId, f.composeService || null, f.url, f.urlCheckFrom, f.skipUnchanged ? 1 : 0, this.now().toISOString(), id)
+    } else if (before.kind === 'bastion') {
+      const f = this.validateBastion({ name, description: pick(before, 'description'), hostId: pick(before, 'hostId') })
+      changed = BASTION_FIELDS.filter((k) => !same(f[k], before[k]))
+      if (changed.length === 0) return changed
+      this.db
+        .prepare('UPDATE services SET name = ?, description = ?, host_id = ?, updated_at = ? WHERE id = ?')
+        .run(f.name, f.description, f.hostId, this.now().toISOString(), id)
     } else {
       const f = this.validateDb({
         name,
@@ -239,14 +265,14 @@ export class ServiceStore {
         dbEngine: this.checkEngine(pick(before, 'dbEngine')),
         dbAddress: pick(before, 'dbAddress'),
         dbPort: pick(before, 'dbPort'),
-        viaHostId: pick(before, 'viaHostId'),
+        hostId: pick(before, 'hostId'),
         localPort: pick(before, 'localPort'),
       })
       changed = DB_FIELDS.filter((k) => !same(f[k], before[k]))
       if (changed.length === 0) return changed
       this.db
-        .prepare('UPDATE services SET name = ?, description = ?, db_engine = ?, db_address = ?, db_port = ?, via_host_id = ?, local_port = ?, updated_at = ? WHERE id = ?')
-        .run(f.name, f.description, f.dbEngine, f.dbAddress, f.dbPort, f.viaHostId, f.localPort, this.now().toISOString(), id)
+        .prepare('UPDATE services SET name = ?, description = ?, db_engine = ?, db_address = ?, db_port = ?, host_id = ?, local_port = ?, updated_at = ? WHERE id = ?')
+        .run(f.name, f.description, f.dbEngine, f.dbAddress, f.dbPort, f.hostId, f.localPort, this.now().toISOString(), id)
     }
     return changed
   }
@@ -350,6 +376,7 @@ export class ServiceStore {
     const base = {
       id: r.id,
       environmentId: r.environment_id,
+      hostId: r.host_id,
       name: r.name,
       position: r.position,
       description: r.description,
@@ -361,7 +388,7 @@ export class ServiceStore {
         ...base,
         kind: 'service',
         deploymentId: r.deployment_id,
-        composeService: r.compose_service as string,
+        composeService: r.compose_service ?? '',
         url: r.url,
         urlCheckFrom: r.url_check_from as HealthFrom,
         lastDeployedCommit: r.last_deployed_commit,
@@ -369,13 +396,13 @@ export class ServiceStore {
         skipUnchanged: r.skip_unchanged === 1,
       }
     }
+    if (r.kind === 'bastion') return { ...base, kind: 'bastion' }
     return {
       ...base,
       kind: 'db',
       dbEngine: r.db_engine as DbEngine,
       dbAddress: r.db_address as string,
       dbPort: r.db_port as number,
-      viaHostId: r.via_host_id,
       localPort: r.local_port,
       tunnelId: r.tunnel_id,
     }
@@ -396,9 +423,23 @@ export class ServiceStore {
   }
 
   private refuseForeign(kind: ServiceKind, raw: object): void {
-    const foreign: readonly string[] = kind === 'service' ? DB_FIELDS : APP_FIELDS
-    const own: readonly string[] = kind === 'service' ? APP_FIELDS : DB_FIELDS
-    for (const k of foreign) if (!own.includes(k) && has(raw, k)) throw new Error(kind === 'service' ? 'that field only applies to a db service' : 'that field does not apply to a db service')
+    const own = FIELDS[kind]
+    for (const k of ALL_FIELDS) if (!own.includes(k) && has(raw, k)) throw new Error(`that field does not apply to ${kind === 'service' ? 'an app' : kind === 'db' ? 'a db service' : 'a bastion'}`)
+  }
+
+  private checkoutHost(deploymentId: string | null): string | null {
+    if (deploymentId === null) return null
+    return (this.db.prepare('SELECT host_id FROM deployments WHERE id = ?').get(deploymentId) as { host_id: string } | undefined)?.host_id ?? null
+  }
+
+  private checkHost(hostId: string): string {
+    if (typeof hostId !== 'string' || hostId === '') throw new Error('a service needs a host')
+    if (!this.db.prepare('SELECT 1 FROM hosts WHERE id = ?').get(hostId)) throw new Error('host not found')
+    return hostId
+  }
+
+  private validateBastion(f: BastionFields): BastionFields {
+    return { ...f, description: this.checkDescription(f.description), hostId: this.checkHost(f.hostId) }
   }
 
   private checkName(raw: string, environmentId: string, selfId: string | null): string {
@@ -425,13 +466,19 @@ export class ServiceStore {
   /** Checks every rule on a fully merged kind `service`. Messages name the rule, never the value. */
   private validateApp(f: AppFields, environmentId: string, selfId: string | null): AppFields {
     const description = this.checkDescription(f.description)
-    if (typeof f.composeService !== 'string' || !COMPOSE_SERVICE.test(f.composeService)) throw new Error(COMPOSE_MESSAGE)
-    if (f.deploymentId !== null) {
-      const checkout = this.db.prepare('SELECT name, environment_id FROM deployments WHERE id = ?').get(f.deploymentId) as
-        | { name: string; environment_id: string }
-        | undefined
-      if (!checkout) throw new Error('checkout not found')
+    if (typeof f.composeService !== 'string' || (f.composeService !== '' && !COMPOSE_SERVICE.test(f.composeService))) throw new Error(COMPOSE_MESSAGE)
+    const checkout =
+      f.deploymentId === null
+        ? undefined
+        : (this.db.prepare('SELECT name, environment_id, host_id FROM deployments WHERE id = ?').get(f.deploymentId) as
+            | { name: string; environment_id: string; host_id: string }
+            | undefined)
+    if (f.deploymentId !== null && !checkout) throw new Error('checkout not found')
+    const hostId = this.checkHost(f.hostId)
+    if (f.deploymentId !== null && checkout) {
+      if (f.composeService === '') throw new Error(COMPOSE_MESSAGE)
       if (checkout.environment_id !== environmentId) throw new Error('the checkout belongs to another environment')
+      if (checkout.host_id !== hostId) throw new Error("an app runs on its checkout's host")
       const dup = this.db
         .prepare('SELECT id FROM services WHERE deployment_id = ? AND compose_service = ?')
         .get(f.deploymentId, f.composeService) as { id: string } | undefined
@@ -439,7 +486,7 @@ export class ServiceStore {
     }
     if (f.urlCheckFrom !== 'mac' && f.urlCheckFrom !== 'host') throw new Error('url check must run from mac or host')
     if (typeof f.skipUnchanged !== 'boolean') throw new Error('skip unchanged must be true or false')
-    return { ...f, description, url: this.checkUrl(f.url) }
+    return { ...f, description, hostId, url: this.checkUrl(f.url) }
   }
 
   /** Checks every rule on a fully merged kind `db`. */
@@ -447,9 +494,9 @@ export class ServiceStore {
     const description = this.checkDescription(f.description)
     const dbAddress = checkAddress(f.dbAddress)
     const dbPort = checkPort(f.dbPort)
-    if (f.viaHostId !== null && !this.db.prepare('SELECT 1 FROM hosts WHERE id = ?').get(f.viaHostId)) throw new Error('host not found')
+    const hostId = this.checkHost(f.hostId)
     const localPort = f.localPort === null ? null : checkPort(f.localPort)
-    return { ...f, description, dbAddress, dbPort, localPort }
+    return { ...f, description, hostId, dbAddress, dbPort, localPort }
   }
 
   /** Blank clears it. http(s) only, no credentials, no spaces or braces. */

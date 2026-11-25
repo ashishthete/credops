@@ -225,6 +225,8 @@ export interface IpcContract {
   'session:reconnect': { args: [id: string]; result: SessionMeta }
   'session:write': { args: [id: string, data: string]; result: void }
   'session:resize': { args: [id: string, cols: number, rows: number]; result: void }
+  // The renderer has drawn this many more chars of session:data; see FLOW_HIGH_CHARS.
+  'session:ack': { args: [id: string, chars: number]; result: void }
   // Also forgets the session: it leaves the list and its buffer is freed.
   'session:close': { args: [id: string]; result: void }
   'session:list': { args: []; result: SessionMeta[] }
@@ -468,6 +470,7 @@ export const CHANNELS = [
   'session:reconnect',
   'session:write',
   'session:resize',
+  'session:ack',
   'session:close',
   'session:list',
   'session:attach',

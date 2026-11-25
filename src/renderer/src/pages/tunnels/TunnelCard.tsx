@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { ArrowLeftToLine, ArrowRightToLine, Copy, Globe, Link2, Lock, Pencil, RotateCw, SquareTerminal, Trash2, type LucideIcon } from 'lucide-react'
+import { ArrowLeftToLine, ArrowRightToLine, Copy, Globe, Lock, Pencil, RotateCw, SquareTerminal, Trash2, type LucideIcon } from 'lucide-react'
 import { memo, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { isLoopback, minutesText, type TunnelMeta, type TunnelRuntime, type TunnelState, type TunnelType } from '../../../../shared/tunnels'
 import { ExplainButton } from '../../ai/ExplainPanel'
@@ -14,7 +14,7 @@ import { Padlock } from '../../ui/Padlock'
 import { Sparkline } from '../../ui/Sparkline'
 import { Switch } from '../../ui/Switch'
 import { toast } from '../../ui/Toaster'
-import { hostPort, RouteLine } from './RouteLine'
+import { RouteLine } from './RouteLine'
 
 export const TUNNEL_TYPE: Record<TunnelType, { chip: string; title: string; icon: LucideIcon; color: string }> = {
   L: { chip: 'L', title: 'Local forward', icon: ArrowRightToLine, color: 'var(--accent)' },
@@ -57,16 +57,9 @@ export function formatUptime(ms: number): string {
   return h % 24 ? `${Math.floor(h / 24)} d ${h % 24} h` : `${Math.floor(h / 24)} d`
 }
 
-/** The address a client uses to reach the tunnel's listening end. */
-export function tunnelAddress(meta: TunnelMeta, runtime: TunnelRuntime | undefined, hostAddress: string | undefined): string {
-  const port = runtime?.boundPort ?? meta.bindPort
-  return meta.type === 'R' ? hostPort(hostAddress ?? meta.bindAddress, port) : hostPort(meta.bindAddress, port)
-}
-
 export interface TunnelCardProps {
   id: string
   hostLabel: string
-  hostAddress?: string
   /** The tunnel's environment is protected (deleting asks for its name). */
   protectedEnv: boolean
   onEdit: (id: string) => void
@@ -75,7 +68,7 @@ export interface TunnelCardProps {
 }
 
 /** One tunnel: its route, a start/stop switch, live status and throughput. Stats ticks re-render only its throughput row. */
-export const TunnelCard = memo(function TunnelCard({ id, hostLabel, hostAddress, protectedEnv, onEdit, onDuplicate, onDelete }: TunnelCardProps) {
+export const TunnelCard = memo(function TunnelCard({ id, hostLabel, protectedEnv, onEdit, onDuplicate, onDelete }: TunnelCardProps) {
   const motionSafe = useMotionSafe()
   const { meta, runtime } = useTunnel(id)
   const state = runtime?.state ?? 'stopped'
@@ -86,18 +79,12 @@ export const TunnelCard = memo(function TunnelCard({ id, hostLabel, hostAddress,
   const glow = GLOW[state]
   const kind = TUNNEL_TYPE[meta.type]
   const exposed = !isLoopback(meta.bindAddress)
-  const copyAddress = () => {
-    const address = tunnelAddress(meta, runtime, hostAddress)
-    navigator.clipboard
-      ?.writeText(address)
-      .then(() => toast({ title: `Copied ${address}`, tone: 'success' }))
-      .catch(() => {})
-  }
   const copyCommand = () => {
     api
       .invoke('host:resolve', meta.hostId, ...(meta.environmentId ? [meta.environmentId] : []))
       .then((host) => {
         if (!host) throw new Error("Couldn't work out how to reach this tunnel's host.")
+        if (!navigator.clipboard) throw new Error('The clipboard is not available.')
         return navigator.clipboard.writeText(runnableSshCommand(meta, host)).then(() =>
           toast({
             title: 'Copied the ssh command',
@@ -168,7 +155,6 @@ export const TunnelCard = memo(function TunnelCard({ id, hostLabel, hostAddress,
               items={[
                 { label: 'Edit', icon: Pencil, run: () => onEdit(id) },
                 { label: 'Duplicate', icon: Copy, run: () => onDuplicate(id) },
-                { label: 'Copy address', icon: Link2, run: copyAddress },
                 { label: 'Copy SSH command', icon: SquareTerminal, run: copyCommand },
                 { label: 'Delete', icon: Trash2, danger: true, run: () => onDelete(id) },
               ]}

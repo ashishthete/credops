@@ -38,7 +38,6 @@ export type TunnelsAction = { kind: 'import' } | { kind: 'new' } | { kind: 'edit
 interface Group {
   hostId: string
   label: string
-  address?: string
   region?: RegionMeta
   environments: EnvironmentMeta[]
   tunnels: TunnelMeta[]
@@ -74,7 +73,6 @@ export function TunnelsPage() {
       const group = byHost.get(t.hostId) ?? {
         hostId: t.hostId,
         label: h?.label ?? 'Unknown host',
-        address: h?.address,
         region: h && regionById(inventory?.regions ?? [], h.regionId),
         environments: [],
         tunnels: [],
@@ -294,7 +292,6 @@ function HostGroup({ group, envById, onEdit, onDuplicate, onDelete }: HostGroupP
               key={t.id}
               id={t.id}
               hostLabel={group.label}
-              hostAddress={group.address}
               protectedEnv={!!(t.environmentId && envById.get(t.environmentId)?.protected)}
               onEdit={onEdit}
               onDuplicate={onDuplicate}

@@ -224,7 +224,9 @@ describe('tunnels page', () => {
     expect(left).toHaveTextContent('Disconnects in 45 min')
     expect(left).not.toHaveClass('text-warn')
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(41 * 60_000)
+      // Jump the clock rather than play 41 minutes of one-second ticks (slow enough to time out under load).
+      vi.setSystemTime(Date.now() + 41 * 60_000 - 15_000)
+      await vi.advanceTimersByTimeAsync(15_000) // an up card re-reads the clock every 15 s
     })
     expect(left).toHaveTextContent('Disconnects in 4 min')
     expect(left).toHaveClass('text-warn')
@@ -250,7 +252,9 @@ describe('tunnels page', () => {
     await renderPage([tunnelMeta({ id: 't1', label: 'pg', hostId: 'h-db' })], [tunnelRuntime({ id: 't1', state: 'stopped' })])
     state(tunnelRuntime({ id: 't1', state: 'connecting', upAt: null }))
     // Ten minutes pass with no clock running (stopped and connecting have none).
-    await tick(10 * 60_000)
+    // Jumping the clock, not ticking through it: background timers make a 10-minute tick slow under load.
+    vi.setSystemTime(Date.now() + 10 * 60_000)
+    await tick(0)
 
     // Every text the countdown ever showed, including any frame an effect later corrected
     // (a corrected text node keeps its first value as the record's oldValue).

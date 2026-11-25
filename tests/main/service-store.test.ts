@@ -10,6 +10,8 @@ type DbInput = Extract<ServiceInput, { kind: 'db' }>
 async function setup() {
   const f = await makeDeployFixture()
   const checkout = f.deploys.create(f.input({ name: 'webapp' }))
+  // The fixture's host joins each environment with a placeholder app; these tests count only their own services.
+  f.db.prepare('DELETE FROM services').run()
   f.changed.length = 0
   const app = (over: Partial<AppServiceInput> = {}): AppServiceInput => ({
     kind: 'service',
@@ -24,6 +26,7 @@ async function setup() {
     name: 'main-db',
     dbEngine: 'postgres',
     dbAddress: '10.0.0.9',
+    hostId: f.host.id,
     ...over,
   })
   return { ...f, checkout, app, dbService }
@@ -95,7 +98,7 @@ describe('ServiceStore', () => {
     )
     expect(message(() => f.services.create(f.app({ name: 'd', urlCheckFrom: 'moon' as never })))).toBe('url check must run from mac or host')
     expect(message(() => f.services.create(f.app({ environmentId: '00000000-0000-4000-8000-000000000000' })))).toBe('environment not found')
-    const free = f.services.create(f.app({ name: 'loose', deploymentId: null }))
+    const free = f.services.create(f.app({ name: 'loose', deploymentId: null, hostId: f.host.id }))
     expect(free).toMatchObject({ deploymentId: null })
   })
 
@@ -128,7 +131,7 @@ describe('ServiceStore', () => {
       deploymentId: f.checkout.id,
       composeService: 'esg_w',
     })
-    const loose = f.services.create(f.app({ name: 'loose', composeService: 'esg', deploymentId: null }))
+    const loose = f.services.create(f.app({ name: 'loose', composeService: 'esg', deploymentId: null, hostId: f.host.id }))
     expect(loose).toMatchObject({ deploymentId: null })
   })
 
@@ -147,14 +150,14 @@ describe('ServiceStore', () => {
       dbEngine: 'postgres',
       dbAddress: '10.0.0.9',
       dbPort: 5432,
-      viaHostId: null,
+      hostId: f.host.id,
       localPort: null,
       tunnelId: null,
     })
     expect(f.services.create(f.dbService({ name: 'cache', dbEngine: 'redis', dbAddress: 'redis.internal' }))).toMatchObject({ dbPort: 6379 })
-    expect(f.services.create(f.dbService({ name: 'my', dbEngine: 'mysql', dbPort: 3307, viaHostId: f.host.id, localPort: 15432 }))).toMatchObject({
+    expect(f.services.create(f.dbService({ name: 'my', dbEngine: 'mysql', dbPort: 3307, hostId: f.host.id, localPort: 15432 }))).toMatchObject({
       dbPort: 3307,
-      viaHostId: f.host.id,
+      hostId: f.host.id,
       localPort: 15432,
     })
     expect(message(() => f.services.create(f.dbService({ name: 'x', dbEngine: 'other' })))).toBe('port must be 1-65535')
@@ -164,18 +167,18 @@ describe('ServiceStore', () => {
     expect(message(() => f.services.create(f.dbService({ name: 'x', dbAddress: 'a b;rm' })))).toBe('host address is invalid')
     expect(message(() => f.services.create(f.dbService({ name: 'x', dbPort: 70000 })))).toBe('port must be 1-65535')
     expect(message(() => f.services.create(f.dbService({ name: 'x', localPort: 0 })))).toBe('port must be 1-65535')
-    expect(message(() => f.services.create(f.dbService({ name: 'x', viaHostId: '00000000-0000-4000-8000-000000000000' })))).toBe('host not found')
+    expect(message(() => f.services.create(f.dbService({ name: 'x', hostId: '00000000-0000-4000-8000-000000000000' })))).toBe('host not found')
   })
 
   it('db fields on a service patch are refused', async () => {
     const f = await setup()
     const s = f.services.create(f.app())
     const d = f.services.create(f.dbService())
-    expect(message(() => f.services.update(s.id, { dbPort: 5433 } as never))).toBe('that field only applies to a db service')
+    expect(message(() => f.services.update(s.id, { dbPort: 5433 } as never))).toBe('that field does not apply to an app')
     expect(message(() => f.services.update(d.id, { composeService: 'x' } as never))).toBe('that field does not apply to a db service')
     expect(message(() => f.services.update(d.id, { url: null } as never))).toBe('that field does not apply to a db service')
     expect(message(() => f.services.create({ ...f.app({ name: 'z' }), dbPort: 1 } as never))).toBe(
-      'that field only applies to a db service',
+      'that field does not apply to an app',
     )
     expect(f.services.update(d.id, { dbAddress: 'db.internal', localPort: null })).toMatchObject({ dbAddress: 'db.internal' })
     expect(f.services.update(s.id, { description: 'Front end' })).toMatchObject({ description: 'Front end' })
@@ -210,7 +213,7 @@ describe('ServiceStore', () => {
   it('writes audit service.* without host ids or labels', async () => {
     const f = await setup()
     const s = f.services.create(f.app({ url: 'https://esg.example' }))
-    const d = f.services.create(f.dbService({ viaHostId: f.host.id }))
+    const d = f.services.create(f.dbService({ hostId: f.host.id }))
     f.services.update(s.id, { description: 'Main site', url: null })
     f.services.update(d.id, { dbPort: 5433 })
     f.services.reorder(f.staging.id, [d.id, s.id])

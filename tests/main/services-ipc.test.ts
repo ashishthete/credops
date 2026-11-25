@@ -45,9 +45,9 @@ const COPY = {
   sourceEnvironmentId: ID,
   targetEnvironmentId: ID,
   checkouts: [{ deploymentId: ID, branch: 'main', repoPath: '/srv/app', hostId: ID, deployTag: 'webapp_prod' }],
-  dbs: [{ serviceId: ID, dbAddress: 'db.internal', dbPort: 5432, viaHostId: null }],
+  dbs: [{ serviceId: ID, dbAddress: 'db.internal', dbPort: 5432, hostId: ID }],
 }
-const DB = { kind: 'db', environmentId: ID, name: 'main-db', dbEngine: 'postgres', dbAddress: '10.0.0.9' }
+const DB = { kind: 'db', environmentId: ID, hostId: ID, name: 'main-db', dbEngine: 'postgres', dbAddress: '10.0.0.9' }
 
 /** Every dep but the store, with no-op tunnels and a follow that records its call. */
 function rest(f: DeployFixture, over: { opened?: string[]; follows?: unknown[][] } = {}) {
@@ -79,7 +79,10 @@ describe('service:* IPC', () => {
     expect(() => check('service:list', [ID])).not.toThrow()
     expect(() => check('service:create', [APP])).not.toThrow()
     expect(() => check('service:create', [{ ...APP, deploymentId: null, composeService: 'esg', url: null, urlCheckFrom: 'host', description: 'x' }])).not.toThrow()
-    expect(() => check('service:create', [{ ...DB, dbPort: 5432, viaHostId: null, localPort: 15432 }])).not.toThrow()
+    expect(() => check('service:create', [{ ...DB, dbPort: 5432, localPort: 15432 }])).not.toThrow()
+    expect(() => check('service:create', [{ kind: 'bastion', environmentId: ID, hostId: ID, name: 'jump', description: 'x' }])).not.toThrow()
+    expect(() => check('service:create', [{ ...APP, deploymentId: null, hostId: ID, composeService: '' }])).not.toThrow()
+    expect(() => check('service:update', [ID, { hostId: ID }])).not.toThrow()
     expect(() => check('service:update', [ID, { name: 'x', dbPort: 1 }])).not.toThrow()
     expect(() => check('service:delete', [ID, { deleteTunnel: false }])).not.toThrow()
     expect(() => check('service:reorder', [ID, [ID]])).not.toThrow()
@@ -118,7 +121,10 @@ describe('service:* IPC', () => {
       ['service:copy', [{ ...COPY, checkouts: [{ ...COPY.checkouts[0], branch: '' }] }], /branch/],
       ['service:copy', [{ ...COPY, checkouts: [{ ...COPY.checkouts[0], vaultIds: [] }] }], /vaultIds/],
       ['service:copy', [{ ...COPY, dbs: [{ ...COPY.dbs[0], dbPort: 0 }] }], /dbs\[0\]\.dbPort/],
-      ['service:copy', [{ ...COPY, dbs: [{ ...COPY.dbs[0], viaHostId: undefined }] }], /viaHostId/],
+      ['service:copy', [{ ...COPY, dbs: [{ ...COPY.dbs[0], hostId: undefined }] }], /hostId/],
+      ['service:create', [{ ...DB, hostId: undefined }], /hostId/],
+      ['service:create', [{ ...DB, viaHostId: ID }], /viaHostId/],
+      ['service:create', [{ kind: 'bastion', environmentId: ID, name: 'jump' }], /hostId/],
       ['service:logs', [ID], /\[1\]/],
       ['service:logs', [ID, -1], /\[1\]/],
       ['service:logs', [ID, 1.5], /\[1\]/],
@@ -143,6 +149,7 @@ describe('service:* IPC', () => {
   it('service:create round-trips and emits deploy:changed', async () => {
     const f = await makeDeployFixture()
     const checkout = f.deploys.create(f.input({ name: 'webapp' }))
+    f.db.prepare('DELETE FROM services').run()
     const pushed: { environmentId: string }[] = []
     f.services.onChanged = (environmentId) => pushed.push({ environmentId })
     const call = register(createServiceHandlers({ services: f.services, ...rest(f) }))
@@ -168,6 +175,7 @@ describe('service:* IPC', () => {
   it('service:copy runs the copy through the validator and returns counts', async () => {
     const f = await makeDeployFixture()
     const checkout = f.deploys.create(f.input({ name: 'webapp' }))
+    f.db.prepare('DELETE FROM services WHERE environment_id = ?').run(f.staging.id)
     f.services.create({ kind: 'service', environmentId: f.staging.id, name: 'esg', deploymentId: checkout.id })
     const call = register(
       createServiceHandlers({ ...rest(f), services: f.services, copy: (req) => copyServices({ db: f.db, deploys: f.deploys, services: f.services, audit: f.audit, vault: f.vault }, req) }),
@@ -189,7 +197,7 @@ describe('service:* IPC', () => {
     const call = register(createServiceHandlers({ services: f.services, ...rest(f, { opened }) }))
     const bare = f.services.create({ kind: 'service', environmentId: f.staging.id, name: 'worker', deploymentId: checkout.id })
     const site = f.services.create({ kind: 'service', environmentId: f.staging.id, name: 'esg', deploymentId: checkout.id, url: 'https://esg.example.com/app' })
-    const db = f.services.create({ kind: 'db', environmentId: f.staging.id, name: 'main-db', dbEngine: 'postgres', dbAddress: '10.0.0.9' })
+    const db = f.services.create({ kind: 'db', environmentId: f.staging.id, name: 'main-db', dbEngine: 'postgres', dbAddress: '10.0.0.9', hostId: f.host.id })
     await expect(call('service:open', bare.id)).rejects.toThrow(/^worker has no URL$/)
     await expect(call('service:open', db.id)).rejects.toThrow(/^main-db has no URL$/)
     expect(opened).toEqual([])
@@ -202,8 +210,8 @@ describe('service:* IPC', () => {
     const checkout = f.deploys.create(f.input({ name: 'webapp', composeProject: 'shop', useSudo: 'yes' }))
     const follows: unknown[][] = []
     const call = register(createServiceHandlers({ services: f.services, ...rest(f, { follows }) }))
-    const db = f.services.create({ kind: 'db', environmentId: f.staging.id, name: 'main-db', dbEngine: 'postgres', dbAddress: '10.0.0.9' })
-    const loose = f.services.create({ kind: 'service', environmentId: f.staging.id, name: 'cron', deploymentId: null })
+    const db = f.services.create({ kind: 'db', environmentId: f.staging.id, name: 'main-db', dbEngine: 'postgres', dbAddress: '10.0.0.9', hostId: f.host.id })
+    const loose = f.services.create({ kind: 'service', environmentId: f.staging.id, name: 'cron', deploymentId: null, hostId: f.host.id })
     const app = f.services.create({ kind: 'service', environmentId: f.staging.id, name: 'esg', deploymentId: checkout.id, composeService: 'esg-web' })
     await expect(call('service:logs', db.id, 100)).rejects.toThrow(/^main-db is a database; it has no compose logs$/)
     await expect(call('service:logs', loose.id, 100)).rejects.toThrow(/^cron has no checkout$/)

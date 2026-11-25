@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
+import { randomUUID } from 'node:crypto'
 import { AuditLog } from '../audit/audit-log'
 import { ssoMigration } from './sso-migration'
 import { REGIONS_REPORT_KEY, hasRepoCredentials, stripRepoCredentials, type RegionsUpgradeReport } from '../../shared/inventory'
@@ -431,7 +432,157 @@ ALTER TABLE vault_state ADD COLUMN pin_length INTEGER;
 ALTER TABLE tunnels ADD COLUMN max_minutes INTEGER DEFAULT 60;
 `,
   },
+  {
+    // Every service runs on a host; environment membership is derived from services (see servicesOnHosts).
+    version: 17,
+    name: 'services_on_hosts',
+    up: `
+CREATE TABLE services_new(id TEXT PRIMARY KEY,
+  environment_id TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+  host_id TEXT NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('service','db','bastion')),
+  position INTEGER NOT NULL DEFAULT 0, description TEXT NOT NULL DEFAULT '',
+  deployment_id TEXT REFERENCES deployments(id) ON DELETE SET NULL,
+  compose_service TEXT, url TEXT, url_check_from TEXT CHECK (url_check_from IN ('mac','host')),
+  last_deployed_commit TEXT, last_release_id TEXT REFERENCES releases(id) ON DELETE SET NULL,
+  db_engine TEXT CHECK (db_engine IN ('postgres','mysql','mongodb','redis','other')),
+  db_address TEXT, db_port INTEGER CHECK (db_port BETWEEN 1 AND 65535),
+  local_port INTEGER CHECK (local_port BETWEEN 1 AND 65535),
+  tunnel_id TEXT REFERENCES tunnels(id) ON DELETE SET NULL,
+  skip_unchanged INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  CHECK (kind <> 'service' OR (url_check_from IS NOT NULL AND (deployment_id IS NULL OR compose_service IS NOT NULL)
+    AND db_engine IS NULL AND db_address IS NULL AND db_port IS NULL AND local_port IS NULL AND tunnel_id IS NULL)),
+  CHECK (kind = 'service' OR (deployment_id IS NULL AND compose_service IS NULL AND url IS NULL AND url_check_from IS NULL
+    AND last_deployed_commit IS NULL AND last_release_id IS NULL)),
+  CHECK (kind <> 'db' OR (db_engine IS NOT NULL AND db_address IS NOT NULL AND db_port IS NOT NULL)),
+  CHECK (kind <> 'bastion' OR (db_engine IS NULL AND db_address IS NULL AND db_port IS NULL AND local_port IS NULL
+    AND tunnel_id IS NULL)));
+`,
+    after: (db) => servicesOnHosts(db),
+  },
 ]
+
+/** Role precedence when a host runs several kinds of service in one environment: bastion > app > db. */
+export const ENVIRONMENT_HOSTS_VIEW = `CREATE VIEW environment_hosts AS
+  SELECT environment_id, host_id,
+    CASE MIN(CASE kind WHEN 'bastion' THEN 0 WHEN 'service' THEN 1 ELSE 2 END)
+      WHEN 0 THEN 'bastion' WHEN 1 THEN 'app' ELSE 'db' END AS role
+  FROM services GROUP BY environment_id, host_id`
+
+/** Migration 17's data step: gives every service a host, turns bare memberships into services, swaps in the view. */
+function servicesOnHosts(db: Db): void {
+  const now = new Date().toISOString()
+  type Member = { environment_id: string; host_id: string; role: string; label: string; address: string }
+  const members = db
+    .prepare(
+      `SELECT eh.environment_id, eh.host_id, eh.role, h.label, h.address FROM environment_hosts eh
+       JOIN hosts h ON h.id = eh.host_id ORDER BY lower(h.label), h.id`,
+    )
+    .all() as Member[]
+  const membersOf = (env: string): Member[] => members.filter((m) => m.environment_id === env)
+  const checkouts = db.prepare('SELECT environment_id, host_id FROM deployments').all() as { environment_id: string; host_id: string }[]
+  const rows = db
+    .prepare(
+      `SELECT s.*, d.host_id AS checkout_host FROM services s LEFT JOIN deployments d ON d.id = s.deployment_id
+       ORDER BY s.environment_id, s.position, s.created_at`,
+    )
+    .all() as Record<string, unknown>[]
+
+  const appHost = (env: string): string | null => {
+    const count = new Map<string, number>()
+    for (const c of checkouts) if (c.environment_id === env) count.set(c.host_id, (count.get(c.host_id) ?? 0) + 1)
+    const apps = membersOf(env)
+      .filter((m) => m.role === 'app')
+      .sort((a, b) => (count.get(b.host_id) ?? 0) - (count.get(a.host_id) ?? 0) || a.label.localeCompare(b.label))
+    return apps[0]?.host_id ?? null
+  }
+  const roleHost = (env: string, role: string): string | null => membersOf(env).find((m) => m.role === role)?.host_id ?? null
+  const anyHost = (env: string): string | null => membersOf(env)[0]?.host_id ?? null
+
+  const insert = db.prepare(
+    `INSERT INTO services_new(id, environment_id, host_id, name, kind, position, description, deployment_id, compose_service,
+       url, url_check_from, last_deployed_commit, last_release_id, db_engine, db_address, db_port, local_port, tunnel_id,
+       skip_unchanged, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  )
+  const audit = new AuditLog(db)
+  const taken = new Map<string, Set<string>>() // environment -> lower-cased names
+  const hosted = new Set<string>() // `${env}\0${host}`
+  const position = new Map<string, number>()
+  for (const r of rows) {
+    const env = r.environment_id as string
+    let address = r.db_address as string | null
+    let host: string | null
+    if (r.kind === 'service') {
+      host = (r.checkout_host as string | null) ?? appHost(env) ?? anyHost(env)
+    } else {
+      host = (r.via_host_id as string | null) ?? null
+      if (!host) {
+        const at = membersOf(env).find((m) => m.address === address)
+        if (at) {
+          host = at.host_id
+          address = '127.0.0.1'
+        } else host = roleHost(env, 'db') ?? appHost(env) ?? anyHost(env)
+      }
+    }
+    if (!host) {
+      audit.appendInTx({
+        action: 'service.dropped_without_host',
+        outcome: 'info',
+        targetType: 'service',
+        targetId: r.id as string,
+        targetLabel: r.name as string,
+        details: { environmentId: env, kind: r.kind },
+      })
+      continue
+    }
+    insert.run(
+      r.id as string, env, host, r.name as string, r.kind as string, r.position as number, r.description as string,
+      (r.deployment_id as string | null) ?? null, (r.compose_service as string | null) ?? null, (r.url as string | null) ?? null,
+      (r.url_check_from as string | null) ?? null, (r.last_deployed_commit as string | null) ?? null,
+      (r.last_release_id as string | null) ?? null, (r.db_engine as string | null) ?? null, address,
+      (r.db_port as number | null) ?? null, (r.local_port as number | null) ?? null, (r.tunnel_id as string | null) ?? null,
+      r.skip_unchanged as number, r.created_at as string, now,
+    )
+    if (!taken.has(env)) taken.set(env, new Set())
+    taken.get(env)!.add((r.name as string).toLowerCase())
+    hosted.add(`${env}\0${host}`)
+    position.set(env, Math.max(position.get(env) ?? 0, (r.position as number) + 1))
+  }
+
+  // A membership with no service on that host becomes one, named after the host.
+  for (const m of members) {
+    const env = m.environment_id
+    if (hosted.has(`${env}\0${m.host_id}`)) continue
+    const names = taken.get(env) ?? new Set<string>()
+    taken.set(env, names)
+    let name = m.label
+    for (let n = 2; names.has(name.toLowerCase()); n++) name = `${m.label} ${n}`
+    names.add(name.toLowerCase())
+    const pos = position.get(env) ?? 0
+    position.set(env, pos + 1)
+    const id = randomUUID()
+    if (m.role === 'db') {
+      insert.run(id, env, m.host_id, name, 'db', pos, '', null, null, null, null, null, null, 'other', '127.0.0.1', 5432, null, null, 0, now, now)
+    } else if (m.role === 'bastion') {
+      insert.run(id, env, m.host_id, name, 'bastion', pos, '', null, null, null, null, null, null, null, null, null, null, null, 0, now, now)
+    } else {
+      insert.run(id, env, m.host_id, name, 'service', pos, '', null, null, null, 'mac', null, null, null, null, null, null, null, 0, now, now)
+    }
+    hosted.add(`${env}\0${m.host_id}`)
+  }
+
+  db.exec(`
+DROP TABLE services;
+ALTER TABLE services_new RENAME TO services;
+CREATE UNIQUE INDEX services_name ON services(environment_id, name COLLATE NOCASE);
+CREATE UNIQUE INDEX services_compose ON services(deployment_id, compose_service) WHERE deployment_id IS NOT NULL;
+CREATE INDEX services_env ON services(environment_id, position);
+CREATE INDEX services_host ON services(host_id);
+DROP TABLE environment_hosts;
+${ENVIRONMENT_HOSTS_VIEW};
+`)
+}
 
 /** One audit event summarising migration 12's report, by id and count only; none when there is no report. */
 function auditRegionsUpgrade(db: Db): void {

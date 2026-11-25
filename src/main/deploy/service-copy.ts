@@ -18,6 +18,7 @@ export interface CopyDeps {
 const CHECKOUT_EXISTS = 'a checkout with that name already exists'
 const CHECKOUT_SKIPPED = 'its checkout was skipped'
 const SERVICE_EXISTS = 'a service with that name already exists'
+const HOST_ELSEWHERE = 'its host is not in the target environment'
 
 const envName = (db: Db, id: string): string | null =>
   (db.prepare('SELECT name FROM environments WHERE id = ?').get(id) as { name: string } | undefined)?.name ?? null
@@ -114,9 +115,27 @@ export function copyServices(deps: CopyDeps, req: CopyServicesRequest): CopyServ
         skip(SERVICE_EXISTS)
         continue
       }
+      // An app without a checkout or a bastion keeps its host, so it is copied only where that host already runs.
+      if (((s.kind === 'service' && s.deploymentId === null) || s.kind === 'bastion') && !hostsBefore.has(s.hostId)) {
+        skip(HOST_ELSEWHERE)
+        continue
+      }
       services.insertInTx(copyOf(s, req.targetEnvironmentId, newCheckout, dbRows), s.position)
       takenServices.add(s.name.toLowerCase())
       created++
+    }
+
+    // A checkout on a host new to the target added it with a placeholder app. Once the copied services run there, the
+    // placeholder is noise: drop it. (A host that was not in before can hold no other app without a checkout.)
+    for (const h of members(db, req.targetEnvironmentId)) {
+      if (hostsBefore.has(h)) continue
+      const placeholders = db
+        .prepare("SELECT id FROM services WHERE environment_id = ? AND host_id = ? AND kind = 'service' AND deployment_id IS NULL")
+        .all(req.targetEnvironmentId, h) as { id: string }[]
+      const total = (db.prepare('SELECT COUNT(*) AS n FROM services WHERE environment_id = ? AND host_id = ?').get(req.targetEnvironmentId, h) as { n: number }).n
+      if (placeholders.length > 0 && total > placeholders.length) {
+        for (const p of placeholders) db.prepare('DELETE FROM services WHERE id = ?').run(p.id)
+      }
     }
 
     const hostsAfter = members(db, req.targetEnvironmentId)
@@ -149,10 +168,13 @@ function copyOf(
   newCheckout: Map<string, string>,
   dbRows: Map<string, CopyServicesRequest['dbs'][number]>,
 ): Parameters<ServiceStore['insertInTx']>[0] {
+  if (s.kind === 'bastion') return { kind: 'bastion', environmentId, name: s.name, description: s.description, hostId: s.hostId }
   if (s.kind === 'service') {
     return {
       kind: 'service',
       environmentId,
+      // With a checkout, the host is the new checkout's.
+      ...(s.deploymentId === null ? { hostId: s.hostId } : {}),
       name: s.name,
       description: s.description,
       deploymentId: s.deploymentId === null ? null : newCheckout.get(s.deploymentId)!,
@@ -169,6 +191,6 @@ function copyOf(
     dbEngine: s.dbEngine,
     dbAddress: row.dbAddress,
     dbPort: row.dbPort,
-    viaHostId: row.viaHostId,
+    hostId: row.hostId,
   }
 }

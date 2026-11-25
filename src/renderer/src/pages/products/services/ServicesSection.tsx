@@ -1,10 +1,10 @@
 import { motion } from 'framer-motion'
-import { ArrowUpDown, Boxes, CopyPlus, Database, FolderGit2, GitBranch, Pencil, Plus, Rocket, Server, Tag } from 'lucide-react'
+import { ArrowUpDown, Boxes, CopyPlus, FolderGit2, GitBranch, Pencil, Plus, Rocket, Server, Tag } from 'lucide-react'
 import { useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import type { DeploymentMeta } from '../../../../../shared/deploy'
 import { REPO_URL_LEGACY_WARNING, isLegacyRepoUrl, maskRepoUrl, type EnvironmentMeta } from '../../../../../shared/inventory'
 import { hostRegions, serviceRegion } from '../../../../../shared/regions'
-import { envAppHost, type AppServiceMeta, type DbServiceMeta, type ServiceKind, type ServiceMeta } from '../../../../../shared/services'
+import type { AppServiceMeta, BastionServiceMeta, DbServiceMeta, ServiceKind, ServiceMeta } from '../../../../../shared/services'
 import { reorderServices, useDeploy, useDeployments, useServices } from '../../../deploy/store'
 import { regionById, regionsOfEnvironment } from '../../../inventory/regions'
 import type { InventoryData } from '../../../inventory/store'
@@ -12,7 +12,7 @@ import { Button } from '../../../ui/Button'
 import { ConfirmDialog, RowMenu, type ConfirmRequest } from '../../../ui/common'
 import { fast, spring, staggerDelay, useMotionSafe } from '../../../ui/motion'
 import { DeploymentDialog, type DeploymentRequest } from '../../deployments/DeploymentDialog'
-import { DbRow, ServiceRow, shortSha } from './ServiceRow'
+import { BastionRow, DbRow, ServiceRow, shortSha } from './ServiceRow'
 import { ServiceDialog, deleteRequest } from './ServiceDialog'
 
 interface ServicesSectionProps {
@@ -22,12 +22,14 @@ interface ServicesSectionProps {
   onDeploy?: (preselect: string[]) => void
   onLogs?: (svc: AppServiceMeta) => void
   onCopy?: () => void
+  /** Opens a terminal on a service's host, in this environment. */
+  onConnect?: (hostId: string) => void
 }
 
-type Editing = { kind: ServiceKind; service?: ServiceMeta }
+type Editing = { kind?: ServiceKind; service?: ServiceMeta; copyOf?: ServiceMeta }
 
-/** The services of an environment, grouped by checkout, with the databases last. */
-export function ServicesSection({ env, data, onDeploy, onLogs, onCopy }: ServicesSectionProps) {
+/** The services of an environment by type: apps (grouped by checkout), then databases, then bastions. Each row names its host. */
+export function ServicesSection({ env, data, onDeploy, onLogs, onCopy, onConnect }: ServicesSectionProps) {
   const services = useServices(env.id)
   const checkouts = useDeployments(env.id)
   const { routeChanged } = useDeploy()
@@ -37,15 +39,7 @@ export function ServicesSection({ env, data, onDeploy, onLogs, onCopy }: Service
   const [ordering, setOrdering] = useState<string[] | null>(null)
 
   const hostLabel = useMemo(() => new Map(data.hosts.map((h) => [h.id, h.label])), [data.hosts])
-  const defaultVia = useMemo(
-    () =>
-      envAppHost(
-        env.hosts,
-        data.hosts,
-        checkouts.map((d) => d.hostId),
-      ),
-    [env.hosts, data.hosts, checkouts],
-  )
+  const labelOf = (s: ServiceMeta) => hostLabel.get(s.hostId) ?? null
 
   const groups = useMemo(() => {
     const apps = services.filter((s): s is AppServiceMeta => s.kind === 'service')
@@ -56,6 +50,7 @@ export function ServicesSection({ env, data, onDeploy, onLogs, onCopy }: Service
         .filter((g) => g.items.length > 0),
       orphans: apps.filter((s) => s.deploymentId === null || !known.has(s.deploymentId)),
       dbs: services.filter((s): s is DbServiceMeta => s.kind === 'db'),
+      bastions: services.filter((s): s is BastionServiceMeta => s.kind === 'bastion'),
     }
   }, [services, checkouts])
 
@@ -68,12 +63,13 @@ export function ServicesSection({ env, data, onDeploy, onLogs, onCopy }: Service
 
   const ask = (svc: ServiceMeta) => setConfirm(deleteRequest(env, svc))
   const edit = (svc: ServiceMeta) => setEditing({ kind: svc.kind, service: svc })
-  const add = (kind: ServiceKind) => setEditing({ kind })
+  const add = () => setEditing({})
+  const duplicate = (svc: ServiceMeta) => setEditing({ kind: svc.kind, copyOf: svc })
 
   // One running index across the groups, so the cascade reads top to bottom.
   let index = 0
   const appRow = (s: AppServiceMeta) => (
-    <ServiceRow key={s.id} svc={s} index={index++} region={regionOf(s)} onEdit={() => edit(s)} onDelete={() => ask(s)} onLogs={onLogs} onDeploy={onDeploy} />
+    <ServiceRow key={s.id} svc={s} index={index++} region={regionOf(s)} hostLabel={labelOf(s)} onConnect={onConnect && (() => onConnect(s.hostId))} onEdit={() => edit(s)} onDuplicate={() => duplicate(s)} onDelete={() => ask(s)} onLogs={onLogs} onDeploy={onDeploy} />
   )
 
   return (
@@ -86,6 +82,9 @@ export function ServicesSection({ env, data, onDeploy, onLogs, onCopy }: Service
           </span>
         </h3>
         <div className="ml-auto flex items-center gap-1">
+          <Button size="sm" variant="ghost" icon={<Plus aria-hidden className="size-3.5" />} onClick={add}>
+            Add service
+          </Button>
           {onDeploy && (
             <Button size="sm" variant="ghost" icon={<Rocket aria-hidden className="size-3.5" />} onClick={() => onDeploy([])}>
               Deploy…
@@ -94,8 +93,7 @@ export function ServicesSection({ env, data, onDeploy, onLogs, onCopy }: Service
           <RowMenu
             label="Services options"
             items={[
-              { label: 'Add service', icon: Plus, run: () => add('service') },
-              { label: 'Add database', icon: Database, run: () => add('db') },
+              { label: 'Add service', icon: Plus, run: add },
               ...(onCopy ? [{ label: 'Copy to…', icon: CopyPlus, run: onCopy }] : []),
               { label: 'New checkout', icon: FolderGit2, run: () => setCheckout({ kind: 'new', environmentId: env.id }) },
               ...(services.length > 1 ? [{ label: 'Reorder', icon: ArrowUpDown, run: () => setOrdering(services.map((s) => s.id)) }] : []),
@@ -119,13 +117,10 @@ export function ServicesSection({ env, data, onDeploy, onLogs, onCopy }: Service
         <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-line px-6 py-8 text-center">
           <Boxes aria-hidden className="size-5 text-muted" strokeWidth={1.8} />
           <p className="text-[13px] font-medium text-fg">No services yet</p>
-          <p className="text-[12.5px] text-muted">A service runs from a checkout; a database is reached through a tunnel.</p>
+          <p className="text-[12.5px] text-muted">An app, a database or a bastion, each on one of your hosts.</p>
           <div className="mt-1 flex items-center gap-2">
-            <Button size="sm" icon={<Plus aria-hidden className="size-3.5" />} onClick={() => add('service')}>
+            <Button size="sm" icon={<Plus aria-hidden className="size-3.5" />} onClick={add}>
               Add service
-            </Button>
-            <Button size="sm" variant="ghost" icon={<Database aria-hidden className="size-3.5" />} onClick={() => add('db')}>
-              Add database
             </Button>
           </div>
         </div>
@@ -138,8 +133,8 @@ export function ServicesSection({ env, data, onDeploy, onLogs, onCopy }: Service
             </section>
           ))}
           {groups.orphans.length > 0 && (
-            <section aria-label="No checkout" className="rounded-xl border border-dashed border-line p-1.5">
-              <GroupTitle>No checkout</GroupTitle>
+            <section aria-label="Apps without a checkout" className="rounded-xl border border-dashed border-line p-1.5">
+              <GroupTitle>{groups.checkouts.length > 0 ? 'Apps without a checkout' : 'Apps'}</GroupTitle>
               <ul className="flex flex-col gap-0.5">{groups.orphans.map(appRow)}</ul>
             </section>
           )}
@@ -147,28 +142,45 @@ export function ServicesSection({ env, data, onDeploy, onLogs, onCopy }: Service
             <section aria-label="Databases" className="rounded-xl border border-line bg-surface/70 p-1.5">
               <GroupTitle>Databases</GroupTitle>
               <ul className="flex flex-col gap-0.5">
-                {groups.dbs.map((s) => {
-                  const via = s.viaHostId && env.hosts.some((m) => m.hostId === s.viaHostId) ? s.viaHostId : defaultVia
-                  return (
-                    <DbRow
-                      key={s.id}
-                      svc={s}
-                      index={index++}
-                      viaLabel={via ? (hostLabel.get(via) ?? null) : null}
-                      routeChanged={!!routeChanged[s.id]}
-                      region={regionOf(s)}
-                      onEdit={() => edit(s)}
-                      onDelete={() => ask(s)}
-                    />
-                  )
-                })}
+                {groups.dbs.map((s) => (
+                  <DbRow
+                    key={s.id}
+                    svc={s}
+                    index={index++}
+                    hostLabel={labelOf(s)} onConnect={onConnect && (() => onConnect(s.hostId))}
+                    routeChanged={!!routeChanged[s.id]}
+                    region={regionOf(s)}
+                    onEdit={() => edit(s)}
+                    onDuplicate={() => duplicate(s)}
+                    onDelete={() => ask(s)}
+                  />
+                ))}
+              </ul>
+            </section>
+          )}
+          {groups.bastions.length > 0 && (
+            <section aria-label="Bastions" className="rounded-xl border border-line bg-surface/70 p-1.5">
+              <GroupTitle>Bastions</GroupTitle>
+              <ul className="flex flex-col gap-0.5">
+                {groups.bastions.map((s) => (
+                  <BastionRow
+                    key={s.id}
+                    svc={s}
+                    index={index++}
+                    hostLabel={labelOf(s)} onConnect={onConnect && (() => onConnect(s.hostId))}
+                    region={regionOf(s)}
+                    onEdit={() => edit(s)}
+                    onDuplicate={() => duplicate(s)}
+                    onDelete={() => ask(s)}
+                  />
+                ))}
               </ul>
             </section>
           )}
         </div>
       )}
 
-      {editing && <ServiceDialog env={env} kind={editing.kind} service={editing.service} onClose={() => setEditing(null)} />}
+      {editing && <ServiceDialog env={env} kind={editing.kind} service={editing.service} copyOf={editing.copyOf} onClose={() => setEditing(null)} />}
       <DeploymentDialog request={checkout} onClose={() => setCheckout(null)} />
       <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
     </section>

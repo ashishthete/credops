@@ -276,18 +276,17 @@ describe('parseScope', () => {
 })
 
 describe('service attachments', () => {
-  /** Two environments share h1; api's checkout is on h1 in e1, the db sits at h2's address. */
+  /** Two environments share h1; api and worker run on h1 in e1, main-db on h2; far-db names a host outside e1. */
   function deployed() {
     const d = basic()
     d.environments[1].hosts.push({ hostId: 'h1', role: 'app' })
     d.hosts[1] = host({ id: 'h2', label: 'beta', address: '10.0.0.9' })
     const checkouts = [deploymentMeta({ id: 'd1', environmentId: 'e1', hostId: 'h1' })]
     const services = [
-      appService({ id: 's2', name: 'worker', environmentId: 'e1', deploymentId: 'd1', position: 1 }),
-      appService({ id: 's1', name: 'api', environmentId: 'e1', deploymentId: 'd1', position: 0 }),
-      appService({ id: 's9', name: 'loose', environmentId: 'e1', deploymentId: null, position: 2 }),
-      dbService({ id: 'b1', name: 'main-db', environmentId: 'e1', dbAddress: '10.0.0.9', position: 3 }),
-      dbService({ id: 'b2', name: 'far-db', environmentId: 'e1', dbAddress: '192.0.2.1', position: 4 }),
+      appService({ id: 's2', name: 'worker', environmentId: 'e1', hostId: 'h1', deploymentId: 'd1', position: 1 }),
+      appService({ id: 's1', name: 'api', environmentId: 'e1', hostId: 'h1', deploymentId: 'd1', position: 0 }),
+      dbService({ id: 'b1', name: 'main-db', environmentId: 'e1', hostId: 'h2', position: 3 }),
+      dbService({ id: 'b2', name: 'far-db', environmentId: 'e1', hostId: 'h9', position: 4 }),
     ]
     return { data: d, attachments: buildAttachments(d, services, checkouts) }
   }
@@ -302,7 +301,7 @@ describe('service attachments', () => {
     ])
     // The same host in another environment draws none of e1's services.
     expect(attached(g, 'e:e2/h:h1')).toEqual([])
-    // A db attaches to the environment host at its address; one at no host's address attaches nowhere.
+    // Every service attaches to the host it runs on; one on a host outside the environment attaches nowhere.
     expect(attached(g, 'e:e1/h:h2')).toEqual([{ id: 'b1', kind: 'db', label: 'main-db' }])
     expect(g.nodes.flatMap((n) => (n.data.kind === 'host' ? n.data.attachments.map((a) => a.id) : []))).not.toContain('b2')
 

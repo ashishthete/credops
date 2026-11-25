@@ -103,18 +103,19 @@ describe('buildManifest', () => {
     await expect(buildManifest(f.prod.id, deps)).rejects.toThrow('Deploys need key or agent auth; "app1" uses a password')
   })
 
-  it('carries services: checkout host for a service, via-host for a db', async () => {
+  it('carries services: checkout host for a service, its host as via-host for a db; an app with no checkout is left out', async () => {
     const { f, deps, trust } = await setup()
     trust('203.0.113.9', 2222)
     trust('10.0.0.7', 22)
     const dep = f.deploys.list(f.prod.id)[0]
     const web = f.services.create({ kind: 'service', environmentId: f.prod.id, name: 'web', deploymentId: dep.id, composeService: 'web' })
-    const loose = f.services.create({ kind: 'service', environmentId: f.prod.id, name: 'loose', deploymentId: null })
-    const db = f.services.create({ kind: 'db', environmentId: f.prod.id, name: 'main-db', dbEngine: 'postgres', dbAddress: '10.0.0.9', viaHostId: f.host.id })
+    const loose = f.services.create({ kind: 'service', environmentId: f.prod.id, name: 'loose', deploymentId: null, hostId: f.host.id })
+    const db = f.services.create({ kind: 'db', environmentId: f.prod.id, name: 'main-db', dbEngine: 'postgres', dbAddress: '10.0.0.9', hostId: f.host.id })
     const m = await buildManifest(f.prod.id, deps)
     const byName = Object.fromEntries(m.services.map((s) => [s.name, s]))
     expect(byName.web).toEqual({ id: web.id, name: 'web', kind: 'service', composeService: 'web', deploymentId: dep.id, hostId: f.host.id, viaHostId: null })
-    expect(byName.loose).toMatchObject({ id: loose.id, deploymentId: null, hostId: null })
+    expect(loose.hostId).toBe(f.host.id)
+    expect(byName.loose).toBeUndefined()
     expect(byName['main-db']).toEqual({ id: db.id, name: 'main-db', kind: 'db', composeService: null, deploymentId: null, hostId: null, viaHostId: f.host.id })
     expect(m.deployments[0]).toHaveProperty('composeProject')
     expect(m.deployments[0]).toHaveProperty('repoUrl')
@@ -127,10 +128,10 @@ describe('buildManifest', () => {
     trust('10.0.0.50', 22)
     const via = f.hosts.create({ regionId: REGION, label: 'jump2', address: '10.0.0.50', port: 22 })
     f.envs.putHost(f.prod.id, via.id, 'db')
-    f.services.create({ kind: 'db', environmentId: f.prod.id, name: 'main-db', dbEngine: 'postgres', dbAddress: '10.0.0.9', viaHostId: via.id })
+    f.services.create({ kind: 'db', environmentId: f.prod.id, name: 'main-db', dbEngine: 'postgres', dbAddress: '10.0.0.9', hostId: via.id })
     const m = await buildManifest(f.prod.id, deps)
     expect(m.hosts.map((h) => h.id)).toContain(via.id)
-    expect(m.services[0].viaHostId).toBe(via.id)
+    expect(m.services.find((s) => s.name === 'main-db')?.viaHostId).toBe(via.id)
   })
 
   it('a repository URL with credentials is never published or echoed', async () => {

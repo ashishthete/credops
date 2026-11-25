@@ -2,7 +2,8 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Boxes, Cable, Check, Globe2, Layers, Network, Play, Pencil, SquareTerminal, StickyNote, Trash2, Vault, X } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
-import type { EnvironmentMeta, HostMeta } from '../../../../shared/inventory'
+import type { HostMeta } from '../../../../shared/inventory'
+import { deployStore } from '../../deploy/store'
 import { regionById } from '../../inventory/regions'
 import { inv, inventoryStore, useInventory, type InventoryData } from '../../inventory/store'
 import { showHostOnMapPath } from '../../map/commands'
@@ -19,7 +20,7 @@ import { PaneHeader, paneLabel } from '../products/ProductView'
 import { ConnectionCard } from './ConnectionCard'
 import { HostDialog, OS_META } from './HostDialog'
 import { HostTunnels } from './HostTunnels'
-import { MembershipEditor } from './MembershipEditor'
+import { HostServices } from './HostServices'
 import { RegionSelect } from './RegionDialog'
 
 interface HostViewProps {
@@ -61,7 +62,7 @@ export function HostView({ hostId, environmentId, onDeleted }: HostViewProps) {
       title: `Delete ${host.label}?`,
       description: blockers
         ? `${host.label} is the jump host for ${blockers}. Change those first.`
-        : `It leaves every environment it's in, and its vault links go with it.`,
+        : servicesGone(host.id),
       confirmLabel: 'Delete host',
       blocked: !!blockers,
       typeToConfirm: protectedEnv && !blockers ? host.label : undefined,
@@ -73,17 +74,6 @@ export function HostView({ hostId, environmentId, onDeleted }: HostViewProps) {
       },
     })
   }
-
-  const askRemove = (env: EnvironmentMeta) =>
-    setConfirm({
-      title: `Remove ${host.label} from ${env.name}?`,
-      description: 'The host is kept, along with its places in other environments.',
-      confirmLabel: 'Remove host',
-      typeToConfirm: env.protected ? env.name : undefined,
-      run: async () => {
-        if (await inv.removeHost(env.id, host.id)) toast({ title: `Removed ${host.label} from ${env.name}`, tone: 'success' })
-      },
-    })
 
   return (
     <>
@@ -141,8 +131,8 @@ export function HostView({ hostId, environmentId, onDeleted }: HostViewProps) {
         <ConnectionCard hostId={host.id} environmentId={environmentId} onContextChange={setContext} />
 
         <div className="mt-6 grid grid-cols-[repeat(auto-fit,minmax(300px,1fr))] gap-6">
-          <Section icon={Layers} title="Environments">
-            <MembershipEditor host={host} data={data} onRemove={askRemove} />
+          <Section icon={Layers} title="Services">
+            <HostServices host={host} data={data} onConfirm={setConfirm} />
           </Section>
           <Section icon={Vault} title="Vaults">
             <VaultLinks host={host} />
@@ -171,6 +161,18 @@ export function HostView({ hostId, environmentId, onDeleted }: HostViewProps) {
       <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
     </>
   )
+}
+
+/** What deleting a host takes with it: the services it runs, by environment. */
+function servicesGone(hostId: string): string {
+  const data = inventoryStore.get()
+  const envName = new Map((data?.environments ?? []).map((e) => [e.id, e.name]))
+  const mine = deployStore.get().services.filter((s) => s.hostId === hostId)
+  if (mine.length === 0) return 'It runs no services, so only the host and its vault links go.'
+  const byEnv = new Map<string, string[]>()
+  for (const s of mine) byEnv.set(envName.get(s.environmentId) ?? 'another environment', [...(byEnv.get(envName.get(s.environmentId) ?? 'another environment') ?? []), s.name])
+  const parts = [...byEnv].map(([env, names]) => `${names.join(', ')} in ${env}`)
+  return `Its ${mine.length === 1 ? 'service goes' : `${mine.length} services go`} with it: ${parts.join('; ')}. Its vault links go too.`
 }
 
 /** Moves a host to another region, or a new one made on the spot. */

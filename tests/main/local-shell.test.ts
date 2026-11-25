@@ -6,7 +6,7 @@ import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import { spawnLocalShell } from '../../src/main/ssh/local-shell'
 import { PromptBroker } from '../../src/main/ssh/prompts'
 import { SessionManager, type Pty, type SessionManagerDeps } from '../../src/main/ssh/sessions'
-import type { SessionMeta } from '../../src/shared/ssh'
+import { FLOW_HIGH_CHARS, FLOW_LOW_CHARS, FLOW_STALL_MS, FLUSH_MS, type SessionMeta } from '../../src/shared/ssh'
 import { makeVault } from './vault-helpers'
 
 const base = { cols: 80, rows: 24, home: '/tmp', shell: '/bin/sh' }
@@ -109,6 +109,70 @@ describe('SessionManager local shell', () => {
     expect(closes).toHaveLength(2)
     expect(closes[0]).toMatchObject({ targetType: 'shell', targetLabel: 'Local shell' })
     expect(closes[0].details).toMatchObject({ reason: expect.stringMatching(/user|remote/), durationSec: expect.any(Number) })
+  })
+})
+
+describe('SessionManager output flow control', () => {
+  async function flowSetup() {
+    const f = makeVault()
+    await f.vault.setup({ password: 'correct horse', touchId: true })
+    let feed: (chunk: string) => void = () => {}
+    const pty = {
+      write: vi.fn(),
+      resize: vi.fn(),
+      onData: (cb: (c: string) => void) => void (feed = cb),
+      onExit: vi.fn(),
+      kill: vi.fn(),
+      pause: vi.fn(),
+      resume: vi.fn(),
+    }
+    const emit = vi.fn()
+    const manager = new SessionManager({
+      openLocal: () => pty,
+      audit: f.audit,
+      prompts: new PromptBroker({ emit: vi.fn(), isLocked: () => false }),
+      emit,
+    } as unknown as SessionManagerDeps)
+    onTestFinished(() => manager.closeAll('quit'))
+    vi.useFakeTimers()
+    onTestFinished(() => void vi.useRealTimers())
+    const { id } = manager.openLocal({ cols: 80, rows: 24 })
+    // Each fed chunk goes out as its own session:data event once the batch timer fires.
+    const send = (chars: number) => {
+      feed('x'.repeat(chars))
+      vi.advanceTimersByTime(FLUSH_MS)
+    }
+    return { manager, pty, id, send }
+  }
+
+  it('stops reading once the window is far behind, and reads again when it catches up', async () => {
+    const { manager, pty, id, send } = await flowSetup()
+    send(FLOW_HIGH_CHARS)
+    expect(pty.pause).not.toHaveBeenCalled()
+    send(1)
+    expect(pty.pause).toHaveBeenCalledTimes(1)
+    send(10) // output already in flight still goes out, and doesn't pause twice
+    expect(pty.pause).toHaveBeenCalledTimes(1)
+
+    manager.ack(id, FLOW_HIGH_CHARS - FLOW_LOW_CHARS) // still behind
+    expect(pty.resume).not.toHaveBeenCalled()
+    manager.ack(id, 11)
+    expect(pty.resume).toHaveBeenCalledTimes(1)
+  })
+
+  it('reads again if the window stops acknowledging, and on a fresh attach', async () => {
+    const { manager, pty, id, send } = await flowSetup()
+    send(FLOW_HIGH_CHARS + 1)
+    expect(pty.pause).toHaveBeenCalledTimes(1)
+    vi.advanceTimersByTime(FLOW_STALL_MS - FLUSH_MS - 1) // send() already waited FLUSH_MS
+    expect(pty.resume).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    expect(pty.resume).toHaveBeenCalledTimes(1)
+
+    send(FLOW_HIGH_CHARS + 1)
+    expect(pty.pause).toHaveBeenCalledTimes(2)
+    manager.attach(id)
+    expect(pty.resume).toHaveBeenCalledTimes(2)
   })
 })
 

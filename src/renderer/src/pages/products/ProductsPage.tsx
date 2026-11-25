@@ -1,12 +1,13 @@
 import { motion } from 'framer-motion'
 import { Boxes, Download, Inbox, Plus, Upload, type LucideIcon } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useSearchParams } from 'react-router'
 import type { EnvironmentMeta, Membership, ProductMeta } from '../../../../shared/inventory'
-import type { ServiceKind } from '../../../../shared/services'
+import type { ServiceMeta } from '../../../../shared/services'
+import { deployStore, startDeploySync } from '../../deploy/store'
 import { regionHintText } from '../../inventory/regions'
 import { inv, inventoryStore, loadInventory, reloadInventory, useInventory, type InventoryData } from '../../inventory/store'
-import { buildTree, environmentKey, selectionFromKey, type NodeKey, type TreeRow } from '../../inventory/tree'
+import { buildTree, environmentKey, selectionFromKey, type NodeKey, type TreeRow, type TreeService } from '../../inventory/tree'
 import { Badge } from '../../ui/Badge'
 import { registerCommand } from '../../ui/commands'
 import { attempt, ConfirmDialog, plural, type ConfirmRequest } from '../../ui/common'
@@ -17,6 +18,7 @@ import { Skeleton } from '../../ui/Skeleton'
 import { toast } from '../../ui/Toaster'
 import { api } from '../../lib/api'
 import { useVaultStatus } from '../../vault/status'
+import { useConnect } from '../../terminal/connect'
 import { HostDialog } from '../hosts/HostDialog'
 import { HostView } from '../hosts/HostView'
 import { EnvironmentDialog } from './EnvironmentDialog'
@@ -25,17 +27,17 @@ import { InventoryTree, type RowAction } from './InventoryTree'
 import { ProductDialog } from './ProductDialog'
 import { PaneHeader, ProductView } from './ProductView'
 import { RegionsUpgradeBanner } from './RegionsUpgradeBanner'
-import { ServiceDialog } from './services/ServiceDialog'
+import { deleteRequest, ServiceDialog } from './services/ServiceDialog'
 import { useConfigTransfer } from '../settings/ConfigTransfer'
 import { ResizablePanel } from '../../ui/ResizablePanel'
 
 /** Every node of the fully expanded tree: the expandable ones, and all keys. */
-function everyNode(data: InventoryData): { expandable: Set<NodeKey>; all: Set<NodeKey> } {
+function everyNode(data: InventoryData, services: readonly TreeService[]): { expandable: Set<NodeKey>; all: Set<NodeKey> } {
   const expandable = new Set<NodeKey>()
   let rows: TreeRow[] = []
-  // Each pass opens one more level: products, then environments, then (no-op) hosts.
+  // Each pass opens one more level: products, then environments, then (no-op) services.
   for (let i = 0; i < 3; i++) {
-    rows = buildTree(data, expandable)
+    rows = buildTree(data, expandable, services)
     rows.forEach((r) => r.expandable && expandable.add(r.key))
   }
   return { expandable, all: new Set(rows.filter((r) => r.kind !== 'hint').map((r) => r.key)) }
@@ -48,13 +50,16 @@ type Dialogs =
   /** `productId` presets a new environment's product; `locked` keeps it there (opened from that product). */
   | { kind: 'environment'; environment?: EnvironmentMeta; productId?: string; locked?: boolean }
   | { kind: 'host'; presetEnvironment: Membership; envKey: NodeKey }
-  /** Mounted while open, as ServicesSection mounts it. */
-  | { kind: 'service'; environment: EnvironmentMeta; service: ServiceKind }
+  /** Mounted while open, as ServicesSection mounts it. Adds a service, or edits `service`. */
+  | { kind: 'service'; environment: EnvironmentMeta; service?: ServiceMeta }
   | null
 
 export function ProductsPage() {
   const motionSafe = useMotionSafe()
   const data = useInventory()
+  // The tree lists every environment's services.
+  const services = useSyncExternalStore(deployStore.subscribe, () => deployStore.get().services)
+  useEffect(() => startDeploySync(), [])
   const status = useVaultStatus()
   const corruptIds = useMemo(() => status?.corruptVaultIds ?? [], [status])
   const [params, setParams] = useSearchParams()
@@ -72,10 +77,10 @@ export function ProductsPage() {
     if (inventoryStore.get() === null) void loadInventory()
   }, [])
 
-  const nodes = useMemo(() => (data ? everyNode(data) : null), [data])
+  const nodes = useMemo(() => (data ? everyNode(data, services) : null), [data, services])
   // Everything starts open the first time data arrives.
   if (nodes && expanded === null) setExpanded(new Set(nodes.expandable))
-  const rows = useMemo(() => (data && expanded ? buildTree(data, expanded) : []), [data, expanded])
+  const rows = useMemo(() => (data && expanded ? buildTree(data, expanded, services) : []), [data, expanded, services])
 
   const firstProduct = data && [...data.products].sort((a, b) => a.name.localeCompare(b.name))[0]
   const wanted = params.get('node')
@@ -142,19 +147,25 @@ export function ProductsPage() {
   useShortcut('mod+n', () => (openNewRef.current.hasProduct ? openNewRef.current.newEnvironment() : openNewRef.current.newProduct()))
 
   const env = (id: string) => data?.environments.find((e) => e.id === id)
+  const { connect } = useConnect()
 
-  /** A product or environment row's menu: the same dialogs as the page's own buttons, preset to that row. */
+  /** A row's menu: the same dialogs as the page's own buttons, preset to that row. */
   const rowAction = (row: TreeRow, action: RowAction) => {
     const product = row.kind === 'product' ? data?.products.find((p) => p.id === row.id) : undefined
-    const environment = row.kind === 'environment' ? env(row.id) : undefined
+    const service = row.kind === 'service' ? services.find((x) => x.id === row.id) : undefined
+    const environment = row.kind === 'environment' ? env(row.id) : service ? env(service.environmentId) : undefined
     if (action === 'newEnvironment' && product) newEnvironment(product.id, true)
     else if (action === 'editProduct' && product) openDialog({ kind: 'product', product })
     else if (action === 'editEnvironment' && environment) openDialog({ kind: 'environment', environment })
     else if (action === 'newHost' && environment) openDialog({ kind: 'host', presetEnvironment: { environmentId: environment.id, role: 'app' }, envKey: row.key })
-    else if ((action === 'addService' || action === 'addDatabase') && environment) {
+    else if (action === 'addService' && environment) {
       // Its services show on the environment's page, so that is where the new one lands.
       if (row.key !== selected) select(row.key)
-      openDialog({ kind: 'service', environment, service: action === 'addDatabase' ? 'db' : 'service' })
+      openDialog({ kind: 'service', environment })
+    } else if (action === 'connectService' && service) void connect(service.hostId, service.environmentId)
+    else if (action === 'editService' && environment && service) openDialog({ kind: 'service', environment, service })
+    else if (action === 'deleteService' && environment && service) {
+      setConfirm(deleteRequest(environment, service, () => row.key === selected && row.parentKey && select(row.parentKey)))
     }
   }
 
@@ -258,19 +269,6 @@ export function ProductsPage() {
     })
   }
 
-  const askRemoveHost = (e: EnvironmentMeta, hostId: string) => {
-    const label = data?.hosts.find((h) => h.id === hostId)?.label ?? 'this host'
-    setConfirm({
-      title: `Remove ${label} from ${e.name}?`,
-      description: 'The host is kept, along with its places in other environments.',
-      confirmLabel: 'Remove host',
-      typeToConfirm: e.protected ? e.name : undefined,
-      run: async () => {
-        if (await inv.removeHost(e.id, hostId)) toast({ title: `Removed ${label} from ${e.name}`, tone: 'success' })
-      },
-    })
-  }
-
   const productIcons = useMemo(() => Object.fromEntries((data?.products ?? []).map((p) => [p.id, p.icon])), [data])
 
   const details = () => {
@@ -295,10 +293,7 @@ export function ProductsPage() {
       return (
         <EnvironmentView
           env={e}
-          envKey={selected}
           data={data}
-          onSelect={select}
-          onRemoveHost={(id) => askRemoveHost(e, id)}
           onNewHost={() => openDialog({ kind: 'host', presetEnvironment: { environmentId: e.id, role: 'app' }, envKey: selected })}
           onEdit={() => openDialog({ kind: 'environment', environment: e })}
           onDelete={() => askDeleteEnvironment(e, selected)}
@@ -352,12 +347,7 @@ export function ProductsPage() {
               canDrop={canDrop}
               onDropHost={(h, e) => void dropHost(h, e)}
               onDropEnvironment={(e, p) => void dropEnvironment(e, p)}
-              onSetRole={(h, e, role) => void inv.putHost(e.id, h.id, role)}
               onRowAction={rowAction}
-              onRemoveHost={(h, e) => {
-                const meta = env(e.id)
-                if (meta) askRemoveHost(meta, h.id)
-              }}
               productIcons={productIcons}
             />
           ) : (
@@ -435,8 +425,9 @@ export function ProductsPage() {
           onClose={closeDialog}
           onSaved={(h) => {
             closeDialog()
+            // It joins as a service named after it, listed on the environment's page.
             expand(dialog.envKey)
-            select(`${dialog.envKey}/h:${h.id}`)
+            select(dialog.envKey)
             const envId = dialog.presetEnvironment.environmentId
             const d = inventoryStore.get()
             const hint = d && h.environments.some((m) => m.environmentId === envId) ? regionHintText(d, envId, h) : null
@@ -444,7 +435,7 @@ export function ProductsPage() {
           }}
         />
       )}
-      {dialog?.kind === 'service' && dialogOpen && <ServiceDialog env={dialog.environment} kind={dialog.service} onClose={closeDialog} />}
+      {dialog?.kind === 'service' && dialogOpen && <ServiceDialog env={dialog.environment} service={dialog.service} onClose={closeDialog} />}
       <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
       {transfer.dialog}
     </div>

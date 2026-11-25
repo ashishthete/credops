@@ -19,7 +19,9 @@ export class FakeTerminal {
   dispose: Mock<(...args: any[]) => any> = vi.fn()
   focus: Mock<(...args: any[]) => any> = vi.fn()
   reset: Mock<(...args: any[]) => any> = vi.fn()
+  clear: Mock<(...args: any[]) => any> = vi.fn()
   getSelection: Mock<(...args: any[]) => any> = vi.fn(() => '')
+  selectAll: Mock<(...args: any[]) => any> = vi.fn()
   dataListeners: ((d: string) => void)[] = []
   selectionListeners: (() => void)[] = []
   modes = { bracketedPasteMode: false }

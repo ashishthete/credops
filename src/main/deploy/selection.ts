@@ -49,6 +49,7 @@ export function resolveSelection(
     const s = services.get(id)
     if (!s || s.environmentId !== environmentId) return refuse(FOREIGN)
     if (s.kind === 'db') return refuse(`${s.name} is a database; databases are never deployed`)
+    if (s.kind === 'bastion') return refuse(`${s.name} is a bastion; bastions are never deployed`)
     if (s.deploymentId === null) return refuse(`${s.name} has no checkout`)
     if (!deployments.has(s.deploymentId)) return refuse(FOREIGN)
     const set = picked.get(s.deploymentId) ?? new Set<string>()

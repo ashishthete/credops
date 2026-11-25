@@ -349,6 +349,14 @@ export class TunnelManager {
     }
   }
 
+  /**
+   * Stops every running tunnel whose time limit has passed by the wall clock. Timers don't run while
+   * the Mac sleeps, so the app calls this on resume; a limit that passed during sleep stops it here.
+   */
+  checkExpiry(): void {
+    for (const run of [...this.runs.values()]) this.limit(run)
+  }
+
   /** (Re)arms the time limit from the run's start; one already past stops the tunnel at once. */
   private limit(run: Run): void {
     if (run.expiryTimer !== null) this.timers.clearTimeout(run.expiryTimer)
@@ -587,7 +595,8 @@ export class TunnelManager {
 
   private fail(run: Run, f: Failure): void {
     run.gen++
-    this.clearTimers(run)
+    // The time limit outlives a failure: a retrying or paused tunnel still stops when it runs out.
+    this.clearTimers(run, { keepExpiry: true })
     run.probing = false
     run.handle?.setAccepting(false)
     if (f.stage === 'link') this.unsubscribe(run)
@@ -671,10 +680,10 @@ export class TunnelManager {
     quietly(() => this.unsubscribe(run))
   }
 
-  private clearTimers(run: Run): void {
+  private clearTimers(run: Run, opts: { keepExpiry?: boolean } = {}): void {
     this.clearTimer(run, 'retryTimer')
     this.clearTimer(run, 'stableTimer')
-    this.clearTimer(run, 'expiryTimer')
+    if (!opts.keepExpiry) this.clearTimer(run, 'expiryTimer')
     if (run.probeTimer !== null) this.timers.clearInterval(run.probeTimer)
     run.probeTimer = null
   }

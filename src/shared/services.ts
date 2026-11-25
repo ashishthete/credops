@@ -8,7 +8,10 @@ export { COMPOSE_SERVICE }
 export const MAX_SERVICES = 512
 
 // ---- Types ----
-export type ServiceKind = 'service' | 'db'
+export type ServiceKind = 'service' | 'db' | 'bastion'
+
+/** What the UI calls each kind: an app is stored as kind `service`. */
+export const SERVICE_KIND_LABEL: Record<ServiceKind, string> = { service: 'App', db: 'Database', bastion: 'Bastion' }
 export type DbEngine = 'postgres' | 'mysql' | 'mongodb' | 'redis' | 'other'
 
 /** The port a db service gets when none is given; `other` has no default. */
@@ -17,6 +20,8 @@ export const DB_DEFAULT_PORT: Record<DbEngine, number | null> = { postgres: 5432
 interface ServiceBase {
   id: string
   environmentId: string
+  /** The host it runs on; with a checkout, the checkout's host. A host is in an environment exactly when it runs a service there. */
+  hostId: string
   name: string
   position: number
   description: string
@@ -24,10 +29,11 @@ interface ServiceBase {
   updatedAt: string
 }
 
-/** Runs from a checkout's compose file. Its host is the checkout's host; it is never stored. */
+/** An app on a host; with a checkout it runs from the checkout's compose file. */
 export interface AppServiceMeta extends ServiceBase {
   kind: 'service'
   deploymentId: string | null
+  /** '' for an app without a checkout. */
   composeService: string
   url: string | null
   urlCheckFrom: HealthFrom
@@ -37,23 +43,29 @@ export interface AppServiceMeta extends ServiceBase {
   skipUnchanged: boolean
 }
 
-/** Reached through a tunnel from a via-host; `dbAddress` is as seen from that host. */
+/** Reached through a tunnel from its host; `dbAddress` is as seen from that host (127.0.0.1 when it runs there). */
 export interface DbServiceMeta extends ServiceBase {
   kind: 'db'
   dbEngine: DbEngine
   dbAddress: string
   dbPort: number
-  viaHostId: string | null
   localPort: number | null
   tunnelId: string | null
 }
 
-export type ServiceMeta = AppServiceMeta | DbServiceMeta
+/** A jump host the environment's other hosts are reached through. */
+export interface BastionServiceMeta extends ServiceBase {
+  kind: 'bastion'
+}
+
+export type ServiceMeta = AppServiceMeta | DbServiceMeta | BastionServiceMeta
 
 export type ServiceInput =
   | {
       kind: 'service'
       environmentId: string
+      /** Defaults to the checkout's host; required without a checkout. */
+      hostId?: string
       name: string
       description?: string
       deploymentId: string | null
@@ -65,19 +77,27 @@ export type ServiceInput =
   | {
       kind: 'db'
       environmentId: string
+      hostId: string
       name: string
       description?: string
       dbEngine: DbEngine
       dbAddress: string
       dbPort?: number
-      viaHostId?: string | null
       localPort?: number | null
+    }
+  | {
+      kind: 'bastion'
+      environmentId: string
+      hostId: string
+      name: string
+      description?: string
     }
 
 /** The kind and environment never change. */
 export type ServicePatch =
   | Partial<Omit<Extract<ServiceInput, { kind: 'service' }>, 'kind' | 'environmentId'>>
   | Partial<Omit<Extract<ServiceInput, { kind: 'db' }>, 'kind' | 'environmentId'>>
+  | Partial<Omit<Extract<ServiceInput, { kind: 'bastion' }>, 'kind' | 'environmentId'>>
 
 export interface ServiceUpdateResult {
   service: ServiceMeta
@@ -90,15 +110,15 @@ export interface CopyServicesRequest {
   targetEnvironmentId: string
   /** One per source checkout that has services or is picked; these four fields differ per environment. */
   checkouts: { deploymentId: string; branch: string; repoPath: string; hostId: string; deployTag: string }[]
-  /** One per source db service, with its address as seen from the target's via-host. */
-  dbs: { serviceId: string; dbAddress: string; dbPort: number; viaHostId: string | null }[]
+  /** One per source db service, with the host it runs on in the target and its address as seen from there. */
+  dbs: { serviceId: string; dbAddress: string; dbPort: number; hostId: string }[]
 }
 
 export interface CopyServicesResult {
   created: { services: number; checkouts: number }
   /** Name conflicts are skipped, never renamed or overwritten. */
   skipped: { kind: 'service' | 'checkout'; name: string; reason: string }[]
-  /** Hosts that joined the target environment as `app` hosts. */
+  /** Hosts that joined the target environment by running a copied service. */
   addedHosts: number
 }
 
@@ -110,7 +130,7 @@ export function listNames(names: string[]): string {
   return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
 }
 
-/** The default via-host: the `app` host with the most checkouts, ties to the lower label; null with no app host. */
+/** The default app host: the `app` host with the most checkouts, ties to the lower label; null with no app host. */
 export function pickAppHost(hosts: { hostId: string; role: HostRole; label: string }[], checkoutHostIds: string[]): string | null {
   const count = new Map<string, number>()
   for (const id of checkoutHostIds) count.set(id, (count.get(id) ?? 0) + 1)

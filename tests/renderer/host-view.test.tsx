@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import type { ReactElement, ReactNode } from 'react'
 import { MemoryRouter, useLocation } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { resetDeploy } from '../../src/renderer/src/deploy/store'
 import { inventoryStore, type InventoryData } from '../../src/renderer/src/inventory/store'
 import { HostDialog } from '../../src/renderer/src/pages/hosts/HostDialog'
 import { HostView } from '../../src/renderer/src/pages/hosts/HostView'
@@ -10,8 +11,9 @@ import { resetTunnels, tunnelStore } from '../../src/renderer/src/tunnels/store'
 import { Toaster } from '../../src/renderer/src/ui/Toaster'
 import { vaultStatusStore } from '../../src/renderer/src/vault/status'
 import type { HostMeta, ResolvedHost } from '../../src/shared/inventory'
+import type { ServiceMeta } from '../../src/shared/services'
 import { DEFAULT_VAULT_ID, type IdentityMeta, type SshKeyMeta, type VaultMeta } from '../../src/shared/vault'
-import { REGION, defaultVault, environment, host, mockBridge, tunnelMeta, tunnelRuntime, vaultStatus } from './helpers'
+import { REGION, appService, dbService, defaultVault, environment, host, mockBridge, tunnelMeta, tunnelRuntime, vaultStatus } from './helpers'
 
 // framer-motion caches matchMedia, so reduced motion is driven through useMotionSafe (F18).
 const motion = vi.hoisted(() => ({ safe: true }))
@@ -163,6 +165,11 @@ function setup(data: InventoryData = world(), resolve: (hostId: string, envId?: 
       }
       case 'host:delete':
         return null
+      case 'service:list':
+        return services
+      case 'service:delete':
+        services = services.filter((s) => s.id !== args[0])
+        return undefined
     }
     return base(channel, ...args)
   })
@@ -170,6 +177,9 @@ function setup(data: InventoryData = world(), resolve: (hostId: string, envId?: 
   inventoryStore.set(structuredClone(data))
   return invoke
 }
+
+/** What 'service:list' answers; empty unless a test sets it. */
+let services: ServiceMeta[] = []
 
 const card = () => screen.getByRole('region', { name: 'Connection' })
 const row = (term: string) => within(card()).getByRole('group', { name: term })
@@ -179,6 +189,8 @@ beforeEach(() => {
   inventoryStore.set(null)
   resetTunnels()
   where = ''
+  services = []
+  resetDeploy()
   sessions.openSsh.mockReset().mockResolvedValue('s1')
 })
 
@@ -314,42 +326,77 @@ describe('HostView', () => {
     expect(await screen.findByText('jump host loop: A → B → A')).toBeInTheDocument()
     expect(screen.getByText(/Change the jump host on B/)).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'web-1', level: 2 })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Environments' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Services' })).toBeInTheDocument()
   })
 
-  it('role change and add to environment', async () => {
+  it('lists the services it runs by environment; Open goes to the service in its environment', async () => {
     const user = userEvent.setup()
+    services = [
+      appService({ id: 's1', name: 'api', environmentId: 'prod', hostId: 'web1', deploymentId: null }),
+      dbService({ id: 'b1', name: 'main-db', environmentId: 'prod', hostId: 'web1', position: 1 }),
+      appService({ id: 's9', name: 'elsewhere', environmentId: 'prod', hostId: 'bastion', deploymentId: null }),
+    ]
+    setup()
+    render(<HostView hostId="web1" environmentId="prod" />)
+    const list = await screen.findByRole('list', { name: 'Services' })
+    await waitFor(() => expect(within(list).getAllByRole('listitem')).toHaveLength(2))
+    const [api, db] = within(list).getAllByRole('listitem')
+    expect(api).toHaveTextContent('prod')
+    expect(api).toHaveTextContent('api')
+    expect(api).toHaveTextContent('App')
+    expect(db).toHaveTextContent('main-db')
+    expect(db).toHaveTextContent('Database')
+    expect(within(list).queryByText('elsewhere')).not.toBeInTheDocument()
+    await user.click(within(api).getByRole('button', { name: 'Open api in prod' }))
+    expect(where).toBe('/products')
+    expect(new URLSearchParams(search).get('node')).toMatch(/\/s:s1$/)
+  })
+
+  it('a host with no services says so', async () => {
+    setup()
+    render(<HostView hostId="web1" environmentId="prod" />)
+    expect(await screen.findByText(/^No services\. Add one to put web-1 in an environment/)).toBeInTheDocument()
+  })
+
+  it('deleting a service in a protected environment types its name', async () => {
+    const user = userEvent.setup()
+    services = [appService({ id: 's1', name: 'api', environmentId: 'prod', hostId: 'web1', deploymentId: null })]
     const invoke = setup()
     render(<HostView hostId="web1" environmentId="prod" />)
-    await user.selectOptions(await screen.findByRole('combobox', { name: 'Role in prod' }), 'bastion')
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:putHost', 'prod', 'web1', 'bastion'))
-    await user.click(screen.getByRole('button', { name: 'Add to environment…' }))
-    expect(screen.queryByRole('menuitem', { name: /prod/ })).not.toBeInTheDocument()
-    await user.click(screen.getByRole('menuitem', { name: /staging/ }))
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:putHost', 'staging', 'web1', 'app'))
-    expect(await screen.findByRole('combobox', { name: 'Role in staging' })).toBeInTheDocument()
-  })
-
-  it('removing from a protected environment types its name', async () => {
-    const user = userEvent.setup()
-    const invoke = setup()
-    render(
-      <>
-        <HostView hostId="web1" environmentId="prod" />
-        <Toaster />
-      </>,
-    )
-    const unlink = await screen.findByRole('button', { name: 'Remove web-1 from prod' })
-    // Reads "Unlink" in plain text, visible without hovering.
-    expect(unlink).toHaveTextContent('Unlink')
-    expect(unlink.className).not.toMatch(/(^|\s)opacity-0(\s|$)/)
-    await user.click(unlink)
-    const dialog = await screen.findByRole('dialog', { name: 'Remove web-1 from prod?' })
-    const confirm = within(dialog).getByRole('button', { name: 'Remove host' })
+    await user.click(await screen.findByRole('button', { name: 'Delete api from prod' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Delete api?' })
+    const confirm = within(dialog).getByRole('button', { name: 'Delete service' })
     expect(confirm).toBeDisabled()
     await user.type(within(dialog).getByLabelText('Type prod to confirm'), 'prod')
     await user.click(confirm)
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:removeHost', 'prod', 'web1'))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('service:delete', 's1', { deleteTunnel: false }))
+  })
+
+  it('Add service… asks for the environment, then opens the dialog on this host', async () => {
+    const user = userEvent.setup()
+    setup()
+    render(<HostView hostId="web1" environmentId="prod" />)
+    await user.click(await screen.findByRole('button', { name: 'Add service…' }))
+    const menu = screen.getByRole('menu', { name: 'Add a service in' })
+    expect(within(menu).getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['prod', 'staging'])
+    await user.click(within(menu).getByRole('menuitem', { name: 'staging' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Add service' })
+    expect(within(dialog).getByLabelText('Host')).toHaveValue('web1')
+  })
+
+  it('delete lists the services that go with the host', async () => {
+    const user = userEvent.setup()
+    services = [
+      appService({ id: 's1', name: 'api', environmentId: 'prod', hostId: 'web1', deploymentId: null }),
+      appService({ id: 's2', name: 'cron', environmentId: 'prod', hostId: 'web1', deploymentId: null, position: 1 }),
+    ]
+    setup()
+    render(<HostView hostId="web1" environmentId="prod" />)
+    await screen.findByRole('button', { name: 'Open cron in prod' })
+    await user.click(screen.getByRole('button', { name: 'web-1 options' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Delete' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Delete web-1?' })
+    expect(dialog).toHaveTextContent('Its 2 services go with it: api, cron in prod. Its vault links go too.')
   })
 
   it('delete confirms, typing the name when in a protected environment', async () => {
@@ -406,18 +453,6 @@ describe('HostView', () => {
     expect(screen.getByRole('menuitemcheckbox', { name: 'Default' })).toHaveFocus()
     await user.keyboard('{Escape}')
     expect(screen.getByRole('button', { name: 'Link vault' })).toHaveFocus()
-  })
-
-  it('picking the last environment hands focus to the list', async () => {
-    const user = userEvent.setup()
-    const invoke = setup()
-    render(<HostView hostId="web1" environmentId="prod" />)
-    await user.click(await screen.findByRole('button', { name: 'Add to environment…' }))
-    await user.keyboard('{End}')
-    await user.keyboard('{Enter}')
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:putHost', 'staging', 'web1', 'app'))
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Add to environment…' })).not.toBeInTheDocument())
-    expect(screen.getByRole('list', { name: 'Environments' })).toHaveFocus()
   })
 
   it('vault toggles apply in order, each on the last result', async () => {
@@ -1099,29 +1134,6 @@ describe('regions', () => {
     await user.selectOptions(within(dialog).getByLabelText('Region'), EU.id)
     await user.click(move)
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('host:update', 'web1', { regionId: EU.id }))
-  })
-
-  it("joining an environment in a region it doesn't use hints, but still joins", async () => {
-    const user = userEvent.setup()
-    const invoke = setup(withEu())
-    render(<HostView hostId="appeu" />)
-    await user.click(await screen.findByRole('button', { name: 'Add to environment…' }))
-    await user.click(screen.getByRole('menuitem', { name: /prod/ }))
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:putHost', 'prod', 'appeu', 'app'))
-    expect(await screen.findByRole('status')).toHaveTextContent("prod's hosts are all in test-1; app-eu-1 is in eu-west-1.")
-    await user.click(screen.getByRole('button', { name: 'Dismiss' }))
-    expect(screen.queryByRole('status')).not.toBeInTheDocument()
-  })
-
-  it('an empty environment, or one already in the region, gives no hint', async () => {
-    const user = userEvent.setup()
-    const invoke = setup(withEu())
-    render(<HostView hostId="appeu" />)
-    await user.click(await screen.findByRole('button', { name: 'Add to environment…' }))
-    await user.click(screen.getByRole('menuitem', { name: /staging/ }))
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:putHost', 'staging', 'appeu', 'app'))
-    expect(await screen.findByRole('combobox', { name: 'Role in staging' })).toBeInTheDocument()
-    expect(screen.queryByRole('status')).not.toBeInTheDocument()
   })
 
   it('HostDialog needs a region before it creates', async () => {

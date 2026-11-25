@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { SECTIONS } from '../../src/renderer/src/shell/sections'
 import { useShortcut } from '../../src/renderer/src/ui/shortcuts'
 import { disposeAll, getTerminal } from '../../src/renderer/src/terminal/registry'
@@ -203,6 +203,39 @@ describe('TerminalView', () => {
     await act(async () => {})
     expect(calls(invoke, 'session:write').map((c) => c[2]).join('')).toBe('rm -rf /tmp/a\r')
     expect(screen.queryByRole('dialog', { name: 'Run this on prod?' })).toBeNull()
+  })
+
+  it('right-click opens Copy, Select all, Find, Clear and Reset; Copy takes the selection, and is off without one', async () => {
+    const writeText = vi.fn(async () => {})
+    vi.stubGlobal('navigator', Object.assign(Object.create(navigator), { clipboard: { writeText } }))
+    await mount()
+    const term = fake.terms[0]
+    const surface = screen.getByTestId('terminal-s1').firstElementChild!
+    fireEvent.contextMenu(surface, { clientX: 20, clientY: 30 })
+    const menu = screen.getByRole('menu', { name: 'Terminal' })
+    expect(within(menu).getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['Copy', 'Select all', 'Find…', 'Clear', 'Reset terminal'])
+    expect(within(menu).getByRole('menuitem', { name: 'Copy' })).toBeDisabled()
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Select all' }))
+    expect(term.selectAll).toHaveBeenCalled()
+    expect(screen.queryByRole('menu', { name: 'Terminal' })).toBeNull()
+
+    term.getSelection.mockReturnValue('ls -la output')
+    fireEvent.contextMenu(surface, { clientX: 20, clientY: 30 })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy' }))
+    expect(writeText).toHaveBeenCalledWith('ls -la output')
+  })
+
+  it('right-click Clear empties the scrollback and Reset terminal resets the screen', async () => {
+    await mount()
+    const term = fake.terms[0]
+    const surface = screen.getByTestId('terminal-s1').firstElementChild!
+    fireEvent.contextMenu(surface, { clientX: 20, clientY: 30 })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Clear' }))
+    expect(term.clear).toHaveBeenCalled()
+    expect(term.reset).not.toHaveBeenCalled()
+    fireEvent.contextMenu(surface, { clientX: 20, clientY: 30 })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Reset terminal' }))
+    expect(term.reset).toHaveBeenCalled()
   })
 
   it('copy on select writes to the clipboard when turned on', async () => {

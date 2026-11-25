@@ -59,7 +59,7 @@ export function createServiceHandlers(deps: {
     'service:copy': (req) => copy(req),
     'service:logs': (id, tail) => {
       const svc = services.get(id)
-      if (svc.kind !== 'service') throw new Error(`${svc.name} is a database; it has no compose logs`)
+      if (svc.kind !== 'service') throw new Error(`${svc.name} is a ${svc.kind === 'db' ? 'database' : 'bastion'}; it has no compose logs`)
       if (svc.deploymentId === null) throw new Error(`${svc.name} has no checkout`)
       const d = deploys.get(svc.deploymentId)
       const spec = { repoPath: d.repoPath, composeFile: d.composeFile, composeProject: d.composeProject, composeService: svc.composeService, useSudo: d.useSudo }
@@ -81,12 +81,13 @@ export function createServiceHandlers(deps: {
 
 function catalogService(
   environmentId: string,
-  s: { id: string; name: string; composeService: string | null; deploymentId: string | null },
+  s: { id: string; name: string; composeService: string | null; deploymentId: string | null; hostId: string | null },
   position: number,
 ): AppServiceMeta {
   return {
     id: s.id,
     environmentId,
+    hostId: s.hostId ?? '',
     name: s.name,
     position,
     description: '',

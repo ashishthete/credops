@@ -257,6 +257,38 @@ describe('TunnelManager', () => {
     expect(t.timeouts()).not.toContain(60 * 60_000)
   })
 
+  it('a time limit survives a dropped link: the retrying tunnel still stops when it runs out', async () => {
+    let clock = Date.parse('2026-10-28T10:00:00.000Z')
+    const t = await setup({ deps: { now: () => new Date(clock) } })
+    const srv = await server()
+    const echo = await target()
+    const tun = t.tunnel(t.host(srv), { targetPort: echo.port, maxMinutes: 60 })
+    t.manager.start(tun.id)
+    await t.waitState(tun.id, 'up')
+    srv.dropAll()
+    await t.waitState(tun.id, 'retrying')
+    expect(t.timeouts()).toContain(60 * 60_000)
+    clock += 60 * 60_000
+    t.mt.fire(60 * 60_000)
+    await t.waitState(tun.id, 'stopped')
+    expect(t.tunnelEvents(tun.id).at(-1)).toMatchObject({ type: 'stopped', reason: 'expired' })
+  })
+
+  it('a time limit that passed while the Mac slept stops the tunnel on the next expiry check', async () => {
+    let clock = Date.parse('2026-10-28T10:00:00.000Z')
+    const t = await setup({ deps: { now: () => new Date(clock) } })
+    const srv = await server()
+    const echo = await target()
+    const tun = t.tunnel(t.host(srv), { targetPort: echo.port, maxMinutes: 60 })
+    t.manager.start(tun.id)
+    await t.waitState(tun.id, 'up')
+    // Timers don't run during sleep: the wall clock moves on, the timer has not fired.
+    clock += 90 * 60_000
+    t.manager.checkExpiry()
+    await t.waitState(tun.id, 'stopped')
+    expect(t.tunnelEvents(tun.id).at(-1)).toMatchObject({ type: 'stopped', reason: 'expired' })
+  })
+
   it('a time limit changed on a running tunnel counts from its start, and no limit clears it', async () => {
     let clock = Date.parse('2026-10-28T10:00:00.000Z')
     const t = await setup({ deps: { now: () => new Date(clock) } })

@@ -110,7 +110,11 @@ describe('config segment export', () => {
     const { file } = buildConfigExport(f.db, clock, 'products')
     expect(ids(file.products)).toEqual([PRODUCT, f.ids.product].sort())
     expect(ids(file.environments)).toEqual([f.staging.id, f.prod.id].sort())
-    expect(ids(file.services)).toEqual([f.ids.appService, f.ids.dbService].sort())
+    // Every service of those environments: the two made here and the hosts' placeholders (staging's bastion, prod's app1).
+    const all = (f.db.prepare('SELECT id FROM services').all() as { id: string }[]).map((r) => r.id)
+    expect(all).toEqual(expect.arrayContaining([f.ids.appService, f.ids.dbService]))
+    expect(all).toHaveLength(4)
+    expect(ids(file.services)).toEqual([...all].sort())
     // The app service's checkout and the db service's tunnel come along.
     expect(ids(file.deployments)).toEqual([f.ids.deployment])
     expect(ids(file.tunnels)).toEqual([f.ids.tunnel])
@@ -262,8 +266,8 @@ describe('config segment import', () => {
     const { f, file } = await source()
     const t = await target(f)
     const plan = planImport(t.db, file, 'tunnels')
-    // prod, Fixture (prod's product), the checkout and both services.
-    expect(plan.ignored).toBe(5)
+    // prod, Fixture (prod's product), the checkout and all four services (two of them host placeholders).
+    expect(plan.ignored).toBe(7)
     for (const kind of ['deployments', 'services'] as const) expect(plan.items.some((i) => i.kind === kind)).toBe(false)
     expect(itemOf(plan, 'environments', 'prod')).toBeUndefined()
     // A full import says nothing about ignored objects.
@@ -276,7 +280,14 @@ describe('config segment import', () => {
     const before = Object.fromEntries(tables.map((x) => [x, rows(t.db, x)]))
     importSegment(t, file, 'deployments')
     expect(ids(t.db.prepare('SELECT id FROM deployments').all() as { id: string }[])).toEqual([f.ids.deployment])
-    expect(rows(t.db, 'services')).toBe(before.services)
+    // No service from the file comes in. The staging it adds as a dependency brings its hosts, and a host is in an
+    // environment by running a service there: a placeholder named after the host, outside any checkout.
+    expect(before.services).toBe('[]')
+    expect(t.db.prepare('SELECT s.name, s.kind, s.deployment_id, s.environment_id, h.label FROM services s JOIN hosts h ON h.id = s.host_id ORDER BY s.name').all()).toEqual([
+      { name: 'app1', kind: 'service', deployment_id: null, environment_id: f.staging.id, label: 'app1' },
+      { name: 'bastion', kind: 'bastion', deployment_id: null, environment_id: f.staging.id, label: 'bastion' },
+    ])
+    for (const id of [f.ids.appService, f.ids.dbService]) expect(t.db.prepare('SELECT 1 FROM services WHERE id = ?').get(id)).toBeUndefined()
     expect(rows(t.db, 'tunnels')).toBe(before.tunnels)
     expect(t.db.prepare('SELECT 1 FROM environments WHERE id = ?').get(f.prod.id)).toBeUndefined()
     // Fixture was here already: untouched.
@@ -359,7 +370,7 @@ describe('config segment import', () => {
     const h = createConfigHandlers({ ...exportDeps(t), saveDialog: async () => undefined, openDialog: async () => path })
     const preview = await h['config:importOpen']('tunnels')
     if (!preview || 'errors' in preview) throw new Error('expected a preview')
-    expect(preview.ignored).toBe(5)
+    expect(preview.ignored).toBe(7)
     // The token belongs to the tunnels page.
     await expect(h['config:importApply'](preview.token, { typedNames: [] }, 'hosts')).rejects.toThrow('The preview expired; open the file again')
     const again = await h['config:importOpen']('tunnels')

@@ -17,7 +17,7 @@ const NOT_COPIED =
   'Vault links, secrets, URLs and tunnels are not copied. Managed .env templates are copied with secret values cleared and turned off.'
 
 type CheckoutRow = { branch: string; repoPath: string; hostId: string; tag: string }
-type DbRow = { dbAddress: string; dbPort: string; viaHostId: string }
+type DbRow = { dbAddress: string; dbPort: string; hostId: string }
 
 /** Copies an environment's services and checkouts to another; the per-environment fields are asked for here. */
 export function CopyServicesDialog({ source, onClose }: { source: EnvironmentMeta | null; onClose: () => void }) {
@@ -75,7 +75,9 @@ function CopyBody({ source, onClose }: { source: EnvironmentMeta; onClose: () =>
     const env = environments.find((e) => e.id === id)
     const host = env ? (appHostOf(env) ?? '') : ''
     setRows(Object.fromEntries(checkouts.map((d) => [d.id, { branch: d.defaultBranch, repoPath: d.repoPath, hostId: host, tag: '' }])))
-    setDbRows(Object.fromEntries(dbs.map((s) => [s.id, { dbAddress: s.dbAddress, dbPort: String(s.dbPort), viaHostId: '' }])))
+    // A database keeps its host when that host is already in the target; otherwise the user picks one.
+    const inTarget = new Set(env?.hosts.map((m) => m.hostId) ?? [])
+    setDbRows(Object.fromEntries(dbs.map((s) => [s.id, { dbAddress: s.dbAddress, dbPort: String(s.dbPort), hostId: inTarget.has(s.hostId) ? s.hostId : '' }])))
   }
   const setRow = (id: string, change: Partial<CheckoutRow>) => setRows((r) => ({ ...r, [id]: { ...r[id], ...change } }))
   const setDb = (id: string, change: Partial<DbRow>) => setDbRows((r) => ({ ...r, [id]: { ...r[id], ...change } }))
@@ -96,7 +98,7 @@ function CopyBody({ source, onClose }: { source: EnvironmentMeta; onClose: () =>
     }) &&
     dbs.every((s) => {
       const r = dbRows[s.id]
-      return r && r.dbAddress.trim() && !errors.port(r) && r.dbPort
+      return r && r.dbAddress.trim() && !errors.port(r) && r.dbPort && r.hostId
     })
 
   const submit = async () => {
@@ -110,7 +112,7 @@ function CopyBody({ source, onClose }: { source: EnvironmentMeta; onClose: () =>
       }),
       dbs: dbs.map((s) => {
         const r = dbRows[s.id]
-        return { serviceId: s.id, dbAddress: r.dbAddress.trim(), dbPort: Number(r.dbPort), viaHostId: r.viaHostId || null }
+        return { serviceId: s.id, dbAddress: r.dbAddress.trim(), dbPort: Number(r.dbPort), hostId: r.hostId }
       }),
     }
     setBusy(true)
@@ -224,9 +226,10 @@ function CopyBody({ source, onClose }: { source: EnvironmentMeta; onClose: () =>
                 <div className="grid grid-cols-3 gap-3">
                   <TextField label="Address" value={r.dbAddress} onChange={(e) => setDb(s.id, { dbAddress: e.target.value })} />
                   <TextField label="Port" inputMode="numeric" value={r.dbPort} onChange={(e) => setDb(s.id, { dbPort: e.target.value })} error={errors.port(r)} />
-                  <SelectField label="Via host" value={r.viaHostId} onChange={(e) => setDb(s.id, { viaHostId: e.target.value })}>
-                    <option value="">{appHost ? `App host (${label(appHost)})` : 'App host'}</option>
+                  <SelectField label="Host" value={r.hostId} onChange={(e) => setDb(s.id, { hostId: e.target.value })} hint={hintFor(r.hostId) ?? undefined}>
+                    <option value="">Choose a host…</option>
                     <RegionGroups regions={regions} hosts={members} />
+                    <RegionGroups regions={regions} hosts={others} joins />
                   </SelectField>
                 </div>
               </motion.fieldset>
@@ -262,7 +265,7 @@ function RegionGroups({ regions, hosts, joins = false }: { regions: readonly Reg
   return hostsByRegion(regions, hosts).map(({ region, hosts: group }) => {
     const code = region?.code ?? 'No region'
     return (
-      <optgroup key={group[0]!.regionId} label={joins ? `Other hosts in ${code} (joins as an app host)` : code}>
+      <optgroup key={group[0]!.regionId} label={joins ? `Other hosts in ${code} (joins the environment)` : code}>
         {group.map((h) => (
           <option key={h.id} value={h.id}>
             {h.label}

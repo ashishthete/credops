@@ -39,7 +39,7 @@ export async function rig(
 ): Promise<Rig> {
   const f = await makeDeployFixture({ maxEvents: over.maxEvents })
   // The fixture shares app1 with protected prod; most tests want an unprotected staging, so unshare it here.
-  f.db.prepare('DELETE FROM environment_hosts WHERE environment_id = ?').run(f.prod.id)
+  f.db.prepare('DELETE FROM services WHERE environment_id = ?').run(f.prod.id)
   // Parallel prepare (on by default) is tested on its own: the rig keeps the in-order release its tests were written for.
   for (const env of [f.staging, f.prod]) f.deploys.updateSettings(env.id, { parallelPrepare: false })
   const runner = new FakeRunner()
@@ -88,7 +88,8 @@ export const dep = (r: Rig, name: string, over: Record<string, unknown> = {}) =>
 export const tracked = (r: Rig, d: DeploymentMeta): AppServiceMeta[] => {
   const have = r.f.services.forCheckout(d.id)
   if (have.length) return have
-  const n = r.f.services.list(d.environmentId).length
+  // Counts checkout services only: the fixture host's placeholder app doesn't shift the names.
+  const n = r.f.services.list(d.environmentId).filter((s) => s.kind === 'service' && s.deploymentId !== null).length
   return [r.f.services.create({ kind: 'service', environmentId: d.environmentId, name: `${d.name}-${n}`, deploymentId: d.id }) as AppServiceMeta]
 }
 

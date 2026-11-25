@@ -50,7 +50,7 @@ const cmds = (tasks: Task[], kind: StepKind, deployment: string): string[] =>
 async function world() {
   const f = await makeDeployFixture()
   // app1 is shared with protected prod in the fixture; staging starts unprotected.
-  f.db.prepare('DELETE FROM environment_hosts WHERE environment_id = ?').run(f.prod.id)
+  f.db.prepare('DELETE FROM services WHERE environment_id = ?').run(f.prod.id)
   const home = mkdtempSync(join(tmpdir(), 'credops-e2e-home-'))
   const ansible = new FakeAnsible()
   const fs = memFs()
@@ -151,13 +151,15 @@ describe('services deploy end to end', () => {
       f.input({ name: 'webapp/esg', repoPath: '/srv/esg', deployTag: 'deploy_esg', managedEnv: true, envTemplate: `A=1\nB=\${secret:${f.secretId}}`, vaultIds: [DEFAULT_VAULT_ID] }),
     )
     const fastCheckout = f.deploys.create(f.input({ name: 'fast-api', repoPath: '/srv/fast-api', deployTag: 'deploy_fast' }))
+    // The fixture's host joined staging with a placeholder app; drop it so only this test's services are copied.
+    f.db.prepare("DELETE FROM services WHERE environment_id = ? AND deployment_id IS NULL").run(f.staging.id)
     const mk = (name: string, deploymentId: string, over: { url?: string; urlCheckFrom?: 'host' | 'mac' } = {}) =>
       f.services.create({ kind: 'service', environmentId: f.staging.id, name, deploymentId, composeService: name, ...over })
     const esg = mk('esg', esgCheckout.id)
     const jsf = mk('js_foundry', esgCheckout.id)
     const fastapi = mk('fastapi-app', fastCheckout.id, { url: 'http://127.0.0.1:8000/health', urlCheckFrom: 'host' })
     const langgraph = mk('langgraph-api', fastCheckout.id)
-    const pg = f.services.create({ kind: 'db', environmentId: f.staging.id, name: 'prod-pg', dbEngine: 'postgres', dbAddress: '10.0.0.9' })
+    const pg = f.services.create({ kind: 'db', environmentId: f.staging.id, name: 'prod-pg', dbEngine: 'postgres', dbAddress: '10.0.0.9', hostId: f.host.id })
     // Both esg services were last deployed at P0 by an earlier, untracked release.
     f.services.recordDeployed([
       { serviceId: esg.id, commit: P0, releaseId: null },
@@ -277,7 +279,7 @@ describe('services deploy end to end', () => {
       sourceEnvironmentId: f.staging.id,
       targetEnvironmentId: f.prod.id,
       checkouts: [esgCheckout, fastCheckout].map((d) => ({ deploymentId: d.id, branch: 'prod-2026', repoPath: `/opt/${d.name}`, hostId: app2.id, deployTag: `prod_${d.id.slice(0, 4)}` })),
-      dbs: [{ serviceId: pg.id, dbAddress: '10.1.0.9', dbPort: 5432, viaHostId: app2.id }],
+      dbs: [{ serviceId: pg.id, dbAddress: '10.1.0.9', dbPort: 5432, hostId: app2.id }],
     })
     expect(copied).toMatchObject({ created: { services: 5, checkouts: 2 }, skipped: [] })
     expect(f.audit.list({ actions: ['services.copy'] }).length - auditBefore).toBe(1)

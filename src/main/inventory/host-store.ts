@@ -1,3 +1,4 @@
+import { ensureHostService } from '../deploy/host-service'
 import { randomUUID } from 'node:crypto'
 import {
   HOST_ROLES,
@@ -98,11 +99,7 @@ export class HostStore {
     for (const vaultId of vaultIds) {
       this.db.prepare('INSERT INTO host_vaults(host_id, vault_id) VALUES (?,?)').run(id, vaultId)
     }
-    for (const m of memberships) {
-      this.db
-        .prepare('INSERT INTO environment_hosts(environment_id, host_id, role) VALUES (?,?,?)')
-        .run(m.environmentId, id, m.role)
-    }
+    for (const m of memberships) ensureHostService(this.db, m.environmentId, id, m.role)
     return id
   }
 

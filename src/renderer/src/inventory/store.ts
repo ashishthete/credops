@@ -60,6 +60,9 @@ type ListKey = keyof InventoryData
  * Bumped by every write to a list. A read only applies the lists nobody wrote while it was in
  * flight, so a slow load or refresh can't overwrite a newer edit with what it read before.
  */
+/** Memberships are services now: a host joining or leaving an environment adds or deletes services there. */
+const reloadServices = () => void import('../deploy/store').then((m) => m.loadDeploy())
+
 const written: Record<ListKey, number> = { products: 0, environments: 0, hosts: 0, identities: 0, vaults: 0, regions: 0 }
 
 function applyRead(seen: Record<ListKey, number>, lists: Partial<InventoryData>) {
@@ -231,6 +234,7 @@ export const inv = {
     if (row) {
       patchStore((d) => ({ environments: upsert(d.environments, row) }))
       await refresh('hosts')
+      reloadServices()
     }
     return row
   },
@@ -240,6 +244,7 @@ export const inv = {
     if (row) {
       patchStore((d) => ({ environments: upsert(d.environments, row) }))
       await refresh('hosts')
+      reloadServices()
       // The host's tunnels in this environment fall back to host-only.
       void loadTunnels()
     }
@@ -270,6 +275,7 @@ export const inv = {
       patchStore((d) => ({ hosts: upsert(d.hosts, row) }))
       // A region's host count changes when a host is added or moves region.
       await refresh(...(id ? ['regions' as const] : ['environments' as const, 'regions' as const]))
+      if (!id && input.environments?.length) reloadServices()
     } else if (updated) {
       // The edit saved but the vault links didn't; show what was saved.
       await refresh('hosts')
@@ -282,6 +288,7 @@ export const inv = {
     if (ok) {
       patchStore((d) => ({ hosts: d.hosts.filter((h) => h.id !== id) }))
       await refresh('environments', 'regions')
+      reloadServices()
       // The host's tunnels went with it (main stops them and the rows cascade).
       void loadTunnels()
     }

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { ensureHostService } from '../../src/main/deploy/host-service'
 import { environmentMeta, hostMeta } from '../../src/main/inventory/rows'
+import type { HostRole } from '../../src/shared/inventory'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import { PRODUCT, REGION, makeInventory } from './inventory-helpers'
 
@@ -25,7 +27,7 @@ describe('inventory lists', () => {
       ['e1', 'h2', 'other'],
       ['e1', 'h3', 'db'],
     ])
-      run('INSERT INTO environment_hosts(environment_id, host_id, role) VALUES (?,?,?)', env, host, role)
+      ensureHostService(f.db, env, host, role as HostRole)
     for (const [host, vault] of [
       ['h4', other.id],
       ['h4', DEFAULT_VAULT_ID],

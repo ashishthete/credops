@@ -24,7 +24,7 @@ describe('config export', () => {
     expect(file.version).toBe(2)
     expect(file.exportedAt).toBe('2026-10-20T10:00:00.000Z')
     expect(Object.keys(file)).toEqual(['format', 'version', 'exportedAt', 'secretRefs', 'regions', 'products', 'identities', 'hosts', 'environments', 'tunnels', 'deployments', 'services'])
-    expect(counts).toEqual({ regions: 1, products: 2, identities: 2, hosts: 2, environments: 2, tunnels: 1, deployments: 1, services: 2, runbooks: 0 })
+    expect(counts).toEqual({ regions: 1, products: 2, identities: 2, hosts: 2, environments: 2, tunnels: 1, deployments: 1, services: 4, runbooks: 0 })
     for (const list of [file.regions, file.products, file.identities, file.hosts, file.environments, file.tunnels, file.deployments, file.services] as { id: string }[][]) {
       expect(sortedById(list)).toBe(true)
     }
@@ -122,6 +122,7 @@ describe('config export', () => {
     expect(byId(file.services, f.ids.appService)).toEqual({
       id: f.ids.appService,
       environmentId: f.staging.id,
+      hostId: f.host.id,
       name: 'web',
       kind: 'service',
       position: expect.any(Number),
@@ -135,6 +136,7 @@ describe('config export', () => {
     expect(byId(file.services, f.ids.dbService)).toEqual({
       id: f.ids.dbService,
       environmentId: f.staging.id,
+      hostId: f.host.id,
       name: 'main-db',
       kind: 'db',
       position: expect.any(Number),
@@ -202,7 +204,7 @@ describe('config export', () => {
         JSON.stringify([{ url: 'https://app.example/health?token=faketok8&x=1', from: 'mac' }]),
         f.ids.deployment,
       )
-    f.db.prepare("UPDATE services SET url = ? WHERE kind = 'service'").run('https://svc.example/h?api_key=faketok9')
+    f.db.prepare('UPDATE services SET url = ? WHERE id = ?').run('https://svc.example/h?api_key=faketok9', f.ids.appService)
     const { file, omitted } = buildConfigExport(f.db, clock)
     const text = serializeConfig(file)
     expect(text).not.toMatch(/fakepass|fakepw|fakedsn|faketok/)
@@ -211,7 +213,7 @@ describe('config export', () => {
     expect(d.envTemplate).toBe(['# note', 'DB_PASS=', 'db_pwd=', 'SENTRY_DSN=', 'DATABASE_URL=', 'APP_ENV=staging', 'EMPTY_PASS=', ''].join('\n'))
     expect(d.repoUrl).toBe('https://git.example/x.git?private_token=&ref=main')
     expect(d.urls[0].url).toBe('https://app.example/health?token=&x=1')
-    expect(file.services.find((s) => s.kind === 'service')).toMatchObject({ url: 'https://svc.example/h?api_key=' })
+    expect(file.services.find((s) => s.id === f.ids.appService)).toMatchObject({ url: 'https://svc.example/h?api_key=' })
     // 4 env vars + 4 template lines + 3 URL params.
     expect(omitted).toBe(11)
     expect(parseConfigFile(text).ok).toBe(true)
@@ -328,7 +330,7 @@ describe('config export', () => {
     const path = tmpPath()
     const h = createConfigHandlers({ ...exportDeps(f), openDialog: async () => undefined, saveDialog: async () => path })
     const res = await h['config:export']()
-    expect(res).toEqual({ path, counts: { regions: 1, products: 2, identities: 2, hosts: 2, environments: 2, tunnels: 1, deployments: 1, services: 2, runbooks: 0 }, omitted: 0 })
+    expect(res).toEqual({ path, counts: { regions: 1, products: 2, identities: 2, hosts: 2, environments: 2, tunnels: 1, deployments: 1, services: 4, runbooks: 0 }, omitted: 0 })
     const [e] = f.audit.list({ actions: ['config.export'] })
     expect(e).toMatchObject({ outcome: 'success', targetType: 'config', targetLabel: 'config', targetId: null })
     expect(e.details).toEqual({ counts: res!.counts, omitted: 0 })

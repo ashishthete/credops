@@ -20,9 +20,11 @@ describe('inventory schema', () => {
   it('migrates to the latest version', () => {
     const db = testDb()
     expect(currentVersion(db)).toBe(migrations.at(-1)!.version)
-    for (const t of ['regions', 'products', 'hosts', 'environments', 'environment_hosts', 'host_vaults']) {
+    for (const t of ['regions', 'products', 'hosts', 'environments', 'host_vaults', 'services']) {
       expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(t)).toBeDefined()
     }
+    // Membership is derived from services now.
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type='view' AND name = 'environment_hosts'").get()).toBeDefined()
   })
 
   it('fk fallbacks', async () => {
@@ -79,8 +81,9 @@ describe('inventory schema', () => {
     )
     expect(() => host('h2', 70000)).toThrow(/CHECK/i)
     expect(() =>
-      db.prepare("INSERT INTO environment_hosts(environment_id, host_id, role) VALUES ('e1','h1','web')").run(),
+      db.prepare("INSERT INTO services(id, environment_id, host_id, name, kind, created_at, updated_at) VALUES ('s1','e1','h1','x','web',?,?)").run(NOW, NOW),
     ).toThrow(/CHECK/i)
+    expect(() => db.prepare("INSERT INTO environment_hosts(environment_id, host_id, role) VALUES ('e1','h1','app')").run()).toThrow(/view/i)
     expect(() => db.prepare("UPDATE hosts SET jump_host_id = 'h1' WHERE id = 'h1'").run()).toThrow(/CHECK/i)
   })
 
@@ -186,20 +189,20 @@ describe('migration 7 (deployments)', () => {
 
   const svc = (db: ReturnType<typeof openDatabase>, id: string, cols: string, vals: (string | number | null)[]): void => {
     db.prepare(
-      `INSERT INTO services(id, environment_id, name, ${cols}, created_at, updated_at) VALUES (?,?,?,${vals.map(() => '?').join(',')},?,?)`,
-    ).run(id, 'e1', id, ...vals, NOW, NOW)
+      `INSERT INTO services(id, environment_id, host_id, name, ${cols}, created_at, updated_at) VALUES (?,?,?,?,${vals.map(() => '?').join(',')},?,?)`,
+    ).run(id, 'e1', 'h1', id, ...vals, NOW, NOW)
   }
 
-  it('migration 7 creates services and no apps table', () => {
+  it('services (migration 7, rebuilt by 17) has a host on every row and no apps table', () => {
     const db = testDb()
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = 'apps'").get()).toBeUndefined()
     expect(cols(db, 'services')).toEqual([
-      'id', 'environment_id', 'name', 'kind', 'position', 'description', 'deployment_id', 'compose_service', 'url',
-      'url_check_from', 'last_deployed_commit', 'last_release_id', 'db_engine', 'db_address', 'db_port', 'via_host_id',
-      'local_port', 'tunnel_id', 'created_at', 'updated_at', 'skip_unchanged',
+      'id', 'environment_id', 'host_id', 'name', 'kind', 'position', 'description', 'deployment_id', 'compose_service', 'url',
+      'url_check_from', 'last_deployed_commit', 'last_release_id', 'db_engine', 'db_address', 'db_port',
+      'local_port', 'tunnel_id', 'skip_unchanged', 'created_at', 'updated_at',
     ])
     const indexes = (db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name = 'services'").all() as { name: string }[]).map((r) => r.name)
-    expect(indexes).toEqual(expect.arrayContaining(['services_name', 'services_compose', 'services_env']))
+    expect(indexes).toEqual(expect.arrayContaining(['services_name', 'services_compose', 'services_env', 'services_host']))
     expect(cols(db, 'deployment_runs')).toContain('whole_checkout')
     seed(db)
     dep(db)
@@ -207,9 +210,24 @@ describe('migration 7 (deployments)', () => {
     svc(db, 'pg', 'kind, db_engine, db_address, db_port', ['db', 'postgres', 'db.internal', 5432])
     expect(() => svc(db, 'ESG', 'kind, deployment_id, compose_service, url_check_from', ['service', 'd1', 'other', 'mac'])).toThrow(/UNIQUE/)
     expect(() => svc(db, 'bad-kind', 'kind', ['queue'])).toThrow(/CHECK/)
-    expect(() => svc(db, 'no-compose', 'kind, url_check_from', ['service', 'mac'])).toThrow(/CHECK/)
+    // An app may run without a checkout, but one in a checkout names its compose service.
+    svc(db, 'loose', 'kind, url_check_from', ['service', 'mac'])
+    expect(() => svc(db, 'no-compose', 'kind, deployment_id, url_check_from', ['service', 'd1', 'mac'])).toThrow(/CHECK/)
+    svc(db, 'jump', 'kind', ['bastion'])
+    expect(() => svc(db, 'bad-bastion', 'kind, db_engine, db_address, db_port', ['bastion', 'postgres', 'db', 5432])).toThrow(/CHECK/)
+    expect(() =>
+      db.prepare("INSERT INTO services(id, environment_id, name, kind, url_check_from, created_at, updated_at) VALUES ('nohost','e1','nohost','service','mac',?,?)").run(NOW, NOW),
+    ).toThrow(/NOT NULL/)
     expect(() => svc(db, 'bad-port', 'kind, db_engine, db_address, db_port', ['db', 'redis', 'r', 70000])).toThrow(/CHECK/)
     db.prepare('DELETE FROM environments WHERE id = ?').run('e1')
+    expect(db.prepare('SELECT COUNT(*) AS n FROM services').get()).toEqual({ n: 0 })
+  })
+
+  it('deleting a host deletes the services it runs', () => {
+    const db = testDb()
+    seed(db)
+    svc(db, 'pg', 'kind, db_engine, db_address, db_port', ['db', 'postgres', 'db.internal', 5432])
+    db.prepare('DELETE FROM hosts WHERE id = ?').run('h1')
     expect(db.prepare('SELECT COUNT(*) AS n FROM services').get()).toEqual({ n: 0 })
   })
 

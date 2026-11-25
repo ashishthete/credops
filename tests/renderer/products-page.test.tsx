@@ -10,9 +10,10 @@ import { ProductsPage } from '../../src/renderer/src/pages/products/ProductsPage
 import { clearToasts, Toaster } from '../../src/renderer/src/ui/Toaster'
 import { vaultStatusStore } from '../../src/renderer/src/vault/status'
 import { cancelUnlock } from '../../src/renderer/src/vault/unlock'
-import type { EnvironmentMeta, HostMeta, ProductMeta } from '../../src/shared/inventory'
+import type { EnvironmentMeta, HostMeta, HostRole, ProductMeta } from '../../src/shared/inventory'
+import type { ServiceMeta } from '../../src/shared/services'
 import { DEFAULT_VAULT_ID, type IdentityMeta } from '../../src/shared/vault'
-import { appService, defaultVault, deploymentMeta, environment, host, mockBridge, product, REGION, vaultStatus } from './helpers'
+import { appService, dbService, defaultVault, deploymentMeta, environment, host, mockBridge, product, REGION, vaultStatus } from './helpers'
 
 // framer-motion caches matchMedia, so reduced motion is driven through useMotionSafe (F18).
 const motion = vi.hoisted(() => ({ safe: true }))
@@ -72,12 +73,48 @@ function world(): World {
   }
 }
 
-/** web-1 sits in both prod and staging, so it shows twice. */
+/** web-1 runs a service in both prod and staging. */
 function sharedWorld(): World {
   const w = world()
   w.environments = w.environments.map((e) => (e.id === 'staging' ? { ...e, hosts: [{ hostId: 'web1', role: 'app' }] } : e))
   w.hosts = w.hosts.map((h) => ({ ...h, environments: [...h.environments, { environmentId: 'staging', role: 'app' }] }))
   return w
+}
+
+/** World plus an unassigned host, loose-1, to drag into environments. */
+function looseWorld(): World {
+  const w = world()
+  w.hosts = [...w.hosts, host({ id: 'loose', label: 'loose-1' })]
+  return w
+}
+
+const KIND_OF_ROLE = { app: 'service', other: 'service', db: 'db', bastion: 'bastion' } as const
+const ROLE_RANK: HostRole[] = ['bastion', 'app', 'db']
+
+/** The service a host gets when it joins an environment: named after the host, its type from the role. */
+function placeholder(envId: string, hostId: string, label: string, role: HostRole, position: number): ServiceMeta {
+  const base = { id: `${envId}-${hostId}`, name: label, environmentId: envId, hostId, position }
+  const kind = KIND_OF_ROLE[role]
+  if (kind === 'db') return dbService({ ...base, dbAddress: '127.0.0.1' })
+  if (kind === 'bastion') return { ...base, kind: 'bastion', description: '', createdAt: TS, updatedAt: TS }
+  return appService({ ...base, deploymentId: null, composeService: '' })
+}
+
+/** One placeholder service per membership in the world, as the migration makes them. */
+function seed(w: World): ServiceMeta[] {
+  const label = new Map(w.hosts.map((h) => [h.id, h.label]))
+  return w.environments.flatMap((e) => e.hosts.map((m, i) => placeholder(e.id, m.hostId, label.get(m.hostId) ?? m.hostId, m.role, i)))
+}
+
+/** Membership is derived from services: a host is in an environment when it runs one there, its role the strongest. */
+function members(services: ServiceMeta[], envId: string): { hostId: string; role: HostRole }[] {
+  const out = new Map<string, HostRole>()
+  for (const s of services.filter((x) => x.environmentId === envId)) {
+    const role: HostRole = s.kind === 'service' ? 'app' : s.kind
+    const had = out.get(s.hostId)
+    if (!had || ROLE_RANK.indexOf(role) < ROLE_RANK.indexOf(had)) out.set(s.hostId, role)
+  }
+  return [...out].map(([hostId, role]) => ({ hostId, role }))
 }
 
 let where = ''
@@ -88,16 +125,35 @@ function Location() {
 }
 
 function renderPage(w: World = world(), extra: Record<string, unknown> = {}) {
-  const invoke = mockBridge({ 'vault:status': vaultStatus({ unlocked: true }), 'identity:list': [deploy], 'vault:list': [defaultVault], ...extra })
+  // Services are the record; the world's memberships seed them, and env/host lists are derived from them.
+  const { 'service:list': given = [], ...rest } = extra as { 'service:list'?: ServiceMeta[] }
+  let services: ServiceMeta[] = [...seed(w), ...given]
+  const envs = () => w.environments.map((e) => ({ ...e, hosts: members(services, e.id) }))
+  const hosts = () =>
+    w.hosts.map((h) => ({
+      ...h,
+      environments: w.environments.flatMap((e) => members(services, e.id).filter((m) => m.hostId === h.id).map((m) => ({ environmentId: e.id, role: m.role }))),
+    }))
+  const join = (envId: string, hostId: string, role: HostRole) => {
+    if (services.some((s) => s.environmentId === envId && s.hostId === hostId)) return
+    const label = w.hosts.find((h) => h.id === hostId)?.label ?? hostId
+    services = [...services, placeholder(envId, hostId, label, role, services.filter((s) => s.environmentId === envId).length)]
+  }
+  const invoke = mockBridge({ 'vault:status': vaultStatus({ unlocked: true }), 'identity:list': [deploy], 'vault:list': [defaultVault], ...rest })
   const base = invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
   invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
     switch (channel) {
       case 'product:list':
         return w.products
       case 'env:list':
-        return w.environments
+        return envs()
       case 'host:list':
-        return w.hosts
+        return hosts()
+      case 'service:list':
+        return args[0] ? services.filter((s) => s.environmentId === args[0]) : services
+      case 'service:delete':
+        services = services.filter((s) => s.id !== args[0])
+        return null
       case 'product:create': {
         const p = product({ id: 'new-product', ...(args[0] as { name: string }) })
         w.products = [...w.products, p]
@@ -111,37 +167,20 @@ function renderPage(w: World = world(), extra: Record<string, unknown> = {}) {
       }
       case 'host:create': {
         const input = args[0] as { label: string; environments: { environmentId: string; role: 'app' }[] }
-        const h = host({ id: 'new-host', ...input })
+        const h = host({ id: 'new-host', ...input, environments: [] })
         w.hosts = [...w.hosts, h]
-        w.environments = w.environments.map((e) => {
-          const m = input.environments.find((x) => x.environmentId === e.id)
-          return m ? { ...e, hosts: [...e.hosts, { hostId: h.id, role: m.role }] } : e
-        })
-        return h
+        for (const m of input.environments) join(m.environmentId, h.id, m.role)
+        return hosts().find((x) => x.id === h.id)
       }
       case 'env:putHost': {
-        const [envId, hostId, role] = args as [string, string, 'app']
-        // The real upsert: an existing membership keeps its place and takes the new role.
-        const put = <T extends { role: 'app' }>(list: T[], match: (x: T) => boolean, add: T) =>
-          list.some(match) ? list.map((x) => (match(x) ? { ...x, role } : x)) : [...list, add]
-        w.environments = w.environments.map((e) =>
-          e.id === envId ? { ...e, hosts: put(e.hosts as never[], (m: { hostId: string }) => m.hostId === hostId, { hostId, role } as never) } : e,
-        )
-        w.hosts = w.hosts.map((h) =>
-          h.id === hostId
-            ? {
-                ...h,
-                environments: put(h.environments as never[], (m: { environmentId: string }) => m.environmentId === envId, { environmentId: envId, role } as never),
-              }
-            : h,
-        )
-        return w.environments.find((e) => e.id === envId)
+        const [envId, hostId, role] = args as [string, string, HostRole]
+        join(envId, hostId, role)
+        return envs().find((e) => e.id === envId)
       }
       case 'env:removeHost': {
         const [envId, hostId] = args as [string, string]
-        w.environments = w.environments.map((e) => (e.id === envId ? { ...e, hosts: e.hosts.filter((m) => m.hostId !== hostId) } : e))
-        w.hosts = w.hosts.map((h) => (h.id === hostId ? { ...h, environments: h.environments.filter((m) => m.environmentId !== envId) } : h))
-        return w.environments.find((e) => e.id === envId)
+        services = services.filter((s) => !(s.environmentId === envId && s.hostId === hostId))
+        return envs().find((e) => e.id === envId)
       }
       case 'env:setProduct': {
         const [envId, productId] = args as [string, string]
@@ -152,10 +191,11 @@ function renderPage(w: World = world(), extra: Record<string, unknown> = {}) {
             ? [...new Set([...p.environmentIds, envId])]
             : p.environmentIds.filter((id) => id !== envId),
         }))
-        return w.environments.find((e) => e.id === envId)
+        return envs().find((e) => e.id === envId)
       }
       case 'env:delete':
         w.environments = w.environments.filter((e) => e.id !== args[0])
+        services = services.filter((s) => s.environmentId !== args[0])
         return null
     }
     return base(channel, ...args)
@@ -174,6 +214,7 @@ function renderPage(w: World = world(), extra: Record<string, unknown> = {}) {
 const items = () => screen.getAllByRole('treeitem')
 const item = (name: string, nth = 0) => screen.getAllByRole('treeitem', { name })[nth]
 const chevron = (el: HTMLElement) => within(el).getByTestId('tree-chevron')
+const HINT = 'No services — drag a host here'
 const dataTransfer = () => ({ setData() {}, getData: () => '', effectAllowed: '', dropEffect: '' })
 
 beforeEach(() => {
@@ -218,7 +259,8 @@ describe('products page', () => {
     expect(item('prod')).toHaveAttribute('aria-level', '2')
 
     const all = new Set(['p:acme', 'p:essentials', 'p:acme/e:prod'])
-    const order = buildTree({ ...w, identities: [], vaults: [], regions: [] }, all).map((r) => r.label)
+    const order = buildTree({ ...w, identities: [], vaults: [], regions: [] }, all, seed(w)).map((r) => r.label)
+    expect(order).toContain('web-1')
     expect(items().map((el) => el.getAttribute('aria-label'))).toEqual(order)
 
     await user.click(chevron(acme))
@@ -272,8 +314,10 @@ describe('products page', () => {
     renderPage()
     await screen.findByRole('treeitem', { name: 'Acme' })
     expect(item('prod')).toHaveAccessibleDescription('Environment prod. Protected. Region test-1')
-    expect(item('analytics-db')).toHaveAccessibleDescription('Environment analytics-db. No hosts')
-    expect(item('staging')).toHaveAccessibleDescription('Environment staging. No hosts')
+    expect(item('analytics-db')).toHaveAccessibleDescription('Environment analytics-db. No services')
+    expect(item('staging')).toHaveAccessibleDescription('Environment staging. No services')
+    // A service row says its type and the host it runs on.
+    expect(item('web-1')).toHaveAccessibleDescription('App web-1. On web-1. Region test-1')
   })
 
   it('collapsing moves focus out of a hidden row', async () => {
@@ -306,15 +350,26 @@ describe('products page', () => {
     expect(screen.getByRole('treeitem', { name: 'Essentials' })).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('EnvironmentView host row Connect passes the environment', async () => {
+  it("a service row's Connect opens its host in the environment", async () => {
     const user = userEvent.setup()
     renderPage()
     await screen.findByRole('treeitem', { name: 'Acme' })
     await user.click(item('prod'))
     const details = screen.getByRole('region', { name: 'Details' })
+    // A button on the row itself, not only in its menu.
     await user.click(await within(details).findByRole('button', { name: 'Connect to web-1' }))
     await waitFor(() => expect(where).toBe('/terminals'))
     expect(sessions.openSsh).toHaveBeenCalledWith('web1', 'prod')
+  })
+
+  it("a service in the tree connects to its host from the row's menu", async () => {
+    const user = userEvent.setup()
+    renderPage(sharedWorld())
+    const inStaging = (await screen.findAllByRole('treeitem', { name: 'web-1' }))[1]
+    fireEvent.contextMenu(inStaging)
+    await user.click(await screen.findByRole('menuitem', { name: 'Connect to host' }))
+    await waitFor(() => expect(where).toBe('/terminals'))
+    expect(sessions.openSsh).toHaveBeenCalledWith('web1', 'staging')
   })
 
   it('a service row Deploy opens the deploy wizard with only that service ticked', async () => {
@@ -322,8 +377,8 @@ describe('products page', () => {
     renderPage(world(), {
       'deploy:list': [deploymentMeta({ id: 'd1', name: 'core', environmentId: 'prod', hostId: 'web1' })],
       'service:list': [
-        appService({ id: 's1', name: 'api', environmentId: 'prod', deploymentId: 'd1' }),
-        appService({ id: 's2', name: 'worker', environmentId: 'prod', deploymentId: 'd1', position: 1 }),
+        appService({ id: 's1', name: 'api', environmentId: 'prod', hostId: 'web1', deploymentId: 'd1', position: 1 }),
+        appService({ id: 's2', name: 'worker', environmentId: 'prod', hostId: 'web1', deploymentId: 'd1', position: 2 }),
       ],
     })
     await screen.findByRole('treeitem', { name: 'Acme' })
@@ -484,7 +539,7 @@ describe('products page', () => {
     const main = screen.getByRole('region', { name: 'Details' })
     expect(within(main).getByText('HTTPS://Staging.Example.com/app?x=1')).toBeInTheDocument()
     await user.click(item('staging'))
-    await within(main).findByText('No hosts in this environment yet')
+    await within(main).findByText('No services yet')
     expect(within(main).getByText('None')).toBeInTheDocument()
     expect(within(main).queryByRole('button', { name: /^Open / })).not.toBeInTheDocument()
   })
@@ -499,33 +554,25 @@ describe('products page', () => {
     expect(await screen.findByText(/This environment's domain or URL can't be opened/)).toBeInTheDocument()
   })
 
-  it('shared host updates everywhere', async () => {
-    const { invoke } = renderPage()
-    const web1 = await screen.findByRole('treeitem', { name: 'web-1' })
+  it('dropping an unassigned host on an environment runs it there', async () => {
+    const { invoke } = renderPage(looseWorld())
+    const loose = await screen.findByRole('treeitem', { name: 'loose-1' })
     const staging = item('staging')
-    fireEvent.dragStart(web1, { dataTransfer: dataTransfer() })
+    fireEvent.dragStart(loose, { dataTransfer: dataTransfer() })
     expect(staging).toHaveAttribute('data-drop-target', 'true')
-    // prod already holds web-1, so it isn't offered.
-    expect(item('prod')).not.toHaveAttribute('data-drop-target')
+    // Products and services are not places for a host.
+    expect(item('Acme')).not.toHaveAttribute('data-drop-target')
+    expect(item('web-1')).not.toHaveAttribute('data-drop-target')
     fireEvent.dragOver(staging, { dataTransfer: dataTransfer() })
     fireEvent.drop(staging, { dataTransfer: dataTransfer() })
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:putHost', 'staging', 'web1', 'app'))
-    expect(await screen.findByText('Added web-1 to staging')).toBeInTheDocument()
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:putHost', 'staging', 'loose', 'app'))
+    expect(await screen.findByText('Added loose-1 to staging')).toBeInTheDocument()
 
-    await waitFor(() => expect(screen.getAllByRole('treeitem', { name: 'web-1' })).toHaveLength(2))
-    const [inProd, inStaging] = screen.getAllByRole('treeitem', { name: 'web-1' })
-    expect(inStaging).toHaveAccessibleDescription('Host web-1. Role App. Region test-1. Also in Acme · prod')
-    fireEvent.mouseEnter(inProd)
-    expect(inStaging).toHaveAttribute('data-shared-highlight', 'true')
-    expect(inStaging).toHaveAttribute('data-pulse', 'true')
-    expect(inProd).not.toHaveAttribute('data-shared-highlight')
-    fireEvent.mouseLeave(inProd)
-    expect(inStaging).not.toHaveAttribute('data-shared-highlight')
-
-    // A drop that changes nothing is ignored.
-    fireEvent.dragStart(inProd, { dataTransfer: dataTransfer() })
-    fireEvent.drop(item('prod'), { dataTransfer: dataTransfer() })
-    expect(invoke.mock.calls.filter(([c]) => c === 'env:putHost')).toHaveLength(1)
+    // It now runs a service in staging, named after it, and is no longer unassigned.
+    const row = await screen.findByRole('treeitem', { name: 'loose-1' })
+    await waitFor(() => expect(row).toHaveAttribute('aria-level', '3'))
+    expect(row).toHaveAccessibleDescription('App loose-1. On loose-1. Region test-1')
+    expect(screen.queryByRole('treeitem', { name: 'Unassigned hosts' })).not.toBeInTheDocument()
   })
 
   it('drops an environment on a product', async () => {
@@ -583,67 +630,58 @@ describe('products page', () => {
   })
 
   it('a drop in flight blocks further drops', async () => {
-    const { invoke } = renderPage()
+    const { invoke } = renderPage(looseWorld())
     const run = invoke.getMockImplementation()! as (c: string, ...a: unknown[]) => Promise<unknown>
     let release = () => {}
     const gate = new Promise<void>((r) => (release = r))
     invoke.mockImplementation(async (c: string, ...a: unknown[]) => (c === 'env:putHost' ? gate.then(() => run(c, ...a)) : run(c, ...a)))
-    const web1 = await screen.findByRole('treeitem', { name: 'web-1' })
-    fireEvent.dragStart(web1, { dataTransfer: dataTransfer() })
+    const loose = await screen.findByRole('treeitem', { name: 'loose-1' })
+    fireEvent.dragStart(loose, { dataTransfer: dataTransfer() })
     fireEvent.drop(item('staging'), { dataTransfer: dataTransfer() })
-    fireEvent.dragStart(web1, { dataTransfer: dataTransfer() })
+    fireEvent.dragStart(loose, { dataTransfer: dataTransfer() })
     expect(item('analytics-db')).not.toHaveAttribute('data-drop-target')
     fireEvent.drop(item('analytics-db'), { dataTransfer: dataTransfer() })
     expect(invoke.mock.calls.filter(([c]) => c === 'env:putHost')).toHaveLength(1)
     await act(async () => release())
-    expect(await screen.findByText('Added web-1 to staging')).toBeInTheDocument()
+    expect(await screen.findByText('Added loose-1 to staging')).toBeInTheDocument()
   })
 
-  it('hover and drag state clear when their row leaves the tree', async () => {
-    renderPage(sharedWorld())
+  it('drag state clears when the dragged row leaves the tree', async () => {
+    renderPage(looseWorld())
     await screen.findByRole('treeitem', { name: 'Acme' })
-    const [inProd, inStaging] = screen.getAllByRole('treeitem', { name: 'web-1' })
-    fireEvent.mouseEnter(inProd)
-    expect(inStaging).toHaveAttribute('data-shared-highlight', 'true')
-    fireEvent.click(chevron(item('prod')))
-    expect(inStaging).not.toHaveAttribute('data-shared-highlight')
-
-    fireEvent.click(chevron(item('prod')))
-    fireEvent.dragStart(screen.getAllByRole('treeitem', { name: 'web-1' })[0], { dataTransfer: dataTransfer() })
+    fireEvent.dragStart(item('loose-1'), { dataTransfer: dataTransfer() })
     expect(item('analytics-db')).toHaveAttribute('data-drop-target', 'true')
-    fireEvent.click(chevron(item('prod')))
+    fireEvent.click(chevron(item('Unassigned hosts')))
     expect(item('analytics-db')).not.toHaveAttribute('data-drop-target')
   })
 
-  it('removing a host asks first', async () => {
+  it('deleting a service from the tree asks first', async () => {
     const user = userEvent.setup()
     const { invoke } = renderPage(sharedWorld())
-    await user.click(await screen.findByRole('treeitem', { name: 'staging' }))
-    // Visible without hovering: never opacity-0, and it says what it does.
-    const remove = screen.getByRole('button', { name: 'Remove web-1 from staging' })
-    expect(remove.className).not.toMatch(/(^|\s)opacity-0(\s|$)/)
-    expect(remove).toHaveTextContent('Remove')
-    // The word itself is always rendered, not collapsed until hover.
-    expect(within(remove).getByText('Remove').className).not.toMatch(/(^|\s)(max-w-0|opacity-0|sr-only|hidden)(\s|$)/)
-    await user.click(remove)
-    const dialog = await screen.findByRole('dialog', { name: 'Remove web-1 from staging?' })
+    const inStaging = (await screen.findAllByRole('treeitem', { name: 'web-1' }))[1]
+    fireEvent.contextMenu(inStaging)
+    const menu = await screen.findByRole('menu', { name: 'Options for web-1' })
+    expect(within(menu).getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['Connect to host', 'Edit service', 'Delete service'])
+    await user.click(within(menu).getByRole('menuitem', { name: 'Delete service' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Delete web-1?' })
     expect(within(dialog).queryByLabelText(/to confirm/)).not.toBeInTheDocument()
-    await user.click(within(dialog).getByRole('button', { name: 'Remove host' }))
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:removeHost', 'staging', 'web1'))
-    expect(await screen.findByText('Removed web-1 from staging')).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Delete service' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('service:delete', 'staging-web1', { deleteTunnel: false }))
+    // Its last service gone, the host leaves staging but stays in prod.
+    await waitFor(() => expect(screen.getAllByRole('treeitem', { name: 'web-1' })).toHaveLength(1))
   })
 
-  it('removing a host from a protected environment types the name', async () => {
+  it('deleting a service in a protected environment types the name', async () => {
     const user = userEvent.setup()
     const { invoke } = renderPage()
-    await user.click(await screen.findByRole('treeitem', { name: 'prod' }))
-    await user.click(screen.getByRole('button', { name: 'Remove web-1 from prod' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Remove web-1 from prod?' })
-    const confirm = within(dialog).getByRole('button', { name: 'Remove host' })
+    fireEvent.contextMenu(await screen.findByRole('treeitem', { name: 'web-1' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Delete service' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Delete web-1?' })
+    const confirm = within(dialog).getByRole('button', { name: 'Delete service' })
     expect(confirm).toBeDisabled()
     await user.type(within(dialog).getByLabelText('Type prod to confirm'), 'prod')
     await user.click(confirm)
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:removeHost', 'prod', 'web1'))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('service:delete', 'prod-web1', { deleteTunnel: false }))
   })
 
   it('protected delete types the name', async () => {
@@ -780,7 +818,7 @@ describe('products page', () => {
     })
   })
 
-  it('environment view groups hosts and shows defaults', async () => {
+  it('environment view lists its services and shows defaults', async () => {
     const user = userEvent.setup()
     const w = world()
     w.environments = w.environments.map((e) => (e.id === 'prod' ? { ...e, defaultPort: 2222, defaultIdentityId: 'id-deploy' } : e))
@@ -788,24 +826,30 @@ describe('products page', () => {
     await user.click(await screen.findByRole('treeitem', { name: 'prod' }))
     const main = screen.getByRole('region', { name: 'Details' })
     expect(within(main).getByText('Protected')).toBeInTheDocument()
-    expect(within(main).getByRole('heading', { name: /App/ })).toHaveTextContent('1')
+    const section = await within(main).findByRole('region', { name: 'Services' })
+    expect(within(section).getByRole('heading', { name: /Services/ })).toHaveTextContent('1')
     expect(within(main).getByText('2222')).toBeInTheDocument()
     expect(within(main).getAllByText('Inherited from prod')).toHaveLength(2)
     expect(within(main).getByText('App default')).toBeInTheDocument()
+    // No role-grouped host sections, and no separate database button.
+    expect(within(main).queryByRole('heading', { name: 'App' })).not.toBeInTheDocument()
+    expect(within(main).queryByRole('button', { name: 'Add database' })).not.toBeInTheDocument()
 
     await user.click(item('staging'))
-    expect(await within(main).findByText('No hosts in this environment yet')).toBeInTheDocument()
+    expect(await within(main).findByText('No services yet')).toBeInTheDocument()
   })
 
-  it('a host selection opens the host view in its environment', async () => {
+  it('a service selection opens its environment; an unassigned host opens the host view', async () => {
     const user = userEvent.setup()
-    const { invoke } = renderPage()
+    renderPage(looseWorld())
     await user.click(await screen.findByRole('treeitem', { name: 'web-1' }))
+    expect(new URLSearchParams(where.split('?')[1]).get('node')).toBe('p:acme/e:prod/s:prod-web1')
     const main = screen.getByRole('region', { name: 'Details' })
-    expect(await within(main).findByRole('heading', { name: 'web-1', level: 2 })).toBeInTheDocument()
+    expect(await within(main).findByRole('heading', { name: 'prod', level: 2 })).toBeInTheDocument()
+
+    await user.click(item('loose-1'))
+    expect(await within(main).findByRole('heading', { name: 'loose-1', level: 2 })).toBeInTheDocument()
     expect(within(main).getByRole('region', { name: 'Connection' })).toBeInTheDocument()
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('host:resolve', 'web1', 'prod'))
-    expect(within(main).getByRole('radio', { name: 'prod' })).toHaveAttribute('aria-checked', 'true')
   })
 
   it('new host from an environment lands in it', async () => {
@@ -820,34 +864,30 @@ describe('products page', () => {
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith('host:create', expect.objectContaining({ environments: [{ environmentId: 'staging', role: 'app' }] })),
     )
-    await waitFor(() => expect(new URLSearchParams(where.split('?')[1]).get('node')).toBe('p:acme/e:staging/h:new-host'))
-    expect(await screen.findByRole('heading', { name: 'db-2', level: 2 })).toBeInTheDocument()
-    expect(screen.getByRole('treeitem', { name: 'db-2' })).toHaveAttribute('aria-selected', 'true')
+    // It joins as an app named after it; the environment stays selected.
+    await waitFor(() => expect(new URLSearchParams(where.split('?')[1]).get('node')).toBe('p:acme/e:staging'))
+    expect(await screen.findByRole('treeitem', { name: 'db-2' })).toHaveAccessibleDescription(/^App db-2\. On db-2/)
   })
 
   it('a dropped host is a bastion where it is the jump host', async () => {
-    const w = world()
-    w.environments = w.environments.map((e) => (e.id === 'staging' ? { ...e, defaultJumpHostId: 'web1' } : e))
+    const w = looseWorld()
+    w.environments = w.environments.map((e) => (e.id === 'staging' ? { ...e, defaultJumpHostId: 'loose' } : e))
     const { invoke } = renderPage(w)
-    const web1 = await screen.findByRole('treeitem', { name: 'web-1' })
-    fireEvent.dragStart(web1, { dataTransfer: dataTransfer() })
+    fireEvent.dragStart(await screen.findByRole('treeitem', { name: 'loose-1' }), { dataTransfer: dataTransfer() })
     fireEvent.drop(item('staging'), { dataTransfer: dataTransfer() })
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:putHost', 'staging', 'web1', 'bastion'))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:putHost', 'staging', 'loose', 'bastion'))
+    await waitFor(() => expect(item('loose-1')).toHaveAccessibleDescription(/^Bastion loose-1/))
   })
 
-  it('the context menu changes a host role', async () => {
+  it("a service row's menu edits the service", async () => {
     const user = userEvent.setup()
-    const { invoke } = renderPage()
-    const web1 = await screen.findByRole('treeitem', { name: 'web-1' })
-    fireEvent.contextMenu(web1)
+    renderPage()
+    fireEvent.contextMenu(await screen.findByRole('treeitem', { name: 'web-1' }))
     const menu = await screen.findByRole('menu', { name: 'Options for web-1' })
-    expect(within(menu).getByRole('menuitemradio', { name: 'Role: App' })).toHaveAttribute('aria-checked', 'true')
-    expect(within(menu).getByRole('menuitemradio', { name: 'Role: Database' })).toHaveAttribute('aria-checked', 'false')
-    await user.click(within(menu).getByRole('menuitemradio', { name: 'Role: Database' }))
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:putHost', 'prod', 'web1', 'db'))
-    await waitFor(() => expect(within(item('web-1')).getByText('db')).toBeInTheDocument())
+    expect(within(menu).queryByRole('menuitemradio')).not.toBeInTheDocument()
+    await user.click(within(menu).getByRole('menuitem', { name: 'Edit service' }))
+    expect(await screen.findByRole('dialog', { name: 'Edit web-1' })).toBeInTheDocument()
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
-    expect(item('web-1')).toHaveFocus()
   })
 
   it('right-clicking a product or environment opens its add and edit dialogs', async () => {
@@ -865,15 +905,15 @@ describe('products page', () => {
 
     fireEvent.contextMenu(item('staging'))
     menu = await screen.findByRole('menu', { name: 'Options for staging' })
-    expect(within(menu).getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['New host', 'Add service', 'Add database', 'Edit environment'])
+    expect(within(menu).getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['New host', 'Add service', 'Edit environment'])
     await user.click(within(menu).getByRole('menuitem', { name: 'New host' }))
     expect(await screen.findByRole('dialog', { name: 'New host' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
 
     fireEvent.contextMenu(item('staging'))
-    await user.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Add database' }))
-    expect(await screen.findByRole('dialog', { name: 'Add database' })).toBeInTheDocument()
+    await user.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Add service' }))
+    expect(await screen.findByRole('dialog', { name: 'Add service' })).toBeInTheDocument()
     expect(item('staging')).toHaveAttribute('aria-selected', 'true')
   })
 
@@ -925,17 +965,19 @@ describe('products page', () => {
     expect(web1).toHaveFocus()
 
     await user.click(within(web1).getByRole('button', { name: 'Options for web-1' }))
-    await user.click(await screen.findByRole('menuitem', { name: 'Remove from prod' }))
-    expect(await screen.findByText('Remove web-1 from prod?')).toBeInTheDocument()
+    await user.click(await screen.findByRole('menuitem', { name: 'Delete service' }))
+    expect(await screen.findByRole('dialog', { name: 'Delete web-1?' })).toBeInTheDocument()
   })
 
-  it('a host in two environments names only the other one', async () => {
+  it('a host running services in two environments shows one row in each, saying the host', async () => {
     renderPage(sharedWorld())
     await screen.findByRole('treeitem', { name: 'staging' })
-    const [inProd, inStaging] = screen.getAllByRole('treeitem', { name: 'web-1' })
-    expect(inProd).toHaveAccessibleDescription('Host web-1. Role App. Region test-1. Also in Acme · staging')
-    expect(inStaging).toHaveAccessibleDescription('Host web-1. Role App. Region test-1. Also in Acme · prod')
-    expect(within(inProd).getByTitle('Also in Acme · staging')).toBeInTheDocument()
+    const rows = screen.getAllByRole('treeitem', { name: 'web-1' })
+    expect(rows).toHaveLength(2)
+    for (const r of rows) {
+      expect(r).toHaveAccessibleDescription('App web-1. On web-1. Region test-1')
+      expect(within(r).getByTitle('App')).toHaveTextContent('app')
+    }
   })
 
   it('an empty expanded environment shows a hint that arrow keys skip', async () => {
@@ -943,8 +985,8 @@ describe('products page', () => {
     renderPage()
     const staging = await screen.findByRole('treeitem', { name: 'staging' })
     expect(staging).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getAllByText('No hosts — drag one here').length).toBeGreaterThan(0)
-    expect(items().every((el) => el.getAttribute('aria-label') !== 'No hosts — drag one here')).toBe(true)
+    expect(screen.getAllByText(HINT).length).toBeGreaterThan(0)
+    expect(items().every((el) => el.getAttribute('aria-label') !== HINT)).toBe(true)
     act(() => staging.focus())
     await user.keyboard('{ArrowDown}')
     expect(item('Essentials')).toHaveFocus()
@@ -953,13 +995,13 @@ describe('products page', () => {
   })
 
   it('dropping on the hint adds the host to that environment', async () => {
-    const { invoke } = renderPage()
-    const web1 = await screen.findByRole('treeitem', { name: 'web-1' })
-    fireEvent.dragStart(web1, { dataTransfer: dataTransfer() })
-    const hint = screen.getAllByText('No hosts — drag one here')[1]
+    const { invoke } = renderPage(looseWorld())
+    const loose = await screen.findByRole('treeitem', { name: 'loose-1' })
+    fireEvent.dragStart(loose, { dataTransfer: dataTransfer() })
+    const hint = screen.getAllByText(HINT)[1]
     fireEvent.dragOver(hint, { dataTransfer: dataTransfer() })
     fireEvent.drop(hint, { dataTransfer: dataTransfer() })
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:putHost', 'staging', 'web1', 'app'))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:putHost', 'staging', 'loose', 'app'))
   })
 
   describe('practical layouts', () => {
@@ -997,46 +1039,50 @@ describe('products page', () => {
       ],
     })
 
-    it('B: one environment over several hosts shows each role', async () => {
+    it('B: one environment over several hosts shows each service type', async () => {
       renderPage(layout())
-      const stage = await screen.findByRole('treeitem', { name: 'Stage' })
-      expect(stage).toBeInTheDocument()
-      const roleOf = (name: string, nth = 0) => within(item(name, nth)).getByTitle(/^Role: /).textContent
-      expect(roleOf('uat2-db')).toBe('db')
-      expect(roleOf('jump-1')).toBe('bastion')
-      expect(item('uat2-db')).toHaveAccessibleDescription('Host uat2-db. Role Database. Region test-1')
+      await screen.findByRole('treeitem', { name: 'Stage' })
+      const chipOf = (name: string) => within(item(name)).getByTitle(/^(App|Database|Bastion)$/).textContent
+      expect(chipOf('uat2-db')).toBe('db')
+      expect(chipOf('jump-1')).toBe('bastion')
+      expect(item('uat2-db')).toHaveAccessibleDescription('Database uat2-db. On uat2-db. Region test-1')
+      // Bastions first, then apps, then databases.
+      const stage = items().map((el) => el.getAttribute('aria-label'))
+      expect(stage.slice(stage.indexOf('Stage') + 1, stage.indexOf('Stage') + 4)).toEqual(['jump-1', 'alpha', 'uat2-db'])
     })
 
-    it('C: a host running several environments says where else', async () => {
+    it('C: a host running in several environments has a service row in each', async () => {
       renderPage(layout())
       await screen.findByRole('treeitem', { name: 'Stage' })
       const rows = screen.getAllByRole('treeitem', { name: 'alpha' }).filter((el) => el.getAttribute('aria-level') === '3')
       expect(rows).toHaveLength(3)
       const descs = rows.map((r) => r.getAttribute('aria-describedby') && document.getElementById(r.getAttribute('aria-describedby')!)?.textContent)
-      expect(descs).toContain('Host alpha. Role App. Region test-1. Also in Enterprize · UAT, Essentials · alpha')
-      expect(descs).toContain('Host alpha. Role Database. Region test-1. Also in Enterprize · Stage, Essentials · alpha')
-      expect(descs).toContain('Host alpha. Role App. Region test-1. Also in Enterprize · Stage, Enterprize · UAT')
+      expect(descs.sort()).toEqual([
+        'App alpha. On alpha. Region test-1',
+        'App alpha. On alpha. Region test-1',
+        'Database alpha. On alpha. Region test-1',
+      ])
     })
 
-    it('D: roles belong to the membership', async () => {
+    it('D: the service type belongs to the environment', async () => {
       renderPage(layout())
       await screen.findByRole('treeitem', { name: 'Stage' })
-      const hosts = screen.getAllByRole('treeitem', { name: 'alpha' }).filter((el) => el.getAttribute('aria-level') === '3')
-      const chips = hosts.map((r) => within(r).getByTitle(/^Role: /).textContent)
+      const rows = screen.getAllByRole('treeitem', { name: 'alpha' }).filter((el) => el.getAttribute('aria-level') === '3')
+      const chips = rows.map((r) => within(r).getByTitle(/^(App|Database|Bastion)$/).textContent)
       expect(chips.sort()).toEqual(['app', 'app', 'db'])
     })
 
-    it('F: an environment and a host with one name read differently', async () => {
+    it('F: an environment and a service with one name read differently', async () => {
       renderPage(layout())
       await screen.findByRole('treeitem', { name: 'Stage' })
       const same = screen.getAllByRole('treeitem', { name: 'alpha' })
       const env = same.find((el) => el.getAttribute('aria-level') === '2')!
-      const hostRow = same.find((el) => el.getAttribute('aria-level') === '3')!
+      const svc = same.find((el) => el.getAttribute('aria-level') === '3')!
       expect(env).toHaveAccessibleDescription(/^Environment alpha(\. Region \S+)?$/)
-      expect(hostRow).toHaveAccessibleDescription(/^Host alpha\. Role /)
+      expect(svc).toHaveAccessibleDescription(/^App alpha\. On alpha/)
       expect(within(env).getByTitle('Environment alpha')).toBeInTheDocument()
-      expect(within(hostRow).getByTitle('Host alpha')).toBeInTheDocument()
-      expect(within(env).queryByTitle(/^Role: /)).not.toBeInTheDocument()
+      expect(within(svc).getByTitle('App alpha')).toBeInTheDocument()
+      expect(within(env).queryByTitle(/^(App|Database|Bastion)$/)).not.toBeInTheDocument()
     })
   })
 
@@ -1049,24 +1095,19 @@ describe('products page', () => {
     expect(screen.getAllByRole('treeitem', { name: 'web-1' })).toHaveLength(1)
     await user.click(chevron(prod))
     // No findBy: the row is there right after the click, with no height or transform animation.
-    const [inProd, inStaging] = screen.getAllByRole('treeitem', { name: 'web-1' })
+    const [inProd] = screen.getAllByRole('treeitem', { name: 'web-1' })
     expect(inProd.style.transform).toBe('')
     expect(inProd.style.height).toBe('')
-    fireEvent.mouseEnter(inProd)
-    expect(inStaging).toHaveAttribute('data-shared-highlight', 'true')
     for (const el of items()) expect(el).not.toHaveAttribute('data-pulse')
   })
 
-  it('motion-safe expand animates height and pulses shared rows', async () => {
+  it('motion-safe expand animates height', async () => {
     const user = userEvent.setup()
     renderPage(sharedWorld())
     const prod = await screen.findByRole('treeitem', { name: 'prod' })
     await user.click(chevron(prod))
     await user.click(chevron(prod))
-    const [inProd, inStaging] = screen.getAllByRole('treeitem', { name: 'web-1' })
+    const [inProd] = screen.getAllByRole('treeitem', { name: 'web-1' })
     expect(inProd.style.height).not.toBe('')
-    fireEvent.mouseEnter(inProd)
-    expect(inStaging).toHaveAttribute('data-shared-highlight', 'true')
-    expect(inStaging).toHaveAttribute('data-pulse', 'true')
   })
 })

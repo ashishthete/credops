@@ -32,11 +32,13 @@ async function setup() {
     }),
   )
   const worker = f.deploys.create(f.input({ name: 'worker', repoPath: '/srv/worker', deployTag: 'worker_staging' }))
+  // The fixture's placeholder app in staging would collide with prod's on copy; prod keeps its own.
+  f.db.prepare('DELETE FROM services WHERE environment_id = ?').run(f.staging.id)
   const esg = f.services.create({ kind: 'service', environmentId: f.staging.id, name: 'esg', deploymentId: webapp.id, url: 'https://esg.example', description: 'Front' })
   const api = f.services.create({ kind: 'service', environmentId: f.staging.id, name: 'api', deploymentId: webapp.id, composeService: 'fastapi-app', urlCheckFrom: 'host' })
   const jobs = f.services.create({ kind: 'service', environmentId: f.staging.id, name: 'jobs', deploymentId: worker.id })
-  const loose = f.services.create({ kind: 'service', environmentId: f.staging.id, name: 'docs', deploymentId: null })
-  const pg = f.services.create({ kind: 'db', environmentId: f.staging.id, name: 'main-db', dbEngine: 'postgres', dbAddress: '10.0.0.9', viaHostId: f.host.id, localPort: 15432 })
+  const loose = f.services.create({ kind: 'service', environmentId: f.staging.id, name: 'docs', deploymentId: null, hostId: f.host.id })
+  const pg = f.services.create({ kind: 'db', environmentId: f.staging.id, name: 'main-db', dbEngine: 'postgres', dbAddress: '10.0.0.9', hostId: f.host.id, localPort: 15432 })
   const tunnel = f.tunnels.create({ label: 'db', hostId: f.host.id, type: 'L', bindPort: 15432, targetHost: '10.0.0.9', targetPort: 5432 })
   f.services.setTunnel(pg.id, tunnel.id, 15432)
   f.services.recordDeployed([{ serviceId: esg.id, commit: 'abc1234', releaseId: null }])
@@ -48,7 +50,7 @@ async function setup() {
       { deploymentId: webapp.id, branch: 'release', repoPath: '/srv/prod/webapp', hostId: f.host.id, deployTag: 'webapp_prod' },
       { deploymentId: worker.id, branch: 'release', repoPath: '/srv/prod/worker', hostId: f.host.id, deployTag: 'worker_prod' },
     ],
-    dbs: [{ serviceId: pg.id, dbAddress: 'db.prod.internal', dbPort: 5433, viaHostId: null }],
+    dbs: [{ serviceId: pg.id, dbAddress: 'db.prod.internal', dbPort: 5433, hostId: f.host.id }],
     ...over,
   })
   const copy = (req: CopyServicesRequest) => copyServices({ db: f.db, deploys: f.deploys, services: f.services, audit: f.audit, vault: f.vault }, req)
@@ -102,7 +104,7 @@ describe('copyServices', () => {
     expect(byName.get('api')).toMatchObject({ deploymentId: webapp.id, composeService: 'fastapi-app', urlCheckFrom: 'host', position: f.api.position })
     expect(byName.get('jobs')).toMatchObject({ deploymentId: worker.id })
     expect(byName.get('docs')).toMatchObject({ deploymentId: null })
-    expect(byName.get('main-db')).toMatchObject({ kind: 'db', dbEngine: 'postgres', dbAddress: 'db.prod.internal', dbPort: 5433, viaHostId: null })
+    expect(byName.get('main-db')).toMatchObject({ kind: 'db', dbEngine: 'postgres', dbAddress: 'db.prod.internal', dbPort: 5433, hostId: f.host.id })
     expect(f.services.forCheckout(webapp.id).map((s) => s.name)).toEqual(['esg', 'api'])
     // The source is untouched.
     expect(f.deploys.list(f.staging.id)).toHaveLength(2)
@@ -132,7 +134,7 @@ describe('copyServices', () => {
   it('name conflicts are skipped and listed; nothing is overwritten', async () => {
     const f = await setup()
     const existing = f.deploys.create(f.input({ name: 'WebApp', environmentId: f.prod.id, repoPath: '/srv/keep', deployTag: 'keep' }))
-    const docs = f.services.create({ kind: 'service', environmentId: f.prod.id, name: 'DOCS', deploymentId: null, description: 'mine' })
+    const docs = f.services.create({ kind: 'service', environmentId: f.prod.id, name: 'DOCS', deploymentId: null, description: 'mine', hostId: f.host.id })
     const result = f.copy(f.request())
     expect(result.created).toEqual({ services: 2, checkouts: 1 })
     expect(result.skipped).toEqual([
@@ -143,7 +145,7 @@ describe('copyServices', () => {
     ])
     expect(f.deploys.get(existing.id)).toEqual(existing)
     expect(f.services.get(docs.id)).toEqual(docs)
-    expect(f.services.list(f.prod.id).map((s) => s.name).sort()).toEqual(['DOCS', 'jobs', 'main-db'])
+    expect(f.services.list(f.prod.id).map((s) => s.name).sort()).toEqual(['DOCS', 'app1', 'jobs', 'main-db'])
   })
 
   it('one transaction: a failure part way leaves the target unchanged', async () => {
@@ -154,7 +156,7 @@ describe('copyServices', () => {
     req.checkouts[0] = { ...req.checkouts[0], hostId: f.app2.id }
     expect(() => f.copy(req)).toThrow('repo path must be an absolute path without spaces or shell characters')
     expect(f.deploys.list(f.prod.id)).toEqual([])
-    expect(f.services.list(f.prod.id)).toEqual([])
+    expect(f.services.list(f.prod.id).map((s) => s.name)).toEqual(['app1'])
     expect(f.db.prepare('SELECT 1 FROM environment_hosts WHERE environment_id = ? AND host_id = ?').get(f.prod.id, f.app2.id)).toBeUndefined()
     expect(auditCount(f)).toBe(before)
   })

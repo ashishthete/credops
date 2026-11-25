@@ -259,7 +259,14 @@ describe('SessionManager', () => {
     })
     t.trust(srv)
     const { id } = t.manager.openSsh({ hostId: t.host(srv.port), ...size })
-    await vi.waitFor(() => expect(t.data(id).endsWith(chunk(19_999))).toBe(true), { timeout: 20_000, interval: 20 })
+    // Ack as a window drawing it would, or flow control holds the rest back.
+    await vi.waitFor(
+      () => {
+        t.manager.ack(id, Number.MAX_SAFE_INTEGER)
+        expect(t.data(id).endsWith(chunk(19_999))).toBe(true)
+      },
+      { timeout: 20_000, interval: 20 },
+    )
     expect(t.dataEvents(id)).toBeLessThan(400)
     const { buffer } = t.manager.attach(id)
     expect(buffer.length).toBeLessThanOrEqual(SCROLLBACK_CHARS)

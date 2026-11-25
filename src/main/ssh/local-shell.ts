@@ -36,6 +36,8 @@ export function spawnLocalShell(opts: LocalShellOptions, load: () => NodePty = (
       onData: (cb) => void term.onData(cb),
       onExit: (cb) => void term.onExit(({ exitCode }) => cb({ code: exitCode })),
       kill: () => term.kill(),
+      pause: () => term.pause(),
+      resume: () => term.resume(),
     }
   } catch (err) {
     throw new Error(`The local shell isn't available: ${err instanceof Error ? err.message : String(err)}`)

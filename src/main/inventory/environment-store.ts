@@ -1,3 +1,4 @@
+import { ensureHostService, removeHostServices } from '../deploy/host-service'
 import { randomUUID } from 'node:crypto'
 import {
   HOST_ROLES,
@@ -115,18 +116,15 @@ export class EnvironmentStore {
     return { name, fields }
   }
 
-  /** putHost() without the transaction, the unlock check or the audit; false when the host already has that role. */
+  /**
+   * putHost() without the transaction, the unlock check or the audit. A host is in an environment by running a service
+   * there, so a new host gets a placeholder service typed from `role`. A host already in it keeps its services (false).
+   */
   putHostInTx(id: string, hostId: string, role: HostRole): boolean {
     if (!(HOST_ROLES as readonly string[]).includes(role)) throw new Error('host role is not allowed')
-    const before = environmentMeta(this.db, id)
+    environmentMeta(this.db, id)
     hostRow(this.db, hostId)
-    if (before.hosts.find((h) => h.hostId === hostId)?.role === role) return false
-    this.db
-      .prepare(
-        `INSERT INTO environment_hosts(environment_id, host_id, role) VALUES (?,?,?)
-          ON CONFLICT(environment_id, host_id) DO UPDATE SET role = excluded.role`,
-      )
-      .run(id, hostId, role)
+    if (!ensureHostService(this.db, id, hostId, role)) return false
     this.db.prepare('UPDATE environments SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), id)
     return true
   }
@@ -173,41 +171,32 @@ export class EnvironmentStore {
     return environmentMeta(this.db, id)
   }
 
-  /** Adds the host or changes its role; the same role again is a no-op. */
+  /** Adds the host with a placeholder service typed from `role`; a host already in the environment is a no-op. */
   putHost(id: string, hostId: string, role: HostRole): EnvironmentMeta {
     this.vault.assertUnlocked()
     if (!(HOST_ROLES as readonly string[]).includes(role)) throw new Error('host role is not allowed')
     const before = environmentMeta(this.db, id)
     hostRow(this.db, hostId)
-    const current = before.hosts.find((h) => h.hostId === hostId)
-    if (current?.role === role) return before
-    inTransaction(this.db, () => {
-      this.db
-        .prepare(
-          `INSERT INTO environment_hosts(environment_id, host_id, role) VALUES (?,?,?)
-            ON CONFLICT(environment_id, host_id) DO UPDATE SET role = excluded.role`,
-        )
-        .run(id, hostId, role)
-      this.db.prepare('UPDATE environments SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), id)
-    })
+    if (before.hosts.some((h) => h.hostId === hostId)) return before
+    inTransaction(this.db, () => this.putHostInTx(id, hostId, role))
     this.audit.append({
       action: 'environment.host',
       outcome: 'success',
       targetType: 'environment',
       targetId: id,
       targetLabel: before.name,
-      details: current ? { op: 'role', hostId, role, from: current.role } : { op: 'add', hostId, role },
+      details: { op: 'add', hostId, role },
     })
     return environmentMeta(this.db, id)
   }
 
-  /** Takes the host out; its tunnels in this environment fall back to host-only. */
+  /** Takes the host out by deleting the services it runs here; its tunnels in this environment fall back to host-only. */
   removeHost(id: string, hostId: string): EnvironmentMeta {
     this.vault.assertUnlocked()
     const before = environmentMeta(this.db, id)
     if (!before.hosts.some((h) => h.hostId === hostId)) throw new Error('host is not in this environment')
     inTransaction(this.db, () => {
-      this.db.prepare('DELETE FROM environment_hosts WHERE environment_id = ? AND host_id = ?').run(id, hostId)
+      removeHostServices(this.db, id, hostId)
       // The host's tunnels leave the environment with it, as the FK's SET NULL does when it is deleted.
       this.db.prepare('UPDATE tunnels SET environment_id = NULL WHERE host_id = ? AND environment_id = ?').run(hostId, id)
       this.db.prepare('UPDATE environments SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), id)

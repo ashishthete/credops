@@ -1,12 +1,13 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { ChevronDown, ChevronUp, Search, X } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { ChevronDown, ChevronUp, Copy, Eraser, RotateCcw, Search, TextSelect, X } from 'lucide-react'
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { api } from '../lib/api'
-import { ConfirmDialog, type ConfirmRequest } from '../ui/common'
+import { ConfirmDialog, ContextMenu, type ConfirmRequest, type ContextMenuAt } from '../ui/common'
+import { toast } from '../ui/Toaster'
 import { exitFast, fast, spring, useMotionSafe } from '../ui/motion'
 import { isMac, useShortcut } from '../ui/shortcuts'
 import { cursorLine, inFullScreenApp, isDestructive, LineTracker } from './inputGuard'
-import { attachSession, getTerminal, setLastSize } from './registry'
+import { attachSession, enableGpuRenderer, getTerminal, setLastSize } from './registry'
 
 const CHUNK_CHARS = 32 * 1024
 const RESIZE_DEBOUNCE_MS = 50
@@ -73,6 +74,8 @@ export function TerminalView({ sessionId, visible, copyOnSelect = false, protect
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   // Input from the held Enter on, while the destructive confirmation is open; dropped on cancel.
   const held = useRef<string | null>(null)
+  // The right-click menu, with the selection as it was when it opened.
+  const [menu, setMenu] = useState<(ContextMenuAt & { selection: string }) | null>(null)
 
   if (visible && !opened) setOpened(true)
 
@@ -83,6 +86,7 @@ export function TerminalView({ sessionId, visible, copyOnSelect = false, protect
     const { term, fit } = getTerminal(sessionId)
     if (term.element) el.appendChild(term.element)
     else term.open(el)
+    enableGpuRenderer(sessionId)
     void attachSession(sessionId)
 
     let lastSent = ''
@@ -212,6 +216,20 @@ export function TerminalView({ sessionId, visible, copyOnSelect = false, protect
     term.focus()
   }
 
+  const copySelection = (text: string) => {
+    void navigator.clipboard
+      ?.writeText(text)
+      .then(() => toast({ title: 'Copied', tone: 'success' }))
+      .catch(() => {})
+    getTerminal(sessionId).term.focus()
+  }
+
+  const onContextMenu = (e: ReactMouseEvent) => {
+    e.preventDefault()
+    // Right-click on macOS selects the word under it first, as in Terminal; that selection is what Copy takes.
+    setMenu({ x: e.clientX, y: e.clientY, selection: getTerminal(sessionId).term.getSelection() })
+  }
+
   const find = (backwards: boolean, incremental = false) => {
     if (!query && !incremental) return
     const { search } = getTerminal(sessionId)
@@ -222,7 +240,45 @@ export function TerminalView({ sessionId, visible, copyOnSelect = false, protect
   return (
     <div className={`relative size-full ${visible ? '' : 'hidden'}`} data-testid={`terminal-${sessionId}`}>
       {visible && <SearchShortcut onFire={openSearch} />}
-      <div ref={host} className="size-full overflow-hidden bg-canvas p-2" />
+      <div ref={host} onContextMenu={onContextMenu} className="size-full overflow-hidden bg-canvas p-2" />
+      <ContextMenu
+        at={menu}
+        label="Terminal"
+        onClose={() => setMenu(null)}
+        items={[
+          { label: 'Copy', icon: Copy, disabled: !menu?.selection, run: () => menu?.selection && copySelection(menu.selection) },
+          {
+            label: 'Select all',
+            icon: TextSelect,
+            run: () => {
+              const { term } = getTerminal(sessionId)
+              term.selectAll()
+              term.focus()
+            },
+          },
+          { label: 'Find…', icon: Search, run: openSearch },
+          {
+            // Scrollback goes; the line with the cursor stays.
+            label: 'Clear',
+            icon: Eraser,
+            run: () => {
+              const { term } = getTerminal(sessionId)
+              term.clear()
+              term.focus()
+            },
+          },
+          {
+            // For a screen left garbled by a program's output (cursor moves, colours, a stuck mode); the shell is untouched.
+            label: 'Reset terminal',
+            icon: RotateCcw,
+            run: () => {
+              const { term } = getTerminal(sessionId)
+              term.reset()
+              term.focus()
+            },
+          },
+        ]}
+      />
       <AnimatePresence>
         {searching && visible && (
           <motion.div

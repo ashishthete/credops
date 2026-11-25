@@ -10,6 +10,17 @@ export const SCROLLBACK_CHARS = 1_048_576 // ring buffer per session, trimmed fr
 export const FLUSH_MS = 16
 export const FLUSH_CHARS = 65_536
 export const MAX_WRITE_CHARS = 65_536 // per session:write
+/**
+ * Output flow control, as in VS Code's terminal: main stops reading a session's output once the window
+ * is this far behind drawing it, and reads again when it has caught up to FLOW_LOW_CHARS. A flood of
+ * output then slows the remote program instead of freezing the window.
+ */
+export const FLOW_HIGH_CHARS = 262_144
+export const FLOW_LOW_CHARS = 32_768
+/** The renderer acknowledges drawn output in batches of at least this many chars. */
+export const FLOW_ACK_CHARS = 16_384
+/** A paused session reads again if the window acknowledges nothing for this long (reloaded, closed). */
+export const FLOW_STALL_MS = 5_000
 export const MAX_COLS = 1000
 export const MAX_ROWS = 500
 export const MAX_KNOWN_HOSTS_BYTES = 4 * 1024 * 1024

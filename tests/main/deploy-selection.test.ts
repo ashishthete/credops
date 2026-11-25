@@ -50,6 +50,7 @@ const app = (id: string, deploymentId: string | null, position: number, over: Pa
   createdAt: '',
   updatedAt: '',
   kind: 'service',
+  hostId: 'h1',
   skipUnchanged: false,
   deploymentId,
   composeService: id,
@@ -72,7 +73,7 @@ const db = (id: string, position: number): DbServiceMeta => ({
   dbEngine: 'postgres',
   dbAddress: '10.0.0.5',
   dbPort: 5432,
-  viaHostId: null,
+  hostId: 'h1',
   localPort: null,
   tunnelId: null,
 })

@@ -235,6 +235,8 @@ export interface ConfigAppService {
   kind: 'service'
   position: number
   description: string
+  /** Absent in files from before services ran on hosts: the checkout's host, else one in the environment. */
+  hostId?: string
   deploymentId: string | null
   composeService: string
   url: string | null
@@ -248,14 +250,26 @@ export interface ConfigDbService {
   kind: 'db'
   position: number
   description: string
+  /** The host the database lives on. Older files only carry `viaHostId`. */
+  hostId?: string
   dbEngine: DbEngine
   dbAddress: string
   dbPort: number
+  /** Written equal to `hostId` for older readers. */
   viaHostId: string | null
   localPort: number | null
   tunnelId: string | null
 }
-export type ConfigService = ConfigAppService | ConfigDbService
+export interface ConfigBastionService {
+  id: string
+  environmentId: string
+  name: string
+  kind: 'bastion'
+  position: number
+  description: string
+  hostId: string
+}
+export type ConfigService = ConfigAppService | ConfigDbService | ConfigBastionService
 
 export interface ConfigFile {
   format: typeof CONFIG_FORMAT
@@ -673,8 +687,9 @@ const serviceCommon = {
 const appService = object({
   ...serviceCommon,
   kind: oneOf(['service'] as const),
+  hostId: optional(uuid),
   deploymentId: nullableId,
-  composeService: str({ min: 1, max: MAX_COMPOSE_NAME, pattern: COMPOSE_SERVICE }),
+  composeService: str({ max: MAX_COMPOSE_NAME, ok: (s) => s === '' || COMPOSE_SERVICE.test(s) }),
   url: nullable(httpUrl(MAX_URL)),
   urlCheckFrom: oneOf(['mac', 'host'] as const),
   skipUnchanged: optional(bool),
@@ -682,6 +697,7 @@ const appService = object({
 const dbService = object({
   ...serviceCommon,
   kind: oneOf(['db'] as const),
+  hostId: optional(uuid),
   dbEngine: oneOf(['postgres', 'mysql', 'mongodb', 'redis', 'other'] as const),
   dbAddress: address,
   dbPort: port,
@@ -689,10 +705,16 @@ const dbService = object({
   localPort: nullable(port),
   tunnelId: nullableId,
 }) as Check<ConfigDbService>
+const bastionService = object({
+  ...serviceCommon,
+  kind: oneOf(['bastion'] as const),
+  hostId: uuid,
+}) as Check<ConfigBastionService>
 const service: Check<ConfigService> = (value, path, errs) => {
   const kind = typeof value === 'object' && value !== null ? (value as { kind?: unknown }).kind : undefined
   if (kind === 'service') return appService(value, path, errs)
   if (kind === 'db') return dbService(value, path, errs)
+  if (kind === 'bastion') return bastionService(value, path, errs)
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return fail(errs, path, 'must be an object')
   return fail(errs, `${path}.kind`, 'is not an allowed value')
 }
@@ -841,9 +863,11 @@ function checkReferences(file: ConfigFile, errs: string[]): void {
   file.services.forEach((s, i) => {
     const p = `$.services[${i}]`
     ref(envs, 'an environment', s.environmentId, `${p}.environmentId`)
+    if (s.hostId !== undefined) ref(hosts, 'a host', s.hostId, `${p}.hostId`)
     if (s.kind === 'service') {
       ref(deployments, 'a checkout', s.deploymentId, `${p}.deploymentId`)
-    } else {
+      if (s.deploymentId !== null && s.composeService === '') fail(errs, `${p}.composeService`, 'is required with a checkout')
+    } else if (s.kind === 'db') {
       ref(hosts, 'a host', s.viaHostId, `${p}.viaHostId`)
       ref(tunnels, 'a tunnel', s.tunnelId, `${p}.tunnelId`)
     }

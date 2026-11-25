@@ -728,6 +728,9 @@ if (!app.requestSingleInstanceLock()) {
       powerMonitor.on('lock-screen', () => vault?.lock('screen'))
       powerMonitor.on('suspend', () => vault?.lock('suspend'))
       powerMonitor.on('shutdown', () => vault?.lock('quit'))
+      // Timers stall while the Mac sleeps: a tunnel whose time limit passed meanwhile stops on wake.
+      powerMonitor.on('resume', () => tunnelManager?.checkExpiry())
+      powerMonitor.on('unlock-screen', () => tunnelManager?.checkExpiry())
       const rendererFile = join(__dirname, '../renderer/index.html')
       const hubHandlers = createHubHandlers({ conn: hub, vault: service, gate: ssoGate, audit: log, catalog: hubCatalog, publisher: hubPublisher, onLocksChanged: () => pushEvent(mainWindow, 'hub:locks', {}) })
       registerHandlers(

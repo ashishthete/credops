@@ -66,21 +66,23 @@ describe('DeployStore', () => {
     expect(f.deploys.list()).toEqual([])
   })
 
-  it('a checkout on a non-member host adds it as an app host', async () => {
+  it('a checkout on a non-member host adds it with a placeholder app service', async () => {
     const f = await makeDeployFixture()
     const other = f.hosts.create({ regionId: REGION, label: 'lonely', address: '10.0.0.8' })
     const role = (hostId: string) =>
       (f.db.prepare('SELECT role FROM environment_hosts WHERE environment_id = ? AND host_id = ?').get(f.staging.id, hostId) as { role: string } | undefined)?.role
+    const onHost = (hostId: string) => f.services.list(f.staging.id).filter((s) => s.hostId === hostId)
     expect(role(other.id)).toBeUndefined()
     const d = f.deploys.create(f.input({ hostId: other.id }))
     expect(d.hostId).toBe(other.id)
     expect(role(other.id)).toBe('app')
-    // An existing membership keeps its role.
-    f.envs.putHost(f.staging.id, f.host.id, 'db')
+    expect(onHost(other.id)).toMatchObject([{ kind: 'service', name: 'lonely', deploymentId: null }])
+    // A host that already runs a service here gets no second one.
+    const before = onHost(f.host.id).length
     f.deploys.create(f.input({ name: 'worker' }))
-    expect(role(f.host.id)).toBe('db')
+    expect(onHost(f.host.id)).toHaveLength(before)
     // Removed after the checkout was saved: an update puts it back.
-    f.db.prepare('DELETE FROM environment_hosts WHERE environment_id = ? AND host_id = ?').run(f.staging.id, other.id)
+    f.envs.removeHost(f.staging.id, other.id)
     f.deploys.update(d.id, { name: 'api2' })
     expect(role(other.id)).toBe('app')
     // A failed save adds nothing.

@@ -284,6 +284,7 @@ export function appService(over: Partial<AppServiceMeta> & { id: string; name: s
   return {
     kind: 'service',
     environmentId: 'e1',
+    hostId: 'h1',
     position: 0,
     description: '',
     deploymentId: 'd1',
@@ -303,12 +304,12 @@ export function dbService(over: Partial<DbServiceMeta> & { id: string; name: str
   return {
     kind: 'db',
     environmentId: 'e1',
+    hostId: 'h1',
     position: 0,
     description: '',
     dbEngine: 'postgres',
     dbAddress: '10.0.0.5',
     dbPort: 5432,
-    viaHostId: null,
     localPort: null,
     tunnelId: null,
     createdAt: STAMP,

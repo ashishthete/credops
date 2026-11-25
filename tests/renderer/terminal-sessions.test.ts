@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act } from '@testing-library/react'
-import type { SessionMeta, SessionPrompt } from '../../src/shared/ssh'
+import { FLOW_ACK_CHARS, type SessionMeta, type SessionPrompt } from '../../src/shared/ssh'
 import { attachSession, disposeAll, disposeTerminal, getTerminal, TERMINAL_FONT, writeData } from '../../src/renderer/src/terminal/registry'
 import {
   closeSession,
@@ -118,8 +118,25 @@ describe('session store', () => {
     await attachSession('a')
     act(() => emitBridgeEvent('session:data', { id: 'a', data: 'hello', end: 5 }))
     expect(listener).not.toHaveBeenCalled()
-    expect(fake.terms[0].write).toHaveBeenCalledWith('hello')
+    expect(fake.terms[0].write).toHaveBeenCalledWith('hello', expect.any(Function))
     off()
+    stop()
+  })
+
+  it('acknowledges output to main once xterm has drawn it, in batches', async () => {
+    const invoke = mockBridge({ 'session:attach': { meta: meta('a'), buffer: '', end: 0 } })
+    getTerminal('a')
+    const stop = startSessionSync()
+    await attachSession('a')
+    const term = fake.terms[0]
+    const big = 'x'.repeat(FLOW_ACK_CHARS)
+    act(() => emitBridgeEvent('session:data', { id: 'a', data: 'small', end: 5 }))
+    act(() => emitBridgeEvent('session:data', { id: 'a', data: big, end: 5 + big.length }))
+    expect(invoke).not.toHaveBeenCalledWith('session:ack', 'a', expect.anything())
+    term.write.mock.calls[0][1]() // 'small' drawn: below the batch size, held
+    expect(invoke).not.toHaveBeenCalledWith('session:ack', 'a', expect.anything())
+    term.write.mock.calls[1][1]()
+    expect(invoke).toHaveBeenCalledWith('session:ack', 'a', 5 + big.length)
     stop()
   })
 

@@ -1,3 +1,4 @@
+import { ensureHostService } from './host-service'
 import { randomUUID } from 'node:crypto'
 import {
   BACKUP_DIR,
@@ -543,11 +544,11 @@ export class DeployStore {
     return { environment: this.envName(environmentId) }
   }
 
-  /** A checkout's host joins its environment as an `app` host when it isn't a member yet; a member keeps its role. */
+  /** A checkout's host joins its environment with a placeholder app service when it runs nothing there yet. */
   private ensureMembership(environmentId: string, hostId: string): void {
     if (!this.db.prepare('SELECT 1 FROM hosts WHERE id = ?').get(hostId)) throw new Error('host not found')
     if (!this.db.prepare('SELECT 1 FROM environments WHERE id = ?').get(environmentId)) throw new Error('environment not found')
-    this.db.prepare("INSERT OR IGNORE INTO environment_hosts(environment_id, host_id, role) VALUES (?, ?, 'app')").run(environmentId, hostId)
+    ensureHostService(this.db, environmentId, hostId, 'app')
   }
 
   /**

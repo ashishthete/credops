@@ -28,7 +28,7 @@ import { ResizablePanel } from '../../ui/ResizablePanel'
 
 const ROLE_ICON: Record<HostRole, LucideIcon> = { bastion: ShieldHalf, app: Server, db: Database, other: CircleDashed }
 
-/** The role a host shows in the list: its most significant one across environments. */
+/** The type a host shows in the list: the most significant service it runs (bastion, then app, then database). */
 const primaryRole = (h: HostMeta): HostRole | null =>
   ROLE_ORDER.find((r) => h.environments.some((m) => m.role === r)) ?? null
 
@@ -622,7 +622,7 @@ function HostRow({ host, envs, index, stagger, selection, onSelect, onConnect: c
           <span className="absolute inset-0 rounded-lg bg-accent/10 shadow-[inset_2px_0_0_0_var(--accent)]" />
         ))}
       <span
-        title={role ? ROLE_LABEL[role] : 'In no environment'}
+        title={role ? `Runs ${ROLE_LABEL[role] === 'App' ? 'an app' : `a ${ROLE_LABEL[role].toLowerCase()}`}` : 'No services'}
         className={`relative mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg bg-white/[0.05] ${role ? 'text-fg/80' : 'text-muted/60'}`}
       >
         <RoleIcon aria-hidden className="size-3.5" />

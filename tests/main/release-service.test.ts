@@ -1320,7 +1320,7 @@ describe('service selection', () => {
 
   it('the schema refuses a db service on a checkout, so a whole checkout never holds one', async () => {
     const { r, shop, web, worker } = await shopRig()
-    const pg = r.f.services.create({ kind: 'db', environmentId: r.f.staging.id, name: 'pg', dbEngine: 'postgres', dbAddress: '10.0.0.5' })
+    const pg = r.f.services.create({ kind: 'db', environmentId: r.f.staging.id, name: 'pg', dbEngine: 'postgres', dbAddress: '10.0.0.5', hostId: r.f.host.id })
     expect(() => r.f.db.prepare('UPDATE services SET deployment_id = ? WHERE id = ?').run(shop.id, pg.id)).toThrow(/CHECK/)
     await ready(r, [], { serviceIds: [web.id, worker.id] })
     const pf = r.runner.call('preflight').deployments

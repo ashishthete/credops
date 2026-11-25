@@ -10,6 +10,7 @@ import type {
 } from '../../../shared/deploy'
 import type { ServiceInput, ServiceMeta, ServicePatch, ServiceUpdateResult } from '../../../shared/services'
 import { api } from '../lib/api'
+import { reloadInventory } from '../inventory/store'
 import { loadTunnels } from '../tunnels/store'
 import { attempt, fail } from '../ui/common'
 import { createStore } from '../ui/store'
@@ -246,13 +247,20 @@ export const markRouteChanged = (id: string): void => setRouteChanged(id, true)
 
 export async function createService(input: ServiceInput, onError?: OnError): Promise<ServiceMeta | undefined> {
   const meta = await attempt("Couldn't create the service", () => api.invoke('service:create', input), onError)
-  if (meta) putService(meta)
+  if (meta) {
+    putService(meta)
+    // A service on a host that wasn't in the environment puts it there.
+    void reloadInventory()
+  }
   return meta
 }
 
 export async function updateService(id: string, patch: ServicePatch, onError?: OnError): Promise<ServiceUpdateResult | undefined> {
   const out = await attempt("Couldn't save the service", () => api.invoke('service:update', id, patch), onError)
-  if (out) putService(out.service)
+  if (out) {
+    putService(out.service)
+    void reloadInventory()
+  }
   return out
 }
 
@@ -266,6 +274,8 @@ export async function deleteService(id: string, deleteTunnel: boolean): Promise<
   const s = deployStore.get()
   const { [id]: _gone, ...routeChanged } = s.routeChanged
   deployStore.set({ ...s, services: s.services.filter((x) => x.id !== id), routeChanged })
+  // Its host leaves the environment when this was its last service there.
+  void reloadInventory()
   if (deleteTunnel) void loadTunnels()
   return true
 }

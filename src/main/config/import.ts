@@ -267,8 +267,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
   const reloaded = new Set<string>()
   const touchOnly = (envId: string) => reloaded.add(envId)
   /**
-   * The environments that depend on a host: those it is linked to, whose default jump it is, whose services reach
-   * through it, or whose checkouts or tunnels run on it; and, through `jump_host_id`, those of every host that jumps
+   * The environments that depend on a host: those it runs services in, whose default jump it is, or whose checkouts or tunnels run on it; and, through `jump_host_id`, those of every host that jumps
    * through it.
    */
   const protectedDependents = (hostId: string, seen = new Set<string>()): Set<string> => {
@@ -278,7 +277,6 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
     for (const sql of [
       'SELECT environment_id AS id FROM environment_hosts WHERE host_id = ?',
       'SELECT id FROM environments WHERE default_jump_host_id = ?',
-      'SELECT environment_id AS id FROM services WHERE via_host_id = ?',
       'SELECT environment_id AS id FROM deployments WHERE host_id = ?',
       'SELECT environment_id AS id FROM tunnels WHERE host_id = ? AND environment_id IS NOT NULL',
     ]) {
@@ -298,6 +296,10 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
   const HOST_REACH = ['address', 'port', 'identityId', 'jumpHostId']
   const IDENTITY_REACH = ['username', 'auth', 'sshKeyId']
   const reaches = (fields: string[], which: string[]) => fields.some((f) => which.includes(f))
+
+  // The services here before the import: anything else not from the file is a placeholder this import made.
+  const servicesBefore = new Set(ids('SELECT id FROM services'))
+  const placeholdersGone = new Set<string>()
 
   // ---- regions: matched by id, then by code ----
   for (const x of file.regions) {
@@ -779,6 +781,27 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
   }
 
   // ---- services ----
+  // A file from before services ran on hosts names no host: the checkout's, the via host, else one already in the
+  // environment (a database prefers the one at its address, then a db host).
+  const envHosts = (environmentId: string): { host_id: string; role: string; address: string }[] =>
+    db
+      .prepare(
+        'SELECT eh.host_id, eh.role, h.address FROM environment_hosts eh JOIN hosts h ON h.id = eh.host_id WHERE eh.environment_id = ? ORDER BY h.label',
+      )
+      .all(environmentId) as { host_id: string; role: string; address: string }[]
+  const pickHost = (environmentId: string, prefer: string[], address?: string): string | null => {
+    const hs = envHosts(environmentId)
+    if (address !== undefined) {
+      const at = hs.find((h) => h.address.toLowerCase() === address.toLowerCase())
+      if (at) return at.host_id
+    }
+    for (const role of prefer) {
+      const h = hs.find((x) => x.role === role)
+      if (h) return h.host_id
+    }
+    return hs[0]?.host_id ?? null
+  }
+  const NO_HOST = 'needs a host in its environment'
   for (const x of file.services) {
     setAt(`Service ${x.name}`)
     const environmentId = map.environments.get(x.environmentId) ?? null
@@ -793,11 +816,40 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
       item('services', x.id, x.name, 'skip', { reason: "can't move to another environment" })
       continue
     }
-    const local = byId ? x.id : (ids('SELECT id FROM services WHERE environment_id = ? AND name = ? COLLATE NOCASE', environmentId, x.name)[0] ?? null)
+    let local: string | null = byId ? x.id : (ids('SELECT id FROM services WHERE environment_id = ? AND name = ? COLLATE NOCASE', environmentId, x.name)[0] ?? null)
+    // A name match on a placeholder this import just made for the environment's hosts is not a service from before:
+    // when the file says which host runs this service, the placeholder gives way and the service keeps its own id.
+    if (local !== null && !byId && !servicesBefore.has(local) && x.hostId !== undefined && map.hosts.get(x.hostId)) {
+      db.prepare('DELETE FROM services WHERE id = ?').run(local)
+      local = null
+    }
     const before = local === null ? null : s.services.get(local)
     if (before && before.kind !== x.kind) {
       map.services.set(x.id, null)
       item('services', before.id, x.name, 'skip', { reason: 'is a different kind here' })
+      continue
+    }
+    const fileHost = x.hostId === undefined ? undefined : (map.hosts.get(x.hostId) ?? undefined)
+    if (x.kind === 'bastion') {
+      const hostId = fileHost ?? (before ? undefined : null)
+      if (hostId === null) {
+        map.services.set(x.id, null)
+        item('services', x.id, x.name, 'skip', { reason: NO_HOST })
+        continue
+      }
+      const f = { name: x.name, description: x.description }
+      if (before === null) {
+        s.services.insertInTx({ ...f, kind: 'bastion', environmentId, hostId: hostId! }, x.position, x.id)
+        map.services.set(x.id, x.id)
+        touch(environmentId)
+        done('services', x.id, x.name, true, [])
+        continue
+      }
+      map.services.set(x.id, before.id)
+      const fields = s.services.updateInTx(before.id, { ...f, ...(hostId ? { hostId } : {}) })
+      if (s.services.setPositionInTx(before.id, x.position)) fields.push('position')
+      if (fields.length > 0) touch(environmentId)
+      done('services', before.id, x.name, false, fields)
       continue
     }
     if (x.kind === 'service') {
@@ -811,24 +863,43 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
         skipUnchanged: x.skipUnchanged,
       }
       if (before === null) {
-        s.services.insertInTx({ ...f, kind: 'service', environmentId, deploymentId: deploymentId ?? null }, x.position, x.id)
+        // With a checkout the store puts the app on the checkout's host.
+        const hostId = deploymentId ? fileHost : (fileHost ?? pickHost(environmentId, ['app']))
+        if (!deploymentId && !hostId) {
+          map.services.set(x.id, null)
+          item('services', x.id, x.name, 'skip', { reason: NO_HOST })
+          continue
+        }
+        s.services.insertInTx(
+          { ...f, kind: 'service', environmentId, deploymentId: deploymentId ?? null, ...(hostId ? { hostId } : {}) },
+          x.position,
+          x.id,
+        )
         map.services.set(x.id, x.id)
         touch(environmentId)
         done('services', x.id, x.name, true, [])
         continue
       }
       map.services.set(x.id, before.id)
-      const fields = s.services.updateInTx(before.id, { ...f, deploymentId })
+      const fields = s.services.updateInTx(before.id, { ...f, deploymentId, ...(fileHost && !deploymentId ? { hostId: fileHost } : {}) })
       if (s.services.setPositionInTx(before.id, x.position)) fields.push('position')
       if (fields.length > 0) touch(environmentId)
       done('services', before.id, x.name, false, fields)
       continue
     }
-    const viaHostId = ref(map.hosts, x.viaHostId) ?? null
+    const hostId =
+      fileHost ??
+      (ref(map.hosts, x.viaHostId) || undefined) ??
+      (before ? undefined : pickHost(environmentId, ['db', 'app'], x.dbAddress))
+    if (hostId === null) {
+      map.services.set(x.id, null)
+      item('services', x.id, x.name, 'skip', { reason: NO_HOST })
+      continue
+    }
     const tunnelId = ref(map.tunnels, x.tunnelId)
-    const f = { name: x.name, description: x.description, dbEngine: x.dbEngine, dbAddress: x.dbAddress, dbPort: x.dbPort, viaHostId, localPort: x.localPort }
+    const f = { name: x.name, description: x.description, dbEngine: x.dbEngine, dbAddress: x.dbAddress, dbPort: x.dbPort, localPort: x.localPort }
     if (before === null) {
-      s.services.insertInTx({ ...f, kind: 'db', environmentId }, x.position, x.id)
+      s.services.insertInTx({ ...f, kind: 'db', environmentId, hostId: hostId! }, x.position, x.id)
       map.services.set(x.id, x.id)
       if (tunnelId) s.services.setTunnelInTx(x.id, tunnelId, x.localPort)
       touch(environmentId)
@@ -836,12 +907,25 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
       continue
     }
     map.services.set(x.id, before.id)
-    const fields = s.services.updateInTx(before.id, f)
+    const fields = s.services.updateInTx(before.id, { ...f, ...(hostId ? { hostId } : {}) })
     if (s.services.setPositionInTx(before.id, x.position)) fields.push('position')
     const keepTunnel = tunnelId === undefined && before.kind === 'db' ? before.tunnelId : (tunnelId ?? null)
     if (s.services.setTunnelInTx(before.id, keepTunnel, x.localPort)) fields.push('tunnelId')
     if (fields.length > 0) touch(environmentId)
     done('services', before.id, x.name, false, fields)
+  }
+  // Placeholders this import made for an environment's hosts or a checkout's host go once that host runs a service
+  // from the file in the same environment.
+  const imported = new Set([...map.services.values()].filter((v): v is string => v !== null))
+  for (const r of db.prepare('SELECT id, environment_id, host_id FROM services').all() as { id: string; environment_id: string; host_id: string }[]) {
+    if (servicesBefore.has(r.id) || imported.has(r.id)) continue
+    const other = db
+      .prepare('SELECT 1 FROM services WHERE environment_id = ? AND host_id = ? AND id != ? AND id NOT IN (SELECT value FROM json_each(?))')
+      .get(r.environment_id, r.host_id, r.id, JSON.stringify([...placeholdersGone]))
+    if (other) {
+      db.prepare('DELETE FROM services WHERE id = ?').run(r.id)
+      placeholdersGone.add(r.id)
+    }
   }
 
   // ---- checkouts' steps ----
