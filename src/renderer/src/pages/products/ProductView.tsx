@@ -118,7 +118,7 @@ function EnvironmentCard({
       initial={stagger ? (motionSafe ? { opacity: 0, y: 8 } : { opacity: 0 }) : false}
       animate={{ opacity: 1, y: 0 }}
       transition={motionSafe ? { ...spring, delay: staggerDelay(index) } : { ...fast, delay: staggerDelay(index) }}
-      className="relative"
+      className="relative flex"
     >
       <motion.button
         type="button"
@@ -126,7 +126,7 @@ function EnvironmentCard({
         whileHover={motionSafe ? { y: -2 } : undefined}
         whileTap={motionSafe ? { scale: 0.985 } : undefined}
         transition={spring}
-        className="group relative flex w-full flex-col gap-3 overflow-hidden rounded-xl border border-line bg-surface/60 p-4 pl-5 text-left transition-[border-color,background-color] hover:border-muted/30 hover:bg-surface"
+        className="group relative flex h-full w-full flex-col gap-3 overflow-hidden rounded-xl border border-line bg-surface/60 p-4 pl-5 text-left transition-[border-color,background-color] hover:border-muted/30 hover:bg-surface"
       >
         <span aria-hidden className="absolute inset-y-0 left-0 w-[3px]" style={{ background: env.color, boxShadow: `0 0 14px ${env.color}` }} />
         <span className="flex items-center gap-2">
@@ -138,15 +138,19 @@ function EnvironmentCard({
             </Badge>
           )}
         </span>
-        <span className="flex flex-wrap items-center gap-1.5 text-[12px] text-muted">
+        <span className="flex flex-col gap-1.5 text-[12px] text-muted">
           <span className="text-fg/85 tabular-nums">
             {plural(mine.length, 'service')} on {plural(env.hosts.length, 'host')}
           </span>
-          {counts.map(({ kind, n }) => (
-            <span key={kind} className="rounded-full bg-white/[0.05] px-1.5 leading-[18px] tabular-nums">
-              {SERVICE_KIND_LABEL[kind]} {n}
+          {counts.length > 0 && (
+            <span className="flex flex-wrap items-center gap-1.5">
+              {counts.map(({ kind, n }) => (
+                <span key={kind} className="rounded-full bg-white/[0.05] px-1.5 leading-[18px] tabular-nums">
+                  {SERVICE_KIND_LABEL[kind]} {n}
+                </span>
+              ))}
             </span>
-          ))}
+          )}
         </span>
       </motion.button>
     </motion.li>
