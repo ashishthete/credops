@@ -338,7 +338,7 @@ export function ServiceDialog({ env, service, copyOf, kind: initialKind, hostId:
               Cancel
             </Button>
             <Button form={formId} type="submit" loading={busy} disabled={!valid}>
-              {service ? 'Save' : `Add ${noun}`}
+              {service ? 'Save' : 'Add service'}
             </Button>
           </>
         }

@@ -249,7 +249,7 @@ describe('services section', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Add service' })
     expect(within(dialog).getByRole('radio', { name: 'App' })).toBeChecked()
     await user.click(within(dialog).getByRole('radio', { name: 'Database' }))
-    expect(within(dialog).getByRole('button', { name: 'Add database' })).toBeDisabled()
+    expect(within(dialog).getByRole('button', { name: 'Add service' })).toBeDisabled()
   })
 
   it('dialog defaults compose service to the name until edited', async () => {
@@ -273,7 +273,7 @@ describe('services section', () => {
     expect(within(dialog).getByLabelText('Host')).toHaveValue('h1')
     expect(within(dialog).getByLabelText('Host')).toBeDisabled()
     await user.click(within(dialog).getByRole('radio', { name: 'The host' }))
-    await user.click(within(dialog).getByRole('button', { name: 'Add app' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Add service' }))
     await waitFor(() => expect(calls(invoke, 'service:create')).toHaveLength(1))
     expect(calls(invoke, 'service:create')[0][1]).toEqual({
       kind: 'service',
@@ -301,7 +301,7 @@ describe('services section', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Duplicate api' })
     expect(within(dialog).getByLabelText('Name')).toHaveValue('api copy')
     expect(within(dialog).getByLabelText('Compose service')).toHaveValue('api-copy')
-    await user.click(within(dialog).getByRole('button', { name: 'Add app' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Add service' }))
     await waitFor(() => expect(calls(invoke, 'service:create')).toHaveLength(1))
     expect(calls(invoke, 'service:create')[0][1]).toMatchObject({ kind: 'service', name: 'api copy', deploymentId: 'd1', composeService: 'api-copy' })
   })
@@ -348,9 +348,9 @@ describe('services section', () => {
     expect(within(dialog).getByLabelText('Local port')).toHaveAttribute('placeholder', 'Picked on first open')
     // No host, no save.
     await user.type(within(dialog).getByLabelText('Name'), 'cache')
-    expect(within(dialog).getByRole('button', { name: 'Add database' })).toBeDisabled()
+    expect(within(dialog).getByRole('button', { name: 'Add service' })).toBeDisabled()
     await user.selectOptions(within(dialog).getByLabelText('Host'), 'h2')
-    await user.click(within(dialog).getByRole('button', { name: 'Add database' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Add service' }))
     await waitFor(() => expect(calls(invoke, 'service:create')).toHaveLength(1))
     expect(calls(invoke, 'service:create')[0][1]).toEqual({
       kind: 'db',
