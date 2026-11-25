@@ -160,13 +160,14 @@ function DialogPanel({
           aria-describedby={description ? descId : undefined}
           tabIndex={-1}
           onKeyDown={onKeyDown}
-          className="overflow-hidden rounded-[14px] border border-line bg-surface shadow-pop focus:outline-none"
+          // Never taller than the window: the title and the buttons stay put and the body scrolls between them.
+          className="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden rounded-[14px] border border-line bg-surface shadow-pop focus:outline-none"
           initial={motionSafe ? { opacity: 0, scale: 0.96, y: 6 } : { opacity: 0 }}
           animate={motionSafe ? { opacity: 1, scale: 1, y: 0 } : { opacity: 1 }}
           exit={motionSafe ? { opacity: 0, scale: 0.97, transition: exitFast } : { opacity: 0, transition: exitFast }}
           transition={motionSafe ? spring : fast}
         >
-          <div className="px-5 pt-5">
+          <div className="shrink-0 px-5 pt-5">
             {icon}
             <h2 id={titleId} className="text-[15px] font-semibold tracking-tight text-fg">
               {title}
@@ -177,9 +178,9 @@ function DialogPanel({
               </p>
             )}
           </div>
-          <div className="px-5 pt-4 pb-5">{children}</div>
+          <div data-dialog-body className="min-h-0 flex-1 overflow-y-auto px-5 pt-4 pb-5">{children}</div>
           {asking ? (
-            <div role="alert" className="flex items-center justify-end gap-2 border-t border-line bg-warn/8 px-5 py-3">
+            <div role="alert" className="flex shrink-0 items-center justify-end gap-2 border-t border-line bg-warn/8 px-5 py-3">
               <span className="mr-auto text-[12.5px] font-medium text-fg">Discard changes?</span>
               <Button variant="ghost" size="sm" autoFocus onClick={keep}>
                 Keep editing
@@ -190,7 +191,7 @@ function DialogPanel({
             </div>
           ) : (
             footer && (
-              <div className="flex items-center justify-end gap-2 border-t border-line bg-canvas/40 px-5 py-3">{footer}</div>
+              <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-line bg-canvas/40 px-5 py-3">{footer}</div>
             )
           )}
         </motion.div>
