@@ -62,6 +62,8 @@ export interface VaultStatus {
   quickUnlock: QuickUnlockMode
   quickUnlockAvailable: { touchId: boolean; login: boolean }
   autoLockMinutes: number | null
+  /** Whether the vaults lock when the Mac sleeps or its screen locks. On unless turned off. */
+  lockOnSleep: boolean
   retryAfterMs: number
   /** Vaults whose wrapped key failed to open at the last unlock; empty while locked. */
   corruptVaultIds: string[]

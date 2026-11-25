@@ -478,6 +478,11 @@ UPDATE environments SET position = (
     name: 'service_path',
     up: `ALTER TABLE services ADD COLUMN path TEXT NOT NULL DEFAULT '';`,
   },
+  {
+    version: 20,
+    name: 'vault_lock_on_sleep',
+    up: `ALTER TABLE vault_state ADD COLUMN lock_on_sleep INTEGER NOT NULL DEFAULT 1;`,
+  },
 ]
 
 /** Role precedence when a host runs several kinds of service in one environment: bastion > app > db. */

@@ -56,6 +56,20 @@ describe('AutoLock', () => {
     expect(lock).toHaveBeenCalledTimes(1)
   })
 
+  it('lock on sleep is on by default, persists, and can only be turned off with the vaults open', async () => {
+    const f = makeVault()
+    await f.vault.setup({ password: 'correct horse', touchId: true })
+    expect(f.vault.status().lockOnSleep).toBe(true)
+    expect(f.vault.setLockOnSleep(false).lockOnSleep).toBe(false)
+    expect(f.vault.lockOnSleep()).toBe(false)
+    expect(makeVault({ db: f.db }).vault.status().lockOnSleep).toBe(false)
+    expect(f.audit.list({ actions: ['vault.autolock'] })[0]).toMatchObject({ outcome: 'success', details: { lockOnSleep: false } })
+    f.vault.setLockOnSleep(true)
+    f.vault.lock('manual')
+    expect(() => f.vault.setLockOnSleep(false)).toThrow(/locked/i)
+    expect(f.vault.setLockOnSleep(true).lockOnSleep).toBe(true)
+  })
+
   it('setAutoLock persists', async () => {
     const f = makeVault()
     await f.vault.setup({ password: 'correct horse', touchId: true })

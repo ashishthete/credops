@@ -858,6 +858,7 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'vault:delete': args(v.uuid()),
   'vault:setQuickUnlock': args(v.oneOf(QUICK_UNLOCK_MODES), v.optional(asReverifyProof)),
   'vault:setAutoLock': args(v.oneOf(AUTO_LOCK_CHOICES)),
+  'vault:setLockOnSleep': args(v.bool()),
   // The service checks the word itself, so its message is the one the user sees.
   'vault:reset': args(v.str({ max: 64 })),
   'vault:setPin': args(asPin, asReverifyProof),

@@ -160,6 +160,7 @@ export interface IpcContract {
   // Adding a way in (Touch ID, a PIN, a password) needs a reverify `proof`; turning one off does not.
   'vault:setQuickUnlock': { args: [mode: QuickUnlockMode, proof?: ReverifyProof]; result: ProvenResult }
   'vault:setAutoLock': { args: [minutes: number | null]; result: VaultStatus }
+  'vault:setLockOnSleep': { args: [on: boolean]; result: VaultStatus }
   'vault:reset': { args: [confirm: string]; result: VaultStatus }
   'vault:setPin': { args: [pin: string, proof: ReverifyProof]; result: ProvenResult }
   'vault:clearPin': { args: []; result: VaultStatus }
@@ -414,6 +415,7 @@ export const CHANNELS = [
   'vault:delete',
   'vault:setQuickUnlock',
   'vault:setAutoLock',
+  'vault:setLockOnSleep',
   'vault:reset',
   'vault:setPin',
   'vault:clearPin',

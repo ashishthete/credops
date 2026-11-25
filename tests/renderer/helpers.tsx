@@ -40,6 +40,7 @@ export function vaultStatus(over: Partial<VaultStatus> = {}): VaultStatus {
     quickUnlock: 'off',
     quickUnlockAvailable: { touchId: true, login: false },
     autoLockMinutes: 15,
+    lockOnSleep: true,
     retryAfterMs: 0,
     corruptVaultIds: [],
     hasPassword: true,

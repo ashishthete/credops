@@ -17,6 +17,7 @@ type VaultChannel =
   | 'vault:delete'
   | 'vault:setQuickUnlock'
   | 'vault:setAutoLock'
+  | 'vault:setLockOnSleep'
   | 'vault:reset'
   | 'vault:setPin'
   | 'vault:clearPin'
@@ -69,6 +70,7 @@ export function createVaultHandlers(vault: VaultService): Pick<Handlers, VaultCh
             vault.setQuickUnlock(mode),
           ),
     'vault:setAutoLock': (minutes) => vault.setAutoLock(minutes),
+    'vault:setLockOnSleep': (on) => vault.setLockOnSleep(on),
     'vault:reset': (confirm) => vault.reset(confirm),
     'vault:setPin': (pin, proof) => withProof(vault, proof, 'set a PIN', () => vault.setPin(pin)),
     'vault:clearPin': () => vault.clearPin(),

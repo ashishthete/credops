@@ -25,6 +25,19 @@ afterEach(() => {
 })
 
 describe('settings page', () => {
+  it('Lock on sleep can be turned off, and then says what that means', async () => {
+    const status = vaultStatus({ unlocked: true })
+    const invoke = mockBridge({ 'vault:status': status, 'vault:setLockOnSleep': { ...status, lockOnSleep: false } })
+    act(() => vaultStatusStore.set(status))
+    renderPage()
+    const sw = screen.getByRole('switch', { name: 'Lock on sleep' })
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    await userEvent.click(sw)
+    expect(invoke).toHaveBeenCalledWith('vault:setLockOnSleep', false)
+    expect(screen.getByRole('switch', { name: 'Lock on sleep' })).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByRole('region', { name: 'Unlock' })).toHaveTextContent('Anyone who gets into this Mac can use them.')
+  })
+
   it('Unlock shows each way in where it stands, and Touch ID turns on with a proof', async () => {
     const status = vaultStatus({ unlocked: true, hasPassword: true, autoLockMinutes: 15 })
     const invoke = mockBridge({ 'vault:status': status, 'vault:setAutoLock': { ...status, autoLockMinutes: 60 } })

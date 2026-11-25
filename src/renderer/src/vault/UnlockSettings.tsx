@@ -1,4 +1,4 @@
-import { Fingerprint, Grid3x3, KeyRound, Timer } from 'lucide-react'
+import { Fingerprint, Grid3x3, KeyRound, Moon, Timer } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { AUTO_LOCK_CHOICES, type VaultStatus } from '../../../shared/vault'
 import { api } from '../lib/api'
@@ -74,6 +74,14 @@ function UnlockCard({ status }: { status: VaultStatus }) {
       vaultStatusStore.set(await api.invoke('vault:setAutoLock', id === 'never' ? null : Number(id)))
     } catch (err) {
       toast({ title: "Couldn't change auto-lock", description: errorText(err), tone: 'error' })
+    }
+  }
+
+  const setLockOnSleep = async (on: boolean) => {
+    try {
+      vaultStatusStore.set(await api.invoke('vault:setLockOnSleep', on))
+    } catch (err) {
+      toast({ title: "Couldn't change the setting", description: errorText(err), tone: 'error' })
     }
   }
 
@@ -157,6 +165,17 @@ function UnlockCard({ status }: { status: VaultStatus }) {
           detail={status.autoLockMinutes ? 'Locks the vaults after this long without use.' : 'The vaults stay open until you lock them.'}
         >
           <Segmented label="Auto-lock" size="sm" options={AUTO_LOCK_OPTIONS} value={String(status.autoLockMinutes ?? 'never')} onChange={(id) => void setAutoLock(id)} />
+        </Row>
+        <Row
+          icon={<Moon className="size-4" />}
+          title="Lock on sleep"
+          detail={
+            status.lockOnSleep
+              ? 'Locks the vaults when the Mac sleeps or its screen locks.'
+              : 'The vaults stay open through sleep and screen lock. Anyone who gets into this Mac can use them.'
+          }
+        >
+          <Switch label="Lock on sleep" checked={status.lockOnSleep} onChange={(on) => void setLockOnSleep(on)} />
         </Row>
       </ul>
       <TouchIdDialog open={panel === 'touchId'} status={status} onClose={close} />

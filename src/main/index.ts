@@ -742,8 +742,9 @@ if (!app.requestSingleInstanceLock()) {
         lock: (reason) => service.lock(reason),
       }).start()
       // vault is null once will-quit has closed the db.
-      powerMonitor.on('lock-screen', () => vault?.lock('screen'))
-      powerMonitor.on('suspend', () => vault?.lock('suspend'))
+      // Sleep and screen lock close the vaults unless the user turned that off in Settings; shutdown always does.
+      powerMonitor.on('lock-screen', () => void (vault?.lockOnSleep() && vault.lock('screen')))
+      powerMonitor.on('suspend', () => void (vault?.lockOnSleep() && vault.lock('suspend')))
       powerMonitor.on('shutdown', () => vault?.lock('quit'))
       // Timers stall while the Mac sleeps: a tunnel whose time limit passed meanwhile stops on wake.
       // The network is likely back too: a tunnel waiting out a backoff tries again at once.

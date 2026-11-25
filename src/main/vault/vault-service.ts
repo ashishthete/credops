@@ -92,6 +92,7 @@ interface StateRow {
   quick_unlock: QuickUnlockMode
   quick_unlock_blob: string | null
   auto_lock_minutes: number | null
+  lock_on_sleep: number
   pin_wrap: string | null
   pin_salt: string | null
   pin_pepper_blob: string | null
@@ -196,6 +197,7 @@ export class VaultService {
       quickUnlock: s.quick_unlock,
       quickUnlockAvailable: { touchId: this.modeAvailable('touchId'), login: this.modeAvailable('login') },
       autoLockMinutes: s.auto_lock_minutes,
+      lockOnSleep: s.lock_on_sleep !== 0,
       retryAfterMs: this.retryAfterMs(s),
       corruptVaultIds: this.kek ? [...this.corrupt] : [],
       hasPassword: this.hasPassword(),
@@ -552,6 +554,18 @@ export class VaultService {
     return this.status()
   }
 
+  lockOnSleep(): boolean {
+    return (this.db.prepare('SELECT lock_on_sleep FROM vault_state WHERE id = 1').get() as { lock_on_sleep: number }).lock_on_sleep !== 0
+  }
+
+  /** Turning it off weakens the lock, so that needs the vaults open; turning it back on never does. */
+  setLockOnSleep(on: boolean): VaultStatus {
+    if (!on && !this.isUnlocked()) throw vaultLockedError()
+    this.db.prepare('UPDATE vault_state SET lock_on_sleep = ? WHERE id = 1').run(on ? 1 : 0)
+    this.audit.append({ action: 'vault.autolock', outcome: 'success', details: { lockOnSleep: on } })
+    return this.status()
+  }
+
   lock(reason: LockReason): void {
     this.epoch++
     this.unlockedPending = false
@@ -905,7 +919,7 @@ export class VaultService {
   private state(): StateRow {
     return this.db
       .prepare(
-        'SELECT failed_attempts, last_failed_at, quick_unlock, quick_unlock_blob, auto_lock_minutes, pin_wrap, pin_salt, pin_pepper_blob, pin_failed, pin_length, last_method, password_wrap, password_kdf FROM vault_state WHERE id = 1',
+        'SELECT failed_attempts, last_failed_at, quick_unlock, quick_unlock_blob, auto_lock_minutes, lock_on_sleep, pin_wrap, pin_salt, pin_pepper_blob, pin_failed, pin_length, last_method, password_wrap, password_kdf FROM vault_state WHERE id = 1',
       )
       .get() as unknown as StateRow
   }
