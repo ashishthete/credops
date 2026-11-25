@@ -199,7 +199,7 @@ describe('migration 7 (deployments)', () => {
     expect(cols(db, 'services')).toEqual([
       'id', 'environment_id', 'host_id', 'name', 'kind', 'position', 'description', 'deployment_id', 'compose_service', 'url',
       'url_check_from', 'last_deployed_commit', 'last_release_id', 'db_engine', 'db_address', 'db_port',
-      'local_port', 'tunnel_id', 'skip_unchanged', 'created_at', 'updated_at',
+      'local_port', 'tunnel_id', 'skip_unchanged', 'created_at', 'updated_at', 'path',
     ])
     const indexes = (db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name = 'services'").all() as { name: string }[]).map((r) => r.name)
     expect(indexes).toEqual(expect.arrayContaining(['services_name', 'services_compose', 'services_env', 'services_host']))

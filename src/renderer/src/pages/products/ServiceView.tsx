@@ -1,4 +1,4 @@
-import { Box, Boxes, Clock, ExternalLink, FolderGit2, Globe, HeartPulse, Layers, Link2, Network, Pencil, Plug, Rocket, ScrollText, Server, ShieldCheck, SquareTerminal, Trash2, Unplug } from 'lucide-react'
+import { Box, Boxes, Clock, ExternalLink, Folder, FolderGit2, Globe, HeartPulse, Layers, Link2, Network, Pencil, Plug, Rocket, ScrollText, Server, ShieldCheck, SquareTerminal, Trash2, Unplug } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { EnvironmentMeta } from '../../../../shared/inventory'
 import { SERVICE_KIND_LABEL, type AppServiceMeta, type ServiceMeta } from '../../../../shared/services'
@@ -47,7 +47,7 @@ export function ServiceView({ service: svc, env, data, onEdit, onDelete, onOpenE
   const deployable = svc.kind === 'service' && svc.deploymentId !== null
   const Icon = svc.kind === 'db' ? ENGINE_ICON[svc.dbEngine] : svc.kind === 'bastion' ? ShieldCheck : Box
   const open = (
-    <Button size="sm" variant="ghost" icon={<SquareTerminal aria-hidden className="size-3.5" />} aria-label={`Connect to ${host?.label ?? 'the host'}`} onClick={() => void connect(svc.hostId, env.id)}>
+    <Button size="sm" variant="ghost" icon={<SquareTerminal aria-hidden className="size-3.5" />} aria-label={`Connect to ${host?.label ?? 'the host'}`} onClick={() => void connect(svc.hostId, env.id, svc.path || undefined)}>
       Connect
     </Button>
   )
@@ -109,6 +109,7 @@ export function ServiceView({ service: svc, env, data, onEdit, onDelete, onOpenE
             }
           />
           <Default icon={Server} term="Host" value={host?.label ?? 'Unknown'} source={host?.address ?? ''} action={host && open} />
+          {svc.path && <Default icon={Folder} term="Folder" value={svc.path} source="Connect opens here" />}
           {svc.kind === 'service' && (
             <>
               <Default

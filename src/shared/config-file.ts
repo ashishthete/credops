@@ -65,7 +65,7 @@ import {
   type BuiltinKind,
   type RunbookParam,
 } from './runbooks'
-import { MAX_SERVICES, type DbEngine } from './services'
+import { MAX_SERVICE_PATH, MAX_SERVICES, SERVICE_PATH, type DbEngine } from './services'
 import {
   ENV_NAME as STEP_ENV_NAME,
   MAX_FLOW_STAGES,
@@ -176,6 +176,8 @@ export interface ConfigEnvironment {
   /** Absent in files from before playbook ops: a new environment gets 4 true and 3, an existing one keeps its own. */
   parallelPrepare?: boolean
   prepareCap?: number
+  /** Its place in its product. Absent in older files: a new environment lands last, an existing one keeps its own. */
+  position?: number
   /** Written only when the environment has a flow. */
   flow?: ConfigFlow
   /** Null only for a version 1 environment that had no product: the import puts it in Unassigned. */
@@ -235,6 +237,7 @@ export interface ConfigAppService {
   kind: 'service'
   position: number
   description: string
+  path?: string
   /** Absent in files from before services ran on hosts: the checkout's host, else one in the environment. */
   hostId?: string
   deploymentId: string | null
@@ -250,6 +253,7 @@ export interface ConfigDbService {
   kind: 'db'
   position: number
   description: string
+  path?: string
   /** The host the database lives on. Older files only carry `viaHostId`. */
   hostId?: string
   dbEngine: DbEngine
@@ -267,6 +271,7 @@ export interface ConfigBastionService {
   kind: 'bastion'
   position: number
   description: string
+  path?: string
   hostId: string
 }
 export type ConfigService = ConfigAppService | ConfigDbService | ConfigBastionService
@@ -614,6 +619,7 @@ const environmentFields = {
   domain: nullable(str({ max: MAX_URL, ok: (s) => parseEnvDomain(s).ok, rule: 'must be a domain or http(s) URL' })),
   parallelPrepare: optional(bool),
   prepareCap: optional(int(1, 8)),
+  position: optional(int(0, MAX_POSITION)),
   flow: optional(flow),
   hosts: array(object({ hostId: uuid, role: oneOf(HOST_ROLES) }), MAX_LINKS),
 }
@@ -683,6 +689,7 @@ const serviceCommon = {
   name: text(MAX_NAME),
   position: int(0, MAX_POSITION),
   description: str({ max: MAX_DESCRIPTION }),
+  path: optional(str({ max: MAX_SERVICE_PATH, ok: (s) => s === '' || SERVICE_PATH.test(s) })),
 }
 const appService = object({
   ...serviceCommon,

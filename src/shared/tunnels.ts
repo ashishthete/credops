@@ -7,7 +7,8 @@ export const TUNNEL_LIMIT = `Too many running tunnels (${MAX_RUNNING_TUNNELS})`
 export const MAX_TUNNEL_CHANNELS = 128
 export const BACKOFF_BASE_MS = 1000
 export const BACKOFF_CAP_MS = 60000
-export const DEFAULT_MAX_FAILURES = 5
+/** Ten tries on the backoff is about four minutes: long enough for Wi-Fi to come back or a VPN to reconnect. */
+export const DEFAULT_MAX_FAILURES = 10
 export const STABLE_MS = 30000
 export const PROBE_INTERVAL_MS = 15000
 export const PROBE_TIMEOUT_MS = 3000

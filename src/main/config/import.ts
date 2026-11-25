@@ -590,6 +590,8 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
       })
       fields.push(...(next?.fields ?? []))
     }
+    // An environment kept in another product here keeps its place there.
+    if (x.position !== undefined && !notes.includes('product not changed') && s.envs.setPositionInTx(local, x.position) && !added) fields.push('position')
     // Absent in an older file: a new environment gets the column defaults, an existing one keeps its own.
     fields.push(...s.deploys.updateSettingsInTx(local, { versioned: x.versioned, autoRollback: x.autoRollback, parallelPrepare: x.parallelPrepare, prepareCap: x.prepareCap }))
     let hostsChanged = false
@@ -837,7 +839,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
         item('services', x.id, x.name, 'skip', { reason: NO_HOST })
         continue
       }
-      const f = { name: x.name, description: x.description }
+      const f = { name: x.name, description: x.description, path: x.path }
       if (before === null) {
         s.services.insertInTx({ ...f, kind: 'bastion', environmentId, hostId: hostId! }, x.position, x.id)
         map.services.set(x.id, x.id)
@@ -857,6 +859,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
       const f = {
         name: x.name,
         description: x.description,
+        path: x.path,
         composeService: x.composeService,
         url: x.url === null ? null : keepLocalUrl(before?.kind === 'service' ? before.url : null, x.url),
         urlCheckFrom: x.urlCheckFrom,
@@ -897,7 +900,7 @@ function runEach(db: Db, file: ConfigFile, setAt: (where: string) => void, regio
       continue
     }
     const tunnelId = ref(map.tunnels, x.tunnelId)
-    const f = { name: x.name, description: x.description, dbEngine: x.dbEngine, dbAddress: x.dbAddress, dbPort: x.dbPort, localPort: x.localPort }
+    const f = { name: x.name, description: x.description, path: x.path, dbEngine: x.dbEngine, dbAddress: x.dbAddress, dbPort: x.dbPort, localPort: x.localPort }
     if (before === null) {
       s.services.insertInTx({ ...f, kind: 'db', environmentId, hostId: hostId! }, x.position, x.id)
       map.services.set(x.id, x.id)

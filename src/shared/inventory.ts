@@ -263,6 +263,8 @@ export interface EnvironmentMeta {
   defaultJumpHostId: string | null
   domain: string | null
   productId: string
+  /** Its place among its product's environments, from 0. */
+  position: number
   hosts: { hostId: string; role: HostRole }[]
   createdAt: string
   updatedAt: string

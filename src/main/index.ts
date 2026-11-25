@@ -1,5 +1,5 @@
 import { execFile, spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
@@ -24,6 +24,7 @@ import { openDatabase, type Db } from './db/connection'
 import { currentVersion, SchemaTooNewError } from './db/migrations'
 import { diagnosticsFrom } from './diagnostics/bundle'
 import { captureConsole, LogFile } from './diagnostics/log-file'
+import { logProcessErrors } from './diagnostics/process-errors'
 import { DB_FILE, migrateFromOpsDeck, systemMigrationDeps } from './rename-migration'
 import { initialWindowState, loadWindowState, saveWindowState, WINDOW_STATE_FILE } from './window-state'
 import { createAppHandlers } from './ipc/handlers/app'
@@ -53,6 +54,7 @@ import { startPrivateAgent, type ChildLike } from './deploy/agent'
 import { prepareHosts } from './deploy/hostkeys'
 import { HeldIdentities } from './deploy/held-identities'
 import { LocalRunner, nodeFs, nodeSpawn } from './deploy/local-runner'
+import { RunPids } from './deploy/run-pids'
 import { startTap } from './deploy/log-tap'
 import { maskEvents, maskSummary } from './deploy/mask'
 import { localAllowAll } from './deploy/access'
@@ -141,6 +143,7 @@ if (!app.isPackaged) app.setAppLogsPath(`${app.getPath('logs')}-dev`)
 let logSecrets: () => readonly string[] = () => []
 const logFile = new LogFile({ dir: app.getPath('logs'), knownSecrets: () => logSecrets() })
 captureConsole(logFile)
+logProcessErrors(process, logFile)
 logFile.info(`start: CredOps ${app.getVersion()}${app.isPackaged ? '' : ' (dev)'}, ${process.platform} ${osRelease()} ${arch()}, electron ${process.versions.electron}`)
 
 const devServerUrl = devRendererUrl(app.isPackaged, process.env)
@@ -437,7 +440,14 @@ if (!app.requestSingleInstanceLock()) {
       }
       // A started release keeps the ssh identities it resolved until it finishes (deploy/held-identities.ts).
       const heldIdentities = new HeldIdentities(identities as IdentityStore)
+      const runPidsFile = join(app.getPath('userData'), 'deploy-runs.json')
+      const runPids = new RunPids({
+        read: () => (existsSync(runPidsFile) ? readFileSync(runPidsFile, 'utf8') : null),
+        write: (text) => writeFileSync(runPidsFile, text, { mode: 0o600 }),
+        kill: (pid, signal) => void process.kill(pid, signal),
+      })
       const localRunner = new LocalRunner({
+        pids: runPids,
         tools: () => detectTools(toolDeps),
         prepare: (plan, signal) =>
           prepareHosts(plan, {
@@ -540,6 +550,7 @@ if (!app.requestSingleInstanceLock()) {
         knownSecrets,
         emit: (batch) => pushEvent(mainWindow, 'deploy:event', batch),
         emitState: (summary) => pushEvent(mainWindow, 'release:state', maskSummary(summary, knownSecrets())),
+        runAlive: (id) => runPids.alive(id),
         actor,
         now: () => new Date(),
         clock: { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: (h) => clearTimeout(h as NodeJS.Timeout) },
@@ -550,6 +561,12 @@ if (!app.requestSingleInstanceLock()) {
       // Startup recovery lives here (Task 7 must not add a second call): a release left preflight, running or
       // rolling back by a quit can never finish, so mark it failed (and audit it) before anything reads it.
       release.recoverInterrupted()
+      try {
+        const lines = releaseStore.pruneLogs()
+        if (lines > 0) logFile.info(`release logs: removed ${lines} lines of releases past their keep time`)
+      } catch (e) {
+        logFile.warn(`release logs could not be trimmed: ${e instanceof Error ? e.message : String(e)}`)
+      }
       // Team releases run on the Hub: its live stream feeds the same pushes as a local run, and release calls
       // for a Hub environment (or a release the Hub told us about) go to the Hub.
       const hubReleaseIds = new Set<string>()
@@ -729,8 +746,13 @@ if (!app.requestSingleInstanceLock()) {
       powerMonitor.on('suspend', () => vault?.lock('suspend'))
       powerMonitor.on('shutdown', () => vault?.lock('quit'))
       // Timers stall while the Mac sleeps: a tunnel whose time limit passed meanwhile stops on wake.
-      powerMonitor.on('resume', () => tunnelManager?.checkExpiry())
-      powerMonitor.on('unlock-screen', () => tunnelManager?.checkExpiry())
+      // The network is likely back too: a tunnel waiting out a backoff tries again at once.
+      const woke = (): void => {
+        tunnelManager?.checkExpiry()
+        tunnelManager?.retryWaiting()
+      }
+      powerMonitor.on('resume', woke)
+      powerMonitor.on('unlock-screen', woke)
       const rendererFile = join(__dirname, '../renderer/index.html')
       const hubHandlers = createHubHandlers({ conn: hub, vault: service, gate: ssoGate, audit: log, catalog: hubCatalog, publisher: hubPublisher, onLocksChanged: () => pushEvent(mainWindow, 'hub:locks', {}) })
       registerHandlers(

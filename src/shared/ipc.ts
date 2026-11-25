@@ -204,6 +204,8 @@ export interface IpcContract {
   'env:delete': { args: [id: string]; result: void }
   'env:openDomain': { args: [id: string]; result: void }
   'env:setProduct': { args: [id: string, productId: string]; result: EnvironmentMeta }
+  /** `ids` is every environment of the product, in the order wanted. */
+  'env:reorder': { args: [productId: string, ids: string[]]; result: EnvironmentMeta[] }
   'env:putHost': { args: [id: string, hostId: string, role: HostRole]; result: EnvironmentMeta }
   'env:removeHost': { args: [id: string, hostId: string]; result: EnvironmentMeta }
   'product:list': { args: []; result: ProductMeta[] }
@@ -453,6 +455,7 @@ export const CHANNELS = [
   'env:delete',
   'env:openDomain',
   'env:setProduct',
+  'env:reorder',
   'env:putHost',
   'env:removeHost',
   'product:list',

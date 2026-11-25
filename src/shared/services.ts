@@ -7,6 +7,14 @@ export { COMPOSE_SERVICE }
 // ---- Limits ----
 export const MAX_SERVICES = 512
 
+/**
+ * The folder a service lives in on its host: absolute, or under the home folder (`~/app`). Plain path characters only
+ * (no spaces), so it is safe as one shell word. Empty means none.
+ */
+export const SERVICE_PATH = /^(?!.*\.\.)(?!.*\/\/)(?:~|~?\/[A-Za-z0-9._@+/-]{0,255})$/
+export const MAX_SERVICE_PATH = 258
+export const SERVICE_PATH_MESSAGE = 'folder must start with / or ~/ and use only letters, digits and . _ @ + - /'
+
 // ---- Types ----
 export type ServiceKind = 'service' | 'db' | 'bastion'
 
@@ -25,6 +33,8 @@ interface ServiceBase {
   name: string
   position: number
   description: string
+  /** The folder it lives in on the host, '' for none; a terminal opened from the service starts there. */
+  path: string
   createdAt: string
   updatedAt: string
 }
@@ -68,6 +78,7 @@ export type ServiceInput =
       hostId?: string
       name: string
       description?: string
+      path?: string
       deploymentId: string | null
       composeService?: string
       url?: string | null
@@ -80,6 +91,7 @@ export type ServiceInput =
       hostId: string
       name: string
       description?: string
+      path?: string
       dbEngine: DbEngine
       dbAddress: string
       dbPort?: number
@@ -91,6 +103,7 @@ export type ServiceInput =
       hostId: string
       name: string
       description?: string
+      path?: string
     }
 
 /**

@@ -357,6 +357,17 @@ export class TunnelManager {
     for (const run of [...this.runs.values()]) this.limit(run)
   }
 
+  /**
+   * Tries again now every tunnel that is waiting out a backoff. The app calls this when the Mac wakes or its screen
+   * unlocks: the network is probably back, and a wait armed before the sleep says nothing about it.
+   */
+  retryWaiting(): void {
+    for (const run of [...this.runs.values()]) {
+      if (run.retryTimer === null || run.released) continue
+      void this.attempt(run)
+    }
+  }
+
   /** (Re)arms the time limit from the run's start; one already past stops the tunnel at once. */
   private limit(run: Run): void {
     if (run.expiryTimer !== null) this.timers.clearTimeout(run.expiryTimer)

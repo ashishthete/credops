@@ -211,7 +211,7 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: Omitt
   )
   const environments: ConfigEnvironment[] = all(
     `SELECT id, name, color, protected, default_identity_id, default_port, default_jump_host_id, versioned, auto_rollback, domain,
-       product_id, parallel_prepare, prepare_cap, release_flow FROM environments`,
+       product_id, parallel_prepare, prepare_cap, release_flow, position FROM environments`,
   ).map((r) => {
     at = `environments:${str(r.id)}:flow`
     return {
@@ -227,6 +227,7 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: Omitt
       domain: optStr(r.domain),
       parallelPrepare: bool(r.parallel_prepare),
       prepareCap: Number(r.prepare_cap),
+      position: Number(r.position),
       ...(r.release_flow === null ? {} : { flow: configFlow(JSON.parse(str(r.release_flow)) as ReleaseFlow) }),
       productId: str(r.product_id),
       hosts: envHosts.get(str(r.id)) ?? [],
@@ -295,7 +296,7 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: Omitt
   })
 
   const services: ConfigService[] = all(
-    `SELECT id, environment_id, host_id, name, kind, position, description, deployment_id, compose_service, url, url_check_from,
+    `SELECT id, environment_id, host_id, name, kind, position, description, path, deployment_id, compose_service, url, url_check_from,
        db_engine, db_address, db_port, local_port, tunnel_id, skip_unchanged FROM services`,
   ).map((r): ConfigService => {
     at = `services:${str(r.id)}`
@@ -305,6 +306,7 @@ function readConfig(db: Db, now: () => Date): { file: ConfigFile; omitted: Omitt
       name: str(r.name),
       position: Number(r.position),
       description: str(r.description),
+      ...(str(r.path) === '' ? {} : { path: str(r.path) }),
       hostId: str(r.host_id),
     }
     if (r.kind === 'bastion') return { ...common, kind: 'bastion' }

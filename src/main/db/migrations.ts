@@ -461,6 +461,23 @@ CREATE TABLE services_new(id TEXT PRIMARY KEY,
 `,
     after: (db) => servicesOnHosts(db),
   },
+  {
+    // An environment's place within its product. Existing ones keep the order they were shown in: by name.
+    version: 18,
+    name: 'environment_position',
+    up: `
+ALTER TABLE environments ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
+UPDATE environments SET position = (
+  SELECT n - 1 FROM (
+    SELECT id, row_number() OVER (PARTITION BY product_id ORDER BY name COLLATE NOCASE, id) AS n FROM environments) r
+  WHERE r.id = environments.id);
+`,
+  },
+  {
+    version: 19,
+    name: 'service_path',
+    up: `ALTER TABLE services ADD COLUMN path TEXT NOT NULL DEFAULT '';`,
+  },
 ]
 
 /** Role precedence when a host runs several kinds of service in one environment: bastion > app > db. */

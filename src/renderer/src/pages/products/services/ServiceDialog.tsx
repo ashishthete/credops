@@ -6,6 +6,7 @@ import {
   COMPOSE_SERVICE,
   DB_DEFAULT_PORT,
   SERVICE_KIND_LABEL,
+  SERVICE_PATH,
   type DbEngine,
   type ServiceInput,
   type ServiceKind,
@@ -42,6 +43,8 @@ interface Form {
   kind: ServiceKind
   name: string
   description: string
+  /** The folder it lives in on the host; a terminal opened from the service starts there. */
+  path: string
   /** The host the service runs on; an app with a checkout follows the checkout's. */
   hostId: string
   deploymentId: string
@@ -62,6 +65,7 @@ function formOf(service: ServiceMeta | undefined, kind: ServiceKind = 'service',
     kind,
     name: '',
     description: '',
+    path: '',
     hostId,
     deploymentId: '',
     composeService: '',
@@ -75,7 +79,7 @@ function formOf(service: ServiceMeta | undefined, kind: ServiceKind = 'service',
     localPort: '',
   }
   if (!service) return blank
-  const base = { ...blank, kind: service.kind, name: service.name, description: service.description, hostId: service.hostId }
+  const base = { ...blank, kind: service.kind, name: service.name, description: service.description, path: service.path, hostId: service.hostId }
   if (service.kind === 'bastion') return base
   if (service.kind === 'service') {
     return {
@@ -120,12 +124,13 @@ export function duplicateForm(source: ServiceMeta, siblings: ServiceMeta[]): For
 
 const asPort = (s: string): number | null => (/^\d{1,5}$/.test(s) && +s >= 1 && +s <= 65535 ? +s : null)
 
-type Field = 'name' | 'hostId' | 'composeService' | 'url' | 'dbAddress' | 'dbPort' | 'localPort'
+type Field = 'name' | 'hostId' | 'path' | 'composeService' | 'url' | 'dbAddress' | 'dbPort' | 'localPort'
 
 function check(f: Form): Partial<Record<Field, string>> {
   const out: Partial<Record<Field, string>> = {}
   if (f.name.trim() === '') out.name = 'A name is required'
   if (f.hostId === '' && !(f.kind === 'service' && f.deploymentId)) out.hostId = 'Pick the host it runs on'
+  if (f.path.trim() !== '' && !SERVICE_PATH.test(f.path.trim())) out.path = 'Starts with / or ~/; letters, digits and . _ @ + - only'
   if (f.kind === 'service') {
     if (f.deploymentId !== '' && !COMPOSE_SERVICE.test(f.composeService)) out.composeService = 'Letters, digits, dot, dash and underscore; starting with a letter or digit'
     if (f.url.trim() !== '' && !/^https?:\/\/\S+$/i.test(f.url.trim())) out.url = 'A URL starts with http:// or https://'
@@ -140,12 +145,14 @@ function check(f: Form): Partial<Record<Field, string>> {
 function toInput(f: Form, environmentId: string): ServiceInput {
   const name = f.name.trim()
   const kind = f.kind
-  if (kind === 'bastion') return { kind, environmentId, hostId: f.hostId, name, description: f.description.trim() }
+  const path = f.path.trim()
+  if (kind === 'bastion') return { kind, environmentId, hostId: f.hostId, name, description: f.description.trim(), path }
   if (kind === 'service') {
     return {
       kind,
       environmentId,
       name,
+      path,
       ...(f.hostId ? { hostId: f.hostId } : {}),
       deploymentId: f.deploymentId || null,
       // Without a checkout there is nothing to run, so no compose service.
@@ -159,6 +166,7 @@ function toInput(f: Form, environmentId: string): ServiceInput {
     kind,
     environmentId,
     name,
+    path,
     dbEngine: f.dbEngine,
     dbAddress: f.dbAddress.trim(),
     hostId: f.hostId,
@@ -383,6 +391,15 @@ export function ServiceDialog({ env, service, copyOf, kind: initialKind, hostId:
               </optgroup>
             ))}
           </SelectField>
+          <TextField
+            label="Folder on the host"
+            value={form.path}
+            onChange={(e) => set({ path: e.target.value }, ['path'])}
+            error={err('path')}
+            placeholder="/opt/app"
+            hint="Optional. Connect opens the terminal in this folder."
+            spellCheck={false}
+          />
           {kind === 'bastion' ? (
             <TextField label="Description" value={form.description} onChange={(e) => set({ description: e.target.value })} placeholder="Optional" />
           ) : isDb ? (

@@ -21,7 +21,8 @@ import {
 } from '../../shared/ssh'
 import { VAULT_LOCKED, vaultLockedError } from '../../shared/vault'
 import { checkContainerRef, containerAuditId, containerExecArgv, shortRef } from '../ops/containers'
-import { shJoin } from '../ops/quote'
+import { shJoin, shQuote } from '../ops/quote'
+import { SERVICE_PATH, SERVICE_PATH_MESSAGE } from '../../shared/services'
 import { redact } from '../security/redact'
 import { quietly } from '../util/teardown'
 import type { AuthPlan } from './auth'
@@ -134,6 +135,8 @@ interface Session {
   readyAtMs: number
   /** The host's own label: `meta.label` reads `<ref>@<host>` on a container tab, the ssh.* audit keeps the host. */
   hostLabel: string
+  /** The folder the login shell starts in, when the tab was opened from a service that has one. */
+  cwd: string | null
 }
 
 interface DialTarget {
@@ -160,6 +163,21 @@ const once = (fn: () => void): (() => void) => {
     done = true
     fn()
   }
+}
+
+function checkCwd(raw: string | undefined): string | null {
+  if (raw === undefined) return null
+  if (typeof raw !== 'string' || raw === '' || !SERVICE_PATH.test(raw)) throw new Error(SERVICE_PATH_MESSAGE)
+  return raw
+}
+
+/**
+ * The command that opens the user's login shell in `cwd`. SERVICE_PATH leaves only plain path characters, so the
+ * folder is one word; a leading `~` is written as "$HOME", which every common shell (fish included) expands.
+ */
+export function shellIn(cwd: string): string {
+  const word = cwd.startsWith('~') ? `"$HOME"${cwd.slice(1)}` : shQuote(cwd)
+  return `cd -- ${word}; exec "$SHELL" -l`
 }
 
 /** A container tab reads `<ref>@<host>`, a full id as its 12-char short id. */
@@ -222,6 +240,8 @@ export class SessionManager {
     const target = this.target(req.hostId, req.environmentId)
     const s = this.create('ssh', req, tabLabel(container, target.label), req.hostId, target)
     s.meta.container = container
+    // A container tab has its own working folder.
+    s.cwd = container === null ? checkCwd(req.cwd) : null
     this.dial(s, target)
     return snapshot(s.meta)
   }
@@ -260,8 +280,12 @@ export class SessionManager {
     return snapshot(s.meta)
   }
 
-  /** Dropped silently unless the session is ready. */
+  /**
+   * Dropped silently unless the session is ready. Also dropped while the vault is locked: a ready session keeps
+   * running behind the lock screen, but nothing can be typed into it until the vault is open again.
+   */
   write(id: string, data: string): void {
+    if (this.deps.isLocked()) return
     const s = this.sessions.get(id)
     if (s?.meta.state === 'ready') s.pty?.write(data)
   }
@@ -299,6 +323,8 @@ export class SessionManager {
   /** `end` is the stream offset the buffer reaches; later session:data events carry theirs. */
   attach(id: string): { meta: SessionMeta; buffer: string; end: number } {
     const s = this.get(id)
+    // The scrollback can hold anything a host printed: it is not handed out behind the lock screen.
+    this.assertUnlocked()
     // A new view (or a reloaded window) starts from the buffer: nothing earlier is owed an ack.
     this.unpause(s)
     return { meta: snapshot(s.meta), buffer: s.scrollback.text(), end: s.end }
@@ -404,6 +430,7 @@ export class SessionManager {
       attempt: null,
       readyAtMs: 0,
       hostLabel: target?.label ?? label,
+      cwd: null,
     }
     this.sessions.set(s.meta.id, s)
     return s
@@ -520,9 +547,11 @@ export class SessionManager {
     try {
       // A server may refuse the env vars; ssh2 doesn't wait for a reply, so that is ignored.
       const { container } = s.meta
-      if (container === null) client.shell({ term: 'xterm-256color', ...sent }, { env: target.envVars }, onShell)
       // A container tab: `docker exec -it` on a pty in place of the login shell, again on each reconnect.
-      else client.exec(shJoin(containerExecArgv(container)), { pty: { term: 'xterm-256color', ...sent }, env: target.envVars }, onShell)
+      if (container !== null) client.exec(shJoin(containerExecArgv(container)), { pty: { term: 'xterm-256color', ...sent }, env: target.envVars }, onShell)
+      // Started in a folder: the login shell again, from there. A folder that isn't there says so and the shell opens at home.
+      else if (s.cwd !== null) client.exec(shellIn(s.cwd), { pty: { term: 'xterm-256color', ...sent }, env: target.envVars }, onShell)
+      else client.shell({ term: 'xterm-256color', ...sent }, { env: target.envVars }, onShell)
     } catch (err) {
       this.dialFailed(s, attempt, target, err)
     }

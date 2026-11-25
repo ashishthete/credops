@@ -132,6 +132,7 @@ describe('SessionManager output flow control', () => {
       audit: f.audit,
       prompts: new PromptBroker({ emit: vi.fn(), isLocked: () => false }),
       emit,
+      isLocked: () => false,
     } as unknown as SessionManagerDeps)
     onTestFinished(() => manager.closeAll('quit'))
     vi.useFakeTimers()

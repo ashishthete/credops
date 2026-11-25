@@ -136,7 +136,7 @@ export function EnvironmentView({ env, data, onNewHost, onEdit, onDelete }: Envi
           onDeploy={setDeployPick}
           onLogs={setLogsOf}
           onCopy={() => setCopyFrom(env)}
-          onConnect={(hostId) => void connect(hostId, env.id)}
+          onConnect={(hostId, path) => void connect(hostId, env.id, path)}
         />
 
         {settings && apps.length > 0 && (

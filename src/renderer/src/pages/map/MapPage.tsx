@@ -3,7 +3,7 @@ import { FileDown, Maximize, Network, Plus, RotateCcw, Search, X } from 'lucide-
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 import { useInventory, type InventoryData } from '../../inventory/store'
-import { byName } from '../../inventory/tree'
+import { byName, byPosition } from '../../inventory/tree'
 import { FIND_PARAM, FOCUS_PARAM } from '../../map/commands'
 import { DetailPanel, selectionSubject, type MapSelection } from '../../map/DetailPanel'
 import { parseScope, scopeKey, type MapGraph, type MapNode, type MapScope } from '../../map/graph'
@@ -203,7 +203,7 @@ function MapBody() {
   const environmentId = data?.environments.some((e) => e.id === params.get('env')) ? params.get('env')! : ''
   const products = useMemo(() => [...(data?.products ?? [])].sort((a, b) => byName(a.name, b.name)), [data])
   const environments = useMemo(
-    () => (data?.environments ?? []).filter((e) => !productId || e.productId === productId).sort((a, b) => byName(a.name, b.name)),
+    () => (data?.environments ?? []).filter((e) => !productId || e.productId === productId).sort(productId ? byPosition : (a, b) => byName(a.name, b.name)),
     [data, productId],
   )
   const setFilter = useCallback(

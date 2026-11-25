@@ -203,6 +203,28 @@ describe('EnvironmentStore and ProductStore', () => {
     expect(f.products.list().find((x) => x.id === a.id)!.environmentIds).toEqual([])
   })
 
+  it('reorder sets the order of a product\'s environments; new and moved ones go last', async () => {
+    const f = await makeInventory()
+    const a = prod(f, 'A')
+    const b = prod(f, 'B')
+    const [x, y, z] = ['prod', 'staging', 'dev'].map((name) => f.envs.create({ name, color: COLOR, productId: a.id }))
+    const ids = () => f.products.list().find((p) => p.id === a.id)!.environmentIds
+    expect(ids()).toEqual([x!.id, y!.id, z!.id])
+    expect(f.envs.reorder(a.id, [z!.id, x!.id, y!.id]).map((e) => e.position)).toEqual([0, 1, 2])
+    expect(ids()).toEqual([z!.id, x!.id, y!.id])
+    expect(f.envs.list().filter((e) => e.productId === a.id).map((e) => e.name)).toEqual(['dev', 'prod', 'staging'])
+    expect(actions(f, 'environment.reorder')[0]!.details).toEqual({ environments: 3 })
+    f.envs.reorder(a.id, [z!.id, x!.id, y!.id])
+    expect(actions(f, 'environment.reorder')).toHaveLength(1)
+    const msg = /list each of the product's environments once/
+    expect(() => f.envs.reorder(a.id, [z!.id, x!.id])).toThrow(msg)
+    expect(() => f.envs.reorder(a.id, [z!.id, x!.id, x!.id])).toThrow(msg)
+    const other = f.envs.create({ name: 'qa', color: COLOR, productId: b.id })
+    expect(() => f.envs.reorder(a.id, [z!.id, x!.id, other.id])).toThrow(msg)
+    f.envs.setProduct(other.id, a.id)
+    expect(ids()).toEqual([z!.id, x!.id, y!.id, other.id])
+  })
+
   it('setProduct moves the environment and audits from and to', async () => {
     const f = await makeInventory()
     const a = prod(f, 'A')

@@ -41,6 +41,10 @@ export const ROLE_ORDER = ['bastion', 'app', 'db', 'other'] as const satisfies r
 export const UNASSIGNED_COLOR = '#8a91a3'
 export const byName = (a: string, b: string) => a.localeCompare(b)
 
+/** A product's environments in the order the user gave them; a tie falls back to the name. */
+export const byPosition = (a: { position: number; name: string }, b: { position: number; name: string }) =>
+  a.position - b.position || byName(a.name, b.name)
+
 /** Services by type, in the order you reach them: bastions, then apps, then databases. */
 export const SERVICE_ORDER = ['bastion', 'service', 'db'] as const satisfies readonly ServiceKind[]
 
@@ -130,7 +134,7 @@ export function buildTree(data: InventoryData, expanded: ReadonlySet<NodeKey>, s
 
   for (const p of [...data.products].sort((a, b) => byName(a.name, b.name))) {
     const key = `p:${p.id}`
-    const envIds = data.environments.filter((e) => e.productId === p.id).sort((a, b) => byName(a.name, b.name)).map((e) => e.id)
+    const envIds = data.environments.filter((e) => e.productId === p.id).sort(byPosition).map((e) => e.id)
     if (push({ key, kind: 'product', id: p.id, depth: 0, parentKey: null, label: p.name, color: p.color, sharedCount: 0, childCount: envIds.length })) {
       envIds.forEach((id) => addEnv(key, id))
     }

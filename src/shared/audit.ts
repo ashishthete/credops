@@ -55,6 +55,7 @@ export const AUDIT_ACTIONS = [
   'environment.products', // before regions: kept so older events still read
   'environment.product',
   'environment.host',
+  'environment.reorder',
   'host.create',
   'host.update',
   'host.delete',

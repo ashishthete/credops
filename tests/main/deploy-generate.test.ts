@@ -462,6 +462,11 @@ describe('other kinds', () => {
     expect(cmdOf(t)).toContain('{{ od.expect_b64 | quote }}')
     expect((bl.vars.od as Record<string, string>).expect_b64).toBe(b64('RAW1'))
     expect(() => generatePlaybook(planFixture({ kind: 'break-lock', lock: {} }))).toThrow()
+    // steps left on the host are stopped by an unlock, and by a break-lock only when asked (an interrupted holder)
+    expect(c).toContain('stopped step process group')
+    expect(cmdOf(t)).not.toContain('stopped step process group')
+    const stop = plays(planFixture({ kind: 'break-lock', lock: { expectRaw: { 'host-od-1': 'RAW1', 'host-od-2': 'RAW2' }, stopSteps: true } }))[0]
+    expect(cmdOf(flat(stop.tasks).find((x) => step(x) === 'unlock')!)).toContain('stopped step process group')
   })
 })
 

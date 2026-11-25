@@ -137,7 +137,8 @@ export interface DeployPlan {
   /** Rollback only: the release being rolled back, when it is another one (a manual rollback); its .env backup is restored. */
   rollbackOf?: string
   /** For `break-lock`: the raw lock content preflight saw, per host. */
-  lock: { expectRaw?: Record<string, string> }
+  /** `stopSteps`: a break-lock also stops the steps the holder left running on the host (its controller is gone). */
+  lock: { expectRaw?: Record<string, string>; stopSteps?: boolean }
   startedAt: string
   /** Release only: the stages the deploy phase runs in, one play each. Null: one play per host. */
   flow: PlanFlow | null

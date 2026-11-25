@@ -19,6 +19,7 @@ type InventoryChannel =
   | 'env:delete'
   | 'env:openDomain'
   | 'env:setProduct'
+  | 'env:reorder'
   | 'env:putHost'
   | 'env:removeHost'
   | 'product:list'
@@ -72,6 +73,7 @@ export function createInventoryHandlers(deps: {
       await openExternal(url)
     },
     'env:setProduct': (id, productId) => environments.setProduct(id, productId),
+    'env:reorder': (productId, ids) => environments.reorder(productId, ids),
     'env:putHost': (id, hostId, role) => environments.putHost(id, hostId, role),
     'env:removeHost': (id, hostId) => environments.removeHost(id, hostId),
     'product:list': () => products.list(),

@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppShell } from '../../src/renderer/src/shell/AppShell'
 import { preloadPages } from '../../src/renderer/src/shell/pages'
-import { mockBridge } from './helpers'
+import { mockBridge, product } from './helpers'
 
 // setup.ts swaps in eager pages for every other suite; this one keeps the real lazy ones.
 vi.unmock('../../src/renderer/src/shell/pages')
@@ -35,6 +35,7 @@ describe('lazy pages', () => {
   })
 
   it('navigating from an eager page to lazy ones loads each', async () => {
+    mockBridge({ 'product:list': [product({ id: 'p1', name: 'Acme' })] })
     const user = userEvent.setup()
     renderShell('/products')
     expect(await screen.findByRole('heading', { name: 'Products', level: 1 })).toBeInTheDocument()

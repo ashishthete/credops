@@ -229,6 +229,14 @@ export const inv = {
     return row
   },
 
+  async reorderEnvironments(productId: string, ids: string[]): Promise<boolean> {
+    const rows = await attempt("Couldn't reorder the environments", () => api.invoke('env:reorder', productId, ids))
+    if (!rows) return false
+    patchStore((d) => ({ environments: rows.reduce(upsert, d.environments) }))
+    await refresh('products')
+    return true
+  },
+
   async putHost(envId: string, hostId: string, role: HostRole): Promise<EnvironmentMeta | undefined> {
     const row = await attempt("Couldn't add the host to the environment", () => api.invoke('env:putHost', envId, hostId, role))
     if (row) {

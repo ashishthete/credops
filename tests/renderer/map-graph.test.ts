@@ -6,9 +6,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useHostDeployStatus } from '../../src/renderer/src/deploy/map-status'
 import { releaseStore, resetReleases } from '../../src/renderer/src/deploy/releases'
 import type { InventoryData } from '../../src/renderer/src/inventory/store'
-import { buildAttachments, buildGraph, parseScope, scopeKey, type HostNodeData, type MapScope } from '../../src/renderer/src/map/graph'
+import { buildAttachments, buildGraph, domainOf, parseScope, scopeKey, type HostNodeData, type MapScope } from '../../src/renderer/src/map/graph'
 import { ATTACH_H, HOST_H, layoutGraph } from '../../src/renderer/src/map/layout'
 import { nodeTypes } from '../../src/renderer/src/map/nodes'
+import { searchGraph } from '../../src/renderer/src/map/search'
 import type { ReleaseSummary } from '../../src/shared/deploy'
 import { releaseDetail } from './fixtures/release-events'
 import { appService, dbService, deploymentMeta, environment, host, product, REGION, tunnelMeta } from './helpers'
@@ -283,8 +284,8 @@ describe('service attachments', () => {
     d.hosts[1] = host({ id: 'h2', label: 'beta', address: '10.0.0.9' })
     const checkouts = [deploymentMeta({ id: 'd1', environmentId: 'e1', hostId: 'h1' })]
     const services = [
-      appService({ id: 's2', name: 'worker', environmentId: 'e1', hostId: 'h1', deploymentId: 'd1', position: 1 }),
-      appService({ id: 's1', name: 'api', environmentId: 'e1', hostId: 'h1', deploymentId: 'd1', position: 0 }),
+      appService({ id: 's2', name: 'worker', environmentId: 'e1', hostId: 'h1', deploymentId: 'd1', position: 1, url: null }),
+      appService({ id: 's1', name: 'api', environmentId: 'e1', hostId: 'h1', deploymentId: 'd1', position: 0, url: 'https://api.example.com/health' }),
       dbService({ id: 'b1', name: 'main-db', environmentId: 'e1', hostId: 'h2', position: 3 }),
       dbService({ id: 'b2', name: 'far-db', environmentId: 'e1', hostId: 'h9', position: 4 }),
     ]
@@ -296,18 +297,23 @@ describe('service attachments', () => {
     const { data, attachments } = deployed()
     const g = buildGraph({ data, tunnels: [], scope: ALL, attachments })
     expect(attached(g, 'e:e1/h:h1')).toEqual([
-      { id: 's1', kind: 'service', label: 'api' },
-      { id: 's2', kind: 'service', label: 'worker' },
+      { id: 's1', kind: 'service', label: 'api', url: 'https://api.example.com/health' },
+      { id: 's2', kind: 'service', label: 'worker', url: null },
     ])
     // The same host in another environment draws none of e1's services.
     expect(attached(g, 'e:e2/h:h1')).toEqual([])
     // Every service attaches to the host it runs on; one on a host outside the environment attaches nowhere.
-    expect(attached(g, 'e:e1/h:h2')).toEqual([{ id: 'b1', kind: 'db', label: 'main-db' }])
+    expect(attached(g, 'e:e1/h:h2')).toEqual([{ id: 'b1', kind: 'db', label: 'main-db', url: null }])
     expect(g.nodes.flatMap((n) => (n.data.kind === 'host' ? n.data.attachments.map((a) => a.id) : []))).not.toContain('b2')
+
+    // A service's domain finds its host, and only that placement.
+    expect(searchGraph(g, 'api.example.com').matches).toEqual(['e:e1/h:h1'])
+    expect(domainOf('https://api.example.com:8443/health')).toBe('api.example.com:8443')
+    expect(domainOf('not a url')).toBe('not a url')
 
     // The unassigned group never carries services.
     const loose = { ...data, hosts: [...data.hosts, host({ id: 'h7', label: 'spare' })] }
-    const withLoose = buildGraph({ data: loose, tunnels: [], scope: ALL, attachments: { ...attachments, h7: { e1: [{ id: 'x', kind: 'service', label: 'x' }] } } })
+    const withLoose = buildGraph({ data: loose, tunnels: [], scope: ALL, attachments: { ...attachments, h7: { e1: [{ id: 'x', kind: 'service', label: 'x', url: null }] } } })
     expect(attached(withLoose, 'u/h:h7')).toEqual([])
 
     // A host with services is taller by ATTACH_H; the others keep HOST_H.

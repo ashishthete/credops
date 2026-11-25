@@ -14,7 +14,7 @@ import type { AuthPlan } from '../../src/main/ssh/auth'
 import { connectChain } from '../../src/main/ssh/connect'
 import { fingerprintOf, KnownHostStore } from '../../src/main/ssh/known-hosts'
 import { PromptBroker } from '../../src/main/ssh/prompts'
-import { SessionManager, type SessionManagerDeps } from '../../src/main/ssh/sessions'
+import { SessionManager, shellIn, type SessionManagerDeps } from '../../src/main/ssh/sessions'
 import { generateKey, startServer } from './ssh-server'
 import type { ServerOpts, TestServer } from './ssh-server'
 import { makeVault } from './vault-helpers'
@@ -393,6 +393,9 @@ describe('SessionManager', () => {
 
     t.vault.lock('manual')
     t.manager.vaultLocked()
+    // The ready session stays up, but takes no input and gives out no scrollback until the unlock.
+    expect(() => t.manager.attach(a.id)).toThrow(VAULT_LOCKED)
+    t.manager.write(a.id, 'echo typed-while-locked\n')
     expect(t.promptDone()).toEqual([prompt.promptId])
     expect(t.broker.pending()).toEqual([])
     const failed = t.states(b.id).at(-1)
@@ -402,9 +405,12 @@ describe('SessionManager', () => {
     t.broker.answer(prompt.promptId, { kind: 'host-key', trust: true })
     expect(t.knownHosts.list()).toHaveLength(1)
     expect(t.audits('ssh.open').find((e) => e.outcome === 'failure')?.details).toMatchObject({ code: 'locked' })
+    expect((await t.vault.unlock('correct horse')).ok).toBe(true)
     t.manager.write(a.id, 'still\r')
     await t.waitData(a.id, 'still\r')
-    expect(t.manager.attach(a.id).meta.state).toBe('ready')
+    const back = t.manager.attach(a.id)
+    expect(back.meta.state).toBe('ready')
+    expect(back.buffer).not.toContain('typed-while-locked')
   })
 
   it('a dial in flight at the lock never raises a prompt and ends locked', async () => {
@@ -633,6 +639,28 @@ describe('SessionManager container exec tabs', () => {
       },
     })
   }
+
+  it('a tab opened with a folder runs the login shell from it, again on reconnect; a bad folder is refused', async () => {
+    const t = await setup(appHost)
+    const seen: Parameters<typeof execServer>[0] = []
+    const srv = await execServer(seen)
+    t.trust(srv)
+    const hostId = t.host(srv.port)
+    expect(shellIn('/opt/app')).toBe('cd -- /opt/app; exec "$SHELL" -l')
+    expect(shellIn('~/apps/web')).toBe('cd -- "$HOME"/apps/web; exec "$SHELL" -l')
+    expect(shellIn('~')).toBe('cd -- "$HOME"; exec "$SHELL" -l')
+    const opened = t.manager.openSsh({ hostId, ...size, cwd: '/opt/app' })
+    expect(opened).toMatchObject({ label: 'app-1', container: null })
+    await t.waitState(opened.id, 'ready')
+    expect(seen).toEqual([{ command: 'cd -- /opt/app; exec "$SHELL" -l', env: { LANG: 'C.UTF-8' }, term: 'xterm-256color', cols: 80 }])
+    expect(execs(t)).toEqual([])
+    t.manager.write(opened.id, 'exit\r')
+    await t.waitState(opened.id, 'closed')
+    t.manager.reconnect(opened.id)
+    await t.waitState(opened.id, 'ready')
+    expect(seen.map((s) => s.command)).toEqual(['cd -- /opt/app; exec "$SHELL" -l', 'cd -- /opt/app; exec "$SHELL" -l'])
+    for (const cwd of ['', 'opt', '/a b', '/a;id', '/$(id)', '~x/y']) expect(() => t.manager.openSsh({ hostId, ...size, cwd })).toThrow(/folder must start with/)
+  })
 
   it('opens a container exec tab with a pty and the quoted docker exec command', async () => {
     const t = await setup(appHost)

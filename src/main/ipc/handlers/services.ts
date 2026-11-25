@@ -93,6 +93,7 @@ function catalogService(
     name: s.name,
     position,
     description: '',
+    path: '',
     createdAt: '',
     updatedAt: '',
     kind: 'service',

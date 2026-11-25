@@ -225,7 +225,7 @@ describe('TunnelManager', () => {
     const up = await t.waitState(tun.id, 'up')
     expect(t.states(tun.id).map((s) => s.state)).toEqual(['connecting', 'up'])
     expect(up.boundPort).toBeGreaterThan(0)
-    expect(up).toMatchObject({ boundAddress: '127.0.0.1', liveness: 'probe', failures: 0, error: null, maxFailures: 5 })
+    expect(up).toMatchObject({ boundAddress: '127.0.0.1', liveness: 'probe', failures: 0, error: null, maxFailures: 10 })
     await ping(up.boundPort!)
     expect(t.tunnelEvents(tun.id).map((e) => e.type)).toEqual(['connecting', 'up'])
     const starts = t.audits('tunnel.start')
@@ -420,7 +420,7 @@ describe('TunnelManager', () => {
     expect(srv.connections()).toBe(1)
   })
 
-  it('backs off 1-2-4-8 s and fails on the 5th failure', async () => {
+  it('backs off 1-2-4-8 s up to the 60 s cap and fails on the 10th failure', async () => {
     const t = await setup()
     const srv = await server()
     const echo = await target()
@@ -430,19 +430,19 @@ describe('TunnelManager', () => {
     await srv.close()
     const delays = (): (number | null)[] =>
       t.tunnelEvents(tun.id).flatMap((e) => (e.type === 'retrying' ? [e.retryInMs] : []))
-    for (let n = 1; n <= 4; n++) {
+    for (let n = 1; n <= 9; n++) {
       await t.waitFor(() => expect(delays()).toHaveLength(n))
       t.mt.fire(delays()[n - 1]!)
     }
     const failed = await t.waitState(tun.id, 'failed')
-    expect(delays()).toEqual([1000, 2000, 4000, 8000])
-    expect(failed.failures).toBe(5)
+    expect(delays()).toEqual([1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000])
+    expect(failed.failures).toBe(10)
     const failedEvents = t.tunnelEvents(tun.id).filter((e) => e.type === 'failed')
     expect(failedEvents).toHaveLength(1)
     expect(failedEvents[0]).toMatchObject({ wasUp: true })
     const stops = t.audits('tunnel.stop')
     expect(stops).toHaveLength(1)
-    expect(stops[0].details).toMatchObject({ reason: 'failed', failures: 5 })
+    expect(stops[0].details).toMatchObject({ reason: 'failed', failures: 10 })
     await expect(dial(up.boundPort!)).rejects.toMatchObject({ code: 'ECONNREFUSED' })
     expect(t.timeouts()).toEqual([])
   })
@@ -461,6 +461,23 @@ describe('TunnelManager', () => {
     t.mt.fire(STABLE_MS)
     expect(t.manager.runtime(tun.id).failures).toBe(0)
     expect(t.states(tun.id).at(-1)).toMatchObject({ state: 'up', failures: 0 })
+  })
+
+  it('retryWaiting tries a tunnel in backoff again at once, and leaves the others alone', async () => {
+    const t = await setup()
+    const srv = await server()
+    const echo = await target()
+    const tun = t.tunnel(t.host(srv), { targetPort: echo.port })
+    t.manager.start(tun.id)
+    await t.waitState(tun.id, 'up')
+    // Nothing waiting: no effect on a tunnel that is up.
+    t.manager.retryWaiting()
+    expect(t.manager.runtime(tun.id).state).toBe('up')
+    srv.dropAll()
+    await t.waitState(tun.id, 'retrying')
+    // No timer fired: the wake is what brings it back.
+    t.manager.retryWaiting()
+    expect((await t.waitState(tun.id, 'up')).failures).toBe(1)
   })
 
   it('autoReconnect off fails on the first drop', async () => {

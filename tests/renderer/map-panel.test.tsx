@@ -2,12 +2,13 @@ import './flow-stubs'
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { deployStore, resetDeploy } from '../../src/renderer/src/deploy/store'
 import { inventoryStore, reloadInventory } from '../../src/renderer/src/inventory/store'
 import { resetSessions } from '../../src/renderer/src/terminal/sessions'
 import { resetTunnels } from '../../src/renderer/src/tunnels/store'
 import { clearToasts } from '../../src/renderer/src/ui/Toaster'
 import { AppShell } from '../../src/renderer/src/shell/AppShell'
-import { defaultVault, emitBridgeEvent, environment, host, identity, mockBridge, product, session, tunnelMeta, tunnelRuntime } from './helpers'
+import { appService, dbService, defaultVault, emitBridgeEvent, environment, host, identity, mockBridge, product, session, tunnelMeta, tunnelRuntime } from './helpers'
 
 // Connect lands on the Terminals page, which mounts xterm.
 vi.mock('@xterm/xterm', async () => ({ Terminal: (await import('./terminal-fakes')).FakeTerminal }))
@@ -142,6 +143,27 @@ describe('map detail panel', () => {
     expect(within(p).getByText('test-1')).toHaveAttribute('title', 'Test')
     expect(document.activeElement).toBe(within(p).getByRole('button', { name: 'Connect' }))
     expect(node('e:e1/h:h1')).toHaveClass('selected')
+  })
+
+  it("the host panel lists the placement's services with their domains, and Open asks main by id", async () => {
+    const invoke = await renderMap({ 'service:open': undefined })
+    await act(async () => {
+      deployStore.set({
+        ...deployStore.get(),
+        services: [
+          appService({ id: 's1', name: 'api', environmentId: 'e1', hostId: 'h1', url: 'https://api.example.com/health', position: 0 }),
+          dbService({ id: 'b1', name: 'main-db', environmentId: 'e1', hostId: 'h1', position: 1 }),
+        ],
+      })
+    })
+    await click(node('e:e1/h:h1')!)
+    const list = within(panel('web')).getByRole('list', { name: 'Services' })
+    expect(within(list).getByText('api.example.com')).toHaveAttribute('title', 'https://api.example.com/health')
+    expect(list).toHaveTextContent('main-db')
+    expect(within(list).getAllByRole('button')).toHaveLength(1)
+    await click(within(list).getByRole('button', { name: 'Open api' }))
+    expect(calls(invoke, 'service:open')).toEqual([['service:open', 's1']])
+    resetDeploy()
   })
 
   it('the host panel shows no private fields', async () => {

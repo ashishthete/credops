@@ -6,7 +6,7 @@ import type { EnvironmentMeta, ProductMeta } from '../../../../shared/inventory'
 import { SERVICE_KIND_LABEL } from '../../../../shared/services'
 import { deployStore } from '../../deploy/store'
 import type { InventoryData } from '../../inventory/store'
-import { ROLE_ORDER, SERVICE_ORDER } from '../../inventory/tree'
+import { byPosition, ROLE_ORDER, SERVICE_ORDER } from '../../inventory/tree'
 import { showProductOnMapPath } from '../../map/commands'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
@@ -57,7 +57,7 @@ interface ProductViewProps {
 }
 
 export function ProductView({ product, data, stagger, onOpen, onNewEnvironment, onEdit, onDelete }: ProductViewProps) {
-  const envs = data.environments.filter((e) => e.productId === product.id).sort((a, b) => a.name.localeCompare(b.name))
+  const envs = data.environments.filter((e) => e.productId === product.id).sort(byPosition)
   const navigate = useNavigate()
 
   return (

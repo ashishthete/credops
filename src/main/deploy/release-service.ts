@@ -27,6 +27,7 @@ import {
   type PrepareShared,
   LOCK_FINISHED_NOTE,
   LOCK_LIVE_NOTE,
+  LOCK_INTERRUPTED_GONE_NOTE,
   LOCK_INTERRUPTED_NOTE,
   CANCELLED_PART_WAY,
   cancelledPartWay,
@@ -141,6 +142,8 @@ export interface ReleaseServiceDeps {
   /** One call per flushed batch (about every EVENT_BATCH_MS), already persisted with their seq. */
   emit: (batch: RunEvent[]) => void
   emitState: (summary: ReleaseSummary) => void
+  /** Whether the ansible run a release last started is still going on this machine; null when nothing is known of it. */
+  runAlive?: (releaseId: string) => boolean | null
   actor: Actor
   now: () => Date
   clock: { setTimeout(fn: () => void, ms: number): unknown; clearTimeout(handle: unknown): void }
@@ -1231,8 +1234,14 @@ export class ReleaseService {
         // another machine's release, or a lock with no release id
       }
       if (status === null || !FINISHED.has(status)) continue
-      if (interrupted) {
+      // An interrupted run leads its own process group and may outlive the app: only one known to be gone frees the lock early.
+      if (interrupted && this.d.runAlive?.(lock.holder.releaseId) !== false) {
         note(hostId, `${lockHolderText(lock.holder, this.d.now().getTime())}${LOCK_INTERRUPTED_NOTE}`)
+        continue
+      }
+      if (interrupted) {
+        locks = { ...locks, [hostId]: { ...lock, stale: true } }
+        note(hostId, `${lockHolderText(lock.holder, this.d.now().getTime())}${LOCK_INTERRUPTED_GONE_NOTE}`)
         continue
       }
       locks = { ...locks, [hostId]: { ...lock, stale: true } }
@@ -1282,8 +1291,15 @@ export class ReleaseService {
     const infos = this.infosOf(rel).filter((i) => i.dep.hostId === hostId)
     if (infos.length === 0) throw new DeployError('INVALID_STATE', 'This release has no deployment on that host')
     const live = this.register(releaseId, env, 'preflight', rel.version ?? 'release', actor)
+    // An interrupted holder has no controller left to stop its steps: the break does it before the lock goes.
+    let stopSteps = false
+    try {
+      stopSteps = wasInterrupted(this.d.releases.get(lock.holder.releaseId).error)
+    } catch {
+      // another machine's release
+    }
     const run = async (): Promise<void> => {
-      const brk = this.plan('break-lock', live, infos, { version: null, holder: null, docker: new Map(), lockRaw: { [hostId]: lock.raw } })
+      const brk = this.plan('break-lock', live, infos, { version: null, holder: null, docker: new Map(), lockRaw: { [hostId]: lock.raw }, stopSteps })
       const a = await this.exec(live, brk, EMPTY)
       if (a.err !== null || !a.out || this.failed(a.out)) throw new DeployError('INVALID_STATE', this.reason(live, a.out, a.err, 'Breaking the lock'))
       const holder = this.resolveSecrets(infos, { env: false })
@@ -1720,6 +1736,7 @@ export class ReleaseService {
       backup?: boolean
       previous?: Map<string, string>
       lockRaw?: Record<string, string>
+      stopSteps?: boolean
       /** The lock's start time; a reviewed release passes the review's, so the text matches. */
       startedAt?: string
       /** Preflight's commits per checkout: a step's `when changed` base falls back to the deploy tag's commit. */
@@ -1778,7 +1795,7 @@ export class ReleaseService {
       hosts,
       deployments,
       secretRefs: o.holder?.refs ?? {},
-      lock: o.lockRaw ? { expectRaw: o.lockRaw } : {},
+      lock: o.lockRaw ? { expectRaw: o.lockRaw, ...(o.stopSteps ? { stopSteps: true } : {}) } : {},
       startedAt: o.startedAt ?? this.d.now().toISOString(),
       flow: kind === 'release' ? (o.flow ?? null) : null,
       prepare: kind === 'release' ? (o.prepare ?? null) : null,

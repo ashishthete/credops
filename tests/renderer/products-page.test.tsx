@@ -96,7 +96,7 @@ function placeholder(envId: string, hostId: string, label: string, role: HostRol
   const base = { id: `${envId}-${hostId}`, name: label, environmentId: envId, hostId, position }
   const kind = KIND_OF_ROLE[role]
   if (kind === 'db') return dbService({ ...base, dbAddress: '127.0.0.1' })
-  if (kind === 'bastion') return { ...base, kind: 'bastion', description: '', createdAt: TS, updatedAt: TS }
+  if (kind === 'bastion') return { ...base, kind: 'bastion', description: '', path: '', createdAt: TS, updatedAt: TS }
   return appService({ ...base, deploymentId: null, composeService: '' })
 }
 
@@ -186,6 +186,11 @@ function renderPage(w: World = world(), extra: Record<string, unknown> = {}) {
         const [envId, hostId] = args as [string, string]
         services = services.filter((s) => !(s.environmentId === envId && s.hostId === hostId))
         return envs().find((e) => e.id === envId)
+      }
+      case 'env:reorder': {
+        const [, ids] = args as [string, string[]]
+        w.environments = w.environments.map((e) => (ids.includes(e.id) ? { ...e, position: ids.indexOf(e.id) } : e))
+        return envs().filter((e) => ids.includes(e.id))
       }
       case 'env:setProduct': {
         const [envId, productId] = args as [string, string]
@@ -375,6 +380,17 @@ describe('products page', () => {
     await user.click(await screen.findByRole('menuitem', { name: 'Connect to host' }))
     await waitFor(() => expect(where).toBe('/terminals'))
     expect(sessions.openSsh).toHaveBeenCalledWith('web1', 'staging')
+  })
+
+  it('connecting from a service with a folder opens the terminal in that folder', async () => {
+    const user = userEvent.setup()
+    renderPage(world(), {
+      'service:list': [appService({ id: 's1', name: 'api', environmentId: 'prod', hostId: 'web1', path: '/opt/api' })],
+    })
+    fireEvent.contextMenu(await screen.findByRole('treeitem', { name: 'api' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'Connect to host' }))
+    await waitFor(() => expect(where).toBe('/terminals'))
+    expect(sessions.openSsh).toHaveBeenCalledWith('web1', 'prod', '/opt/api')
   })
 
   it('a service row Deploy opens the deploy wizard with only that service ticked', async () => {
@@ -938,6 +954,36 @@ describe('products page', () => {
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
   })
 
+  it('Move up, Move down and dragging onto a sibling reorder a product\'s environments', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderPage()
+    const moves = async (name: string) => {
+      fireEvent.contextMenu(item(name))
+      const menu = await screen.findByRole('menu', { name: `Options for ${name}` })
+      const out = within(menu).getAllByRole('menuitem').map((m) => m.textContent).filter((t) => t?.startsWith('Move'))
+      await user.keyboard('{Escape}')
+      return out
+    }
+    await screen.findByRole('treeitem', { name: 'prod' })
+    // The ends have nowhere further to go.
+    expect(await moves('analytics-db')).toEqual(['Move down'])
+    expect(await moves('prod')).toEqual(['Move up', 'Move down'])
+    expect(await moves('staging')).toEqual(['Move up'])
+
+    fireEvent.contextMenu(item('prod'))
+    await user.click(await screen.findByRole('menuitem', { name: 'Move up' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:reorder', 'acme', ['prod', 'analytics', 'staging']))
+    await waitFor(async () => expect(await moves('prod')).toEqual(['Move down']))
+
+    // Dropped on staging, prod takes staging's place and the rest shift up.
+    fireEvent.dragStart(item('prod'), { dataTransfer: dataTransfer() })
+    fireEvent.dragOver(item('staging'), { dataTransfer: dataTransfer() })
+    expect(item('staging')).toHaveAttribute('data-drop-target')
+    fireEvent.drop(item('staging'), { dataTransfer: dataTransfer() })
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('env:reorder', 'acme', ['analytics', 'staging', 'prod']))
+    await waitFor(async () => expect(await moves('prod')).toEqual(['Move up']))
+  })
+
   it('right-clicking a product or environment opens its add and edit dialogs', async () => {
     const user = userEvent.setup()
     renderPage()
@@ -953,7 +999,7 @@ describe('products page', () => {
 
     fireEvent.contextMenu(item('staging'))
     menu = await screen.findByRole('menu', { name: 'Options for staging' })
-    expect(within(menu).getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['New host', 'Add service', 'Edit environment'])
+    expect(within(menu).getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['New host', 'Add service', 'Edit environment', 'Move up'])
     await user.click(within(menu).getByRole('menuitem', { name: 'New host' }))
     expect(await screen.findByRole('dialog', { name: 'New host' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Cancel' }))

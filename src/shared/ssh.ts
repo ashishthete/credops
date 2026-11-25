@@ -95,6 +95,8 @@ export interface OpenSshRequest {
   rows: number
   /** Opens `docker exec` into this container instead of a login shell. */
   container?: string
+  /** A folder on the host (see SERVICE_PATH) the login shell starts in; not used with `container`. */
+  cwd?: string
 }
 export interface OpenLocalRequest {
   cols: number

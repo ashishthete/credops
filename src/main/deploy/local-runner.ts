@@ -53,6 +53,8 @@ export interface LocalRunnerDeps {
   sshConfig?: SshConfigOptions['sshConfig']
   /** Test-only (Task 8): skip host preparation and taps; the playbook's connection is local. */
   connectionOverride?: 'local'
+  /** Told when a release's ansible starts and closes, so a later launch can tell whether a run it left is still going. */
+  pids?: { started(releaseId: string, pid: number): void; ended(releaseId: string, pid: number): void }
   now?: () => number
 }
 
@@ -347,6 +349,8 @@ export class LocalRunner implements DeployRunner {
         return reject(err)
       }
       state.child = child
+      const pid = child.pid
+      if (pid !== undefined) o.pids?.started(plan.releaseId, pid)
       const { translator, term, termOut } = view
       const out = lineSplitter((l) => {
         for (const b of translator.feed(l)) send(b)
@@ -367,6 +371,7 @@ export class LocalRunner implements DeployRunner {
       })
       child.on('close', (code, signal) => {
         state.child = null
+        if (pid !== undefined) o.pids?.ended(plan.releaseId, pid)
         out.end()
         err.end()
         resolve({ code, signal })

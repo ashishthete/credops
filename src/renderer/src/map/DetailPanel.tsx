@@ -1,8 +1,8 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowUpRight, Cable, Filter, Laptop, Lock, SquareTerminal, X } from 'lucide-react'
+import { AppWindow, ArrowUpRight, Cable, Database, ExternalLink, Filter, Laptop, Lock, ShieldCheck, SquareTerminal, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
-import { deployStore } from '../deploy/store'
+import { deployStore, openService } from '../deploy/store'
 import { regionsOfEnvironment } from '../inventory/regions'
 import { useInventory, type InventoryData } from '../inventory/store'
 import { environmentKey, ROLE_ORDER } from '../inventory/tree'
@@ -18,7 +18,7 @@ import { Button } from '../ui/Button'
 import { plural } from '../ui/common'
 import { RegionChip } from '../ui/RegionChip'
 import { exitFast, fast, spring, useMotionSafe } from '../ui/motion'
-import type { EnvironmentNodeData, HostNodeData, MapGraph, MapNode, MapScope, ProductNodeData, TunnelEdgeData } from './graph'
+import { domainOf, type EnvironmentNodeData, type HostNodeData, type MapAttachment, type MapGraph, type MapNode, type MapScope, type ProductNodeData, type TunnelEdgeData } from './graph'
 import { REACH_TEXT, useHostPresence } from './presence'
 
 export type MapSelection = { kind: 'node'; id: string } | { kind: 'edge'; id: string }
@@ -250,6 +250,15 @@ function HostDetails({ d, data, onClose }: { d: HostNodeData; data: InventoryDat
           <span className="text-muted">Direct</span>
         )}
       </Section>
+      {d.attachments.length > 0 && (
+        <Section label="Services">
+          <ul aria-label="Services" className="flex flex-col gap-1">
+            {d.attachments.map((a) => (
+              <ServiceRow key={a.id} a={a} />
+            ))}
+          </ul>
+        </Section>
+      )}
       <HostTunnelList hostId={d.hostId} />
       <Actions>
         <Button data-autofocus icon={<SquareTerminal aria-hidden className="size-3.5" />} onClick={() => void connect(d.hostId, d.environmentId ?? undefined)}>
@@ -260,6 +269,32 @@ function HostDetails({ d, data, onClose }: { d: HostNodeData; data: InventoryDat
         </Button>
       </Actions>
     </>
+  )
+}
+
+/** One of the host's services in this placement, with its domain when it has a URL. */
+function ServiceRow({ a }: { a: MapAttachment }) {
+  const Icon = a.kind === 'db' ? Database : a.kind === 'bastion' ? ShieldCheck : AppWindow
+  return (
+    <li aria-label={a.label} className="flex min-w-0 items-center gap-2 rounded-lg border border-line bg-surface/50 px-2.5 py-1.5">
+      <Icon aria-hidden className="size-3.5 shrink-0 text-muted" strokeWidth={2} />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[12.5px] font-medium" title={a.label}>
+          {a.label}
+        </span>
+        {a.url && (
+          <span className="block truncate font-mono text-[11px] text-muted" title={a.url}>
+            {domainOf(a.url)}
+          </span>
+        )}
+      </span>
+      {a.url && (
+        // Main opens the stored URL by service id; the panel never passes one.
+        <Button size="sm" variant="ghost" icon={<ExternalLink aria-hidden className="size-3.5" />} aria-label={`Open ${a.label}`} onClick={() => void openService(a.id)}>
+          Open
+        </Button>
+      )}
+    </li>
   )
 }
 

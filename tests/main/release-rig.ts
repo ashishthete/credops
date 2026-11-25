@@ -35,7 +35,7 @@ export interface Rig {
 }
 
 export async function rig(
-  over: { access?: DeployAccess; finalize?: FinalizeSteps; maxEvents?: number; audit?: ReleaseServiceDeps['audit']; now?: () => Date; knownSecrets?: () => readonly string[] } = {},
+  over: { access?: DeployAccess; finalize?: FinalizeSteps; maxEvents?: number; audit?: ReleaseServiceDeps['audit']; now?: () => Date; knownSecrets?: () => readonly string[]; runAlive?: ReleaseServiceDeps['runAlive'] } = {},
 ): Promise<Rig> {
   const f = await makeDeployFixture({ maxEvents: over.maxEvents })
   // The fixture shares app1 with protected prod; most tests want an unprotected staging, so unshare it here.
@@ -59,6 +59,7 @@ export async function rig(
     releases: f.releases,
     runbooks,
     runner,
+    runAlive: over.runAlive,
     access: setup.access,
     finalize: setup.finalize,
     audit: over.audit ?? f.audit,

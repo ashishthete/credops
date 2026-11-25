@@ -34,6 +34,8 @@ export const statsStore = createStore<Record<string, StatsEntry>>({})
 const eventListeners = new Set<(event: TunnelEvent) => void>()
 /** Bumped by resetTunnels; a load that started before it must not repopulate the stores. */
 let generation = 0
+/** Counts local writes to the list: a read that began before one would put the old list back. */
+let written = 0
 let syncUsers = 0
 let stopSync: (() => void) | null = null
 
@@ -108,11 +110,12 @@ function announce(event: TunnelEvent): void {
 /** Loads the saved tunnels and their runtime; runtime pushed by events meanwhile is newer and stays. */
 export async function loadTunnels(): Promise<void> {
   const started = generation
+  const seen = written
   try {
     const [list, status] = await Promise.all([api.invoke('tunnel:list'), api.invoke('tunnel:status')])
     if (started !== generation) return
     const s = tunnelStore.get()
-    const tunnels = list ?? s.tunnels
+    const tunnels = seen === written ? (list ?? s.tunnels) : s.tunnels
     const known = new Set(tunnels.map((t) => t.id))
     // Runtime and stats for tunnels no longer listed (deleted with their host) go too.
     const runtime: Record<string, TunnelRuntime> = {}
@@ -159,6 +162,7 @@ export function startTunnelSync(): () => void {
 export async function createTunnel(input: TunnelInput, onError?: (message: string) => void): Promise<TunnelMeta | undefined> {
   const meta = await attempt("Couldn't create the tunnel", () => api.invoke('tunnel:create', input), onError)
   if (meta) {
+    written++
     const s = tunnelStore.get()
     tunnelStore.set({ ...s, tunnels: [...s.tunnels.filter((t) => t.id !== meta.id), meta] })
   }
@@ -168,6 +172,7 @@ export async function createTunnel(input: TunnelInput, onError?: (message: strin
 export async function updateTunnel(id: string, patch: TunnelPatch, onError?: (message: string) => void): Promise<TunnelMeta | undefined> {
   const meta = await attempt("Couldn't save the tunnel", () => api.invoke('tunnel:update', id, patch), onError)
   if (meta) {
+    written++
     const s = tunnelStore.get()
     tunnelStore.set({ ...s, tunnels: s.tunnels.map((t) => (t.id === id ? meta : t)) })
   }
@@ -180,6 +185,7 @@ export async function deleteTunnel(id: string): Promise<boolean> {
     return true
   })
   if (!done) return false
+  written++
   const s = tunnelStore.get()
   const { [id]: _rt, ...runtime } = s.runtime
   tunnelStore.set({ ...s, tunnels: s.tunnels.filter((t) => t.id !== id), runtime })

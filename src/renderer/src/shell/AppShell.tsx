@@ -7,7 +7,7 @@ import { useInventoryCommands } from '../inventory/commands'
 import { loadInventory } from '../inventory/store'
 import { useMapCommands } from '../map/commands'
 import { HostsPage } from '../pages/hosts/HostsPage'
-import { ProductsPage } from '../pages/products/ProductsPage'
+import { ProductsLanding } from '../pages/products/Welcome'
 import { KnownHostsDialog, closeKnownHosts, openKnownHosts } from '../pages/terminals/KnownHostsDialog'
 import { PromptHost } from '../pages/terminals/PromptHost'
 import { QuickConnect, closeQuickConnect } from '../pages/terminals/QuickConnect'
@@ -124,7 +124,7 @@ export function AppShell() {
                 <Route path="/deployments" element={<DeploymentsPage />} />
                 <Route path="/deployments/release/:id" element={<ReleasePage />} />
                 <Route path="/deployments/release/:id/logs" element={<PlaybookLogsPage />} />
-                <Route path="/products" element={<ProductsPage />} />
+                <Route path="/products" element={<ProductsLanding />} />
                 {/* The deck below draws this page; it stays mounted so terminals survive navigation. */}
                 <Route path="/terminals" element={null} />
                 <Route path="/hosts" element={<HostsPage />} />

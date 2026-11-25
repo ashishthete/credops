@@ -772,13 +772,13 @@ const KILL_STEPS = [
  * Unlock releases only locks this release holds; break-lock only locks whose content equals the expected raw.
  * An unlock first stops what a cancel left running: a parallel prepare's builds (`kill`) and any streamed step.
  */
-export function taskUnlock(h: PlanHost, breakLock: boolean, kill = false): Task {
+export function taskUnlock(h: PlanHost, breakLock: boolean, kill = false, stopSteps = !breakLock): Task {
   const guard = breakLock
     ? '[ "$cur" = "$(echo {{ od.expect_b64 | quote }} | base64 -d)" ]'
     : 'case "$cur" in *\'"releaseId":"{{ od.rel }}"\'*) true;; *) false;; esac'
   const cmd = [
     ...(kill ? [KILL_BUILDS] : []),
-    ...(breakLock ? [] : [KILL_STEPS]),
+    ...(stopSteps ? [KILL_STEPS] : []),
     'rc=0',
     ...EACH_CHECKOUT,
     '  cur=$(cat "$f" 2>/dev/null)',
@@ -998,7 +998,7 @@ function playFor(plan: DeployPlan, h: PlanHost, deps: PlanDeployment[]): Play {
     }
     case 'unlock':
     case 'break-lock':
-      tasks.push(taskUnlock(h, plan.kind === 'break-lock', 'kill_pids' in vars.od))
+      tasks.push(taskUnlock(h, plan.kind === 'break-lock', 'kill_pids' in vars.od, plan.kind === 'unlock' || plan.lock.stopSteps === true))
       break
   }
   return { name: `${plan.kind} ${sanitizeIdent(h.alias)}`, hosts: h.alias, gather_facts: false, strategy: 'linear', vars, tasks }

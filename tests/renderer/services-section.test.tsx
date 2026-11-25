@@ -273,6 +273,14 @@ describe('services section', () => {
     expect(within(dialog).getByLabelText('Host')).toHaveValue('h1')
     expect(within(dialog).getByLabelText('Host')).toBeDisabled()
     await user.click(within(dialog).getByRole('radio', { name: 'The host' }))
+    // A folder is a plain path from / or ~/.
+    const folder = within(dialog).getByLabelText('Folder on the host')
+    await user.type(folder, 'opt/my app')
+    await user.click(within(dialog).getByRole('button', { name: 'Add service' }))
+    expect(await within(dialog).findByText(/Starts with \/ or ~\//)).toBeInTheDocument()
+    expect(calls(invoke, 'service:create')).toHaveLength(0)
+    await user.clear(folder)
+    await user.type(folder, ' /opt/billing ')
     await user.click(within(dialog).getByRole('button', { name: 'Add service' }))
     await waitFor(() => expect(calls(invoke, 'service:create')).toHaveLength(1))
     expect(calls(invoke, 'service:create')[0][1]).toEqual({
@@ -280,6 +288,7 @@ describe('services section', () => {
       environmentId: 'e1',
       hostId: 'h1',
       name: 'billing',
+      path: '/opt/billing',
       deploymentId: 'd1',
       composeService: 'billing-svc',
       url: null,
@@ -356,6 +365,7 @@ describe('services section', () => {
       kind: 'db',
       environmentId: 'e1',
       name: 'cache',
+      path: '',
       dbEngine: 'redis',
       dbAddress: '127.0.0.1',
       hostId: 'h2',
@@ -418,7 +428,7 @@ describe('services section', () => {
     await waitFor(() =>
       expect(calls(invoke, 'service:update')[0].slice(1)).toEqual([
         's4',
-        { kind: 'db', name: 'cron', dbEngine: 'mysql', dbAddress: '10.0.0.5', hostId: 'h1', dbPort: 3306, localPort: null },
+        { kind: 'db', name: 'cron', path: '', dbEngine: 'mysql', dbAddress: '10.0.0.5', hostId: 'h1', dbPort: 3306, localPort: null },
       ]),
     )
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Edit cron' })).not.toBeInTheDocument())

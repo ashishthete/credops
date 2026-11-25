@@ -78,6 +78,7 @@ describe('config export', () => {
       versioned: true,
       autoRollback: false,
       domain: 'staging.example.com',
+      position: 0,
       parallelPrepare: true,
       prepareCap: 3,
       productId: f.ids.product,

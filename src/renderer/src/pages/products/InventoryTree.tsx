@@ -1,5 +1,5 @@
 import { AnimatePresence, motion, useIsPresent } from 'framer-motion'
-import { AppWindow, ChevronRight, Database, Inbox, Layers, Link2, Lock, MoreHorizontal, Pencil, Plus, Server, ShieldCheck, SquareTerminal, Trash2, type LucideIcon } from 'lucide-react'
+import { AppWindow, ArrowDown, ArrowUp, ChevronRight, Database, Inbox, Layers, Link2, Lock, MoreHorizontal, Pencil, Plus, Server, ShieldCheck, SquareTerminal, Trash2, type LucideIcon } from 'lucide-react'
 import { Fragment, memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type RefObject } from 'react'
 import type { ProductIcon } from '../../../../shared/inventory'
 import { SERVICE_KIND_LABEL, type ServiceKind } from '../../../../shared/services'
@@ -22,20 +22,24 @@ export interface InventoryTreeProps {
   canDrop: (drag: TreeRow, target: TreeRow) => boolean
   onDropHost: (host: TreeRow, environment: TreeRow) => void
   onDropEnvironment: (environment: TreeRow, product: TreeRow) => void
+  /** An environment dropped on another of the same product takes its place. */
+  onReorderEnvironment?: (environment: TreeRow, onto: TreeRow) => void
   onDropService: (service: TreeRow, environment: TreeRow) => void
   /** Adds or edits from a product, environment or service row's menu; without it those rows have no menu. */
   onRowAction?: (row: TreeRow, action: RowAction) => void
+  /** False hides a menu item that would do nothing for this row, like moving the first environment up. */
+  canRowAction?: (row: TreeRow, action: RowAction) => boolean
   productIcons?: Readonly<Record<string, ProductIcon>>
 }
 
 type MoveKey = Parameters<typeof moveFocus>[2]
 
-export type RowAction = 'newEnvironment' | 'editProduct' | 'newHost' | 'addService' | 'editEnvironment' | 'connectService' | 'editService' | 'deleteService'
+export type RowAction = 'newEnvironment' | 'editProduct' | 'newHost' | 'addService' | 'editEnvironment' | 'moveEnvironmentUp' | 'moveEnvironmentDown' | 'connectService' | 'editService' | 'deleteService'
 
 type MenuKind = 'product' | 'environment' | 'service'
 const hasRowMenu = (kind: TreeRow['kind']): kind is MenuKind => kind === 'product' || kind === 'environment' || kind === 'service'
 const groupOf = (a: { action: RowAction; danger?: true }) =>
-  a.danger ? 'delete' : a.action.startsWith('edit') ? 'edit' : a.action.startsWith('connect') ? 'connect' : 'add'
+  a.danger ? 'delete' : a.action.startsWith('edit') ? 'edit' : a.action.startsWith('move') ? 'move' : a.action.startsWith('connect') ? 'connect' : 'add'
 
 /** What a row's menu offers, in order. */
 const ROW_ACTIONS: Record<MenuKind, { action: RowAction; label: string; icon: LucideIcon; danger?: true }[]> = {
@@ -47,6 +51,8 @@ const ROW_ACTIONS: Record<MenuKind, { action: RowAction; label: string; icon: Lu
     { action: 'newHost', label: 'New host', icon: Server },
     { action: 'addService', label: 'Add service', icon: Plus },
     { action: 'editEnvironment', label: 'Edit environment', icon: Pencil },
+    { action: 'moveEnvironmentUp', label: 'Move up', icon: ArrowUp },
+    { action: 'moveEnvironmentDown', label: 'Move down', icon: ArrowDown },
   ],
   service: [
     { action: 'connectService', label: 'Connect to host', icon: SquareTerminal },
@@ -100,7 +106,9 @@ export function InventoryTree({
   onDropHost,
   onDropEnvironment,
   onDropService,
+  onReorderEnvironment,
   onRowAction,
+  canRowAction,
   productIcons = {},
 }: InventoryTreeProps) {
   const tree = useRef<HTMLUListElement>(null)
@@ -189,7 +197,7 @@ export function InventoryTree({
     dragOver: (row, e) => {
       if (!drag.current || !canDrop(drag.current, row)) return
       e.preventDefault()
-      e.dataTransfer.dropEffect = drag.current.kind === 'service' ? 'move' : 'copy'
+      e.dataTransfer.dropEffect = drag.current.kind === 'service' || row.kind === drag.current.kind ? 'move' : 'copy'
       if (over !== row.key) setOver(row.key)
     },
     dragLeave: (row, e) => {
@@ -202,6 +210,7 @@ export function InventoryTree({
       // The key lives in a ref, not dataTransfer (F30); a drop that changes nothing is ignored.
       if (!from || !canDrop(from, row)) return
       if (from.kind === 'host') onDropHost(from, row)
+      else if (from.kind === 'environment' && row.kind === 'environment') onReorderEnvironment?.(from, row)
       else if (from.kind === 'environment') onDropEnvironment(from, row)
       else if (from.kind === 'service') onDropService(from, row)
     },
@@ -251,7 +260,7 @@ export function InventoryTree({
           )}
         </AnimatePresence>
       </ul>
-      {menu && <RowMenu menu={menu} onClose={closeMenu} onAction={onRowAction} />}
+      {menu && <RowMenu menu={menu} onClose={closeMenu} onAction={onRowAction} canAction={canRowAction} />}
     </>
   )
 }
@@ -580,10 +589,12 @@ function RowMenu({
   menu,
   onClose,
   onAction,
+  canAction,
 }: {
   menu: MenuAt
   onClose: () => void
   onAction?: (row: TreeRow, action: RowAction) => void
+  canAction?: (row: TreeRow, action: RowAction) => boolean
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const { row } = menu
@@ -651,7 +662,7 @@ function RowMenu({
       className="fixed z-50 w-[200px] rounded-ui border border-line bg-surface-2/95 p-1 shadow-pop backdrop-blur-xl"
     >
       {hasRowMenu(kind) &&
-        ROW_ACTIONS[kind].map(({ action, label, icon: Icon, danger }, i, all) => (
+        ROW_ACTIONS[kind].filter((a) => canAction?.(row, a.action) ?? true).map(({ action, label, icon: Icon, danger }, i, all) => (
           <Fragment key={action}>
             {/* Adds, edits and deletes each sit apart. */}
             {i > 0 && groupOf(all[i - 1]) !== groupOf(all[i]) && <div role="separator" className="my-1 h-px bg-line/70" />}

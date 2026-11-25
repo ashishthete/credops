@@ -10,7 +10,7 @@ import { GlowDot, ROLE_LABEL } from '../pages/products/ProductView'
 import { plural } from '../ui/common'
 import { RegionChip } from '../ui/RegionChip'
 import { useMotionSafe } from '../ui/motion'
-import type { EnvironmentNodeData, HostNodeData, MacNodeData, ProductNodeData } from './graph'
+import { domainOf, type EnvironmentNodeData, type HostNodeData, type MacNodeData, type ProductNodeData } from './graph'
 import { REACH_TEXT, useHostPresence, type Reach } from './presence'
 
 /** React Flow wants an index signature on node data; the graph's interfaces don't carry one. */
@@ -161,6 +161,8 @@ function Attachments({ data }: { data: HostNodeData }) {
         const release = status.releaseOf[a.id]
         const word = running ? 'deploying' : failed ? 'last release failed' : null
         const label = word ? `${a.label}: ${word}` : a.label
+        // The chip is too narrow for a domain, so the tooltip carries it.
+        const tip = a.url ? `${label} · ${domainOf(a.url)}` : label
         const Icon = a.kind === 'db' ? Database : a.kind === 'bastion' ? ShieldCheck : AppWindow
         return (
           <button
@@ -169,7 +171,7 @@ function Attachments({ data }: { data: HostNodeData }) {
             data-attachment={a.id}
             data-state={running ? 'running' : failed ? 'failed' : 'idle'}
             aria-label={label}
-            title={label}
+            title={tip}
             disabled={!release}
             // The node itself is draggable and selectable; a chip click only opens the release.
             onClick={(e) => {

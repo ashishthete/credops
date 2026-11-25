@@ -26,8 +26,9 @@ export function useConnect() {
   useEffect(() => {
     navigateRef.current = navigate
   })
-  const connect = useCallback(async (hostId: string, environmentId?: string) => {
-    if (await once(`${hostId}:${environmentId ?? ''}`, () => openSsh(hostId, environmentId))) navigateRef.current('/terminals')
+  /** With `cwd`, a folder on the host (a service's), the shell starts there. */
+  const connect = useCallback(async (hostId: string, environmentId?: string, cwd?: string) => {
+    if (await once(`${hostId}:${environmentId ?? ''}:${cwd ?? ''}`, () => (cwd ? openSsh(hostId, environmentId, cwd) : openSsh(hostId, environmentId)))) navigateRef.current('/terminals')
   }, [])
   const connectContainer = useCallback(async (hostId: string, environmentId: string | null, ref: string) => {
     if (await once(`${hostId}:${environmentId ?? ''}:${ref}`, () => openContainer(hostId, environmentId, ref))) navigateRef.current('/terminals')

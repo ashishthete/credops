@@ -68,6 +68,23 @@ describe('ServiceStore', () => {
     )
   })
 
+  it('a folder is trimmed, kept on every kind, cleared by blank, and refused unless it is a plain path', async () => {
+    const f = await setup()
+    const a = f.services.create(f.app({ path: ' /opt/esg ' }))
+    expect(a.path).toBe('/opt/esg')
+    expect(f.services.create(f.dbService({ path: '~/pg' })).path).toBe('~/pg')
+    expect(f.services.create({ kind: 'bastion', environmentId: f.staging.id, hostId: f.host.id, name: 'jump' }).path).toBe('')
+    expect(f.services.update(a.id, { name: 'esg2' }).path).toBe('/opt/esg')
+    // Another kind keeps the folder.
+    expect(f.services.update(a.id, { kind: 'bastion' }).path).toBe('/opt/esg')
+    expect(f.services.update(a.id, { path: '' }).path).toBe('')
+    for (const bad of ['opt/app', '/opt/my app', '/opt/$(id)', "/a';id", '/a/../b', '~root/x', '/a\nb']) {
+      const msg = message(() => f.services.update(a.id, { path: bad }))
+      expect(msg).toBe('folder must start with / or ~/ and use only letters, digits and . _ @ + - /')
+      expect(msg).not.toContain(bad)
+    }
+  })
+
   it('compose service must match COMPOSE_SERVICE', async () => {
     const f = await setup()
     for (const bad of ['--rm', '-p', 'a b', 'x;rm']) {

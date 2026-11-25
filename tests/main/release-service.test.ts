@@ -8,7 +8,7 @@ import type { DeployPlan } from '../../src/main/deploy/runner'
 import { generatePlaybook, prepareSchedule } from '../../src/main/deploy/generate'
 import { ToolingError } from '../../src/main/deploy/tooling'
 import { CONFIRM_MESSAGE } from '../../src/shared/ops'
-import { BREAK_LOCK_CONFIRM_MESSAGE, CANCELLED_PART_WAY, DEFAULT_RELEASE_OPTIONS, LOCK_FINISHED_NOTE, LOCK_INTERRUPTED_NOTE, LOCK_LEFT_MESSAGE, LOCK_LIVE_NOTE, PREPARE_FAILED_MESSAGE, PREPARE_FETCH_FAILED_MESSAGE, type CommitInfo, type DeploymentMeta, type PreflightCheck, type RunEvent, type StepKind } from '../../src/shared/deploy'
+import { BREAK_LOCK_CONFIRM_MESSAGE, CANCELLED_PART_WAY, DEFAULT_RELEASE_OPTIONS, LOCK_FINISHED_NOTE, LOCK_INTERRUPTED_GONE_NOTE, LOCK_INTERRUPTED_NOTE, LOCK_LEFT_MESSAGE, LOCK_LIVE_NOTE, PREPARE_FAILED_MESSAGE, PREPARE_FETCH_FAILED_MESSAGE, type CommitInfo, type DeploymentMeta, type PreflightCheck, type RunEvent, type StepKind } from '../../src/shared/deploy'
 import { DEFAULT_VAULT_ID } from '../../src/shared/vault'
 import type { AppServiceMeta } from '../../src/shared/services'
 import { A, B, C, NOW, SECRET, dep, opReady, ready, rig, runbook, tracked, type Rig } from './release-rig'
@@ -990,6 +990,40 @@ describe('ReleaseService', () => {
     r.runner.checks = []
     await r.svc.breakLock(later, r.f.host.id, { typedLabel: 'app1' })
     expect(r.runner.call('break-lock').lock.expectRaw).toEqual({ [r.f.host.id]: 'raw' })
+  })
+
+  it('a lock an interrupted release left can be broken at once when its run is known to be gone, and the break stops what it left', async () => {
+    const alive: { v: boolean | null } = { v: true }
+    const r = await rig({ runAlive: () => alive.v })
+    const first = dep(r, 'api')
+    const quit = r.f.releases.createRelease({
+      environmentId: r.f.staging.id, kind: 'release', status: 'running', version: null, previousVersion: null,
+      versionBump: 'none', redeploy: false, rollbackOf: null, options: DEFAULT_RELEASE_OPTIONS, triggeredBy: 'ana@mbp', serviceIds: [],
+    })
+    r.svc.recoverInterrupted()
+    const holder = { releaseId: quit.id, user: 'ana', machine: 'mbp', environment: 'staging', version: null, startedAt: new Date(NOW - 12 * 60000).toISOString() }
+    const locked = (): void => {
+      r.runner.checks = [{ id: 'lock', deploymentId: null, hostId: r.f.host.id, label: 'app1', level: 'block', message: 'locked' }]
+      r.runner.locks = { [r.f.host.id]: { holder, stale: false, raw: 'raw' } }
+    }
+    // still going, or nothing known of it: it waits as before
+    for (const v of [true, null]) {
+      alive.v = v
+      locked()
+      const id = await ready(r, [first])
+      expect(r.svc.detail(id).preflight?.locks[r.f.host.id]?.stale).toBe(false)
+      expect(r.svc.detail(id).preflight?.checks.find((c) => c.id === 'lock')?.message).toContain(LOCK_INTERRUPTED_NOTE)
+    }
+    alive.v = false
+    locked()
+    const id = await ready(r, [first])
+    expect(r.svc.detail(id).preflight?.locks[r.f.host.id]?.stale).toBe(true)
+    expect(r.svc.detail(id).preflight?.checks.find((c) => c.id === 'lock')?.message).toContain(LOCK_INTERRUPTED_GONE_NOTE)
+    r.runner.locks = {}
+    r.runner.checks = []
+    await r.svc.breakLock(id, r.f.host.id, { typedLabel: 'app1' })
+    expect(r.runner.call('break-lock').lock).toEqual({ expectRaw: { [r.f.host.id]: 'raw' }, stopSteps: true })
+    expect(r.svc.detail(id).status).toBe('ready')
   })
 
   it('a lock held by a release still running in this app is never stale, however old', async () => {

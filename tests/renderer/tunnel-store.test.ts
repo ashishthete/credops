@@ -1,6 +1,7 @@
 import { act } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  deleteTunnel,
   loadTunnels,
   onTunnelEvent,
   resetTunnels,
@@ -190,6 +191,19 @@ describe('tunnel store', () => {
     await flush()
     expect(tunnelStore.get().tunnels).toEqual([])
     expect(tunnelStore.get().loaded).toBe(false)
+  })
+
+  it('a tunnel deleted while a reload is in flight does not come back with the old list', async () => {
+    await sync({ 'tunnel:list': [tunnelMeta({ id: 't1' }), tunnelMeta({ id: 't2' })] })
+    let answer!: (list: unknown) => void
+    ;(window.credops.invoke as ReturnType<typeof vi.fn>).mockImplementation(async (c: string) =>
+      c === 'tunnel:list' ? new Promise((res) => (answer = res)) : c === 'tunnel:status' ? [] : null,
+    )
+    const reading = loadTunnels()
+    await act(() => deleteTunnel('t2'))
+    answer([tunnelMeta({ id: 't1' }), tunnelMeta({ id: 't2' })]) // read before the delete
+    await act(() => reading)
+    expect(tunnelStore.get().tunnels.map((t) => t.id)).toEqual(['t1'])
   })
 
   it('a reload prunes runtime and stats for tunnels no longer listed', async () => {

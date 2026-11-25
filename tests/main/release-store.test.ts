@@ -241,6 +241,33 @@ describe('ReleaseStore', () => {
     expect(plan.some((d) => /SCAN (releases|r2)\b/.test(d))).toBe(false)
   })
 
+  it('pruneLogs drops the log lines of old finished releases, keeps the rest of them and the newest per environment', async () => {
+    const { f } = await release()
+    const day = 86_400_000
+    const mk = (finishedDaysAgo: number | null) => {
+      const rel = f.releases.createRelease({
+        environmentId: f.prod.id, kind: 'release', status: 'running', version: null, previousVersion: null,
+        versionBump: 'none', redeploy: false, rollbackOf: null, options: DEFAULT_RELEASE_OPTIONS, triggeredBy: 'u@m', serviceIds: [],
+      })
+      f.releases.appendEvents(rel.id, [log('one'), log('two'), { type: 'run.finished', status: 'succeeded' }])
+      if (finishedDaysAgo !== null) f.releases.setStatus(rel.id, 'succeeded', { finishedAt: new Date(Date.now() - finishedDaysAgo * day).toISOString() })
+      return rel.id
+    }
+    const old = mk(200)
+    const recent = mk(10)
+    const running = mk(null)
+    const kept = mk(200) // old, but among the newest two of its environment
+    const types = (id: string) => f.releases.events(id, 0, 100).map((e) => e.type)
+    expect(f.releases.pruneLogs(90, 2)).toBe(2)
+    for (const id of [old, recent]) expect(types(id)).toEqual(id === old ? ['run.finished', 'log.truncated'] : ['log', 'log', 'run.finished'])
+    expect(types(running)).toEqual(['log', 'log', 'run.finished'])
+    expect(types(kept)).toEqual(['log', 'log', 'run.finished'])
+    expect(f.releases.events(old, 0, 100).at(-1)).toMatchObject({ type: 'log.truncated', dropped: 2 })
+    expect(f.releases.get(old).status).toBe('succeeded')
+    // a second pass finds nothing left to do
+    expect(f.releases.pruneLogs(90, 2)).toBe(0)
+  })
+
   it('failInterrupted marks running and rolling_back as failed', async () => {
     const { f, d, r } = await release()
     const mk = () =>

@@ -33,6 +33,8 @@ export const deployStore = createStore<DeployState>(EMPTY)
 /** Bumped by resetDeploy and by every local write; a read that started before either must not overwrite. */
 let generation = 0
 let written = 0
+/** Per environment, its settings saved locally: a read that began before a save would put the old ones back. */
+let settingsWritten: Record<string, number> = {}
 let syncUsers = 0
 let stopSync: (() => void) | null = null
 /** Events within this window share one refetch: a running release emits many. */
@@ -51,6 +53,7 @@ export function resetDeploy(): void {
 export async function loadDeploy(envIds: string[] = []): Promise<void> {
   const started = generation
   const seen = written
+  const seenSettings = { ...settingsWritten }
   try {
     const wanted = [...new Set([...Object.keys(deployStore.get().settings), ...envIds])]
     const [deployments, services, tooling, settings] = await Promise.all([
@@ -66,7 +69,7 @@ export async function loadDeploy(envIds: string[] = []): Promise<void> {
       ...s,
       deployments: fresh ? (deployments ?? s.deployments) : s.deployments,
       services: fresh ? (services ?? s.services) : s.services,
-      settings: { ...s.settings, ...Object.fromEntries((settings ?? []).filter(Boolean).map((x) => [x.environmentId, x])) },
+      settings: { ...s.settings, ...Object.fromEntries((settings ?? []).filter((x) => x && (settingsWritten[x.environmentId] ?? 0) === (seenSettings[x.environmentId] ?? 0)).map((x) => [x.environmentId, x])) },
       tooling: tooling ?? s.tooling,
       loaded: true,
     })
@@ -208,6 +211,7 @@ export async function reorderDeployments(envId: string, ids: string[]): Promise<
 export async function updateSettings(envId: string, patch: EnvDeploySettingsPatch): Promise<boolean> {
   const next = await attempt("Couldn't save the deploy settings", () => api.invoke('deploy:updateSettings', envId, patch))
   if (!next) return false
+  settingsWritten[envId] = (settingsWritten[envId] ?? 0) + 1
   const s = deployStore.get()
   deployStore.set({ ...s, settings: { ...s.settings, [envId]: next } })
   return true
@@ -218,6 +222,7 @@ export async function applyDeployBatch(envId: string, batch: DeployBatch): Promi
   const out = await attempt("Couldn't save the deploy settings", () => api.invoke('deploy:applyBatch', envId, batch))
   if (!out) return false
   written++
+  settingsWritten[envId] = (settingsWritten[envId] ?? 0) + 1
   const saved = new Map(out.deployments.map((d) => [d.id, d]))
   const s = deployStore.get()
   deployStore.set({

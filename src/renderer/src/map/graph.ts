@@ -4,7 +4,7 @@ import type { ServiceKind, ServiceMeta } from '../../../shared/services'
 import type { TunnelMeta, TunnelType } from '../../../shared/tunnels'
 import type { InventoryData } from '../inventory/store'
 import { regionById } from '../inventory/regions'
-import { byName, compareHosts, UNASSIGNED_COLOR } from '../inventory/tree'
+import { byName, byPosition, compareHosts, UNASSIGNED_COLOR } from '../inventory/tree'
 
 export type MapScope = { kind: 'all' } | { kind: 'product'; productId: string } | { kind: 'environment'; environmentId: string }
 
@@ -31,6 +31,17 @@ export interface MapAttachment {
   id: string
   kind: ServiceKind
   label: string
+  /** The service's URL; null for a db or bastion, or an app without one. */
+  url: string | null
+}
+
+/** The part of a URL people call the domain: its host, with a port when it has one. */
+export function domainOf(url: string): string {
+  try {
+    return new URL(url).host || url
+  } catch {
+    return url
+  }
 }
 
 /** Per host, then per environment, the services drawn under that placement. */
@@ -49,7 +60,7 @@ export function buildAttachments(data: InventoryData, services: ServiceMeta[], d
     if (!env) continue
     const hostId = s.hostId
     if (!hostId || !env.hosts.some((m) => m.hostId === hostId)) continue
-    ;((out[hostId] ??= {})[env.id] ??= []).push({ id: s.id, kind: s.kind, label: s.name })
+    ;((out[hostId] ??= {})[env.id] ??= []).push({ id: s.id, kind: s.kind, label: s.name, url: s.kind === 'service' ? s.url : null })
   }
   return out
 }
@@ -177,7 +188,7 @@ export function buildGraph({
   groups.sort((a, b) => {
     const ra = a.productId === null ? Infinity : productRank.get(a.productId)!
     const rb = b.productId === null ? Infinity : productRank.get(b.productId)!
-    return ra - rb || byName(a.env!.name, b.env!.name)
+    return ra - rb || byPosition(a.env!, b.env!)
   })
 
   const placed = new Set(data.environments.flatMap((e) => e.hosts.map((m) => m.hostId)))

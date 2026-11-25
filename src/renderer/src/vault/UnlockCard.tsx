@@ -296,8 +296,16 @@ function TouchIdTab({
 
   useEffect(() => {
     if (!autoPrompt.current) return
-    autoPrompt.current = false
-    void tryQuick()
+    const go = () => {
+      if (!autoPrompt.current) return
+      autoPrompt.current = false
+      void tryQuick()
+    }
+    // A lock while CredOps is in the background (idle, sleep) must not put the system prompt over another app:
+    // the try waits until the window is in front again.
+    if (document.hasFocus()) return go()
+    window.addEventListener('focus', go, { once: true })
+    return () => window.removeEventListener('focus', go)
   }, [])
 
   const throttled = secondsLeft > 0

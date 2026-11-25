@@ -22,7 +22,7 @@ const checkouts = [
   { id: 'c2', environmentId: 'e1', hostId: 'h-us' },
   { id: 'c3', environmentId: 'e2', hostId: 'h-ap' },
 ]
-const base = { name: 's', position: 0, description: '', createdAt: '', updatedAt: '' }
+const base = { name: 's', position: 0, description: '', path: '', createdAt: '', updatedAt: '' }
 const app = (id: string, environmentId: string, hostId: string): ServiceMeta => ({
   ...base,
   id,

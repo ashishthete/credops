@@ -12,6 +12,7 @@ import type { AuditLog } from '../audit/audit-log'
 import type { Db } from '../db/connection'
 import { inTransaction } from '../db/tx'
 import type { VaultService } from '../vault/vault-service'
+import { MAX_POSITION } from '../../shared/deploy'
 import { checkColor, checkDomain, checkName, checkPort, environmentMeta, environmentMetas, hostRow } from './rows'
 
 const exists = (db: Db, table: string, id: string): boolean => db.prepare(`SELECT 1 FROM ${table} WHERE id = ?`).get(id) !== undefined
@@ -79,10 +80,47 @@ export class EnvironmentStore {
     this.db
       .prepare(
         `INSERT INTO environments(id, name, color, protected, default_identity_id, default_port, default_jump_host_id, domain,
-          product_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+          product_id, position, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
-      .run(id, name, color, input.protected ? 1 : 0, identityId, port, jumpHostId, domain, productId, ts, ts)
+      .run(id, name, color, input.protected ? 1 : 0, identityId, port, jumpHostId, domain, productId, this.lastPosition(productId), ts, ts)
     return id
+  }
+
+  /** Sets the environment's place in its product, for a config import; false when it is already there. */
+  setPositionInTx(id: string, position: number): boolean {
+    const before = environmentMeta(this.db, id)
+    if (!Number.isInteger(position) || position < 0 || position > MAX_POSITION) throw new Error(`position must be 0-${MAX_POSITION}`)
+    if (before.position === position) return false
+    this.db.prepare('UPDATE environments SET position = ?, updated_at = ? WHERE id = ?').run(position, new Date().toISOString(), id)
+    return true
+  }
+
+  /**
+   * Puts a product's environments in the given order. `ids` must name every environment of the product, once each,
+   * so an order built from a stale list is refused rather than half applied.
+   */
+  reorder(productId: string, ids: string[]): EnvironmentMeta[] {
+    this.vault.assertUnlocked()
+    const to = this.checkProduct(productId)
+    const mine = () => environmentMetas(this.db).filter((e) => e.productId === to)
+    const before = mine()
+    const known = new Set(before.map((e) => e.id))
+    if (ids.length !== before.length || new Set(ids).size !== ids.length || ids.some((id) => !known.has(id))) {
+      throw new Error("the order must list each of the product's environments once")
+    }
+    if (before.every((e, i) => e.id === ids[i] && e.position === i)) return before
+    inTransaction(this.db, () => {
+      const set = this.db.prepare('UPDATE environments SET position = ? WHERE id = ?')
+      ids.forEach((id, i) => set.run(i, id))
+    })
+    this.audit.append({
+      action: 'environment.reorder',
+      outcome: 'success',
+      targetType: 'product',
+      targetId: to,
+      details: { environments: ids.length },
+    })
+    return mine()
   }
 
   /** update() without the transaction, the unlock check or the audit; null when nothing changed. */
@@ -158,7 +196,10 @@ export class EnvironmentStore {
         throw new Error('this environment is published to the Hub: unpublish it, move it, then publish it again')
       }
       this.checkNameFree(before.name, to, id)
-      this.db.prepare('UPDATE environments SET product_id = ?, updated_at = ? WHERE id = ?').run(to, new Date().toISOString(), id)
+      // It lands last in its new product.
+      this.db
+        .prepare('UPDATE environments SET product_id = ?, position = ?, updated_at = ? WHERE id = ?')
+        .run(to, this.lastPosition(to), new Date().toISOString(), id)
     })
     this.audit.append({
       action: 'environment.product',
@@ -228,6 +269,12 @@ export class EnvironmentStore {
     if (typeof id !== 'string' || id === '') throw new Error('an environment needs a product')
     if (!exists(this.db, 'products', id)) throw new Error('product not found')
     return id
+  }
+
+  /** The place after the product's last environment. */
+  private lastPosition(productId: string): number {
+    const row = this.db.prepare('SELECT MAX(position) AS p FROM environments WHERE product_id = ?').get(productId) as { p: number | null }
+    return row.p === null ? 0 : Math.min(row.p + 1, MAX_POSITION)
   }
 
   /** An environment name is unique within its product (case-insensitive); other products may reuse it. */

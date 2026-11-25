@@ -123,9 +123,9 @@ async function open(failTitle: string, request: () => Promise<SessionMeta>): Pro
 }
 
 /** Opens an SSH session at the last-known terminal size; resolves undefined after a toast on failure. */
-export function openSsh(hostId: string, environmentId?: string): Promise<string | undefined> {
+export function openSsh(hostId: string, environmentId?: string, cwd?: string): Promise<string | undefined> {
   const { cols, rows } = getLastSize()
-  return open("Couldn't open the session", () => api.invoke('ssh:open', { hostId, environmentId, cols, rows }))
+  return open("Couldn't open the session", () => api.invoke('ssh:open', { hostId, environmentId, cols, rows, ...(cwd ? { cwd } : {}) }))
 }
 
 /** Opens a `docker exec` tab into a container on the host; resolves undefined after a toast on failure. */

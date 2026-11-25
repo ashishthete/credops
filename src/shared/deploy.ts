@@ -12,6 +12,9 @@ export const MAX_ENV_TEMPLATE = 32768
 export const MAX_COMMITS = 500
 export const MAX_LOG_LINE = 4096
 export const MAX_EVENTS_PER_RELEASE = 50000
+/** A release's log lines are kept this long after it finishes, and always for each environment's newest LOG_KEEP_RELEASES. */
+export const LOG_KEEP_DAYS = 90
+export const LOG_KEEP_RELEASES = 20
 export const EVENT_BATCH_MS = 100
 export const MAX_ACTIVE_RELEASES = 4
 export const LOCK_STALE_MS = 2 * 60 * 60 * 1000
@@ -426,6 +429,8 @@ export const LOCK_FINISHED_NOTE = ' (left by a release that has finished; it can
  * its own process group and may still be working on the host, so the lock is judged by its age alone.
  */
 export const LOCK_INTERRUPTED_NOTE = ' (left by a release that was interrupted; its run may still be working on the host, so it can be broken once it is 2 hours old)'
+/** Added instead when the interrupted holder's run is known to have ended on this Mac: nothing drives it any more. */
+export const LOCK_INTERRUPTED_GONE_NOTE = ' (left by a release that was interrupted; its run is no longer going on this Mac, so it can be broken, which also stops any step it left on the host)'
 export const LOCK_LIVE_NOTE = ' (that release is still running in this app; wait for it or cancel it)'
 
 // ---- Preflight ----

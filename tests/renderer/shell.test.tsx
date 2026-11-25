@@ -6,7 +6,7 @@ import { AppShell } from '../../src/renderer/src/shell/AppShell'
 import { SECTIONS, sectionShortcut, type SectionId } from '../../src/renderer/src/shell/sections'
 import { commandStore } from '../../src/renderer/src/ui/commands'
 import type { RunSummary } from '../../src/shared/ops'
-import { mockBridge, tunnelMeta, tunnelRuntime } from './helpers'
+import { mockBridge, product, tunnelMeta, tunnelRuntime } from './helpers'
 
 // Shortcuts follow SECTIONS order, so a section inserted later shifts these without a rewrite.
 const digitOf = (id: SectionId) => String(SECTIONS.findIndex((s) => s.id === id) + 1)
@@ -62,6 +62,8 @@ describe('shell', () => {
   })
 
   it('mod+1 lands on Products', async () => {
+    // With nothing set up the page is the welcome (welcome.test.tsx).
+    mockBridge({ 'product:list': [product({ id: 'p1', name: 'Acme' })] })
     renderShell('/audit')
     act(() => {
       fireEvent.keyDown(window, { key: '1', metaKey: true })
@@ -83,6 +85,7 @@ describe('shell', () => {
   })
 
   it('/environments redirects to Products', async () => {
+    mockBridge({ 'product:list': [product({ id: 'p1', name: 'Acme' })] })
     renderShell('/environments')
     expect(await screen.findByRole('heading', { name: 'Products', level: 1 })).toBeInTheDocument()
   })

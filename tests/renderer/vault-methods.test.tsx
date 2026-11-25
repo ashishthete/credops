@@ -363,6 +363,23 @@ describe('method chooser', () => {
     for (const input of document.querySelectorAll('input')) expect(input).toHaveValue('')
   })
 
+  it('a lock while the app is in the background waits for the window before asking for Touch ID', async () => {
+    const focused = vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    try {
+      const { invoke, onUnlocked } = renderUnlock({ ...ALL_METHODS, lastMethod: 'touchId' }, { 'vault:unlockQuick': [{ ok: true }] })
+      await act(async () => {})
+      expect(invoke).not.toHaveBeenCalledWith('vault:unlockQuick')
+      act(() => {
+        window.dispatchEvent(new Event('focus'))
+        window.dispatchEvent(new Event('focus'))
+      })
+      await waitFor(() => expect(onUnlocked).toHaveBeenCalledTimes(1))
+      expect(invoke.mock.calls.filter(([c]) => c === 'vault:unlockQuick')).toHaveLength(1)
+    } finally {
+      focused.mockRestore()
+    }
+  })
+
   it('signin-required with no callback forces auth:check and publishes its status', async () => {
     const user = userEvent.setup()
     const { invoke, state } = renderUnlock({ ...ALL_METHODS, lastMethod: 'pin' }, { 'vault:unlockPin': [SIGNIN] })

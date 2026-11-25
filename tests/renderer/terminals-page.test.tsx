@@ -11,7 +11,7 @@ import { reloadFavourites } from '../../src/renderer/src/terminal/favourites'
 import { resetSessions, sessionStore } from '../../src/renderer/src/terminal/sessions'
 import { clearToasts } from '../../src/renderer/src/ui/Toaster'
 import type { SessionMeta } from '../../src/shared/ssh'
-import { emitBridgeEvent, environment, host, mockBridge } from './helpers'
+import { emitBridgeEvent, environment, host, mockBridge, product } from './helpers'
 import { fake, resetFakeXterm } from './terminal-fakes'
 
 vi.mock('@xterm/xterm', async () => ({ Terminal: (await import('./terminal-fakes')).FakeTerminal }))
@@ -667,7 +667,7 @@ describe('terminals page', () => {
     })
 
     it('after a close by click, focus moves to the next tab, else the previous; closing the last leaves Terminals', async () => {
-      await renderShell()
+      await renderShell('/terminals', { 'product:list': [product({ id: 'p1', name: 'Acme' })] })
       state(failed('a'))
       state(failed('b'))
       state(failed('c'))

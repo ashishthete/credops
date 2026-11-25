@@ -23,7 +23,8 @@ interface ServicesSectionProps {
   onLogs?: (svc: AppServiceMeta) => void
   onCopy?: () => void
   /** Opens a terminal on a service's host, in this environment. */
-  onConnect?: (hostId: string) => void
+  /** `path` is the service's folder on the host, when it has one. */
+  onConnect?: (hostId: string, path?: string) => void
 }
 
 type Editing = { kind?: ServiceKind; service?: ServiceMeta; copyOf?: ServiceMeta }
@@ -69,7 +70,7 @@ export function ServicesSection({ env, data, onDeploy, onLogs, onCopy, onConnect
   // One running index across the groups, so the cascade reads top to bottom.
   let index = 0
   const appRow = (s: AppServiceMeta) => (
-    <ServiceRow key={s.id} svc={s} index={index++} region={regionOf(s)} hostLabel={labelOf(s)} onConnect={onConnect && (() => onConnect(s.hostId))} onEdit={() => edit(s)} onDuplicate={() => duplicate(s)} onDelete={() => ask(s)} onLogs={onLogs} onDeploy={onDeploy} />
+    <ServiceRow key={s.id} svc={s} index={index++} region={regionOf(s)} hostLabel={labelOf(s)} onConnect={onConnect && (() => onConnect(s.hostId, s.path || undefined))} onEdit={() => edit(s)} onDuplicate={() => duplicate(s)} onDelete={() => ask(s)} onLogs={onLogs} onDeploy={onDeploy} />
   )
 
   return (
@@ -147,7 +148,7 @@ export function ServicesSection({ env, data, onDeploy, onLogs, onCopy, onConnect
                     key={s.id}
                     svc={s}
                     index={index++}
-                    hostLabel={labelOf(s)} onConnect={onConnect && (() => onConnect(s.hostId))}
+                    hostLabel={labelOf(s)} onConnect={onConnect && (() => onConnect(s.hostId, s.path || undefined))}
                     routeChanged={!!routeChanged[s.id]}
                     region={regionOf(s)}
                     onEdit={() => edit(s)}
@@ -167,7 +168,7 @@ export function ServicesSection({ env, data, onDeploy, onLogs, onCopy, onConnect
                     key={s.id}
                     svc={s}
                     index={index++}
-                    hostLabel={labelOf(s)} onConnect={onConnect && (() => onConnect(s.hostId))}
+                    hostLabel={labelOf(s)} onConnect={onConnect && (() => onConnect(s.hostId, s.path || undefined))}
                     region={regionOf(s)}
                     onEdit={() => edit(s)}
                     onDuplicate={() => duplicate(s)}

@@ -1,4 +1,6 @@
 import {
+  LOG_KEEP_DAYS,
+  LOG_KEEP_RELEASES,
   MAX_EVENTS_PER_RELEASE,
   type CommitInfo,
   type DeploymentRunMeta,
@@ -513,6 +515,38 @@ export class ReleaseStore {
       }
     })
     return ids
+  }
+
+  /**
+   * Drops the log lines of releases that finished more than `keepDays` ago, sparing each environment's newest
+   * `keepReleases`. The release, its runs, steps and every other event stay; one `log.truncated` says how many lines
+   * went. Returns the number of lines removed.
+   */
+  pruneLogs(keepDays: number = LOG_KEEP_DAYS, keepReleases: number = LOG_KEEP_RELEASES): number {
+    const cutoff = new Date(this.now().getTime() - keepDays * 86_400_000).toISOString()
+    const ids = (
+      this.db
+        .prepare(
+          `SELECT r.id FROM releases r
+           WHERE r.finished_at IS NOT NULL AND r.finished_at < ?
+             AND EXISTS (SELECT 1 FROM run_events e WHERE e.release_id = r.id AND e.type = 'log')
+             AND r.id NOT IN (SELECT r2.id FROM releases r2 WHERE r2.environment_id = r.environment_id ORDER BY r2.created_at DESC, r2.id DESC LIMIT ?)`,
+        )
+        .all(cutoff, keepReleases) as { id: string }[]
+    ).map((r) => r.id)
+    let removed = 0
+    for (const id of ids) {
+      this.transaction(() => {
+        const n = Number(this.db.prepare("DELETE FROM run_events WHERE release_id = ? AND type = 'log'").run(id).changes)
+        const seq = (this.db.prepare('SELECT COALESCE(MAX(seq), 0) AS s FROM run_events WHERE release_id = ?').get(id) as { s: number }).s
+        this.db
+          .prepare('INSERT INTO run_events(id, release_id, seq, at, type, payload) VALUES (?,?,?,?,?,?)')
+          .run(uuidv7(), id, seq + 1, this.now().toISOString(), 'log.truncated', JSON.stringify({ type: 'log.truncated', dropped: n }))
+        removed += n
+      })
+      this.logCounts.delete(id)
+    }
+    return removed
   }
 
   private row(id: string): ReleaseRow {

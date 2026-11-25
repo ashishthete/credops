@@ -1,10 +1,13 @@
 import { fuzzyMatch } from '../ui/commands'
-import type { MapGraph, MapNodeData } from './graph'
+import { domainOf, type MapGraph, type MapNodeData } from './graph'
 
-/** What a node is found by: product and environment names; a host's label, address, tags and region. */
+/** What a node is found by: product and environment names; a host's label, address, tags, region and its services' domains. */
 function searchable(d: MapNodeData): string[] {
   if (d.kind === 'product' || d.kind === 'environment') return [d.name]
-  if (d.kind === 'host') return [d.label, d.address, ...d.tags, ...(d.region ? [d.region.code, d.region.displayName] : [])]
+  if (d.kind === 'host') {
+    const domains = d.attachments.flatMap((a) => (a.url ? [domainOf(a.url)] : []))
+    return [d.label, d.address, ...d.tags, ...(d.region ? [d.region.code, d.region.displayName] : []), ...domains]
+  }
   return []
 }
 

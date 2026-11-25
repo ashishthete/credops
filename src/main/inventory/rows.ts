@@ -197,6 +197,7 @@ interface EnvironmentRow {
   default_jump_host_id: string | null
   domain: string | null
   product_id: string
+  position: number
   created_at: string
   updated_at: string
 }
@@ -210,9 +211,9 @@ export function environmentMeta(db: Db, id: string): EnvironmentMeta {
   return toEnvironmentMeta(r, hosts)
 }
 
-/** Every environment, sorted by name, in two queries rather than two per environment. */
+/** Every environment, in its product's order (then by name), in two queries rather than two per environment. */
 export function environmentMetas(db: Db): EnvironmentMeta[] {
-  const rows = db.prepare('SELECT * FROM environments ORDER BY name COLLATE NOCASE, id').all() as unknown as EnvironmentRow[]
+  const rows = db.prepare('SELECT * FROM environments ORDER BY position, name COLLATE NOCASE, id').all() as unknown as EnvironmentRow[]
   const hosts = groupBy(
     db.prepare('SELECT environment_id, host_id, role FROM environment_hosts ORDER BY host_id').all() as {
       environment_id: string
@@ -238,6 +239,7 @@ function toEnvironmentMeta(
     defaultJumpHostId: r.default_jump_host_id,
     domain: r.domain,
     productId: r.product_id,
+    position: r.position,
     hosts: hosts.map((h) => ({ hostId: h.host_id, role: h.role })),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -259,7 +261,7 @@ export function productMeta(db: Db, id: string): ProductMeta {
     | undefined
   if (!r) throw new Error('product not found')
   const envs = db
-    .prepare('SELECT id FROM environments WHERE product_id = ? ORDER BY id')
+    .prepare('SELECT id FROM environments WHERE product_id = ? ORDER BY position, name COLLATE NOCASE, id')
     .all(id) as { id: string }[]
   return {
     id: r.id,

@@ -7,7 +7,7 @@ import type { ServiceMeta } from '../../../../shared/services'
 import { deployStore, loadDeploy, startDeploySync } from '../../deploy/store'
 import { regionHintText } from '../../inventory/regions'
 import { inv, inventoryStore, loadInventory, reloadInventory, useInventory, type InventoryData } from '../../inventory/store'
-import { buildTree, environmentKey, selectionFromKey, type NodeKey, type TreeRow, type TreeService } from '../../inventory/tree'
+import { buildTree, byPosition, environmentKey, selectionFromKey, type NodeKey, type TreeRow, type TreeService } from '../../inventory/tree'
 import { Badge } from '../../ui/Badge'
 import { registerCommand } from '../../ui/commands'
 import { attempt, ConfirmDialog, plural, type ConfirmRequest } from '../../ui/common'
@@ -158,12 +158,14 @@ export function ProductsPage() {
     if (action === 'newEnvironment' && product) newEnvironment(product.id, true)
     else if (action === 'editProduct' && product) openDialog({ kind: 'product', product })
     else if (action === 'editEnvironment' && environment) openDialog({ kind: 'environment', environment })
+    else if (action === 'moveEnvironmentUp' && environment) void moveEnvironment(environment, -1)
+    else if (action === 'moveEnvironmentDown' && environment) void moveEnvironment(environment, 1)
     else if (action === 'newHost' && environment) openDialog({ kind: 'host', presetEnvironment: { environmentId: environment.id, role: 'app' }, envKey: row.key })
     else if (action === 'addService' && environment) {
       // Its services show on the environment's page, so that is where the new one lands.
       if (row.key !== selected) select(row.key)
       openDialog({ kind: 'service', environment })
-    } else if (action === 'connectService' && service) void connect(service.hostId, service.environmentId)
+    } else if (action === 'connectService' && service) void connect(service.hostId, service.environmentId, service.path || undefined)
     else if (action === 'editService' && environment && service) openDialog({ kind: 'service', environment, service })
     else if (action === 'deleteService' && environment && service) {
       setConfirm(deleteRequest(environment, service, () => row.key === selected && row.parentKey && select(row.parentKey)))
@@ -185,6 +187,8 @@ export function ProductsPage() {
     if (dropping) return false
     if (drag.kind === 'host' && target.kind === 'environment') return !env(target.id)?.hosts.some((h) => h.hostId === drag.id)
     if (drag.kind === 'environment' && target.kind === 'product') return env(drag.id)?.productId !== target.id
+    // Within its product an environment takes the place of the one it lands on.
+    if (drag.kind === 'environment' && target.kind === 'environment') return drag.id !== target.id && env(drag.id)?.productId === env(target.id)?.productId
     if (drag.kind === 'service' && target.kind === 'environment') {
       const svc = services.find((s) => s.id === drag.id)
       return !!svc && svc.environmentId !== target.id
@@ -204,6 +208,35 @@ export function ProductsPage() {
         toast({ title: `Added ${host.label} to ${target.label}`, description: hint ?? undefined, tone: 'success' })
       }
     })
+
+  /** A product's environments in their order, as ids. */
+  const orderOf = (productId: string) => (data?.environments ?? []).filter((e) => e.productId === productId).sort(byPosition).map((e) => e.id)
+
+  /** Puts the environment where `to` is in its product's order; the ones between shift by one. */
+  const placeEnvironment = (id: string, productId: string, to: number) =>
+    whileDropping(async () => {
+      const ids = orderOf(productId)
+      const from = ids.indexOf(id)
+      if (from < 0 || to < 0 || to >= ids.length || from === to) return
+      ids.splice(to, 0, ...ids.splice(from, 1))
+      await inv.reorderEnvironments(productId, ids)
+    })
+
+  const moveEnvironment = (e: EnvironmentMeta, by: -1 | 1) => placeEnvironment(e.id, e.productId, orderOf(e.productId).indexOf(e.id) + by)
+
+  const reorderEnvironment = (from: TreeRow, onto: TreeRow) => {
+    const e = env(from.id)
+    return e ? placeEnvironment(e.id, e.productId, orderOf(e.productId).indexOf(onto.id)) : undefined
+  }
+
+  /** Move up and Move down show only where there is somewhere to go. */
+  const canRowAction = (row: TreeRow, action: RowAction) => {
+    if (action !== 'moveEnvironmentUp' && action !== 'moveEnvironmentDown') return true
+    const e = env(row.id)
+    if (!e) return false
+    const ids = orderOf(e.productId)
+    return action === 'moveEnvironmentUp' ? ids[0] !== e.id : ids[ids.length - 1] !== e.id
+  }
 
   // A drop re-parents the environment, so it asks first.
   const dropEnvironment = (from: TreeRow, target: TreeRow) =>
@@ -400,7 +433,9 @@ export function ProductsPage() {
               onDropHost={(h, e) => void dropHost(h, e)}
               onDropEnvironment={(e, p) => void dropEnvironment(e, p)}
               onDropService={dropService}
+              onReorderEnvironment={(e, onto) => void reorderEnvironment(e, onto)}
               onRowAction={rowAction}
+              canRowAction={canRowAction}
               productIcons={productIcons}
             />
           ) : (

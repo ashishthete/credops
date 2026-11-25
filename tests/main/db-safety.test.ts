@@ -61,6 +61,13 @@ describe('downgrade guard', () => {
     check.close()
   })
 
+  it('the database file is readable only by its owner', () => {
+    const file = join(dir, 'app.db')
+    writeFileSync(file, '', { mode: 0o644 })
+    openDatabase(file).close()
+    expect(statSync(file).mode & 0o777).toBe(0o600)
+  })
+
   it('opens a database at exactly the newest known version', () => {
     const file = join(dir, 'credops.db')
     openDatabase(file).close()

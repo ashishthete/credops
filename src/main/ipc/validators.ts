@@ -131,7 +131,7 @@ import {
   type NotifyTestTarget,
   type IntegrationSettingsPatch,
 } from '../../shared/settings'
-import { MAX_SERVICES, type CopyServicesRequest, type ServiceInput, type ServicePatch } from '../../shared/services'
+import { MAX_SERVICE_PATH, MAX_SERVICES, SERVICE_PATH, type CopyServicesRequest, type ServiceInput, type ServicePatch } from '../../shared/services'
 import { MAX_PRIVATE_KEY_BYTES } from '../vault/openssh'
 import { MAX_COMMANDS, MAX_NOTES_SUBJECT, type ExplainSubject, type ReleaseNotesRequest } from '../../shared/ai'
 import {
@@ -458,6 +458,8 @@ const serviceCommon = {
   hostId: v.uuid(),
   name: deployName,
   description: v.optional(v.str({ max: MAX_DESCRIPTION })),
+  // The store trims it and owns the rule; empty clears it.
+  path: v.optional(v.str({ max: MAX_SERVICE_PATH })),
 }
 const servicePort = v.int({ min: 1, max: 65535 })
 const appServiceFields = {
@@ -504,6 +506,7 @@ export const asServicePatch: Check<ServicePatch> = v.object({
   kind: v.optional(v.oneOf(['service', 'db', 'bastion'] as const)),
   name: v.optional(deployName),
   description: serviceCommon.description,
+  path: serviceCommon.path,
   hostId: v.optional(serviceCommon.hostId),
   ...Object.fromEntries(Object.entries({ ...appServiceFields, ...dbServiceFields }).map(([k, c]) => [k, v.optional(c as Check<unknown>)])),
 }) as Check<ServicePatch>
@@ -714,6 +717,7 @@ export const asOpenSshRequest: Check<OpenSshRequest> = v.object({
   cols,
   rows,
   container: v.optional(containerRef),
+  cwd: v.optional(v.str({ min: 1, max: MAX_SERVICE_PATH, pattern: SERVICE_PATH })),
 }) as Check<OpenSshRequest>
 
 export const asOpenLocalRequest: Check<OpenLocalRequest> = v.object({ cols, rows }) as Check<OpenLocalRequest>
@@ -896,6 +900,7 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'env:delete': args(v.uuid()),
   'env:openDomain': args(v.uuid()),
   'env:setProduct': args(v.uuid(), v.uuid()),
+  'env:reorder': args(v.uuid(), v.array(v.uuid(), MAX_LINKS)),
   'env:putHost': args(v.uuid(), v.uuid(), v.oneOf(HOST_ROLES)),
   'env:removeHost': args(v.uuid(), v.uuid()),
   'product:list': args(),
