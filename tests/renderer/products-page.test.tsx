@@ -154,6 +154,11 @@ function renderPage(w: World = world(), extra: Record<string, unknown> = {}) {
       case 'service:delete':
         services = services.filter((s) => s.id !== args[0])
         return null
+      case 'service:move': {
+        const moved = { ...services.find((s) => s.id === args[0])!, environmentId: args[1] as string }
+        services = services.map((s) => (s.id === moved.id ? moved : s))
+        return moved
+      }
       case 'product:create': {
         const p = product({ id: 'new-product', ...(args[0] as { name: string }) })
         w.products = [...w.products, p]
@@ -655,6 +660,48 @@ describe('products page', () => {
     expect(item('analytics-db')).not.toHaveAttribute('data-drop-target')
   })
 
+  it('dropping a service on another environment moves it there, after asking', async () => {
+    const user = userEvent.setup()
+    const { invoke } = renderPage()
+    const web = await screen.findByRole('treeitem', { name: 'web-1' })
+    fireEvent.dragStart(web, { dataTransfer: dataTransfer() })
+    // Any other environment takes it; its own does not, nor does a product.
+    expect(item('staging')).toHaveAttribute('data-drop-target', 'true')
+    expect(item('analytics-db')).toHaveAttribute('data-drop-target', 'true')
+    expect(item('prod')).not.toHaveAttribute('data-drop-target')
+    expect(item('Acme')).not.toHaveAttribute('data-drop-target')
+    fireEvent.dragOver(item('staging'), { dataTransfer: dataTransfer() })
+    fireEvent.drop(item('staging'), { dataTransfer: dataTransfer() })
+    const dialog = await screen.findByRole('dialog', { name: 'Move web-1 to staging?' })
+    expect(dialog).toHaveTextContent('prod is protected. It leaves prod and keeps its host and settings.')
+    expect(invoke).not.toHaveBeenCalledWith('service:move', expect.anything(), expect.anything(), expect.anything())
+    await user.click(within(dialog).getByRole('button', { name: 'Move' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('service:move', 'prod-web1', 'staging', { detachCheckout: false }))
+    expect(await screen.findByText('Moved web-1 to staging')).toBeInTheDocument()
+    const row = await screen.findByRole('treeitem', { name: 'web-1' })
+    await waitFor(() => expect(row).toHaveAccessibleDescription(/^App web-1/))
+    expect(screen.getAllByRole('treeitem', { name: 'web-1' })).toHaveLength(1)
+  })
+
+  it('selecting a service shows its own page, with the way back to its environment', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(await screen.findByRole('treeitem', { name: 'web-1' }))
+    const main = screen.getByRole('region', { name: 'Details' })
+    expect(await within(main).findByRole('heading', { name: 'web-1' })).toBeInTheDocument()
+    const facts = within(main).getByLabelText('Service details')
+    expect(facts).toHaveTextContent('Environment')
+    expect(facts).toHaveTextContent('Host')
+    expect(facts).toHaveTextContent('Checkout')
+    // The environment's own sections are not here.
+    expect(within(main).queryByRole('region', { name: 'Services' })).not.toBeInTheDocument()
+    await user.click(within(main).getByRole('button', { name: 'Edit' }))
+    await user.click(within(await screen.findByRole('dialog', { name: 'Edit web-1' })).getByRole('button', { name: 'Cancel' }))
+    await user.click(within(main).getByRole('button', { name: 'Show prod' }))
+    expect(await within(main).findByRole('heading', { name: 'prod' })).toBeInTheDocument()
+    expect(await within(main).findByRole('region', { name: 'Services' })).toBeInTheDocument()
+  })
+
   it('deleting a service from the tree asks first', async () => {
     const user = userEvent.setup()
     const { invoke } = renderPage(sharedWorld())
@@ -839,13 +886,14 @@ describe('products page', () => {
     expect(await within(main).findByText('No services yet')).toBeInTheDocument()
   })
 
-  it('a service selection opens its environment; an unassigned host opens the host view', async () => {
+  it('a service selection opens the service; an unassigned host opens the host view', async () => {
     const user = userEvent.setup()
     renderPage(looseWorld())
     await user.click(await screen.findByRole('treeitem', { name: 'web-1' }))
     expect(new URLSearchParams(where.split('?')[1]).get('node')).toBe('p:acme/e:prod/s:prod-web1')
     const main = screen.getByRole('region', { name: 'Details' })
-    expect(await within(main).findByRole('heading', { name: 'prod', level: 2 })).toBeInTheDocument()
+    expect(await within(main).findByRole('heading', { name: 'web-1', level: 2 })).toBeInTheDocument()
+    expect(within(main).getByLabelText('Service details')).toBeInTheDocument()
 
     await user.click(item('loose-1'))
     expect(await within(main).findByRole('heading', { name: 'loose-1', level: 2 })).toBeInTheDocument()

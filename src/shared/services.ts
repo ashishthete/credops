@@ -93,11 +93,15 @@ export type ServiceInput =
       description?: string
     }
 
-/** The kind and environment never change. */
-export type ServicePatch =
+/**
+ * The environment never changes here (a service is moved instead). Another `kind` turns the service into that kind;
+ * the patch then carries the new kind's fields.
+ */
+export type ServicePatch = { kind?: ServiceKind } & (
   | Partial<Omit<Extract<ServiceInput, { kind: 'service' }>, 'kind' | 'environmentId'>>
   | Partial<Omit<Extract<ServiceInput, { kind: 'db' }>, 'kind' | 'environmentId'>>
   | Partial<Omit<Extract<ServiceInput, { kind: 'bastion' }>, 'kind' | 'environmentId'>>
+)
 
 export interface ServiceUpdateResult {
   service: ServiceMeta

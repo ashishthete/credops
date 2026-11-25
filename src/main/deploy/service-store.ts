@@ -65,7 +65,7 @@ const ENGINES = Object.keys(DB_DEFAULT_PORT) as DbEngine[]
 
 const COMPOSE_MESSAGE = 'compose service must be letters, digits, dashes, dots or underscores'
 const URL_MESSAGE = `url must be http(s) and at most ${MAX_URL} characters`
-const FIXED_MESSAGE = 'a service cannot change its kind or environment'
+const FIXED_MESSAGE = 'a service changes environment by being moved, not edited'
 const REORDER_MESSAGE = "ids must be exactly the environment's services"
 
 const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
@@ -199,7 +199,10 @@ export class ServiceStore {
     return id
   }
 
-  /** `undefined` keeps a field; `null` clears the nullable ones. The kind and environment never change. */
+  /**
+   * `undefined` keeps a field; `null` clears the nullable ones. A patch with another `kind` turns the service into
+   * that kind: it keeps its id, name, host, description and place, and takes the new kind's fields from the patch.
+   */
   update(id: string, patch: ServicePatch): ServiceMeta {
     this.vault.assertUnlocked()
     const fields = inTransaction(this.db, () => this.updateInTx(id, patch))
@@ -221,9 +224,8 @@ export class ServiceStore {
   updateInTx(id: string, patch: ServicePatch): string[] {
     const before = this.get(id)
     const raw = patch as Record<string, unknown>
-    if ((has(raw, 'kind') && raw.kind !== before.kind) || (has(raw, 'environmentId') && raw.environmentId !== before.environmentId)) {
-      throw new Error(FIXED_MESSAGE)
-    }
+    if (has(raw, 'environmentId') && raw.environmentId !== before.environmentId) throw new Error(FIXED_MESSAGE)
+    if (has(raw, 'kind') && raw.kind !== before.kind) return this.changeKindInTx(before, raw)
     this.refuseForeign(before.kind, raw)
     const pick = <T extends ServiceMeta, K extends keyof T>(b: T, k: K): T[K] => (has(raw, k as string) ? (raw[k as string] as T[K]) : b[k])
     const name = has(raw, 'name') ? this.checkName(raw.name as string, before.environmentId, id) : before.name
@@ -277,6 +279,99 @@ export class ServiceStore {
     return changed
   }
 
+  /**
+   * Rewrites a service as another kind. The old kind's fields are dropped: an app lets go of its checkout and deploy
+   * record, a db of its address and tunnel (the tunnel itself stays, as a plain one). Refused while a release flow or
+   * a runbook names the service.
+   */
+  private changeKindInTx(before: ServiceMeta, raw: Record<string, unknown>): string[] {
+    const kind = raw.kind
+    if (kind !== 'service' && kind !== 'db' && kind !== 'bastion') throw new Error('kind must be app, db or bastion')
+    this.refuseForeign(kind, raw)
+    this.refuseReferenced(before)
+    const id = before.id
+    const name = has(raw, 'name') ? this.checkName(raw.name as string, before.environmentId, id) : before.name
+    const description = has(raw, 'description') ? (raw.description as string) : before.description
+    const hostId = has(raw, 'hostId') ? (raw.hostId as string) : before.hostId
+    const ts = this.now().toISOString()
+    const set = (cols: Record<string, string | number | null>): void => {
+      const all: Record<string, string | number | null> = {
+        deployment_id: null,
+        compose_service: null,
+        url: null,
+        url_check_from: null,
+        last_deployed_commit: null,
+        last_release_id: null,
+        skip_unchanged: 0,
+        db_engine: null,
+        db_address: null,
+        db_port: null,
+        local_port: null,
+        tunnel_id: null,
+        ...cols,
+        kind,
+        updated_at: ts,
+      }
+      const keys = Object.keys(all)
+      this.db.prepare(`UPDATE services SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(...keys.map((k) => all[k] as string | number | null), id)
+    }
+    if (kind === 'service') {
+      const deploymentId = has(raw, 'deploymentId') ? (raw.deploymentId as string | null) : null
+      const f = this.validateApp(
+        {
+          name,
+          description,
+          hostId: has(raw, 'hostId') ? hostId : (this.checkoutHost(deploymentId) ?? hostId),
+          deploymentId,
+          composeService: has(raw, 'composeService') ? (raw.composeService as string) : deploymentId !== null && COMPOSE_SERVICE.test(name) ? name : '',
+          url: has(raw, 'url') ? (raw.url as string | null) : null,
+          urlCheckFrom: has(raw, 'urlCheckFrom') ? (raw.urlCheckFrom as HealthFrom) : 'mac',
+          skipUnchanged: has(raw, 'skipUnchanged') ? (raw.skipUnchanged as boolean) : false,
+        },
+        before.environmentId,
+        id,
+      )
+      set({
+        name: f.name,
+        description: f.description,
+        host_id: f.hostId,
+        deployment_id: f.deploymentId,
+        compose_service: f.composeService || null,
+        url: f.url,
+        url_check_from: f.urlCheckFrom,
+        skip_unchanged: f.skipUnchanged ? 1 : 0,
+      })
+    } else if (kind === 'bastion') {
+      const f = this.validateBastion({ name, description, hostId })
+      set({ name: f.name, description: f.description, host_id: f.hostId })
+    } else {
+      if (!has(raw, 'dbEngine') || !has(raw, 'dbAddress')) throw new Error('a db service needs an engine and an address')
+      const engine = this.checkEngine(raw.dbEngine as DbEngine)
+      const f = this.validateDb({
+        name,
+        description,
+        dbEngine: engine,
+        dbAddress: raw.dbAddress as string,
+        dbPort: has(raw, 'dbPort') ? (raw.dbPort as number) : (DB_DEFAULT_PORT[engine] as number),
+        hostId,
+        localPort: has(raw, 'localPort') ? (raw.localPort as number | null) : null,
+      })
+      set({ name: f.name, description: f.description, host_id: f.hostId, db_engine: f.dbEngine, db_address: f.dbAddress, db_port: f.dbPort, local_port: f.localPort })
+    }
+    return ['kind', ...FIELDS[kind].filter((k) => has(raw, k))]
+  }
+
+  /** Throws while the environment's release flow or one of its runbooks names the service. */
+  private refuseReferenced(svc: ServiceMeta): void {
+    const env = this.envName(svc.environmentId)
+    const flow = (this.db.prepare('SELECT release_flow FROM environments WHERE id = ?').get(svc.environmentId) as { release_flow: string | null } | undefined)?.release_flow
+    if (flow?.includes(`"${svc.id}"`)) throw new Error(`${svc.name} is part of ${env}'s release flow; take it out of the flow first`)
+    const runbook = (this.db.prepare('SELECT name, definition FROM runbooks WHERE environment_id = ?').all(svc.environmentId) as { name: string; definition: string }[]).find((r) =>
+      r.definition.includes(`"${svc.id}"`),
+    )
+    if (runbook) throw new Error(`${svc.name} is a target of the runbook ${runbook.name}; take it out of the runbook first`)
+  }
+
   /** Moves a service to `position` without renumbering the others; no transaction and no audit. False when it's already there. */
   setPositionInTx(id: string, position: number): boolean {
     const before = this.get(id)
@@ -284,6 +379,47 @@ export class ServiceStore {
     if (before.position === position) return false
     this.db.prepare('UPDATE services SET position = ?, updated_at = ? WHERE id = ?').run(position, this.now().toISOString(), id)
     return true
+  }
+
+  /**
+   * Moves a service to another environment, keeping its id, host, URL and tunnel; it lands last there. A checkout
+   * stays in its environment, so an app that has one moves only with `detachCheckout`, which leaves it without one.
+   * Refused while the source environment's release flow or a runbook names the service.
+   */
+  move(id: string, targetEnvironmentId: string, opts: { detachCheckout?: boolean } = {}): ServiceMeta {
+    this.vault.assertUnlocked()
+    const before = this.get(id)
+    const source = this.envName(before.environmentId)
+    inTransaction(this.db, () => {
+      if (before.environmentId === targetEnvironmentId) throw new Error(`${before.name} is already in that environment`)
+      const target = this.db.prepare('SELECT name FROM environments WHERE id = ?').get(targetEnvironmentId) as { name: string } | undefined
+      if (!target) throw new Error('environment not found')
+      if (this.db.prepare('SELECT 1 FROM services WHERE environment_id = ? AND name = ? COLLATE NOCASE').get(targetEnvironmentId, before.name)) {
+        throw new Error(`a service named ${before.name} already exists in ${target.name}`)
+      }
+      const detach = before.kind === 'service' && before.deploymentId !== null
+      if (detach && opts.detachCheckout !== true) throw new Error(`${before.name} deploys from a checkout, which stays in ${source}`)
+      this.refuseReferenced(before)
+      const ts = this.now().toISOString()
+      this.db
+        .prepare('UPDATE services SET environment_id = ?, position = ?, updated_at = ? WHERE id = ?')
+        .run(targetEnvironmentId, this.nextPosition(targetEnvironmentId), ts, id)
+      if (detach) this.db.prepare('UPDATE services SET deployment_id = NULL, last_deployed_commit = NULL, last_release_id = NULL WHERE id = ?').run(id)
+      // Its tunnel is filed under the environment too.
+      if (before.kind === 'db' && before.tunnelId !== null) this.db.prepare('UPDATE tunnels SET environment_id = ? WHERE id = ?').run(targetEnvironmentId, before.tunnelId)
+    })
+    const after = this.get(id)
+    this.audit.append({
+      action: 'service.move',
+      outcome: 'success',
+      targetType: 'service',
+      targetId: id,
+      targetLabel: after.name,
+      details: { ...this.labels(after), from: source },
+    })
+    this.onChanged?.(before.environmentId)
+    this.onChanged?.(after.environmentId)
+    return after
   }
 
   delete(id: string): void {

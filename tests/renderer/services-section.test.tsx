@@ -398,6 +398,32 @@ describe('services section', () => {
     expect(within(section()).queryByText('test-1')).not.toBeInTheDocument()
   })
 
+  it('editing a service can change its type, sending the new type with its fields', async () => {
+    const user = userEvent.setup()
+    const after = dbService({ id: 's4', name: 'cron', position: 3, dbEngine: 'mysql', dbAddress: '10.0.0.5', dbPort: 3306 })
+    const invoke = world({ 'service:update': { service: after, tunnelRestartNeeded: false } })
+    await mount()
+    await user.click(await waitFor(() => within(row('cron')).getByRole('button', { name: 'cron options' })))
+    await user.click(screen.getByRole('menuitem', { name: 'Edit' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Edit cron' })
+    const type = within(dialog).getByRole('radiogroup', { name: 'Type' })
+    expect(within(dialog).queryByText(/^Saving turns/)).not.toBeInTheDocument()
+    await user.click(within(type).getByRole('radio', { name: 'Database' }))
+    expect(within(dialog).getByText('Saving turns cron into a database: its URL is dropped.')).toBeInTheDocument()
+    await user.selectOptions(within(dialog).getByLabelText('Engine'), 'mysql')
+    const address = within(dialog).getByLabelText('Address')
+    await user.clear(address)
+    await user.type(address, '10.0.0.5')
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(calls(invoke, 'service:update')[0].slice(1)).toEqual([
+        's4',
+        { kind: 'db', name: 'cron', dbEngine: 'mysql', dbAddress: '10.0.0.5', hostId: 'h1', dbPort: 3306, localPort: null },
+      ]),
+    )
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Edit cron' })).not.toBeInTheDocument())
+  })
+
   it('declining the restart prompt shows Route changed; restart to apply', async () => {
     const user = userEvent.setup()
     const moved = dbService({ id: 'b1', name: 'main-db', position: 4, localPort: 15432, tunnelId: 't1', dbAddress: '10.0.0.9' })

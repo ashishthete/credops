@@ -326,6 +326,8 @@ export interface IpcContract {
   'service:update': { args: [id: string, patch: ServicePatch]; result: ServiceUpdateResult }
   'service:delete': { args: [id: string, opts: { deleteTunnel: boolean }]; result: void }
   'service:reorder': { args: [environmentId: string, ids: string[]]; result: void }
+  // To another environment, same id. An app with a checkout moves only with `detachCheckout`: the checkout stays behind.
+  'service:move': { args: [id: string, targetEnvironmentId: string, opts: { detachCheckout: boolean }]; result: ServiceMeta }
   // One transaction and one `services.copy` audit; name conflicts come back in `skipped`.
   'service:copy': { args: [req: CopyServicesRequest]; result: CopyServicesResult }
   // Integration settings hold secret ids, never values; updates need the vault unlocked.
@@ -552,6 +554,7 @@ export const CHANNELS = [
   'service:update',
   'service:delete',
   'service:reorder',
+  'service:move',
   'service:copy',
   'settings:get',
   'settings:update',

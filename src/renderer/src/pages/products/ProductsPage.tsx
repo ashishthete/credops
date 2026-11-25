@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { useSearchParams } from 'react-router'
 import type { EnvironmentMeta, Membership, ProductMeta } from '../../../../shared/inventory'
 import type { ServiceMeta } from '../../../../shared/services'
-import { deployStore, startDeploySync } from '../../deploy/store'
+import { deployStore, loadDeploy, startDeploySync } from '../../deploy/store'
 import { regionHintText } from '../../inventory/regions'
 import { inv, inventoryStore, loadInventory, reloadInventory, useInventory, type InventoryData } from '../../inventory/store'
 import { buildTree, environmentKey, selectionFromKey, type NodeKey, type TreeRow, type TreeService } from '../../inventory/tree'
@@ -26,6 +26,7 @@ import { EnvironmentView } from './EnvironmentView'
 import { InventoryTree, type RowAction } from './InventoryTree'
 import { ProductDialog } from './ProductDialog'
 import { PaneHeader, ProductView } from './ProductView'
+import { ServiceView } from './ServiceView'
 import { RegionsUpgradeBanner } from './RegionsUpgradeBanner'
 import { deleteRequest, ServiceDialog } from './services/ServiceDialog'
 import { useConfigTransfer } from '../settings/ConfigTransfer'
@@ -184,6 +185,10 @@ export function ProductsPage() {
     if (dropping) return false
     if (drag.kind === 'host' && target.kind === 'environment') return !env(target.id)?.hosts.some((h) => h.hostId === drag.id)
     if (drag.kind === 'environment' && target.kind === 'product') return env(drag.id)?.productId !== target.id
+    if (drag.kind === 'service' && target.kind === 'environment') {
+      const svc = services.find((s) => s.id === drag.id)
+      return !!svc && svc.environmentId !== target.id
+    }
     return false
   }
 
@@ -215,6 +220,36 @@ export function ProductsPage() {
           }
         }),
     })
+
+  // A drop moves the service to another environment, so it asks first and says what stays behind.
+  const dropService = (from: TreeRow, target: TreeRow) => {
+    const svc = services.find((s) => s.id === from.id)
+    const source = svc && env(svc.environmentId)
+    const dest = env(target.id)
+    if (!svc || !source || !dest) return
+    const detachCheckout = svc.kind === 'service' && svc.deploymentId !== null
+    const checkout = detachCheckout ? deployStore.get().deployments.find((d) => d.id === svc.deploymentId)?.name : undefined
+    const guarded = [source, dest].filter((e) => e.protected).map((e) => e.name)
+    setConfirm({
+      title: `Move ${svc.name} to ${dest.name}?`,
+      description:
+        (guarded.length ? `${guarded.join(' and ')} ${guarded.length > 1 ? 'are' : 'is'} protected. ` : '') +
+        (detachCheckout
+          ? `It keeps its host and settings, but its checkout${checkout ? ` ${checkout}` : ''} stays in ${source.name}: it can't be deployed until you give it a checkout in ${dest.name}.`
+          : `It leaves ${source.name} and keeps its host and settings.`),
+      confirmLabel: detachCheckout ? 'Move without checkout' : 'Move',
+      gentle: { cancelLabel: 'Cancel' },
+      run: () =>
+        whileDropping(async () => {
+          const moved = await attempt("Couldn't move the service", () => api.invoke('service:move', svc.id, dest.id, { detachCheckout }))
+          if (!moved) return
+          await Promise.all([loadDeploy(), reloadInventory()])
+          expand(target.key)
+          if (selected === from.key) select(`${target.key}/s:${svc.id}`)
+          toast({ title: `Moved ${svc.name} to ${dest.name}`, tone: 'success' })
+        }),
+    })
+  }
 
   /** Opens a product with its environments in view. */
   const showProduct = (id: string) => {
@@ -287,6 +322,23 @@ export function ProductsPage() {
       if (!data.hosts.some((x) => x.id === sel.hostId)) return null
       return <HostView key={sel.hostId} hostId={sel.hostId} environmentId={sel.environmentId} onDeleted={() => select(parentOf(selected))} />
     }
+    if (sel.serviceId) {
+      const svc = services.find((x) => x.id === sel.serviceId)
+      const e = svc && env(svc.environmentId)
+      if (!svc || !e) return null
+      const envKey = parentOf(selected)
+      return (
+        <ServiceView
+          key={svc.id}
+          service={svc}
+          env={e}
+          data={data}
+          onEdit={() => openDialog({ kind: 'service', environment: e, service: svc })}
+          onDelete={() => setConfirm(deleteRequest(e, svc, () => select(envKey)))}
+          onOpenEnvironment={() => select(envKey)}
+        />
+      )
+    }
     if (sel.environmentId) {
       const e = env(sel.environmentId)
       if (!e) return null
@@ -347,6 +399,7 @@ export function ProductsPage() {
               canDrop={canDrop}
               onDropHost={(h, e) => void dropHost(h, e)}
               onDropEnvironment={(e, p) => void dropEnvironment(e, p)}
+              onDropService={dropService}
               onRowAction={rowAction}
               productIcons={productIcons}
             />

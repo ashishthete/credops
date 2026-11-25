@@ -184,14 +184,84 @@ describe('ServiceStore', () => {
     expect(f.services.update(s.id, { description: 'Front end' })).toMatchObject({ description: 'Front end' })
   })
 
-  it('kind and environment never change', async () => {
+  it('the environment never changes through update', async () => {
     const f = await setup()
     const s = f.services.create(f.app())
-    expect(message(() => f.services.update(s.id, { kind: 'db' } as never))).toBe('a service cannot change its kind or environment')
-    expect(message(() => f.services.update(s.id, { environmentId: f.prod.id } as never))).toBe(
-      'a service cannot change its kind or environment',
-    )
+    expect(message(() => f.services.update(s.id, { environmentId: f.prod.id } as never))).toBe('a service changes environment by being moved, not edited')
     expect(f.services.update(s.id, { kind: 'service', environmentId: f.staging.id } as never)).toEqual(s)
+  })
+
+  it('an app becomes a db, letting go of its checkout and deploy record', async () => {
+    const f = await setup()
+    const s = f.services.create(f.app({ url: 'https://esg.example.com' }))
+    f.services.recordDeployed([{ serviceId: s.id, commit: 'abc1234', releaseId: null }])
+    const d = f.services.update(s.id, { kind: 'db', dbEngine: 'mysql', dbAddress: '10.0.0.9' })
+    expect(d).toMatchObject({ id: s.id, kind: 'db', name: 'esg', hostId: f.host.id, position: s.position, dbEngine: 'mysql', dbAddress: '10.0.0.9', dbPort: 3306, localPort: null, tunnelId: null })
+    expect(d).not.toHaveProperty('deploymentId')
+    const [e] = f.audit.list({ actions: ['service.update'] })
+    expect(e.details).toMatchObject({ kind: 'db', fields: ['kind', 'dbEngine', 'dbAddress'] })
+    // And back: an app again, without the checkout it had.
+    expect(f.services.update(s.id, { kind: 'service' })).toMatchObject({ kind: 'service', deploymentId: null, composeService: '', url: null, lastDeployedCommit: null })
+  })
+
+  it('a db becomes a bastion; its tunnel stays as a plain tunnel', async () => {
+    const f = await setup()
+    const d = f.services.create(f.dbService())
+    const tunnel = f.tunnels.create({ label: 'db', hostId: f.host.id, type: 'L', bindAddress: '127.0.0.1', bindPort: 15432, targetHost: '10.0.0.9', targetPort: 5432 })
+    f.services.setTunnel(d.id, tunnel.id, 15432)
+    const b = f.services.update(d.id, { kind: 'bastion', description: 'Jump box' })
+    expect(b).toMatchObject({ id: d.id, kind: 'bastion', name: 'main-db', description: 'Jump box' })
+    expect(b).not.toHaveProperty('dbAddress')
+    expect(f.tunnels.get(tunnel.id)).toMatchObject({ label: 'db' })
+  })
+
+  it('a kind change validates the new kind and refuses a service a flow or runbook names', async () => {
+    const f = await setup()
+    const s = f.services.create(f.app())
+    expect(message(() => f.services.update(s.id, { kind: 'db' }))).toBe('a db service needs an engine and an address')
+    expect(message(() => f.services.update(s.id, { kind: 'db', dbEngine: 'postgres', dbAddress: '10.0.0.9', url: null } as never))).toBe('that field does not apply to a db service')
+    expect(message(() => f.services.update(s.id, { kind: 'nope' } as never))).toBe('kind must be app, db or bastion')
+    f.db.prepare('UPDATE environments SET release_flow = ? WHERE id = ?').run(JSON.stringify({ steps: [{ serviceIds: [s.id] }] }), f.staging.id)
+    expect(message(() => f.services.update(s.id, { kind: 'bastion' }))).toBe("esg is part of staging's release flow; take it out of the flow first")
+    expect(f.services.get(s.id)).toEqual(s)
+  })
+
+  it('move takes a service to another environment, last in line', async () => {
+    const f = await setup()
+    f.services.create(f.dbService({ environmentId: f.prod.id, name: 'other' }))
+    const d = f.services.create(f.dbService())
+    const tunnel = f.tunnels.create({ label: 'db', hostId: f.host.id, type: 'L', bindAddress: '127.0.0.1', bindPort: 15432, targetHost: '10.0.0.9', targetPort: 5432 })
+    f.services.setTunnel(d.id, tunnel.id, 15432)
+    f.changed.length = 0
+    const moved = f.services.move(d.id, f.prod.id)
+    expect(moved).toMatchObject({ id: d.id, environmentId: f.prod.id, position: 1, tunnelId: tunnel.id, dbAddress: '10.0.0.9' })
+    expect(f.services.list(f.staging.id)).toEqual([])
+    expect(f.changed).toEqual([f.staging.id, f.prod.id])
+    const [e] = f.audit.list({ actions: ['service.move'] })
+    expect(e.details).toEqual({ environment: 'prod', kind: 'db', from: 'staging' })
+  })
+
+  it('move leaves the checkout behind only when asked', async () => {
+    const f = await setup()
+    const s = f.services.create(f.app())
+    f.services.recordDeployed([{ serviceId: s.id, commit: 'abc1234', releaseId: null }])
+    expect(message(() => f.services.move(s.id, f.prod.id))).toBe('esg deploys from a checkout, which stays in staging')
+    expect(f.services.move(s.id, f.prod.id, { detachCheckout: true })).toMatchObject({ environmentId: f.prod.id, deploymentId: null, lastDeployedCommit: null, name: 'esg' })
+  })
+
+  it('move refuses the same environment, a taken name, and a service a flow or runbook names', async () => {
+    const f = await setup()
+    const s = f.services.create(f.app({ deploymentId: null, hostId: f.host.id }))
+    expect(message(() => f.services.move(s.id, f.staging.id))).toBe('esg is already in that environment')
+    expect(message(() => f.services.move(s.id, '00000000-0000-4000-8000-000000000000'))).toBe('environment not found')
+    const twin = f.services.create(f.app({ environmentId: f.prod.id, name: 'ESG', deploymentId: null, hostId: f.host.id }))
+    expect(message(() => f.services.move(s.id, f.prod.id))).toBe('a service named esg already exists in prod')
+    f.services.delete(twin.id)
+    f.db.prepare("INSERT INTO runbooks(id, environment_id, name, definition, created_at, updated_at) VALUES ('r1', ?, 'restart', ?, 'x', 'x')").run(f.staging.id, JSON.stringify({ targets: [s.id] }))
+    expect(message(() => f.services.move(s.id, f.prod.id))).toBe('esg is a target of the runbook restart; take it out of the runbook first')
+    f.db.prepare('DELETE FROM runbooks').run()
+    f.vault.lock('manual')
+    expect(message(() => f.services.move(s.id, f.prod.id))).toBe(VAULT_LOCKED)
   })
 
   it('reorder needs exactly the environment\'s services', async () => {

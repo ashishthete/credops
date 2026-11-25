@@ -498,9 +498,10 @@ export const asServiceInput: Check<ServiceInput> = v.tagged('kind', {
     ...serviceCommon,
   }),
 }) as Check<ServiceInput>
-// The patch can't know the kind: both kinds' keys are allowed here and the store refuses the other kind's. The kind
-// and environment are not keys, so changing them fails validation.
+// The patch can't know the saved kind: every kind's keys are allowed here and the store refuses another kind's. The
+// environment is not a key, so changing it fails validation.
 export const asServicePatch: Check<ServicePatch> = v.object({
+  kind: v.optional(v.oneOf(['service', 'db', 'bastion'] as const)),
   name: v.optional(deployName),
   description: serviceCommon.description,
   hostId: v.optional(serviceCommon.hostId),
@@ -943,6 +944,7 @@ export const VALIDATORS: { [K in Channel]: ArgsValidator<IpcContract[K]['args']>
   'service:update': args(v.uuid(), asServicePatch),
   'service:delete': args(v.uuid(), v.object({ deleteTunnel: v.bool() })),
   'service:reorder': args(v.uuid(), v.array(v.uuid(), MAX_SERVICES)),
+  'service:move': args(v.uuid(), v.uuid(), v.object({ detachCheckout: v.bool() })),
   'service:copy': args(asCopyServicesRequest),
   'settings:get': args(),
   'settings:update': args(asSettingsPatch),

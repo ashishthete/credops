@@ -153,7 +153,8 @@ export function EnvironmentView({ env, data, onNewHost, onEdit, onDelete }: Envi
   )
 }
 
-function Default({
+/** One fact in a details grid: a term, its value, where the value comes from, and an optional action. */
+export function Default({
   icon: Icon,
   term,
   value,

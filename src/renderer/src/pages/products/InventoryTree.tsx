@@ -22,6 +22,7 @@ export interface InventoryTreeProps {
   canDrop: (drag: TreeRow, target: TreeRow) => boolean
   onDropHost: (host: TreeRow, environment: TreeRow) => void
   onDropEnvironment: (environment: TreeRow, product: TreeRow) => void
+  onDropService: (service: TreeRow, environment: TreeRow) => void
   /** Adds or edits from a product, environment or service row's menu; without it those rows have no menu. */
   onRowAction?: (row: TreeRow, action: RowAction) => void
   productIcons?: Readonly<Record<string, ProductIcon>>
@@ -89,7 +90,7 @@ function tabbableKey(rows: TreeRow[], selected: NodeKey | null): NodeKey | null 
   return rows[0]?.key ?? null
 }
 
-/** Product → environment → service, as an ARIA tree of flat rows. Hosts and environments drag onto parents. */
+/** Product → environment → service, as an ARIA tree of flat rows. Hosts, environments and services drag onto parents. */
 export function InventoryTree({
   rows,
   selected,
@@ -98,6 +99,7 @@ export function InventoryTree({
   canDrop,
   onDropHost,
   onDropEnvironment,
+  onDropService,
   onRowAction,
   productIcons = {},
 }: InventoryTreeProps) {
@@ -178,16 +180,16 @@ export function InventoryTree({
     hover: (row, on) => setHovered((h) => (on ? (row.sharedCount > 0 ? row : null) : h?.key === row.key ? null : h)),
     menu: (row, x, y, up) => openMenu(row, x, y, up),
     dragStart: (row, e) => {
-      if (row.kind !== 'host' && row.kind !== 'environment') return
+      if (row.kind !== 'host' && row.kind !== 'environment' && row.kind !== 'service') return
       drag.current = row
       setDragging(row)
-      e.dataTransfer.effectAllowed = 'copy'
+      e.dataTransfer.effectAllowed = row.kind === 'service' ? 'move' : 'copy'
       e.dataTransfer.setData('text/plain', row.label)
     },
     dragOver: (row, e) => {
       if (!drag.current || !canDrop(drag.current, row)) return
       e.preventDefault()
-      e.dataTransfer.dropEffect = 'copy'
+      e.dataTransfer.dropEffect = drag.current.kind === 'service' ? 'move' : 'copy'
       if (over !== row.key) setOver(row.key)
     },
     dragLeave: (row, e) => {
@@ -201,6 +203,7 @@ export function InventoryTree({
       if (!from || !canDrop(from, row)) return
       if (from.kind === 'host') onDropHost(from, row)
       else if (from.kind === 'environment') onDropEnvironment(from, row)
+      else if (from.kind === 'service') onDropService(from, row)
     },
     dragEnd: endDrag,
   }
@@ -295,7 +298,7 @@ const TreeItem = memo(function TreeItem({
   }
   // Rows on their way out stay mounted for the exit animation, but nothing can reach them (F19).
   const present = useIsPresent()
-  const draggable = present && (row.kind === 'host' || row.kind === 'environment')
+  const draggable = present && (row.kind === 'host' || row.kind === 'environment' || row.kind === 'service')
   const pulse = sharedHighlight && motionSafe
   const descId = useId()
   // A hidden description carries the role, protection, region and other places; its name stays the bare label.

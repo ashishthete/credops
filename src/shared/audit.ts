@@ -99,6 +99,7 @@ export const AUDIT_ACTIONS = [
   'service.create',
   'service.update',
   'service.delete',
+  'service.move',
   'service.dropped_without_host',
   'services.copy',
   'settings.update',

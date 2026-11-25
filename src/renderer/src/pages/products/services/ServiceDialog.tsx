@@ -167,9 +167,13 @@ function toInput(f: Form, environmentId: string): ServiceInput {
   }
 }
 
-/** Only the fields that differ from the saved service. */
+/** Only the fields that differ from the saved service; with another type, the type and all of its fields. */
 function toPatch(f: Form, saved: ServiceMeta): ServicePatch {
-  const next = toInput({ ...f, kind: saved.kind }, saved.environmentId) as unknown as Record<string, unknown>
+  if (f.kind !== saved.kind) {
+    const { environmentId: _, ...rest } = toInput(f, saved.environmentId)
+    return rest
+  }
+  const next = toInput(f, saved.environmentId) as unknown as Record<string, unknown>
   const before = saved as unknown as Record<string, unknown>
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(next)) if (k !== 'kind' && k !== 'environmentId' && v !== before[k]) out[k] = v
@@ -251,6 +255,17 @@ export function ServiceDialog({ env, service, copyOf, kind: initialKind, hostId:
   const title = service ? `Edit ${service.name}` : copyOf ? `Duplicate ${copyOf.name}` : 'Add service'
   // A checkout runs on one host, so an app with a checkout runs there.
   const lockedHost = isApp && form.deploymentId !== '' ? (checkoutHost.get(form.deploymentId) ?? '') : null
+  // What a saved service gives up when it becomes another type.
+  const typeNote =
+    !service || service.kind === kind
+      ? null
+      : service.kind === 'service'
+        ? service.deploymentId
+          ? `Saving turns ${service.name} into a ${noun}: it leaves its checkout and is no longer deployed.`
+          : `Saving turns ${service.name} into a ${noun}: its URL is dropped.`
+        : service.kind === 'db'
+          ? `Saving turns ${service.name} into ${noun === 'app' ? 'an app' : 'a bastion'}: its address is dropped${service.tunnelId ? ' and its tunnel stays as a plain tunnel' : ''}.`
+          : `Saving turns ${service.name} into ${noun === 'app' ? 'an app' : 'a database'}.`
   const DESCRIPTION = {
     service: 'An app on a host, optionally deployed from a checkout.',
     db: 'A database on a host, at its address as seen from that host. Its tunnel goes through the host.',
@@ -329,10 +344,13 @@ export function ServiceDialog({ env, service, copyOf, kind: initialKind, hostId:
         }
       >
         <form id={formId} onSubmit={submit} noValidate aria-label={`The ${noun}`} className="flex flex-col gap-3">
-          {!service && !copyOf && (
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-[12.5px] font-medium text-fg/90">Type</span>
-              <Segmented label="Type" size="sm" options={KINDS} value={kind} onChange={(k) => set({ kind: k })} />
+          {!copyOf && (
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[12.5px] font-medium text-fg/90">Type</span>
+                <Segmented label="Type" size="sm" options={KINDS} value={kind} onChange={(k) => set({ kind: k })} />
+              </div>
+              {typeNote && <p className="text-[12px] text-muted">{typeNote}</p>}
             </div>
           )}
           <TextField

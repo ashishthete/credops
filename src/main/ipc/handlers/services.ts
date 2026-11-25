@@ -12,6 +12,7 @@ type ServiceChannel =
   | 'service:update'
   | 'service:delete'
   | 'service:reorder'
+  | 'service:move'
   | 'service:copy'
   | 'service:logs'
   | 'service:open'
@@ -56,6 +57,7 @@ export function createServiceHandlers(deps: {
       services.delete(id)
     },
     'service:reorder': (environmentId, ids) => services.reorder(environmentId, ids),
+    'service:move': (id, targetEnvironmentId, opts) => services.move(id, targetEnvironmentId, opts),
     'service:copy': (req) => copy(req),
     'service:logs': (id, tail) => {
       const svc = services.get(id)

@@ -19,6 +19,7 @@ const SERVICE_CHANNELS = [
   'service:update',
   'service:delete',
   'service:reorder',
+  'service:move',
   'service:copy',
   'service:logs',
   'service:open',
@@ -83,6 +84,8 @@ describe('service:* IPC', () => {
     expect(() => check('service:create', [{ kind: 'bastion', environmentId: ID, hostId: ID, name: 'jump', description: 'x' }])).not.toThrow()
     expect(() => check('service:create', [{ ...APP, deploymentId: null, hostId: ID, composeService: '' }])).not.toThrow()
     expect(() => check('service:update', [ID, { hostId: ID }])).not.toThrow()
+    expect(() => check('service:update', [ID, { kind: 'db', dbEngine: 'mysql', dbAddress: '10.0.0.9' }])).not.toThrow()
+    expect(() => check('service:move', [ID, ID, { detachCheckout: true }])).not.toThrow()
     expect(() => check('service:update', [ID, { name: 'x', dbPort: 1 }])).not.toThrow()
     expect(() => check('service:delete', [ID, { deleteTunnel: false }])).not.toThrow()
     expect(() => check('service:reorder', [ID, [ID]])).not.toThrow()
@@ -106,7 +109,9 @@ describe('service:* IPC', () => {
       ['service:create', [{ ...DB, localPort: 70000 }], /localPort/],
       ['service:create', ['x'], /\[0\]/],
       ['service:update', ['x', {}], /\[0\]/],
-      ['service:update', [ID, { kind: 'db' }], /kind/],
+      ['service:update', [ID, { kind: 'nope' }], /kind/],
+      ['service:move', [ID, ID], /length|args|\[2\]/],
+      ['service:move', [ID, 'x', { detachCheckout: false }], /\[1\]/],
       ['service:update', [ID, { environmentId: ID }], /environmentId/],
       ['service:update', [ID, { tunnelId: ID }], /tunnelId/],
       ['service:update', [ID, { name: 5 }], /name/],
