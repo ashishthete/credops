@@ -86,7 +86,9 @@ it the first time you open a copy that was downloaded or shared. To allow it, do
 
 ## Where your data lives
 
-CredOps keeps its database and vault in `~/Library/Application Support/credops/`. Nothing is sent anywhere
+CredOps keeps its database and vault in `~/Library/Application Support/credops/`. A copy started with
+`pnpm dev` uses `~/Library/Application Support/credops-dev/` instead, so development never touches your real
+data. Nothing is sent anywhere
 unless you connect the app to a Hub or turn on a feature that calls an outside service.
 
 ## Project layout
